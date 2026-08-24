@@ -3,9 +3,9 @@
 ## Context
 
 GitHub, Sparkle, Homebrew, and the signed app must agree on each release. A
-reused version, build number, tag, or ZIP can leave users on different builds
-that claim to be the same release. Passing values only through the shell also
-leaves no clear record in Git.
+reused version, build number, tag, ZIP, or DMG can leave users on different
+builds that claim to be the same release. Passing values only through the shell
+also leaves no clear record in Git.
 
 ## Decision
 
@@ -17,15 +17,18 @@ patch for a compatible fix.
 
 Start the build number at 1. Increase it each time we send an artifact to Apple,
 and never reset it. Never reuse or replace a published version, build number,
-tag, ZIP, appcast entry, or Homebrew cask version. Keep prereleases out of the
-stable appcast and cask.
+tag, ZIP, DMG, appcast entry, or Homebrew cask version. Keep prereleases out of
+the stable appcast and cask.
 
 Release only the clean commit at public `origin/main` after all tests pass. The
 release scripts must check the manifest, Xcode settings, prior tags, prior
-appcast builds, signed app metadata, and ZIP checksum. GitHub, Sparkle, and
-Homebrew must publish the same notarized ZIP. If publishing stops, resume only
-when any existing GitHub release, appcast entry, and cask match that ZIP and
-checksum.
+appcast builds, signed app metadata, and release checksums. Each release sends
+one signed DMG to Apple. Apple creates tickets for the DMG and its nested app.
+Staple the DMG and the exported app. The direct-install DMG keeps the signed app
+covered by its outer ticket. Package the separately stapled copy of that same
+signed app build as the ZIP used by Sparkle and Homebrew. If publishing stops,
+resume only from the exact accepted Apple submission and only when any existing
+GitHub release, appcast entry, and cask match those files and checksums.
 
 ## Consequences
 

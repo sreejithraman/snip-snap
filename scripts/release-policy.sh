@@ -286,6 +286,24 @@ release_policy_notary_submission_names() {
     '
 }
 
+release_policy_notary_submission_entry() {
+    local history_json="$1"
+    local submission_name="$2"
+
+    print -r -- "$history_json" | /usr/bin/ruby -rjson -e '
+        data = JSON.parse(STDIN.read)
+        name = ARGV.fetch(0)
+        entry = data.fetch("history").find do |item|
+          item.is_a?(Hash) && item["name"] == name
+        end
+        exit 1 unless entry
+        id = entry["id"]
+        status = entry["status"]
+        exit 1 unless id.is_a?(String) && status.is_a?(String)
+        puts [id, status].join("\t")
+    ' "$submission_name"
+}
+
 release_policy_notary_history_contains_build() {
     local history_json="$1"
     local build_number="$2"
@@ -370,6 +388,42 @@ release_policy_verify_app() {
     }
 }
 
+release_policy_signed_app_identity() {
+    local app_path="$1"
+    local codesign_tool="${SNIP_SNAP_CODESIGN:-/usr/bin/codesign}"
+    local architecture
+    local identity
+
+    for architecture in arm64 x86_64; do
+        identity="$("$codesign_tool" \
+            --display \
+            --verbose=4 \
+            --arch "$architecture" \
+            "$app_path" 2>&1 | \
+            /usr/bin/sed -nE '/^(Identifier|TeamIdentifier|CDHash)=/p')" || return 1
+        [[ "$(print -r -- "$identity" | /usr/bin/grep -c '^CDHash=')" == 1 ]] || {
+            release_policy_fail "$app_path has no $architecture signed slice"
+            return 1
+        }
+        print -r -- "$architecture"
+        print -r -- "$identity"
+    done
+}
+
+release_policy_require_matching_apps() {
+    local first_app="$1"
+    local second_app="$2"
+    local first_identity
+    local second_identity
+
+    first_identity="$(release_policy_signed_app_identity "$first_app")" || return 1
+    second_identity="$(release_policy_signed_app_identity "$second_app")" || return 1
+    [[ -n "$first_identity" && "$first_identity" == "$second_identity" ]] || {
+        release_policy_fail "release files contain different signed apps"
+        return 1
+    }
+}
+
 release_policy_verify_checksum() {
     local archive_path="$1"
     local checksum_path="$2"
@@ -390,7 +444,7 @@ release_policy_verify_checksum() {
         return 1
     }
     [[ -n "$expected" && "$actual" == "$expected" ]] || {
-        release_policy_fail "release ZIP does not match its checksum"
+        release_policy_fail "release artifact does not match its checksum"
         return 1
     }
 }
