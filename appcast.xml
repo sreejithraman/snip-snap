@@ -1,0 +1,16 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Snip Snap</title>
+        <item>
+            <title>0.1.0</title>
+            <pubDate>Mon, 24 Aug 2026 15:55:11 -0400</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.1.0</link>
+            <sparkle:version>1</sparkle:version>
+            <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:releaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.1.0.md</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.1.0/Snip-Snap-0.1.0.zip" length="4566099" type="application/octet-stream" sparkle:edSignature="8OLC2Uko2rcxNruK0GksMD1o25PJwxHWhedChX3VgmyV9LQBHB7YsSZZ9EDlkNPPADpWh8wmSKXQkS9XugLFDg=="/>
+        </item>
+    </channel>
+</rss>
