@@ -77,6 +77,14 @@ assert_fails release_policy_notary_history_contains_build \
 assert_fails release_policy_notary_history_contains_build \
     '{"message":"No submission history.","history":[]}' \
     1
+entry="$(release_policy_notary_submission_entry \
+    '{"history":[{"id":"submission-2","name":"Snip-Snap-build-2-0.1.1-submission.dmg","status":"Accepted"}]}' \
+    'Snip-Snap-build-2-0.1.1-submission.dmg')"
+[[ "$entry" == $'submission-2\tAccepted' ]] || \
+    fail_test "wrong Apple submission entry"
+assert_fails release_policy_notary_submission_entry \
+    '{"history":[]}' \
+    'Snip-Snap-build-2-0.1.1-submission.dmg'
 [[ "$(release_policy_latest_notary_build \
     '{"history":[{"name":"Snip-Snap-build-5-0.2.0-submission.zip"},{"name":"Snip-Snap-build-2-0.1.0-submission.zip"}]}')" == "5" ]] || \
     fail_test "wrong latest Apple build"
@@ -122,6 +130,36 @@ assert_succeeds "$update_root/scripts/set-release.sh" 0.2.0 2
     "$update_root/SnipSnap.xcodeproj/project.pbxproj" || fail_test "set-release missed Xcode build"
 assert_fails "$update_root/scripts/set-release.sh" 0.1.0 3
 assert_fails "$update_root/scripts/set-release.sh" 0.2.0 2
+
+codesign_fixture="$test_root/codesign"
+print '#!/bin/zsh' > "$codesign_fixture"
+print 'while (( $# )); do' >> "$codesign_fixture"
+print '    if [[ "$1" == --arch ]]; then' >> "$codesign_fixture"
+print '        architecture="$2"' >> "$codesign_fixture"
+print '        shift 2' >> "$codesign_fixture"
+print '    else' >> "$codesign_fixture"
+print '        app_path="$1"' >> "$codesign_fixture"
+print '        shift' >> "$codesign_fixture"
+print '    fi' >> "$codesign_fixture"
+print 'done' >> "$codesign_fixture"
+print '/bin/cat "$app_path/identity-$architecture"' >> "$codesign_fixture"
+/bin/chmod +x "$codesign_fixture"
+first_app="$test_root/first/Snip Snap.app"
+second_app="$test_root/second/Snip Snap.app"
+/bin/mkdir -p "$first_app" "$second_app"
+for architecture in arm64 x86_64; do
+    print 'Identifier=world.sree.snipsnap' > "$first_app/identity-$architecture"
+    print 'TeamIdentifier=K6239Y94G5' >> "$first_app/identity-$architecture"
+    print "CDHash=$architecture-hash" >> "$first_app/identity-$architecture"
+    /bin/cp "$first_app/identity-$architecture" "$second_app/identity-$architecture"
+done
+SNIP_SNAP_CODESIGN="$codesign_fixture"
+assert_succeeds release_policy_require_matching_apps "$first_app" "$second_app"
+print 'Identifier=world.sree.snipsnap' > "$second_app/identity-x86_64"
+print 'TeamIdentifier=K6239Y94G5' >> "$second_app/identity-x86_64"
+print 'CDHash=different-x86_64-hash' >> "$second_app/identity-x86_64"
+assert_fails release_policy_require_matching_apps "$first_app" "$second_app"
+unset SNIP_SNAP_CODESIGN
 
 archive="$test_root/Snip-Snap-0.1.0.zip"
 checksum="$archive.sha256"
