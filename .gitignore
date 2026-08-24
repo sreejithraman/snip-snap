@@ -1,0 +1,8 @@
+.DS_Store
+DerivedData/
+build/
+*.xcuserstate
+*.profraw
+xcuserdata/
+artifacts/
+docs/research/
