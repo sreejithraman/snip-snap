@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct InboxItemRow: View {
     let item: CaptureItem
@@ -15,6 +14,8 @@ struct InboxItemRow: View {
     let onSelect: () -> Void
     let onOpen: () -> Void
     let onToggleDone: () -> Void
+    let onChooseFiles: () -> Void
+    let onCaptureScreenArea: (@escaping @MainActor (URL?) -> Void) -> Void
     let onCancelEdit: () -> Void
     let onSaveEdit: (String, [URL]) async -> Bool
     let onEditError: (String) -> Void
@@ -22,8 +23,7 @@ struct InboxItemRow: View {
     let onDragEnded: (ClipDragOutcome) -> Void
 
     @State private var editText = ""
-    @State private var showingFiles = false
-    @State private var pastedAttachmentURLs: Set<URL> = []
+    @State private var temporaryAttachmentURLs: Set<URL> = []
     @State private var editSessionID = UUID()
     @FocusState private var editorFocused: Bool
 
@@ -65,7 +65,7 @@ struct InboxItemRow: View {
         .onChange(of: isEditing, initial: true) { _, editing in
             guard editing else {
                 editSessionID = UUID()
-                removePastedAttachments()
+                removeTemporaryAttachments()
                 editorFocused = false
                 return
             }
@@ -79,21 +79,7 @@ struct InboxItemRow: View {
         .onChange(of: isSaving) { _, saving in
             if saving { editSessionID = UUID() }
         }
-        .onDisappear(perform: removePastedAttachments)
-        .fileImporter(
-            isPresented: $showingFiles,
-            allowedContentTypes: [.data],
-            allowsMultipleSelection: true
-        ) { result in
-            switch result {
-            case .success(let urls):
-                addEditAttachments(urls)
-            case .failure(let error):
-                if (error as NSError).code != NSUserCancelledError {
-                    onEditError(error.localizedDescription)
-                }
-            }
-        }
+        .onDisappear(perform: removeTemporaryAttachments)
     }
 
     private var draggableBody: some View {
@@ -208,7 +194,7 @@ struct InboxItemRow: View {
                     removeTemporaryFiles(urls)
                     return
                 }
-                pastedAttachmentURLs.formUnion(urls)
+                temporaryAttachmentURLs.formUnion(urls)
                 addEditAttachments(urls)
             case .failure(let error):
                 onEditError(error.localizedDescription)
@@ -216,9 +202,23 @@ struct InboxItemRow: View {
         }
     }
 
-    private func removePastedAttachments() {
-        removeTemporaryFiles(Array(pastedAttachmentURLs))
-        pastedAttachmentURLs.removeAll()
+    private func captureScreenAreaIntoEdit() {
+        guard !isSaving else { return }
+        let sessionID = editSessionID
+        onCaptureScreenArea { url in
+            guard let url else { return }
+            guard editSessionID == sessionID else {
+                removeTemporaryFiles([url])
+                return
+            }
+            temporaryAttachmentURLs.insert(url)
+            addEditAttachments([url])
+        }
+    }
+
+    private func removeTemporaryAttachments() {
+        removeTemporaryFiles(Array(temporaryAttachmentURLs))
+        temporaryAttachmentURLs.removeAll()
     }
 
     private func removeTemporaryFiles(_ urls: [URL]) {
@@ -230,7 +230,8 @@ struct InboxItemRow: View {
     private var editActions: some View {
         HStack(spacing: SnipSnapSpacing.relatedContent) {
             Menu {
-                Button("Choose Files…") { showingFiles = true }
+                Button("Choose Files…", action: onChooseFiles)
+                Button("Capture Screen Area…", action: captureScreenAreaIntoEdit)
             } label: {
                 editActionIcon("plus")
                     .panelEmbeddedActionControl()

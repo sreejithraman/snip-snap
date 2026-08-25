@@ -36,7 +36,7 @@ final class PanelFileDropController: ObservableObject {
         isTargeted = targeted
     }
 
-    fileprivate func receive(_ urls: [URL]) {
+    func receive(_ urls: [URL]) {
         fileDrops.send(urls)
     }
 }
