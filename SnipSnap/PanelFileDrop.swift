@@ -13,6 +13,12 @@ enum PanelFileDropValidation {
             ) && !isDirectory.boolValue
         }
     }
+
+    static func newFiles(in urls: [URL], excluding existing: [URL]) -> [URL] {
+        var seen = Set(existing)
+        let uniqueNewURLs = urls.filter { seen.insert($0).inserted }
+        return existingFiles(in: uniqueNewURLs)
+    }
 }
 
 @MainActor
