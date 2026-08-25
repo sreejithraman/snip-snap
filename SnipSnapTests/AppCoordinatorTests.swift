@@ -178,13 +178,18 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testComposerExpansionGrowsPanelDownwardAndPreservesBaseHeight() throws {
+        let autosaveName = NSWindow.FrameAutosaveName("AppCoordinatorTests-\(UUID().uuidString)")
+        defer { NSWindow.removeFrame(usingName: autosaveName) }
         let repository = try ItemRepository(fileURL: storeURL())
         let coordinator = AppCoordinator(
             model: AppModel(repository: repository),
             shortcutSettings: ShortcutSettings(),
             isAccessibilityTrusted: { true }
         )
-        let panel = SnipSnapPanel.make(contentViewController: NSViewController())
+        let panel = SnipSnapPanel.make(
+            contentViewController: NSViewController(),
+            frameAutosaveName: nil
+        )
         panel.setFrameOrigin(NSPoint(x: 300, y: 300))
         coordinator.attachInboxWindow(panel)
         let baseline = panel.frame
@@ -195,9 +200,14 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         XCTAssertEqual(panel.frame.maxY, baseline.maxY)
         XCTAssertEqual(panel.frame.height - 44, baseline.height)
 
-        coordinator.updateInboxComposerExpansion(0)
+        coordinator.saveInboxWindowFrame(using: autosaveName)
 
         XCTAssertEqual(panel.frame, baseline)
+        let restoredPanel = SnipSnapPanel.make(
+            contentViewController: NSViewController(),
+            frameAutosaveName: autosaveName
+        )
+        XCTAssertEqual(restoredPanel.frame, baseline)
     }
 
     @MainActor
