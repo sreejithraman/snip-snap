@@ -17,7 +17,8 @@ final class AppCoordinator {
     private let model: AppModel
     let shortcutSettings: ShortcutSettings
     private let makeHotKeyManager: (@escaping (GlobalHotKeyAction) -> Void) -> any GlobalHotKeyManaging
-    private let requestAccessibilityTrust: () -> Bool
+    private let isAccessibilityTrusted: () -> Bool
+    private let requestAccessibilityTrust: () -> Void
     private let selectionReader = AccessibilitySelectionReader()
     private let hud = CaptureHUDController()
     let inboxFocusRequests = PassthroughSubject<InboxFocusRequest, Never>()
@@ -35,8 +36,9 @@ final class AppCoordinator {
         makeHotKeyManager: @escaping (
             @escaping (GlobalHotKeyAction) -> Void
         ) -> any GlobalHotKeyManaging = { GlobalHotKeyManager(handler: $0) },
-        requestAccessibilityTrust: @escaping () -> Bool = {
-            AXIsProcessTrusted() || AXIsProcessTrustedWithOptions(
+        isAccessibilityTrusted: @escaping () -> Bool = { AXIsProcessTrusted() },
+        requestAccessibilityTrust: @escaping () -> Void = {
+            _ = AXIsProcessTrustedWithOptions(
                 ["AXTrustedCheckOptionPrompt": true] as CFDictionary
             )
         }
@@ -44,6 +46,7 @@ final class AppCoordinator {
         self.model = model
         self.shortcutSettings = shortcutSettings
         self.makeHotKeyManager = makeHotKeyManager
+        self.isAccessibilityTrusted = isAccessibilityTrusted
         self.requestAccessibilityTrust = requestAccessibilityTrust
     }
 
@@ -51,9 +54,8 @@ final class AppCoordinator {
         observeExternalApplicationActivations()
         guard hotKeys == nil else { return }
         refreshAppShortcutMenu()
-        if shortcutSettings.configuration.usesDoubleShift,
-           !requestAccessibilityTrust() {
-            model.presentedError = "Allow Snip Snap in System Settings → Privacy & Security → Accessibility so its Shift shortcuts work."
+        if !isAccessibilityTrusted() {
+            presentAccessibilityAccessExplanation()
         }
         let manager = newHotKeyManager()
         do {
@@ -62,6 +64,12 @@ final class AppCoordinator {
         } catch {
             model.presentedError = "Snip Snap could not register its keyboard shortcuts."
         }
+    }
+
+    func requestAccessibilityAccess() {
+        model.isAccessibilityAccessExplanationPresented = false
+        guard !isAccessibilityTrusted() else { return }
+        requestAccessibilityTrust()
     }
 
     func setShortcut(_ trigger: ShortcutTrigger, for action: GlobalHotKeyAction) throws {
@@ -109,7 +117,7 @@ final class AppCoordinator {
         showInbox(inboxWindow, focusing: .search)
     }
 
-    private func showInbox(_ inboxWindow: NSWindow, focusing target: InboxFocusRequest) {
+    private func showInbox(_ inboxWindow: NSWindow, focusing target: InboxFocusRequest?) {
         previousExternalApplication = frontmostExternalApplication()
         NSApp.activate(ignoringOtherApps: true)
         if inboxWindow.isMiniaturized {
@@ -118,8 +126,10 @@ final class AppCoordinator {
             inboxWindow.orderOut(nil)
         }
         inboxWindow.makeKeyAndOrderFront(nil)
-        DispatchQueue.main.async { [weak self] in
-            self?.inboxFocusRequests.send(target)
+        if let target {
+            DispatchQueue.main.async { [weak self] in
+                self?.inboxFocusRequests.send(target)
+            }
         }
     }
 
@@ -220,6 +230,10 @@ final class AppCoordinator {
     }
 
     func captureSelection() {
+        guard isAccessibilityTrusted() else {
+            presentAccessibilityAccessExplanation()
+            return
+        }
         guard let sourceApplication = frontmostExternalApplication() else {
             hud.show(
                 message: SelectionCaptureFailure.sourceUnavailable.localizedDescription,
@@ -277,6 +291,10 @@ final class AppCoordinator {
                         )
                     }
                 case .failure(let error):
+                    if error == .accessibilityPermissionRequired {
+                        self.presentAccessibilityAccessExplanation()
+                        return
+                    }
                     self.hud.show(
                         message: error.localizedDescription,
                         symbol: error == .duplicateSelection ? "minus" : "exclamationmark"
@@ -284,6 +302,12 @@ final class AppCoordinator {
                 }
             }
         }
+    }
+
+    private func presentAccessibilityAccessExplanation() {
+        model.isAccessibilityAccessExplanationPresented = true
+        guard let inboxWindow else { return }
+        showInbox(inboxWindow, focusing: nil)
     }
 
     nonisolated static func writeTemporaryAttachments(
