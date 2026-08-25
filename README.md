@@ -1,17 +1,45 @@
-# Snip Snap
+<p align="center">
+  <img src="SnipSnap/Assets.xcassets/AppIcon.appiconset/icon_128x128@2x.png" width="128" height="128" alt="Snip Snap app icon">
+</p>
 
-Snip Snap is a small, local Mac app for clips you want to use later. It keeps
-text, files, and clipboard history close at hand without an account or cloud
-sync.
+<h1 align="center">Snip Snap</h1>
 
-[Website](https://sree.world/snip-snap)
+<p align="center">
+  Save text and files on your Mac. Use them when you need them.
+</p>
 
-## Requirements
+<p align="center">
+  <a href="https://sree.world/snip-snap">Website</a> ·
+  <a href="https://github.com/sreejithraman/snip-snap/releases/latest">Latest release</a>
+</p>
 
-- macOS 26 or later
-- Accessibility access for system-wide selection capture
+## Install
 
-## Build
+```sh
+brew install --cask sreejithraman/tap/snip-snap
+```
+
+Snip Snap needs macOS 26 or later. Grant Accessibility access when asked so
+system-wide capture and Shift shortcuts can work.
+
+## Keep clips ready
+
+- Press Left Shift twice to capture selected text.
+- Press Right Shift twice to open your clips.
+- Save text and files, sort them into sections, and find them fast.
+- Keep up to 100 clipboard items, or pause and clear clipboard history at any
+  time.
+
+Everything stays in a small panel where you can edit, copy, or drag items back
+into your work.
+
+## Private on your Mac
+
+Snip Snap stores clips and clipboard history on your Mac. It has no account,
+sync, or tracking. Release builds contact the public update feed to check for
+new versions.
+
+## Build from source
 
 Use Xcode 26 or later:
 
@@ -20,12 +48,6 @@ Use Xcode 26 or later:
 ./scripts/test.sh
 ./scripts/run.sh
 ```
-
-## Privacy
-
-Snip Snap stores clips and clipboard history on your Mac. It has no account,
-sync, or tracking. Release builds contact the public update feed to check for
-new versions.
 
 ## License
 
