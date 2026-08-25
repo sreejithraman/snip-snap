@@ -42,6 +42,15 @@ struct ContentView: View {
             panelShell
         }
         .padding(AppWindowDefaults.effectGutter)
+        .overlay(alignment: .topTrailing) {
+            if let developmentBuild = DevelopmentBuildIdentity.current {
+                DevelopmentBuildBadge(identity: developmentBuild)
+                    .offset(
+                        x: DevelopmentBuildBadge.panelXOffset,
+                        y: DevelopmentBuildBadge.panelYOffset
+                    )
+            }
+        }
         .background {
             PanelDragRegion()
         }

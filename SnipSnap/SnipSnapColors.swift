@@ -23,6 +23,31 @@ enum SnipSnapColors {
     static let dropTargetEdge = Color.primary.opacity(0.48)
     static let insertionEdge = Color.primary.opacity(0.20)
 
+    static func developmentBadge(tone: DevelopmentBadgeTone) -> Color {
+        switch tone {
+        case .red: Color(nsColor: .systemRed)
+        case .orange: Color(nsColor: .systemOrange)
+        case .yellow: Color(nsColor: .systemYellow)
+        case .green: Color(nsColor: .systemGreen)
+        case .blue: Color(nsColor: .systemBlue)
+        case .indigo: Color(nsColor: .systemIndigo)
+        case .violet: Color(nsColor: .systemPurple)
+        case .black: .black
+        case .white: .white
+        }
+    }
+
+    static func developmentBadgeLabel(
+        tone: DevelopmentBadgeTone,
+        colorScheme: ColorScheme
+    ) -> Color {
+        tone.usesDarkLabel(in: colorScheme) ? .black : .white
+    }
+
+    static func developmentBadgeEdge(tone: DevelopmentBadgeTone) -> Color {
+        tone == .white ? .black.opacity(0.30) : .white.opacity(0.75)
+    }
+
     static func primaryActionTint(for colorScheme: ColorScheme) -> Color {
         // Send needs exact monochrome contrast; the hierarchical primary color
         // is softer than black and white on macOS.
