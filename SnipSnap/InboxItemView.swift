@@ -7,6 +7,8 @@ struct InboxItemRow: View {
     let isEditing: Bool
     let dragPayload: ClipDragPayload
     let dragSourceController: ClipDragSourceController
+    @Binding var editAttachments: [URL]
+    @Binding var isSaving: Bool
     let attachmentURL: (ClipAttachment) -> URL
     let onPreviewAttachments: ([URL], URL) -> Void
     let onRemovePreviewURL: (URL) -> Void
@@ -20,9 +22,7 @@ struct InboxItemRow: View {
     let onDragEnded: (ClipDragOutcome) -> Void
 
     @State private var editText = ""
-    @State private var editAttachments: [URL] = []
     @State private var showingFiles = false
-    @State private var isSaving = false
     @FocusState private var editorFocused: Bool
 
     var body: some View {
@@ -66,7 +66,6 @@ struct InboxItemRow: View {
                 return
             }
             editText = item.content
-            editAttachments = item.attachments.map(attachmentURL)
             Task { @MainActor in
                 await Task.yield()
                 editorFocused = true
@@ -79,7 +78,7 @@ struct InboxItemRow: View {
         ) { result in
             switch result {
             case .success(let urls):
-                editAttachments.append(contentsOf: urls.filter { !editAttachments.contains($0) })
+                addEditAttachments(urls)
             case .failure(let error):
                 if (error as NSError).code != NSUserCancelledError {
                     onEditError(error.localizedDescription)
@@ -171,6 +170,16 @@ struct InboxItemRow: View {
         editAttachments.map(AttachmentPreviewItem.init(url:))
     }
 
+    private func addEditAttachments(_ urls: [URL]) {
+        guard !isSaving else { return }
+        editAttachments.append(
+            contentsOf: PanelFileDropValidation.newFiles(
+                in: urls,
+                excluding: editAttachments
+            )
+        )
+    }
+
     private var editActions: some View {
         HStack(spacing: SnipSnapSpacing.relatedContent) {
             Menu {
@@ -181,6 +190,7 @@ struct InboxItemRow: View {
             }
             .menuIndicator(.hidden)
             .buttonStyle(.plain)
+            .disabled(isSaving)
             .help("Add Attachment")
             .accessibilityLabel("Add Attachment")
 

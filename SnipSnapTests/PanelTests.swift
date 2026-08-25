@@ -85,6 +85,13 @@ final class PanelTests: XCTestCase {
             ),
             [file]
         )
+        XCTAssertEqual(
+            PanelFileDropValidation.newFiles(in: [file, file], excluding: []),
+            [file]
+        )
+        XCTAssertTrue(
+            PanelFileDropValidation.newFiles(in: [file], excluding: [file]).isEmpty
+        )
     }
 
     @MainActor

@@ -6,6 +6,12 @@ enum InboxFocusTarget: Hashable {
     case inlineEntry
 }
 
+private struct InlineEditSession {
+    let itemID: UUID
+    var attachments: [URL]
+    var isSaving = false
+}
+
 @MainActor
 final class InboxListState: ObservableObject {
     fileprivate var anchor: UUID?
@@ -48,6 +54,7 @@ struct InboxListView: View {
     @ObservedObject var model: AppModel
     let coordinator: AppCoordinator
     let clipDragSourceController: ClipDragSourceController
+    let fileDropController: PanelFileDropController
     @ObservedObject var state: InboxListState
     @FocusState.Binding var focusedTarget: InboxFocusTarget?
     let moveSelectionToNewSection: (Set<UUID>) -> Void
@@ -60,6 +67,7 @@ struct InboxListView: View {
     @State private var pinnedSections: Set<UUID> = []
     @State private var hasScrolledFromTop = false
     @State private var addedClipRevealState = InboxAddedClipRevealState()
+    @State private var editSession: InlineEditSession?
 
     private var orderedItemIDs: [UUID] {
         state.orderedIDs(for: model.filteredItems)
@@ -160,7 +168,15 @@ struct InboxListView: View {
                         revealAddedClip(at: destination)
                     }
                 }
-                .onChange(of: model.editingID) { _, editingID in
+                .onChange(of: model.editingID, initial: true) { _, editingID in
+                    editSession = editingID.flatMap { itemID in
+                        model.items.first(where: { $0.id == itemID }).map { item in
+                            InlineEditSession(
+                                itemID: itemID,
+                                attachments: item.attachments.map(model.attachmentURL)
+                            )
+                        }
+                    }
                     guard let editingID,
                           snapshot.orderedVisibleIDs.contains(editingID) else { return }
                     Task { @MainActor in
@@ -186,6 +202,27 @@ struct InboxListView: View {
         }
         .onChange(of: model.selection) {
             state.reconcile(model: model)
+        }
+        .onReceive(fileDropController.fileDrops) { urls in
+            guard let editingID = model.editingID,
+                  let item = model.items.first(where: { $0.id == editingID }) else { return }
+            var session: InlineEditSession
+            if let editSession, editSession.itemID == editingID {
+                session = editSession
+            } else {
+                session = InlineEditSession(
+                    itemID: editingID,
+                    attachments: item.attachments.map(model.attachmentURL)
+                )
+            }
+            guard !session.isSaving else { return }
+            session.attachments.append(
+                contentsOf: PanelFileDropValidation.newFiles(
+                    in: urls,
+                    excluding: session.attachments
+                )
+            )
+            editSession = session
         }
     }
 
@@ -418,6 +455,8 @@ struct InboxListView: View {
             isEditing: model.editingID == item.id,
             dragPayload: payload,
             dragSourceController: clipDragSourceController,
+            editAttachments: editAttachmentsBinding(for: item),
+            isSaving: savingBinding(for: item),
             attachmentURL: model.attachmentURL,
             onPreviewAttachments: onPreviewAttachments,
             onRemovePreviewURL: onRemovePreviewURL,
@@ -487,6 +526,45 @@ struct InboxListView: View {
             selectExclusively(item.id)
             itemCommands.perform(.delete)
         }
+    }
+
+    private func editAttachmentsBinding(for item: CaptureItem) -> Binding<[URL]> {
+        Binding(
+            get: {
+                guard let editSession, editSession.itemID == item.id else {
+                    return item.attachments.map(model.attachmentURL)
+                }
+                return editSession.attachments
+            },
+            set: { attachments in
+                let isSaving = editSession?.itemID == item.id
+                    && editSession?.isSaving == true
+                editSession = InlineEditSession(
+                    itemID: item.id,
+                    attachments: attachments,
+                    isSaving: isSaving
+                )
+            }
+        )
+    }
+
+    private func savingBinding(for item: CaptureItem) -> Binding<Bool> {
+        Binding(
+            get: { editSession?.itemID == item.id && editSession?.isSaving == true },
+            set: { isSaving in
+                let attachments: [URL]
+                if let editSession, editSession.itemID == item.id {
+                    attachments = editSession.attachments
+                } else {
+                    attachments = item.attachments.map(model.attachmentURL)
+                }
+                editSession = InlineEditSession(
+                    itemID: item.id,
+                    attachments: attachments,
+                    isSaving: isSaving
+                )
+            }
+        )
     }
 
     private func handleDrop(

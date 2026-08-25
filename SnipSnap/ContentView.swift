@@ -76,6 +76,7 @@ struct ContentView: View {
             fileImportSectionID = nil
         }
         .onReceive(fileDropController.fileDrops) { urls in
+            guard model.editingID == nil else { return }
             _ = attachDroppedFiles(urls)
         }
     }
@@ -325,6 +326,7 @@ struct ContentView: View {
             model: model,
             coordinator: coordinator,
             clipDragSourceController: clipDragSourceController,
+            fileDropController: fileDropController,
             state: listState,
             focusedTarget: $focusedTarget,
             moveSelectionToNewSection: { ids in
