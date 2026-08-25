@@ -58,6 +58,7 @@
 		100000000000000000000034 /* PanelResizeSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003D /* PanelResizeSurface.swift */; };
 		100000000000000000000035 /* DevelopmentBuildBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003E /* DevelopmentBuildBadge.swift */; };
 		100000000000000000000036 /* PanelMultilineTextInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003F /* PanelMultilineTextInput.swift */; };
+		100000000000000000000037 /* SectionIconCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000040 /* SectionIconCatalog.swift */; };
 		2230FA4B303C74F2008B20D5 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 2230FA4A303C74F2008B20D5 /* Sparkle */; };
 /* End PBXBuildFile section */
 
@@ -126,6 +127,7 @@
 		20000000000000000000003D /* PanelResizeSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelResizeSurface.swift; sourceTree = "<group>"; };
 		20000000000000000000003E /* DevelopmentBuildBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevelopmentBuildBadge.swift; sourceTree = "<group>"; };
 		20000000000000000000003F /* PanelMultilineTextInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelMultilineTextInput.swift; sourceTree = "<group>"; };
+		200000000000000000000040 /* SectionIconCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SectionIconCatalog.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -186,6 +188,7 @@
 				200000000000000000000024 /* InboxMoreButton.swift */,
 				20000000000000000000003E /* DevelopmentBuildBadge.swift */,
 				200000000000000000000025 /* InboxSheets.swift */,
+				200000000000000000000040 /* SectionIconCatalog.swift */,
 				200000000000000000000026 /* InboxListView.swift */,
 				200000000000000000000035 /* InboxListGeometry.swift */,
 				200000000000000000000038 /* InboxDragController.swift */,
@@ -366,6 +369,7 @@
 				10000000000000000000001C /* InboxMoreButton.swift in Sources */,
 				100000000000000000000035 /* DevelopmentBuildBadge.swift in Sources */,
 				10000000000000000000001D /* InboxSheets.swift in Sources */,
+				100000000000000000000037 /* SectionIconCatalog.swift in Sources */,
 				10000000000000000000001E /* InboxListView.swift in Sources */,
 				10000000000000000000002C /* InboxListGeometry.swift in Sources */,
 				10000000000000000000002F /* InboxDragController.swift in Sources */,

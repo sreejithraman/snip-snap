@@ -22,6 +22,17 @@ private final class PanelResizeTrackingEvent: NSEvent {
 }
 
 final class PanelTests: XCTestCase {
+    func testSectionIconCatalogHasThreeHundredUniqueAvailableSymbols() {
+        let icons = SectionIconOptions.categories.flatMap(\.icons)
+
+        XCTAssertEqual(SectionIconOptions.categories.count, 15)
+        XCTAssertTrue(SectionIconOptions.categories.allSatisfy { $0.icons.count == 20 })
+        XCTAssertEqual(icons.count, 300)
+        XCTAssertEqual(Set(icons).count, icons.count)
+        XCTAssertTrue(icons.allSatisfy { NSImage(systemSymbolName: $0, accessibilityDescription: nil) != nil })
+        XCTAssertTrue(SectionIconOptions.matches("lizard.fill", query: "dinosaur"))
+    }
+
     func testDevelopmentBuildIdentityReadsTheSlotFromTheBundleIdentifier() {
         XCTAssertEqual(
             DevelopmentBuildIdentity(bundleIdentifier: "world.sree.snipsnap.dev3")?.slot,
