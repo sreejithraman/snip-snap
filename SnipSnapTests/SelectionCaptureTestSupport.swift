@@ -135,8 +135,6 @@ private final class TestSelectionSourceAccess: SelectionSourceAccess, @unchecked
         lock.withLock { focusedReadCountValue }
     }
 
-    func requestTrust() {}
-
     func isProcessFrontmost(_ processID: pid_t) -> Bool {
         lock.withLock {
             guard !frontmostChecks.isEmpty else { return true }

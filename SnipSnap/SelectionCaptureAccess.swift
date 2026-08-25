@@ -21,7 +21,6 @@ struct SelectionAXContext: Equatable, Sendable {
 
 protocol SelectionSourceAccess: Sendable {
     var isTrusted: Bool { get }
-    func requestTrust()
     func isProcessFrontmost(_ processID: pid_t) -> Bool
     func focusedElement(_ processID: pid_t) -> SelectionAXNode?
     func selectedText(_ node: SelectionAXNode) -> String?
@@ -66,12 +65,6 @@ struct SelectionCaptureDependencies: Sendable {
 private final class LiveSelectionSourceAccess: SelectionSourceAccess {
     var isTrusted: Bool {
         AXIsProcessTrusted()
-    }
-
-    func requestTrust() {
-        _ = AXIsProcessTrustedWithOptions(
-            ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-        )
     }
 
     func isProcessFrontmost(_ processID: pid_t) -> Bool {

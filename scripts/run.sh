@@ -3,6 +3,12 @@ set -euo pipefail
 
 script_dir="${0:A:h}"
 
+case "${1:-}" in
+    describe|device-start|device-verify)
+        exec "$script_dir/showroom-delivery.sh" "$@"
+        ;;
+esac
+
 slot="$("$script_dir/dev-slot.sh" claim)"
 state_dir="${SNIP_SNAP_DEV_STATE_DIR:-$HOME/Library/Application Support/Snip Snap/Development}"
 derived_data="${SNIP_SNAP_DERIVED_DATA:-$state_dir/build/slot-$slot}"

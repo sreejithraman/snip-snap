@@ -6,6 +6,7 @@ repo_dir="${script_dir:h}"
 derived_data="${SNIP_SNAP_DERIVED_DATA:-/tmp/snip-snap-derived-data}"
 
 "$script_dir/release-policy-tests.sh"
+"$script_dir/showroom-delivery-tests.sh"
 
 xcodebuild \
     -project "$repo_dir/SnipSnap.xcodeproj" \

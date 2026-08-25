@@ -143,6 +143,19 @@ struct ContentView: View {
             )
         }
         .alert(
+            "Allow Accessibility Access?",
+            isPresented: $model.isAccessibilityAccessExplanationPresented
+        ) {
+            Button("Not Now", role: .cancel) {}
+            Button("Continue") {
+                coordinator.requestAccessibilityAccess()
+            }
+        } message: {
+            Text(
+                "Snip Snap uses Accessibility to detect Shift shortcuts and capture selected content. macOS will ask you to allow access in System Settings."
+            )
+        }
+        .alert(
             "Snip Snap",
             isPresented: Binding(
                 get: { model.presentedError != nil },
