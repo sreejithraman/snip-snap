@@ -266,7 +266,7 @@ struct InboxListView: View {
         snapshot: InboxListSnapshot
     ) -> some View {
         let entries = dragController.entries(for: group)
-        let body = LazyVStack(alignment: .leading, spacing: 0) {
+        let body = VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
                 if index > 0 {
                     PanelDragRegion()
