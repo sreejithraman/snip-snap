@@ -128,12 +128,14 @@ enum InboxDropSpace {
 }
 
 enum SectionDropSurface: Equatable {
-    case content(InboxListGeometry.Element)
+    case entry(ClipListEntryID)
+    case footer
     case header
 
     func element(in sectionID: UUID) -> InboxListGeometry.Element {
         switch self {
-        case .content(let element): element
+        case .entry(let entryID): .dropSurface(entryID)
+        case .footer: .sectionFooterDropSurface(sectionID)
         case .header: .heading(sectionID)
         }
     }
@@ -144,9 +146,39 @@ enum SectionDropSurface: Equatable {
     }
 }
 
-private struct ActiveSectionDropSurface: Equatable {
-    let sectionID: UUID
-    let surface: SectionDropSurface
+struct SectionDropSurfaceState {
+    struct Identity: Equatable {
+        let sectionID: UUID
+        let surface: SectionDropSurface
+    }
+
+    struct Exit: Equatable {
+        fileprivate let identity: Identity
+        fileprivate let generation: UInt
+    }
+
+    private(set) var active: Identity?
+    private var generation: UInt = 0
+
+    mutating func activate(sectionID: UUID, surface: SectionDropSurface) {
+        generation &+= 1
+        active = Identity(sectionID: sectionID, surface: surface)
+    }
+
+    func exitToken(sectionID: UUID, surface: SectionDropSurface) -> Exit? {
+        let identity = Identity(sectionID: sectionID, surface: surface)
+        guard active == identity else { return nil }
+        return Exit(identity: identity, generation: generation)
+    }
+
+    func owns(_ exit: Exit) -> Bool {
+        active == exit.identity && generation == exit.generation
+    }
+
+    mutating func clear() {
+        generation &+= 1
+        active = nil
+    }
 }
 
 private struct ClipDropTarget: Equatable {
@@ -209,7 +241,7 @@ final class InboxDragController: ObservableObject {
     private var pendingDropSessions: Set<UUID> = []
     private var lastDropViewportLocation: CGPoint?
     private var lastDropSurface: SectionDropSurface?
-    private var activeDropSurface: ActiveSectionDropSurface?
+    private var dropSurfaceState = SectionDropSurfaceState()
     private var pendingDropExit: Task<Void, Never>?
 
     var isDragging: Bool { activeDrag != nil }
@@ -251,8 +283,8 @@ final class InboxDragController: ObservableObject {
         geometry.remove(element)
     }
 
-    func retainRows(_ ids: Set<UUID>) {
-        geometry.retainRows(ids)
+    func retainItems(_ ids: Set<UUID>) {
+        geometry.retainItems(ids)
     }
 
     func updateScroll(_ snapshot: InboxListGeometry.ScrollSnapshot) {
@@ -591,7 +623,7 @@ final class InboxDragController: ObservableObject {
     ) {
         pendingDropExit?.cancel()
         pendingDropExit = nil
-        activeDropSurface = ActiveSectionDropSurface(
+        dropSurfaceState.activate(
             sectionID: sectionID,
             surface: surface
         )
@@ -601,17 +633,16 @@ final class InboxDragController: ObservableObject {
         sectionID: UUID,
         surface: SectionDropSurface
     ) {
-        let exitingSurface = ActiveSectionDropSurface(
+        guard let exit = dropSurfaceState.exitToken(
             sectionID: sectionID,
             surface: surface
-        )
-        guard activeDropSurface == exitingSurface else { return }
+        ) else { return }
         pendingDropExit?.cancel()
         pendingDropExit = Task { @MainActor [weak self] in
             await Task.yield()
             guard let self,
                   !Task.isCancelled,
-                  self.activeDropSurface == exitingSurface else { return }
+                  self.dropSurfaceState.owns(exit) else { return }
             self.pendingDropExit = nil
             self.clearDropInteraction()
         }
@@ -620,7 +651,7 @@ final class InboxDragController: ObservableObject {
     private func clearDropInteraction() {
         pendingDropExit?.cancel()
         pendingDropExit = nil
-        activeDropSurface = nil
+        dropSurfaceState.clear()
         withAnimation(.snappy(duration: 0.12)) {
             dropTarget = nil
             clipboardDropTarget = nil

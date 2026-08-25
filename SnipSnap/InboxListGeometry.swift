@@ -86,12 +86,21 @@ final class InboxListGeometry {
         frames.removeValue(forKey: element)
     }
 
-    func retainRows(_ ids: Set<UUID>) {
+    func retainItems(_ ids: Set<UUID>) {
         frames = frames.filter { element, _ in
-            if case .row(let id) = element {
-                return ids.contains(id)
+            switch element {
+            case .row(let id):
+                ids.contains(id)
+            case .entry(let entryID), .dropSurface(let entryID):
+                switch entryID {
+                case .item(let id), .originGap(let id):
+                    ids.contains(id)
+                case .destinationGap:
+                    true
+                }
+            default:
+                true
             }
-            return true
         }
     }
 

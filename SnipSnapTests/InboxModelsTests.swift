@@ -62,6 +62,31 @@ final class InboxModelsTests: XCTestCase {
         XCTAssertFalse(controller.needsDropGeometry)
     }
 
+    func testDropSurfaceStateRejectsStaleExitTokens() throws {
+        let sectionID = UUID()
+        let firstSurface = SectionDropSurface.entry(.item(UUID()))
+        let secondSurface = SectionDropSurface.entry(.item(UUID()))
+        var state = SectionDropSurfaceState()
+
+        state.activate(sectionID: sectionID, surface: firstSurface)
+        let firstExit = try XCTUnwrap(
+            state.exitToken(sectionID: sectionID, surface: firstSurface)
+        )
+
+        state.activate(sectionID: sectionID, surface: secondSurface)
+
+        XCTAssertFalse(state.owns(firstExit))
+        XCTAssertNil(state.exitToken(sectionID: sectionID, surface: firstSurface))
+
+        let secondExit = try XCTUnwrap(
+            state.exitToken(sectionID: sectionID, surface: secondSurface)
+        )
+        XCTAssertTrue(state.owns(secondExit))
+
+        state.activate(sectionID: sectionID, surface: secondSurface)
+        XCTAssertFalse(state.owns(secondExit))
+    }
+
     @MainActor
     func testMixedClipDragUsesOneClipVisualForItsFilePackage() {
         let image = URL(fileURLWithPath: "/tmp/preview.png")
@@ -975,8 +1000,21 @@ final class InboxModelsTests: XCTestCase {
         geometry.remove(.row(first.id))
         XCTAssertNil(geometry.frame(for: .row(first.id)))
 
-        geometry.retainRows([first.id])
+        geometry.record(
+            CGRect(x: 10, y: 180, width: 200, height: 60),
+            for: .dropSurface(.item(second.id))
+        )
+        geometry.record(
+            CGRect(x: 10, y: 180, width: 200, height: 60),
+            for: .entry(.originGap(second.id))
+        )
+
+        geometry.retainItems([first.id])
+
         XCTAssertNil(geometry.frame(for: .row(second.id)))
+        XCTAssertNil(geometry.frame(for: .entry(.item(second.id))))
+        XCTAssertNil(geometry.frame(for: .entry(.originGap(second.id))))
+        XCTAssertNil(geometry.frame(for: .dropSurface(.item(second.id))))
     }
 
     @MainActor

@@ -197,11 +197,11 @@ struct InboxListView: View {
             }
         }
         .onAppear {
-            dragController.retainRows(Set(snapshot.orderedVisibleIDs))
+            dragController.retainItems(Set(snapshot.orderedVisibleIDs))
             state.reconcile(model: model)
         }
         .onChange(of: snapshot.orderedVisibleIDs) { _, visibleIDs in
-            dragController.retainRows(Set(visibleIDs))
+            dragController.retainItems(Set(visibleIDs))
         }
         .onChange(of: model.selection) {
             state.reconcile(model: model)
@@ -279,7 +279,6 @@ struct InboxListView: View {
         snapshot: InboxListSnapshot,
         proxy: ScrollViewProxy
     ) -> some View {
-        let surfaceElement = InboxListGeometry.Element.dropSurface(entry.id)
         let entryElement = InboxListGeometry.Element.entry(entry.id)
         let content = VStack(alignment: .leading, spacing: 0) {
             PanelDragRegion()
@@ -298,7 +297,7 @@ struct InboxListView: View {
         return sectionContentDropTarget(
             content,
             sectionID: sectionID,
-            element: surfaceElement,
+            surface: .entry(entry.id),
             expandsTop: index == 0,
             proxy: proxy
         )
@@ -330,7 +329,6 @@ struct InboxListView: View {
         proxy: ScrollViewProxy
     ) -> some View {
         let footerElement = InboxListGeometry.Element.sectionFooter(group.sectionID)
-        let surfaceElement = InboxListGeometry.Element.sectionFooterDropSurface(group.sectionID)
         let content = dropGeometry(
             PanelDragRegion()
                 .frame(height: PanelListMetrics.sectionSpacing)
@@ -340,7 +338,7 @@ struct InboxListView: View {
         return sectionContentDropTarget(
             content,
             sectionID: group.sectionID,
-            element: surfaceElement,
+            surface: .footer,
             expandsTop: expandsTop,
             expandsBottom: true,
             proxy: proxy
@@ -351,11 +349,12 @@ struct InboxListView: View {
     private func sectionContentDropTarget<Content: View>(
         _ content: Content,
         sectionID: UUID,
-        element: InboxListGeometry.Element,
+        surface: SectionDropSurface,
         expandsTop: Bool = false,
         expandsBottom: Bool = false,
         proxy: ScrollViewProxy
     ) -> some View {
+        let element = surface.element(in: sectionID)
         let expansion = PanelDropTargetStyle.expansion
         let hitInsets = EdgeInsets(
             top: expandsTop ? expansion : 0,
@@ -369,7 +368,7 @@ struct InboxListView: View {
                 for: element
             ),
             sectionID: sectionID,
-            surface: .content(element),
+            surface: surface,
             proxy: proxy
         )
         .padding(
