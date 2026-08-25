@@ -41,7 +41,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testDoubleShiftStartRequestsAccessibilityAndExplainsTheNeed() throws {
+    func testDoubleShiftStartExplainsAccessibilityBeforeRequestingIt() throws {
         let repository = try ItemRepository(fileURL: storeURL())
         let model = AppModel(repository: repository)
         let suiteName = "Snip SnapShortcutTrustTests-\(UUID().uuidString)"
@@ -49,22 +49,112 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let settings = ShortcutSettings(defaults: defaults)
         let manager = StubGlobalHotKeyManager()
+        let inbox = NSWindow()
+        defer { inbox.orderOut(nil) }
         var requestCount = 0
         let coordinator = AppCoordinator(
             model: model,
             shortcutSettings: settings,
             makeHotKeyManager: { _ in manager },
+            isAccessibilityTrusted: { false },
             requestAccessibilityTrust: {
                 requestCount += 1
-                return false
             }
+        )
+        coordinator.attachInboxWindow(inbox)
+
+        coordinator.start()
+
+        XCTAssertEqual(requestCount, 0)
+        XCTAssertEqual(manager.registeredConfigurations, [.snipSnapDefaults])
+        XCTAssertTrue(model.isAccessibilityAccessExplanationPresented)
+        XCTAssertTrue(inbox.isVisible)
+        XCTAssertNil(model.presentedError)
+
+        coordinator.requestAccessibilityAccess()
+
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertFalse(model.isAccessibilityAccessExplanationPresented)
+    }
+
+    @MainActor
+    func testStartExplainsAccessibilityWithoutDoubleShiftShortcuts() throws {
+        let repository = try ItemRepository(fileURL: storeURL())
+        let model = AppModel(repository: repository)
+        let suiteName = "Snip SnapShortcutTrustTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = ShortcutSettings(defaults: defaults)
+        settings.save(
+            GlobalShortcutConfiguration(
+                captureSelection: .keyChord(
+                    keyCode: UInt32(kVK_ANSI_J),
+                    modifiers: UInt32(controlKey | optionKey),
+                    keyLabel: "J"
+                ),
+                toggleInbox: .keyChord(
+                    keyCode: UInt32(kVK_ANSI_K),
+                    modifiers: UInt32(controlKey | optionKey),
+                    keyLabel: "K"
+                ),
+                toggleClipboard: .keyChord(
+                    keyCode: UInt32(kVK_ANSI_L),
+                    modifiers: UInt32(controlKey | optionKey),
+                    keyLabel: "L"
+                )
+            )
+        )
+        let coordinator = AppCoordinator(
+            model: model,
+            shortcutSettings: settings,
+            makeHotKeyManager: { _ in StubGlobalHotKeyManager() },
+            isAccessibilityTrusted: { false }
         )
 
         coordinator.start()
 
-        XCTAssertEqual(requestCount, 1)
-        XCTAssertEqual(manager.registeredConfigurations, [.snipSnapDefaults])
-        XCTAssertTrue(model.presentedError?.contains("Accessibility") == true)
+        XCTAssertTrue(model.isAccessibilityAccessExplanationPresented)
+    }
+
+    @MainActor
+    func testTrustedStartDoesNotExplainOrRequestAccessibility() throws {
+        let repository = try ItemRepository(fileURL: storeURL())
+        let model = AppModel(repository: repository)
+        var requestCount = 0
+        let coordinator = AppCoordinator(
+            model: model,
+            shortcutSettings: ShortcutSettings(),
+            makeHotKeyManager: { _ in StubGlobalHotKeyManager() },
+            isAccessibilityTrusted: { true },
+            requestAccessibilityTrust: { requestCount += 1 }
+        )
+
+        coordinator.start()
+
+        XCTAssertFalse(model.isAccessibilityAccessExplanationPresented)
+        XCTAssertEqual(requestCount, 0)
+    }
+
+    @MainActor
+    func testCaptureExplainsMissingAccessibilityWithoutRequestingIt() throws {
+        let repository = try ItemRepository(fileURL: storeURL())
+        let model = AppModel(repository: repository)
+        let inbox = NSWindow()
+        defer { inbox.orderOut(nil) }
+        var requestCount = 0
+        let coordinator = AppCoordinator(
+            model: model,
+            shortcutSettings: ShortcutSettings(),
+            isAccessibilityTrusted: { false },
+            requestAccessibilityTrust: { requestCount += 1 }
+        )
+        coordinator.attachInboxWindow(inbox)
+
+        coordinator.captureSelection()
+
+        XCTAssertTrue(model.isAccessibilityAccessExplanationPresented)
+        XCTAssertTrue(inbox.isVisible)
+        XCTAssertEqual(requestCount, 0)
     }
 
     @MainActor
@@ -75,7 +165,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         let coordinator = AppCoordinator(
             model: model,
             shortcutSettings: settings,
-            requestAccessibilityTrust: { true }
+            isAccessibilityTrusted: { true }
         )
         let inbox = NSWindow()
         let editor = NSWindow()
@@ -92,7 +182,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         let coordinator = AppCoordinator(
             model: AppModel(repository: repository),
             shortcutSettings: ShortcutSettings(),
-            requestAccessibilityTrust: { true }
+            isAccessibilityTrusted: { true }
         )
         let panel = SnipSnapPanel.make(contentViewController: NSViewController())
         panel.setFrameOrigin(NSPoint(x: 300, y: 300))
@@ -116,7 +206,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         let coordinator = AppCoordinator(
             model: AppModel(repository: repository),
             shortcutSettings: ShortcutSettings(),
-            requestAccessibilityTrust: { true }
+            isAccessibilityTrusted: { true }
         )
         let inbox = NSWindow()
         coordinator.attachInboxWindow(inbox)
@@ -136,7 +226,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         let coordinator = AppCoordinator(
             model: model,
             shortcutSettings: ShortcutSettings(),
-            requestAccessibilityTrust: { true }
+            isAccessibilityTrusted: { true }
         )
         let inbox = NSWindow()
         coordinator.attachInboxWindow(inbox)
@@ -190,7 +280,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         let coordinator = AppCoordinator(
             model: model,
             shortcutSettings: ShortcutSettings(),
-            requestAccessibilityTrust: { true }
+            isAccessibilityTrusted: { true }
         )
         var receivedSearchRequest = false
         let subscription = coordinator.inboxFocusRequests.sink { request in
@@ -221,7 +311,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             model: model,
             shortcutSettings: settings,
             makeHotKeyManager: { _ in managers.removeFirst() },
-            requestAccessibilityTrust: { true }
+            isAccessibilityTrusted: { true }
         )
         coordinator.start()
         let custom = ShortcutTrigger.keyChord(

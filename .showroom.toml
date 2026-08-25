@@ -1,0 +1,6 @@
+version = 1
+
+[snip-snap]
+project = "SnipSnap.xcodeproj"
+scheme = "SnipSnap"
+delivery = ["scripts/run.sh"]

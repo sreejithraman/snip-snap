@@ -112,17 +112,12 @@ final class AccessibilitySelectionReader: @unchecked Sendable {
         access.isTrusted
     }
 
-    func requestTrust() {
-        access.requestTrust()
-    }
-
     func capture(
         processID: pid_t,
         applicationName: String,
         completion: @escaping @Sendable (Result<SelectionCapture, SelectionCaptureFailure>) -> Void
     ) {
         guard isTrusted else {
-            requestTrust()
             completion(.failure(.accessibilityPermissionRequired))
             return
         }
