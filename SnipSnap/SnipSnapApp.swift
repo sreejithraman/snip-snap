@@ -113,10 +113,15 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         )
         let hostingController = NSViewController()
         hostingController.view = hostingView
-        let panel = SnipSnapPanel.make(contentViewController: hostingController)
+        let panel = SnipSnapPanel.make(
+            contentViewController: hostingController,
+            frameAutosaveName: AppWindowDefaults.frameAutosaveName
+        )
         coordinator.attachInboxWindow(panel)
         coordinator.start()
-        panel.center()
+        if !panel.restoredSavedFrame {
+            panel.center()
+        }
         inboxPanel = panel
 #if DEBUG
         if ProcessInfo.processInfo.environment["SNIP_SNAP_SHOW_PANEL_ON_LAUNCH"] == "1" {
@@ -132,6 +137,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isFlushingBeforeTermination else { return .terminateLater }
         isFlushingBeforeTermination = true
+        coordinator.saveInboxWindowFrame(using: AppWindowDefaults.frameAutosaveName)
         Task { @MainActor [model] in
             model.flushComposerDrafts()
             await model.clipboardHistory.flushPersistence()

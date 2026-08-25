@@ -353,6 +353,12 @@ final class AppCoordinator {
         applyInboxComposerExpansion()
     }
 
+    func saveInboxWindowFrame(using frameAutosaveName: NSWindow.FrameAutosaveName) {
+        requestedInboxComposerExpansion = 0
+        applyInboxComposerExpansion()
+        inboxWindow?.saveFrame(usingName: frameAutosaveName)
+    }
+
     func isInboxWindow(_ window: NSWindow?) -> Bool {
         window === inboxWindow
     }

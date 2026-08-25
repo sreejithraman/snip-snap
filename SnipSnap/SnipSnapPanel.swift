@@ -2,7 +2,12 @@ import AppKit
 
 @MainActor
 final class SnipSnapPanel: NSPanel {
-    static func make(contentViewController: NSViewController) -> SnipSnapPanel {
+    private(set) var restoredSavedFrame = false
+
+    static func make(
+        contentViewController: NSViewController,
+        frameAutosaveName: NSWindow.FrameAutosaveName?
+    ) -> SnipSnapPanel {
         let panel = SnipSnapPanel(
             contentRect: NSRect(origin: .zero, size: AppWindowDefaults.defaultSize),
             styleMask: [.borderless],
@@ -24,6 +29,18 @@ final class SnipSnapPanel: NSPanel {
         panel.isReleasedWhenClosed = false
 
         panel.contentViewController = contentViewController
+        if let frameAutosaveName {
+            panel.restoredSavedFrame = panel.setFrameUsingName(frameAutosaveName, force: true)
+        }
+        if !panel.restoredSavedFrame {
+            panel.setFrame(
+                NSRect(origin: panel.frame.origin, size: AppWindowDefaults.defaultSize),
+                display: false
+            )
+        }
+        if let frameAutosaveName {
+            panel.setFrameAutosaveName(frameAutosaveName)
+        }
         return panel
     }
 

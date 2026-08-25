@@ -420,9 +420,9 @@ final class PanelTests: XCTestCase {
         XCTAssertEqual(PanelListMetrics.horizontalContentInset, 16)
     }
 
-    func testDefaultWindowIsCompactAndUsable() {
+    func testDefaultWindowSizeIsUsable() {
         XCTAssertEqual(AppWindowDefaults.defaultSize.width, 430)
-        XCTAssertEqual(AppWindowDefaults.defaultSize.height, 576)
+        XCTAssertEqual(AppWindowDefaults.defaultSize.height, 700)
         XCTAssertEqual(
             AppWindowDefaults.defaultSize,
             AppWindowDefaults.windowSize(for: AppWindowDefaults.defaultContentSize)
@@ -688,7 +688,10 @@ final class PanelTests: XCTestCase {
     @MainActor
     func testSnipSnapPanelLetsExplicitSwiftUISurfacesOwnWindowMovement() {
         let contentViewController = NSViewController()
-        let panel = SnipSnapPanel.make(contentViewController: contentViewController)
+        let panel = SnipSnapPanel.make(
+            contentViewController: contentViewController,
+            frameAutosaveName: nil
+        )
 
         XCTAssertFalse(panel.styleMask.contains(.resizable))
         XCTAssertFalse(panel.styleMask.contains(.titled))
@@ -715,8 +718,55 @@ final class PanelTests: XCTestCase {
     }
 
     @MainActor
+    func testSnipSnapPanelRestoresItsSavedSizeAndPosition() {
+        let autosaveName = NSWindow.FrameAutosaveName("PanelTests-\(UUID().uuidString)")
+        defer { NSWindow.removeFrame(usingName: autosaveName) }
+        let savedFrame = NSRect(x: 180, y: 220, width: 510, height: 740)
+        let firstPanel = SnipSnapPanel.make(
+            contentViewController: NSViewController(),
+            frameAutosaveName: autosaveName
+        )
+        firstPanel.setFrame(savedFrame, display: false)
+        firstPanel.saveFrame(usingName: autosaveName)
+        firstPanel.setFrameAutosaveName("")
+
+        let restoredPanel = SnipSnapPanel.make(
+            contentViewController: NSViewController(),
+            frameAutosaveName: autosaveName
+        )
+
+        XCTAssertTrue(restoredPanel.restoredSavedFrame)
+        XCTAssertEqual(restoredPanel.frame, savedFrame)
+        XCTAssertEqual(restoredPanel.frameAutosaveName, autosaveName)
+    }
+
+    @MainActor
+    func testSnipSnapPanelKeepsTheDefaultSizeWhenThereIsNoSavedFrame() {
+        let autosaveName = NSWindow.FrameAutosaveName("PanelTests-\(UUID().uuidString)")
+        defer { NSWindow.removeFrame(usingName: autosaveName) }
+        let contentViewController = NSHostingController(
+            rootView: EmptyView()
+                .frame(
+                    minWidth: AppWindowDefaults.minimumContentSize.width,
+                    minHeight: AppWindowDefaults.minimumContentSize.height
+                )
+        )
+
+        let panel = SnipSnapPanel.make(
+            contentViewController: contentViewController,
+            frameAutosaveName: autosaveName
+        )
+
+        XCTAssertFalse(panel.restoredSavedFrame)
+        XCTAssertEqual(panel.frame.size, AppWindowDefaults.defaultSize)
+    }
+
+    @MainActor
     func testSnipSnapPanelHasNoSeparateNativeTitleSurface() {
-        let panel = SnipSnapPanel.make(contentViewController: NSViewController())
+        let panel = SnipSnapPanel.make(
+            contentViewController: NSViewController(),
+            frameAutosaveName: nil
+        )
 
         XCTAssertFalse(panel.styleMask.contains(.titled))
         XCTAssertNil(panel.standardWindowButton(.closeButton))
@@ -727,7 +777,10 @@ final class PanelTests: XCTestCase {
         let contentViewController = NSHostingController(
             rootView: List { Text("Item") }
         )
-        let panel = SnipSnapPanel.make(contentViewController: contentViewController)
+        let panel = SnipSnapPanel.make(
+            contentViewController: contentViewController,
+            frameAutosaveName: nil
+        )
         panel.makeKeyAndOrderFront(nil)
         defer { panel.orderOut(nil) }
         RunLoop.current.run(until: Date().addingTimeInterval(0.5))
@@ -740,7 +793,10 @@ final class PanelTests: XCTestCase {
     @MainActor
     func testPanelContentTracksResize() {
         let contentViewController = NSViewController()
-        let panel = SnipSnapPanel.make(contentViewController: contentViewController)
+        let panel = SnipSnapPanel.make(
+            contentViewController: contentViewController,
+            frameAutosaveName: nil
+        )
         let resized = NSSize(width: 480, height: 700)
 
         panel.setContentSize(resized)
