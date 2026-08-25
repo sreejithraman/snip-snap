@@ -127,15 +127,57 @@ enum InboxDropSpace {
     static let name = "InboxDropSpace"
 }
 
-enum SectionDropSurface {
-    case body
+enum SectionDropSurface: Equatable {
+    case entry(ClipListEntryID)
+    case footer
     case header
 
     func element(in sectionID: UUID) -> InboxListGeometry.Element {
         switch self {
-        case .body: .section(sectionID)
+        case .entry(let entryID): .dropSurface(entryID)
+        case .footer: .sectionFooterDropSurface(sectionID)
         case .header: .heading(sectionID)
         }
+    }
+
+    var isHeader: Bool {
+        if case .header = self { return true }
+        return false
+    }
+}
+
+struct SectionDropSurfaceState {
+    struct Identity: Equatable {
+        let sectionID: UUID
+        let surface: SectionDropSurface
+    }
+
+    struct Exit: Equatable {
+        fileprivate let identity: Identity
+        fileprivate let generation: UInt
+    }
+
+    private(set) var active: Identity?
+    private var generation: UInt = 0
+
+    mutating func activate(sectionID: UUID, surface: SectionDropSurface) {
+        generation &+= 1
+        active = Identity(sectionID: sectionID, surface: surface)
+    }
+
+    func exitToken(sectionID: UUID, surface: SectionDropSurface) -> Exit? {
+        let identity = Identity(sectionID: sectionID, surface: surface)
+        guard active == identity else { return nil }
+        return Exit(identity: identity, generation: generation)
+    }
+
+    func owns(_ exit: Exit) -> Bool {
+        active == exit.identity && generation == exit.generation
+    }
+
+    mutating func clear() {
+        generation &+= 1
+        active = nil
     }
 }
 
@@ -199,6 +241,8 @@ final class InboxDragController: ObservableObject {
     private var pendingDropSessions: Set<UUID> = []
     private var lastDropViewportLocation: CGPoint?
     private var lastDropSurface: SectionDropSurface?
+    private var dropSurfaceState = SectionDropSurfaceState()
+    private var pendingDropExit: Task<Void, Never>?
 
     var isDragging: Bool { activeDrag != nil }
     var needsDropGeometry: Bool {
@@ -239,8 +283,8 @@ final class InboxDragController: ObservableObject {
         geometry.remove(element)
     }
 
-    func retainRows(_ ids: Set<UUID>) {
-        geometry.retainRows(ids)
+    func retainItems(_ ids: Set<UUID>) {
+        geometry.retainItems(ids)
     }
 
     func updateScroll(_ snapshot: InboxListGeometry.ScrollSnapshot) {
@@ -249,6 +293,15 @@ final class InboxDragController: ObservableObject {
 
     func pinnedSectionIDs() -> Set<UUID> {
         geometry.pinnedSectionIDs()
+    }
+
+    func sectionBodyFrame(for group: InboxItemGroup) -> CGRect? {
+        let entries = entries(for: group)
+        return geometry.sectionBodyFrame(
+            sectionID: group.sectionID,
+            rowIDs: group.items.map(\.id),
+            entryIDs: entries.map(\.id)
+        )
     }
 
     func entries(for group: InboxItemGroup) -> [ClipListEntry] {
@@ -288,6 +341,7 @@ final class InboxDragController: ObservableObject {
     ) {
         switch session.phase {
         case .entering, .active:
+            activateDropSurface(sectionID: sectionID, surface: surface)
             let location = dropLocation(session.location, in: sectionID, surface: surface)
             let viewportLocation = geometry.viewportPoint(fromContentPoint: location)
             lastDropViewportLocation = viewportLocation
@@ -303,9 +357,7 @@ final class InboxDragController: ObservableObject {
                 )
             }
         case .exiting:
-            if dropTarget?.sectionID == sectionID {
-                clearDropInteraction()
-            }
+            deferDropExit(sectionID: sectionID, surface: surface)
         case .ended, .dataTransferCompleted:
             if activeDrag == nil {
                 clearDropInteraction()
@@ -325,6 +377,7 @@ final class InboxDragController: ObservableObject {
         switch session.phase {
         case .entering, .active:
             beginClipboardDropSession()
+            activateDropSurface(sectionID: sectionID, surface: surface)
             let plan = clipboardDropPlan(
                 session: session,
                 sectionID: sectionID,
@@ -339,7 +392,9 @@ final class InboxDragController: ObservableObject {
             if next != clipboardDropTarget {
                 withAnimation(.snappy(duration: 0.16)) { clipboardDropTarget = next }
             }
-        case .exiting, .ended, .dataTransferCompleted:
+        case .exiting:
+            deferDropExit(sectionID: sectionID, surface: surface)
+        case .ended, .dataTransferCompleted:
             endClipboardDropSession()
         @unknown default:
             break
@@ -353,10 +408,7 @@ final class InboxDragController: ObservableObject {
     }
 
     func endClipboardDropSession() {
-        withAnimation(.snappy(duration: 0.12)) {
-            isClipboardDropSessionActive = false
-            clipboardDropTarget = nil
-        }
+        clearDropInteraction()
     }
 
     func clipboardDropPlan(
@@ -367,7 +419,7 @@ final class InboxDragController: ObservableObject {
         clearsTarget: Bool = true
     ) -> ClipDropPlan {
         let location = dropLocation(session.location, in: sectionID, surface: surface)
-        let overHeading = surface != .body
+        let overHeading = surface.isHeader
             || geometry.frame(for: .heading(sectionID))?.contains(location) == true
         let sectionItems = context.visibleItems.filter { $0.sectionID == sectionID }
         let hasPlacementFrames = geometry.hasPlacementFrames(
@@ -518,7 +570,7 @@ final class InboxDragController: ObservableObject {
         let visibleTargetItems = context.visibleItems.filter {
             $0.sectionID == sectionID && !movingIDs.contains($0.id)
         }
-        let overHeading = surface != .body
+        let overHeading = surface.isHeader
             || geometry.frame(for: .heading(sectionID))?.contains(location) == true
         guard let plan = ClipDropPlanner.plan(
             payloadIDs: payload.ids,
@@ -565,7 +617,41 @@ final class InboxDragController: ObservableObject {
         }
     }
 
+    private func activateDropSurface(
+        sectionID: UUID,
+        surface: SectionDropSurface
+    ) {
+        pendingDropExit?.cancel()
+        pendingDropExit = nil
+        dropSurfaceState.activate(
+            sectionID: sectionID,
+            surface: surface
+        )
+    }
+
+    private func deferDropExit(
+        sectionID: UUID,
+        surface: SectionDropSurface
+    ) {
+        guard let exit = dropSurfaceState.exitToken(
+            sectionID: sectionID,
+            surface: surface
+        ) else { return }
+        pendingDropExit?.cancel()
+        pendingDropExit = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self,
+                  !Task.isCancelled,
+                  self.dropSurfaceState.owns(exit) else { return }
+            self.pendingDropExit = nil
+            self.clearDropInteraction()
+        }
+    }
+
     private func clearDropInteraction() {
+        pendingDropExit?.cancel()
+        pendingDropExit = nil
+        dropSurfaceState.clear()
         withAnimation(.snappy(duration: 0.12)) {
             dropTarget = nil
             clipboardDropTarget = nil

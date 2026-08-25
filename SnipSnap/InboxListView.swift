@@ -104,7 +104,7 @@ struct InboxListView: View {
                 ScrollView {
                     LazyVStack(
                         alignment: .leading,
-                        spacing: PanelListMetrics.sectionSpacing,
+                        spacing: 0,
                         pinnedViews: [.sectionHeaders]
                     ) {
                         ForEach(snapshot.groups) { group in
@@ -122,6 +122,9 @@ struct InboxListView: View {
                         alignment: .top
                     )
                     .coordinateSpace(name: InboxDropSpace.name)
+                    .overlay(alignment: .topLeading) {
+                        sectionDropHighlight(snapshot: snapshot)
+                    }
                     .background {
                         ZStack {
                             PanelDragRegion()
@@ -194,11 +197,11 @@ struct InboxListView: View {
             }
         }
         .onAppear {
-            dragController.retainRows(Set(snapshot.orderedVisibleIDs))
+            dragController.retainItems(Set(snapshot.orderedVisibleIDs))
             state.reconcile(model: model)
         }
         .onChange(of: snapshot.orderedVisibleIDs) { _, visibleIDs in
-            dragController.retainRows(Set(visibleIDs))
+            dragController.retainItems(Set(visibleIDs))
         }
         .onChange(of: model.selection) {
             state.reconcile(model: model)
@@ -243,14 +246,22 @@ struct InboxListView: View {
         snapshot: InboxListSnapshot,
         proxy: ScrollViewProxy
     ) -> some View {
-        Section {
-            sectionDropTarget(
-                sectionBody(group, snapshot: snapshot),
-                sectionID: group.sectionID,
-                surface: .body,
+        let entries = dragController.entries(for: group)
+        return Section {
+            ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                sectionEntry(
+                    entry,
+                    index: index,
+                    sectionID: group.sectionID,
+                    snapshot: snapshot,
+                    proxy: proxy
+                )
+            }
+            sectionFooter(
+                group,
+                expandsTop: entries.isEmpty,
                 proxy: proxy
             )
-            .padding(.horizontal, PanelListMetrics.horizontalContentInset)
         } header: {
             sectionDropTarget(
                 sectionHeader(group),
@@ -261,43 +272,137 @@ struct InboxListView: View {
         }
     }
 
-    private func sectionBody(
-        _ group: InboxItemGroup,
+    private func sectionEntry(
+        _ entry: ClipListEntry,
+        index: Int,
+        sectionID: UUID,
+        snapshot: InboxListSnapshot,
+        proxy: ScrollViewProxy
+    ) -> some View {
+        let entryElement = InboxListGeometry.Element.entry(entry.id)
+        let content = VStack(alignment: .leading, spacing: 0) {
+            PanelDragRegion()
+                .frame(
+                    height: index == 0
+                        ? PanelListMetrics.sectionSpacing
+                        : PanelListMetrics.rowSpacing
+                )
+                .allowsHitTesting(!dragController.isDragging)
+
+            dropGeometry(
+                sectionEntryContent(entry, snapshot: snapshot),
+                for: entryElement
+            )
+        }
+        return sectionContentDropTarget(
+            content,
+            sectionID: sectionID,
+            surface: .entry(entry.id),
+            expandsTop: index == 0,
+            proxy: proxy
+        )
+        .onDisappear { dragController.remove(entryElement) }
+    }
+
+    @ViewBuilder
+    private func sectionEntryContent(
+        _ entry: ClipListEntry,
         snapshot: InboxListSnapshot
     ) -> some View {
-        let entries = dragController.entries(for: group)
-        let body = LazyVStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-                if index > 0 {
-                    PanelDragRegion()
-                        .frame(height: PanelListMetrics.rowSpacing)
-                        .allowsHitTesting(!dragController.isDragging)
-                }
-
-                switch entry {
-                case .item(let item):
-                    dropGeometry(
-                        itemCard(item, snapshot: snapshot)
-                            .id(item.id),
-                        for: .row(item.id)
-                    )
-                case .originGap(_, let height):
-                    dropGap(height: height, showsDestinationEdge: false)
-                case .destinationGap(_, let height):
-                    dropGap(height: height, showsDestinationEdge: true)
-                }
-            }
+        switch entry {
+        case .item(let item):
+            dropGeometry(
+                itemCard(item, snapshot: snapshot)
+                    .id(item.id),
+                for: .row(item.id)
+            )
+        case .originGap(_, let height):
+            dropGap(height: height, showsDestinationEdge: false)
+        case .destinationGap(_, let height):
+            dropGap(height: height, showsDestinationEdge: true)
         }
-        .padding(PanelDropTargetStyle.expansion)
-        .panelDropTargetState(
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous),
-            isTargeted: dragController.targetSectionID == group.sectionID
-        )
-        .padding(-PanelDropTargetStyle.expansion)
+    }
 
-        return dropGeometry(body, for: .section(group.sectionID))
-        .onDisappear { dragController.remove(.section(group.sectionID)) }
-        .animation(.snappy(duration: 0.16), value: dragController.targetSectionID)
+    private func sectionFooter(
+        _ group: InboxItemGroup,
+        expandsTop: Bool,
+        proxy: ScrollViewProxy
+    ) -> some View {
+        let footerElement = InboxListGeometry.Element.sectionFooter(group.sectionID)
+        let content = dropGeometry(
+            PanelDragRegion()
+                .frame(height: PanelListMetrics.sectionSpacing)
+                .allowsHitTesting(!dragController.isDragging),
+            for: footerElement
+        )
+        return sectionContentDropTarget(
+            content,
+            sectionID: group.sectionID,
+            surface: .footer,
+            expandsTop: expandsTop,
+            expandsBottom: true,
+            proxy: proxy
+        )
+        .onDisappear { dragController.remove(footerElement) }
+    }
+
+    private func sectionContentDropTarget<Content: View>(
+        _ content: Content,
+        sectionID: UUID,
+        surface: SectionDropSurface,
+        expandsTop: Bool = false,
+        expandsBottom: Bool = false,
+        proxy: ScrollViewProxy
+    ) -> some View {
+        let element = surface.element(in: sectionID)
+        let expansion = PanelDropTargetStyle.expansion
+        let hitInsets = EdgeInsets(
+            top: expandsTop ? expansion : 0,
+            leading: expansion,
+            bottom: expandsBottom ? expansion : 0,
+            trailing: expansion
+        )
+        return sectionDropTarget(
+            dropGeometry(
+                content.padding(hitInsets),
+                for: element
+            ),
+            sectionID: sectionID,
+            surface: surface,
+            proxy: proxy
+        )
+        .padding(
+            EdgeInsets(
+                top: -hitInsets.top,
+                leading: -hitInsets.leading,
+                bottom: -hitInsets.bottom,
+                trailing: -hitInsets.trailing
+            )
+        )
+        .padding(.horizontal, PanelListMetrics.horizontalContentInset)
+        .onDisappear { dragController.remove(element) }
+    }
+
+    @ViewBuilder
+    private func sectionDropHighlight(snapshot: InboxListSnapshot) -> some View {
+        if let sectionID = dragController.targetSectionID,
+           let group = snapshot.groups.first(where: { $0.sectionID == sectionID }),
+           let frame = dragController.sectionBodyFrame(for: group) {
+            let expandedFrame = frame.insetBy(
+                dx: -PanelDropTargetStyle.expansion,
+                dy: -PanelDropTargetStyle.expansion
+            )
+            Color.clear
+                .frame(width: expandedFrame.width, height: expandedFrame.height)
+                .panelDropTargetState(
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous),
+                    isTargeted: true
+                )
+                .offset(x: expandedFrame.minX, y: expandedFrame.minY)
+                .allowsHitTesting(false)
+                .transition(.opacity)
+                .animation(.snappy(duration: 0.16), value: sectionID)
+        }
     }
 
     @ViewBuilder

@@ -62,8 +62,11 @@ struct InboxAddedClipRevealState {
 final class InboxListGeometry {
     enum Element: Hashable {
         case row(UUID)
-        case section(UUID)
+        case sectionFooter(UUID)
         case heading(UUID)
+        case entry(ClipListEntryID)
+        case dropSurface(ClipListEntryID)
+        case sectionFooterDropSurface(UUID)
     }
 
     struct ScrollSnapshot: Equatable {
@@ -83,12 +86,21 @@ final class InboxListGeometry {
         frames.removeValue(forKey: element)
     }
 
-    func retainRows(_ ids: Set<UUID>) {
+    func retainItems(_ ids: Set<UUID>) {
         frames = frames.filter { element, _ in
-            if case .row(let id) = element {
-                return ids.contains(id)
+            switch element {
+            case .row(let id):
+                ids.contains(id)
+            case .entry(let entryID), .dropSurface(let entryID):
+                switch entryID {
+                case .item(let id), .originGap(let id):
+                    ids.contains(id)
+                case .destinationGap:
+                    true
+                }
+            default:
+                true
             }
-            return true
         }
     }
 
@@ -108,6 +120,20 @@ final class InboxListGeometry {
 
     func frame(for element: Element) -> CGRect? {
         frames[element]
+    }
+
+    func sectionBodyFrame(
+        sectionID: UUID,
+        rowIDs: [UUID],
+        entryIDs: [ClipListEntryID]
+    ) -> CGRect? {
+        let entryFrames = entryIDs.compactMap { frames[.entry($0)] }
+        let rowFrames = rowIDs.compactMap { frames[.row($0)] }
+        let bodyFrames = entryFrames.isEmpty ? rowFrames : entryFrames
+        guard let first = bodyFrames.first else {
+            return frames[.sectionFooter(sectionID)]
+        }
+        return bodyFrames.dropFirst().reduce(first) { $0.union($1) }
     }
 
     func contentPoint(fromLocalPoint point: CGPoint, in element: Element) -> CGPoint? {
@@ -137,8 +163,11 @@ final class InboxListGeometry {
     }
 
     func hasPlacementFrames(in sectionID: UUID, among items: [CaptureItem]) -> Bool {
-        guard frames[.section(sectionID)] != nil else { return false }
-        return items.isEmpty || items.contains { frames[.row($0.id)] != nil }
+        if items.isEmpty {
+            return frames[.sectionFooter(sectionID)] != nil
+                || frames[.heading(sectionID)] != nil
+        }
+        return items.contains { frames[.row($0.id)] != nil }
     }
 
     func dragGapHeight(for ids: [UUID]) -> CGFloat {
