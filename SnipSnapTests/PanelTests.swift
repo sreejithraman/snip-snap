@@ -129,6 +129,188 @@ final class PanelTests: XCTestCase {
         )
     }
 
+    func testPanelImagePasteboardPrefersOnePNGPerItem() throws {
+        let pasteboard = NSPasteboard(
+            name: NSPasteboard.Name("world.sree.snipsnap.image-paste.\(UUID().uuidString)")
+        )
+        defer { pasteboard.releaseGlobally() }
+        let item = NSPasteboardItem()
+        let png = Data([1, 2, 3])
+        item.setData(Data([4, 5, 6]), forType: .tiff)
+        item.setData(png, forType: .png)
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.writeObjects([item]))
+
+        XCTAssertEqual(
+            PanelImagePasteboard.images(from: pasteboard),
+            [.data(fileName: "Pasted Image.png", data: png)]
+        )
+    }
+
+    func testPanelImagePasteboardLeavesTextPasteToTheEditor() {
+        let pasteboard = NSPasteboard(
+            name: NSPasteboard.Name("world.sree.snipsnap.text-paste.\(UUID().uuidString)")
+        )
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("Keep as text", forType: .string))
+
+        XCTAssertTrue(PanelImagePasteboard.images(from: pasteboard).isEmpty)
+        XCTAssertTrue(PanelImagePasteboard.containsText(pasteboard))
+    }
+
+    func testImagePasteShortcutAllowsCapsLock() {
+        XCTAssertTrue(
+            PanelImagePasteCommand.matches(modifiers: [.command, .capsLock])
+        )
+    }
+
+    func testImagePasteShortcutRejectsTextChangingModifiers() {
+        XCTAssertFalse(
+            PanelImagePasteCommand.matches(modifiers: [.command, .shift])
+        )
+        XCTAssertFalse(
+            PanelImagePasteCommand.matches(modifiers: [.command, .option])
+        )
+        XCTAssertFalse(
+            PanelImagePasteCommand.matches(modifiers: [.command, .control])
+        )
+    }
+
+    func testPanelImagePasteboardReadsCopiedImageFiles() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Snip SnapPasteboardTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Copied.png")
+        let data = Data([10, 11, 12])
+        try data.write(to: url)
+        let pasteboard = NSPasteboard(
+            name: NSPasteboard.Name("world.sree.snipsnap.file-paste.\(UUID().uuidString)")
+        )
+        defer { pasteboard.releaseGlobally() }
+        let item = NSPasteboardItem()
+        item.setString(url.absoluteString, forType: .fileURL)
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.writeObjects([item]))
+
+        XCTAssertEqual(PanelImagePasteboard.images(from: pasteboard), [.file(url)])
+    }
+
+    func testPanelImagePasteboardPrefersFileURLOverRenderedImageData() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Snip SnapPasteboardTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Original Name.png")
+        try Data([1, 2, 3]).write(to: url)
+        let pasteboard = NSPasteboard(
+            name: NSPasteboard.Name("world.sree.snipsnap.file-data-paste.\(UUID().uuidString)")
+        )
+        defer { pasteboard.releaseGlobally() }
+        let item = NSPasteboardItem()
+        item.setString(url.absoluteString, forType: .fileURL)
+        item.setData(Data([4, 5, 6]), forType: .png)
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.writeObjects([item]))
+
+        XCTAssertEqual(PanelImagePasteboard.images(from: pasteboard), [.file(url)])
+    }
+
+    func testPanelImagePasteboardDoesNotAttachANonImageFileIcon() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Snip SnapPasteboardTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Notes.txt")
+        try Data("notes".utf8).write(to: url)
+        let pasteboard = NSPasteboard(
+            name: NSPasteboard.Name("world.sree.snipsnap.non-image-paste.\(UUID().uuidString)")
+        )
+        defer { pasteboard.releaseGlobally() }
+        let item = NSPasteboardItem()
+        item.setString(url.absoluteString, forType: .fileURL)
+        item.setData(Data([1, 2, 3]), forType: .tiff)
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.writeObjects([item]))
+
+        XCTAssertTrue(PanelImagePasteboard.images(from: pasteboard).isEmpty)
+    }
+
+    @MainActor
+    func testCommandVPastesImagesInPanelTextInput() throws {
+        let image = PanelPastedImage.data(fileName: "Pasted Image.png", data: Data([1]))
+        var pastedImages: [PanelPastedImage] = []
+        let input = PanelMultilineTextInput(
+            "Paste here",
+            text: .constant(""),
+            lineRange: 1...5,
+            isFocused: true,
+            onFocusChange: { _ in },
+            readPastedImages: { [image] },
+            pastedContentContainsText: { false },
+            onPasteImages: { pastedImages = $0 },
+            onSubmit: {}
+        )
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 320, height: 80),
+            styleMask: .titled,
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = NSHostingView(rootView: input)
+        window.makeKeyAndOrderFront(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let textView = try XCTUnwrap(findTextView(in: window.contentView))
+        XCTAssertTrue(window.makeFirstResponder(textView))
+        let event = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: .command,
+                timestamp: 0,
+                windowNumber: window.windowNumber,
+                context: nil,
+                characters: "v",
+                charactersIgnoringModifiers: "v",
+                isARepeat: false,
+                keyCode: 9
+            )
+        )
+
+        NSApp.sendEvent(event)
+
+        XCTAssertEqual(pastedImages, [image])
+    }
+
+    @MainActor
+    private func findTextView(in view: NSView?) -> NSTextView? {
+        guard let view else { return nil }
+        if let textView = view as? NSTextView { return textView }
+        for subview in view.subviews {
+            if let textView = findTextView(in: subview) { return textView }
+        }
+        return nil
+    }
+
+    func testPanelPastedImageStagingWritesAnImageFile() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Snip SnapPasteTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let data = Data([7, 8, 9])
+
+        let result = PanelPastedImageStaging.write(
+            [.data(fileName: "Screenshot.png", data: data)],
+            to: directory
+        )
+        let urls = try result.get()
+        let url = try XCTUnwrap(urls.first)
+
+        XCTAssertEqual(url.pathExtension, "png")
+        XCTAssertEqual(try Data(contentsOf: url), data)
+    }
+
     @MainActor
     func testColdDragPreviewLookupDoesNotDecodeTheFile() throws {
         let directory = FileManager.default.temporaryDirectory
@@ -252,6 +434,62 @@ final class PanelTests: XCTestCase {
         XCTAssertGreaterThan(
             PanelInlineEditMetrics.maximumTextLines,
             PanelInlineEditMetrics.minimumTextLines
+        )
+    }
+
+    func testInlineEditorUsesTheComposerMaximumLineCount() {
+        XCTAssertEqual(
+            PanelInlineEditMetrics.maximumTextLines,
+            PanelComposerMetrics.maximumTextLines
+        )
+    }
+
+    func testPlainReturnSubmitsTextInput() {
+        XCTAssertEqual(PanelTextInputReturnAction.action(for: []), .submit)
+    }
+
+    func testShiftReturnInsertsNewlineInTextInput() {
+        XCTAssertEqual(PanelTextInputReturnAction.action(for: [.shift]), .insertNewline)
+    }
+
+    func testPanelTextInputCapsItsMeasuredHeightAtTheLineRange() {
+        XCTAssertEqual(
+            PanelMultilineTextMetrics.height(
+                measuredContentHeight: 1,
+                lineRange: 2...10,
+                lineSpacing: 0
+            ),
+            PanelMultilineTextMetrics.lineHeight * 2 + 8
+        )
+        XCTAssertEqual(
+            PanelMultilineTextMetrics.height(
+                measuredContentHeight: 1_000,
+                lineRange: 2...10,
+                lineSpacing: 0
+            ),
+            PanelMultilineTextMetrics.lineHeight * 10 + 8
+        )
+    }
+
+    func testPanelTextInputIncludesLineSpacingInItsHeightLimit() {
+        XCTAssertEqual(
+            PanelMultilineTextMetrics.height(
+                measuredContentHeight: 1_000,
+                lineRange: 2...5,
+                lineSpacing: 2
+            ),
+            PanelMultilineTextMetrics.lineHeight * 5 + 16
+        )
+    }
+
+    func testPanelTextInputDoesNotNarrowTextWhileEditing() {
+        XCTAssertEqual(PanelMultilineTextMetrics.effectiveHorizontalInset, 0)
+    }
+
+    func testPanelTextInputPlaceholderMatchesEditorTopInset() {
+        XCTAssertEqual(
+            PanelMultilineTextMetrics.placeholderTopInset,
+            PanelMultilineTextMetrics.systemTextEditorTopInset
         )
     }
 

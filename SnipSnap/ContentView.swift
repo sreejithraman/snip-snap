@@ -469,9 +469,21 @@ struct ContentView: View {
     }
 
     private var inlineEntryField: some View {
-        TextField("Add to \(model.activeSection.name)…", text: entryText, axis: .vertical)
-            .panelInputStyle()
-            .lineLimit(1...5)
+        PanelMultilineTextInput(
+            "Add to \(model.activeSection.name)…",
+            text: entryText,
+            lineRange: PanelComposerMetrics.textLineRange,
+            isFocused: focusedTarget == .inlineEntry,
+            onFocusChange: { isFocused in
+                if isFocused {
+                    focusedTarget = .inlineEntry
+                } else if focusedTarget == .inlineEntry {
+                    focusedTarget = nil
+                }
+            },
+            onPasteImages: pasteImagesIntoComposer,
+            onSubmit: saveInlineEntry
+        )
             .onGeometryChange(for: CGFloat.self) { proxy in
                 proxy.size.height
             } action: { height in
@@ -481,8 +493,6 @@ struct ContentView: View {
                 ) else { return }
                 inlineEntryFieldHeight = height
             }
-            .focused($focusedTarget, equals: .inlineEntry)
-            .onSubmit(saveInlineEntry)
     }
 
     private var entryText: Binding<String> {
@@ -558,6 +568,28 @@ struct ContentView: View {
         entryDraft = model.composerDraft(for: sectionID)
         focusedTarget = .inlineEntry
         return true
+    }
+
+    @MainActor
+    private func pasteImagesIntoComposer(_ images: [PanelPastedImage]) {
+        let sectionID = model.activeSectionID
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                PanelPastedImageStaging.write(images)
+            }.value
+            switch result {
+            case .success(let urls):
+                for url in urls {
+                    model.addTemporaryDraftAttachment(url, to: sectionID)
+                }
+                if model.activeSectionID == sectionID {
+                    entryDraftSectionID = sectionID
+                    entryDraft = model.composerDraft(for: sectionID)
+                }
+            case .failure(let error):
+                model.presentedError = error.localizedDescription
+            }
+        }
     }
 
     private func updateInboxComposerExpansion(for height: CGFloat) {

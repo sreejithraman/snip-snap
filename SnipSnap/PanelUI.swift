@@ -57,9 +57,15 @@ enum PanelListMetrics {
     static let compactVerticalContentInset: CGFloat = 10
 }
 
+enum PanelComposerMetrics {
+    static let minimumTextLines = 1
+    static let maximumTextLines = 5
+    static let textLineRange = minimumTextLines...maximumTextLines
+}
+
 enum PanelInlineEditMetrics {
     static let minimumTextLines = 2
-    static let maximumTextLines = 10
+    static let maximumTextLines = PanelComposerMetrics.maximumTextLines
     static let textLineRange = minimumTextLines...maximumTextLines
 }
 

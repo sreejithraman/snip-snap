@@ -23,6 +23,8 @@ struct InboxItemRow: View {
 
     @State private var editText = ""
     @State private var showingFiles = false
+    @State private var pastedAttachmentURLs: Set<URL> = []
+    @State private var editSessionID = UUID()
     @FocusState private var editorFocused: Bool
 
     var body: some View {
@@ -62,15 +64,22 @@ struct InboxItemRow: View {
         .animation(.snappy(duration: 0.18), value: isEditing)
         .onChange(of: isEditing, initial: true) { _, editing in
             guard editing else {
+                editSessionID = UUID()
+                removePastedAttachments()
                 editorFocused = false
                 return
             }
+            editSessionID = UUID()
             editText = item.content
             Task { @MainActor in
                 await Task.yield()
                 editorFocused = true
             }
         }
+        .onChange(of: isSaving) { _, saving in
+            if saving { editSessionID = UUID() }
+        }
+        .onDisappear(perform: removePastedAttachments)
         .fileImporter(
             isPresented: $showingFiles,
             allowedContentTypes: [.data],
@@ -142,11 +151,16 @@ struct InboxItemRow: View {
                 .padding(.trailing, SnipSnapSpacing.cardContentInset)
             }
 
-            TextField("Clip text", text: $editText, axis: .vertical)
-                .panelInputStyle()
-                .lineLimit(PanelInlineEditMetrics.textLineRange)
-                .lineSpacing(2)
-                .focused($editorFocused)
+            PanelMultilineTextInput(
+                "Clip text",
+                text: $editText,
+                lineRange: PanelInlineEditMetrics.textLineRange,
+                lineSpacing: 2,
+                isFocused: editorFocused,
+                onFocusChange: { editorFocused = $0 },
+                onPasteImages: pasteImagesIntoEdit,
+                onSubmit: saveEdit
+            )
                 .onKeyPress(.escape) {
                     cancelEdit()
                     return .handled
@@ -178,6 +192,39 @@ struct InboxItemRow: View {
                 excluding: editAttachments
             )
         )
+    }
+
+    @MainActor
+    private func pasteImagesIntoEdit(_ images: [PanelPastedImage]) {
+        guard !isSaving else { return }
+        let sessionID = editSessionID
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                PanelPastedImageStaging.write(images)
+            }.value
+            switch result {
+            case .success(let urls):
+                guard editSessionID == sessionID else {
+                    removeTemporaryFiles(urls)
+                    return
+                }
+                pastedAttachmentURLs.formUnion(urls)
+                addEditAttachments(urls)
+            case .failure(let error):
+                onEditError(error.localizedDescription)
+            }
+        }
+    }
+
+    private func removePastedAttachments() {
+        removeTemporaryFiles(Array(pastedAttachmentURLs))
+        pastedAttachmentURLs.removeAll()
+    }
+
+    private func removeTemporaryFiles(_ urls: [URL]) {
+        for url in urls {
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     private var editActions: some View {
