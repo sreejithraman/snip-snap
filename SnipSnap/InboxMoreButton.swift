@@ -22,8 +22,8 @@ struct InboxMoreButton: View {
         }
         .menuIndicator(.hidden)
         .buttonStyle(.plain)
-        .help("More")
-        .accessibilityLabel("More")
+        .help(moreLabel)
+        .accessibilityLabel(moreLabel)
     }
 
     @ViewBuilder
@@ -73,6 +73,15 @@ struct InboxMoreButton: View {
             get: { model.sortMode },
             set: { model.setSortMode($0) }
         )
+    }
+
+    private var developmentBuild: DevelopmentBuildIdentity? {
+        DevelopmentBuildIdentity.current
+    }
+
+    private var moreLabel: String {
+        guard let developmentBuild else { return "More" }
+        return "More, development build \(developmentBuild.slot)"
     }
 
     private var appearanceBinding: Binding<AppAppearance> {

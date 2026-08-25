@@ -115,5 +115,17 @@ PATH="$test_dir/bin:$PATH" \
     SNIP_SNAP_DEV_SLOT=2 \
     "$script_dir/build.sh" >/dev/null
 grep -F -- "$test_dir/state/build/slot-2" "$test_dir/build-args" >/dev/null
+grep -F -- "PRODUCT_BUNDLE_IDENTIFIER=world.sree.snipsnap.dev2" \
+    "$test_dir/build-args" >/dev/null
+grep -F -- "PRODUCT_NAME=SnipSnapDev2" "$test_dir/build-args" >/dev/null
+grep -F -- "INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Dev 2" \
+    "$test_dir/build-args" >/dev/null
+
+display_name_source="$(
+    /usr/libexec/PlistBuddy \
+        -c 'Print :CFBundleDisplayName' \
+        "$script_dir/../SnipSnap/Info.plist"
+)"
+[[ "$display_name_source" == '$(INFOPLIST_KEY_CFBundleDisplayName)' ]]
 
 print "Development slot checks passed."

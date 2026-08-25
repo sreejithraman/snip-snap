@@ -22,6 +22,41 @@ private final class PanelResizeTrackingEvent: NSEvent {
 }
 
 final class PanelTests: XCTestCase {
+    func testDevelopmentBuildIdentityReadsTheSlotFromTheBundleIdentifier() {
+        XCTAssertEqual(
+            DevelopmentBuildIdentity(bundleIdentifier: "world.sree.snipsnap.dev3")?.slot,
+            3
+        )
+        XCTAssertNil(DevelopmentBuildIdentity(bundleIdentifier: "world.sree.snipsnap"))
+        XCTAssertNil(DevelopmentBuildIdentity(bundleIdentifier: "world.sree.snipsnap.dev03"))
+        XCTAssertNil(DevelopmentBuildIdentity(bundleIdentifier: "world.sree.snipsnap.dev0"))
+        XCTAssertNil(DevelopmentBuildIdentity(bundleIdentifier: "world.sree.snipsnap.preview"))
+    }
+
+    func testDevelopmentBuildBadgePaletteLoopsThroughRainbowBlackAndWhite() {
+        let tones = (1...18).compactMap {
+            DevelopmentBuildIdentity(
+                bundleIdentifier: "world.sree.snipsnap.dev\($0)"
+            )?.badgeTone
+        }
+
+        let cycle = DevelopmentBadgeTone.allCases
+        XCTAssertEqual(tones, cycle + cycle)
+        XCTAssertTrue(zip(cycle, cycle.dropFirst()).allSatisfy(!=))
+        XCTAssertNotEqual(cycle.last, cycle.first)
+    }
+
+    func testDevelopmentBadgeLabelsKeepContrastInBothAppearances() {
+        for tone in DevelopmentBadgeTone.allCases where tone != .indigo && tone != .black {
+            XCTAssertTrue(tone.usesDarkLabel(in: .light))
+            XCTAssertTrue(tone.usesDarkLabel(in: .dark))
+        }
+        XCTAssertFalse(DevelopmentBadgeTone.indigo.usesDarkLabel(in: .light))
+        XCTAssertTrue(DevelopmentBadgeTone.indigo.usesDarkLabel(in: .dark))
+        XCTAssertFalse(DevelopmentBadgeTone.black.usesDarkLabel(in: .light))
+        XCTAssertFalse(DevelopmentBadgeTone.black.usesDarkLabel(in: .dark))
+    }
+
     @MainActor
     private func makeResizeView() -> (window: NSWindow, view: PanelResizeView) {
         let window = NSWindow(
