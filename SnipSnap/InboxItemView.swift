@@ -79,7 +79,10 @@ struct InboxItemRow: View {
         .onChange(of: isSaving) { _, saving in
             if saving { editSessionID = UUID() }
         }
-        .onDisappear(perform: removeTemporaryAttachments)
+        .onDisappear {
+            editSessionID = UUID()
+            removeTemporaryAttachments()
+        }
     }
 
     private var draggableBody: some View {

@@ -7,6 +7,12 @@ private enum FileImportTarget {
     case edit(UUID)
 }
 
+struct PendingEditAttachmentImport: Identifiable {
+    let id = UUID()
+    let itemID: UUID
+    let urls: [URL]
+}
+
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var shortcutSettings: ShortcutSettings
@@ -21,6 +27,7 @@ struct ContentView: View {
     @State private var movesSelectionToNewSection = false
     @State private var showingFileImporter = false
     @State private var fileImportTarget: FileImportTarget?
+    @State private var pendingEditAttachmentImport: PendingEditAttachmentImport?
     @State private var showingClearClipboard = false
     @State private var declinedClipboardOnboarding = false
     @State private var measuredInlineEntryHeight = PanelControlMetrics.inlineEntryBaseHeight
@@ -79,7 +86,10 @@ struct ContentView: View {
             case .success(let urls):
                 switch fileImportTarget {
                 case .edit(let itemID) where itemID == model.editingID:
-                    fileDropController.receive(urls)
+                    pendingEditAttachmentImport = PendingEditAttachmentImport(
+                        itemID: itemID,
+                        urls: urls
+                    )
                 case .composer(let sectionID):
                     model.addDraftAttachments(urls, to: sectionID)
                     if model.activeSectionID == sectionID {
@@ -371,6 +381,7 @@ struct ContentView: View {
                 fileImportTarget = .edit(itemID)
                 showingFileImporter = true
             },
+            pendingEditAttachmentImport: $pendingEditAttachmentImport,
             captureScreenAreaForEdit: captureScreenAreaForEdit,
             bottomContentInset: model.isShowingClipboard ? 0 : measuredInlineEntryHeight,
             onPreviewAttachments: openAttachmentPreview,

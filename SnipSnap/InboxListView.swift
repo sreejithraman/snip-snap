@@ -59,6 +59,7 @@ struct InboxListView: View {
     @FocusState.Binding var focusedTarget: InboxFocusTarget?
     let moveSelectionToNewSection: (Set<UUID>) -> Void
     let requestFileImport: (UUID) -> Void
+    @Binding var pendingEditAttachmentImport: PendingEditAttachmentImport?
     let captureScreenAreaForEdit: (@escaping @MainActor (URL?) -> Void) -> Void
     let bottomContentInset: CGFloat
     let onPreviewAttachments: ([URL], URL) -> Void
@@ -209,9 +210,16 @@ struct InboxListView: View {
             state.reconcile(model: model)
         }
         .onReceive(fileDropController.fileDrops) { urls in
-            guard let editingID = model.editingID,
-                  model.items.contains(where: { $0.id == editingID }) else { return }
+            guard let editingID = model.editingID else { return }
             addEditAttachments(urls, to: editingID)
+        }
+        .onChange(of: pendingEditAttachmentImport?.id, initial: true) {
+            guard let pendingEditAttachmentImport else { return }
+            self.pendingEditAttachmentImport = nil
+            addEditAttachments(
+                pendingEditAttachmentImport.urls,
+                to: pendingEditAttachmentImport.itemID
+            )
         }
     }
 
