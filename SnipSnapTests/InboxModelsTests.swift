@@ -903,8 +903,20 @@ final class InboxModelsTests: XCTestCase {
             for: .heading(sectionID("Review"))
         )
         geometry.record(
-            CGRect(x: 10, y: 110, width: 200, height: 140),
-            for: .section(sectionID("Review"))
+            CGRect(x: 10, y: 110, width: 200, height: 40),
+            for: .dropSurface(.item(first.id))
+        )
+        geometry.record(
+            CGRect(x: 10, y: 120, width: 200, height: 40),
+            for: .entry(.item(first.id))
+        )
+        geometry.record(
+            CGRect(x: 10, y: 180, width: 200, height: 60),
+            for: .entry(.item(second.id))
+        )
+        geometry.record(
+            CGRect(x: 10, y: 250, width: 200, height: 16),
+            for: .sectionFooter(sectionID("Review"))
         )
         geometry.updateScroll(
             .init(visibleOrigin: CGPoint(x: 0, y: 100), contentHeight: 500, viewportHeight: 200)
@@ -933,9 +945,23 @@ final class InboxModelsTests: XCTestCase {
         XCTAssertEqual(
             geometry.contentPoint(
                 fromLocalPoint: CGPoint(x: 5, y: 6),
-                in: .section(sectionID("Review"))
+                in: .dropSurface(.item(first.id))
             ),
             CGPoint(x: 15, y: 116)
+        )
+        XCTAssertEqual(
+            geometry.sectionBodyFrame(
+                sectionID: sectionID("Review"),
+                rowIDs: [first.id, second.id],
+                entryIDs: [.item(first.id), .item(second.id)]
+            ),
+            CGRect(x: 10, y: 120, width: 200, height: 120)
+        )
+        XCTAssertTrue(
+            geometry.hasPlacementFrames(
+                in: sectionID("Review"),
+                among: [first, second]
+            )
         )
 
         geometry.updateScroll(
@@ -951,6 +977,45 @@ final class InboxModelsTests: XCTestCase {
 
         geometry.retainRows([first.id])
         XCTAssertNil(geometry.frame(for: .row(second.id)))
+    }
+
+    @MainActor
+    func testListGeometryUsesHeaderForAnEmptySectionDropSurface() {
+        let geometry = InboxListGeometry()
+        let sectionID = sectionID("Empty")
+        geometry.record(
+            CGRect(x: 10, y: 80, width: 200, height: 30),
+            for: .heading(sectionID)
+        )
+
+        XCTAssertTrue(geometry.hasPlacementFrames(in: sectionID, among: []))
+        XCTAssertNil(
+            geometry.sectionBodyFrame(
+                sectionID: sectionID,
+                rowIDs: [],
+                entryIDs: []
+            )
+        )
+    }
+
+    @MainActor
+    func testListGeometryIncludesSyntheticEntriesInSectionHighlight() {
+        let geometry = InboxListGeometry()
+        let sectionID = sectionID("Review")
+        let gapID = ClipListEntryID.destinationGap(sectionID)
+        geometry.record(
+            CGRect(x: 10, y: 80, width: 200, height: 72),
+            for: .entry(gapID)
+        )
+
+        XCTAssertEqual(
+            geometry.sectionBodyFrame(
+                sectionID: sectionID,
+                rowIDs: [],
+                entryIDs: [gapID]
+            ),
+            CGRect(x: 10, y: 80, width: 200, height: 72)
+        )
     }
 
     private func dropItem(
