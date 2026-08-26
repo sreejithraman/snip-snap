@@ -10,7 +10,7 @@ final class ClipboardHistoryTests: XCTestCase {
         let secondURL = URL(fileURLWithPath: "/tmp/second.md")
         writeFileURLs([firstURL, secondURL], to: context.pasteboard)
 
-        context.history.startMonitoring()
+        context.history.poll()
 
         let entry = try XCTUnwrap(context.history.entries.first)
         XCTAssertEqual(entry.items.count, 2)
@@ -35,7 +35,7 @@ final class ClipboardHistoryTests: XCTestCase {
         context.pasteboard.clearContents()
         XCTAssertTrue(context.pasteboard.writeObjects([item]))
 
-        context.history.startMonitoring()
+        context.history.poll()
         let entry = try XCTUnwrap(context.history.entries.first)
         context.pasteboard.clearContents()
 
@@ -58,7 +58,7 @@ final class ClipboardHistoryTests: XCTestCase {
         context.pasteboard.clearContents()
         XCTAssertTrue(context.pasteboard.writeObjects([item]))
 
-        context.history.startMonitoring()
+        context.history.poll()
 
         let entry = try XCTUnwrap(context.history.entries.first)
         XCTAssertEqual(entry.items.flatMap(\.representations).map(\.type), [NSPasteboard.PasteboardType.string.rawValue])
@@ -75,7 +75,7 @@ final class ClipboardHistoryTests: XCTestCase {
         context.pasteboard.clearContents()
         XCTAssertTrue(context.pasteboard.writeObjects([item]))
 
-        context.history.startMonitoring()
+        context.history.poll()
         await context.history.waitForPendingCapture()
 
         let entry = try XCTUnwrap(context.history.entries.first)
@@ -86,7 +86,7 @@ final class ClipboardHistoryTests: XCTestCase {
     func testPauseAndScopedSuppressionSkipChanges() throws {
         let context = try makeContext()
         writeText("Initial", to: context.pasteboard)
-        context.history.startMonitoring()
+        context.history.poll()
         XCTAssertEqual(context.history.entries.map(\.text), ["Initial"])
 
         context.history.setPaused(true)
@@ -110,7 +110,6 @@ final class ClipboardHistoryTests: XCTestCase {
 
     func testPauseSurvivesRelaunch() throws {
         let context = try makeContext()
-        context.history.startMonitoring()
         context.history.setPaused(true)
 
         let reopened = ClipboardHistory(
@@ -143,7 +142,7 @@ final class ClipboardHistoryTests: XCTestCase {
     func testInternalCopyMarkerNeverCreatesHistory() throws {
         let context = try makeContext()
         writeText("Initial", to: context.pasteboard)
-        context.history.startMonitoring()
+        context.history.poll()
 
         let item = NSPasteboardItem()
         item.setString("Snip Snap copy", forType: .string)
@@ -158,7 +157,7 @@ final class ClipboardHistoryTests: XCTestCase {
     func testHistoryPersistsTheLatestClipboardSnapshot() async throws {
         let context = try makeContext()
         writeText("First", to: context.pasteboard)
-        context.history.startMonitoring()
+        context.history.poll()
         writeText("Second", to: context.pasteboard)
         context.history.poll()
 
@@ -175,7 +174,7 @@ final class ClipboardHistoryTests: XCTestCase {
         let context = try makeContext(persistedEntries: [clipboardEntry("Persisted")])
         writeText("Copied during launch", to: context.pasteboard)
 
-        context.history.startMonitoring()
+        context.history.poll()
         await context.history.waitForInitialLoad()
 
         XCTAssertEqual(
@@ -210,7 +209,7 @@ final class ClipboardHistoryTests: XCTestCase {
         )
         writeText("Keep this in memory", to: context.pasteboard)
 
-        context.history.startMonitoring()
+        context.history.poll()
         await context.history.flushPersistence()
 
         XCTAssertEqual(context.history.entries.map(\.text), ["Keep this in memory"])
