@@ -6,7 +6,7 @@ Snip Snap must keep captured text across restarts without an account, network ca
 
 ## Decision
 
-Save clips and sections in a JSON document with an explicit schema version at `~/Library/Application Support/Snip Snap/items.json`. Replace the file as one write. Before recovery from damaged JSON, keep the old bytes in a unique backup. Stop writes if Snip Snap cannot make the backup or new store.
+Save snips and lists in a JSON document with an explicit schema version at `~/Library/Application Support/Snip Snap/snips.json`. Replace the file as one write. Before recovery from damaged JSON, keep the old bytes in a unique backup. Stop writes if Snip Snap cannot make the backup or new store.
 
 ## Consequences
 

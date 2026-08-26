@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-private final class ClipDragPanGestureRecognizer: NSPanGestureRecognizer {
+private final class SnipDragPanGestureRecognizer: NSPanGestureRecognizer {
     override func canPrevent(_ preventedGestureRecognizer: NSGestureRecognizer) -> Bool {
         true
     }
@@ -12,7 +12,7 @@ private final class ClipDragPanGestureRecognizer: NSPanGestureRecognizer {
     }
 }
 
-enum ClipDragOutcome: Equatable {
+enum SnipDragOutcome: Equatable {
     case copy
     case move
     case cancelled
@@ -28,7 +28,7 @@ enum ClipDragOutcome: Equatable {
     }
 }
 
-private final class ClipMarkdownPromiseDelegate: NSObject,
+private final class SnipMarkdownPromiseDelegate: NSObject,
     NSFilePromiseProviderDelegate,
     @unchecked Sendable {
     private let contents: Data
@@ -37,7 +37,7 @@ private final class ClipMarkdownPromiseDelegate: NSObject,
     init(markdown: String) {
         contents = Data(markdown.utf8)
         queue = OperationQueue()
-        queue.name = "world.sree.snipsnap.clip-markdown-promise"
+        queue.name = "world.sree.snipsnap.snip-markdown-promise"
         queue.qualityOfService = .utility
         queue.maxConcurrentOperationCount = 1
     }
@@ -46,7 +46,7 @@ private final class ClipMarkdownPromiseDelegate: NSObject,
         _ filePromiseProvider: NSFilePromiseProvider,
         fileNameForType fileType: String
     ) -> String {
-        "Snip Snap Clip.md"
+        "Snip Snap Snip.md"
     }
 
     nonisolated func filePromiseProvider(
@@ -69,15 +69,15 @@ private final class ClipMarkdownPromiseDelegate: NSObject,
     }
 }
 
-struct ClipDragExportPackage {
-    let payload: ClipDragPayload
-    private let markdownPromiseDelegate: ClipMarkdownPromiseDelegate?
+struct SnipDragExportPackage {
+    let payload: SnipDragPayload
+    private let markdownPromiseDelegate: SnipMarkdownPromiseDelegate?
     private let markdownPromiseProvider: NSFilePromiseProvider?
 
-    init(payload: ClipDragPayload) {
+    init(payload: SnipDragPayload) {
         self.payload = payload
         if !payload.text.isEmpty, !payload.attachmentURLs.isEmpty {
-            let delegate = ClipMarkdownPromiseDelegate(markdown: Self.markdown(for: payload))
+            let delegate = SnipMarkdownPromiseDelegate(markdown: Self.markdown(for: payload))
             markdownPromiseDelegate = delegate
             let provider = NSFilePromiseProvider(
                 fileType: UTType.data.identifier,
@@ -113,7 +113,7 @@ struct ClipDragExportPackage {
             + [privatePayloadWriter()]
     }
 
-    static func markdown(for payload: ClipDragPayload) -> String {
+    static func markdown(for payload: SnipDragPayload) -> String {
         var result = payload.text
         if !result.hasSuffix("\n") {
             result.append("\n")
@@ -168,7 +168,7 @@ struct ClipDragExportPackage {
         }
     }
 
-    static let privateType = NSPasteboard.PasteboardType(UTType.snipSnapClipDrag.identifier)
+    static let privateType = NSPasteboard.PasteboardType(UTType.snipSnapSnipDrag.identifier)
 
     @MainActor
     private func cardPreviewImage(scale: CGFloat, colorScheme: ColorScheme) -> NSImage {
@@ -185,7 +185,7 @@ struct ClipDragExportPackage {
             )
         }
         let renderer = ImageRenderer(
-            content: ClipDragPreviewCard(
+            content: SnipDragPreviewCard(
                 payload: payload,
                 attachmentImages: attachmentImages
             )
@@ -201,17 +201,17 @@ private struct DragPreviewAttachment {
     let fillsTile: Bool
 }
 
-private struct ClipDragPreviewCard: View {
+private struct SnipDragPreviewCard: View {
     private enum Metrics {
         static let width: CGFloat = 280
         static let shadowAllowance: CGFloat = 12
     }
 
-    let payload: ClipDragPayload
+    let payload: SnipDragPayload
     let attachmentImages: [DragPreviewAttachment]
 
     var body: some View {
-        ClipCardBody(
+        SnipCardBody(
             text: payload.text,
             isDone: payload.previewIsDone,
             hasAttachments: !attachmentImages.isEmpty,
@@ -235,7 +235,7 @@ private struct ClipDragPreviewCard: View {
 }
 
 @MainActor
-final class ClipDragSourceController: NSObject, NSDraggingSource, NSGestureRecognizerDelegate {
+final class SnipDragSourceController: NSObject, NSDraggingSource, NSGestureRecognizerDelegate {
     private final class WeakView {
         weak var value: NSView?
 
@@ -246,15 +246,15 @@ final class ClipDragSourceController: NSObject, NSDraggingSource, NSGestureRecog
 
     private final class Region {
         weak var view: NSView?
-        let payload: ClipDragPayload
+        let payload: SnipDragPayload
         let onBegan: () -> Void
-        let onEnded: (ClipDragOutcome) -> Void
+        let onEnded: (SnipDragOutcome) -> Void
 
         init(
             view: NSView,
-            payload: ClipDragPayload,
+            payload: SnipDragPayload,
             onBegan: @escaping () -> Void,
-            onEnded: @escaping (ClipDragOutcome) -> Void
+            onEnded: @escaping (SnipDragOutcome) -> Void
         ) {
             self.view = view
             self.payload = payload
@@ -268,9 +268,9 @@ final class ClipDragSourceController: NSObject, NSDraggingSource, NSGestureRecog
     private var blockingViews: [UUID: WeakView] = [:]
     private var pendingRegion: Region?
     private var activeRegion: Region?
-    private var activeExport: ClipDragExportPackage?
+    private var activeExport: SnipDragExportPackage?
     private lazy var panRecognizer: NSPanGestureRecognizer = {
-        let recognizer = ClipDragPanGestureRecognizer(
+        let recognizer = SnipDragPanGestureRecognizer(
             target: self,
             action: #selector(handlePan(_:))
         )
@@ -291,9 +291,9 @@ final class ClipDragSourceController: NSObject, NSDraggingSource, NSGestureRecog
     func updateRegion(
         id: UUID,
         view: NSView?,
-        payload: ClipDragPayload,
+        payload: SnipDragPayload,
         onBegan: @escaping () -> Void,
-        onEnded: @escaping (ClipDragOutcome) -> Void
+        onEnded: @escaping (SnipDragOutcome) -> Void
     ) {
         guard let view, view.window != nil else {
             regions.removeValue(forKey: id)
@@ -323,7 +323,7 @@ final class ClipDragSourceController: NSObject, NSDraggingSource, NSGestureRecog
         blockingViews.removeValue(forKey: id)
     }
 
-    func payload(atWindowPoint point: NSPoint) -> ClipDragPayload? {
+    func payload(atWindowPoint point: NSPoint) -> SnipDragPayload? {
         region(atWindowPoint: point)?.payload
     }
 
@@ -376,7 +376,7 @@ final class ClipDragSourceController: NSObject, NSDraggingSource, NSGestureRecog
         let colorScheme: ColorScheme = hostView.effectiveAppearance.bestMatch(
             from: [.darkAqua, .aqua]
         ) == .darkAqua ? .dark : .light
-        let export = ClipDragExportPackage(payload: region.payload)
+        let export = SnipDragExportPackage(payload: region.payload)
         region.onBegan()
         activeRegion = region
         activeExport = export
@@ -409,33 +409,33 @@ final class ClipDragSourceController: NSObject, NSDraggingSource, NSGestureRecog
         activeRegion = nil
         activeExport = nil
         pendingRegion = nil
-        region?.onEnded(ClipDragOutcome(operation: operation))
+        region?.onEnded(SnipDragOutcome(operation: operation))
     }
 }
 
-struct ClipDragBlockingRegion: NSViewRepresentable {
-    let controller: ClipDragSourceController
+struct SnipDragBlockingRegion: NSViewRepresentable {
+    let controller: SnipDragSourceController
     let id: UUID
 
-    func makeNSView(context: Context) -> ClipDragBlockingRegionView {
-        ClipDragBlockingRegionView(controller: controller, id: id)
+    func makeNSView(context: Context) -> SnipDragBlockingRegionView {
+        SnipDragBlockingRegionView(controller: controller, id: id)
     }
 
-    func updateNSView(_ nsView: ClipDragBlockingRegionView, context: Context) {
+    func updateNSView(_ nsView: SnipDragBlockingRegionView, context: Context) {
         nsView.updateController()
     }
 
-    static func dismantleNSView(_ nsView: ClipDragBlockingRegionView, coordinator: ()) {
+    static func dismantleNSView(_ nsView: SnipDragBlockingRegionView, coordinator: ()) {
         nsView.removeFromController()
     }
 }
 
 @MainActor
-final class ClipDragBlockingRegionView: NSView {
-    private let controller: ClipDragSourceController
+final class SnipDragBlockingRegionView: NSView {
+    private let controller: SnipDragSourceController
     private let id: UUID
 
-    init(controller: ClipDragSourceController, id: UUID) {
+    init(controller: SnipDragSourceController, id: UUID) {
         self.controller = controller
         self.id = id
         super.init(frame: .zero)
@@ -469,15 +469,15 @@ final class ClipDragBlockingRegionView: NSView {
     }
 }
 
-struct ClipDragSourceRegion: NSViewRepresentable {
-    let controller: ClipDragSourceController
+struct SnipDragSourceRegion: NSViewRepresentable {
+    let controller: SnipDragSourceController
     let id: UUID
-    let payload: ClipDragPayload
+    let payload: SnipDragPayload
     let onBegan: () -> Void
-    let onEnded: (ClipDragOutcome) -> Void
+    let onEnded: (SnipDragOutcome) -> Void
 
-    func makeNSView(context: Context) -> ClipDragSourceRegionView {
-        ClipDragSourceRegionView(
+    func makeNSView(context: Context) -> SnipDragSourceRegionView {
+        SnipDragSourceRegionView(
             controller: controller,
             id: id,
             payload: payload,
@@ -486,7 +486,7 @@ struct ClipDragSourceRegion: NSViewRepresentable {
         )
     }
 
-    func updateNSView(_ nsView: ClipDragSourceRegionView, context: Context) {
+    func updateNSView(_ nsView: SnipDragSourceRegionView, context: Context) {
         nsView.configure(
             payload: payload,
             onBegan: onBegan,
@@ -494,25 +494,25 @@ struct ClipDragSourceRegion: NSViewRepresentable {
         )
     }
 
-    static func dismantleNSView(_ nsView: ClipDragSourceRegionView, coordinator: ()) {
+    static func dismantleNSView(_ nsView: SnipDragSourceRegionView, coordinator: ()) {
         nsView.removeFromController()
     }
 }
 
 @MainActor
-final class ClipDragSourceRegionView: NSView {
-    private let controller: ClipDragSourceController
+final class SnipDragSourceRegionView: NSView {
+    private let controller: SnipDragSourceController
     private let id: UUID
-    private var payload: ClipDragPayload
+    private var payload: SnipDragPayload
     private var onBegan: () -> Void
-    private var onEnded: (ClipDragOutcome) -> Void
+    private var onEnded: (SnipDragOutcome) -> Void
 
     init(
-        controller: ClipDragSourceController,
+        controller: SnipDragSourceController,
         id: UUID,
-        payload: ClipDragPayload,
+        payload: SnipDragPayload,
         onBegan: @escaping () -> Void,
-        onEnded: @escaping (ClipDragOutcome) -> Void
+        onEnded: @escaping (SnipDragOutcome) -> Void
     ) {
         self.controller = controller
         self.id = id
@@ -528,9 +528,9 @@ final class ClipDragSourceRegionView: NSView {
     }
 
     func configure(
-        payload: ClipDragPayload,
+        payload: SnipDragPayload,
         onBegan: @escaping () -> Void,
-        onEnded: @escaping (ClipDragOutcome) -> Void
+        onEnded: @escaping (SnipDragOutcome) -> Void
     ) {
         self.payload = payload
         self.onBegan = onBegan

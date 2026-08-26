@@ -10,7 +10,7 @@ class StoreBackedTestCase: XCTestCase {
         addTeardownBlock {
             try? FileManager.default.removeItem(at: directory)
         }
-        return directory.appendingPathComponent("items.json")
+        return directory.appendingPathComponent("snips.json")
     }
 }
 

@@ -1,66 +1,66 @@
 import CoreTransferable
 import SwiftUI
 
-struct SectionTabBarView: View {
+struct ListTabBarView: View {
     private enum TabSelection: Hashable {
         case clipboard
-        case section(UUID)
+        case list(UUID)
 
-        var sectionID: UUID? {
+        var listID: UUID? {
             switch self {
             case .clipboard: nil
-            case .section(let sectionID): sectionID
+            case .list(let listID): listID
             }
         }
     }
 
     @ObservedObject var model: AppModel
-    let clipDragSourceController: ClipDragSourceController
-    let createSection: () -> Void
+    let snipDragSourceController: SnipDragSourceController
+    let createList: () -> Void
     @State private var dragBlockingID = UUID()
     @State private var dropTargetTab: TabSelection?
     @State private var hoverOpenTask: Task<Void, Never>?
-    @State private var editingSection: SnipSnapSection?
-    @State private var sectionPendingDeletion: SnipSnapSection?
+    @State private var editingList: SnipList?
+    @State private var listPendingDeletion: SnipList?
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: SnipSnapSpacing.relatedContent) {
                 tabStrip
                     .fixedSize(horizontal: true, vertical: false)
-                newSectionButton
+                newListButton
             }
             .fixedSize(horizontal: true, vertical: false)
 
             HStack(spacing: SnipSnapSpacing.relatedContent) {
                 scrollingTabStrip
                     .frame(maxWidth: .infinity, alignment: .leading)
-                newSectionButton
+                newListButton
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            ClipDragBlockingRegion(
-                controller: clipDragSourceController,
+            SnipDragBlockingRegion(
+                controller: snipDragSourceController,
                 id: dragBlockingID
             )
         }
         .onDisappear { hoverOpenTask?.cancel() }
-        .sheet(item: $editingSection) { section in
-            SectionEditSheet(model: model, section: section)
+        .sheet(item: $editingList) { list in
+            SnipListEditSheet(model: model, list: list)
         }
         .confirmationDialog(
-            "Delete \(sectionPendingDeletion?.name ?? "section")?",
-            isPresented: sectionDeletionPresented
+            "Delete \(listPendingDeletion?.name ?? "list")?",
+            isPresented: listDeletionPresented
         ) {
-            Button("Delete Section", role: .destructive) {
-                guard let section = sectionPendingDeletion else { return }
-                sectionPendingDeletion = nil
-                Task { await model.deleteSection(section) }
+            Button("Delete List", role: .destructive) {
+                guard let list = listPendingDeletion else { return }
+                listPendingDeletion = nil
+                Task { await model.deleteList(list) }
             }
-            Button("Cancel", role: .cancel) { sectionPendingDeletion = nil }
+            Button("Cancel", role: .cancel) { listPendingDeletion = nil }
         } message: {
-            Text("Its clips will move to Inbox.")
+            Text("Its snips will move to Inbox.")
         }
     }
 
@@ -80,8 +80,8 @@ struct SectionTabBarView: View {
         }
     }
 
-    private var newSectionButton: some View {
-        Button(action: createSection) {
+    private var newListButton: some View {
+        Button(action: createList) {
             Image(systemName: "plus")
                 .font(.body.weight(.semibold))
                 .frame(
@@ -91,8 +91,8 @@ struct SectionTabBarView: View {
                 .panelStandaloneActionControl()
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("New Section")
-        .help("New Section")
+        .accessibilityLabel("New List")
+        .help("New List")
     }
 
     private var tabStrip: some View {
@@ -108,7 +108,7 @@ struct SectionTabBarView: View {
     private func tabButton(_ tab: TabSelection) -> some View {
         let selected = selectedTab.wrappedValue == tab
         let remembered = model.isShowingClipboard
-            && tab == .section(model.activeSectionID)
+            && tab == .list(model.activeListID)
         let targeted = dropTargetTab == tab
         let name = tabName(tab)
 
@@ -141,22 +141,22 @@ struct SectionTabBarView: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
         .help(name)
         .contextMenu {
-            if case .section(let sectionID) = tab,
-               sectionID != SnipSnapSection.inboxID,
-               let section = model.sections.first(where: { $0.id == sectionID }) {
-                Button("Edit Section…") { editingSection = section }
+            if case .list(let listID) = tab,
+               listID != SnipList.inboxID,
+               let list = model.lists.first(where: { $0.id == listID }) {
+                Button("Edit List…") { editingList = list }
                 Divider()
-                Button("Delete Section", role: .destructive) {
-                    sectionPendingDeletion = section
+                Button("Delete List", role: .destructive) {
+                    listPendingDeletion = list
                 }
             }
         }
         .dropDestination(
             for: PanelDropPayload.self,
-            isEnabled: tab.sectionID != nil
+            isEnabled: tab.listID != nil
         ) { payloads, _ in
-            guard let sectionID = tab.sectionID else { return }
-            performDrop(payloads, in: sectionID)
+            guard let listID = tab.listID else { return }
+            performDrop(payloads, in: listID)
         }
         .onDropSessionUpdated { session in
             updateDropSession(session, over: tab)
@@ -171,29 +171,29 @@ struct SectionTabBarView: View {
         }
     }
 
-    private func performDrop(_ payloads: [PanelDropPayload], in sectionID: UUID) {
+    private func performDrop(_ payloads: [PanelDropPayload], in listID: UUID) {
         cancelHoverOpen()
         dropTargetTab = nil
         guard payloads.count == 1, let payload = payloads.first else { return }
 
         switch payload {
-        case .clip(let payload):
+        case .snip(let payload):
             let selectionBeforeMove = model.selection
             Task {
-                _ = await model.moveToSection(
+                _ = await model.moveToList(
                     ids: payload.ids,
-                    sectionID: sectionID,
+                    listID: listID,
                     selectionAfterMove: selectionBeforeMove
                 )
             }
         case .clipboard(let payload):
             guard let entry = model.clipboardHistory.entry(id: payload.entryID) else { return }
-            Task { _ = await model.saveClipboardEntry(entry, sectionID: sectionID) }
+            Task { _ = await model.saveClipboardEntry(entry, listID: listID) }
         }
     }
 
     private func updateDropSession(_ session: DropSession, over tab: TabSelection) {
-        guard tab.sectionID != nil else { return }
+        guard tab.listID != nil else { return }
         switch session.phase {
         case .entering:
             dropTargetTab = tab
@@ -222,11 +222,11 @@ struct SectionTabBarView: View {
                 return
             }
             guard dropTargetTab == tab,
-                  let sectionID = tab.sectionID,
-                  let section = model.sections.first(where: { $0.id == sectionID }) else {
+                  let listID = tab.listID,
+                  let list = model.lists.first(where: { $0.id == listID }) else {
                 return
             }
-            model.selectSection(section, preservingSelection: true)
+            model.selectList(list, preservingSelection: true)
             hoverOpenTask = nil
         }
     }
@@ -236,21 +236,21 @@ struct SectionTabBarView: View {
         hoverOpenTask = nil
     }
 
-    private var sectionDeletionPresented: Binding<Bool> {
+    private var listDeletionPresented: Binding<Bool> {
         Binding(
-            get: { sectionPendingDeletion != nil },
-            set: { if !$0 { sectionPendingDeletion = nil } }
+            get: { listPendingDeletion != nil },
+            set: { if !$0 { listPendingDeletion = nil } }
         )
     }
 
     private var tabs: [TabSelection] {
-        [.clipboard] + model.sections.map { .section($0.id) }
+        [.clipboard] + model.lists.map { .list($0.id) }
     }
 
     private var currentTab: TabSelection {
         model.isShowingClipboard
             ? .clipboard
-            : .section(model.activeSectionID)
+            : .list(model.activeListID)
     }
 
     private func scrollSelectedTab(using proxy: ScrollViewProxy) {
@@ -266,8 +266,8 @@ struct SectionTabBarView: View {
         switch tab {
         case .clipboard:
             "Clipboard"
-        case .section(let sectionID):
-            model.sections.first(where: { $0.id == sectionID })?.name ?? "Section"
+        case .list(let listID):
+            model.lists.first(where: { $0.id == listID })?.name ?? "List"
         }
     }
 
@@ -280,11 +280,11 @@ struct SectionTabBarView: View {
                 switch tab {
                 case .clipboard:
                     model.showClipboard()
-                case .section(let sectionID):
-                    guard let section = model.sections.first(where: { $0.id == sectionID }) else {
+                case .list(let listID):
+                    guard let list = model.lists.first(where: { $0.id == listID }) else {
                         return
                     }
-                    model.selectSection(section)
+                    model.selectList(list)
                 }
             }
         )
@@ -297,23 +297,23 @@ struct SectionTabBarView: View {
             Image(systemName: "clipboard.fill")
                 .accessibilityLabel("Clipboard")
                 .help("Clipboard")
-        case .section(let sectionID):
-            if let section = model.sections.first(where: { $0.id == sectionID }) {
-                Image(systemName: section.systemImage)
-                    .accessibilityLabel(section.name)
-                    .help(section.name)
+        case .list(let listID):
+            if let list = model.lists.first(where: { $0.id == listID }) {
+                Image(systemName: list.systemImage)
+                    .accessibilityLabel(list.name)
+                    .help(list.name)
             }
         }
     }
 }
 
 enum PanelDropPayload: Transferable, Sendable {
-    case clip(ClipDragPayload)
+    case snip(SnipDragPayload)
     case clipboard(ClipboardDragPayload)
 
     static var transferRepresentation: some TransferRepresentation {
-        ProxyRepresentation { (payload: ClipDragPayload) in
-            PanelDropPayload.clip(payload)
+        ProxyRepresentation { (payload: SnipDragPayload) in
+            PanelDropPayload.snip(payload)
         }
         ProxyRepresentation { (payload: ClipboardDragPayload) in
             PanelDropPayload.clipboard(payload)

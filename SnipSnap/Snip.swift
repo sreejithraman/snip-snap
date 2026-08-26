@@ -1,12 +1,12 @@
 import Foundation
 
-enum CaptureOrigin: String, Codable, Sendable {
+enum SnipOrigin: String, Codable, Sendable {
     case selection
     case quickEntry
     case clipboard
 }
 
-struct SnipSnapSection: Identifiable, Codable, Equatable, Sendable, Hashable {
+struct SnipList: Identifiable, Codable, Equatable, Sendable, Hashable {
     static let inboxID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
 
     let id: UUID
@@ -14,7 +14,7 @@ struct SnipSnapSection: Identifiable, Codable, Equatable, Sendable, Hashable {
     var systemImage: String
     var position: Int
 
-    static let inbox = SnipSnapSection(
+    static let inbox = SnipList(
         id: inboxID,
         name: "Inbox",
         systemImage: "tray.fill",
@@ -22,7 +22,7 @@ struct SnipSnapSection: Identifiable, Codable, Equatable, Sendable, Hashable {
     )
 }
 
-struct ClipAttachment: Identifiable, Codable, Equatable, Sendable, Hashable {
+struct SnipAttachment: Identifiable, Codable, Equatable, Sendable, Hashable {
     let id: UUID
     var fileName: String
     var relativePath: String
@@ -30,12 +30,12 @@ struct ClipAttachment: Identifiable, Codable, Equatable, Sendable, Hashable {
     var byteCount: Int64
 }
 
-enum ClipSortMode: String, CaseIterable, Codable, Sendable, Hashable {
+enum SnipSortMode: String, CaseIterable, Codable, Sendable, Hashable {
     case chronological
     case manual
 }
 
-enum CompletionFilter: String, CaseIterable, Sendable, Hashable {
+enum SnipCompletionFilter: String, CaseIterable, Sendable, Hashable {
     case all
     case done
     case notDone
@@ -51,13 +51,13 @@ enum CompletionFilter: String, CaseIterable, Sendable, Hashable {
     var emptyStateTitle: String {
         switch self {
         case .all: "Nothing captured yet"
-        case .done: "No done clips"
-        case .notDone: "No unfinished clips"
+        case .done: "No done snips"
+        case .notDone: "No unfinished snips"
         }
     }
 }
 
-struct CaptureSource: Codable, Equatable, Sendable {
+struct SnipSource: Codable, Equatable, Sendable {
     var applicationName: String
     var windowTitle: String?
     var url: String?
@@ -72,18 +72,18 @@ struct CaptureSource: Codable, Equatable, Sendable {
     }
 }
 
-struct CaptureItem: Identifiable, Codable, Equatable, Sendable {
+struct Snip: Identifiable, Codable, Equatable, Sendable {
     let id: UUID
     let requestID: UUID
     let createdAt: Date
     var updatedAt: Date
     var content: String
-    var origin: CaptureOrigin
-    var source: CaptureSource?
-    var sectionID: UUID
+    var origin: SnipOrigin
+    var source: SnipSource?
+    var listID: UUID
     var isDone: Bool
     var manualPosition: Int64
-    var attachments: [ClipAttachment]
+    var attachments: [SnipAttachment]
 
     var displaySourceLabel: String {
         if let source {
@@ -103,12 +103,12 @@ struct CaptureItem: Identifiable, Codable, Equatable, Sendable {
         createdAt: Date = Date(),
         updatedAt: Date? = nil,
         content: String,
-        origin: CaptureOrigin,
-        source: CaptureSource? = nil,
-        sectionID: UUID = SnipSnapSection.inboxID,
+        origin: SnipOrigin,
+        source: SnipSource? = nil,
+        listID: UUID = SnipList.inboxID,
         isDone: Bool = false,
         manualPosition: Int64 = 0,
-        attachments: [ClipAttachment] = []
+        attachments: [SnipAttachment] = []
     ) {
         self.id = id
         self.requestID = requestID
@@ -117,14 +117,14 @@ struct CaptureItem: Identifiable, Codable, Equatable, Sendable {
         self.content = content
         self.origin = origin
         self.source = source
-        self.sectionID = sectionID
+        self.listID = listID
         self.isDone = isDone
         self.manualPosition = manualPosition
         self.attachments = attachments
     }
 
-    static func sorted(_ items: [CaptureItem], by mode: ClipSortMode) -> [CaptureItem] {
-        items.sorted { lhs, rhs in
+    static func sorted(_ snips: [Snip], by mode: SnipSortMode) -> [Snip] {
+        snips.sorted { lhs, rhs in
             switch mode {
             case .chronological:
                 if lhs.isDone != rhs.isDone {
@@ -144,7 +144,7 @@ struct CaptureItem: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, requestID, createdAt, updatedAt, content, origin, source, sectionID, isDone
+        case id, requestID, createdAt, updatedAt, content, origin, source, listID, isDone
         case manualPosition, attachments
     }
 
@@ -155,11 +155,11 @@ struct CaptureItem: Identifiable, Codable, Equatable, Sendable {
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
         content = try container.decode(String.self, forKey: .content)
-        origin = try container.decode(CaptureOrigin.self, forKey: .origin)
-        source = try container.decodeIfPresent(CaptureSource.self, forKey: .source)
-        sectionID = try container.decode(UUID.self, forKey: .sectionID)
+        origin = try container.decode(SnipOrigin.self, forKey: .origin)
+        source = try container.decodeIfPresent(SnipSource.self, forKey: .source)
+        listID = try container.decode(UUID.self, forKey: .listID)
         isDone = try container.decode(Bool.self, forKey: .isDone)
         manualPosition = try container.decode(Int64.self, forKey: .manualPosition)
-        attachments = try container.decode([ClipAttachment].self, forKey: .attachments)
+        attachments = try container.decode([SnipAttachment].self, forKey: .attachments)
     }
 }

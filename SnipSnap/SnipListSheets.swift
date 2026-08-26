@@ -1,18 +1,18 @@
 import SwiftUI
 
-private struct SectionNameAndIconField: View {
+private struct SnipListNameAndIconField: View {
     @Binding var name: String
     @Binding var selection: String
 
     var body: some View {
         HStack(spacing: 8) {
-            SectionIconPicker(selection: $selection)
-            TextField("Section name", text: $name)
+            SnipListIconPicker(selection: $selection)
+            TextField("List name", text: $name)
         }
     }
 }
 
-private struct SectionIconPicker: View {
+private struct SnipListIconPicker: View {
     @Binding var selection: String
     @State private var isPresented = false
 
@@ -33,15 +33,15 @@ private struct SectionIconPicker: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.regular)
-        .accessibilityLabel("Choose section icon, current: \(SectionIconOptions.title(for: selection))")
-        .help("Choose Section Icon")
+        .accessibilityLabel("Choose list icon, current: \(SnipListIconOptions.title(for: selection))")
+        .help("Choose List Icon")
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
-            SectionIconBrowser(selection: $selection)
+            SnipListIconBrowser(selection: $selection)
         }
     }
 }
 
-private struct SectionIconBrowser: View {
+private struct SnipListIconBrowser: View {
     private struct GridIcon: Identifiable {
         let categoryID: String
         let systemName: String
@@ -52,26 +52,26 @@ private struct SectionIconBrowser: View {
     @Binding var selection: String
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
-    @State private var recentIcons = SectionIconOptions.recentIcons()
+    @State private var recentIcons = SnipListIconOptions.recentIcons()
     @FocusState private var searchIsFocused: Bool
 
     private let columns = [GridItem(.adaptive(minimum: 36, maximum: 36), spacing: 8)]
 
-    private var displayedCategories: [SectionIconCategory] {
+    private var displayedCategories: [SnipListIconCategory] {
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanQuery.isEmpty else {
-            guard !recentIcons.isEmpty else { return SectionIconOptions.categories }
-            return [SectionIconCategory(title: "Recent", icons: recentIcons)]
-                + SectionIconOptions.categories
+            guard !recentIcons.isEmpty else { return SnipListIconOptions.categories }
+            return [SnipListIconCategory(title: "Recent", icons: recentIcons)]
+                + SnipListIconOptions.categories
         }
 
-        return SectionIconOptions.categories.compactMap { category in
+        return SnipListIconOptions.categories.compactMap { category in
             if category.title.localizedCaseInsensitiveContains(cleanQuery) {
                 return category
             }
 
-            let icons = category.icons.filter { SectionIconOptions.matches($0, query: cleanQuery) }
-            return icons.isEmpty ? nil : SectionIconCategory(title: category.title, icons: icons)
+            let icons = category.icons.filter { SnipListIconOptions.matches($0, query: cleanQuery) }
+            return icons.isEmpty ? nil : SnipListIconCategory(title: category.title, icons: icons)
         }
     }
 
@@ -114,7 +114,7 @@ private struct SectionIconBrowser: View {
         .frame(width: 360, height: 420)
         .onAppear {
             query = ""
-            recentIcons = SectionIconOptions.recentIcons()
+            recentIcons = SnipListIconOptions.recentIcons()
             searchIsFocused = true
         }
     }
@@ -122,7 +122,7 @@ private struct SectionIconBrowser: View {
     private func iconButton(_ icon: String) -> some View {
         Button {
             selection = icon
-            SectionIconOptions.recordRecentIcon(icon)
+            SnipListIconOptions.recordRecentIcon(icon)
             dismiss()
         } label: {
             Image(systemName: icon)
@@ -143,13 +143,13 @@ private struct SectionIconBrowser: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(SectionIconOptions.title(for: icon))
+        .accessibilityLabel(SnipListIconOptions.title(for: icon))
         .accessibilityAddTraits(selection == icon ? .isSelected : [])
-        .help(SectionIconOptions.title(for: icon))
+        .help(SnipListIconOptions.title(for: icon))
     }
 }
 
-struct InboxNewSectionSheet: View {
+struct NewSnipListSheet: View {
     @ObservedObject var model: AppModel
     @Binding var isPresented: Bool
     let movesSelection: Bool
@@ -158,9 +158,9 @@ struct InboxNewSectionSheet: View {
 
     var body: some View {
         VStack(alignment: .leading) {
-            Text("New section")
+            Text("New list")
                 .font(.system(size: 15, weight: .semibold))
-            SectionNameAndIconField(name: $name, selection: $systemImage)
+            SnipListNameAndIconField(name: $name, selection: $systemImage)
                 .textFieldStyle(.automatic)
                 .controlSize(.regular)
                 .onSubmit(create)
@@ -178,12 +178,12 @@ struct InboxNewSectionSheet: View {
     }
 
     private func create() {
-        let section = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !section.isEmpty else { return }
+        let list = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !list.isEmpty else { return }
         let movingIDs = movesSelection ? model.selection : []
         Task {
-            guard await model.createSection(
-                name: section,
+            guard await model.createList(
+                name: list,
                 systemImage: systemImage,
                 movingIDs: movingIDs
             ) else { return }
@@ -193,30 +193,30 @@ struct InboxNewSectionSheet: View {
     }
 }
 
-struct SectionEditSheet: View {
+struct SnipListEditSheet: View {
     @ObservedObject var model: AppModel
-    let section: SnipSnapSection
+    let list: SnipList
     @Environment(\.dismiss) private var dismiss
     @State private var name: String
     @State private var systemImage: String
 
-    init(model: AppModel, section: SnipSnapSection) {
+    init(model: AppModel, list: SnipList) {
         self.model = model
-        self.section = section
-        _name = State(initialValue: section.name)
-        _systemImage = State(initialValue: section.systemImage)
+        self.list = list
+        _name = State(initialValue: list.name)
+        _systemImage = State(initialValue: list.systemImage)
     }
 
     var body: some View {
         VStack(alignment: .leading) {
-            Text("Edit section").font(.headline)
-            SectionNameAndIconField(name: $name, selection: $systemImage)
+            Text("Edit list").font(.headline)
+            SnipListNameAndIconField(name: $name, selection: $systemImage)
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Save") {
                     Task {
-                        if await model.updateSection(section, name: name, systemImage: systemImage) {
+                        if await model.updateList(list, name: name, systemImage: systemImage) {
                             dismiss()
                         }
                     }

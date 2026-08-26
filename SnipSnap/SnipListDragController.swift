@@ -1,7 +1,7 @@
 import SwiftUI
 
 @MainActor
-final class InboxListScroller {
+final class SnipListScroller {
     private weak var scrollView: NSScrollView?
 
     func attach(_ scrollView: NSScrollView?) {
@@ -21,34 +21,34 @@ final class InboxListScroller {
     }
 }
 
-struct InboxScrollBridge: NSViewRepresentable {
-    let scroller: InboxListScroller
-    let onScroll: (InboxListGeometry.ScrollSnapshot) -> Void
+struct SnipListScrollBridge: NSViewRepresentable {
+    let scroller: SnipListScroller
+    let onScroll: (SnipListGeometry.ScrollSnapshot) -> Void
 
-    func makeNSView(context: Context) -> InboxScrollBridgeView {
-        InboxScrollBridgeView(scroller: scroller, onScroll: onScroll)
+    func makeNSView(context: Context) -> SnipListScrollBridgeView {
+        SnipListScrollBridgeView(scroller: scroller, onScroll: onScroll)
     }
 
-    func updateNSView(_ nsView: InboxScrollBridgeView, context: Context) {
+    func updateNSView(_ nsView: SnipListScrollBridgeView, context: Context) {
         nsView.onScroll = onScroll
         nsView.connect()
     }
 
-    static func dismantleNSView(_ nsView: InboxScrollBridgeView, coordinator: ()) {
+    static func dismantleNSView(_ nsView: SnipListScrollBridgeView, coordinator: ()) {
         nsView.disconnect()
     }
 }
 
 @MainActor
-final class InboxScrollBridgeView: NSView {
-    private let scroller: InboxListScroller
+final class SnipListScrollBridgeView: NSView {
+    private let scroller: SnipListScroller
     private weak var connectedScrollView: NSScrollView?
     private var pendingScrollReport: Task<Void, Never>?
-    var onScroll: (InboxListGeometry.ScrollSnapshot) -> Void
+    var onScroll: (SnipListGeometry.ScrollSnapshot) -> Void
 
     init(
-        scroller: InboxListScroller,
-        onScroll: @escaping (InboxListGeometry.ScrollSnapshot) -> Void
+        scroller: SnipListScroller,
+        onScroll: @escaping (SnipListGeometry.ScrollSnapshot) -> Void
     ) {
         self.scroller = scroller
         self.onScroll = onScroll
@@ -114,7 +114,7 @@ final class InboxScrollBridgeView: NSView {
     private func reportScroll() {
         guard let scrollView = connectedScrollView else { return }
         onScroll(
-            InboxListGeometry.ScrollSnapshot(
+            SnipListGeometry.ScrollSnapshot(
                 visibleOrigin: scrollView.contentView.bounds.origin,
                 contentHeight: scrollView.documentView?.bounds.height ?? 0,
                 viewportHeight: scrollView.contentView.bounds.height
@@ -123,20 +123,20 @@ final class InboxScrollBridgeView: NSView {
     }
 }
 
-enum InboxDropSpace {
-    static let name = "InboxDropSpace"
+enum SnipListDropSpace {
+    static let name = "SnipListDropSpace"
 }
 
-enum SectionDropSurface: Equatable {
-    case entry(ClipListEntryID)
+enum SnipListDropSurface: Equatable {
+    case entry(SnipListEntryID)
     case footer
     case header
 
-    func element(in sectionID: UUID) -> InboxListGeometry.Element {
+    func element(in listID: UUID) -> SnipListGeometry.Element {
         switch self {
         case .entry(let entryID): .dropSurface(entryID)
-        case .footer: .sectionFooterDropSurface(sectionID)
-        case .header: .heading(sectionID)
+        case .footer: .listFooterDropSurface(listID)
+        case .header: .heading(listID)
         }
     }
 
@@ -146,10 +146,10 @@ enum SectionDropSurface: Equatable {
     }
 }
 
-struct SectionDropSurfaceState {
+struct SnipListDropSurfaceState {
     struct Identity: Equatable {
-        let sectionID: UUID
-        let surface: SectionDropSurface
+        let listID: UUID
+        let surface: SnipListDropSurface
     }
 
     struct Exit: Equatable {
@@ -160,13 +160,13 @@ struct SectionDropSurfaceState {
     private(set) var active: Identity?
     private var generation: UInt = 0
 
-    mutating func activate(sectionID: UUID, surface: SectionDropSurface) {
+    mutating func activate(listID: UUID, surface: SnipListDropSurface) {
         generation &+= 1
-        active = Identity(sectionID: sectionID, surface: surface)
+        active = Identity(listID: listID, surface: surface)
     }
 
-    func exitToken(sectionID: UUID, surface: SectionDropSurface) -> Exit? {
-        let identity = Identity(sectionID: sectionID, surface: surface)
+    func exitToken(listID: UUID, surface: SnipListDropSurface) -> Exit? {
+        let identity = Identity(listID: listID, surface: surface)
         guard active == identity else { return nil }
         return Exit(identity: identity, generation: generation)
     }
@@ -181,82 +181,82 @@ struct SectionDropSurfaceState {
     }
 }
 
-private struct ClipDropTarget: Equatable {
-    let plan: ClipDropPlan
+private struct SnipDropTarget: Equatable {
+    let plan: SnipDropPlan
     let gapHeight: CGFloat?
 
-    var sectionID: UUID { plan.sectionID }
+    var listID: UUID { plan.listID }
     var beforeID: UUID? { plan.beforeID }
 }
 
-private struct ActiveClipDrag: Equatable {
+private struct ActiveSnipDrag: Equatable {
     let sessionID: UUID
-    let payload: ClipDragPayload
+    let payload: SnipDragPayload
 }
 
-enum ClipListEntryID: Hashable {
-    case item(UUID)
+enum SnipListEntryID: Hashable {
+    case snip(UUID)
     case originGap(UUID)
     case destinationGap(UUID)
 }
 
-enum ClipListEntry: Identifiable {
-    case item(CaptureItem)
-    case originGap(itemID: UUID, height: CGFloat)
-    case destinationGap(sectionID: UUID, height: CGFloat)
+enum SnipListEntry: Identifiable {
+    case snip(Snip)
+    case originGap(snipID: UUID, height: CGFloat)
+    case destinationGap(listID: UUID, height: CGFloat)
 
-    var id: ClipListEntryID {
+    var id: SnipListEntryID {
         switch self {
-        case .item(let item): .item(item.id)
-        case .originGap(let itemID, _): .originGap(itemID)
-        case .destinationGap(let sectionID, _): .destinationGap(sectionID)
+        case .snip(let snip): .snip(snip.id)
+        case .originGap(let snipID, _): .originGap(snipID)
+        case .destinationGap(let listID, _): .destinationGap(listID)
         }
     }
 }
 
-struct InboxDragContext {
-    let allItems: [CaptureItem]
-    let visibleItems: [CaptureItem]
-    let validSectionIDs: Set<UUID>
-    let sortMode: ClipSortMode
+struct SnipListDragContext {
+    let allSnips: [Snip]
+    let visibleSnips: [Snip]
+    let validListIDs: Set<UUID>
+    let sortMode: SnipSortMode
     let filtersActive: Bool
 }
 
 @MainActor
-final class InboxDragController: ObservableObject {
+final class SnipListDragController: ObservableObject {
     struct DropExecution {
         fileprivate let sessionID: UUID
-        let payload: ClipDragPayload
-        let plan: ClipDropPlan
+        let payload: SnipDragPayload
+        let plan: SnipDropPlan
     }
 
-    @Published private var activeDrag: ActiveClipDrag?
-    @Published private var dropTarget: ClipDropTarget?
-    @Published private var clipboardDropTarget: ClipDropTarget?
+    @Published private var activeDrag: ActiveSnipDrag?
+    @Published private var dropTarget: SnipDropTarget?
+    @Published private var clipboardDropTarget: SnipDropTarget?
     @Published private var isClipboardDropSessionActive = false
     @Published private(set) var autoScrollDirection = 0
-    let scroller = InboxListScroller()
+    let scroller = SnipListScroller()
 
-    private let geometry = InboxListGeometry()
+    private let geometry = SnipListGeometry()
     private var pendingDropSessions: Set<UUID> = []
     private var lastDropViewportLocation: CGPoint?
-    private var lastDropSurface: SectionDropSurface?
-    private var dropSurfaceState = SectionDropSurfaceState()
+    private var lastDropSurface: SnipListDropSurface?
+    private var dropSurfaceState = SnipListDropSurfaceState()
     private var pendingDropExit: Task<Void, Never>?
 
     var isDragging: Bool { activeDrag != nil }
     var needsDropGeometry: Bool {
         activeDrag != nil || isClipboardDropSessionActive
     }
-    var targetSectionID: UUID? { (dropTarget ?? clipboardDropTarget)?.sectionID }
+    var targetListID: UUID? { (dropTarget ?? clipboardDropTarget)?.listID }
 
-    func beginNativeDrag(_ payload: ClipDragPayload) {
+    func beginNativeDrag(_ payload: SnipDragPayload) {
         beginDrag(payload)
     }
 
     func endNativeDrag(
-        _ payload: ClipDragPayload,
-        outcome: ClipDragOutcome,
+        _ payload: SnipDragPayload,
+        outcome: SnipDragOutcome,
         markDoneAfterExternalCopy: ([UUID]) -> Void
     ) {
         guard let drag = activeDrag, drag.payload == payload else { return }
@@ -275,59 +275,59 @@ final class InboxDragController: ObservableObject {
         }
     }
 
-    func record(_ frame: CGRect, for element: InboxListGeometry.Element) {
+    func record(_ frame: CGRect, for element: SnipListGeometry.Element) {
         geometry.record(frame, for: element)
     }
 
-    func remove(_ element: InboxListGeometry.Element) {
+    func remove(_ element: SnipListGeometry.Element) {
         geometry.remove(element)
     }
 
-    func retainItems(_ ids: Set<UUID>) {
-        geometry.retainItems(ids)
+    func retainSnips(_ ids: Set<UUID>) {
+        geometry.retainSnips(ids)
     }
 
-    func updateScroll(_ snapshot: InboxListGeometry.ScrollSnapshot) {
+    func updateScroll(_ snapshot: SnipListGeometry.ScrollSnapshot) {
         geometry.updateScroll(snapshot)
     }
 
-    func pinnedSectionIDs() -> Set<UUID> {
-        geometry.pinnedSectionIDs()
+    func pinnedListIDs() -> Set<UUID> {
+        geometry.pinnedListIDs()
     }
 
-    func sectionBodyFrame(for group: InboxItemGroup) -> CGRect? {
+    func listBodyFrame(for group: SnipListGroup) -> CGRect? {
         let entries = entries(for: group)
-        return geometry.sectionBodyFrame(
-            sectionID: group.sectionID,
-            rowIDs: group.items.map(\.id),
+        return geometry.listBodyFrame(
+            listID: group.listID,
+            rowIDs: group.snips.map(\.id),
             entryIDs: entries.map(\.id)
         )
     }
 
-    func entries(for group: InboxItemGroup) -> [ClipListEntry] {
+    func entries(for group: SnipListGroup) -> [SnipListEntry] {
         guard activeDrag != nil || clipboardDropTarget != nil else {
-            return group.items.map(ClipListEntry.item)
+            return group.snips.map(SnipListEntry.snip)
         }
         let movingIDs = Set(activeDrag?.payload.ids ?? [])
         let destination = (dropTarget ?? clipboardDropTarget).flatMap { target in
-            target.sectionID == group.sectionID && target.gapHeight != nil ? target : nil
+            target.listID == group.listID && target.gapHeight != nil ? target : nil
         }
-        let itemsByID = Dictionary(uniqueKeysWithValues: group.items.map { ($0.id, $0) })
-        return ClipDragListLayout.slots(
-            itemIDs: group.items.map(\.id),
+        let snipsByID = Dictionary(uniqueKeysWithValues: group.snips.map { ($0.id, $0) })
+        return SnipDragListLayout.slots(
+            snipIDs: group.snips.map(\.id),
             draggingIDs: movingIDs,
             destinationBeforeID: destination?.beforeID,
             showsDestinationGap: destination != nil,
             preservesOriginGaps: activeDrag != nil && dropTarget == nil
         ).compactMap { slot in
             switch slot {
-            case .item(let id):
-                itemsByID[id].map(ClipListEntry.item)
+            case .snip(let id):
+                snipsByID[id].map(SnipListEntry.snip)
             case .originGap(let id):
-                .originGap(itemID: id, height: geometry.dragGapHeight(for: [id]))
+                .originGap(snipID: id, height: geometry.dragGapHeight(for: [id]))
             case .destinationGap:
                 destination?.gapHeight.map {
-                    .destinationGap(sectionID: group.sectionID, height: $0)
+                    .destinationGap(listID: group.listID, height: $0)
                 }
             }
         }
@@ -335,14 +335,14 @@ final class InboxDragController: ObservableObject {
 
     func updateDropSession(
         _ session: DropSession,
-        sectionID: UUID,
-        surface: SectionDropSurface,
-        context: InboxDragContext
+        listID: UUID,
+        surface: SnipListDropSurface,
+        context: SnipListDragContext
     ) {
         switch session.phase {
         case .entering, .active:
-            activateDropSurface(sectionID: sectionID, surface: surface)
-            let location = dropLocation(session.location, in: sectionID, surface: surface)
+            activateDropSurface(listID: listID, surface: surface)
+            let location = dropLocation(session.location, in: listID, surface: surface)
             let viewportLocation = geometry.viewportPoint(fromContentPoint: location)
             lastDropViewportLocation = viewportLocation
             lastDropSurface = surface
@@ -350,14 +350,14 @@ final class InboxDragController: ObservableObject {
             if let activeDrag {
                 updateDropTarget(
                     at: location,
-                    sectionID: sectionID,
+                    listID: listID,
                     surface: surface,
                     payload: activeDrag.payload,
                     context: context
                 )
             }
         case .exiting:
-            deferDropExit(sectionID: sectionID, surface: surface)
+            deferDropExit(listID: listID, surface: surface)
         case .ended, .dataTransferCompleted:
             if activeDrag == nil {
                 clearDropInteraction()
@@ -369,23 +369,23 @@ final class InboxDragController: ObservableObject {
 
     func updateClipboardDropSession(
         _ session: DropSession,
-        sectionID: UUID,
-        surface: SectionDropSurface,
-        context: InboxDragContext
+        listID: UUID,
+        surface: SnipListDropSurface,
+        context: SnipListDragContext
     ) {
         guard activeDrag == nil else { return }
         switch session.phase {
         case .entering, .active:
             beginClipboardDropSession()
-            activateDropSurface(sectionID: sectionID, surface: surface)
+            activateDropSurface(listID: listID, surface: surface)
             let plan = clipboardDropPlan(
                 session: session,
-                sectionID: sectionID,
+                listID: listID,
                 surface: surface,
                 context: context,
                 clearsTarget: false
             )
-            let next = ClipDropTarget(
+            let next = SnipDropTarget(
                 plan: plan,
                 gapHeight: plan.showsInsertion ? 72 : nil
             )
@@ -393,7 +393,7 @@ final class InboxDragController: ObservableObject {
                 withAnimation(.snappy(duration: 0.16)) { clipboardDropTarget = next }
             }
         case .exiting:
-            deferDropExit(sectionID: sectionID, surface: surface)
+            deferDropExit(listID: listID, surface: surface)
         case .ended, .dataTransferCompleted:
             endClipboardDropSession()
         @unknown default:
@@ -413,18 +413,18 @@ final class InboxDragController: ObservableObject {
 
     func clipboardDropPlan(
         session: DropSession,
-        sectionID: UUID,
-        surface: SectionDropSurface,
-        context: InboxDragContext,
+        listID: UUID,
+        surface: SnipListDropSurface,
+        context: SnipListDragContext,
         clearsTarget: Bool = true
-    ) -> ClipDropPlan {
-        let location = dropLocation(session.location, in: sectionID, surface: surface)
+    ) -> SnipDropPlan {
+        let location = dropLocation(session.location, in: listID, surface: surface)
         let overHeading = surface.isHeader
-            || geometry.frame(for: .heading(sectionID))?.contains(location) == true
-        let sectionItems = context.visibleItems.filter { $0.sectionID == sectionID }
+            || geometry.frame(for: .heading(listID))?.contains(location) == true
+        let listSnips = context.visibleSnips.filter { $0.listID == listID }
         let hasPlacementFrames = geometry.hasPlacementFrames(
-            in: sectionID,
-            among: sectionItems
+            in: listID,
+            among: listSnips
         )
         let placesManually = context.sortMode == .manual
             && !context.filtersActive
@@ -433,33 +433,33 @@ final class InboxDragController: ObservableObject {
         let beforeID = placesManually
             ? geometry.insertionID(
                 atContentPoint: location,
-                among: sectionItems
+                among: listSnips
             )
             : nil
         if clearsTarget { clipboardDropTarget = nil }
-        return ClipDropPlan(
-            sectionID: sectionID,
+        return SnipDropPlan(
+            listID: listID,
             beforeID: beforeID,
-            behavior: placesManually ? .exact : (overHeading ? .sectionTop : .chronological),
+            behavior: placesManually ? .exact : (overHeading ? .listTop : .chronological),
             showsInsertion: placesManually
         )
     }
 
     func beginDrop(
-        payloads: [ClipDragPayload],
+        payloads: [SnipDragPayload],
         session: DropSession,
-        sectionID: UUID,
-        surface: SectionDropSurface,
-        context: InboxDragContext
+        listID: UUID,
+        surface: SnipListDropSurface,
+        context: SnipListDragContext
     ) -> DropExecution? {
-        let location = dropLocation(session.location, in: sectionID, surface: surface)
+        let location = dropLocation(session.location, in: listID, surface: surface)
         guard payloads.count == 1,
               let payload = payloads.first,
               let drag = activeDrag,
               drag.payload == payload,
               let target = target(
                 at: location,
-                sectionID: sectionID,
+                listID: listID,
                 surface: surface,
                 payload: payload,
                 context: context
@@ -485,7 +485,7 @@ final class InboxDragController: ObservableObject {
     }
 
     func autoScrollWhileNeeded(
-        context: @escaping @MainActor () -> InboxDragContext
+        context: @escaping @MainActor () -> SnipListDragContext
     ) async {
         let direction = autoScrollDirection
         guard direction != 0 else { return }
@@ -507,14 +507,14 @@ final class InboxDragController: ObservableObject {
             if let lastDropViewportLocation,
                let lastDropSurface,
                let activeDrag,
-               let sectionID = dropTarget?.sectionID,
-               currentContext.validSectionIDs.contains(sectionID) {
+               let listID = dropTarget?.listID,
+               currentContext.validListIDs.contains(listID) {
                 let location = geometry.contentPoint(
                     fromViewportPoint: lastDropViewportLocation
                 )
                 updateDropTarget(
                     at: location,
-                    sectionID: sectionID,
+                    listID: listID,
                     surface: lastDropSurface,
                     payload: activeDrag.payload,
                     context: currentContext
@@ -523,13 +523,13 @@ final class InboxDragController: ObservableObject {
         }
     }
 
-    private func beginDrag(_ payload: ClipDragPayload) {
+    private func beginDrag(_ payload: SnipDragPayload) {
         withAnimation(.snappy(duration: 0.18)) {
-            activeDrag = ActiveClipDrag(sessionID: UUID(), payload: payload)
+            activeDrag = ActiveSnipDrag(sessionID: UUID(), payload: payload)
         }
     }
 
-    private func finishDrag(_ drag: ActiveClipDrag) {
+    private func finishDrag(_ drag: ActiveSnipDrag) {
         pendingDropSessions.remove(drag.sessionID)
         guard activeDrag?.sessionID == drag.sessionID else { return }
         withAnimation(.snappy(duration: 0.18)) {
@@ -540,14 +540,14 @@ final class InboxDragController: ObservableObject {
 
     private func updateDropTarget(
         at location: CGPoint,
-        sectionID: UUID,
-        surface: SectionDropSurface,
-        payload: ClipDragPayload,
-        context: InboxDragContext
+        listID: UUID,
+        surface: SnipListDropSurface,
+        payload: SnipDragPayload,
+        context: SnipListDragContext
     ) {
         let nextTarget = target(
             at: location,
-            sectionID: sectionID,
+            listID: listID,
             surface: surface,
             payload: payload,
             context: context
@@ -560,31 +560,31 @@ final class InboxDragController: ObservableObject {
 
     private func target(
         at location: CGPoint,
-        sectionID: UUID,
-        surface: SectionDropSurface,
-        payload: ClipDragPayload,
-        context: InboxDragContext
-    ) -> ClipDropTarget? {
+        listID: UUID,
+        surface: SnipListDropSurface,
+        payload: SnipDragPayload,
+        context: SnipListDragContext
+    ) -> SnipDropTarget? {
         guard !payload.ids.isEmpty else { return nil }
         let movingIDs = Set(payload.ids)
-        let visibleTargetItems = context.visibleItems.filter {
-            $0.sectionID == sectionID && !movingIDs.contains($0.id)
+        let visibleTargetSnips = context.visibleSnips.filter {
+            $0.listID == listID && !movingIDs.contains($0.id)
         }
         let overHeading = surface.isHeader
-            || geometry.frame(for: .heading(sectionID))?.contains(location) == true
-        guard let plan = ClipDropPlanner.plan(
+            || geometry.frame(for: .heading(listID))?.contains(location) == true
+        guard let plan = SnipDropPlanner.plan(
             payloadIDs: payload.ids,
-            items: context.allItems,
-            targetSectionID: sectionID,
+            snips: context.allSnips,
+            targetListID: listID,
             pointerBeforeID: geometry.insertionID(
                 atContentPoint: location,
-                among: visibleTargetItems
+                among: visibleTargetSnips
             ),
             isOverHeading: overHeading,
             sortMode: context.sortMode,
             filtersActive: context.filtersActive
         ) else { return nil }
-        return ClipDropTarget(
+        return SnipDropTarget(
             plan: plan,
             gapHeight: plan.showsInsertion ? geometry.dragGapHeight(for: payload.ids) : nil
         )
@@ -592,12 +592,12 @@ final class InboxDragController: ObservableObject {
 
     private func dropLocation(
         _ localLocation: CGPoint,
-        in sectionID: UUID,
-        surface: SectionDropSurface
+        in listID: UUID,
+        surface: SnipListDropSurface
     ) -> CGPoint {
         geometry.contentPoint(
             fromLocalPoint: localLocation,
-            in: surface.element(in: sectionID)
+            in: surface.element(in: listID)
         ) ?? localLocation
     }
 
@@ -618,23 +618,23 @@ final class InboxDragController: ObservableObject {
     }
 
     private func activateDropSurface(
-        sectionID: UUID,
-        surface: SectionDropSurface
+        listID: UUID,
+        surface: SnipListDropSurface
     ) {
         pendingDropExit?.cancel()
         pendingDropExit = nil
         dropSurfaceState.activate(
-            sectionID: sectionID,
+            listID: listID,
             surface: surface
         )
     }
 
     private func deferDropExit(
-        sectionID: UUID,
-        surface: SectionDropSurface
+        listID: UUID,
+        surface: SnipListDropSurface
     ) {
         guard let exit = dropSurfaceState.exitToken(
-            sectionID: sectionID,
+            listID: listID,
             surface: surface
         ) else { return }
         pendingDropExit?.cancel()

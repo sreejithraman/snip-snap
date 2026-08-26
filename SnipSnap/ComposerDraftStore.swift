@@ -8,22 +8,22 @@ struct ComposerDraft: Equatable {
 @MainActor
 final class ComposerDraftStore {
     struct SaveSnapshot {
-        let sectionID: UUID
+        let listID: UUID
         let draft: ComposerDraft
     }
 
     private let defaults: UserDefaults
     private let textDefaultsKey: String
-    private var textBySection: [String: String]
+    private var textByList: [String: String]
     private var textWriteTask: Task<Void, Never>?
-    private var attachmentsBySection: [UUID: [URL]] = [:]
+    private var attachmentsByList: [UUID: [URL]] = [:]
     private var temporaryAttachments: Set<URL> = []
     private var inFlightCounts: [URL: Int] = [:]
 
     init(defaults: UserDefaults = .standard, textDefaultsKey: String) {
         self.defaults = defaults
         self.textDefaultsKey = textDefaultsKey
-        textBySection = defaults.dictionary(forKey: textDefaultsKey) as? [String: String] ?? [:]
+        textByList = defaults.dictionary(forKey: textDefaultsKey) as? [String: String] ?? [:]
     }
 
     deinit {
@@ -33,18 +33,18 @@ final class ComposerDraftStore {
         }
     }
 
-    func draft(for sectionID: UUID) -> ComposerDraft {
+    func draft(for listID: UUID) -> ComposerDraft {
         return ComposerDraft(
-            text: textBySection[sectionID.uuidString] ?? "",
-            attachments: attachmentsBySection[sectionID] ?? []
+            text: textByList[listID.uuidString] ?? "",
+            attachments: attachmentsByList[listID] ?? []
         )
     }
 
-    func setText(_ text: String, for sectionID: UUID) {
+    func setText(_ text: String, for listID: UUID) {
         if text.isEmpty {
-            textBySection.removeValue(forKey: sectionID.uuidString)
+            textByList.removeValue(forKey: listID.uuidString)
         } else {
-            textBySection[sectionID.uuidString] = text
+            textByList[listID.uuidString] = text
         }
         scheduleTextWrite()
     }
@@ -52,18 +52,18 @@ final class ComposerDraftStore {
     func flushText() {
         textWriteTask?.cancel()
         textWriteTask = nil
-        defaults.set(textBySection, forKey: textDefaultsKey)
+        defaults.set(textByList, forKey: textDefaultsKey)
     }
 
-    func add(_ urls: [URL], to sectionID: UUID) {
-        var attachments = draft(for: sectionID).attachments
+    func add(_ urls: [URL], to listID: UUID) {
+        var attachments = draft(for: listID).attachments
         attachments.append(contentsOf: urls.filter { !attachments.contains($0) })
-        set(attachments, for: sectionID)
+        set(attachments, for: listID)
     }
 
-    func addTemporary(_ url: URL, to sectionID: UUID) {
+    func addTemporary(_ url: URL, to listID: UUID) {
         temporaryAttachments.insert(url)
-        add([url], to: sectionID)
+        add([url], to: listID)
     }
 
     func stageScreenCapture() -> URL {
@@ -73,44 +73,44 @@ final class ComposerDraftStore {
         return url
     }
 
-    func finishScreenCapture(_ url: URL, in sectionID: UUID, succeeded: Bool) {
+    func finishScreenCapture(_ url: URL, in listID: UUID, succeeded: Bool) {
         guard succeeded, FileManager.default.fileExists(atPath: url.path) else {
             try? FileManager.default.removeItem(at: url)
             temporaryAttachments.remove(url)
             return
         }
-        add([url], to: sectionID)
+        add([url], to: listID)
     }
 
-    func remove(_ url: URL, from sectionID: UUID) {
-        var attachments = draft(for: sectionID).attachments
+    func remove(_ url: URL, from listID: UUID) {
+        var attachments = draft(for: listID).attachments
         attachments.removeAll { $0 == url }
-        set(attachments, for: sectionID)
+        set(attachments, for: listID)
         removeTemporaryFilesIfUnused([url])
     }
 
-    func clear(sectionID: UUID) {
-        let discarded = Set(draft(for: sectionID).attachments)
-        setText("", for: sectionID)
-        attachmentsBySection.removeValue(forKey: sectionID)
+    func clear(listID: UUID) {
+        let discarded = Set(draft(for: listID).attachments)
+        setText("", for: listID)
+        attachmentsByList.removeValue(forKey: listID)
         removeTemporaryFilesIfUnused(discarded)
     }
 
-    func beginSave(sectionID: UUID) -> SaveSnapshot {
-        let draft = draft(for: sectionID)
+    func beginSave(listID: UUID) -> SaveSnapshot {
+        let draft = draft(for: listID)
         for url in draft.attachments where temporaryAttachments.contains(url) {
             inFlightCounts[url, default: 0] += 1
         }
-        return SaveSnapshot(sectionID: sectionID, draft: draft)
+        return SaveSnapshot(listID: listID, draft: draft)
     }
 
     func finishSave(_ snapshot: SaveSnapshot, saved: Bool) {
         if saved {
-            var current = draft(for: snapshot.sectionID)
+            var current = draft(for: snapshot.listID)
             current.attachments.removeAll { snapshot.draft.attachments.contains($0) }
-            set(current.attachments, for: snapshot.sectionID)
+            set(current.attachments, for: snapshot.listID)
             if current.text == snapshot.draft.text {
-                setText("", for: snapshot.sectionID)
+                setText("", for: snapshot.listID)
             }
         }
 
@@ -125,11 +125,11 @@ final class ComposerDraftStore {
         removeTemporaryFilesIfUnused(Set(snapshot.draft.attachments))
     }
 
-    private func set(_ attachments: [URL], for sectionID: UUID) {
+    private func set(_ attachments: [URL], for listID: UUID) {
         if attachments.isEmpty {
-            attachmentsBySection.removeValue(forKey: sectionID)
+            attachmentsByList.removeValue(forKey: listID)
         } else {
-            attachmentsBySection[sectionID] = attachments
+            attachmentsByList[listID] = attachments
         }
     }
 
@@ -143,7 +143,7 @@ final class ComposerDraftStore {
     }
 
     private func removeTemporaryFilesIfUnused(_ urls: Set<URL>) {
-        let draftedURLs = Set(attachmentsBySection.values.flatMap { $0 })
+        let draftedURLs = Set(attachmentsByList.values.flatMap { $0 })
         for url in urls
         where temporaryAttachments.contains(url)
             && inFlightCounts[url] == nil

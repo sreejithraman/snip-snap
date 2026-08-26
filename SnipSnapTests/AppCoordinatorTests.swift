@@ -42,15 +42,15 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testDoubleShiftStartExplainsAccessibilityBeforeRequestingIt() throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let model = AppModel(repository: repository)
         let suiteName = "Snip SnapShortcutTrustTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let settings = ShortcutSettings(defaults: defaults)
         let manager = StubGlobalHotKeyManager()
-        let inbox = NSWindow()
-        defer { inbox.orderOut(nil) }
+        let panel = NSWindow()
+        defer { panel.orderOut(nil) }
         var requestCount = 0
         let coordinator = AppCoordinator(
             model: model,
@@ -61,14 +61,14 @@ final class AppCoordinatorTests: StoreBackedTestCase {
                 requestCount += 1
             }
         )
-        coordinator.attachInboxWindow(inbox)
+        coordinator.attachPanelWindow(panel)
 
         coordinator.start()
 
         XCTAssertEqual(requestCount, 0)
         XCTAssertEqual(manager.registeredConfigurations, [.snipSnapDefaults])
         XCTAssertTrue(model.isAccessibilityAccessExplanationPresented)
-        XCTAssertTrue(inbox.isVisible)
+        XCTAssertTrue(panel.isVisible)
         XCTAssertNil(model.presentedError)
 
         coordinator.requestAccessibilityAccess()
@@ -79,7 +79,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testStartExplainsAccessibilityWithoutDoubleShiftShortcuts() throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let model = AppModel(repository: repository)
         let suiteName = "Snip SnapShortcutTrustTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -92,7 +92,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
                     modifiers: UInt32(controlKey | optionKey),
                     keyLabel: "J"
                 ),
-                toggleInbox: .keyChord(
+                togglePanel: .keyChord(
                     keyCode: UInt32(kVK_ANSI_K),
                     modifiers: UInt32(controlKey | optionKey),
                     keyLabel: "K"
@@ -118,7 +118,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testTrustedStartDoesNotExplainOrRequestAccessibility() throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let model = AppModel(repository: repository)
         var requestCount = 0
         let coordinator = AppCoordinator(
@@ -137,10 +137,10 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testCaptureExplainsMissingAccessibilityWithoutRequestingIt() throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let model = AppModel(repository: repository)
-        let inbox = NSWindow()
-        defer { inbox.orderOut(nil) }
+        let panel = NSWindow()
+        defer { panel.orderOut(nil) }
         var requestCount = 0
         let coordinator = AppCoordinator(
             model: model,
@@ -148,18 +148,18 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             isAccessibilityTrusted: { false },
             requestAccessibilityTrust: { requestCount += 1 }
         )
-        coordinator.attachInboxWindow(inbox)
+        coordinator.attachPanelWindow(panel)
 
         coordinator.captureSelection()
 
         XCTAssertTrue(model.isAccessibilityAccessExplanationPresented)
-        XCTAssertTrue(inbox.isVisible)
+        XCTAssertTrue(panel.isVisible)
         XCTAssertEqual(requestCount, 0)
     }
 
     @MainActor
-    func testCoordinatorKeepsTheExactInboxWindow() throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+    func testCoordinatorKeepsTheExactPanelWindow() throws {
+        let repository = try SnipRepository(fileURL: storeURL())
         let model = AppModel(repository: repository)
         let settings = ShortcutSettings()
         let coordinator = AppCoordinator(
@@ -167,20 +167,20 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             shortcutSettings: settings,
             isAccessibilityTrusted: { true }
         )
-        let inbox = NSWindow()
+        let panel = NSWindow()
         let editor = NSWindow()
 
-        coordinator.attachInboxWindow(inbox)
+        coordinator.attachPanelWindow(panel)
 
-        XCTAssertTrue(coordinator.isInboxWindow(inbox))
-        XCTAssertFalse(coordinator.isInboxWindow(editor))
+        XCTAssertTrue(coordinator.isPanelWindow(panel))
+        XCTAssertFalse(coordinator.isPanelWindow(editor))
     }
 
     @MainActor
     func testComposerExpansionGrowsPanelDownwardAndPreservesBaseHeight() throws {
         let autosaveName = NSWindow.FrameAutosaveName("AppCoordinatorTests-\(UUID().uuidString)")
         defer { NSWindow.removeFrame(usingName: autosaveName) }
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let coordinator = AppCoordinator(
             model: AppModel(repository: repository),
             shortcutSettings: ShortcutSettings(),
@@ -191,16 +191,16 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             frameAutosaveName: nil
         )
         panel.setFrameOrigin(NSPoint(x: 300, y: 300))
-        coordinator.attachInboxWindow(panel)
+        coordinator.attachPanelWindow(panel)
         let baseline = panel.frame
 
-        coordinator.updateInboxComposerExpansion(44)
+        coordinator.updatePanelComposerExpansion(44)
 
         XCTAssertEqual(panel.frame.height, baseline.height + 44)
         XCTAssertEqual(panel.frame.maxY, baseline.maxY)
         XCTAssertEqual(panel.frame.height - 44, baseline.height)
 
-        coordinator.saveInboxWindowFrame(using: autosaveName)
+        coordinator.savePanelWindowFrame(using: autosaveName)
 
         XCTAssertEqual(panel.frame, baseline)
         let restoredPanel = SnipSnapPanel.make(
@@ -211,26 +211,26 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testToggleHidesAVisibleInboxOnActiveSpace() throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+    func testToggleHidesAVisiblePanelOnActiveSpace() throws {
+        let repository = try SnipRepository(fileURL: storeURL())
         let coordinator = AppCoordinator(
             model: AppModel(repository: repository),
             shortcutSettings: ShortcutSettings(),
             isAccessibilityTrusted: { true }
         )
-        let inbox = NSWindow()
-        coordinator.attachInboxWindow(inbox)
-        inbox.orderFront(nil)
-        XCTAssertTrue(inbox.isVisible)
+        let panel = NSWindow()
+        coordinator.attachPanelWindow(panel)
+        panel.orderFront(nil)
+        XCTAssertTrue(panel.isVisible)
 
-        coordinator.toggleInbox()
+        coordinator.togglePanel()
 
-        XCTAssertFalse(inbox.isVisible)
+        XCTAssertFalse(panel.isVisible)
     }
 
     @MainActor
     func testClipboardShortcutOpensClipboardThenHidesIt() throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let model = AppModel(repository: repository)
         model.query = "old search"
         let coordinator = AppCoordinator(
@@ -238,44 +238,44 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             shortcutSettings: ShortcutSettings(),
             isAccessibilityTrusted: { true }
         )
-        let inbox = NSWindow()
-        coordinator.attachInboxWindow(inbox)
+        let panel = NSWindow()
+        coordinator.attachPanelWindow(panel)
 
         coordinator.toggleClipboard()
 
         XCTAssertTrue(model.isShowingClipboard)
         XCTAssertEqual(model.query, "")
-        XCTAssertTrue(inbox.isVisible)
+        XCTAssertTrue(panel.isVisible)
 
         coordinator.toggleClipboard()
 
-        XCTAssertFalse(inbox.isVisible)
+        XCTAssertFalse(panel.isVisible)
     }
 
     func testToggleHidesOnlyWhenVisibleOnActiveSpace() {
         XCTAssertTrue(
-            AppCoordinator.shouldHideInbox(
+            AppCoordinator.shouldHidePanel(
                 isVisible: true,
                 isMiniaturized: false,
                 isOnActiveSpace: true
             )
         )
         XCTAssertFalse(
-            AppCoordinator.shouldHideInbox(
+            AppCoordinator.shouldHidePanel(
                 isVisible: true,
                 isMiniaturized: false,
                 isOnActiveSpace: false
             )
         )
         XCTAssertFalse(
-            AppCoordinator.shouldHideInbox(
+            AppCoordinator.shouldHidePanel(
                 isVisible: false,
                 isMiniaturized: false,
                 isOnActiveSpace: true
             )
         )
         XCTAssertFalse(
-            AppCoordinator.shouldHideInbox(
+            AppCoordinator.shouldHidePanel(
                 isVisible: true,
                 isMiniaturized: true,
                 isOnActiveSpace: true
@@ -285,7 +285,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testCoordinatorSendsSearchFocusRequest() throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let model = AppModel(repository: repository)
         let coordinator = AppCoordinator(
             model: model,
@@ -293,13 +293,13 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             isAccessibilityTrusted: { true }
         )
         var receivedSearchRequest = false
-        let subscription = coordinator.inboxFocusRequests.sink { request in
+        let subscription = coordinator.panelFocusRequests.sink { request in
             if case .search = request {
                 receivedSearchRequest = true
             }
         }
 
-        coordinator.focusInboxSearch()
+        coordinator.focusPanelSearch()
 
         XCTAssertTrue(receivedSearchRequest)
         withExtendedLifetime(subscription) {}
@@ -307,7 +307,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testFailedShortcutInstallReleasesPartialManagerBeforeRollback() throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let model = AppModel(repository: repository)
         let suiteName = "Snip SnapShortcutRollbackTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -330,7 +330,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             keyLabel: "K"
         )
 
-        XCTAssertThrowsError(try coordinator.setShortcut(custom, for: .toggleInbox))
+        XCTAssertThrowsError(try coordinator.setShortcut(custom, for: .togglePanel))
         XCTAssertEqual(original.unregisterCount, 1)
         XCTAssertEqual(failedReplacement.unregisterCount, 1)
         XCTAssertEqual(rollback.registeredConfigurations, [.snipSnapDefaults])

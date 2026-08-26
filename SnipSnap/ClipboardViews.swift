@@ -112,7 +112,7 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
         }
         .scrollEdgeEffectStyle(.hard, for: .top)
         .onScrollGeometryChange(for: Bool.self) { geometry in
-            InboxPinnedHeaderGlass.hasScrolled(
+            PinnedListHeaderGlass.hasScrolled(
                 visibleOriginY: geometry.contentOffset.y
             )
         } action: { _, hasScrolled in
@@ -166,7 +166,7 @@ private struct ClipboardEntryRow: View {
         .contentShape(Rectangle())
         .onTapGesture(perform: copy)
         .draggable(ClipboardDragPayload(entryID: entry.id))
-        .contextMenu { Button("Save to Active Section", action: save) }
+        .contextMenu { Button("Save to Active List", action: save) }
     }
 }
 

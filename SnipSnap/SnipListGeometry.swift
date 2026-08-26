@@ -1,6 +1,6 @@
 import Foundation
 
-enum InboxPinnedHeaderGlass {
+enum PinnedListHeaderGlass {
     static func hasScrolled(visibleOriginY: CGFloat) -> Bool {
         visibleOriginY > 0.5
     }
@@ -9,48 +9,48 @@ enum InboxPinnedHeaderGlass {
         isPinned && hasScrolled
     }
 
-    static func updatedSections(
-        _ sections: Set<UUID>,
-        sectionID: UUID,
+    static func updatedLists(
+        _ lists: Set<UUID>,
+        listID: UUID,
         isPinned: Bool
     ) -> Set<UUID>? {
-        guard sections.contains(sectionID) != isPinned else { return nil }
-        var updated = sections
+        guard lists.contains(listID) != isPinned else { return nil }
+        var updated = lists
         if isPinned {
-            updated.insert(sectionID)
+            updated.insert(listID)
         } else {
-            updated.remove(sectionID)
+            updated.remove(listID)
         }
         return updated
     }
 }
 
-enum InboxAddedClipRevealDestination: Equatable {
+enum AddedSnipRevealDestination: Equatable {
     case scrollViewTop
 }
 
-struct InboxAddedClipRevealState {
+struct AddedSnipRevealState {
     private var pendingID: UUID?
 
     mutating func record(
-        clipID: UUID?,
+        snipID: UUID?,
         wasAtTop: Bool,
         isVisibleInModel: Bool,
         visibleIDs: [UUID]
-    ) -> InboxAddedClipRevealDestination? {
+    ) -> AddedSnipRevealDestination? {
         guard wasAtTop,
-              let clipID,
+              let snipID,
               isVisibleInModel else {
             pendingID = nil
             return nil
         }
-        pendingID = clipID
+        pendingID = snipID
         return nextDestination(visibleIDs: visibleIDs)
     }
 
     mutating func nextDestination(
         visibleIDs: [UUID]
-    ) -> InboxAddedClipRevealDestination? {
+    ) -> AddedSnipRevealDestination? {
         guard let pendingID,
               visibleIDs.contains(pendingID) else { return nil }
         self.pendingID = nil
@@ -59,14 +59,14 @@ struct InboxAddedClipRevealState {
 }
 
 @MainActor
-final class InboxListGeometry {
+final class SnipListGeometry {
     enum Element: Hashable {
         case row(UUID)
-        case sectionFooter(UUID)
+        case listFooter(UUID)
         case heading(UUID)
-        case entry(ClipListEntryID)
-        case dropSurface(ClipListEntryID)
-        case sectionFooterDropSurface(UUID)
+        case entry(SnipListEntryID)
+        case dropSurface(SnipListEntryID)
+        case listFooterDropSurface(UUID)
     }
 
     struct ScrollSnapshot: Equatable {
@@ -86,14 +86,14 @@ final class InboxListGeometry {
         frames.removeValue(forKey: element)
     }
 
-    func retainItems(_ ids: Set<UUID>) {
-        frames = frames.filter { element, _ in
-            switch element {
+    func retainSnips(_ ids: Set<UUID>) {
+        frames = frames.filter { entry in
+            switch entry.key {
             case .row(let id):
                 ids.contains(id)
             case .entry(let entryID), .dropSurface(let entryID):
                 switch entryID {
-                case .item(let id), .originGap(let id):
+                case .snip(let id), .originGap(let id):
                     ids.contains(id)
                 case .destinationGap:
                     true
@@ -108,12 +108,12 @@ final class InboxListGeometry {
         scrollSnapshot = snapshot
     }
 
-    func pinnedSectionIDs() -> Set<UUID> {
+    func pinnedListIDs() -> Set<UUID> {
         let pinLine = scrollSnapshot.visibleOrigin.y + 0.5
         let current = frames.compactMap { element, frame -> (UUID, CGFloat)? in
-            guard case .heading(let sectionID) = element,
+            guard case .heading(let listID) = element,
                   frame.minY <= pinLine else { return nil }
-            return (sectionID, frame.minY)
+            return (listID, frame.minY)
         }.max { $0.1 < $1.1 }
         return current.map { [$0.0] } ?? []
     }
@@ -122,16 +122,16 @@ final class InboxListGeometry {
         frames[element]
     }
 
-    func sectionBodyFrame(
-        sectionID: UUID,
+    func listBodyFrame(
+        listID: UUID,
         rowIDs: [UUID],
-        entryIDs: [ClipListEntryID]
+        entryIDs: [SnipListEntryID]
     ) -> CGRect? {
         let entryFrames = entryIDs.compactMap { frames[.entry($0)] }
         let rowFrames = rowIDs.compactMap { frames[.row($0)] }
         let bodyFrames = entryFrames.isEmpty ? rowFrames : entryFrames
         guard let first = bodyFrames.first else {
-            return frames[.sectionFooter(sectionID)]
+            return frames[.listFooter(listID)]
         }
         return bodyFrames.dropFirst().reduce(first) { $0.union($1) }
     }
@@ -155,19 +155,19 @@ final class InboxListGeometry {
         )
     }
 
-    func insertionID(atContentPoint point: CGPoint, among items: [CaptureItem]) -> UUID? {
-        items.first { item in
-            guard let frame = frames[.row(item.id)] else { return false }
+    func insertionID(atContentPoint point: CGPoint, among snips: [Snip]) -> UUID? {
+        snips.first { snip in
+            guard let frame = frames[.row(snip.id)] else { return false }
             return point.y < frame.midY
         }?.id
     }
 
-    func hasPlacementFrames(in sectionID: UUID, among items: [CaptureItem]) -> Bool {
-        if items.isEmpty {
-            return frames[.sectionFooter(sectionID)] != nil
-                || frames[.heading(sectionID)] != nil
+    func hasPlacementFrames(in listID: UUID, among snips: [Snip]) -> Bool {
+        if snips.isEmpty {
+            return frames[.listFooter(listID)] != nil
+                || frames[.heading(listID)] != nil
         }
-        return items.contains { frames[.row($0.id)] != nil }
+        return snips.contains { frames[.row($0.id)] != nil }
     }
 
     func dragGapHeight(for ids: [UUID]) -> CGFloat {

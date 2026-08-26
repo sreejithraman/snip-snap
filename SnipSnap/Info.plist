@@ -42,9 +42,9 @@
 				<string>public.json</string>
 			</array>
 			<key>UTTypeDescription</key>
-			<string>Snip Snap Clip Drag</string>
+			<string>Snip Snap Snip Drag</string>
 			<key>UTTypeIdentifier</key>
-			<string>world.sree.snipsnap.clip-drag</string>
+			<string>world.sree.snipsnap.snip-drag</string>
 		</dict>
 	</array>
 </dict>

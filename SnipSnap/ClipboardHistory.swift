@@ -198,9 +198,9 @@ struct ClipboardEntry: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
-struct ClipboardClipMaterialization: Sendable {
+struct ClipboardSnipMaterialization: Sendable {
     let text: String
-    let source: CaptureSource?
+    let source: SnipSource?
     let fileURLs: [URL]
     let temporaryURLs: [URL]
 
@@ -212,8 +212,8 @@ struct ClipboardClipMaterialization: Sendable {
 }
 
 extension ClipboardEntry {
-    func materializeForClip(in directory: URL = FileManager.default.temporaryDirectory) throws
-        -> ClipboardClipMaterialization {
+    func materializeForSnip(in directory: URL = FileManager.default.temporaryDirectory) throws
+        -> ClipboardSnipMaterialization {
         var urls = fileURLs.filter { FileManager.default.fileExists(atPath: $0.path) }
         var temporaryURLs: [URL] = []
         do {
@@ -231,10 +231,10 @@ extension ClipboardEntry {
             for url in temporaryURLs { try? FileManager.default.removeItem(at: url) }
             throw error
         }
-        return ClipboardClipMaterialization(
+        return ClipboardSnipMaterialization(
             text: text,
             source: sourceApplication.map {
-                CaptureSource(applicationName: $0, windowTitle: nil, url: nil)
+                SnipSource(applicationName: $0, windowTitle: nil, url: nil)
             },
             fileURLs: urls,
             temporaryURLs: temporaryURLs
@@ -409,7 +409,7 @@ final class ClipboardHistory: ObservableObject {
     init(
         pasteboard: NSPasteboard = .general,
         defaults: UserDefaults = .standard,
-        storeURL: URL = ItemRepository.defaultStoreURL()
+        storeURL: URL = SnipRepository.defaultStoreURL()
             .deletingLastPathComponent()
             .appendingPathComponent("clipboard.json")
     ) {

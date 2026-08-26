@@ -49,12 +49,12 @@ struct SelectionCaptureAttachment: Equatable, Sendable {
 
 struct SelectionCapture: Equatable, Sendable {
     let content: String
-    let source: CaptureSource
+    let source: SnipSource
     let attachments: [SelectionCaptureAttachment]
 
     init(
         content: String,
-        source: CaptureSource,
+        source: SnipSource,
         attachments: [SelectionCaptureAttachment] = []
     ) {
         self.content = content
@@ -321,7 +321,7 @@ final class AccessibilitySelectionReader: @unchecked Sendable {
             return
         }
         lastCapture = (fingerprint, now)
-        let source = CaptureSource(
+        let source = SnipSource(
             applicationName: applicationName,
             windowTitle: context.windowTitle,
             url: context.url

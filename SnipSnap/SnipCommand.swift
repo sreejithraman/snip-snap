@@ -1,4 +1,4 @@
-enum InboxItemCommand {
+enum SnipCommand {
     case copy
     case toggleDone
     case edit
@@ -19,11 +19,11 @@ enum InboxItemCommand {
 }
 
 @MainActor
-struct InboxItemCommandDispatcher {
+struct SnipCommandDispatcher {
     let model: AppModel
     let coordinator: AppCoordinator
 
-    func perform(_ command: InboxItemCommand) {
+    func perform(_ command: SnipCommand) {
         switch command {
         case .copy:
             _ = model.copySelection()

@@ -4,10 +4,10 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 extension UTType {
-    static let snipSnapClipDrag = UTType(exportedAs: "world.sree.snipsnap.clip-drag", conformingTo: .json)
+    static let snipSnapSnipDrag = UTType(exportedAs: "world.sree.snipsnap.snip-drag", conformingTo: .json)
 }
 
-struct ClipDragPayload: Codable, Equatable, Sendable, Transferable {
+struct SnipDragPayload: Codable, Equatable, Sendable, Transferable {
     let ids: [UUID]
     let text: String
     let attachmentURLs: [URL]
@@ -29,223 +29,223 @@ struct ClipDragPayload: Codable, Equatable, Sendable, Transferable {
     }
 
     static var transferRepresentation: some TransferRepresentation {
-        CodableRepresentation(contentType: .snipSnapClipDrag)
+        CodableRepresentation(contentType: .snipSnapSnipDrag)
             .visibility(.ownProcess)
         ProxyRepresentation(exporting: \.text)
     }
 
-    static func make(items: [CaptureItem]) -> ClipDragPayload {
-        make(items: items, attachmentURL: nil)
+    static func make(snips: [Snip]) -> SnipDragPayload {
+        make(snips: snips, attachmentURL: nil)
     }
 
     static func make(
-        items: [CaptureItem],
-        attachmentURL: ((ClipAttachment) -> URL)?
-    ) -> ClipDragPayload {
-        ClipDragPayload(
-            ids: items.map(\.id),
-            text: items.count == 1
-                ? items[0].content
-                : CopyFormatter.formatInGivenOrder(items: items),
+        snips: [Snip],
+        attachmentURL: ((SnipAttachment) -> URL)?
+    ) -> SnipDragPayload {
+        SnipDragPayload(
+            ids: snips.map(\.id),
+            text: snips.count == 1
+                ? snips[0].content
+                : SnipFormatter.formatInGivenOrder(snips: snips),
             attachmentURLs: attachmentURL.map { resolve in
-                items.flatMap(\.attachments).map(resolve)
+                snips.flatMap(\.attachments).map(resolve)
             } ?? [],
-            previewSourceLabel: items.count == 1
-                ? items[0].displaySourceLabel
-                : "\(items.count) clips",
-            previewIsDone: items.allSatisfy(\.isDone)
+            previewSourceLabel: snips.count == 1
+                ? snips[0].displaySourceLabel
+                : "\(snips.count) snips",
+            previewIsDone: snips.allSatisfy(\.isDone)
         )
     }
 }
 
-enum ExternalClipDragCompletion {
+enum ExternalSnipDragCompletion {
     static func shouldMarkDone(after operation: DropOperation) -> Bool {
         operation == .copy
     }
 }
 
-enum ClipDragListSlot: Equatable {
-    case item(UUID)
+enum SnipDragListSlot: Equatable {
+    case snip(UUID)
     case originGap(UUID)
     case destinationGap
 }
 
-enum ClipDragListLayout {
+enum SnipDragListLayout {
     static func slots(
-        itemIDs: [UUID],
+        snipIDs: [UUID],
         draggingIDs: Set<UUID>,
         destinationBeforeID: UUID?,
         showsDestinationGap: Bool,
         preservesOriginGaps: Bool
-    ) -> [ClipDragListSlot] {
-        guard !draggingIDs.isEmpty else { return itemIDs.map(ClipDragListSlot.item) }
+    ) -> [SnipDragListSlot] {
+        guard !draggingIDs.isEmpty else { return snipIDs.map(SnipDragListSlot.snip) }
 
         if preservesOriginGaps {
-            return itemIDs.map { id in
-                draggingIDs.contains(id) ? .originGap(id) : .item(id)
+            return snipIDs.map { id in
+                draggingIDs.contains(id) ? .originGap(id) : .snip(id)
             }
         }
 
-        var slots = itemIDs
+        var slots = snipIDs
             .filter { !draggingIDs.contains($0) }
-            .map(ClipDragListSlot.item)
+            .map(SnipDragListSlot.snip)
         guard showsDestinationGap else { return slots }
 
         let insertionIndex = destinationBeforeID.flatMap { beforeID in
-            slots.firstIndex(of: .item(beforeID))
+            slots.firstIndex(of: .snip(beforeID))
         } ?? slots.endIndex
         slots.insert(.destinationGap, at: insertionIndex)
         return slots
     }
 }
 
-struct InboxItemGroup: Identifiable, Equatable {
-    let sectionID: UUID
-    let section: String
-    let items: [CaptureItem]
+struct SnipListGroup: Identifiable, Equatable {
+    let listID: UUID
+    let list: String
+    let snips: [Snip]
 
-    var id: UUID { sectionID }
+    var id: UUID { listID }
 }
 
-struct InboxListSnapshot {
-    let groups: [InboxItemGroup]
+struct SnipListSnapshot {
+    let groups: [SnipListGroup]
     let orderedVisibleIDs: [UUID]
 
     private let selection: Set<UUID>
-    private let selectedPayload: ClipDragPayload?
+    private let selectedPayload: SnipDragPayload?
 
     init(
-        visibleItems: [CaptureItem],
-        allItems: [CaptureItem],
-        sections: [SnipSnapSection],
+        visibleSnips: [Snip],
+        allSnips: [Snip],
+        lists: [SnipList],
         selection: Set<UUID>,
-        keepsEmptySectionID: UUID? = nil,
-        attachmentURL: ((ClipAttachment) -> URL)? = nil
+        keepsEmptyListID: UUID? = nil,
+        attachmentURL: ((SnipAttachment) -> URL)? = nil
     ) {
         groups = Self.groups(
-            for: visibleItems,
-            sections: sections,
-            keepsEmptySectionID: keepsEmptySectionID
+            for: visibleSnips,
+            lists: lists,
+            keepsEmptyListID: keepsEmptyListID
         )
-        orderedVisibleIDs = groups.flatMap { $0.items.map(\.id) }
+        orderedVisibleIDs = groups.flatMap { $0.snips.map(\.id) }
         self.selection = selection
         self.attachmentURL = attachmentURL
 
-        let selectedItems = Self.groups(
-            for: allItems.filter { selection.contains($0.id) },
-            sections: sections
-        ).flatMap(\.items)
-        selectedPayload = selectedItems.isEmpty
+        let selectedSnips = Self.groups(
+            for: allSnips.filter { selection.contains($0.id) },
+            lists: lists
+        ).flatMap(\.snips)
+        selectedPayload = selectedSnips.isEmpty
             ? nil
-            : ClipDragPayload.make(items: selectedItems, attachmentURL: attachmentURL)
+            : SnipDragPayload.make(snips: selectedSnips, attachmentURL: attachmentURL)
     }
 
-    func dragPayload(for item: CaptureItem) -> ClipDragPayload {
-        if selection.contains(item.id), let selectedPayload {
+    func dragPayload(for snip: Snip) -> SnipDragPayload {
+        if selection.contains(snip.id), let selectedPayload {
             return selectedPayload
         }
-        return ClipDragPayload.make(items: [item], attachmentURL: attachmentURL)
+        return SnipDragPayload.make(snips: [snip], attachmentURL: attachmentURL)
     }
 
-    private let attachmentURL: ((ClipAttachment) -> URL)?
+    private let attachmentURL: ((SnipAttachment) -> URL)?
 
     private static func groups(
-        for items: [CaptureItem],
-        sections: [SnipSnapSection],
-        keepsEmptySectionID: UUID? = nil
-    ) -> [InboxItemGroup] {
-        let grouped = Dictionary(grouping: items, by: \.sectionID)
-        return sections.compactMap { section in
-            let items = grouped[section.id] ?? []
-            guard !items.isEmpty || section.id == keepsEmptySectionID else { return nil }
-            return InboxItemGroup(sectionID: section.id, section: section.name, items: items)
+        for snips: [Snip],
+        lists: [SnipList],
+        keepsEmptyListID: UUID? = nil
+    ) -> [SnipListGroup] {
+        let grouped = Dictionary(grouping: snips, by: \.listID)
+        return lists.compactMap { list in
+            let snips = grouped[list.id] ?? []
+            guard !snips.isEmpty || list.id == keepsEmptyListID else { return nil }
+            return SnipListGroup(listID: list.id, list: list.name, snips: snips)
         }
     }
 }
 
-enum ClipDropBehavior: Equatable {
+enum SnipDropBehavior: Equatable {
     case exact
-    case sectionTop
+    case listTop
     case chronological
 }
 
-struct ClipDropPlan: Equatable {
-    let sectionID: UUID
+struct SnipDropPlan: Equatable {
+    let listID: UUID
     let beforeID: UUID?
-    let behavior: ClipDropBehavior
+    let behavior: SnipDropBehavior
     let showsInsertion: Bool
 }
 
-enum ClipDropPlanner {
+enum SnipDropPlanner {
     static func plan(
         payloadIDs: [UUID],
-        items: [CaptureItem],
-        targetSectionID: UUID,
+        snips: [Snip],
+        targetListID: UUID,
         pointerBeforeID: UUID?,
         isOverHeading: Bool,
-        sortMode: ClipSortMode,
+        sortMode: SnipSortMode,
         filtersActive: Bool
-    ) -> ClipDropPlan? {
+    ) -> SnipDropPlan? {
         let movingIDs = Set(payloadIDs)
         guard !movingIDs.isEmpty else { return nil }
 
-        let movingItems = items.filter { movingIDs.contains($0.id) }
-        guard movingItems.count == movingIDs.count else { return nil }
+        let movingSnips = snips.filter { movingIDs.contains($0.id) }
+        guard movingSnips.count == movingIDs.count else { return nil }
 
-        let sourceSections = Set(movingItems.map(\.sectionID))
-        let sameSection = sourceSections.count == 1 && sourceSections.first == targetSectionID
-        let targetItems = CaptureItem.sorted(
-            items.filter { $0.sectionID == targetSectionID && !movingIDs.contains($0.id) },
+        let sourceLists = Set(movingSnips.map(\.listID))
+        let sameList = sourceLists.count == 1 && sourceLists.first == targetListID
+        let targetSnips = Snip.sorted(
+            snips.filter { $0.listID == targetListID && !movingIDs.contains($0.id) },
             by: sortMode
         )
 
-        if !filtersActive && (sortMode == .manual || sameSection) {
+        if !filtersActive && (sortMode == .manual || sameList) {
             let validPointerID = pointerBeforeID.flatMap { candidate in
-                targetItems.contains(where: { $0.id == candidate }) ? candidate : nil
+                targetSnips.contains(where: { $0.id == candidate }) ? candidate : nil
             }
-            return ClipDropPlan(
-                sectionID: targetSectionID,
-                beforeID: isOverHeading ? targetItems.first?.id : validPointerID,
+            return SnipDropPlan(
+                listID: targetListID,
+                beforeID: isOverHeading ? targetSnips.first?.id : validPointerID,
                 behavior: .exact,
                 showsInsertion: true
             )
         }
 
         if sortMode == .manual {
-            guard !sameSection else { return nil }
-            return ClipDropPlan(
-                sectionID: targetSectionID,
-                beforeID: targetItems.first?.id,
-                behavior: .sectionTop,
+            guard !sameList else { return nil }
+            return SnipDropPlan(
+                listID: targetListID,
+                beforeID: targetSnips.first?.id,
+                behavior: .listTop,
                 showsInsertion: false
             )
         }
 
-        guard !sameSection else { return nil }
-        let beforeID = movingItems.count == 1
-            ? chronologicalInsertionID(for: movingItems[0], in: targetItems)
+        guard !sameList else { return nil }
+        let beforeID = movingSnips.count == 1
+            ? chronologicalInsertionID(for: movingSnips[0], in: targetSnips)
             : nil
-        return ClipDropPlan(
-            sectionID: targetSectionID,
+        return SnipDropPlan(
+            listID: targetListID,
             beforeID: beforeID,
             behavior: .chronological,
-            showsInsertion: movingItems.count == 1
+            showsInsertion: movingSnips.count == 1
         )
     }
 
     private static func chronologicalInsertionID(
-        for movingItem: CaptureItem,
-        in targetItems: [CaptureItem]
+        for movingSnip: Snip,
+        in targetSnips: [Snip]
     ) -> UUID? {
-        let ordered = CaptureItem.sorted(targetItems + [movingItem], by: .chronological)
-        guard let movingIndex = ordered.firstIndex(where: { $0.id == movingItem.id }) else {
+        let ordered = Snip.sorted(targetSnips + [movingSnip], by: .chronological)
+        guard let movingIndex = ordered.firstIndex(where: { $0.id == movingSnip.id }) else {
             return nil
         }
-        return ordered.dropFirst(movingIndex + 1).first(where: { $0.id != movingItem.id })?.id
+        return ordered.dropFirst(movingIndex + 1).first(where: { $0.id != movingSnip.id })?.id
     }
 }
 
-enum InboxSelection {
+enum SnipSelection {
     struct Modifiers: OptionSet {
         let rawValue: Int
 
@@ -360,62 +360,62 @@ enum InboxSelection {
     }
 }
 
-enum InboxFilter {
+enum SnipFilter {
     static func apply(
-        items: [CaptureItem],
+        snips: [Snip],
         query: String,
-        completionFilter: CompletionFilter,
-        sectionNames: [UUID: String] = [:]
-    ) -> [CaptureItem] {
+        completionFilter: SnipCompletionFilter,
+        listNames: [UUID: String] = [:]
+    ) -> [Snip] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return items.filter { item in
+        return snips.filter { snip in
             switch completionFilter {
             case .all:
                 break
             case .done:
-                guard item.isDone else { return false }
+                guard snip.isDone else { return false }
             case .notDone:
-                guard !item.isDone else { return false }
+                guard !snip.isDone else { return false }
             }
             guard !needle.isEmpty else { return true }
-            return item.content.localizedCaseInsensitiveContains(needle)
-                || item.attachments.contains { $0.fileName.localizedCaseInsensitiveContains(needle) }
-                || sectionNames[item.sectionID]?.localizedCaseInsensitiveContains(needle) == true
-                || item.displaySourceLabel.localizedCaseInsensitiveContains(needle)
-                || item.source?.url?.localizedCaseInsensitiveContains(needle) == true
+            return snip.content.localizedCaseInsensitiveContains(needle)
+                || snip.attachments.contains { $0.fileName.localizedCaseInsensitiveContains(needle) }
+                || listNames[snip.listID]?.localizedCaseInsensitiveContains(needle) == true
+                || snip.displaySourceLabel.localizedCaseInsensitiveContains(needle)
+                || snip.source?.url?.localizedCaseInsensitiveContains(needle) == true
         }
     }
 }
 
-enum CopyFormatter {
-    static func formatForClipboard(items: [CaptureItem]) -> String {
-        guard items.count != 1 else { return items[0].content }
-        return formatAsList(items: items)
+enum SnipFormatter {
+    static func formatForClipboard(snips: [Snip]) -> String {
+        guard snips.count != 1 else { return snips[0].content }
+        return formatAsList(snips: snips)
     }
 
-    static func format(items: [CaptureItem]) -> String {
-        sorted(items)
+    static func format(snips: [Snip]) -> String {
+        sorted(snips)
             .map(format)
             .joined(separator: "\n\n---\n\n")
     }
 
-    private static func formatAsList(items: [CaptureItem]) -> String {
-        sorted(items)
-            .map { item in
-                let indented = format(item).replacingOccurrences(of: "\n", with: "\n  ")
+    private static func formatAsList(snips: [Snip]) -> String {
+        sorted(snips)
+            .map { snip in
+                let indented = format(snip).replacingOccurrences(of: "\n", with: "\n  ")
                 return "- \(indented)"
             }
             .joined(separator: "\n")
     }
 
-    static func formatInGivenOrder(items: [CaptureItem]) -> String {
-        items
+    static func formatInGivenOrder(snips: [Snip]) -> String {
+        snips
             .map(format)
             .joined(separator: "\n\n---\n\n")
     }
 
-    private static func sorted(_ items: [CaptureItem]) -> [CaptureItem] {
-        items.sorted { lhs, rhs in
+    private static func sorted(_ snips: [Snip]) -> [Snip] {
+        snips.sorted { lhs, rhs in
             if lhs.createdAt != rhs.createdAt {
                 return lhs.createdAt < rhs.createdAt
             }
@@ -423,9 +423,9 @@ enum CopyFormatter {
         }
     }
 
-    private static func format(_ item: CaptureItem) -> String {
-        var parts = [item.content]
-        if let source = item.source {
+    private static func format(_ snip: Snip) -> String {
+        var parts = [snip.content]
+        if let source = snip.source {
             let label = source.conciseLabel
             if !label.isEmpty {
                 parts.append("Source: \(label)")
