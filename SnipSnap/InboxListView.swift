@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 enum InboxFocusTarget: Hashable {
@@ -10,6 +11,100 @@ private struct InlineEditSession {
     let itemID: UUID
     var attachments: [URL]
     var isSaving = false
+}
+
+private enum InboxScrollTarget {
+    case top
+}
+
+@MainActor
+private final class InboxReorderGeometry: ObservableObject {
+    var rowFrames: [UUID: CGRect] = [:]
+    var listFrame: CGRect = .zero
+    var scrollOffsetY: CGFloat = 0
+}
+
+private struct InboxWindowFrameReader: NSViewRepresentable {
+    let onChange: @MainActor (CGRect, CGFloat) -> Void
+
+    func makeNSView(context: Context) -> InboxWindowFrameReaderView {
+        InboxWindowFrameReaderView(onChange: onChange)
+    }
+
+    func updateNSView(_ nsView: InboxWindowFrameReaderView, context: Context) {
+        nsView.onChange = onChange
+        nsView.reportFrameIfNeeded()
+    }
+}
+
+@MainActor
+private final class InboxWindowFrameReaderView: NSView {
+    var onChange: @MainActor (CGRect, CGFloat) -> Void
+    private var lastFrame: CGRect?
+    private var lastScrollOffsetY: CGFloat?
+    private weak var observedClipView: NSClipView?
+
+    init(onChange: @escaping @MainActor (CGRect, CGFloat) -> Void) {
+        self.onChange = onChange
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        observeScrollIfNeeded()
+        reportFrameIfNeeded()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        observeScrollIfNeeded()
+        reportFrameIfNeeded()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    func reportFrameIfNeeded() {
+        guard window != nil else { return }
+        let nextFrame = convert(bounds, to: nil)
+        let nextScrollOffsetY = enclosingScrollView?.contentView.bounds.origin.y ?? 0
+        guard nextFrame != lastFrame || nextScrollOffsetY != lastScrollOffsetY else { return }
+        lastFrame = nextFrame
+        lastScrollOffsetY = nextScrollOffsetY
+        onChange(nextFrame, nextScrollOffsetY)
+    }
+
+    private func observeScrollIfNeeded() {
+        let clipView = window == nil ? nil : enclosingScrollView?.contentView
+        guard observedClipView !== clipView else { return }
+        if let observedClipView {
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSView.boundsDidChangeNotification,
+                object: observedClipView
+            )
+        }
+        observedClipView = clipView
+        guard let clipView else { return }
+        clipView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(clipViewBoundsDidChange),
+            name: NSView.boundsDidChangeNotification,
+            object: clipView
+        )
+    }
+
+    @objc
+    private func clipViewBoundsDidChange(_ notification: Notification) {
+        reportFrameIfNeeded()
+    }
 }
 
 @MainActor
@@ -66,11 +161,17 @@ struct InboxListView: View {
     let onRemovePreviewURL: (URL) -> Void
 
     @State private var selectionModifiers: EventModifiers = []
-    @StateObject private var dragController = InboxDragController()
-    @State private var pinnedSections: Set<UUID> = []
     @State private var hasScrolledFromTop = false
     @State private var addedClipRevealState = InboxAddedClipRevealState()
     @State private var editSession: InlineEditSession?
+    @State private var pendingOrderBySection: [UUID: [UUID]] = [:]
+    @State private var activeDragPayload: ClipDragPayload?
+    @State private var activeDragOriginalOrder: [UUID] = []
+    @State private var activeDragScrollOffsetY: CGFloat = 0
+    @State private var activeDropTarget: InboxReorderTarget?
+    @State private var isCommittingDrop = false
+    @State private var activeDragRowFrames: [UUID: CGRect] = [:]
+    @StateObject private var reorderGeometry = InboxReorderGeometry()
 
     private var orderedItemIDs: [UUID] {
         state.orderedIDs(for: model.filteredItems)
@@ -78,17 +179,6 @@ struct InboxListView: View {
 
     private var itemCommands: InboxItemCommandDispatcher {
         InboxItemCommandDispatcher(model: model, coordinator: coordinator)
-    }
-
-    private var dragContext: InboxDragContext {
-        InboxDragContext(
-            allItems: model.items,
-            visibleItems: model.filteredItems,
-            validSectionIDs: Set(model.sections.map(\.id)),
-            sortMode: model.sortMode,
-            filtersActive: model.completionFilter != .all
-                || !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        )
     }
 
     var body: some View {
@@ -102,109 +192,133 @@ struct InboxListView: View {
             ).isEmpty ? model.activeSectionID : nil,
             attachmentURL: model.attachmentURL
         )
+        let showsSearchSections = snapshot.groups.count > 1
         ScrollViewReader { proxy in
-            GeometryReader { viewport in
-                ScrollView {
-                    LazyVStack(
-                        alignment: .leading,
-                        spacing: 0,
-                        pinnedViews: [.sectionHeaders]
-                    ) {
-                        ForEach(snapshot.groups) { group in
-                            sectionView(group, snapshot: snapshot, proxy: proxy)
+            List {
+                topSpacer
+                if showsSearchSections {
+                    ForEach(snapshot.groups) { group in
+                        Section {
+                            ForEach(group.items) { item in
+                                reorderableItemCard(
+                                    item,
+                                    snapshot: snapshot,
+                                    sectionID: group.sectionID,
+                                    items: group.items
+                                )
+                            }
+                        } header: {
+                            PanelListHeader(
+                                group.section,
+                                showsGlass: hasScrolledFromTop
+                            )
+                            .background {
+                                ClipDragBlockingRegion(
+                                    controller: clipDragSourceController,
+                                    id: group.sectionID
+                                )
+                            }
                         }
                     }
-                    .padding(
-                        .bottom,
-                        PanelOverlayLayout.listBottomPadding(
-                            composerHeight: bottomContentInset
+                } else {
+                    let displayedItems = displayedItems(in: snapshot)
+                    ForEach(displayedItems) { item in
+                        reorderableItemCard(
+                            item,
+                            snapshot: snapshot,
+                            sectionID: model.activeSectionID,
+                            items: displayedItems
                         )
+                    }
+                }
+                bottomSpacer
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .contentMargins(0, for: .scrollContent)
+            .environment(\.defaultMinListRowHeight, 1)
+            .background {
+                InboxWindowFrameReader { frame, _ in
+                    reorderGeometry.listFrame = frame
+                }
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if !showsSearchSections {
+                    PanelListHeader(
+                        model.activeSection.name,
+                        showsGlass: hasScrolledFromTop
                     )
-                    .frame(
-                        minHeight: viewport.size.height,
-                        alignment: .top
+                }
+            }
+            .scrollEdgeEffectStyle(.hard, for: .top)
+            .scrollEdgeEffectStyle(.soft, for: .bottom)
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y > 0.5
+            } action: { _, hasScrolled in
+                hasScrolledFromTop = hasScrolled
+            }
+            .onModifierKeysChanged(mask: [.command, .shift]) { _, modifiers in
+                selectionModifiers = modifiers
+            }
+            .onChange(of: model.sortMode) {
+                if let selectedID = orderedItemIDs.first(where: model.selection.contains) {
+                    withAnimation(.snappy(duration: 0.18)) {
+                        proxy.scrollTo(selectedID, anchor: .center)
+                    }
+                }
+            }
+            .onChange(of: model.latestAddedClipID) { _, clipID in
+                let isVisibleInModel = clipID.map { addedID in
+                    model.filteredItems.contains(where: { $0.id == addedID })
+                } ?? false
+                if let destination = addedClipRevealState.record(
+                    clipID: clipID,
+                    wasAtTop: !hasScrolledFromTop,
+                    isVisibleInModel: isVisibleInModel,
+                    visibleIDs: snapshot.orderedVisibleIDs
+                ) {
+                    revealAddedClip(
+                        at: destination,
+                        proxy: proxy
                     )
-                    .coordinateSpace(name: InboxDropSpace.name)
-                    .overlay(alignment: .topLeading) {
-                        sectionDropHighlight(snapshot: snapshot)
-                    }
-                    .background {
-                        ZStack {
-                            PanelDragRegion()
-                                .allowsHitTesting(!dragController.isDragging)
-                            InboxScrollBridge(
-                                scroller: dragController.scroller,
-                                onScroll: updateScroll
-                            )
-                        }
-                    }
                 }
-                .scrollEdgeEffectStyle(.hard, for: .top)
-                .scrollEdgeEffectStyle(.soft, for: .bottom)
-                .onModifierKeysChanged(mask: [.command, .shift]) { _, modifiers in
-                    selectionModifiers = modifiers
+            }
+            .onChange(of: snapshot.orderedVisibleIDs) { _, visibleIDs in
+                if let destination = addedClipRevealState.nextDestination(
+                    visibleIDs: visibleIDs
+                ) {
+                    revealAddedClip(
+                        at: destination,
+                        proxy: proxy
+                    )
                 }
-                .task(id: dragController.autoScrollDirection) {
-                    await dragController.autoScrollWhileNeeded { dragContext }
-                }
-                .onChange(of: model.sortMode) {
-                    if let selectedID = orderedItemIDs.first(where: model.selection.contains) {
-                        withAnimation(.snappy(duration: 0.18)) {
-                            proxy.scrollTo(selectedID, anchor: .center)
-                        }
+            }
+            .onChange(of: model.editingID, initial: true) { _, editingID in
+                editSession = editingID.flatMap { itemID in
+                    model.items.first(where: { $0.id == itemID }).map { item in
+                        InlineEditSession(
+                            itemID: itemID,
+                            attachments: item.attachments.map(model.attachmentURL)
+                        )
                     }
                 }
-                .onChange(of: model.latestAddedClipID) { _, clipID in
-                    let isVisibleInModel = clipID.map { addedID in
-                        model.filteredItems.contains(where: { $0.id == addedID })
-                    } ?? false
-                    if let destination = addedClipRevealState.record(
-                        clipID: clipID,
-                        wasAtTop: !hasScrolledFromTop,
-                        isVisibleInModel: isVisibleInModel,
-                        visibleIDs: snapshot.orderedVisibleIDs
-                    ) {
-                        revealAddedClip(at: destination)
-                    }
-                }
-                .onChange(of: snapshot.orderedVisibleIDs) { _, visibleIDs in
-                    if let destination = addedClipRevealState.nextDestination(
-                        visibleIDs: visibleIDs
-                    ) {
-                        revealAddedClip(at: destination)
-                    }
-                }
-                .onChange(of: model.editingID, initial: true) { _, editingID in
-                    editSession = editingID.flatMap { itemID in
-                        model.items.first(where: { $0.id == itemID }).map { item in
-                            InlineEditSession(
-                                itemID: itemID,
-                                attachments: item.attachments.map(model.attachmentURL)
-                            )
-                        }
-                    }
-                    guard let editingID,
-                          snapshot.orderedVisibleIDs.contains(editingID) else { return }
-                    Task { @MainActor in
-                        await Task.yield()
-                        withAnimation(.snappy(duration: 0.18)) {
-                            proxy.scrollTo(editingID, anchor: .center)
-                        }
-                        try? await Task.sleep(for: .milliseconds(220))
+                guard let editingID,
+                      snapshot.orderedVisibleIDs.contains(editingID) else { return }
+                Task { @MainActor in
+                    await Task.yield()
+                    withAnimation(.snappy(duration: 0.18)) {
                         proxy.scrollTo(editingID, anchor: .center)
                     }
+                    try? await Task.sleep(for: .milliseconds(220))
+                    proxy.scrollTo(editingID, anchor: .center)
                 }
-                .overlay(alignment: .topLeading) {
-                    selectionFocusTarget(proxy: proxy)
-                }
+            }
+            .overlay(alignment: .topLeading) {
+                selectionFocusTarget(proxy: proxy)
             }
         }
         .onAppear {
-            dragController.retainItems(Set(snapshot.orderedVisibleIDs))
             state.reconcile(model: model)
-        }
-        .onChange(of: snapshot.orderedVisibleIDs) { _, visibleIDs in
-            dragController.retainItems(Set(visibleIDs))
         }
         .onChange(of: model.selection) {
             state.reconcile(model: model)
@@ -245,303 +359,255 @@ struct InboxListView: View {
         editSession = session
     }
 
-    private func revealAddedClip(at destination: InboxAddedClipRevealDestination) {
+    private func revealAddedClip(
+        at destination: InboxAddedClipRevealDestination,
+        proxy: ScrollViewProxy
+    ) {
         Task { @MainActor in
             await Task.yield()
             withAnimation(.snappy(duration: 0.18)) {
                 switch destination {
                 case .scrollViewTop:
-                    dragController.scroller.scrollTo(y: 0)
+                    proxy.scrollTo(InboxScrollTarget.top, anchor: .top)
                 }
             }
         }
     }
 
-    private func sectionView(
-        _ group: InboxItemGroup,
+    private var bottomSpacer: some View {
+        Color.clear
+            .frame(
+                height: PanelOverlayLayout.listBottomPadding(
+                    composerHeight: bottomContentInset
+                )
+            )
+            .listRowInsets(EdgeInsets())
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+    }
+
+    private var topSpacer: some View {
+        Color.clear
+            .frame(
+                height: PanelListMetrics.verticalContentInset
+                    + PanelListMetrics.rowSpacing / 2
+            )
+            .listRowInsets(EdgeInsets())
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            .id(InboxScrollTarget.top)
+    }
+
+    private var canDragReorder: Bool {
+        model.editingID == nil
+            && model.completionFilter == .all
+            && model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func reorderableItemCard(
+        _ item: CaptureItem,
         snapshot: InboxListSnapshot,
-        proxy: ScrollViewProxy
-    ) -> some View {
-        let entries = dragController.entries(for: group)
-        return Section {
-            ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-                sectionEntry(
-                    entry,
-                    index: index,
-                    sectionID: group.sectionID,
-                    snapshot: snapshot,
-                    proxy: proxy
-                )
-            }
-            sectionFooter(
-                group,
-                expandsTop: entries.isEmpty,
-                proxy: proxy
-            )
-        } header: {
-            sectionDropTarget(
-                sectionHeader(group),
-                sectionID: group.sectionID,
-                surface: .header,
-                proxy: proxy
-            )
-        }
-    }
-
-    private func sectionEntry(
-        _ entry: ClipListEntry,
-        index: Int,
         sectionID: UUID,
-        snapshot: InboxListSnapshot,
-        proxy: ScrollViewProxy
+        items: [CaptureItem]
     ) -> some View {
-        let entryElement = InboxListGeometry.Element.entry(entry.id)
-        let content = VStack(alignment: .leading, spacing: 0) {
-            PanelDragRegion()
-                .frame(
-                    height: index == 0
-                        ? PanelListMetrics.sectionSpacing
-                        : PanelListMetrics.rowSpacing
-                )
-                .allowsHitTesting(!dragController.isDragging)
-
-            dropGeometry(
-                sectionEntryContent(entry, snapshot: snapshot),
-                for: entryElement
-            )
-        }
-        return sectionContentDropTarget(
-            content,
-            sectionID: sectionID,
-            surface: .entry(entry.id),
-            expandsTop: index == 0,
-            proxy: proxy
-        )
-        .onDisappear { dragController.remove(entryElement) }
-    }
-
-    @ViewBuilder
-    private func sectionEntryContent(
-        _ entry: ClipListEntry,
-        snapshot: InboxListSnapshot
-    ) -> some View {
-        switch entry {
-        case .item(let item):
-            dropGeometry(
-                itemCard(item, snapshot: snapshot)
-                    .id(item.id),
-                for: .row(item.id)
-            )
-        case .originGap(_, let height):
-            dropGap(height: height, showsDestinationEdge: false)
-        case .destinationGap(_, let height):
-            dropGap(height: height, showsDestinationEdge: true)
-        }
-    }
-
-    private func sectionFooter(
-        _ group: InboxItemGroup,
-        expandsTop: Bool,
-        proxy: ScrollViewProxy
-    ) -> some View {
-        let footerElement = InboxListGeometry.Element.sectionFooter(group.sectionID)
-        let content = dropGeometry(
-            PanelDragRegion()
-                .frame(height: PanelListMetrics.sectionSpacing)
-                .allowsHitTesting(!dragController.isDragging),
-            for: footerElement
-        )
-        return sectionContentDropTarget(
-            content,
-            sectionID: group.sectionID,
-            surface: .footer,
-            expandsTop: expandsTop,
-            expandsBottom: true,
-            proxy: proxy
-        )
-        .onDisappear { dragController.remove(footerElement) }
-    }
-
-    private func sectionContentDropTarget<Content: View>(
-        _ content: Content,
-        sectionID: UUID,
-        surface: SectionDropSurface,
-        expandsTop: Bool = false,
-        expandsBottom: Bool = false,
-        proxy: ScrollViewProxy
-    ) -> some View {
-        let element = surface.element(in: sectionID)
-        let expansion = PanelDropTargetStyle.expansion
-        let hitInsets = EdgeInsets(
-            top: expandsTop ? expansion : 0,
-            leading: expansion,
-            bottom: expandsBottom ? expansion : 0,
-            trailing: expansion
-        )
-        return sectionDropTarget(
-            dropGeometry(
-                content.padding(hitInsets),
-                for: element
-            ),
-            sectionID: sectionID,
-            surface: surface,
-            proxy: proxy
-        )
-        .padding(
-            EdgeInsets(
-                top: -hitInsets.top,
-                leading: -hitInsets.leading,
-                bottom: -hitInsets.bottom,
-                trailing: -hitInsets.trailing
-            )
-        )
-        .padding(.horizontal, PanelListMetrics.horizontalContentInset)
-        .onDisappear { dragController.remove(element) }
-    }
-
-    @ViewBuilder
-    private func sectionDropHighlight(snapshot: InboxListSnapshot) -> some View {
-        if let sectionID = dragController.targetSectionID,
-           let group = snapshot.groups.first(where: { $0.sectionID == sectionID }),
-           let frame = dragController.sectionBodyFrame(for: group) {
-            let expandedFrame = frame.insetBy(
-                dx: -PanelDropTargetStyle.expansion,
-                dy: -PanelDropTargetStyle.expansion
-            )
-            Color.clear
-                .frame(width: expandedFrame.width, height: expandedFrame.height)
-                .panelDropTargetState(
-                    in: RoundedRectangle(cornerRadius: 12, style: .continuous),
-                    isTargeted: true
-                )
-                .offset(x: expandedFrame.minX, y: expandedFrame.minY)
-                .allowsHitTesting(false)
-                .transition(.opacity)
-                .animation(.snappy(duration: 0.16), value: sectionID)
-        }
-    }
-
-    @ViewBuilder
-    private func dropGeometry<Content: View>(
-        _ content: Content,
-        for element: InboxListGeometry.Element
-    ) -> some View {
-        if dragController.needsDropGeometry {
-            content.onGeometryChange(for: CGRect.self) { proxy in
-                proxy.frame(in: .named(InboxDropSpace.name))
-            } action: { frame in
-                dragController.record(frame, for: element)
-            }
-        } else {
-            content
-        }
-    }
-
-    private func sectionHeader(_ group: InboxItemGroup) -> some View {
-        let isPinned = pinnedSections.contains(group.sectionID)
-        let showsGlass = InboxPinnedHeaderGlass.isVisible(
-            isPinned: isPinned,
-            hasScrolled: hasScrolledFromTop
-        )
-        return PanelListHeader(group.section, showsGlass: showsGlass)
-            .background {
-                ClipDragBlockingRegion(
-                    controller: clipDragSourceController,
-                    id: group.sectionID
-                )
-            }
-            .onGeometryChange(for: CGRect.self) { proxy in
-                proxy.frame(in: .named(InboxDropSpace.name))
-            } action: { frame in
-                dragController.record(frame, for: .heading(group.sectionID))
-            }
-            .onDisappear {
-                dragController.remove(.heading(group.sectionID))
-                if let updated = InboxPinnedHeaderGlass.updatedSections(
-                    pinnedSections,
-                    sectionID: group.sectionID,
-                    isPinned: false
-                ) {
-                    pinnedSections = updated
+        let payload = snapshot.dragPayload(for: item)
+        return itemCard(item)
+                .opacity(isShowingDragGap(for: item.id) ? 0 : 1)
+                .background {
+                    if model.editingID != item.id {
+                        ClipDragSourceRegion(
+                            controller: clipDragSourceController,
+                            id: item.id,
+                            payload: payload,
+                            onBegan: {
+                                beginDrag(payload, orderedIDs: items.map(\.id))
+                            },
+                            onMoved: { point in
+                                updateDrag(
+                                    at: point,
+                                    sectionID: sectionID,
+                                    items: items
+                                )
+                            },
+                            onEnded: { outcome, point in
+                                endDrag(
+                                    payload,
+                                    outcome: outcome,
+                                    at: point,
+                                    sectionID: sectionID,
+                                    items: items
+                                )
+                            }
+                        )
+                    }
                 }
-            }
-            .overlay {
-                PanelDragRegion()
-                    .allowsHitTesting(!dragController.isDragging)
-            }
-    }
-
-    private func updateScroll(_ metrics: InboxListGeometry.ScrollSnapshot) {
-        dragController.updateScroll(metrics)
-        let hasScrolled = InboxPinnedHeaderGlass.hasScrolled(
-            visibleOriginY: metrics.visibleOrigin.y
-        )
-        if hasScrolledFromTop != hasScrolled {
-            hasScrolledFromTop = hasScrolled
-        }
-        let nextPinnedSections = dragController.pinnedSectionIDs()
-        if pinnedSections != nextPinnedSections {
-            pinnedSections = nextPinnedSections
-        }
-    }
-
-    private func sectionDropTarget<Content: View>(
-        _ content: Content,
-        sectionID: UUID,
-        surface: SectionDropSurface,
-        proxy: ScrollViewProxy
-    ) -> some View {
-        content
-        .dropDestination(for: PanelDropPayload.self) { payloads, session in
-            handleDrop(
-                payloads: payloads,
-                session: session,
-                sectionID: sectionID,
-                surface: surface,
-                proxy: proxy
-            )
-        }
-        .onDropSessionUpdated { session in
-            if dragController.isDragging {
-                dragController.updateDropSession(
-                    session,
-                    sectionID: sectionID,
-                    surface: surface,
-                    context: dragContext
-                )
-            } else {
-                dragController.updateClipboardDropSession(
-                    session,
-                    sectionID: sectionID,
-                    surface: surface,
-                    context: dragContext
-                )
-            }
-        }
-        .dropConfiguration { session in
-            let operation: DropOperation = session.suggestedOperations.contains(.move)
-                ? .move
-                : .copy
-            var configuration = DropConfiguration(operation: operation)
-            configuration.acceptedItemCount = 1
-            return configuration
-        }
-    }
-
-    private func dropGap(
-        height: CGFloat,
-        showsDestinationEdge: Bool
-    ) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
-        return Color.clear
-            .frame(height: max(height, 2))
-            .overlay {
-                if showsDestinationEdge {
-                    shape.stroke(SnipSnapColors.insertionEdge, lineWidth: 1)
+                .padding(.bottom, PanelListMetrics.rowSpacing)
+                .id(item.id)
+                .listRowInsets(PanelListMetrics.inboxRowInsets)
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+                .background {
+                    InboxWindowFrameReader { frame, scrollOffsetY in
+                        reorderGeometry.rowFrames[item.id] = frame
+                        reorderGeometry.scrollOffsetY = scrollOffsetY
+                    }
                 }
+                .onDisappear {
+                    reorderGeometry.rowFrames[item.id] = nil
+                }
+    }
+
+    private func beginDrag(_ payload: ClipDragPayload, orderedIDs: [UUID]) {
+        activeDragPayload = payload
+        activeDropTarget = nil
+        isCommittingDrop = false
+        guard canDragReorder else {
+            activeDragOriginalOrder = []
+            activeDragRowFrames = [:]
+            return
+        }
+        activeDragOriginalOrder = orderedIDs
+        activeDragRowFrames = reorderGeometry.rowFrames
+        activeDragScrollOffsetY = reorderGeometry.scrollOffsetY
+    }
+
+    private func updateDrag(
+        at location: CGPoint,
+        sectionID: UUID,
+        items: [CaptureItem]
+    ) {
+        guard activeDragPayload != nil, !activeDragOriginalOrder.isEmpty else { return }
+        guard reorderGeometry.listFrame.contains(location) else {
+            if activeDropTarget != nil {
+                activeDropTarget = nil
+                pendingOrderBySection[sectionID] = nil
             }
-            .contentShape(shape)
-            .transition(.opacity)
+            return
+        }
+        let target = reorderTarget(at: location, items: items)
+        activeDropTarget = target
+        updatePendingOrder(sectionID: sectionID, target: target)
+    }
+
+    private func reorderTarget(
+        at location: CGPoint,
+        items: [CaptureItem]
+    ) -> InboxReorderTarget {
+        let placementFrames = activeDragRowFrames.isEmpty
+            ? reorderGeometry.rowFrames
+            : activeDragRowFrames
+        return InboxReorderPlan.target(
+            atWindowY: location.y,
+            orderedIDs: items.map(\.id),
+            movingIDs: Set(activeDragPayload?.ids ?? []),
+            rowFrames: placementFrames,
+            rowFrameOffsetY: reorderGeometry.scrollOffsetY - activeDragScrollOffsetY
+        )
+    }
+
+    private func updatePendingOrder(
+        sectionID: UUID,
+        target: InboxReorderTarget
+    ) {
+        guard let payload = activeDragPayload else { return }
+        guard let reorderedIDs = InboxReorderPlan.orderedIDs(
+            from: activeDragOriginalOrder,
+            movingIDs: payload.ids,
+            target: target
+        ) else { return }
+        guard pendingOrderBySection[sectionID] != reorderedIDs else { return }
+        withAnimation(.easeOut(duration: 0.12)) {
+            pendingOrderBySection[sectionID] = reorderedIDs
+        }
+    }
+
+    private func commitDrop(
+        _ payload: ClipDragPayload,
+        target: InboxReorderTarget,
+        sectionID: UUID
+    ) {
+        guard payload == activeDragPayload else { return }
+        guard let reorderedIDs = InboxReorderPlan.orderedIDs(
+            from: activeDragOriginalOrder,
+            movingIDs: payload.ids,
+            target: target
+        ), reorderedIDs != activeDragOriginalOrder else {
+            clearDrag(sectionID: sectionID)
+            return
+        }
+        activeDropTarget = target
+        updatePendingOrder(sectionID: sectionID, target: target)
+        isCommittingDrop = true
+        let selectionBeforeMove = model.selection
+        Task { @MainActor in
+            _ = await model.move(
+                ids: payload.ids,
+                to: sectionID,
+                before: target.beforeID,
+                selectionAfterMove: selectionBeforeMove
+            )
+            guard payload == activeDragPayload, isCommittingDrop else { return }
+            clearDrag(sectionID: sectionID)
+        }
+    }
+
+    private func endDrag(
+        _ payload: ClipDragPayload,
+        outcome: ClipDragOutcome,
+        at location: CGPoint,
+        sectionID: UUID,
+        items: [CaptureItem]
+    ) {
+        guard payload == activeDragPayload else { return }
+        if !activeDragOriginalOrder.isEmpty, reorderGeometry.listFrame.contains(location) {
+            let finalTarget = reorderTarget(at: location, items: items)
+            commitDrop(payload, target: finalTarget, sectionID: sectionID)
+            return
+        }
+        if outcome == .copy {
+            model.markDoneAfterExternalDrop(ids: payload.ids)
+        }
+        guard outcome == .move else {
+            clearDrag(sectionID: sectionID)
+            return
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard payload == activeDragPayload, !isCommittingDrop else { return }
+            clearDrag(sectionID: sectionID)
+        }
+    }
+
+    private func isShowingDragGap(for itemID: UUID) -> Bool {
+        activeDragPayload?.ids.contains(itemID) == true
+    }
+
+    private func clearDrag(sectionID: UUID) {
+        withAnimation(.snappy(duration: 0.12)) {
+            pendingOrderBySection[sectionID] = nil
+            activeDragPayload = nil
+            activeDragOriginalOrder = []
+            activeDragScrollOffsetY = 0
+            activeDragRowFrames = [:]
+            activeDropTarget = nil
+            isCommittingDrop = false
+        }
+    }
+
+    private func displayedItems(in snapshot: InboxListSnapshot) -> [CaptureItem] {
+        guard snapshot.groups.count == 1, let group = snapshot.groups.first else {
+            return snapshot.groups.flatMap(\.items)
+        }
+        return orderedItems(in: group)
+    }
+
+    private func orderedItems(in group: InboxItemGroup) -> [CaptureItem] {
+        guard let pendingOrder = pendingOrderBySection[group.sectionID],
+              Set(pendingOrder) == Set(group.items.map(\.id)) else {
+            return group.items
+        }
+        let itemsByID = Dictionary(uniqueKeysWithValues: group.items.map { ($0.id, $0) })
+        return pendingOrder.compactMap { itemsByID[$0] }
     }
 
     private func selectionFocusTarget(proxy: ScrollViewProxy) -> some View {
@@ -568,14 +634,11 @@ struct InboxListView: View {
             }
     }
 
-    private func itemCard(_ item: CaptureItem, snapshot: InboxListSnapshot) -> some View {
-        let payload = snapshot.dragPayload(for: item)
-        return InboxItemRow(
+    private func itemCard(_ item: CaptureItem) -> some View {
+        InboxItemRow(
             item: item,
             isSelected: model.selection.contains(item.id),
             isEditing: model.editingID == item.id,
-            dragPayload: payload,
-            dragSourceController: clipDragSourceController,
             editAttachments: editAttachmentsBinding(for: item),
             isSaving: savingBinding(for: item),
             attachmentURL: model.attachmentURL,
@@ -605,17 +668,7 @@ struct InboxListView: View {
                 focusedTarget = .list
                 return true
             },
-            onEditError: { model.presentedError = $0 },
-            onDragBegan: {
-                dragController.beginNativeDrag(payload)
-            },
-            onDragEnded: { outcome in
-                dragController.endNativeDrag(
-                    payload,
-                    outcome: outcome,
-                    markDoneAfterExternalCopy: model.markDoneAfterExternalDrop
-                )
-            }
+            onEditError: { model.presentedError = $0 }
         )
         .contextMenu {
             if model.editingID != item.id {
@@ -691,89 +744,6 @@ struct InboxListView: View {
                 )
             }
         )
-    }
-
-    private func handleDrop(
-        payloads: [PanelDropPayload],
-        session: DropSession,
-        sectionID: UUID,
-        surface: SectionDropSurface,
-        proxy: ScrollViewProxy
-    ) {
-        guard payloads.count == 1, let payload = payloads.first else { return }
-        switch payload {
-        case .clipboard(let clipboardPayload):
-            guard let entry = model.clipboardHistory.entry(id: clipboardPayload.entryID) else { return }
-            let plan = dragController.clipboardDropPlan(
-                session: session,
-                sectionID: sectionID,
-                surface: surface,
-                context: dragContext
-            )
-            Task { @MainActor in
-                let saved = await model.saveClipboardEntry(
-                    entry,
-                    sectionID: plan.sectionID,
-                    before: plan.beforeID,
-                    placesManually: plan.behavior == .exact
-                )
-                if saved, let id = model.latestAddedClipID {
-                    withAnimation(.snappy(duration: 0.18)) {
-                        proxy.scrollTo(id, anchor: .center)
-                    }
-                }
-            }
-        case .clip(let clipPayload):
-            handleClipDrop(
-                payload: clipPayload,
-                session: session,
-                sectionID: sectionID,
-                surface: surface,
-                proxy: proxy
-            )
-        }
-    }
-
-    private func handleClipDrop(
-        payload: ClipDragPayload,
-        session: DropSession,
-        sectionID: UUID,
-        surface: SectionDropSurface,
-        proxy: ScrollViewProxy
-    ) {
-        guard let execution = dragController.beginDrop(
-            payloads: [payload],
-            session: session,
-            sectionID: sectionID,
-            surface: surface,
-            context: dragContext
-        ) else { return }
-        let selectionBeforeMove = model.selection
-
-        Task { @MainActor in
-            defer { dragController.completeDrop(execution) }
-            let moved: Bool
-            switch execution.plan.behavior {
-            case .exact, .sectionTop:
-                moved = await model.move(
-                    ids: execution.payload.ids,
-                    to: execution.plan.sectionID,
-                    before: execution.plan.beforeID,
-                    selectionAfterMove: selectionBeforeMove
-                )
-            case .chronological:
-                moved = await model.moveChronologically(
-                    ids: execution.payload.ids,
-                    to: execution.plan.sectionID,
-                    selectionAfterMove: selectionBeforeMove
-                )
-            }
-            if moved, let firstID = execution.payload.ids.first {
-                withAnimation(.snappy(duration: 0.18)) {
-                    proxy.scrollTo(firstID, anchor: .center)
-                }
-            }
-        }
     }
 
     private func select(_ id: UUID) {

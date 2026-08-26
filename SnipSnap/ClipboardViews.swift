@@ -99,7 +99,6 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
                         showsGlass: hasScrolledFromTop,
                         actions: headerActions
                     )
-                    .background { PanelDragRegion() }
                 }
             }
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {

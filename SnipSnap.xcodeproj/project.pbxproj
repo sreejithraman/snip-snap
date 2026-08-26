@@ -47,10 +47,8 @@
 		100000000000000000000029 /* ClipboardHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000032 /* ClipboardHistoryTests.swift */; };
 		10000000000000000000002A /* SectionTabBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000033 /* SectionTabBarView.swift */; };
 		10000000000000000000002B /* ClipboardViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000034 /* ClipboardViews.swift */; };
-		10000000000000000000002C /* InboxListGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000035 /* InboxListGeometry.swift */; };
 		10000000000000000000002D /* PreviewImageCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000036 /* PreviewImageCache.swift */; };
 		10000000000000000000002E /* ComposerDraftStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000037 /* ComposerDraftStore.swift */; };
-		10000000000000000000002F /* InboxDragController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000038 /* InboxDragController.swift */; };
 		100000000000000000000030 /* AttachmentPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000039 /* AttachmentPreview.swift */; };
 		100000000000000000000031 /* ClipDragExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003A /* ClipDragExport.swift */; };
 		100000000000000000000032 /* PanelFileDrop.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003B /* PanelFileDrop.swift */; };
@@ -116,10 +114,8 @@
 		200000000000000000000032 /* ClipboardHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardHistoryTests.swift; sourceTree = "<group>"; };
 		200000000000000000000033 /* SectionTabBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SectionTabBarView.swift; sourceTree = "<group>"; };
 		200000000000000000000034 /* ClipboardViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardViews.swift; sourceTree = "<group>"; };
-		200000000000000000000035 /* InboxListGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxListGeometry.swift; sourceTree = "<group>"; };
 		200000000000000000000036 /* PreviewImageCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewImageCache.swift; sourceTree = "<group>"; };
 		200000000000000000000037 /* ComposerDraftStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerDraftStore.swift; sourceTree = "<group>"; };
-		200000000000000000000038 /* InboxDragController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxDragController.swift; sourceTree = "<group>"; };
 		200000000000000000000039 /* AttachmentPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentPreview.swift; sourceTree = "<group>"; };
 		20000000000000000000003A /* ClipDragExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipDragExport.swift; sourceTree = "<group>"; };
 		20000000000000000000003B /* PanelFileDrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelFileDrop.swift; sourceTree = "<group>"; };
@@ -190,8 +186,6 @@
 				200000000000000000000025 /* InboxSheets.swift */,
 				200000000000000000000040 /* SectionIconCatalog.swift */,
 				200000000000000000000026 /* InboxListView.swift */,
-				200000000000000000000035 /* InboxListGeometry.swift */,
-				200000000000000000000038 /* InboxDragController.swift */,
 				200000000000000000000039 /* AttachmentPreview.swift */,
 				20000000000000000000003A /* ClipDragExport.swift */,
 				200000000000000000000030 /* PanelUI.swift */,
@@ -371,8 +365,6 @@
 				10000000000000000000001D /* InboxSheets.swift in Sources */,
 				100000000000000000000037 /* SectionIconCatalog.swift in Sources */,
 				10000000000000000000001E /* InboxListView.swift in Sources */,
-				10000000000000000000002C /* InboxListGeometry.swift in Sources */,
-				10000000000000000000002F /* InboxDragController.swift in Sources */,
 				100000000000000000000030 /* AttachmentPreview.swift in Sources */,
 				100000000000000000000031 /* ClipDragExport.swift in Sources */,
 				100000000000000000000027 /* PanelUI.swift in Sources */,
