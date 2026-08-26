@@ -21,16 +21,25 @@ private final class PanelResizeTrackingEvent: NSEvent {
     }
 }
 
-final class PanelTests: XCTestCase {
-    func testSectionIconCatalogHasThreeHundredUniqueAvailableSymbols() {
-        let icons = SectionIconOptions.categories.flatMap(\.icons)
+@MainActor
+private final class PanelTextValue {
+    var text: String
 
-        XCTAssertEqual(SectionIconOptions.categories.count, 15)
-        XCTAssertTrue(SectionIconOptions.categories.allSatisfy { $0.icons.count == 20 })
+    init(_ text: String) {
+        self.text = text
+    }
+}
+
+final class PanelTests: XCTestCase {
+    func testListIconCatalogHasThreeHundredUniqueAvailableSymbols() {
+        let icons = SnipListIconOptions.categories.flatMap(\.icons)
+
+        XCTAssertEqual(SnipListIconOptions.categories.count, 15)
+        XCTAssertTrue(SnipListIconOptions.categories.allSatisfy { $0.icons.count == 20 })
         XCTAssertEqual(icons.count, 300)
         XCTAssertEqual(Set(icons).count, icons.count)
         XCTAssertTrue(icons.allSatisfy { NSImage(systemSymbolName: $0, accessibilityDescription: nil) != nil })
-        XCTAssertTrue(SectionIconOptions.matches("lizard.fill", query: "dinosaur"))
+        XCTAssertTrue(SnipListIconOptions.matches("lizard.fill", query: "dinosaur"))
     }
 
     func testDevelopmentBuildIdentityReadsTheSlotFromTheBundleIdentifier() {
@@ -107,7 +116,7 @@ final class PanelTests: XCTestCase {
         let hostingView = PanelFileDropHostingView(
             rootView: EmptyView(),
             controller: PanelFileDropController(),
-            clipDragSourceController: ClipDragSourceController()
+            snipDragSourceController: SnipDragSourceController()
         )
 
         XCTAssertTrue(hostingView.sizingOptions.isEmpty)
@@ -121,8 +130,8 @@ final class PanelTests: XCTestCase {
             withIntermediateDirectories: true
         )
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        let file = directory.appendingPathComponent("clip.md")
-        try Data("# Clip".utf8).write(to: file)
+        let file = directory.appendingPathComponent("snip.md")
+        try Data("# Snip".utf8).write(to: file)
         let missing = directory.appendingPathComponent("missing.md")
 
         XCTAssertEqual(
@@ -272,8 +281,8 @@ final class PanelTests: XCTestCase {
         window.contentView = NSHostingView(rootView: input)
         window.makeKeyAndOrderFront(nil)
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        let textView = try XCTUnwrap(findTextView(in: window.contentView))
-        XCTAssertTrue(window.makeFirstResponder(textView))
+        let textField = try XCTUnwrap(findTextField(in: window.contentView))
+        XCTAssertTrue(window.makeFirstResponder(textField))
         let event = try XCTUnwrap(
             NSEvent.keyEvent(
                 with: .keyDown,
@@ -295,11 +304,61 @@ final class PanelTests: XCTestCase {
     }
 
     @MainActor
-    private func findTextView(in view: NSView?) -> NSTextView? {
+    func testShiftReturnInsertsNewlineInPanelTextInputAtTheSelection() throws {
+        let value = PanelTextValue("firstsecond")
+        var submitted = false
+        let input = PanelMultilineTextInput(
+            "Add to Inbox…",
+            text: Binding(
+                get: { value.text },
+                set: { value.text = $0 }
+            ),
+            lineRange: 1...5,
+            isFocused: true,
+            onFocusChange: { _ in },
+            onSubmit: { submitted = true }
+        )
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 320, height: 80),
+            styleMask: .titled,
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = NSHostingView(rootView: input)
+        window.makeKeyAndOrderFront(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let textField = try XCTUnwrap(findTextField(in: window.contentView))
+        textField.selectText(nil)
+        let fieldEditor = try XCTUnwrap(window.firstResponder as? NSTextView)
+        fieldEditor.setSelectedRange(NSRange(location: 5, length: 0))
+        let event = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: .shift,
+                timestamp: 0,
+                windowNumber: window.windowNumber,
+                context: nil,
+                characters: "\r",
+                charactersIgnoringModifiers: "\r",
+                isARepeat: false,
+                keyCode: 36
+            )
+        )
+
+        NSApp.sendEvent(event)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+
+        XCTAssertEqual(value.text, "first\nsecond")
+        XCTAssertFalse(submitted)
+    }
+
+    @MainActor
+    private func findTextField(in view: NSView?) -> NSTextField? {
         guard let view else { return nil }
-        if let textView = view as? NSTextView { return textView }
+        if let textField = view as? NSTextField { return textField }
         for subview in view.subviews {
-            if let textView = findTextView(in: subview) { return textView }
+            if let textField = findTextField(in: subview) { return textField }
         }
         return nil
     }
@@ -422,7 +481,7 @@ final class PanelTests: XCTestCase {
 
     func testDefaultWindowSizeIsUsable() {
         XCTAssertEqual(AppWindowDefaults.defaultSize.width, 430)
-        XCTAssertEqual(AppWindowDefaults.defaultSize.height, 700)
+        XCTAssertEqual(AppWindowDefaults.defaultSize.height, 500)
         XCTAssertEqual(
             AppWindowDefaults.defaultSize,
             AppWindowDefaults.windowSize(for: AppWindowDefaults.defaultContentSize)
@@ -463,44 +522,55 @@ final class PanelTests: XCTestCase {
         XCTAssertEqual(PanelTextInputReturnAction.action(for: [.shift]), .insertNewline)
     }
 
-    func testPanelTextInputCapsItsMeasuredHeightAtTheLineRange() {
-        XCTAssertEqual(
-            PanelMultilineTextMetrics.height(
-                measuredContentHeight: 1,
-                lineRange: 2...10,
-                lineSpacing: 0
-            ),
-            PanelMultilineTextMetrics.lineHeight * 2 + 8
+    func testCompactComposerDoesNotTreatItsAlignedFieldAsExpanded() {
+        XCTAssertFalse(
+            PanelComposerLayout.isExpanded(
+                fieldHeight: PanelControlMetrics.floatingRowHeight
+            )
         )
-        XCTAssertEqual(
-            PanelMultilineTextMetrics.height(
-                measuredContentHeight: 1_000,
-                lineRange: 2...10,
-                lineSpacing: 0
-            ),
-            PanelMultilineTextMetrics.lineHeight * 10 + 8
+        XCTAssertTrue(
+            PanelComposerLayout.isExpanded(
+                fieldHeight: PanelControlMetrics.floatingRowHeight + 1
+            )
         )
     }
 
-    func testPanelTextInputIncludesLineSpacingInItsHeightLimit() {
-        XCTAssertEqual(
-            PanelMultilineTextMetrics.height(
-                measuredContentHeight: 1_000,
-                lineRange: 2...5,
-                lineSpacing: 2
-            ),
-            PanelMultilineTextMetrics.lineHeight * 5 + 16
+    @MainActor
+    func testCompactPanelTextInputCentersItsRenderedGlyphLine() throws {
+        let input = PanelMultilineTextInput(
+            "Add to Inbox…",
+            text: .constant("sfafd"),
+            lineRange: 1...5,
+            isFocused: true,
+            onFocusChange: { _ in },
+            onSubmit: {}
         )
-    }
+        let window = NSWindow(
+            contentRect: CGRect(
+                x: 0,
+                y: 0,
+                width: 320,
+                height: PanelControlMetrics.floatingRowHeight
+            ),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let hostingView = NSHostingView(rootView: input)
+        window.contentView = hostingView
+        window.makeKeyAndOrderFront(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
 
-    func testPanelTextInputDoesNotNarrowTextWhileEditing() {
-        XCTAssertEqual(PanelMultilineTextMetrics.effectiveHorizontalInset, 0)
-    }
+        let textField = try XCTUnwrap(findTextField(in: hostingView))
+        let cell = try XCTUnwrap(textField.cell)
+        let textBounds = cell.titleRect(forBounds: textField.bounds)
+        let textBoundsInInput = textField.convert(textBounds, to: hostingView)
 
-    func testPanelTextInputPlaceholderMatchesEditorTopInset() {
         XCTAssertEqual(
-            PanelMultilineTextMetrics.placeholderTopInset,
-            PanelMultilineTextMetrics.systemTextEditorTopInset
+            textBoundsInInput.midY,
+            hostingView.bounds.midY,
+            accuracy: 0.5,
+            "Rendered text bounds: \(textBoundsInInput); input bounds: \(hostingView.bounds)"
         )
     }
 
@@ -808,27 +878,27 @@ final class PanelTests: XCTestCase {
     }
 
     @MainActor
-    func testClipDragDoesNotRunAlongsideAnotherDragGesture() throws {
-        let controller = ClipDragSourceController()
+    func testSnipDragDoesNotRunAlongsideAnotherDragGesture() throws {
+        let controller = SnipDragSourceController()
         let hostView = NSView()
         controller.attach(to: hostView)
-        let clipPan = try XCTUnwrap(
+        let snipPan = try XCTUnwrap(
             hostView.gestureRecognizers.first { $0 is NSPanGestureRecognizer }
         )
         let otherDrag = NSPanGestureRecognizer()
 
         XCTAssertFalse(
             controller.gestureRecognizer(
-                clipPan,
+                snipPan,
                 shouldRecognizeSimultaneouslyWith: otherDrag
             )
         )
-        XCTAssertTrue(clipPan.canPrevent(otherDrag))
-        XCTAssertFalse(clipPan.canBePrevented(by: otherDrag))
+        XCTAssertTrue(snipPan.canPrevent(otherDrag))
+        XCTAssertFalse(snipPan.canBePrevented(by: otherDrag))
     }
 
     @MainActor
-    func testStickyHeaderBlocksTheClipHiddenBelowIt() throws {
+    func testStickyHeaderBlocksTheSnipHiddenBelowIt() throws {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 300, height: 300),
             styleMask: .borderless,
@@ -836,15 +906,15 @@ final class PanelTests: XCTestCase {
             defer: false
         )
         let host = try XCTUnwrap(window.contentView)
-        let clipView = NSView(frame: NSRect(x: 0, y: 180, width: 300, height: 100))
+        let snipView = NSView(frame: NSRect(x: 0, y: 180, width: 300, height: 100))
         let headerView = NSView(frame: NSRect(x: 0, y: 240, width: 300, height: 40))
-        host.addSubview(clipView)
+        host.addSubview(snipView)
         host.addSubview(headerView)
-        let controller = ClipDragSourceController()
-        let payload = ClipDragPayload(ids: [UUID()], text: "Hidden clip")
+        let controller = SnipDragSourceController()
+        let payload = SnipDragPayload(ids: [UUID()], text: "Hidden snip")
         controller.updateRegion(
             id: UUID(),
-            view: clipView,
+            view: snipView,
             payload: payload,
             onBegan: {},
             onMoved: { _ in },
@@ -857,7 +927,7 @@ final class PanelTests: XCTestCase {
     }
 
     @MainActor
-    func testTabBarBlocksTheClipHiddenBelowItAcrossItsFullWidth() throws {
+    func testTabBarBlocksTheSnipHiddenBelowItAcrossItsFullWidth() throws {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 300, height: 300),
             styleMask: .borderless,
@@ -865,15 +935,15 @@ final class PanelTests: XCTestCase {
             defer: false
         )
         let host = try XCTUnwrap(window.contentView)
-        let clipView = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 100))
+        let snipView = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 100))
         let tabBarView = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 40))
-        host.addSubview(clipView)
+        host.addSubview(snipView)
         host.addSubview(tabBarView)
-        let controller = ClipDragSourceController()
-        let payload = ClipDragPayload(ids: [UUID()], text: "Hidden clip")
+        let controller = SnipDragSourceController()
+        let payload = SnipDragPayload(ids: [UUID()], text: "Hidden snip")
         controller.updateRegion(
             id: UUID(),
-            view: clipView,
+            view: snipView,
             payload: payload,
             onBegan: {},
             onMoved: { _ in },
@@ -888,7 +958,7 @@ final class PanelTests: XCTestCase {
     }
 
     @MainActor
-    func testResizeRimBlocksTheClipHiddenBelowIt() throws {
+    func testResizeRimBlocksTheSnipHiddenBelowIt() throws {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 300, height: 300),
             styleMask: .borderless,
@@ -896,16 +966,16 @@ final class PanelTests: XCTestCase {
             defer: false
         )
         let host = try XCTUnwrap(window.contentView)
-        let clipView = NSView(frame: host.bounds)
+        let snipView = NSView(frame: host.bounds)
         let resizeView = PanelResizeView(frame: host.bounds)
-        host.addSubview(clipView)
+        host.addSubview(snipView)
         host.addSubview(resizeView)
-        let controller = ClipDragSourceController()
+        let controller = SnipDragSourceController()
         controller.attach(to: host)
-        let payload = ClipDragPayload(ids: [UUID()], text: "Hidden clip")
+        let payload = SnipDragPayload(ids: [UUID()], text: "Hidden snip")
         controller.updateRegion(
             id: UUID(),
-            view: clipView,
+            view: snipView,
             payload: payload,
             onBegan: {},
             onMoved: { _ in },

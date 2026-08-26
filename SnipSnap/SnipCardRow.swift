@@ -1,12 +1,12 @@
 import SwiftUI
 
-struct InboxItemRow: View {
-    let item: CaptureItem
+struct SnipCardRow: View {
+    let snip: Snip
     let isSelected: Bool
     let isEditing: Bool
     @Binding var editAttachments: [URL]
     @Binding var isSaving: Bool
-    let attachmentURL: (ClipAttachment) -> URL
+    let attachmentURL: (SnipAttachment) -> URL
     let onPreviewAttachments: ([URL], URL) -> Void
     let onRemovePreviewURL: (URL) -> Void
     let onSelect: () -> Void
@@ -28,7 +28,7 @@ struct InboxItemRow: View {
             Toggle(
                 "Done",
                 isOn: Binding(
-                    get: { item.isDone },
+                    get: { snip.isDone },
                     set: { _ in onToggleDone() }
                 )
             )
@@ -40,7 +40,7 @@ struct InboxItemRow: View {
             .padding(.trailing, SnipSnapSpacing.relatedContent)
             .padding(.vertical, SnipSnapSpacing.cardContentInset)
             .disabled(isEditing)
-            .help(item.isDone ? "Mark Not Done" : "Mark Done")
+            .help(snip.isDone ? "Mark Not Done" : "Mark Done")
 
             if isEditing {
                 editingBody
@@ -50,7 +50,7 @@ struct InboxItemRow: View {
                     .transition(.opacity)
             }
         }
-        .panelContentCardSurface(isSelected: isSelected, isDone: item.isDone)
+        .panelContentCardSurface(isSelected: isSelected, isDone: snip.isDone)
         .contentShape(Rectangle())
         .onTapGesture(count: 2, perform: onOpen)
         .onTapGesture(count: 1, perform: onSelect)
@@ -63,7 +63,7 @@ struct InboxItemRow: View {
                 return
             }
             editSessionID = UUID()
-            editText = item.content
+            editText = snip.content
             Task { @MainActor in
                 await Task.yield()
                 editorFocused = true
@@ -79,13 +79,13 @@ struct InboxItemRow: View {
     }
 
     private var draggableBody: some View {
-        ClipCardBody(
-            text: item.content,
-            isDone: item.isDone,
-            hasAttachments: !item.attachments.isEmpty,
+        SnipCardBody(
+            text: snip.content,
+            isDone: snip.isDone,
+            hasAttachments: !snip.attachments.isEmpty,
             leadingInset: 0
         ) {
-            if !item.attachments.isEmpty {
+            if !snip.attachments.isEmpty {
                 AttachmentPreviewStrip(
                     items: attachmentPreviewItems,
                     onPreview: { url in
@@ -98,7 +98,7 @@ struct InboxItemRow: View {
     }
 
     private var attachmentPreviewItems: [AttachmentPreviewItem] {
-        item.attachments.map { attachment in
+        snip.attachments.map { attachment in
             AttachmentPreviewItem(
                 attachment: attachment,
                 url: attachmentURL(attachment)
@@ -114,9 +114,9 @@ struct InboxItemRow: View {
                     onPreview: { url in
                         onPreviewAttachments(editAttachments, url)
                     },
-                    onRemove: { item in
-                        onRemovePreviewURL(item.url)
-                        editAttachments.removeAll { $0 == item.url }
+                    onRemove: { snip in
+                        onRemovePreviewURL(snip.url)
+                        editAttachments.removeAll { $0 == snip.url }
                     }
                 )
                 .padding(.top, SnipSnapSpacing.cardContentInset)
@@ -124,7 +124,7 @@ struct InboxItemRow: View {
             }
 
             PanelMultilineTextInput(
-                "Clip text",
+                "Snip text",
                 text: $editText,
                 lineRange: PanelInlineEditMetrics.textLineRange,
                 lineSpacing: 2,
@@ -246,8 +246,8 @@ struct InboxItemRow: View {
             .panelEmbeddedProminentActionControl()
             .keyboardShortcut("s", modifiers: .command)
             .disabled(!canSaveEdit)
-            .help("Save Clip")
-            .accessibilityLabel("Save Clip")
+            .help("Save Snip")
+            .accessibilityLabel("Save Snip")
         }
     }
 
@@ -287,7 +287,7 @@ struct InboxItemRow: View {
     }
 }
 
-struct ClipCardBody<AttachmentContent: View>: View {
+struct SnipCardBody<AttachmentContent: View>: View {
     let text: String
     let isDone: Bool
     let hasAttachments: Bool
@@ -303,7 +303,7 @@ struct ClipCardBody<AttachmentContent: View>: View {
                     .padding(.trailing, SnipSnapSpacing.cardContentInset)
             }
 
-            ClipCardTextBlock(
+            SnipCardTextBlock(
                 text: text,
                 isDone: isDone,
                 hasAttachments: hasAttachments,
@@ -313,7 +313,7 @@ struct ClipCardBody<AttachmentContent: View>: View {
     }
 }
 
-struct ClipCardTextBlock: View {
+struct SnipCardTextBlock: View {
     let text: String
     let isDone: Bool
     let hasAttachments: Bool

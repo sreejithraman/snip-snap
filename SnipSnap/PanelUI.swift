@@ -52,11 +52,11 @@ enum PanelShapeMetrics {
 enum PanelListMetrics {
     static let horizontalContentInset = SnipSnapSpacing.paneContentInset
     static let rowSpacing = SnipSnapSpacing.relatedContent
-    static let sectionSpacing = SnipSnapSpacing.paneContentInset
+    static let listSpacing = SnipSnapSpacing.paneContentInset
     static let verticalContentInset: CGFloat = 12
     static let compactVerticalContentInset: CGFloat = 10
 
-    static let inboxRowInsets = EdgeInsets(
+    static let rowInsets = EdgeInsets(
         top: 0,
         leading: relatedListInset,
         bottom: 0,
@@ -97,6 +97,11 @@ enum PanelGeometryChange {
 enum PanelComposerLayout {
     static func actionAlignment(isExpanded: Bool) -> VerticalAlignment {
         isExpanded ? .top : .center
+    }
+
+    static func isExpanded(fieldHeight: CGFloat) -> Bool {
+        fieldHeight > PanelControlMetrics.floatingRowHeight
+            + PanelGeometryChange.minimumMeaningfulChange
     }
 }
 

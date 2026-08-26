@@ -10,7 +10,7 @@ final class ShortcutTests: StoreBackedTestCase {
         )
         XCTAssertEqual(AppShortcutAction.allCases.map(\.title), [
             "Done or Not Done",
-            "Merge Clips",
+            "Merge Snips",
         ])
         XCTAssertEqual(AppShortcutAction.toggleDone.rawValue, "toggleDone")
     }
@@ -19,10 +19,10 @@ final class ShortcutTests: StoreBackedTestCase {
         let defaults = GlobalShortcutConfiguration.snipSnapDefaults
 
         XCTAssertEqual(defaults.captureSelection, .doubleShift(.left))
-        XCTAssertEqual(defaults.toggleInbox, .doubleShift(.right))
+        XCTAssertEqual(defaults.togglePanel, .doubleShift(.right))
         XCTAssertEqual(defaults.toggleClipboard, .commandDoubleShift(.right))
         XCTAssertEqual(defaults.captureSelection.displayName, "Left ⇧ ⇧")
-        XCTAssertEqual(defaults.toggleInbox.displayName, "Right ⇧ ⇧")
+        XCTAssertEqual(defaults.togglePanel.displayName, "Right ⇧ ⇧")
         XCTAssertEqual(defaults.toggleClipboard.displayName, "⌘ Right ⇧ ⇧")
         XCTAssertTrue(defaults.isValid)
     }
@@ -41,7 +41,7 @@ final class ShortcutTests: StoreBackedTestCase {
             """
             {
               "captureSelection": {"kind": "doubleShift", "side": "left"},
-              "toggleInbox": {"kind": "doubleShift", "side": "right"}
+              "togglePanel": {"kind": "doubleShift", "side": "right"}
             }
             """.utf8
         )
@@ -52,6 +52,26 @@ final class ShortcutTests: StoreBackedTestCase {
         )
 
         XCTAssertEqual(decoded, .snipSnapDefaults)
+    }
+
+    func testRenamedPanelShortcutKeepsTheSavedInboxTrigger() throws {
+        let oldSettings = Data(
+            """
+            {
+              "captureSelection": {"kind": "doubleShift", "side": "right"},
+              "toggleInbox": {"kind": "doubleShift", "side": "left"}
+            }
+            """.utf8
+        )
+
+        let decoded = try JSONDecoder().decode(
+            GlobalShortcutConfiguration.self,
+            from: oldSettings
+        )
+
+        XCTAssertEqual(decoded.captureSelection, .doubleShift(.right))
+        XCTAssertEqual(decoded.togglePanel, .doubleShift(.left))
+        XCTAssertEqual(decoded.toggleClipboard, .commandDoubleShift(.right))
     }
 
     func testDoubleShiftDetectorRequiresTwoCleanTaps() {
@@ -154,9 +174,9 @@ final class ShortcutTests: StoreBackedTestCase {
             keyLabel: "K"
         )
 
-        let changed = try settings.candidate(setting: custom, for: .toggleInbox)
+        let changed = try settings.candidate(setting: custom, for: .togglePanel)
         settings.save(changed)
-        XCTAssertEqual(ShortcutSettings(defaults: defaults).configuration.toggleInbox, custom)
+        XCTAssertEqual(ShortcutSettings(defaults: defaults).configuration.togglePanel, custom)
 
         XCTAssertThrowsError(
             try settings.candidate(setting: custom, for: .captureSelection)
@@ -217,7 +237,7 @@ final class ShortcutTests: StoreBackedTestCase {
         XCTAssertThrowsError(
             try settings.candidate(
                 setting: GlobalHotKeyAction.captureSelection.defaultTrigger,
-                for: .toggleInbox
+                for: .togglePanel
             )
         ) { error in
             XCTAssertEqual(error as? ShortcutSettingsError, .defaultForAnotherAction)
@@ -324,7 +344,7 @@ final class ShortcutTests: StoreBackedTestCase {
                 modifiers: UInt32(controlKey | optionKey),
                 keyLabel: "K"
             ),
-            toggleInbox: .doubleShift(.right)
+            togglePanel: .doubleShift(.right)
         )
         defaults.set(
             try JSONEncoder().encode(customGlobal),
@@ -373,7 +393,7 @@ final class ShortcutTests: StoreBackedTestCase {
         )
         let crossGroupGlobal = GlobalShortcutConfiguration(
             captureSelection: .keyChord(collidingChord),
-            toggleInbox: .doubleShift(.right)
+            togglePanel: .doubleShift(.right)
         )
         let preservedMerge = ShortcutKeyChord(
             keyCode: kVK_ANSI_K,
@@ -403,7 +423,7 @@ final class ShortcutTests: StoreBackedTestCase {
 
         let defaultClaimingGlobal = GlobalShortcutConfiguration(
             captureSelection: .keyChord(AppShortcutAction.merge.defaultChord),
-            toggleInbox: .doubleShift(.right)
+            togglePanel: .doubleShift(.right)
         )
         let validCustomApp = AppShortcutConfiguration(bindings: [
             .toggleDone: collidingChord,
@@ -419,7 +439,7 @@ final class ShortcutTests: StoreBackedTestCase {
         )
         settings = ShortcutSettings(defaults: defaults)
         XCTAssertEqual(settings.configuration.captureSelection, .doubleShift(.left))
-        XCTAssertEqual(settings.configuration.toggleInbox, .doubleShift(.right))
+        XCTAssertEqual(settings.configuration.togglePanel, .doubleShift(.right))
         XCTAssertEqual(settings.appConfiguration, validCustomApp)
     }
 
@@ -433,7 +453,7 @@ final class ShortcutTests: StoreBackedTestCase {
                 """
                 {
                   "captureSelection": {"kind": "doubleShift"},
-                  "toggleInbox": {"kind": "doubleShift", "side": "right"}
+                  "togglePanel": {"kind": "doubleShift", "side": "right"}
                 }
                 """.utf8
             ),
@@ -447,7 +467,7 @@ final class ShortcutTests: StoreBackedTestCase {
 
         let duplicateActions = GlobalShortcutConfiguration(
             captureSelection: .doubleShift(.left),
-            toggleInbox: .doubleShift(.left)
+            togglePanel: .doubleShift(.left)
         )
         defaults.set(
             try JSONEncoder().encode(duplicateActions),

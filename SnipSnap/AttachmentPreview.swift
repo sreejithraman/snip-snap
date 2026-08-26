@@ -45,7 +45,7 @@ struct AttachmentPreviewItem: Identifiable, Hashable {
         fileName = url.lastPathComponent
     }
 
-    init(attachment: ClipAttachment, url: URL) {
+    init(attachment: SnipAttachment, url: URL) {
         id = attachment.id.uuidString
         self.url = url
         fileName = attachment.fileName

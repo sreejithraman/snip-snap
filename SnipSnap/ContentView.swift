@@ -9,7 +9,7 @@ private enum FileImportTarget {
 
 struct PendingEditAttachmentImport: Identifiable {
     let id = UUID()
-    let itemID: UUID
+    let snipID: UUID
     let urls: [URL]
 }
 
@@ -19,12 +19,12 @@ struct ContentView: View {
     @Environment(\.controlActiveState) private var controlActiveState
     let coordinator: AppCoordinator
     @ObservedObject private var fileDropController: PanelFileDropController
-    private let clipDragSourceController: ClipDragSourceController
+    private let snipDragSourceController: SnipDragSourceController
 
     @State private var entryDraft = ComposerDraft()
-    @State private var entryDraftSectionID = SnipSnapSection.inboxID
-    @State private var showingNewSection = false
-    @State private var movesSelectionToNewSection = false
+    @State private var entryDraftListID = SnipList.inboxID
+    @State private var showingNewList = false
+    @State private var movesSelectionToNewList = false
     @State private var showingFileImporter = false
     @State private var fileImportTarget: FileImportTarget?
     @State private var pendingEditAttachmentImport: PendingEditAttachmentImport?
@@ -35,16 +35,16 @@ struct ContentView: View {
     @State private var previewURLs: [URL] = []
     @State private var selectedPreviewURL: URL?
     @State private var inlineEntryDragBlockingID = UUID()
-    @StateObject private var listState = InboxListState()
-    @FocusState private var focusedTarget: InboxFocusTarget?
+    @StateObject private var listState = SnipListState()
+    @FocusState private var focusedTarget: PanelFocusTarget?
 
     init(
         coordinator: AppCoordinator,
         fileDropController: PanelFileDropController,
-        clipDragSourceController: ClipDragSourceController
+        snipDragSourceController: SnipDragSourceController
     ) {
         self.coordinator = coordinator
-        self.clipDragSourceController = clipDragSourceController
+        self.snipDragSourceController = snipDragSourceController
         _fileDropController = ObservedObject(wrappedValue: fileDropController)
     }
 
@@ -82,15 +82,15 @@ struct ContentView: View {
             switch result {
             case .success(let urls):
                 switch fileImportTarget {
-                case .edit(let itemID) where itemID == model.editingID:
+                case .edit(let snipID) where snipID == model.editingID:
                     pendingEditAttachmentImport = PendingEditAttachmentImport(
-                        itemID: itemID,
+                        snipID: snipID,
                         urls: urls
                     )
-                case .composer(let sectionID):
-                    model.addDraftAttachments(urls, to: sectionID)
-                    if model.activeSectionID == sectionID {
-                        entryDraft = model.composerDraft(for: sectionID)
+                case .composer(let listID):
+                    model.addDraftAttachments(urls, to: listID)
+                    if model.activeListID == listID {
+                        entryDraft = model.composerDraft(for: listID)
                     }
                 case .edit, .none:
                     break
@@ -114,12 +114,12 @@ struct ContentView: View {
 
             mainPanel
 
-            SectionTabBarView(
+            SnipListTabBarView(
                 model: model,
-                clipDragSourceController: clipDragSourceController
+                snipDragSourceController: snipDragSourceController
             ) {
-                movesSelectionToNewSection = false
-                showingNewSection = true
+                movesSelectionToNewList = false
+                showingNewList = true
             }
         }
         .panelControlBaseline()
@@ -128,18 +128,18 @@ struct ContentView: View {
             minHeight: AppWindowDefaults.minimumContentSize.height
         )
         .onAppear {
-            entryDraftSectionID = model.activeSectionID
-            entryDraft = model.composerDraft(for: model.activeSectionID)
+            entryDraftListID = model.activeListID
+            entryDraft = model.composerDraft(for: model.activeListID)
             focusedTarget = .list
         }
-        .onChange(of: model.activeSectionID) { _, sectionID in
-            entryDraftSectionID = sectionID
-            entryDraft = model.composerDraft(for: sectionID)
+        .onChange(of: model.activeListID) { _, listID in
+            entryDraftListID = listID
+            entryDraft = model.composerDraft(for: listID)
         }
         .onChange(of: model.isShowingClipboard) { _, _ in
-            updateInboxComposerExpansion(for: measuredInlineEntryHeight)
+            updatePanelComposerExpansion(for: measuredInlineEntryHeight)
         }
-        .onReceive(coordinator.inboxFocusRequests) { request in
+        .onReceive(coordinator.panelFocusRequests) { request in
             switch request {
             case .search:
                 focusedTarget = .search
@@ -148,24 +148,24 @@ struct ContentView: View {
             }
         }
         .focusedValue(
-            \.inboxCommandModel,
-            hasInboxCommandFocus ? model : nil
+            \.snipCommandModel,
+            hasSnipCommandFocus ? model : nil
         )
-        .onChange(of: hasInboxCommandFocus, initial: true) { _, isActive in
-            coordinator.setInboxCommandFocusActive(isActive)
+        .onChange(of: hasSnipCommandFocus, initial: true) { _, isActive in
+            coordinator.setSnipCommandFocusActive(isActive)
         }
         .onExitCommand(perform: handleCancel)
         .sheet(
-            isPresented: $showingNewSection,
+            isPresented: $showingNewList,
             onDismiss: {
-                movesSelectionToNewSection = false
+                movesSelectionToNewList = false
                 restoreListFocus()
             }
         ) {
-            InboxNewSectionSheet(
+            NewSnipListSheet(
                 model: model,
-                isPresented: $showingNewSection,
-                movesSelection: movesSelectionToNewSection
+                isPresented: $showingNewList,
+                movesSelection: movesSelectionToNewList
             )
         }
         .alert(
@@ -208,8 +208,8 @@ struct ContentView: View {
                     .background {
                         ZStack {
                             PanelDragRegion()
-                            ClipDragBlockingRegion(
-                                controller: clipDragSourceController,
+                            SnipDragBlockingRegion(
+                                controller: snipDragSourceController,
                                 id: inlineEntryDragBlockingID
                             )
                         }
@@ -222,7 +222,7 @@ struct ContentView: View {
                             proposed: height
                         ) else { return }
                         measuredInlineEntryHeight = height
-                        updateInboxComposerExpansion(for: height)
+                        updatePanelComposerExpansion(for: height)
                     }
                     .zIndex(1)
             }
@@ -246,7 +246,7 @@ struct ContentView: View {
             }
     }
 
-    private var hasInboxCommandFocus: Bool {
+    private var hasSnipCommandFocus: Bool {
         focusedTarget == .list && model.editingID == nil && controlActiveState == .key
     }
 
@@ -261,12 +261,12 @@ struct ContentView: View {
             .padding(.horizontal, SnipSnapSpacing.controlContentInset)
             .panelInputSurface()
 
-            InboxMoreButton(
+            PanelMoreButton(
                 model: model,
                 focusedTarget: $focusedTarget,
-                moveSelectionToNewSection: {
-                    movesSelectionToNewSection = true
-                    showingNewSection = true
+                moveSelectionToNewList: {
+                    movesSelectionToNewList = true
+                    showingNewList = true
                 },
                 selectAllVisible: selectAllVisible
             )
@@ -293,14 +293,14 @@ struct ContentView: View {
                 showingClearConfirmation: $showingClearClipboard
             )
         } else {
-            if model.filteredItems.isEmpty {
+            if model.filteredSnips.isEmpty {
                 ZStack {
-                    savedClipList
+                    savedSnipList
                     emptyState
                         .allowsHitTesting(false)
                 }
             } else {
-                savedClipList
+                savedSnipList
             }
         }
     }
@@ -310,9 +310,9 @@ struct ContentView: View {
         ClipboardSearchLayout(
             history: model.clipboardHistory,
             query: model.query,
-            hasSavedMatches: !model.filteredItems.isEmpty
+            hasSavedMatches: !model.filteredSnips.isEmpty
         ) {
-            savedClipList
+            savedSnipList
         } clipboardResults: { fillsAvailableSpace in
             ClipboardSearchStrip(
                 model: model,
@@ -360,21 +360,21 @@ struct ContentView: View {
         }
     }
 
-    private var savedClipList: some View {
-        InboxListView(
+    private var savedSnipList: some View {
+        SnipListView(
             model: model,
             coordinator: coordinator,
-            clipDragSourceController: clipDragSourceController,
+            snipDragSourceController: snipDragSourceController,
             fileDropController: fileDropController,
             state: listState,
             focusedTarget: $focusedTarget,
-            moveSelectionToNewSection: { ids in
+            moveSelectionToNewList: { ids in
                 model.selection = ids
-                movesSelectionToNewSection = true
-                showingNewSection = true
+                movesSelectionToNewList = true
+                showingNewList = true
             },
-            requestFileImport: { itemID in
-                fileImportTarget = .edit(itemID)
+            requestFileImport: { snipID in
+                fileImportTarget = .edit(snipID)
                 showingFileImporter = true
             },
             pendingEditAttachmentImport: $pendingEditAttachmentImport,
@@ -437,8 +437,8 @@ struct ContentView: View {
                         },
                         onRemove: { item in
                             removePreviewURL(item.url)
-                            model.removeDraftAttachment(item.url, from: model.activeSectionID)
-                            entryDraft = model.composerDraft(for: model.activeSectionID)
+                            model.removeDraftAttachment(item.url, from: model.activeListID)
+                            entryDraft = model.composerDraft(for: model.activeListID)
                         }
                     )
                     .padding(.horizontal, SnipSnapSpacing.controlContentInset)
@@ -472,7 +472,7 @@ struct ContentView: View {
     private var inlineAttachmentMenu: some View {
         Menu {
             Button("Choose Files…") {
-                fileImportTarget = .composer(model.activeSectionID)
+                fileImportTarget = .composer(model.activeListID)
                 showingFileImporter = true
             }
             Button("Capture Screen Area…") { captureScreenArea() }
@@ -493,7 +493,7 @@ struct ContentView: View {
 
     private var inlineEntryField: some View {
         PanelMultilineTextInput(
-            "Add to \(model.activeSection.name)…",
+            "Add to \(model.activeList.name)…",
             text: entryText,
             lineRange: PanelComposerMetrics.textLineRange,
             isFocused: focusedTarget == .inlineEntry,
@@ -523,7 +523,7 @@ struct ContentView: View {
             get: { entryDraft.text },
             set: { value in
                 entryDraft.text = value
-                model.saveComposerText(value, for: entryDraftSectionID)
+                model.saveComposerText(value, for: entryDraftListID)
             }
         )
     }
@@ -534,12 +534,12 @@ struct ContentView: View {
         }
         .panelEmbeddedProminentActionControl()
         .disabled(!canSaveInlineEntry)
-        .accessibilityLabel("Add to \(model.activeSection.name)")
-        .help("Add to \(model.activeSection.name)")
+        .accessibilityLabel("Add to \(model.activeList.name)")
+        .help("Add to \(model.activeList.name)")
     }
 
     private var isInlineEntryExpanded: Bool {
-        inlineEntryFieldHeight > 30
+        PanelComposerLayout.isExpanded(fieldHeight: inlineEntryFieldHeight)
     }
 
     private var isInlineEntrySurfaceExpanded: Bool {
@@ -585,17 +585,17 @@ struct ContentView: View {
         let files = PanelFileDropValidation.existingFiles(in: urls)
         guard !files.isEmpty else { return false }
 
-        let sectionID = model.activeSectionID
-        model.addDraftAttachments(files, to: sectionID)
-        entryDraftSectionID = sectionID
-        entryDraft = model.composerDraft(for: sectionID)
+        let listID = model.activeListID
+        model.addDraftAttachments(files, to: listID)
+        entryDraftListID = listID
+        entryDraft = model.composerDraft(for: listID)
         focusedTarget = .inlineEntry
         return true
     }
 
     @MainActor
     private func pasteImagesIntoComposer(_ images: [PanelPastedImage]) {
-        let sectionID = model.activeSectionID
+        let listID = model.activeListID
         Task {
             let result = await Task.detached(priority: .userInitiated) {
                 PanelPastedImageStaging.write(images)
@@ -603,11 +603,11 @@ struct ContentView: View {
             switch result {
             case .success(let urls):
                 for url in urls {
-                    model.addTemporaryDraftAttachment(url, to: sectionID)
+                    model.addTemporaryDraftAttachment(url, to: listID)
                 }
-                if model.activeSectionID == sectionID {
-                    entryDraftSectionID = sectionID
-                    entryDraft = model.composerDraft(for: sectionID)
+                if model.activeListID == listID {
+                    entryDraftListID = listID
+                    entryDraft = model.composerDraft(for: listID)
                 }
             case .failure(let error):
                 model.presentedError = error.localizedDescription
@@ -615,39 +615,39 @@ struct ContentView: View {
         }
     }
 
-    private func updateInboxComposerExpansion(for height: CGFloat) {
+    private func updatePanelComposerExpansion(for height: CGFloat) {
         let expansion = model.isShowingClipboard
             ? 0
             : max(height - PanelControlMetrics.inlineEntryBaseHeight, 0)
-        coordinator.updateInboxComposerExpansion(expansion)
+        coordinator.updatePanelComposerExpansion(expansion)
     }
 
     private func saveInlineEntry() {
         let text = entryDraft.text
         guard canSaveInlineEntry else { return }
         isSavingInlineEntry = true
-        let sectionID = model.activeSectionID
+        let listID = model.activeListID
         Task {
             defer { isSavingInlineEntry = false }
-            let saved = await model.saveComposerDraft(content: text, sectionID: sectionID)
+            let saved = await model.saveComposerDraft(content: text, listID: listID)
             guard saved else {
                 focusedTarget = .inlineEntry
                 return
             }
-            if model.activeSectionID == sectionID {
-                entryDraft = model.composerDraft(for: sectionID)
+            if model.activeListID == listID {
+                entryDraft = model.composerDraft(for: listID)
                 focusedTarget = .inlineEntry
             }
         }
     }
 
     private func captureScreenArea() {
-        let sectionID = model.activeSectionID
+        let listID = model.activeListID
         let url = model.stageScreenCapture()
         runScreenCapture(to: url) { succeeded in
-            model.finishScreenCapture(url, in: sectionID, succeeded: succeeded)
-            if succeeded, model.activeSectionID == sectionID {
-                entryDraft = model.composerDraft(for: sectionID)
+            model.finishScreenCapture(url, in: listID, succeeded: succeeded)
+            if succeeded, model.activeListID == listID {
+                entryDraft = model.composerDraft(for: listID)
             }
         }
     }
@@ -701,15 +701,15 @@ struct ContentView: View {
             focusedTarget = .list
         } else if focusedTarget == .inlineEntry {
             if entryDraft.text.isEmpty && entryDraft.attachments.isEmpty {
-                coordinator.hideInbox()
+                coordinator.hidePanel()
             } else {
                 entryDraft = ComposerDraft()
-                model.clearDraft(for: model.activeSectionID)
+                model.clearDraft(for: model.activeListID)
             }
         } else if !model.selection.isEmpty {
             model.selection = []
         } else {
-            coordinator.hideInbox()
+            coordinator.hidePanel()
         }
     }
 

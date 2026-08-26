@@ -2,12 +2,63 @@ import XCTest
 import Foundation
 @testable import SnipSnap
 
-final class ItemRepositoryTests: StoreBackedTestCase {
-    func testStoreReopensWithSavedItems() async throws {
-        let url = try storeURL()
-        let firstRepository = try ItemRepository(fileURL: url)
+final class SnipRepositoryTests: StoreBackedTestCase {
+    func testLegacyItemStoreMovesToSnipsAndKeepsItsData() async throws {
+        let snipsURL = try storeURL()
+        let legacyURL = snipsURL.deletingLastPathComponent()
+            .appendingPathComponent("items.json")
+        let id = UUID()
         let requestID = UUID()
-        let source = CaptureSource(
+        let legacyDocument: [String: Any] = [
+            "version": 4,
+            "items": [[
+                "id": id.uuidString,
+                "requestID": requestID.uuidString,
+                "createdAt": "2026-08-26T12:00:00Z",
+                "updatedAt": "2026-08-26T12:00:00Z",
+                "content": "Saved before the rename",
+                "origin": "quickEntry",
+                "sectionID": SnipList.inboxID.uuidString,
+                "isDone": false,
+                "manualPosition": 0,
+                "attachments": [],
+            ]],
+            "sections": [[
+                "id": SnipList.inboxID.uuidString,
+                "name": "Inbox",
+                "systemImage": "tray.fill",
+                "position": 0,
+            ]],
+        ]
+        try JSONSerialization.data(
+            withJSONObject: legacyDocument,
+            options: [.prettyPrinted, .sortedKeys]
+        ).write(to: legacyURL)
+
+        let repository = try SnipRepository(fileURL: snipsURL)
+        let snips = await repository.allSnips()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: snipsURL.path))
+        XCTAssertEqual(snips.map(\.id), [id])
+        XCTAssertEqual(snips.map(\.requestID), [requestID])
+        XCTAssertEqual(snips.map(\.content), ["Saved before the rename"])
+
+        let migratedDocument = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: snipsURL)) as? [String: Any]
+        )
+        XCTAssertEqual(migratedDocument["version"] as? Int, SnipRepository.currentVersion)
+        XCTAssertNotNil(migratedDocument["snips"])
+        XCTAssertNotNil(migratedDocument["lists"])
+        XCTAssertNil(migratedDocument["items"])
+        XCTAssertNil(migratedDocument["sections"])
+    }
+
+    func testStoreReopensWithSavedSnips() async throws {
+        let url = try storeURL()
+        let firstRepository = try SnipRepository(fileURL: url)
+        let requestID = UUID()
+        let source = SnipSource(
             applicationName: "Safari",
             windowTitle: "Reference",
             url: "https://example.com"
@@ -23,29 +74,34 @@ final class ItemRepositoryTests: StoreBackedTestCase {
         let storedDocument = try XCTUnwrap(
             try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
         )
-        XCTAssertEqual(storedDocument["version"] as? Int, 4)
-        XCTAssertEqual((storedDocument["sections"] as? [[String: Any]])?.count, 1)
+        XCTAssertEqual(storedDocument["version"] as? Int, 6)
+        let storedSnips = storedDocument["snips"] as? [[String: Any]]
+        XCTAssertEqual(storedSnips?.count, 1)
+        XCTAssertNotNil(storedSnips?.first?["listID"])
+        XCTAssertNil(storedSnips?.first?["sectionID"])
+        XCTAssertNil(storedDocument["items"])
+        XCTAssertEqual((storedDocument["lists"] as? [[String: Any]])?.count, 1)
 
-        let reopened = try ItemRepository(fileURL: url)
-        let items = await reopened.allItems()
-        XCTAssertEqual(items.count, 1)
-        XCTAssertEqual(items[0].content, "A saved selection")
-        XCTAssertEqual(items[0].requestID, requestID)
-        XCTAssertEqual(items[0].source, source)
+        let reopened = try SnipRepository(fileURL: url)
+        let snips = await reopened.allSnips()
+        XCTAssertEqual(snips.count, 1)
+        XCTAssertEqual(snips[0].content, "A saved selection")
+        XCTAssertEqual(snips[0].requestID, requestID)
+        XCTAssertEqual(snips[0].source, source)
     }
 
     func testSelectionStoragePreservesContentWhileManualEntryStillTrims() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
 
         _ = try await repository.add(content: "  selected line\n", origin: .selection)
         _ = try await repository.add(content: "  quick thought\n", origin: .quickEntry)
 
-        let items = await repository.allItems()
-        XCTAssertEqual(items.map(\.content), ["quick thought", "  selected line\n"])
+        let snips = await repository.allSnips()
+        XCTAssertEqual(snips.map(\.content), ["quick thought", "  selected line\n"])
     }
 
-    func testItemsUseNewestFirstStableOrdering() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+    func testSnipsUseNewestFirstStableOrdering() async throws {
+        let repository = try SnipRepository(fileURL: storeURL())
         let oldDate = Date(timeIntervalSince1970: 100)
         let newDate = Date(timeIntervalSince1970: 200)
 
@@ -62,13 +118,13 @@ final class ItemRepositoryTests: StoreBackedTestCase {
             now: newDate
         )
 
-        let items = await repository.allItems()
-        XCTAssertEqual(items.map(\.content), ["New", "Old"])
+        let snips = await repository.allSnips()
+        XCTAssertEqual(snips.map(\.content), ["New", "Old"])
     }
 
-    func testMergeReplacesItemsAndPersistsCombinedContext() async throws {
+    func testMergeReplacesSnipsAndPersistsCombinedContext() async throws {
         let url = try storeURL()
-        let repository = try ItemRepository(fileURL: url)
+        let repository = try SnipRepository(fileURL: url)
         let addedFirst = try await repository.add(
             content: "First thought",
             origin: .quickEntry,
@@ -78,7 +134,7 @@ final class ItemRepositoryTests: StoreBackedTestCase {
         let addedSecond = try await repository.add(
             content: "Second snippet",
             origin: .selection,
-            source: CaptureSource(
+            source: SnipSource(
                 applicationName: "Safari",
                 windowTitle: "Docs",
                 url: "https://example.com/docs"
@@ -98,13 +154,13 @@ final class ItemRepositoryTests: StoreBackedTestCase {
             "First thought\n\n---\n\nSecond snippet\nSource: Safari — Docs\nURL: https://example.com/docs"
         )
 
-        let reopened = try ItemRepository(fileURL: url)
-        let items = await reopened.allItems()
-        XCTAssertEqual(items.map(\.id), [merged.id])
+        let reopened = try SnipRepository(fileURL: url)
+        let snips = await reopened.allSnips()
+        XCTAssertEqual(snips.map(\.id), [merged.id])
     }
 
-    func testRapidUniqueSavesDoNotDropOrDuplicateItems() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+    func testRapidUniqueSavesDoNotDropOrDuplicateSnips() async throws {
+        let repository = try SnipRepository(fileURL: storeURL())
         let count = 120
 
         try await withThrowingTaskGroup(of: Void.self) { group in
@@ -120,16 +176,16 @@ final class ItemRepositoryTests: StoreBackedTestCase {
             try await group.waitForAll()
         }
 
-        let items = await repository.allItems()
-        XCTAssertEqual(items.count, count)
-        XCTAssertEqual(Set(items.map(\.content)).count, count)
-        XCTAssertEqual(Set(items.map(\.requestID)).count, count)
+        let snips = await repository.allSnips()
+        XCTAssertEqual(snips.count, count)
+        XCTAssertEqual(Set(snips.map(\.content)).count, count)
+        XCTAssertEqual(Set(snips.map(\.requestID)).count, count)
     }
 
     func testDuplicateRequestIsIgnoredAcrossReopen() async throws {
         let url = try storeURL()
         let requestID = UUID()
-        let repository = try ItemRepository(fileURL: url)
+        let repository = try SnipRepository(fileURL: url)
         let first = try await repository.add(
             content: "Keep once",
             origin: .selection,
@@ -137,28 +193,28 @@ final class ItemRepositoryTests: StoreBackedTestCase {
         )
         XCTAssertNotNil(first)
 
-        let reopened = try ItemRepository(fileURL: url)
+        let reopened = try SnipRepository(fileURL: url)
         let duplicate = try await reopened.add(
             content: "Do not add",
             origin: .selection,
             requestID: requestID
         )
         XCTAssertNil(duplicate)
-        let items = await reopened.allItems()
-        XCTAssertEqual(items.map(\.content), ["Keep once"])
+        let snips = await reopened.allSnips()
+        XCTAssertEqual(snips.map(\.content), ["Keep once"])
     }
 
     func testDeletedRequestCannotBeReplayedDuringTheSameRun() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let requestID = UUID()
         let added = try await repository.add(
             content: "Delete once",
             origin: .selection,
             requestID: requestID
         )
-        let item = try XCTUnwrap(added)
+        let snip = try XCTUnwrap(added)
 
-        try await repository.delete(ids: [item.id])
+        try await repository.delete(ids: [snip.id])
         let replay = try await repository.add(
             content: "Do not recreate",
             origin: .selection,
@@ -166,61 +222,61 @@ final class ItemRepositoryTests: StoreBackedTestCase {
         )
 
         XCTAssertNil(replay)
-        let items = await repository.allItems()
-        XCTAssertTrue(items.isEmpty)
+        let snips = await repository.allSnips()
+        XCTAssertTrue(snips.isEmpty)
     }
 
-    func testSectionMovePersistsAcrossReopen() async throws {
+    func testListMovePersistsAcrossReopen() async throws {
         let url = try storeURL()
-        let repository = try ItemRepository(fileURL: url)
-        let build = try await repository.createSection(name: "Build", systemImage: "hammer")
-        let addedItem = try await repository.add(content: "Move me", origin: .quickEntry)
-        let item = try XCTUnwrap(addedItem)
-        try await repository.moveChronologically(ids: [item.id], to: build.id)
+        let repository = try SnipRepository(fileURL: url)
+        let build = try await repository.createList(name: "Build", systemImage: "hammer")
+        let addedSnip = try await repository.add(content: "Move me", origin: .quickEntry)
+        let snip = try XCTUnwrap(addedSnip)
+        try await repository.moveChronologically(ids: [snip.id], to: build.id)
 
-        let reopened = try ItemRepository(fileURL: url)
-        let reopenedItems = await reopened.allItems()
-        let moved = try XCTUnwrap(reopenedItems.first)
-        XCTAssertEqual(moved.sectionID, build.id)
+        let reopened = try SnipRepository(fileURL: url)
+        let reopenedSnips = await reopened.allSnips()
+        let moved = try XCTUnwrap(reopenedSnips.first)
+        XCTAssertEqual(moved.listID, build.id)
         XCTAssertEqual(
-            InboxFilter.apply(
-                items: [moved],
+            SnipFilter.apply(
+                snips: [moved],
                 query: "build",
                 completionFilter: .all,
-                sectionNames: [build.id: build.name]
+                listNames: [build.id: build.name]
             ),
             [moved]
         )
     }
 
-    func testDeletedItemsRestoreWithIdentityAndState() async throws {
+    func testDeletedSnipsRestoreWithIdentityAndState() async throws {
         let url = try storeURL()
-        let repository = try ItemRepository(fileURL: url)
-        let addedItem = try await repository.add(content: "Recover me", origin: .quickEntry)
-        var item = try XCTUnwrap(addedItem)
-        try await repository.setDone(ids: [item.id], done: true)
-        let itemsAfterDone = await repository.allItems()
-        item = try XCTUnwrap(itemsAfterDone.first)
+        let repository = try SnipRepository(fileURL: url)
+        let addedSnip = try await repository.add(content: "Recover me", origin: .quickEntry)
+        var snip = try XCTUnwrap(addedSnip)
+        try await repository.setDone(ids: [snip.id], done: true)
+        let snipsAfterDone = await repository.allSnips()
+        snip = try XCTUnwrap(snipsAfterDone.first)
 
-        try await repository.delete(ids: [item.id])
-        let itemsAfterDelete = await repository.allItems()
-        XCTAssertTrue(itemsAfterDelete.isEmpty)
-        try await repository.restore(items: [item])
+        try await repository.delete(ids: [snip.id])
+        let snipsAfterDelete = await repository.allSnips()
+        XCTAssertTrue(snipsAfterDelete.isEmpty)
+        try await repository.restore(snips: [snip])
 
-        let reopened = try ItemRepository(fileURL: url)
-        let reopenedItems = await reopened.allItems()
-        let restored = try XCTUnwrap(reopenedItems.first)
-        XCTAssertEqual(restored.id, item.id)
-        XCTAssertEqual(restored.requestID, item.requestID)
-        XCTAssertEqual(restored.content, item.content)
-        XCTAssertEqual(restored.origin, item.origin)
-        XCTAssertEqual(restored.source, item.source)
-        XCTAssertEqual(restored.sectionID, item.sectionID)
-        XCTAssertEqual(restored.isDone, item.isDone)
+        let reopened = try SnipRepository(fileURL: url)
+        let reopenedSnips = await reopened.allSnips()
+        let restored = try XCTUnwrap(reopenedSnips.first)
+        XCTAssertEqual(restored.id, snip.id)
+        XCTAssertEqual(restored.requestID, snip.requestID)
+        XCTAssertEqual(restored.content, snip.content)
+        XCTAssertEqual(restored.origin, snip.origin)
+        XCTAssertEqual(restored.source, snip.source)
+        XCTAssertEqual(restored.listID, snip.listID)
+        XCTAssertEqual(restored.isDone, snip.isDone)
     }
 
     func testRepositoryRejectsUndoAfterMergedItemChanges() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let addedFirst = try await repository.add(content: "First", origin: .quickEntry)
         let addedSecond = try await repository.add(content: "Second", origin: .quickEntry)
         let first = try XCTUnwrap(addedFirst)
@@ -230,64 +286,64 @@ final class ItemRepositoryTests: StoreBackedTestCase {
 
         do {
             try await repository.restore(
-                items: [first, second],
+                snips: [first, second],
                 replacing: merged.id,
                 expectedUpdatedAt: merged.updatedAt
             )
             XCTFail("Expected the stale undo to fail")
         } catch {
-            XCTAssertEqual(error as? RepositoryError, .itemChanged)
+            XCTAssertEqual(error as? SnipRepositoryError, .snipChanged)
         }
 
-        let items = await repository.allItems()
-        XCTAssertEqual(items.map(\.content), ["Edited merge"])
+        let snips = await repository.allSnips()
+        XCTAssertEqual(snips.map(\.content), ["Edited merge"])
     }
 
     func testFailureStatesAreExplicit() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         do {
             _ = try await repository.add(content: "   ", origin: .quickEntry)
             XCTFail("Blank content should fail")
-        } catch let error as RepositoryError {
+        } catch let error as SnipRepositoryError {
             XCTAssertEqual(error, .emptyContent)
         }
 
         do {
             try await repository.update(id: UUID(), content: "Missing")
-            XCTFail("A missing item should fail")
-        } catch let error as RepositoryError {
-            XCTAssertEqual(error, .itemNotFound)
+            XCTFail("A missing snip should fail")
+        } catch let error as SnipRepositoryError {
+            XCTAssertEqual(error, .snipNotFound)
         }
 
         let corruptURL = try storeURL()
         try Data("not json".utf8).write(to: corruptURL)
-        XCTAssertThrowsError(try ItemRepository(fileURL: corruptURL)) { error in
-            XCTAssertEqual(error as? RepositoryError, .invalidStore)
+        XCTAssertThrowsError(try SnipRepository(fileURL: corruptURL)) { error in
+            XCTAssertEqual(error as? SnipRepositoryError, .invalidStore)
         }
     }
 
-    func testMovesRequireAnExistingSectionAndRenameKeepsClipIdentity() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
-        let section = try await repository.createSection(name: "Review", systemImage: "star")
+    func testMovesRequireAnExistingListAndRenameKeepsSnipIdentity() async throws {
+        let repository = try SnipRepository(fileURL: storeURL())
+        let list = try await repository.createList(name: "Review", systemImage: "star")
         let added = try await repository.add(
             content: "Keep linked",
             origin: .quickEntry,
-            sectionID: section.id
+            listID: list.id
         )
-        let item = try XCTUnwrap(added)
+        let snip = try XCTUnwrap(added)
 
-        try await repository.updateSection(id: section.id, name: "Agents", systemImage: "terminal")
-        let renamedItems = await repository.allItems()
-        XCTAssertEqual(try XCTUnwrap(renamedItems.first).sectionID, section.id)
+        try await repository.updateList(id: list.id, name: "Agents", systemImage: "terminal")
+        let renamedSnips = await repository.allSnips()
+        XCTAssertEqual(try XCTUnwrap(renamedSnips.first).listID, list.id)
 
         do {
-            try await repository.moveChronologically(ids: [item.id], to: UUID())
-            XCTFail("A move must not create a section")
-        } catch let error as RepositoryError {
-            XCTAssertEqual(error, .invalidSection)
+            try await repository.moveChronologically(ids: [snip.id], to: UUID())
+            XCTFail("A move must not create a list")
+        } catch let error as SnipRepositoryError {
+            XCTAssertEqual(error, .invalidList)
         }
-        let sections = await repository.allSections()
-        XCTAssertEqual(sections.map(\.name), ["Inbox", "Agents"])
+        let lists = await repository.allLists()
+        XCTAssertEqual(lists.map(\.name), ["Inbox", "Agents"])
     }
 
     func testCorruptStoreIsBackedUpAndNewSavesPersistAtTheDefaultPath() async throws {
@@ -303,58 +359,58 @@ final class ItemRepositoryTests: StoreBackedTestCase {
         let attachment = attachmentDirectory.appendingPathComponent("context.md")
         try Data("Keep me".utf8).write(to: attachment)
 
-        let result = try ItemRepository.openRecoveringCorruptStore(fileURL: url)
+        let result = try SnipRepository.openRecoveringCorruptStore(fileURL: url)
         let backupURL = try XCTUnwrap(result.backupURL)
         XCTAssertEqual(try Data(contentsOf: backupURL), corruptData)
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
         let recoveryID = backupURL.deletingPathExtension().lastPathComponent
-            .replacingOccurrences(of: "items.corrupt-", with: "")
+            .replacingOccurrences(of: "snips.corrupt-", with: "")
         let backupAttachment = url.deletingLastPathComponent()
             .appendingPathComponent("Attachments.corrupt-\(recoveryID)/kept/context.md")
         XCTAssertEqual(try String(contentsOf: backupAttachment, encoding: .utf8), "Keep me")
 
         _ = try await result.repository.add(content: "Safe after recovery", origin: .quickEntry)
-        let reopened = try ItemRepository(fileURL: url)
-        let reopenedContents = await reopened.allItems().map(\.content)
+        let reopened = try SnipRepository(fileURL: url)
+        let reopenedContents = await reopened.allSnips().map(\.content)
         XCTAssertEqual(reopenedContents, ["Safe after recovery"])
     }
 
-    func testUnavailableStoreRejectsNewItems() async {
-        let repository = ItemRepository.unavailable(fileURL: URL(fileURLWithPath: "/unavailable/items.json"))
+    func testUnavailableStoreRejectsNewSnips() async {
+        let repository = SnipRepository.unavailable(fileURL: URL(fileURLWithPath: "/unavailable/snips.json"))
         do {
             _ = try await repository.add(content: "Must not disappear", origin: .quickEntry)
             XCTFail("An unavailable store must reject writes")
-        } catch let error as RepositoryError {
+        } catch let error as SnipRepositoryError {
             XCTAssertEqual(error, .storeUnavailable)
         } catch {
             XCTFail("Unexpected error: \(error)")
         }
     }
 
-    func testExactBatchPlacementAcrossSectionsPersistsVisibleOrder() async throws {
+    func testExactBatchPlacementAcrossListsPersistsVisibleOrder() async throws {
         let url = try storeURL()
-        let repository = try ItemRepository(fileURL: url)
+        let repository = try SnipRepository(fileURL: url)
         let firstResult = try await repository.add(content: "First", origin: .quickEntry)
         let secondResult = try await repository.add(content: "Second", origin: .quickEntry)
         let targetResult = try await repository.add(content: "Target", origin: .quickEntry)
         let first = try XCTUnwrap(firstResult)
         let second = try XCTUnwrap(secondResult)
         let target = try XCTUnwrap(targetResult)
-        let review = try await repository.createSection(name: "Review", systemImage: "star")
+        let review = try await repository.createList(name: "Review", systemImage: "star")
         try await repository.moveChronologically(ids: [target.id], to: review.id)
 
         try await repository.place(ids: [first.id, second.id], in: review.id, before: target.id)
 
-        let reopened = try ItemRepository(fileURL: url)
-        let manual = await reopened.allItems(sortMode: .manual).filter { $0.sectionID == review.id }
+        let reopened = try SnipRepository(fileURL: url)
+        let manual = await reopened.allSnips(sortMode: .manual).filter { $0.listID == review.id }
         XCTAssertEqual(manual.map(\.content), ["First", "Second", "Target"])
     }
 
     func testOrganizationChangesKeepContentEditTokenAndChronologicalMoveSeedsManualTop() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let existingResult = try await repository.add(content: "Existing", origin: .quickEntry)
         let existing = try XCTUnwrap(existingResult)
-        let review = try await repository.createSection(name: "Review", systemImage: "star")
+        let review = try await repository.createList(name: "Review", systemImage: "star")
         try await repository.moveChronologically(ids: [existing.id], to: review.id)
         let movedResult = try await repository.add(content: "Moved", origin: .quickEntry)
         let moved = try XCTUnwrap(movedResult)
@@ -362,30 +418,30 @@ final class ItemRepositoryTests: StoreBackedTestCase {
 
         try await repository.moveChronologically(ids: [moved.id], to: review.id)
 
-        let manual = await repository.allItems(sortMode: .manual).filter { $0.sectionID == review.id }
+        let manual = await repository.allSnips(sortMode: .manual).filter { $0.listID == review.id }
         XCTAssertEqual(manual.map(\.id), [moved.id, existing.id])
         XCTAssertEqual(manual.first?.updatedAt, editToken)
     }
 
     func testChronologicalBatchMoveKeepsItsVisibleOrderAtTopOfSavedManualOrder() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let targetResult = try await repository.add(content: "Target", origin: .quickEntry)
         let firstResult = try await repository.add(content: "First", origin: .quickEntry)
         let secondResult = try await repository.add(content: "Second", origin: .quickEntry)
         let target = try XCTUnwrap(targetResult)
         let first = try XCTUnwrap(firstResult)
         let second = try XCTUnwrap(secondResult)
-        let review = try await repository.createSection(name: "Review", systemImage: "star")
+        let review = try await repository.createList(name: "Review", systemImage: "star")
         try await repository.moveChronologically(ids: [target.id], to: review.id)
 
         try await repository.moveChronologically(ids: [first.id, second.id], to: review.id)
 
-        let manual = await repository.allItems(sortMode: .manual).filter { $0.sectionID == review.id }
+        let manual = await repository.allSnips(sortMode: .manual).filter { $0.listID == review.id }
         XCTAssertEqual(manual.map(\.id), [first.id, second.id, target.id])
     }
 
     func testManualMergeUsesHighestSelectedPlace() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let firstResult = try await repository.add(content: "First", origin: .quickEntry)
         let middleResult = try await repository.add(content: "Middle", origin: .quickEntry)
         let lastResult = try await repository.add(content: "Last", origin: .quickEntry)
@@ -394,18 +450,18 @@ final class ItemRepositoryTests: StoreBackedTestCase {
         let last = try XCTUnwrap(lastResult)
         try await repository.place(
             ids: [first.id, middle.id, last.id],
-            in: SnipSnapSection.inboxID,
+            in: SnipList.inboxID,
             before: nil
         )
 
         let merged = try await repository.merge(ids: [first.id, last.id])
 
-        let manual = await repository.allItems(sortMode: .manual)
+        let manual = await repository.allSnips(sortMode: .manual)
         XCTAssertEqual(manual.map(\.id), [merged.id, middle.id])
     }
 
     func testChronologicalMergeKeepsHighestSelectedSavedManualPlace() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let oldResult = try await repository.add(
             content: "Old", origin: .quickEntry, now: Date(timeIntervalSince1970: 100)
         )
@@ -420,55 +476,55 @@ final class ItemRepositoryTests: StoreBackedTestCase {
         let new = try XCTUnwrap(newResult)
         try await repository.place(
             ids: [old.id, new.id, middle.id],
-            in: SnipSnapSection.inboxID,
+            in: SnipList.inboxID,
             before: nil
         )
 
         let merged = try await repository.merge(ids: [new.id, middle.id])
 
-        let manual = await repository.allItems(sortMode: .manual)
+        let manual = await repository.allSnips(sortMode: .manual)
         XCTAssertEqual(manual.map(\.id), [old.id, merged.id])
     }
 
-    func testEmptySectionsPersistAndDeletingOneMovesItsClipsToInbox() async throws {
+    func testEmptyListsPersistAndDeletingOneMovesItsSnipsToInbox() async throws {
         let url = try storeURL()
-        let repository = try ItemRepository(fileURL: url)
-        let section = try await repository.createSection(name: "Agents", systemImage: "terminal.fill")
+        let repository = try SnipRepository(fileURL: url)
+        let list = try await repository.createList(name: "Agents", systemImage: "terminal.fill")
         _ = try await repository.add(
             content: "Prompt",
             origin: .quickEntry,
-            sectionID: section.id
+            listID: list.id
         )
 
-        let reopened = try ItemRepository(fileURL: url)
-        let reopenedSections = await reopened.allSections()
-        XCTAssertEqual(reopenedSections.map(\.name), ["Inbox", "Agents"])
+        let reopened = try SnipRepository(fileURL: url)
+        let reopenedLists = await reopened.allLists()
+        XCTAssertEqual(reopenedLists.map(\.name), ["Inbox", "Agents"])
 
-        try await reopened.deleteSection(id: section.id)
-        let remainingSections = await reopened.allSections()
-        let remainingItems = await reopened.allItems()
-        XCTAssertEqual(remainingSections.map(\.name), ["Inbox"])
-        XCTAssertEqual(remainingItems.first?.sectionID, SnipSnapSection.inboxID)
+        try await reopened.deleteList(id: list.id)
+        let remainingLists = await reopened.allLists()
+        let remainingSnips = await reopened.allSnips()
+        XCTAssertEqual(remainingLists.map(\.name), ["Inbox"])
+        XCTAssertEqual(remainingSnips.first?.listID, SnipList.inboxID)
     }
 
-    func testAttachmentOnlyClipCopiesAStableLocalSnapshot() async throws {
+    func testAttachmentOnlySnipCopiesAStableLocalSnapshot() async throws {
         let url = try storeURL()
         let source = url.deletingLastPathComponent().appendingPathComponent("note.md")
         try Data("# Context".utf8).write(to: source)
-        let repository = try ItemRepository(fileURL: url)
+        let repository = try SnipRepository(fileURL: url)
 
         let added = try await repository.add(
             content: "",
             origin: .quickEntry,
             attachmentURLs: [source]
         )
-        let item = try XCTUnwrap(added)
+        let snip = try XCTUnwrap(added)
         try FileManager.default.removeItem(at: source)
 
-        XCTAssertEqual(item.attachments.map(\.fileName), ["note.md"])
+        XCTAssertEqual(snip.attachments.map(\.fileName), ["note.md"])
         let copied = url.deletingLastPathComponent()
             .appendingPathComponent("Attachments")
-            .appendingPathComponent(item.attachments[0].relativePath)
+            .appendingPathComponent(snip.attachments[0].relativePath)
         XCTAssertEqual(try String(contentsOf: copied, encoding: .utf8), "# Context")
     }
 
@@ -478,16 +534,16 @@ final class ItemRepositoryTests: StoreBackedTestCase {
         let secondSource = url.deletingLastPathComponent().appendingPathComponent("second.md")
         try Data("First".utf8).write(to: firstSource)
         try Data("Second".utf8).write(to: secondSource)
-        let repository = try ItemRepository(fileURL: url)
+        let repository = try SnipRepository(fileURL: url)
         let firstResult = try await repository.add(
-            content: "First clip",
+            content: "First snip",
             origin: .quickEntry,
             attachmentURLs: [firstSource],
             now: Date(timeIntervalSince1970: 100)
         )
         let first = try XCTUnwrap(firstResult)
         let secondResult = try await repository.add(
-            content: "Second clip",
+            content: "Second snip",
             origin: .quickEntry,
             attachmentURLs: [secondSource],
             now: Date(timeIntervalSince1970: 200)

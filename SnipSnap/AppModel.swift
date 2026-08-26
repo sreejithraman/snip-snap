@@ -29,31 +29,34 @@ final class AppModel: ObservableObject {
 
     private struct HistoryOperation {
         let name: String
-        let beforeItems: [CaptureItem]
-        let afterItems: [CaptureItem]
-        let beforeSortMode: ClipSortMode
-        let afterSortMode: ClipSortMode
+        let beforeSnips: [Snip]
+        let afterSnips: [Snip]
+        let beforeSortMode: SnipSortMode
+        let afterSortMode: SnipSortMode
         let beforeSelection: Set<UUID>
         let afterSelection: Set<UUID>
     }
 
-    static let sortModeDefaultsKey = "clipSortMode"
-    static let activeSectionDefaultsKey = "activeSectionID"
-    static let sectionDraftsDefaultsKey = "sectionDrafts"
+    static let sortModeDefaultsKey = "snipSortMode"
+    static let activeListDefaultsKey = "activeListID"
+    static let listDraftsDefaultsKey = "listDrafts"
     static let appearanceDefaultsKey = "appAppearance"
+    private static let legacySortModeDefaultsKey = "clipSortMode"
+    private static let legacyActiveListDefaultsKey = "activeSectionID"
+    private static let legacyListDraftsDefaultsKey = "sectionDrafts"
 
-    @Published private(set) var items: [CaptureItem] = []
-    @Published private(set) var sections: [SnipSnapSection] = [.inbox]
-    @Published var activeSectionID: UUID
+    @Published private(set) var snips: [Snip] = []
+    @Published private(set) var lists: [SnipList] = [.inbox]
+    @Published var activeListID: UUID
     @Published var isShowingClipboard = false
     @Published var query = ""
-    @Published var completionFilter: CompletionFilter = .all
+    @Published var completionFilter: SnipCompletionFilter = .all
     @Published var selection: Set<UUID> = []
     @Published var editingID: UUID?
     @Published var presentedError: String?
     @Published var isAccessibilityAccessExplanationPresented = false
-    @Published private(set) var latestAddedClipID: UUID?
-    @Published private(set) var sortMode: ClipSortMode
+    @Published private(set) var latestAddedSnipID: UUID?
+    @Published private(set) var sortMode: SnipSortMode
     @Published private(set) var appearance: AppAppearance
     @Published private var undoHistory: [HistoryOperation] = []
     @Published private var redoHistory: [HistoryOperation] = []
@@ -74,31 +77,31 @@ final class AppModel: ObservableObject {
         guard query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               completionFilter == .all,
               !ids.isEmpty else { return false }
-        return Set(items.filter { ids.contains($0.id) }.map(\.sectionID)).count == 1
+        return Set(snips.filter { ids.contains($0.id) }.map(\.listID)).count == 1
     }
 
-    private let repository: ItemRepository
+    private let repository: SnipRepository
     private let defaults: UserDefaults
     private let commandLock = AppModelCommandLock()
     private let composerDrafts: ComposerDraftStore
     let clipboardHistory: ClipboardHistory
 
-    var filteredItems: [CaptureItem] {
-        let matches = InboxFilter.apply(
-            items: items,
+    var filteredSnips: [Snip] {
+        let matches = SnipFilter.apply(
+            snips: snips,
             query: query,
             completionFilter: completionFilter,
-            sectionNames: Dictionary(uniqueKeysWithValues: sections.map { ($0.id, $0.name) })
+            listNames: Dictionary(uniqueKeysWithValues: lists.map { ($0.id, $0.name) })
         )
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return matches.filter { $0.sectionID == activeSection.id }
+            return matches.filter { $0.listID == activeList.id }
         }
         return matches
     }
 
-    var selectedItems: [CaptureItem] {
+    var selectedSnips: [Snip] {
         let selected = selection
-        return items.filter { selected.contains($0.id) }
+        return snips.filter { selected.contains($0.id) }
     }
 
     var clipboardSearchMatches: [ClipboardEntry] {
@@ -109,28 +112,29 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var activeSection: SnipSnapSection {
-        sections.first(where: { $0.id == activeSectionID }) ?? .inbox
+    var activeList: SnipList {
+        lists.first(where: { $0.id == activeListID }) ?? .inbox
     }
 
-    func attachmentURL(for attachment: ClipAttachment) -> URL {
+    func attachmentURL(for attachment: SnipAttachment) -> URL {
         repository.attachmentURL(for: attachment)
     }
 
     init(
-        repository: ItemRepository? = nil,
+        repository: SnipRepository? = nil,
         defaults: UserDefaults = .standard,
         clipboardHistory: ClipboardHistory? = nil
     ) {
+        Self.migrateRenamedDefaults(in: defaults)
         self.defaults = defaults
         composerDrafts = ComposerDraftStore(
             defaults: defaults,
-            textDefaultsKey: Self.sectionDraftsDefaultsKey
+            textDefaultsKey: Self.listDraftsDefaultsKey
         )
         self.clipboardHistory = clipboardHistory ?? ClipboardHistory()
-        activeSectionID = defaults.string(forKey: Self.activeSectionDefaultsKey)
-            .flatMap(UUID.init(uuidString:)) ?? SnipSnapSection.inboxID
-        sortMode = ClipSortMode(
+        activeListID = defaults.string(forKey: Self.activeListDefaultsKey)
+            .flatMap(UUID.init(uuidString:)) ?? SnipList.inboxID
+        sortMode = SnipSortMode(
             rawValue: defaults.string(forKey: Self.sortModeDefaultsKey) ?? ""
         ) ?? .chronological
         appearance = AppAppearance(
@@ -140,17 +144,31 @@ final class AppModel: ObservableObject {
             self.repository = repository
         } else {
             do {
-                let result = try ItemRepository.openRecoveringCorruptStore()
+                let result = try SnipRepository.openRecoveringCorruptStore()
                 self.repository = result.repository
                 if let backupURL = result.backupURL {
-                    presentedError = "Snip Snap kept the unreadable items file as \(backupURL.lastPathComponent) and started a new one."
+                    presentedError = "Snip Snap kept the unreadable snips file as \(backupURL.lastPathComponent) and started a new one."
                 }
             } catch {
-                self.repository = ItemRepository.unavailable()
-                presentedError = "Snip Snap could not read or safely back up its items file. Snip Snap cannot save new items."
+                self.repository = SnipRepository.unavailable()
+                presentedError = "Snip Snap could not read or safely back up its snips file. Snip Snap cannot save new snips."
             }
         }
         Task { await reload() }
+    }
+
+    private static func migrateRenamedDefaults(in defaults: UserDefaults) {
+        // TODO: Remove legacy defaults migration after the 1.0 migration window.
+        let renamedKeys = [
+            (legacySortModeDefaultsKey, sortModeDefaultsKey),
+            (legacyActiveListDefaultsKey, activeListDefaultsKey),
+            (legacyListDraftsDefaultsKey, listDraftsDefaultsKey),
+        ]
+        for (oldKey, newKey) in renamedKeys
+        where defaults.object(forKey: newKey) == nil {
+            guard let value = defaults.object(forKey: oldKey) else { continue }
+            defaults.set(value, forKey: newKey)
+        }
     }
 
     func reload() async {
@@ -158,22 +176,22 @@ final class AppModel: ObservableObject {
     }
 
     private func reloadUnlocked() async {
-        async let loadedItems = repository.allItems(sortMode: sortMode)
-        async let loadedSections = repository.allSections()
-        items = await loadedItems
-        sections = await loadedSections
-        if !sections.contains(where: { $0.id == activeSectionID }) {
-            activeSectionID = SnipSnapSection.inboxID
-            defaults.set(SnipSnapSection.inboxID.uuidString, forKey: Self.activeSectionDefaultsKey)
+        async let loadedSnips = repository.allSnips(sortMode: sortMode)
+        async let loadedLists = repository.allLists()
+        snips = await loadedSnips
+        lists = await loadedLists
+        if !lists.contains(where: { $0.id == activeListID }) {
+            activeListID = SnipList.inboxID
+            defaults.set(SnipList.inboxID.uuidString, forKey: Self.activeListDefaultsKey)
         }
-        selection.formIntersection(Set(items.map(\.id)))
+        selection.formIntersection(Set(snips.map(\.id)))
     }
 
-    func setSortMode(_ mode: ClipSortMode) {
+    func setSortMode(_ mode: SnipSortMode) {
         guard sortMode != mode else { return }
         sortMode = mode
         defaults.set(mode.rawValue, forKey: Self.sortModeDefaultsKey)
-        items = CaptureItem.sorted(items, by: mode)
+        snips = Snip.sorted(snips, by: mode)
     }
 
     func setAppearance(_ appearance: AppAppearance) {
@@ -185,10 +203,10 @@ final class AppModel: ObservableObject {
     @discardableResult
     func add(
         content: String,
-        origin: CaptureOrigin,
-        source: CaptureSource? = nil,
+        origin: SnipOrigin,
+        source: SnipSource? = nil,
         attachmentURLs: [URL] = [],
-        sectionID: UUID? = nil,
+        listID: UUID? = nil,
         requestID: UUID = UUID()
     ) async -> Bool {
         switch await addResult(
@@ -196,7 +214,7 @@ final class AppModel: ObservableObject {
             origin: origin,
             source: source,
             attachmentURLs: attachmentURLs,
-            sectionID: sectionID,
+            listID: listID,
             requestID: requestID
         ) {
         case .success(.added):
@@ -211,30 +229,30 @@ final class AppModel: ObservableObject {
 
     func addResult(
         content: String,
-        origin: CaptureOrigin,
-        source: CaptureSource? = nil,
+        origin: SnipOrigin,
+        source: SnipSource? = nil,
         attachmentURLs: [URL] = [],
-        sectionID: UUID? = nil,
+        listID: UUID? = nil,
         requestID: UUID = UUID()
-    ) async -> Result<AddOutcome, Error> {
+    ) async -> Result<SnipAddOutcome, Error> {
         await withCommandLock {
             let result = await performMutationUnlocked(clearingHistory: false) {
                 try await repository.add(
                     content: content,
                     origin: origin,
                     source: source,
-                    sectionID: sectionID ?? activeSection.id,
+                    listID: listID ?? activeList.id,
                     attachmentURLs: attachmentURLs,
                     requestID: requestID
                 )
             }
             switch result {
-            case .success(let item):
-                if let item {
-                    latestAddedClipID = item.id
+            case .success(let snip):
+                if let snip {
+                    latestAddedSnipID = snip.id
                     clearHistory()
                     await reconcileAttachmentStorage()
-                    return .success(.added(item.id))
+                    return .success(.added(snip.id))
                 }
                 return .success(.duplicate)
             case .failure(let error):
@@ -279,9 +297,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func selectSection(_ section: SnipSnapSection, preservingSelection: Bool = false) {
-        activeSectionID = section.id
-        defaults.set(section.id.uuidString, forKey: Self.activeSectionDefaultsKey)
+    func selectList(_ list: SnipList, preservingSelection: Bool = false) {
+        activeListID = list.id
+        defaults.set(list.id.uuidString, forKey: Self.activeListDefaultsKey)
         isShowingClipboard = false
         if !preservingSelection { selection = [] }
     }
@@ -291,71 +309,71 @@ final class AppModel: ObservableObject {
         selection = []
     }
 
-    func composerDraft(for sectionID: UUID) -> ComposerDraft {
-        composerDrafts.draft(for: sectionID)
+    func composerDraft(for listID: UUID) -> ComposerDraft {
+        composerDrafts.draft(for: listID)
     }
 
-    func saveComposerText(_ text: String, for sectionID: UUID) {
-        composerDrafts.setText(text, for: sectionID)
+    func saveComposerText(_ text: String, for listID: UUID) {
+        composerDrafts.setText(text, for: listID)
     }
 
     func flushComposerDrafts() {
         composerDrafts.flushText()
     }
 
-    func addDraftAttachments(_ urls: [URL], to sectionID: UUID) {
-        composerDrafts.add(urls, to: sectionID)
+    func addDraftAttachments(_ urls: [URL], to listID: UUID) {
+        composerDrafts.add(urls, to: listID)
     }
 
-    func addTemporaryDraftAttachment(_ url: URL, to sectionID: UUID) {
-        composerDrafts.addTemporary(url, to: sectionID)
+    func addTemporaryDraftAttachment(_ url: URL, to listID: UUID) {
+        composerDrafts.addTemporary(url, to: listID)
     }
 
     func stageScreenCapture() -> URL {
         composerDrafts.stageScreenCapture()
     }
 
-    func finishScreenCapture(_ url: URL, in sectionID: UUID, succeeded: Bool) {
-        composerDrafts.finishScreenCapture(url, in: sectionID, succeeded: succeeded)
+    func finishScreenCapture(_ url: URL, in listID: UUID, succeeded: Bool) {
+        composerDrafts.finishScreenCapture(url, in: listID, succeeded: succeeded)
     }
 
-    func removeDraftAttachment(_ url: URL, from sectionID: UUID) {
-        composerDrafts.remove(url, from: sectionID)
+    func removeDraftAttachment(_ url: URL, from listID: UUID) {
+        composerDrafts.remove(url, from: listID)
     }
 
-    func clearDraft(for sectionID: UUID) {
-        composerDrafts.clear(sectionID: sectionID)
+    func clearDraft(for listID: UUID) {
+        composerDrafts.clear(listID: listID)
     }
 
-    func saveComposerDraft(content: String, sectionID: UUID) async -> Bool {
-        composerDrafts.setText(content, for: sectionID)
-        let snapshot = composerDrafts.beginSave(sectionID: sectionID)
+    func saveComposerDraft(content: String, listID: UUID) async -> Bool {
+        composerDrafts.setText(content, for: listID)
+        let snapshot = composerDrafts.beginSave(listID: listID)
         let saved = await add(
             content: snapshot.draft.text,
             origin: .quickEntry,
             attachmentURLs: snapshot.draft.attachments,
-            sectionID: sectionID
+            listID: listID
         )
         composerDrafts.finishSave(snapshot, saved: saved)
         return saved
     }
 
-    func createSection(
+    func createList(
         name: String,
         systemImage: String,
         movingIDs: Set<UUID> = []
     ) async -> Bool {
         let result = await performMutation(clearingHistory: false) {
-            try await repository.createSection(name: name, systemImage: systemImage)
+            try await repository.createList(name: name, systemImage: systemImage)
         }
         switch result {
-        case .success(let section):
-            selectSection(section, preservingSelection: !movingIDs.isEmpty)
+        case .success(let list):
+            selectList(list, preservingSelection: !movingIDs.isEmpty)
             guard !movingIDs.isEmpty else { return true }
-            let orderedIDs = items.filter { movingIDs.contains($0.id) }.map(\.id)
-            return await moveToSection(
+            let orderedIDs = snips.filter { movingIDs.contains($0.id) }.map(\.id)
+            return await moveToList(
                 ids: orderedIDs,
-                sectionID: section.id,
+                listID: list.id,
                 selectionAfterMove: movingIDs
             )
         case .failure(let error):
@@ -364,22 +382,22 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func deleteSection(_ section: SnipSnapSection) async {
-        guard section.id != SnipSnapSection.inboxID else { return }
+    func deleteList(_ list: SnipList) async {
+        guard list.id != SnipList.inboxID else { return }
         let result = await performMutation {
-            try await repository.deleteSection(id: section.id)
+            try await repository.deleteList(id: list.id)
         }
         if case .failure(let error) = result {
             presentedError = error.localizedDescription
         } else {
-            clearDraft(for: section.id)
+            clearDraft(for: list.id)
         }
     }
 
-    func updateSection(_ section: SnipSnapSection, name: String, systemImage: String) async -> Bool {
+    func updateList(_ list: SnipList, name: String, systemImage: String) async -> Bool {
         let result = await performMutation {
-            try await repository.updateSection(
-                id: section.id,
+            try await repository.updateList(
+                id: list.id,
                 name: name,
                 systemImage: systemImage
             )
@@ -393,32 +411,32 @@ final class AppModel: ObservableObject {
 
     func saveClipboardEntry(
         _ entry: ClipboardEntry,
-        sectionID: UUID? = nil,
+        listID: UUID? = nil,
         before destinationID: UUID? = nil,
         placesManually: Bool = false
     ) async -> Bool {
-        let materialization: ClipboardClipMaterialization
+        let materialization: ClipboardSnipMaterialization
         do {
             materialization = try await Task.detached(priority: .utility) {
-                try entry.materializeForClip()
+                try entry.materializeForSnip()
             }.value
         } catch {
             presentedError = "Snip Snap could not prepare the clipboard image."
             return false
         }
         defer { materialization.removeTemporaryFiles() }
-        let targetSectionID = sectionID ?? activeSectionID
+        let targetListID = listID ?? activeListID
         let result = await addResult(
             content: materialization.text,
             origin: .clipboard,
             source: materialization.source,
             attachmentURLs: materialization.fileURLs,
-            sectionID: targetSectionID
+            listID: targetListID
         )
         switch result {
         case .success(.added(let id)):
             guard placesManually else { return true }
-            return await move(ids: [id], to: targetSectionID, before: destinationID)
+            return await move(ids: [id], to: targetListID, before: destinationID)
         case .success(.duplicate):
             return false
         case .failure(let error):
@@ -433,8 +451,8 @@ final class AppModel: ObservableObject {
 
     func deleteSelectionNow() async {
         let ids = selection
-        let itemsToDelete = selectedItems
-        guard !ids.isEmpty, !itemsToDelete.isEmpty else { return }
+        let snipsToDelete = selectedSnips
+        guard !ids.isEmpty, !snipsToDelete.isEmpty else { return }
         let result = await performHistoryMutation(name: "Delete", afterSelection: { _ in [] }) {
             try await repository.delete(ids: ids)
         }
@@ -454,7 +472,7 @@ final class AppModel: ObservableObject {
         await withCommandLock {
             guard let operation = undoHistory.last else { return }
             switch await performMutationUnlocked(clearingHistory: false, {
-                try await repository.replaceAll(with: operation.beforeItems)
+                try await repository.replaceAll(with: operation.beforeSnips)
             }) {
             case .success:
                 undoHistory.removeLast()
@@ -477,7 +495,7 @@ final class AppModel: ObservableObject {
         await withCommandLock {
             guard let operation = redoHistory.last else { return }
             switch await performMutationUnlocked(clearingHistory: false, {
-                try await repository.replaceAll(with: operation.afterItems)
+                try await repository.replaceAll(with: operation.afterSnips)
             }) {
             case .success:
                 redoHistory.removeLast()
@@ -518,7 +536,7 @@ final class AppModel: ObservableObject {
 
     func markDoneAfterExternalDropNow(ids: Set<UUID>) async {
         let unfinishedIDs = Set(
-            items.lazy
+            snips.lazy
                 .filter { ids.contains($0.id) && !$0.isDone }
                 .map(\.id)
         )
@@ -528,35 +546,35 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func moveSelection(to sectionID: UUID) {
-        let ids = items.filter { selection.contains($0.id) }.map(\.id)
+    func moveSelection(to listID: UUID) {
+        let ids = snips.filter { selection.contains($0.id) }.map(\.id)
         guard !ids.isEmpty else { return }
         Task {
-            _ = await moveToSection(ids: ids, sectionID: sectionID)
+            _ = await moveToList(ids: ids, listID: listID)
         }
     }
 
     @discardableResult
-    func moveToSection(
+    func moveToList(
         ids: [UUID],
-        sectionID: UUID,
+        listID: UUID,
         selectionAfterMove: Set<UUID>? = nil
     ) async -> Bool {
         if sortMode == .manual {
             let movingIDs = Set(ids)
-            let firstID = items.first {
-                $0.sectionID == sectionID && !movingIDs.contains($0.id)
+            let firstID = snips.first {
+                $0.listID == listID && !movingIDs.contains($0.id)
             }?.id
             return await move(
                 ids: ids,
-                to: sectionID,
+                to: listID,
                 before: firstID,
                 selectionAfterMove: selectionAfterMove
             )
         }
         return await moveChronologically(
             ids: ids,
-            to: sectionID,
+            to: listID,
             selectionAfterMove: selectionAfterMove
         )
     }
@@ -564,7 +582,7 @@ final class AppModel: ObservableObject {
     @discardableResult
     func move(
         ids: [UUID],
-        to sectionID: UUID,
+        to listID: UUID,
         before destinationID: UUID?,
         selectionAfterMove: Set<UUID>? = nil
     ) async -> Bool {
@@ -579,7 +597,7 @@ final class AppModel: ObservableObject {
         ) {
             try await repository.place(
                 ids: ids,
-                in: sectionID,
+                in: listID,
                 before: destinationID,
                 basedOn: currentSortMode
             )
@@ -595,14 +613,14 @@ final class AppModel: ObservableObject {
     @discardableResult
     func moveChronologically(
         ids: [UUID],
-        to sectionID: UUID,
+        to listID: UUID,
         selectionAfterMove: Set<UUID>? = nil
     ) async -> Bool {
         let selectedIDs = Set(ids)
         guard !ids.isEmpty else { return false }
         let finalSelection = selectionAfterMove ?? selectedIDs
         let result = await performHistoryMutation(name: "Move", afterSelection: { _ in finalSelection }) {
-            try await repository.moveChronologically(ids: ids, to: sectionID)
+            try await repository.moveChronologically(ids: ids, to: listID)
         }
         if case .success = result {
             selection = finalSelection
@@ -619,9 +637,9 @@ final class AppModel: ObservableObject {
         guard offset == -1 || offset == 1 else { return }
         let selectedIDs = Set(selection)
         guard canReorder(ids: selectedIDs) else { return }
-        let sections = Set(items.filter { selectedIDs.contains($0.id) }.map(\.sectionID))
-        guard let sectionID = sections.first else { return }
-        let ids = items.filter { $0.sectionID == sectionID }.map(\.id)
+        let lists = Set(snips.filter { selectedIDs.contains($0.id) }.map(\.listID))
+        guard let listID = lists.first else { return }
+        let ids = snips.filter { $0.listID == listID }.map(\.id)
         guard let firstSelectedIndex = ids.firstIndex(where: selectedIDs.contains) else { return }
         let movingIDs = ids.filter(selectedIDs.contains)
         let remainingIDs = ids.filter { !selectedIDs.contains($0) }
@@ -632,22 +650,22 @@ final class AppModel: ObservableObject {
         )
         guard insertionIndex != unselectedBefore else { return }
         let destinationID = insertionIndex < remainingIDs.count ? remainingIDs[insertionIndex] : nil
-        _ = await move(ids: movingIDs, to: sectionID, before: destinationID)
+        _ = await move(ids: movingIDs, to: listID, before: destinationID)
     }
 
     func selectAllVisible() {
-        selection = Set(filteredItems.map(\.id))
+        selection = Set(filteredSnips.map(\.id))
     }
 
     func beginEditingSelection() {
-        editingID = filteredItems.first(where: { selection.contains($0.id) })?.id
+        editingID = filteredSnips.first(where: { selection.contains($0.id) })?.id
     }
 
     @discardableResult
     func copySelection() -> Bool {
-        let selected = selectedItems
+        let selected = selectedSnips
         guard !selected.isEmpty else { return false }
-        let text = CopyFormatter.formatForClipboard(items: selected)
+        let text = SnipFormatter.formatForClipboard(snips: selected)
         let pasteboard = NSPasteboard.general
         let textItem = NSPasteboardItem()
         textItem.setString(text, forType: .string)
@@ -666,14 +684,14 @@ final class AppModel: ObservableObject {
 
     func mergeSelectionNow() async {
         let ids = selection
-        let itemsToMerge = selectedItems
-        guard ids.count >= 2, itemsToMerge.count >= 2 else { return }
+        let snipsToMerge = selectedSnips
+        guard ids.count >= 2, snipsToMerge.count >= 2 else { return }
         let result = await performHistoryMutation(name: "Merge", afterSelection: { [$0.id] }) {
             try await repository.merge(ids: ids)
         }
         switch result {
-        case .success(let mergedItem):
-            selection = [mergedItem.id]
+        case .success(let mergedSnip):
+            selection = [mergedSnip.id]
         case .failure(let error):
             presentedError = error.localizedDescription
         }
@@ -716,15 +734,15 @@ final class AppModel: ObservableObject {
     private func performHistoryMutation<Value>(
         name: String,
         afterSelection: ((Value) -> Set<UUID>)? = nil,
-        afterSortMode: ClipSortMode? = nil,
+        afterSortMode: SnipSortMode? = nil,
         _ mutation: () async throws -> Value
     ) async -> Result<Value, Error> {
         await withCommandLock {
-            let beforeItems = items
+            let beforeSnips = snips
             let beforeSortMode = sortMode
             let beforeSelection = selection
             let result = await performMutationUnlocked(clearingHistory: false, mutation)
-            if case .success(let value) = result, beforeItems != items {
+            if case .success(let value) = result, beforeSnips != snips {
                 let savedAfterSortMode = afterSortMode ?? sortMode
                 setSortMode(savedAfterSortMode)
                 let savedSelection = afterSelection?(value) ?? selection
@@ -732,8 +750,8 @@ final class AppModel: ObservableObject {
                 undoHistory.append(
                     HistoryOperation(
                         name: name,
-                        beforeItems: beforeItems,
-                        afterItems: items,
+                        beforeSnips: beforeSnips,
+                        afterSnips: snips,
                         beforeSortMode: beforeSortMode,
                         afterSortMode: savedAfterSortMode,
                         beforeSelection: beforeSelection,
@@ -769,9 +787,9 @@ final class AppModel: ObservableObject {
     }
 
     private func reconcileAttachmentStorage() async {
-        let historyItems = undoHistory.flatMap { $0.beforeItems + $0.afterItems }
-            + redoHistory.flatMap { $0.beforeItems + $0.afterItems }
-        let retainedPaths = Set(historyItems.flatMap(\.attachments).map(\.relativePath))
+        let historySnips = undoHistory.flatMap { $0.beforeSnips + $0.afterSnips }
+            + redoHistory.flatMap { $0.beforeSnips + $0.afterSnips }
+        let retainedPaths = Set(historySnips.flatMap(\.attachments).map(\.relativePath))
         await repository.removeUnreferencedAttachments(keepingAdditional: retainedPaths)
     }
 }

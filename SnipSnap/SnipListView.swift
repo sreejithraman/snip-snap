@@ -1,44 +1,44 @@
 import AppKit
 import SwiftUI
 
-enum InboxFocusTarget: Hashable {
+enum PanelFocusTarget: Hashable {
     case list
     case search
     case inlineEntry
 }
 
 private struct InlineEditSession {
-    let itemID: UUID
+    let snipID: UUID
     var attachments: [URL]
     var isSaving = false
 }
 
-private enum InboxScrollTarget {
+private enum SnipListScrollTarget {
     case top
 }
 
 @MainActor
-private final class InboxReorderGeometry: ObservableObject {
+private final class SnipListReorderGeometry: ObservableObject {
     var rowFrames: [UUID: CGRect] = [:]
     var listFrame: CGRect = .zero
     var scrollOffsetY: CGFloat = 0
 }
 
-private struct InboxWindowFrameReader: NSViewRepresentable {
+private struct SnipListWindowFrameReader: NSViewRepresentable {
     let onChange: @MainActor (CGRect, CGFloat) -> Void
 
-    func makeNSView(context: Context) -> InboxWindowFrameReaderView {
-        InboxWindowFrameReaderView(onChange: onChange)
+    func makeNSView(context: Context) -> SnipListWindowFrameReaderView {
+        SnipListWindowFrameReaderView(onChange: onChange)
     }
 
-    func updateNSView(_ nsView: InboxWindowFrameReaderView, context: Context) {
+    func updateNSView(_ nsView: SnipListWindowFrameReaderView, context: Context) {
         nsView.onChange = onChange
         nsView.reportFrameIfNeeded()
     }
 }
 
 @MainActor
-private final class InboxWindowFrameReaderView: NSView {
+private final class SnipListWindowFrameReaderView: NSView {
     var onChange: @MainActor (CGRect, CGFloat) -> Void
     private var lastFrame: CGRect?
     private var lastScrollOffsetY: CGFloat?
@@ -108,22 +108,22 @@ private final class InboxWindowFrameReaderView: NSView {
 }
 
 @MainActor
-final class InboxListState: ObservableObject {
+final class SnipListState: ObservableObject {
     fileprivate var anchor: UUID?
     fileprivate var focus: UUID?
 
     func selectAllVisible(model: AppModel) {
         model.selectAllVisible()
-        let ids = orderedIDs(for: model.filteredItems)
+        let ids = orderedIDs(for: model.filteredSnips)
         anchor = ids.first
         focus = ids.last
     }
 
-    fileprivate func orderedIDs(for items: [CaptureItem]) -> [UUID] {
-        items.map(\.id)
+    fileprivate func orderedIDs(for snips: [Snip]) -> [UUID] {
+        snips.map(\.id)
     }
 
-    fileprivate func apply(_ update: InboxSelection.Update, to model: AppModel) {
+    fileprivate func apply(_ update: SnipSelection.Update, to model: AppModel) {
         model.selection = update.selection
         anchor = update.anchor
         focus = update.focus
@@ -140,19 +140,19 @@ final class InboxListState: ObservableObject {
             self.anchor = nil
         }
         if focus.map(selection.contains) != true {
-            focus = orderedIDs(for: model.filteredItems).first(where: selection.contains)
+            focus = orderedIDs(for: model.filteredSnips).first(where: selection.contains)
         }
     }
 }
 
-struct InboxListView: View {
+struct SnipListView: View {
     @ObservedObject var model: AppModel
     let coordinator: AppCoordinator
-    let clipDragSourceController: ClipDragSourceController
+    let snipDragSourceController: SnipDragSourceController
     let fileDropController: PanelFileDropController
-    @ObservedObject var state: InboxListState
-    @FocusState.Binding var focusedTarget: InboxFocusTarget?
-    let moveSelectionToNewSection: (Set<UUID>) -> Void
+    @ObservedObject var state: SnipListState
+    @FocusState.Binding var focusedTarget: PanelFocusTarget?
+    let moveSelectionToNewList: (Set<UUID>) -> Void
     let requestFileImport: (UUID) -> Void
     @Binding var pendingEditAttachmentImport: PendingEditAttachmentImport?
     let captureScreenAreaForEdit: (@escaping @MainActor (URL?) -> Void) -> Void
@@ -162,72 +162,72 @@ struct InboxListView: View {
 
     @State private var selectionModifiers: EventModifiers = []
     @State private var hasScrolledFromTop = false
-    @State private var addedClipRevealState = InboxAddedClipRevealState()
+    @State private var addedSnipRevealState = AddedSnipRevealState()
     @State private var editSession: InlineEditSession?
-    @State private var pendingOrderBySection: [UUID: [UUID]] = [:]
-    @State private var activeDragPayload: ClipDragPayload?
+    @State private var pendingOrderByList: [UUID: [UUID]] = [:]
+    @State private var activeDragPayload: SnipDragPayload?
     @State private var activeDragOriginalOrder: [UUID] = []
     @State private var activeDragScrollOffsetY: CGFloat = 0
-    @State private var activeDropTarget: InboxReorderTarget?
+    @State private var activeDropTarget: SnipListReorderTarget?
     @State private var isCommittingDrop = false
     @State private var activeDragRowFrames: [UUID: CGRect] = [:]
-    @StateObject private var reorderGeometry = InboxReorderGeometry()
+    @StateObject private var reorderGeometry = SnipListReorderGeometry()
 
-    private var orderedItemIDs: [UUID] {
-        state.orderedIDs(for: model.filteredItems)
+    private var orderedSnipIDs: [UUID] {
+        state.orderedIDs(for: model.filteredSnips)
     }
 
-    private var itemCommands: InboxItemCommandDispatcher {
-        InboxItemCommandDispatcher(model: model, coordinator: coordinator)
+    private var snipCommands: SnipCommandDispatcher {
+        SnipCommandDispatcher(model: model, coordinator: coordinator)
     }
 
     var body: some View {
-        let snapshot = InboxListSnapshot(
-            visibleItems: model.filteredItems,
-            allItems: model.items,
-            sections: model.sections,
+        let snapshot = SnipListSnapshot(
+            visibleSnips: model.filteredSnips,
+            allSnips: model.snips,
+            lists: model.lists,
             selection: model.selection,
-            keepsEmptySectionID: model.query.trimmingCharacters(
+            keepsEmptyListID: model.query.trimmingCharacters(
                 in: .whitespacesAndNewlines
-            ).isEmpty ? model.activeSectionID : nil,
+            ).isEmpty ? model.activeListID : nil,
             attachmentURL: model.attachmentURL
         )
-        let showsSearchSections = snapshot.groups.count > 1
+        let showsSearchLists = snapshot.groups.count > 1
         ScrollViewReader { proxy in
             List {
                 topSpacer
-                if showsSearchSections {
+                if showsSearchLists {
                     ForEach(snapshot.groups) { group in
                         Section {
-                            ForEach(group.items) { item in
-                                reorderableItemCard(
-                                    item,
+                            ForEach(group.snips) { snip in
+                                reorderableSnipCard(
+                                    snip,
                                     snapshot: snapshot,
-                                    sectionID: group.sectionID,
-                                    items: group.items
+                                    listID: group.listID,
+                                    snips: group.snips
                                 )
                             }
                         } header: {
                             PanelListHeader(
-                                group.section,
+                                group.listName,
                                 showsGlass: hasScrolledFromTop
                             )
                             .background {
-                                ClipDragBlockingRegion(
-                                    controller: clipDragSourceController,
-                                    id: group.sectionID
+                                SnipDragBlockingRegion(
+                                    controller: snipDragSourceController,
+                                    id: group.listID
                                 )
                             }
                         }
                     }
                 } else {
-                    let displayedItems = displayedItems(in: snapshot)
-                    ForEach(displayedItems) { item in
-                        reorderableItemCard(
-                            item,
+                    let displayedSnips = displayedSnips(in: snapshot)
+                    ForEach(displayedSnips) { snip in
+                        reorderableSnipCard(
+                            snip,
                             snapshot: snapshot,
-                            sectionID: model.activeSectionID,
-                            items: displayedItems
+                            listID: model.activeListID,
+                            snips: displayedSnips
                         )
                     }
                 }
@@ -238,14 +238,14 @@ struct InboxListView: View {
             .contentMargins(0, for: .scrollContent)
             .environment(\.defaultMinListRowHeight, 1)
             .background {
-                InboxWindowFrameReader { frame, _ in
+                SnipListWindowFrameReader { frame, _ in
                     reorderGeometry.listFrame = frame
                 }
             }
             .safeAreaInset(edge: .top, spacing: 0) {
-                if !showsSearchSections {
+                if !showsSearchLists {
                     PanelListHeader(
-                        model.activeSection.name,
+                        model.activeList.name,
                         showsGlass: hasScrolledFromTop
                     )
                 }
@@ -261,44 +261,44 @@ struct InboxListView: View {
                 selectionModifiers = modifiers
             }
             .onChange(of: model.sortMode) {
-                if let selectedID = orderedItemIDs.first(where: model.selection.contains) {
+                if let selectedID = orderedSnipIDs.first(where: model.selection.contains) {
                     withAnimation(.snappy(duration: 0.18)) {
                         proxy.scrollTo(selectedID, anchor: .center)
                     }
                 }
             }
-            .onChange(of: model.latestAddedClipID) { _, clipID in
-                let isVisibleInModel = clipID.map { addedID in
-                    model.filteredItems.contains(where: { $0.id == addedID })
+            .onChange(of: model.latestAddedSnipID) { _, snipID in
+                let isVisibleInModel = snipID.map { addedID in
+                    model.filteredSnips.contains(where: { $0.id == addedID })
                 } ?? false
-                if let destination = addedClipRevealState.record(
-                    clipID: clipID,
+                if let destination = addedSnipRevealState.record(
+                    snipID: snipID,
                     wasAtTop: !hasScrolledFromTop,
                     isVisibleInModel: isVisibleInModel,
                     visibleIDs: snapshot.orderedVisibleIDs
                 ) {
-                    revealAddedClip(
+                    revealAddedSnip(
                         at: destination,
                         proxy: proxy
                     )
                 }
             }
             .onChange(of: snapshot.orderedVisibleIDs) { _, visibleIDs in
-                if let destination = addedClipRevealState.nextDestination(
+                if let destination = addedSnipRevealState.nextDestination(
                     visibleIDs: visibleIDs
                 ) {
-                    revealAddedClip(
+                    revealAddedSnip(
                         at: destination,
                         proxy: proxy
                     )
                 }
             }
             .onChange(of: model.editingID, initial: true) { _, editingID in
-                editSession = editingID.flatMap { itemID in
-                    model.items.first(where: { $0.id == itemID }).map { item in
+                editSession = editingID.flatMap { snipID in
+                    model.snips.first(where: { $0.id == snipID }).map { snip in
                         InlineEditSession(
-                            itemID: itemID,
-                            attachments: item.attachments.map(model.attachmentURL)
+                            snipID: snipID,
+                            attachments: snip.attachments.map(model.attachmentURL)
                         )
                     }
                 }
@@ -332,21 +332,21 @@ struct InboxListView: View {
             self.pendingEditAttachmentImport = nil
             addEditAttachments(
                 pendingEditAttachmentImport.urls,
-                to: pendingEditAttachmentImport.itemID
+                to: pendingEditAttachmentImport.snipID
             )
         }
     }
 
-    private func addEditAttachments(_ urls: [URL], to itemID: UUID) {
-        guard model.editingID == itemID,
-              let item = model.items.first(where: { $0.id == itemID }) else { return }
+    private func addEditAttachments(_ urls: [URL], to snipID: UUID) {
+        guard model.editingID == snipID,
+              let snip = model.snips.first(where: { $0.id == snipID }) else { return }
         var session: InlineEditSession
-        if let editSession, editSession.itemID == itemID {
+        if let editSession, editSession.snipID == snipID {
             session = editSession
         } else {
             session = InlineEditSession(
-                itemID: itemID,
-                attachments: item.attachments.map(model.attachmentURL)
+                snipID: snipID,
+                attachments: snip.attachments.map(model.attachmentURL)
             )
         }
         guard !session.isSaving else { return }
@@ -359,8 +359,8 @@ struct InboxListView: View {
         editSession = session
     }
 
-    private func revealAddedClip(
-        at destination: InboxAddedClipRevealDestination,
+    private func revealAddedSnip(
+        at destination: AddedSnipRevealDestination,
         proxy: ScrollViewProxy
     ) {
         Task { @MainActor in
@@ -368,7 +368,7 @@ struct InboxListView: View {
             withAnimation(.snappy(duration: 0.18)) {
                 switch destination {
                 case .scrollViewTop:
-                    proxy.scrollTo(InboxScrollTarget.top, anchor: .top)
+                    proxy.scrollTo(SnipListScrollTarget.top, anchor: .top)
                 }
             }
         }
@@ -395,7 +395,7 @@ struct InboxListView: View {
             .listRowInsets(EdgeInsets())
             .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
-            .id(InboxScrollTarget.top)
+            .id(SnipListScrollTarget.top)
     }
 
     private var canDragReorder: Bool {
@@ -404,29 +404,29 @@ struct InboxListView: View {
             && model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private func reorderableItemCard(
-        _ item: CaptureItem,
-        snapshot: InboxListSnapshot,
-        sectionID: UUID,
-        items: [CaptureItem]
+    private func reorderableSnipCard(
+        _ snip: Snip,
+        snapshot: SnipListSnapshot,
+        listID: UUID,
+        snips: [Snip]
     ) -> some View {
-        let payload = snapshot.dragPayload(for: item)
-        return itemCard(item)
-                .opacity(isShowingDragGap(for: item.id) ? 0 : 1)
+        let payload = snapshot.dragPayload(for: snip)
+        return snipCard(snip)
+                .opacity(isShowingDragGap(for: snip.id) ? 0 : 1)
                 .background {
-                    if model.editingID != item.id {
-                        ClipDragSourceRegion(
-                            controller: clipDragSourceController,
-                            id: item.id,
+                    if model.editingID != snip.id {
+                        SnipDragSourceRegion(
+                            controller: snipDragSourceController,
+                            id: snip.id,
                             payload: payload,
                             onBegan: {
-                                beginDrag(payload, orderedIDs: items.map(\.id))
+                                beginDrag(payload, orderedIDs: snips.map(\.id))
                             },
                             onMoved: { point in
                                 updateDrag(
                                     at: point,
-                                    sectionID: sectionID,
-                                    items: items
+                                    listID: listID,
+                                    snips: snips
                                 )
                             },
                             onEnded: { outcome, point in
@@ -434,30 +434,30 @@ struct InboxListView: View {
                                     payload,
                                     outcome: outcome,
                                     at: point,
-                                    sectionID: sectionID,
-                                    items: items
+                                    listID: listID,
+                                    snips: snips
                                 )
                             }
                         )
                     }
                 }
                 .padding(.bottom, PanelListMetrics.rowSpacing)
-                .id(item.id)
-                .listRowInsets(PanelListMetrics.inboxRowInsets)
+                .id(snip.id)
+                .listRowInsets(PanelListMetrics.rowInsets)
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
                 .background {
-                    InboxWindowFrameReader { frame, scrollOffsetY in
-                        reorderGeometry.rowFrames[item.id] = frame
+                    SnipListWindowFrameReader { frame, scrollOffsetY in
+                        reorderGeometry.rowFrames[snip.id] = frame
                         reorderGeometry.scrollOffsetY = scrollOffsetY
                     }
                 }
                 .onDisappear {
-                    reorderGeometry.rowFrames[item.id] = nil
+                    reorderGeometry.rowFrames[snip.id] = nil
                 }
     }
 
-    private func beginDrag(_ payload: ClipDragPayload, orderedIDs: [UUID]) {
+    private func beginDrag(_ payload: SnipDragPayload, orderedIDs: [UUID]) {
         activeDragPayload = payload
         activeDropTarget = nil
         isCommittingDrop = false
@@ -473,32 +473,32 @@ struct InboxListView: View {
 
     private func updateDrag(
         at location: CGPoint,
-        sectionID: UUID,
-        items: [CaptureItem]
+        listID: UUID,
+        snips: [Snip]
     ) {
         guard activeDragPayload != nil, !activeDragOriginalOrder.isEmpty else { return }
         guard reorderGeometry.listFrame.contains(location) else {
             if activeDropTarget != nil {
                 activeDropTarget = nil
-                pendingOrderBySection[sectionID] = nil
+                pendingOrderByList[listID] = nil
             }
             return
         }
-        let target = reorderTarget(at: location, items: items)
+        let target = reorderTarget(at: location, snips: snips)
         activeDropTarget = target
-        updatePendingOrder(sectionID: sectionID, target: target)
+        updatePendingOrder(listID: listID, target: target)
     }
 
     private func reorderTarget(
         at location: CGPoint,
-        items: [CaptureItem]
-    ) -> InboxReorderTarget {
+        snips: [Snip]
+    ) -> SnipListReorderTarget {
         let placementFrames = activeDragRowFrames.isEmpty
             ? reorderGeometry.rowFrames
             : activeDragRowFrames
-        return InboxReorderPlan.target(
+        return SnipListReorderPlan.target(
             atWindowY: location.y,
-            orderedIDs: items.map(\.id),
+            orderedIDs: snips.map(\.id),
             movingIDs: Set(activeDragPayload?.ids ?? []),
             rowFrames: placementFrames,
             rowFrameOffsetY: reorderGeometry.scrollOffsetY - activeDragScrollOffsetY
@@ -506,85 +506,85 @@ struct InboxListView: View {
     }
 
     private func updatePendingOrder(
-        sectionID: UUID,
-        target: InboxReorderTarget
+        listID: UUID,
+        target: SnipListReorderTarget
     ) {
         guard let payload = activeDragPayload else { return }
-        guard let reorderedIDs = InboxReorderPlan.orderedIDs(
+        guard let reorderedIDs = SnipListReorderPlan.orderedIDs(
             from: activeDragOriginalOrder,
             movingIDs: payload.ids,
             target: target
         ) else { return }
-        guard pendingOrderBySection[sectionID] != reorderedIDs else { return }
+        guard pendingOrderByList[listID] != reorderedIDs else { return }
         withAnimation(.easeOut(duration: 0.12)) {
-            pendingOrderBySection[sectionID] = reorderedIDs
+            pendingOrderByList[listID] = reorderedIDs
         }
     }
 
     private func commitDrop(
-        _ payload: ClipDragPayload,
-        target: InboxReorderTarget,
-        sectionID: UUID
+        _ payload: SnipDragPayload,
+        target: SnipListReorderTarget,
+        listID: UUID
     ) {
         guard payload == activeDragPayload else { return }
-        guard let reorderedIDs = InboxReorderPlan.orderedIDs(
+        guard let reorderedIDs = SnipListReorderPlan.orderedIDs(
             from: activeDragOriginalOrder,
             movingIDs: payload.ids,
             target: target
         ), reorderedIDs != activeDragOriginalOrder else {
-            clearDrag(sectionID: sectionID)
+            clearDrag(listID: listID)
             return
         }
         activeDropTarget = target
-        updatePendingOrder(sectionID: sectionID, target: target)
+        updatePendingOrder(listID: listID, target: target)
         isCommittingDrop = true
         let selectionBeforeMove = model.selection
         Task { @MainActor in
             _ = await model.move(
                 ids: payload.ids,
-                to: sectionID,
+                to: listID,
                 before: target.beforeID,
                 selectionAfterMove: selectionBeforeMove
             )
             guard payload == activeDragPayload, isCommittingDrop else { return }
-            clearDrag(sectionID: sectionID)
+            clearDrag(listID: listID)
         }
     }
 
     private func endDrag(
-        _ payload: ClipDragPayload,
-        outcome: ClipDragOutcome,
+        _ payload: SnipDragPayload,
+        outcome: SnipDragOutcome,
         at location: CGPoint,
-        sectionID: UUID,
-        items: [CaptureItem]
+        listID: UUID,
+        snips: [Snip]
     ) {
         guard payload == activeDragPayload else { return }
         if !activeDragOriginalOrder.isEmpty, reorderGeometry.listFrame.contains(location) {
-            let finalTarget = reorderTarget(at: location, items: items)
-            commitDrop(payload, target: finalTarget, sectionID: sectionID)
+            let finalTarget = reorderTarget(at: location, snips: snips)
+            commitDrop(payload, target: finalTarget, listID: listID)
             return
         }
         if outcome == .copy {
             model.markDoneAfterExternalDrop(ids: payload.ids)
         }
         guard outcome == .move else {
-            clearDrag(sectionID: sectionID)
+            clearDrag(listID: listID)
             return
         }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(300))
             guard payload == activeDragPayload, !isCommittingDrop else { return }
-            clearDrag(sectionID: sectionID)
+            clearDrag(listID: listID)
         }
     }
 
-    private func isShowingDragGap(for itemID: UUID) -> Bool {
-        activeDragPayload?.ids.contains(itemID) == true
+    private func isShowingDragGap(for snipID: UUID) -> Bool {
+        activeDragPayload?.ids.contains(snipID) == true
     }
 
-    private func clearDrag(sectionID: UUID) {
+    private func clearDrag(listID: UUID) {
         withAnimation(.snappy(duration: 0.12)) {
-            pendingOrderBySection[sectionID] = nil
+            pendingOrderByList[listID] = nil
             activeDragPayload = nil
             activeDragOriginalOrder = []
             activeDragScrollOffsetY = 0
@@ -594,20 +594,20 @@ struct InboxListView: View {
         }
     }
 
-    private func displayedItems(in snapshot: InboxListSnapshot) -> [CaptureItem] {
+    private func displayedSnips(in snapshot: SnipListSnapshot) -> [Snip] {
         guard snapshot.groups.count == 1, let group = snapshot.groups.first else {
-            return snapshot.groups.flatMap(\.items)
+            return snapshot.groups.flatMap(\.snips)
         }
-        return orderedItems(in: group)
+        return orderedSnips(in: group)
     }
 
-    private func orderedItems(in group: InboxItemGroup) -> [CaptureItem] {
-        guard let pendingOrder = pendingOrderBySection[group.sectionID],
-              Set(pendingOrder) == Set(group.items.map(\.id)) else {
-            return group.items
+    private func orderedSnips(in group: SnipListGroup) -> [Snip] {
+        guard let pendingOrder = pendingOrderByList[group.listID],
+              Set(pendingOrder) == Set(group.snips.map(\.id)) else {
+            return group.snips
         }
-        let itemsByID = Dictionary(uniqueKeysWithValues: group.items.map { ($0.id, $0) })
-        return pendingOrder.compactMap { itemsByID[$0] }
+        let snipsByID = Dictionary(uniqueKeysWithValues: group.snips.map { ($0.id, $0) })
+        return pendingOrder.compactMap { snipsByID[$0] }
     }
 
     private func selectionFocusTarget(proxy: ScrollViewProxy) -> some View {
@@ -634,22 +634,22 @@ struct InboxListView: View {
             }
     }
 
-    private func itemCard(_ item: CaptureItem) -> some View {
-        InboxItemRow(
-            item: item,
-            isSelected: model.selection.contains(item.id),
-            isEditing: model.editingID == item.id,
-            editAttachments: editAttachmentsBinding(for: item),
-            isSaving: savingBinding(for: item),
+    private func snipCard(_ snip: Snip) -> some View {
+        SnipCardRow(
+            snip: snip,
+            isSelected: model.selection.contains(snip.id),
+            isEditing: model.editingID == snip.id,
+            editAttachments: editAttachmentsBinding(for: snip),
+            isSaving: savingBinding(for: snip),
             attachmentURL: model.attachmentURL,
             onPreviewAttachments: onPreviewAttachments,
             onRemovePreviewURL: onRemovePreviewURL,
-            onSelect: { select(item.id) },
-            onOpen: { edit(item.id) },
-            onToggleDone: { model.toggleDone(id: item.id) },
+            onSelect: { select(snip.id) },
+            onOpen: { edit(snip.id) },
+            onToggleDone: { model.toggleDone(id: snip.id) },
             onChooseFiles: {
-                guard model.editingID == item.id else { return }
-                requestFileImport(item.id)
+                guard model.editingID == snip.id else { return }
+                requestFileImport(snip.id)
             },
             onCaptureScreenArea: captureScreenAreaForEdit,
             onCancelEdit: {
@@ -658,12 +658,12 @@ struct InboxListView: View {
             },
             onSaveEdit: { text, attachments in
                 let saved = await model.update(
-                    id: item.id,
+                    id: snip.id,
                     content: text,
                     attachmentURLs: attachments
                 )
                 guard saved else { return false }
-                model.selection = [item.id]
+                model.selection = [snip.id]
                 model.editingID = nil
                 focusedTarget = .list
                 return true
@@ -671,55 +671,55 @@ struct InboxListView: View {
             onEditError: { model.presentedError = $0 }
         )
         .contextMenu {
-            if model.editingID != item.id {
-                selectionMenu(for: contextSelection(for: item.id))
+            if model.editingID != snip.id {
+                selectionMenu(for: contextSelection(for: snip.id))
             }
         }
-        .accessibilityAddTraits(model.selection.contains(item.id) ? .isSelected : [])
+        .accessibilityAddTraits(model.selection.contains(snip.id) ? .isSelected : [])
         .accessibilityAction(named: "Select") {
-            selectExclusively(item.id)
+            selectExclusively(snip.id)
         }
         .accessibilityAction(named: "Copy") {
-            selectExclusively(item.id)
-            itemCommands.perform(.copy)
+            selectExclusively(snip.id)
+            snipCommands.perform(.copy)
         }
         .accessibilityAction(named: "Edit") {
-            edit(item.id)
+            edit(snip.id)
         }
         .accessibilityAction(named: "Edit in New Window") {
-            selectExclusively(item.id)
-            itemCommands.perform(.editInNewWindow)
+            selectExclusively(snip.id)
+            snipCommands.perform(.editInNewWindow)
         }
-        .accessibilityAction(named: item.isDone ? "Mark Not Done" : "Mark Done") {
-            model.toggleDone(id: item.id)
+        .accessibilityAction(named: snip.isDone ? "Mark Not Done" : "Mark Done") {
+            model.toggleDone(id: snip.id)
         }
         .accessibilityAction(named: "Move Up") {
-            model.selection = contextSelection(for: item.id)
+            model.selection = contextSelection(for: snip.id)
             model.moveSelectionUp()
         }
         .accessibilityAction(named: "Move Down") {
-            model.selection = contextSelection(for: item.id)
+            model.selection = contextSelection(for: snip.id)
             model.moveSelectionDown()
         }
         .accessibilityAction(named: "Delete") {
-            selectExclusively(item.id)
-            itemCommands.perform(.delete)
+            selectExclusively(snip.id)
+            snipCommands.perform(.delete)
         }
     }
 
-    private func editAttachmentsBinding(for item: CaptureItem) -> Binding<[URL]> {
+    private func editAttachmentsBinding(for snip: Snip) -> Binding<[URL]> {
         Binding(
             get: {
-                guard let editSession, editSession.itemID == item.id else {
-                    return item.attachments.map(model.attachmentURL)
+                guard let editSession, editSession.snipID == snip.id else {
+                    return snip.attachments.map(model.attachmentURL)
                 }
                 return editSession.attachments
             },
             set: { attachments in
-                let isSaving = editSession?.itemID == item.id
+                let isSaving = editSession?.snipID == snip.id
                     && editSession?.isSaving == true
                 editSession = InlineEditSession(
-                    itemID: item.id,
+                    snipID: snip.id,
                     attachments: attachments,
                     isSaving: isSaving
                 )
@@ -727,18 +727,18 @@ struct InboxListView: View {
         )
     }
 
-    private func savingBinding(for item: CaptureItem) -> Binding<Bool> {
+    private func savingBinding(for snip: Snip) -> Binding<Bool> {
         Binding(
-            get: { editSession?.itemID == item.id && editSession?.isSaving == true },
+            get: { editSession?.snipID == snip.id && editSession?.isSaving == true },
             set: { isSaving in
                 let attachments: [URL]
-                if let editSession, editSession.itemID == item.id {
+                if let editSession, editSession.snipID == snip.id {
                     attachments = editSession.attachments
                 } else {
-                    attachments = item.attachments.map(model.attachmentURL)
+                    attachments = snip.attachments.map(model.attachmentURL)
                 }
                 editSession = InlineEditSession(
-                    itemID: item.id,
+                    snipID: snip.id,
                     attachments: attachments,
                     isSaving: isSaving
                 )
@@ -747,13 +747,13 @@ struct InboxListView: View {
     }
 
     private func select(_ id: UUID) {
-        let update = InboxSelection.click(
+        let update = SnipSelection.click(
             id,
-            orderedIDs: orderedItemIDs,
+            orderedIDs: orderedSnipIDs,
             selection: model.selection,
             anchor: state.anchor,
             focus: state.focus,
-            modifiers: inboxSelectionModifiers
+            modifiers: currentSelectionModifiers
         )
         state.apply(update, to: model)
         focusedTarget = .list
@@ -766,9 +766,9 @@ struct InboxListView: View {
     }
 
     private func selectExclusively(_ id: UUID) {
-        guard orderedItemIDs.contains(id) else { return }
+        guard orderedSnipIDs.contains(id) else { return }
         state.apply(
-            InboxSelection.Update(selection: [id], anchor: id, focus: id),
+            SnipSelection.Update(selection: [id], anchor: id, focus: id),
             to: model
         )
         focusedTarget = .list
@@ -779,15 +779,15 @@ struct InboxListView: View {
         extending: Bool,
         proxy: ScrollViewProxy
     ) -> KeyPress.Result {
-        let update = InboxSelection.move(
+        let update = SnipSelection.move(
             by: offset,
-            orderedIDs: orderedItemIDs,
+            orderedIDs: orderedSnipIDs,
             selection: model.selection,
             anchor: state.anchor,
             focus: state.focus,
             extending: extending
         )
-        let current = InboxSelection.Update(
+        let current = SnipSelection.Update(
             selection: model.selection,
             anchor: state.anchor,
             focus: state.focus
@@ -800,8 +800,8 @@ struct InboxListView: View {
         return .handled
     }
 
-    private var inboxSelectionModifiers: InboxSelection.Modifiers {
-        var modifiers: InboxSelection.Modifiers = []
+    private var currentSelectionModifiers: SnipSelection.Modifiers {
+        var modifiers: SnipSelection.Modifiers = []
         if selectionModifiers.contains(.command) { modifiers.insert(.command) }
         if selectionModifiers.contains(.shift) { modifiers.insert(.shift) }
         return modifiers
@@ -823,21 +823,21 @@ struct InboxListView: View {
             Divider()
             Button(doneCommandTitle(for: ids)) { perform(.toggleDone, on: ids) }
             Button("Edit") { perform(.edit, on: ids) }
-                .disabled(!InboxItemCommand.edit.isAvailable(for: ids.count))
+                .disabled(!SnipCommand.edit.isAvailable(for: ids.count))
             Button("Edit in New Window") { perform(.editInNewWindow, on: ids) }
-                .disabled(!InboxItemCommand.editInNewWindow.isAvailable(for: ids.count))
-            Button("Merge Clips") { perform(.merge, on: ids) }
-                .disabled(!InboxItemCommand.merge.isAvailable(for: ids.count))
+                .disabled(!SnipCommand.editInNewWindow.isAvailable(for: ids.count))
+            Button("Merge Snips") { perform(.merge, on: ids) }
+                .disabled(!SnipCommand.merge.isAvailable(for: ids.count))
             Menu("Move to") {
-                ForEach(model.sections) { section in
-                    Button(section.name) {
+                ForEach(model.lists) { list in
+                    Button(list.name) {
                         model.selection = ids
-                        model.moveSelection(to: section.id)
+                        model.moveSelection(to: list.id)
                     }
                 }
                 Divider()
-                Button("New Section…") {
-                    moveSelectionToNewSection(ids)
+                Button("New List…") {
+                    moveSelectionToNewList(ids)
                 }
             }
             Button("Move Up") {
@@ -855,17 +855,17 @@ struct InboxListView: View {
         }
     }
 
-    private func perform(_ command: InboxItemCommand, on ids: Set<UUID>) {
+    private func perform(_ command: SnipCommand, on ids: Set<UUID>) {
         model.selection = ids
         if command == .edit {
             focusedTarget = nil
         }
-        itemCommands.perform(command)
+        snipCommands.perform(command)
     }
 
     private func doneCommandTitle(for ids: Set<UUID>) -> String {
-        let selectedItems = model.items.filter { ids.contains($0.id) }
-        return selectedItems.allSatisfy(\.isDone) ? "Mark Not Done" : "Mark Done"
+        let selectedSnips = model.snips.filter { ids.contains($0.id) }
+        return selectedSnips.allSatisfy(\.isDone) ? "Mark Not Done" : "Mark Done"
     }
 
     private func canReorder(_ ids: Set<UUID>) -> Bool {

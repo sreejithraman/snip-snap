@@ -22,20 +22,20 @@ brew install --cask sreejithraman/tap/snip-snap
 Snip Snap needs macOS 26 or later. Grant Accessibility access when asked so
 system-wide capture and Shift shortcuts can work.
 
-## Keep clips ready
+## Keep snips ready
 
 - Press Left Shift twice to capture selected text.
-- Press Right Shift twice to open your clips.
-- Save text and files, sort them into sections, and find them fast.
+- Press Right Shift twice to open your snips.
+- Save text and files, sort them into lists, and find them fast.
 - Keep up to 100 clipboard items, or pause and clear clipboard history at any
   time.
 
-Everything stays in a small panel where you can edit, copy, or drag items back
+Everything stays in a small panel where you can edit, copy, or drag snips back
 into your work.
 
 ## Private on your Mac
 
-Snip Snap stores clips and clipboard history on your Mac. It has no account,
+Snip Snap stores snips and clipboard history on your Mac. It has no account,
 sync, or tracking. Release builds contact the public update feed to check for
 new versions.
 

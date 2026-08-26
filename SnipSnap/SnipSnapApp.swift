@@ -41,7 +41,7 @@ struct SnipSnapApp: App {
         .defaultSize(width: 400, height: 230)
         .windowResizability(.contentSize)
         .commands {
-            InboxCommands(coordinator: appDelegate.coordinator)
+            SnipCommands(coordinator: appDelegate.coordinator)
             ShortcutCommands()
             if appDelegate.updateChecksEnabled {
                 UpdateCommands(updaterController: appDelegate.updaterController)
@@ -68,10 +68,10 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     let shortcutSettings: ShortcutSettings
     let coordinator: AppCoordinator
     let fileDropController: PanelFileDropController
-    let clipDragSourceController: ClipDragSourceController
+    let snipDragSourceController: SnipDragSourceController
     let updaterController: SPUStandardUpdaterController
     let updateChecksEnabled: Bool
-    private var inboxPanel: SnipSnapPanel?
+    private var mainPanel: SnipSnapPanel?
     private var isFlushingBeforeTermination = false
 
     override init() {
@@ -79,11 +79,11 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let model = AppModel()
         let shortcutSettings = ShortcutSettings()
         let fileDropController = PanelFileDropController()
-        let clipDragSourceController = ClipDragSourceController()
+        let snipDragSourceController = SnipDragSourceController()
         self.model = model
         self.shortcutSettings = shortcutSettings
         self.fileDropController = fileDropController
-        self.clipDragSourceController = clipDragSourceController
+        self.snipDragSourceController = snipDragSourceController
         updateChecksEnabled = isReleaseApp &&
             ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
         updaterController = SPUStandardUpdaterController(
@@ -102,14 +102,14 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let rootView = ContentView(
                 coordinator: coordinator,
                 fileDropController: fileDropController,
-                clipDragSourceController: clipDragSourceController
+                snipDragSourceController: snipDragSourceController
             )
                 .environmentObject(model)
                 .environmentObject(shortcutSettings)
         let hostingView = PanelFileDropHostingView(
             rootView: rootView,
             controller: fileDropController,
-            clipDragSourceController: clipDragSourceController
+            snipDragSourceController: snipDragSourceController
         )
         let hostingController = NSViewController()
         hostingController.view = hostingView
@@ -117,12 +117,12 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             contentViewController: hostingController,
             frameAutosaveName: AppWindowDefaults.frameAutosaveName
         )
-        coordinator.attachInboxWindow(panel)
+        coordinator.attachPanelWindow(panel)
         coordinator.start()
         if !panel.restoredSavedFrame {
             panel.center()
         }
-        inboxPanel = panel
+        mainPanel = panel
 #if DEBUG
         if ProcessInfo.processInfo.environment["SNIP_SNAP_SHOW_PANEL_ON_LAUNCH"] == "1" {
             panel.makeKeyAndOrderFront(nil)
@@ -137,7 +137,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isFlushingBeforeTermination else { return .terminateLater }
         isFlushingBeforeTermination = true
-        coordinator.saveInboxWindowFrame(using: AppWindowDefaults.frameAutosaveName)
+        coordinator.savePanelWindowFrame(using: AppWindowDefaults.frameAutosaveName)
         Task { @MainActor [model] in
             model.flushComposerDrafts()
             await model.clipboardHistory.flushPersistence()
@@ -170,19 +170,19 @@ private struct ShortcutCommands: Commands {
     }
 }
 
-private struct InboxCommandModelKey: FocusedValueKey {
+private struct SnipCommandModelKey: FocusedValueKey {
     typealias Value = AppModel
 }
 
 extension FocusedValues {
-    var inboxCommandModel: AppModel? {
-        get { self[InboxCommandModelKey.self] }
-        set { self[InboxCommandModelKey.self] = newValue }
+    var snipCommandModel: AppModel? {
+        get { self[SnipCommandModelKey.self] }
+        set { self[SnipCommandModelKey.self] = newValue }
     }
 }
 
-private struct InboxCommands: Commands {
-    @FocusedValue(\.inboxCommandModel) private var model
+private struct SnipCommands: Commands {
+    @FocusedValue(\.snipCommandModel) private var model
     let coordinator: AppCoordinator
 
     init(coordinator: AppCoordinator) {
@@ -191,7 +191,7 @@ private struct InboxCommands: Commands {
 
     var body: some Commands {
         CommandGroup(after: .pasteboard) {
-            Button("Search") { coordinator.focusInboxSearch() }
+            Button("Search") { coordinator.focusPanelSearch() }
                 .keyboardShortcut("f", modifiers: .command)
         }
         if let model {
@@ -208,7 +208,7 @@ private struct InboxCommands: Commands {
                 .disabled(!model.canRedo)
             }
         }
-        CommandMenu("Items") {
+        CommandMenu("Snips") {
             Button("Copy") { perform(.copy) }
                 .keyboardShortcut("c", modifiers: .command)
                 .disabled(!isAvailable(.copy))
@@ -222,7 +222,7 @@ private struct InboxCommands: Commands {
             Button("Edit in New Window") { perform(.editInNewWindow) }
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(!isAvailable(.editInNewWindow))
-            Button("Merge Clips") { perform(.merge) }
+            Button("Merge Snips") { perform(.merge) }
                 .appKeyboardShortcut(coordinator.shortcutSettings.chord(for: .merge))
                 .disabled(!isAvailable(.merge))
             Divider()
@@ -237,12 +237,12 @@ private struct InboxCommands: Commands {
         }
     }
 
-    private func isAvailable(_ command: InboxItemCommand) -> Bool {
+    private func isAvailable(_ command: SnipCommand) -> Bool {
         model.map { command.isAvailable(for: $0.selection.count) } ?? false
     }
 
-    private func perform(_ command: InboxItemCommand) {
+    private func perform(_ command: SnipCommand) {
         guard let model else { return }
-        InboxItemCommandDispatcher(model: model, coordinator: coordinator).perform(command)
+        SnipCommandDispatcher(model: model, coordinator: coordinator).perform(command)
     }
 }

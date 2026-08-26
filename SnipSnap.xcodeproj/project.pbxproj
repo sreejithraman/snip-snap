@@ -10,7 +10,7 @@
 		100000000000000000000001 /* SnipSnapApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000001 /* SnipSnapApp.swift */; };
 		100000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000002 /* ContentView.swift */; };
 		100000000000000000000003 /* AppWindowDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* AppWindowDefaults.swift */; };
-		100000000000000000000005 /* CaptureItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000007 /* CaptureItem.swift */; };
+		100000000000000000000005 /* Snip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000007 /* Snip.swift */; };
 		100000000000000000000006 /* SelectionCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000008 /* SelectionCapture.swift */; };
 		100000000000000000000007 /* DetachedEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000009 /* DetachedEditor.swift */; };
 		100000000000000000000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000010 /* Assets.xcassets */; };
@@ -19,9 +19,9 @@
 		10000000000000000000000B /* SnipSnapPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000013 /* SnipSnapPanel.swift */; };
 		10000000000000000000000C /* AppCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000014 /* AppCoordinator.swift */; };
 		10000000000000000000000D /* CaptureHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000015 /* CaptureHUD.swift */; };
-		10000000000000000000000E /* InboxItemView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000016 /* InboxItemView.swift */; };
-		100000000000000000000010 /* ItemRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000018 /* ItemRepository.swift */; };
-		100000000000000000000011 /* InboxModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000019 /* InboxModels.swift */; };
+		10000000000000000000000E /* SnipCardRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000016 /* SnipCardRow.swift */; };
+		100000000000000000000010 /* SnipRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000018 /* SnipRepository.swift */; };
+		100000000000000000000011 /* SnipListModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000019 /* SnipListModels.swift */; };
 		100000000000000000000012 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001A /* AppModel.swift */; };
 		100000000000000000000013 /* PasteboardSnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001B /* PasteboardSnapshotStore.swift */; };
 		100000000000000000000014 /* DoubleShiftDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001C /* DoubleShiftDetector.swift */; };
@@ -30,14 +30,14 @@
 		100000000000000000000018 /* PanelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000020 /* PanelTests.swift */; };
 		100000000000000000000019 /* SelectionCaptureAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000021 /* SelectionCaptureAccess.swift */; };
 		10000000000000000000001A /* SelectionCaptureSnapshotReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000022 /* SelectionCaptureSnapshotReader.swift */; };
-		10000000000000000000001B /* InboxItemCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000023 /* InboxItemCommand.swift */; };
-		10000000000000000000001C /* InboxMoreButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000024 /* InboxMoreButton.swift */; };
-		10000000000000000000001D /* InboxSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000025 /* InboxSheets.swift */; };
-		10000000000000000000001E /* InboxListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000026 /* InboxListView.swift */; };
+		10000000000000000000001B /* SnipCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000023 /* SnipCommand.swift */; };
+		10000000000000000000001C /* PanelMoreButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000024 /* PanelMoreButton.swift */; };
+		10000000000000000000001D /* SnipListSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000025 /* SnipListSheets.swift */; };
+		10000000000000000000001E /* SnipListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000026 /* SnipListView.swift */; };
 		10000000000000000000001F /* TestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000027 /* TestSupport.swift */; };
-		100000000000000000000020 /* ItemRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000028 /* ItemRepositoryTests.swift */; };
+		100000000000000000000020 /* SnipRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000028 /* SnipRepositoryTests.swift */; };
 		100000000000000000000021 /* AppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000029 /* AppModelTests.swift */; };
-		100000000000000000000022 /* InboxModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002A /* InboxModelsTests.swift */; };
+		100000000000000000000022 /* SnipListModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002A /* SnipListModelsTests.swift */; };
 		100000000000000000000023 /* DetachedEditorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002B /* DetachedEditorTests.swift */; };
 		100000000000000000000024 /* ShortcutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002C /* ShortcutTests.swift */; };
 		100000000000000000000025 /* AppCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002D /* AppCoordinatorTests.swift */; };
@@ -45,18 +45,18 @@
 		100000000000000000000027 /* PanelUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000030 /* PanelUI.swift */; };
 		100000000000000000000028 /* ClipboardHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000031 /* ClipboardHistory.swift */; };
 		100000000000000000000029 /* ClipboardHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000032 /* ClipboardHistoryTests.swift */; };
-		10000000000000000000002A /* SectionTabBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000033 /* SectionTabBarView.swift */; };
+		10000000000000000000002A /* SnipListTabBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000033 /* SnipListTabBarView.swift */; };
 		10000000000000000000002B /* ClipboardViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000034 /* ClipboardViews.swift */; };
 		10000000000000000000002D /* PreviewImageCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000036 /* PreviewImageCache.swift */; };
 		10000000000000000000002E /* ComposerDraftStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000037 /* ComposerDraftStore.swift */; };
 		100000000000000000000030 /* AttachmentPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000039 /* AttachmentPreview.swift */; };
-		100000000000000000000031 /* ClipDragExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003A /* ClipDragExport.swift */; };
+		100000000000000000000031 /* SnipDragExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003A /* SnipDragExport.swift */; };
 		100000000000000000000032 /* PanelFileDrop.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003B /* PanelFileDrop.swift */; };
 		100000000000000000000033 /* SnipSnapColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003C /* SnipSnapColors.swift */; };
 		100000000000000000000034 /* PanelResizeSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003D /* PanelResizeSurface.swift */; };
 		100000000000000000000035 /* DevelopmentBuildBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003E /* DevelopmentBuildBadge.swift */; };
 		100000000000000000000036 /* PanelMultilineTextInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003F /* PanelMultilineTextInput.swift */; };
-		100000000000000000000037 /* SectionIconCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000040 /* SectionIconCatalog.swift */; };
+		100000000000000000000037 /* SnipListIconCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000040 /* SnipListIconCatalog.swift */; };
 		2230FA4B303C74F2008B20D5 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 2230FA4A303C74F2008B20D5 /* Sparkle */; };
 /* End PBXBuildFile section */
 
@@ -76,7 +76,7 @@
 		200000000000000000000003 /* AppWindowDefaults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppWindowDefaults.swift; sourceTree = "<group>"; };
 		200000000000000000000005 /* Snip Snap.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Snip Snap.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		200000000000000000000006 /* SnipSnapTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SnipSnapTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		200000000000000000000007 /* CaptureItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureItem.swift; sourceTree = "<group>"; };
+		200000000000000000000007 /* Snip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Snip.swift; sourceTree = "<group>"; };
 		200000000000000000000008 /* SelectionCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionCapture.swift; sourceTree = "<group>"; };
 		200000000000000000000009 /* DetachedEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetachedEditor.swift; sourceTree = "<group>"; };
 		200000000000000000000010 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -85,9 +85,9 @@
 		200000000000000000000013 /* SnipSnapPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipSnapPanel.swift; sourceTree = "<group>"; };
 		200000000000000000000014 /* AppCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoordinator.swift; sourceTree = "<group>"; };
 		200000000000000000000015 /* CaptureHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureHUD.swift; sourceTree = "<group>"; };
-		200000000000000000000016 /* InboxItemView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxItemView.swift; sourceTree = "<group>"; };
-		200000000000000000000018 /* ItemRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ItemRepository.swift; sourceTree = "<group>"; };
-		200000000000000000000019 /* InboxModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxModels.swift; sourceTree = "<group>"; };
+		200000000000000000000016 /* SnipCardRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipCardRow.swift; sourceTree = "<group>"; };
+		200000000000000000000018 /* SnipRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipRepository.swift; sourceTree = "<group>"; };
+		200000000000000000000019 /* SnipListModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListModels.swift; sourceTree = "<group>"; };
 		20000000000000000000001A /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		20000000000000000000001B /* PasteboardSnapshotStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PasteboardSnapshotStore.swift; sourceTree = "<group>"; };
 		20000000000000000000001C /* DoubleShiftDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DoubleShiftDetector.swift; sourceTree = "<group>"; };
@@ -96,14 +96,14 @@
 		200000000000000000000020 /* PanelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelTests.swift; sourceTree = "<group>"; };
 		200000000000000000000021 /* SelectionCaptureAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionCaptureAccess.swift; sourceTree = "<group>"; };
 		200000000000000000000022 /* SelectionCaptureSnapshotReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionCaptureSnapshotReader.swift; sourceTree = "<group>"; };
-		200000000000000000000023 /* InboxItemCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxItemCommand.swift; sourceTree = "<group>"; };
-		200000000000000000000024 /* InboxMoreButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxMoreButton.swift; sourceTree = "<group>"; };
-		200000000000000000000025 /* InboxSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxSheets.swift; sourceTree = "<group>"; };
-		200000000000000000000026 /* InboxListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxListView.swift; sourceTree = "<group>"; };
+		200000000000000000000023 /* SnipCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipCommand.swift; sourceTree = "<group>"; };
+		200000000000000000000024 /* PanelMoreButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelMoreButton.swift; sourceTree = "<group>"; };
+		200000000000000000000025 /* SnipListSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListSheets.swift; sourceTree = "<group>"; };
+		200000000000000000000026 /* SnipListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListView.swift; sourceTree = "<group>"; };
 		200000000000000000000027 /* TestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestSupport.swift; sourceTree = "<group>"; };
-		200000000000000000000028 /* ItemRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ItemRepositoryTests.swift; sourceTree = "<group>"; };
+		200000000000000000000028 /* SnipRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipRepositoryTests.swift; sourceTree = "<group>"; };
 		200000000000000000000029 /* AppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTests.swift; sourceTree = "<group>"; };
-		20000000000000000000002A /* InboxModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxModelsTests.swift; sourceTree = "<group>"; };
+		20000000000000000000002A /* SnipListModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListModelsTests.swift; sourceTree = "<group>"; };
 		20000000000000000000002B /* DetachedEditorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetachedEditorTests.swift; sourceTree = "<group>"; };
 		20000000000000000000002C /* ShortcutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutTests.swift; sourceTree = "<group>"; };
 		20000000000000000000002D /* AppCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoordinatorTests.swift; sourceTree = "<group>"; };
@@ -112,18 +112,18 @@
 		200000000000000000000030 /* PanelUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelUI.swift; sourceTree = "<group>"; };
 		200000000000000000000031 /* ClipboardHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardHistory.swift; sourceTree = "<group>"; };
 		200000000000000000000032 /* ClipboardHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardHistoryTests.swift; sourceTree = "<group>"; };
-		200000000000000000000033 /* SectionTabBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SectionTabBarView.swift; sourceTree = "<group>"; };
+		200000000000000000000033 /* SnipListTabBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListTabBarView.swift; sourceTree = "<group>"; };
 		200000000000000000000034 /* ClipboardViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardViews.swift; sourceTree = "<group>"; };
 		200000000000000000000036 /* PreviewImageCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewImageCache.swift; sourceTree = "<group>"; };
 		200000000000000000000037 /* ComposerDraftStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerDraftStore.swift; sourceTree = "<group>"; };
 		200000000000000000000039 /* AttachmentPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentPreview.swift; sourceTree = "<group>"; };
-		20000000000000000000003A /* ClipDragExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipDragExport.swift; sourceTree = "<group>"; };
+		20000000000000000000003A /* SnipDragExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipDragExport.swift; sourceTree = "<group>"; };
 		20000000000000000000003B /* PanelFileDrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelFileDrop.swift; sourceTree = "<group>"; };
 		20000000000000000000003C /* SnipSnapColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipSnapColors.swift; sourceTree = "<group>"; };
 		20000000000000000000003D /* PanelResizeSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelResizeSurface.swift; sourceTree = "<group>"; };
 		20000000000000000000003E /* DevelopmentBuildBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevelopmentBuildBadge.swift; sourceTree = "<group>"; };
 		20000000000000000000003F /* PanelMultilineTextInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelMultilineTextInput.swift; sourceTree = "<group>"; };
-		200000000000000000000040 /* SectionIconCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SectionIconCatalog.swift; sourceTree = "<group>"; };
+		200000000000000000000040 /* SnipListIconCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListIconCatalog.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -160,9 +160,9 @@
 				200000000000000000000001 /* SnipSnapApp.swift */,
 				200000000000000000000002 /* ContentView.swift */,
 				200000000000000000000003 /* AppWindowDefaults.swift */,
-				200000000000000000000007 /* CaptureItem.swift */,
-				200000000000000000000018 /* ItemRepository.swift */,
-				200000000000000000000019 /* InboxModels.swift */,
+				200000000000000000000007 /* Snip.swift */,
+				200000000000000000000018 /* SnipRepository.swift */,
+				200000000000000000000019 /* SnipListModels.swift */,
 				20000000000000000000001A /* AppModel.swift */,
 				200000000000000000000008 /* SelectionCapture.swift */,
 				200000000000000000000021 /* SelectionCaptureAccess.swift */,
@@ -179,19 +179,19 @@
 				20000000000000000000003B /* PanelFileDrop.swift */,
 				20000000000000000000003D /* PanelResizeSurface.swift */,
 				20000000000000000000003F /* PanelMultilineTextInput.swift */,
-				200000000000000000000016 /* InboxItemView.swift */,
-				200000000000000000000023 /* InboxItemCommand.swift */,
-				200000000000000000000024 /* InboxMoreButton.swift */,
+				200000000000000000000016 /* SnipCardRow.swift */,
+				200000000000000000000023 /* SnipCommand.swift */,
+				200000000000000000000024 /* PanelMoreButton.swift */,
 				20000000000000000000003E /* DevelopmentBuildBadge.swift */,
-				200000000000000000000025 /* InboxSheets.swift */,
-				200000000000000000000040 /* SectionIconCatalog.swift */,
-				200000000000000000000026 /* InboxListView.swift */,
+				200000000000000000000025 /* SnipListSheets.swift */,
+				200000000000000000000040 /* SnipListIconCatalog.swift */,
+				200000000000000000000026 /* SnipListView.swift */,
 				200000000000000000000039 /* AttachmentPreview.swift */,
-				20000000000000000000003A /* ClipDragExport.swift */,
+				20000000000000000000003A /* SnipDragExport.swift */,
 				200000000000000000000030 /* PanelUI.swift */,
 				20000000000000000000003C /* SnipSnapColors.swift */,
 				200000000000000000000031 /* ClipboardHistory.swift */,
-				200000000000000000000033 /* SectionTabBarView.swift */,
+				200000000000000000000033 /* SnipListTabBarView.swift */,
 				200000000000000000000034 /* ClipboardViews.swift */,
 				200000000000000000000036 /* PreviewImageCache.swift */,
 				200000000000000000000037 /* ComposerDraftStore.swift */,
@@ -205,9 +205,9 @@
 			isa = PBXGroup;
 			children = (
 				200000000000000000000027 /* TestSupport.swift */,
-				200000000000000000000028 /* ItemRepositoryTests.swift */,
+				200000000000000000000028 /* SnipRepositoryTests.swift */,
 				200000000000000000000029 /* AppModelTests.swift */,
-				20000000000000000000002A /* InboxModelsTests.swift */,
+				20000000000000000000002A /* SnipListModelsTests.swift */,
 				20000000000000000000002B /* DetachedEditorTests.swift */,
 				20000000000000000000002C /* ShortcutTests.swift */,
 				20000000000000000000002D /* AppCoordinatorTests.swift */,
@@ -339,9 +339,9 @@
 				100000000000000000000001 /* SnipSnapApp.swift in Sources */,
 				100000000000000000000002 /* ContentView.swift in Sources */,
 				100000000000000000000003 /* AppWindowDefaults.swift in Sources */,
-				100000000000000000000005 /* CaptureItem.swift in Sources */,
-				100000000000000000000010 /* ItemRepository.swift in Sources */,
-				100000000000000000000011 /* InboxModels.swift in Sources */,
+				100000000000000000000005 /* Snip.swift in Sources */,
+				100000000000000000000010 /* SnipRepository.swift in Sources */,
+				100000000000000000000011 /* SnipListModels.swift in Sources */,
 				100000000000000000000012 /* AppModel.swift in Sources */,
 				100000000000000000000006 /* SelectionCapture.swift in Sources */,
 				100000000000000000000019 /* SelectionCaptureAccess.swift in Sources */,
@@ -358,19 +358,19 @@
 				100000000000000000000032 /* PanelFileDrop.swift in Sources */,
 				100000000000000000000034 /* PanelResizeSurface.swift in Sources */,
 				100000000000000000000036 /* PanelMultilineTextInput.swift in Sources */,
-				10000000000000000000000E /* InboxItemView.swift in Sources */,
-				10000000000000000000001B /* InboxItemCommand.swift in Sources */,
-				10000000000000000000001C /* InboxMoreButton.swift in Sources */,
+				10000000000000000000000E /* SnipCardRow.swift in Sources */,
+				10000000000000000000001B /* SnipCommand.swift in Sources */,
+				10000000000000000000001C /* PanelMoreButton.swift in Sources */,
 				100000000000000000000035 /* DevelopmentBuildBadge.swift in Sources */,
-				10000000000000000000001D /* InboxSheets.swift in Sources */,
-				100000000000000000000037 /* SectionIconCatalog.swift in Sources */,
-				10000000000000000000001E /* InboxListView.swift in Sources */,
+				10000000000000000000001D /* SnipListSheets.swift in Sources */,
+				100000000000000000000037 /* SnipListIconCatalog.swift in Sources */,
+				10000000000000000000001E /* SnipListView.swift in Sources */,
 				100000000000000000000030 /* AttachmentPreview.swift in Sources */,
-				100000000000000000000031 /* ClipDragExport.swift in Sources */,
+				100000000000000000000031 /* SnipDragExport.swift in Sources */,
 				100000000000000000000027 /* PanelUI.swift in Sources */,
 				100000000000000000000033 /* SnipSnapColors.swift in Sources */,
 				100000000000000000000028 /* ClipboardHistory.swift in Sources */,
-				10000000000000000000002A /* SectionTabBarView.swift in Sources */,
+				10000000000000000000002A /* SnipListTabBarView.swift in Sources */,
 				10000000000000000000002B /* ClipboardViews.swift in Sources */,
 				10000000000000000000002D /* PreviewImageCache.swift in Sources */,
 				10000000000000000000002E /* ComposerDraftStore.swift in Sources */,
@@ -382,9 +382,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				10000000000000000000001F /* TestSupport.swift in Sources */,
-				100000000000000000000020 /* ItemRepositoryTests.swift in Sources */,
+				100000000000000000000020 /* SnipRepositoryTests.swift in Sources */,
 				100000000000000000000021 /* AppModelTests.swift in Sources */,
-				100000000000000000000022 /* InboxModelsTests.swift in Sources */,
+				100000000000000000000022 /* SnipListModelsTests.swift in Sources */,
 				100000000000000000000023 /* DetachedEditorTests.swift in Sources */,
 				100000000000000000000024 /* ShortcutTests.swift in Sources */,
 				100000000000000000000025 /* AppCoordinatorTests.swift in Sources */,

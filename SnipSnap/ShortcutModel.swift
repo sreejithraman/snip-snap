@@ -273,29 +273,29 @@ extension ShortcutTrigger: Codable {
 
 struct GlobalShortcutConfiguration: Codable, Equatable, Sendable {
     var captureSelection: ShortcutTrigger
-    var toggleInbox: ShortcutTrigger
+    var togglePanel: ShortcutTrigger
     var toggleClipboard: ShortcutTrigger
 
     init(
         captureSelection: ShortcutTrigger,
-        toggleInbox: ShortcutTrigger,
+        togglePanel: ShortcutTrigger,
         toggleClipboard: ShortcutTrigger = GlobalHotKeyAction.toggleClipboard.defaultTrigger
     ) {
         self.captureSelection = captureSelection
-        self.toggleInbox = toggleInbox
+        self.togglePanel = togglePanel
         self.toggleClipboard = toggleClipboard
     }
 
     static let snipSnapDefaults = GlobalShortcutConfiguration(
         captureSelection: .doubleShift(.left),
-        toggleInbox: .doubleShift(.right),
+        togglePanel: .doubleShift(.right),
         toggleClipboard: GlobalHotKeyAction.toggleClipboard.defaultTrigger
     )
 
     func trigger(for action: GlobalHotKeyAction) -> ShortcutTrigger {
         switch action {
         case .captureSelection: captureSelection
-        case .toggleInbox: toggleInbox
+        case .togglePanel: togglePanel
         case .toggleClipboard: toggleClipboard
         }
     }
@@ -303,7 +303,7 @@ struct GlobalShortcutConfiguration: Codable, Equatable, Sendable {
     mutating func set(_ trigger: ShortcutTrigger, for action: GlobalHotKeyAction) {
         switch action {
         case .captureSelection: captureSelection = trigger
-        case .toggleInbox: toggleInbox = trigger
+        case .togglePanel: togglePanel = trigger
         case .toggleClipboard: toggleClipboard = trigger
         }
     }
@@ -327,14 +327,19 @@ struct GlobalShortcutConfiguration: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case captureSelection
-        case toggleInbox
+        case togglePanel
+        // TODO: Remove after the 1.0 migration window.
+        case legacyToggleInbox = "toggleInbox"
         case toggleClipboard
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         captureSelection = try container.decode(ShortcutTrigger.self, forKey: .captureSelection)
-        toggleInbox = try container.decode(ShortcutTrigger.self, forKey: .toggleInbox)
+        togglePanel = try container.decodeIfPresent(
+            ShortcutTrigger.self,
+            forKey: .togglePanel
+        ) ?? container.decode(ShortcutTrigger.self, forKey: .legacyToggleInbox)
         toggleClipboard = try container.decodeIfPresent(
             ShortcutTrigger.self,
             forKey: .toggleClipboard
@@ -344,7 +349,7 @@ struct GlobalShortcutConfiguration: Codable, Equatable, Sendable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(captureSelection, forKey: .captureSelection)
-        try container.encode(toggleInbox, forKey: .toggleInbox)
+        try container.encode(togglePanel, forKey: .togglePanel)
         try container.encode(toggleClipboard, forKey: .toggleClipboard)
     }
 }
@@ -358,7 +363,7 @@ enum AppShortcutAction: String, Codable, CaseIterable, Identifiable, Sendable {
     var title: String {
         switch self {
         case .toggleDone: "Done or Not Done"
-        case .merge: "Merge Clips"
+        case .merge: "Merge Snips"
         }
     }
 
@@ -584,7 +589,7 @@ final class ShortcutSettings: ObservableObject {
 
 enum GlobalHotKeyAction: UInt32, CaseIterable, Identifiable {
     case captureSelection = 1
-    case toggleInbox = 2
+    case togglePanel = 2
     case toggleClipboard = 3
 
     var id: UInt32 { rawValue }
@@ -592,7 +597,7 @@ enum GlobalHotKeyAction: UInt32, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .captureSelection: "Capture Selection"
-        case .toggleInbox: "Open or Hide Snip Snap"
+        case .togglePanel: "Open or Hide Snip Snap"
         case .toggleClipboard: "Open or Hide Clipboard"
         }
     }
@@ -600,7 +605,7 @@ enum GlobalHotKeyAction: UInt32, CaseIterable, Identifiable {
     var defaultTrigger: ShortcutTrigger {
         switch self {
         case .captureSelection: .doubleShift(.left)
-        case .toggleInbox: .doubleShift(.right)
+        case .togglePanel: .doubleShift(.right)
         case .toggleClipboard: .commandDoubleShift(.right)
         }
     }

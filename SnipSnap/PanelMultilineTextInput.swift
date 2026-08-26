@@ -103,38 +103,6 @@ enum PanelImagePasteCommand {
     }
 }
 
-enum PanelMultilineTextMetrics {
-    static let verticalInset: CGFloat = 8
-    static let horizontalTextInset: CGFloat = 0
-    static let systemTextEditorInset: CGFloat = 5
-    static let horizontalViewportExpansion: CGFloat = systemTextEditorInset
-    static let systemTextEditorTopInset: CGFloat = 5
-    static let placeholderTopInset: CGFloat = systemTextEditorTopInset
-
-    static var lineHeight: CGFloat {
-        ceil(NSFont.preferredFont(forTextStyle: .body).boundingRectForFont.height)
-    }
-
-    static var effectiveHorizontalInset: CGFloat {
-        systemTextEditorInset - horizontalViewportExpansion
-    }
-
-    static func height(
-        measuredContentHeight: CGFloat,
-        lineRange: ClosedRange<Int>,
-        lineSpacing: CGFloat
-    ) -> CGFloat {
-        func height(for lineCount: Int) -> CGFloat {
-            lineHeight * CGFloat(lineCount)
-                + lineSpacing * CGFloat(max(lineCount - 1, 0))
-                + verticalInset
-        }
-        let minimumHeight = height(for: lineRange.lowerBound)
-        let maximumHeight = height(for: lineRange.upperBound)
-        return min(max(measuredContentHeight, minimumHeight), maximumHeight)
-    }
-}
-
 @MainActor
 private final class PanelTextInputWindowReference {
     weak var window: NSWindow?
@@ -199,8 +167,7 @@ struct PanelMultilineTextInput: View {
     private let onSubmit: () -> Void
 
     @FocusState private var editorFocused: Bool
-    @State private var measuredContentHeight: CGFloat = 0
-    @State private var imagePasteMonitor: Any?
+    @State private var keyEventMonitor: Any?
     @State private var windowReference = PanelTextInputWindowReference()
 
     init(
@@ -232,58 +199,22 @@ struct PanelMultilineTextInput: View {
     }
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            TextEditor(text: $text)
-                .accessibilityLabel(prompt)
-                .scrollContentBackground(.hidden)
-                .contentMargins(
-                    .horizontal,
-                    PanelMultilineTextMetrics.horizontalTextInset,
-                    for: .scrollContent
-                )
-                .font(.body)
-                .foregroundStyle(SnipSnapColors.textPrimary)
-                .lineSpacing(lineSpacing)
-                .focused($editorFocused)
-                .onKeyPress(.return, phases: .down) { press in
-                    guard PanelTextInputReturnAction.action(for: press.modifiers) == .submit else {
-                        return .ignored
-                    }
-                    onSubmit()
-                    return .handled
-                }
-                .padding(
-                    .horizontal,
-                    -PanelMultilineTextMetrics.horizontalViewportExpansion
-                )
-
-            if text.isEmpty {
-                Text(prompt)
-                    .font(.body)
-                    .foregroundStyle(.tertiary)
-                    .padding(.leading, PanelMultilineTextMetrics.horizontalTextInset)
-                    .padding(.top, PanelMultilineTextMetrics.placeholderTopInset)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+        TextField(prompt, text: $text, axis: .vertical)
+        .textFieldStyle(.plain)
+        .lineLimit(lineRange)
+        .frame(minHeight: PanelControlMetrics.floatingRowHeight)
+        .font(.body)
+        .foregroundStyle(SnipSnapColors.textPrimary)
+        .lineSpacing(lineSpacing)
+        .focused($editorFocused)
+        .onKeyPress(.return, phases: .down) { press in
+            guard PanelTextInputReturnAction.action(for: press.modifiers) == .submit else {
+                return .ignored
             }
+            onSubmit()
+            return .handled
         }
-        .frame(height: editorHeight)
         .background {
-            Text(measurementText)
-                .font(.body)
-                .lineSpacing(lineSpacing)
-                .padding(.horizontal, PanelMultilineTextMetrics.horizontalTextInset)
-                .padding(.vertical, PanelMultilineTextMetrics.verticalInset / 2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .hidden()
-                .allowsHitTesting(false)
-                .onGeometryChange(for: CGFloat.self) { proxy in
-                    proxy.size.height
-                } action: { height in
-                    measuredContentHeight = height
-                }
-
             PanelTextInputWindowReader(
                 reference: windowReference,
                 readPastedImages: readPastedImages,
@@ -296,44 +227,43 @@ struct PanelMultilineTextInput: View {
             editorFocused = focused
         }
         .onAppear {
-            updateImagePasteMonitor(isEnabled: isFocused)
+            updateKeyEventMonitor(isEnabled: isFocused)
         }
         .onChange(of: editorFocused) { _, focused in
-            updateImagePasteMonitor(isEnabled: focused)
+            updateKeyEventMonitor(isEnabled: focused)
             onFocusChange(focused)
         }
         .onDisappear {
-            updateImagePasteMonitor(isEnabled: false)
+            updateKeyEventMonitor(isEnabled: false)
         }
     }
 
-    private var editorHeight: CGFloat {
-        PanelMultilineTextMetrics.height(
-            measuredContentHeight: measuredContentHeight,
-            lineRange: lineRange,
-            lineSpacing: lineSpacing
-        )
-    }
-
-    private var measurementText: String {
-        (text.isEmpty ? " " : text) + "\u{200B}"
-    }
-
-    private func updateImagePasteMonitor(isEnabled: Bool) {
-        if isEnabled, imagePasteMonitor == nil {
-            imagePasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+    private func updateKeyEventMonitor(isEnabled: Bool) {
+        if isEnabled, keyEventMonitor == nil {
+            keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                 guard event.window === windowReference.window,
-                      event.window?.firstResponder is NSTextView,
-                      PanelImagePasteCommand.matches(modifiers: event.modifierFlags),
-                      event.charactersIgnoringModifiers?.lowercased() == "v" else { return event }
+                      let fieldEditor = event.window?.firstResponder as? NSTextView else {
+                    return event
+                }
+                let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                if [36, 76].contains(event.keyCode),
+                   modifiers.contains(.shift),
+                   modifiers.intersection([.command, .control, .option]).isEmpty {
+                    fieldEditor.insertNewlineIgnoringFieldEditor(nil)
+                    return nil
+                }
+                guard PanelImagePasteCommand.matches(modifiers: event.modifierFlags),
+                      event.charactersIgnoringModifiers?.lowercased() == "v" else {
+                    return event
+                }
                 let images = windowReference.readPastedImages()
                 guard !images.isEmpty else { return event }
                 windowReference.onPasteImages(images)
                 return windowReference.pastedContentContainsText() ? event : nil
             }
-        } else if !isEnabled, let imagePasteMonitor {
-            NSEvent.removeMonitor(imagePasteMonitor)
-            self.imagePasteMonitor = nil
+        } else if !isEnabled, let keyEventMonitor {
+            NSEvent.removeMonitor(keyEventMonitor)
+            self.keyEventMonitor = nil
         }
     }
 }

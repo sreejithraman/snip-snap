@@ -1,9 +1,9 @@
 import SwiftUI
 
-struct InboxMoreButton: View {
+struct PanelMoreButton: View {
     @ObservedObject var model: AppModel
-    @FocusState.Binding var focusedTarget: InboxFocusTarget?
-    let moveSelectionToNewSection: () -> Void
+    @FocusState.Binding var focusedTarget: PanelFocusTarget?
+    let moveSelectionToNewList: () -> Void
     let selectAllVisible: () -> Void
 
     @Environment(\.openSettings) private var openSettings
@@ -29,14 +29,14 @@ struct InboxMoreButton: View {
     @ViewBuilder
     private var actions: some View {
         Picker("Filter: \(completionFilterTitle)", selection: $model.completionFilter) {
-            Text("All").tag(CompletionFilter.all)
-            Text("Done").tag(CompletionFilter.done)
-            Text("Not Done").tag(CompletionFilter.notDone)
+            Text("All").tag(SnipCompletionFilter.all)
+            Text("Done").tag(SnipCompletionFilter.done)
+            Text("Not Done").tag(SnipCompletionFilter.notDone)
         }
 
         Picker("Sort: \(sortModeTitle)", selection: sortModeBinding) {
-            Text("Chronological").tag(ClipSortMode.chronological)
-            Text("Manual").tag(ClipSortMode.manual)
+            Text("Chronological").tag(SnipSortMode.chronological)
+            Text("Manual").tag(SnipSortMode.manual)
         }
 
         Picker("Appearance", selection: appearanceBinding) {
@@ -50,16 +50,16 @@ struct InboxMoreButton: View {
 
         Divider()
 
-        Button("Move to New Section…") {
+        Button("Move to New List…") {
             focusedTarget = nil
-            moveSelectionToNewSection()
+            moveSelectionToNewList()
         }
         .disabled(model.selection.isEmpty)
 
         Button("Select All") {
             selectAllVisible()
         }
-        .disabled(model.filteredItems.isEmpty)
+        .disabled(model.filteredSnips.isEmpty)
 
         Divider()
 
@@ -68,7 +68,7 @@ struct InboxMoreButton: View {
         }
     }
 
-    private var sortModeBinding: Binding<ClipSortMode> {
+    private var sortModeBinding: Binding<SnipSortMode> {
         Binding(
             get: { model.sortMode },
             set: { model.setSortMode($0) }

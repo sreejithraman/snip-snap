@@ -13,7 +13,7 @@ final class SelectionCaptureTests: XCTestCase {
             .success(
                 SelectionCapture(
                     content: "  exact selection\n",
-                    source: CaptureSource(
+                    source: SnipSource(
                         applicationName: "Editor",
                         windowTitle: "Work",
                         url: "https://example.com/work"
@@ -304,7 +304,7 @@ final class SelectionCaptureTests: XCTestCase {
                 .success(
                     SelectionCapture(
                         content: "One",
-                        source: CaptureSource(
+                        source: SnipSource(
                             applicationName: "Editor",
                             windowTitle: "Work",
                             url: "https://example.com/work"
@@ -315,7 +315,7 @@ final class SelectionCaptureTests: XCTestCase {
                 .success(
                     SelectionCapture(
                         content: "Two",
-                        source: CaptureSource(
+                        source: SnipSource(
                             applicationName: "Editor",
                             windowTitle: "Work",
                             url: "https://example.com/work"

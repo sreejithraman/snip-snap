@@ -4,7 +4,7 @@ import Foundation
 import UniformTypeIdentifiers
 @testable import SnipSnap
 
-final class InboxModelsTests: XCTestCase {
+final class SnipListModelsTests: XCTestCase {
     func testReorderTargetUsesEachRowsRealHeight() {
         let ids = (0..<3).map { _ in UUID() }
         let frames = [
@@ -14,7 +14,7 @@ final class InboxModelsTests: XCTestCase {
         ]
 
         XCTAssertEqual(
-            InboxReorderPlan.target(
+            SnipListReorderPlan.target(
                 atWindowY: 165,
                 orderedIDs: ids,
                 movingIDs: [ids[2]],
@@ -23,7 +23,7 @@ final class InboxModelsTests: XCTestCase {
             .before(ids[1])
         )
         XCTAssertEqual(
-            InboxReorderPlan.target(
+            SnipListReorderPlan.target(
                 atWindowY: 95,
                 orderedIDs: ids,
                 movingIDs: [ids[2]],
@@ -41,7 +41,7 @@ final class InboxModelsTests: XCTestCase {
         ]
 
         XCTAssertEqual(
-            InboxReorderPlan.target(
+            SnipListReorderPlan.target(
                 atWindowY: 265,
                 orderedIDs: ids,
                 movingIDs: [ids[1]],
@@ -56,7 +56,7 @@ final class InboxModelsTests: XCTestCase {
         let ids = (0..<4).map { _ in UUID() }
 
         XCTAssertEqual(
-            InboxReorderPlan.orderedIDs(
+            SnipListReorderPlan.orderedIDs(
                 from: ids,
                 movingIDs: [ids[0]],
                 target: .before(ids[2])
@@ -69,7 +69,7 @@ final class InboxModelsTests: XCTestCase {
         let ids = (0..<3).map { _ in UUID() }
 
         XCTAssertEqual(
-            InboxReorderPlan.orderedIDs(
+            SnipListReorderPlan.orderedIDs(
                 from: ids,
                 movingIDs: [ids[1]],
                 target: .before(ids[2])
@@ -78,80 +78,80 @@ final class InboxModelsTests: XCTestCase {
         )
     }
 
-    func testListSnapshotCanKeepTheActiveSectionHeaderWhenItIsEmpty() {
-        let section = SnipSnapSection(
+    func testListSnapshotCanKeepTheActiveListHeaderWhenItIsEmpty() {
+        let list = SnipList(
             id: UUID(),
             name: "Agents",
             systemImage: "star",
             position: 1
         )
-        let snapshot = InboxListSnapshot(
-            visibleItems: [],
-            allItems: [],
-            sections: [section],
+        let snapshot = SnipListSnapshot(
+            visibleSnips: [],
+            allSnips: [],
+            lists: [list],
             selection: [],
-            keepsEmptySectionID: section.id
+            keepsEmptyListID: list.id
         )
 
         XCTAssertEqual(
             snapshot.groups,
-            [InboxItemGroup(sectionID: section.id, section: section.name, items: [])]
+            [SnipListGroup(listID: list.id, listName: list.name, snips: [])]
         )
         XCTAssertTrue(snapshot.orderedVisibleIDs.isEmpty)
     }
 
     @MainActor
-    func testMixedClipDragUsesOneClipVisualForItsFilePackage() {
+    func testMixedSnipDragUsesOneSnipVisualForItsFilePackage() {
         let image = URL(fileURLWithPath: "/tmp/preview.png")
-        let payload = ClipDragPayload(
+        let payload = SnipDragPayload(
             ids: [UUID()],
             text: "Use this image",
             attachmentURLs: [image]
         )
 
-        let package = ClipDragExportPackage(payload: payload)
-        let items = package.draggingItems(
+        let package = SnipDragExportPackage(payload: payload)
+        let snips = package.draggingItems(
             at: NSPoint(x: 100, y: 100),
             scale: 2,
             colorScheme: .light
         )
 
-        XCTAssertEqual(items.count, 3)
-        XCTAssertGreaterThan(items[0].draggingFrame.width, 0)
-        XCTAssertEqual(items[1].draggingFrame.size, NSSize(width: 1, height: 1))
-        XCTAssertEqual(items[1].imageComponentsProvider?().count, 0)
-        XCTAssertEqual(items[2].draggingFrame.size, NSSize(width: 1, height: 1))
-        XCTAssertEqual(items[2].imageComponentsProvider?().count, 0)
+        XCTAssertEqual(snips.count, 3)
+        XCTAssertGreaterThan(snips[0].draggingFrame.width, 0)
+        XCTAssertEqual(snips[1].draggingFrame.size, NSSize(width: 1, height: 1))
+        XCTAssertEqual(snips[1].imageComponentsProvider?().count, 0)
+        XCTAssertEqual(snips[2].draggingFrame.size, NSSize(width: 1, height: 1))
+        XCTAssertEqual(snips[2].imageComponentsProvider?().count, 0)
     }
 
     @MainActor
     func testMultilineDragPreviewUsesTheExactSourceFrame() {
-        let payload = ClipDragPayload(
+        let payload = SnipDragPayload(
             ids: [UUID()],
             text: "First line\nSecond line"
         )
         let sourceFrame = NSRect(x: 18, y: 42, width: 316, height: 94)
 
-        let items = ClipDragExportPackage(payload: payload).draggingItems(
+        let snips = SnipDragExportPackage(payload: payload).draggingItems(
             at: sourceFrame.origin,
             scale: 2,
             colorScheme: .light,
             sourceFrame: sourceFrame
         )
 
-        XCTAssertEqual(items.first?.draggingFrame, sourceFrame)
+        XCTAssertEqual(snips.first?.draggingFrame, sourceFrame)
     }
 
-    func testMixedClipDragPublishesMarkdownThenEveryAttachment() throws {
+    func testMixedSnipDragPublishesMarkdownThenEveryAttachment() throws {
         let first = URL(fileURLWithPath: "/tmp/first.png")
         let second = URL(fileURLWithPath: "/tmp/second.md")
-        let payload = ClipDragPayload(
+        let payload = SnipDragPayload(
             ids: [UUID()],
             text: "Use these files",
             attachmentURLs: [first, second]
         )
 
-        let package = ClipDragExportPackage(payload: payload)
+        let package = SnipDragExportPackage(payload: payload)
         let writers = package.pasteboardWriters()
 
         XCTAssertEqual(writers.count, 4)
@@ -162,31 +162,31 @@ final class InboxModelsTests: XCTestCase {
             [first, second]
         )
         let privateItem = try XCTUnwrap(writers.last as? NSPasteboardItem)
-        XCTAssertNotNil(privateItem.data(forType: ClipDragExportPackage.privateType))
+        XCTAssertNotNil(privateItem.data(forType: SnipDragExportPackage.privateType))
     }
 
-    func testTextOnlyClipDragOffersPlainTextBeforeItsPrivatePayload() throws {
-        let payload = ClipDragPayload(
+    func testTextOnlySnipDragOffersPlainTextBeforeItsPrivatePayload() throws {
+        let payload = SnipDragPayload(
             ids: [UUID()],
             text: "Start at the first character"
         )
 
-        let writers = ClipDragExportPackage(payload: payload).pasteboardWriters()
-        let item = try XCTUnwrap(writers.first as? NSPasteboardItem)
+        let writers = SnipDragExportPackage(payload: payload).pasteboardWriters()
+        let snip = try XCTUnwrap(writers.first as? NSPasteboardItem)
 
-        XCTAssertEqual(item.types.first, .string)
-        XCTAssertEqual(item.string(forType: .string), payload.text)
+        XCTAssertEqual(snip.types.first, .string)
+        XCTAssertEqual(snip.string(forType: .string), payload.text)
     }
 
-    func testMixedClipDragWritesOnlyFilesToTheDragPasteboard() throws {
+    func testMixedSnipDragWritesOnlyFilesToTheDragPasteboard() throws {
         let first = URL(fileURLWithPath: "/tmp/first.png")
         let second = URL(fileURLWithPath: "/tmp/second.md")
-        let payload = ClipDragPayload(
+        let payload = SnipDragPayload(
             ids: [UUID()],
             text: "Use these files",
             attachmentURLs: [first, second]
         )
-        let writers = ClipDragExportPackage(payload: payload).pasteboardWriters()
+        let writers = SnipDragExportPackage(payload: payload).pasteboardWriters()
 
         XCTAssertTrue(writers.first is NSFilePromiseProvider)
         XCTAssertEqual(
@@ -195,36 +195,36 @@ final class InboxModelsTests: XCTestCase {
         )
         XCTAssertEqual(
             (writers.last as? NSPasteboardItem)?.types,
-            [ClipDragExportPackage.privateType]
+            [SnipDragExportPackage.privateType]
         )
     }
 
-    func testImageOnlyClipDragStillPublishesItsFile() throws {
+    func testImageOnlySnipDragStillPublishesItsFile() throws {
         let image = URL(fileURLWithPath: "/tmp/image.png")
-        let payload = ClipDragPayload(
+        let payload = SnipDragPayload(
             ids: [UUID()],
             text: "",
             attachmentURLs: [image]
         )
 
-        let writers = ClipDragExportPackage(payload: payload).pasteboardWriters()
+        let writers = SnipDragExportPackage(payload: payload).pasteboardWriters()
 
         XCTAssertEqual(writers.count, 2)
         XCTAssertEqual((writers.first as? NSURL) as URL?, image)
         XCTAssertEqual(
             (writers.last as? NSPasteboardItem)?.types,
-            [ClipDragExportPackage.privateType]
+            [SnipDragExportPackage.privateType]
         )
     }
 
     @MainActor
-    func testMixedClipDragWritesMarkdownOnAFilePromiseQueue() throws {
-        let payload = ClipDragPayload(
+    func testMixedSnipDragWritesMarkdownOnAFilePromiseQueue() throws {
+        let payload = SnipDragPayload(
             ids: [UUID()],
             text: "Keep this text",
             attachmentURLs: [URL(fileURLWithPath: "/tmp/image.png")]
         )
-        let package = ClipDragExportPackage(payload: payload)
+        let package = SnipDragExportPackage(payload: payload)
         let provider = try XCTUnwrap(
             package.pasteboardWriters().first as? NSFilePromiseProvider
         )
@@ -235,13 +235,13 @@ final class InboxModelsTests: XCTestCase {
     }
 
     @MainActor
-    func testMixedClipPromiseKeepsItsDelegateAfterThePackageEnds() throws {
-        let payload = ClipDragPayload(
+    func testMixedSnipPromiseKeepsItsDelegateAfterThePackageEnds() throws {
+        let payload = SnipDragPayload(
             ids: [UUID()],
             text: "Keep this text",
             attachmentURLs: [URL(fileURLWithPath: "/tmp/image.png")]
         )
-        let provider = try makeMixedClipPromiseProvider(payload: payload)
+        let provider = try makeMixedSnipPromiseProvider(payload: payload)
         let delegate = try XCTUnwrap(provider.delegate)
         XCTAssertTrue((provider.userInfo as AnyObject) === (delegate as AnyObject))
 
@@ -252,7 +252,7 @@ final class InboxModelsTests: XCTestCase {
             withIntermediateDirectories: true
         )
         defer { try? FileManager.default.removeItem(at: directory) }
-        let destination = directory.appendingPathComponent("Snip Snap Clip.md")
+        let destination = directory.appendingPathComponent("Snip Snap Snip.md")
         var writeError: Error?
 
         delegate.filePromiseProvider(
@@ -265,15 +265,15 @@ final class InboxModelsTests: XCTestCase {
         XCTAssertNil(writeError)
         XCTAssertEqual(
             try String(contentsOf: destination, encoding: .utf8),
-            ClipDragExportPackage.markdown(for: payload)
+            SnipDragExportPackage.markdown(for: payload)
         )
     }
 
     @MainActor
-    private func makeMixedClipPromiseProvider(
-        payload: ClipDragPayload
+    private func makeMixedSnipPromiseProvider(
+        payload: SnipDragPayload
     ) throws -> NSFilePromiseProvider {
-        let package = ClipDragExportPackage(payload: payload)
+        let package = SnipDragExportPackage(payload: payload)
         return try XCTUnwrap(
             package.pasteboardWriters().first as? NSFilePromiseProvider
         )
@@ -281,68 +281,68 @@ final class InboxModelsTests: XCTestCase {
 
     func testPinnedHeaderGlassRequiresRealScrollMovement() {
         XCTAssertFalse(
-            InboxPinnedHeaderGlass.isVisible(
+            PinnedListHeaderGlass.isVisible(
                 isPinned: true,
-                hasScrolled: InboxPinnedHeaderGlass.hasScrolled(visibleOriginY: 0)
+                hasScrolled: PinnedListHeaderGlass.hasScrolled(visibleOriginY: 0)
             )
         )
         XCTAssertTrue(
-            InboxPinnedHeaderGlass.isVisible(
+            PinnedListHeaderGlass.isVisible(
                 isPinned: true,
-                hasScrolled: InboxPinnedHeaderGlass.hasScrolled(visibleOriginY: 1)
+                hasScrolled: PinnedListHeaderGlass.hasScrolled(visibleOriginY: 1)
             )
         )
         XCTAssertFalse(
-            InboxPinnedHeaderGlass.isVisible(
+            PinnedListHeaderGlass.isVisible(
                 isPinned: false,
-                hasScrolled: InboxPinnedHeaderGlass.hasScrolled(visibleOriginY: 1)
+                hasScrolled: PinnedListHeaderGlass.hasScrolled(visibleOriginY: 1)
             )
         )
     }
 
     func testPinnedHeaderStateIgnoresDuplicateGeometryReports() {
-        let sectionID = UUID()
+        let listID = UUID()
 
         XCTAssertEqual(
-            InboxPinnedHeaderGlass.updatedSections(
+            PinnedListHeaderGlass.updatedLists(
                 [],
-                sectionID: sectionID,
+                listID: listID,
                 isPinned: true
             ),
-            [sectionID]
+            [listID]
         )
         XCTAssertNil(
-            InboxPinnedHeaderGlass.updatedSections(
-                [sectionID],
-                sectionID: sectionID,
+            PinnedListHeaderGlass.updatedLists(
+                [listID],
+                listID: listID,
                 isPinned: true
             )
         )
         XCTAssertEqual(
-            InboxPinnedHeaderGlass.updatedSections(
-                [sectionID],
-                sectionID: sectionID,
+            PinnedListHeaderGlass.updatedLists(
+                [listID],
+                listID: listID,
                 isPinned: false
             ),
             []
         )
         XCTAssertNil(
-            InboxPinnedHeaderGlass.updatedSections(
+            PinnedListHeaderGlass.updatedLists(
                 [],
-                sectionID: sectionID,
+                listID: listID,
                 isPinned: false
             )
         )
     }
 
-    func testNewClipRevealWaitsForTheAddedRowWhenTheListWasAtTheTop() {
+    func testNewSnipRevealWaitsForTheAddedRowWhenTheListWasAtTheTop() {
         let existingID = UUID()
         let addedID = UUID()
-        var state = InboxAddedClipRevealState()
+        var state = AddedSnipRevealState()
 
         XCTAssertNil(
             state.record(
-                clipID: addedID,
+                snipID: addedID,
                 wasAtTop: true,
                 isVisibleInModel: true,
                 visibleIDs: [existingID]
@@ -354,13 +354,13 @@ final class InboxModelsTests: XCTestCase {
         )
     }
 
-    func testNewClipRevealPreservesTheScrollPositionWhenAwayFromTheTop() {
+    func testNewSnipRevealPreservesTheScrollPositionWhenAwayFromTheTop() {
         let addedID = UUID()
-        var state = InboxAddedClipRevealState()
+        var state = AddedSnipRevealState()
 
         XCTAssertNil(
             state.record(
-                clipID: addedID,
+                snipID: addedID,
                 wasAtTop: false,
                 isVisibleInModel: true,
                 visibleIDs: [addedID]
@@ -369,13 +369,13 @@ final class InboxModelsTests: XCTestCase {
         XCTAssertNil(state.nextDestination(visibleIDs: [addedID]))
     }
 
-    func testNewClipRevealDoesNotWaitForAClipHiddenByTheCurrentFilter() {
+    func testNewSnipRevealDoesNotWaitForASnipHiddenByTheCurrentFilter() {
         let addedID = UUID()
-        var state = InboxAddedClipRevealState()
+        var state = AddedSnipRevealState()
 
         XCTAssertNil(
             state.record(
-                clipID: addedID,
+                snipID: addedID,
                 wasAtTop: true,
                 isVisibleInModel: false,
                 visibleIDs: []
@@ -385,68 +385,68 @@ final class InboxModelsTests: XCTestCase {
     }
 
     func testDisplaySourceLabelUsesStoredSourceOrCaptureOrigin() {
-        let captured = CaptureItem(
+        let captured = Snip(
             content: "Captured",
             origin: .selection,
-            source: CaptureSource(
+            source: SnipSource(
                 applicationName: "TextEdit",
                 windowTitle: "Draft"
             )
         )
-        let quickEntry = CaptureItem(content: "Typed", origin: .quickEntry)
+        let quickEntry = Snip(content: "Typed", origin: .quickEntry)
 
         XCTAssertEqual(captured.displaySourceLabel, "TextEdit — Draft")
         XCTAssertEqual(quickEntry.displaySourceLabel, "Snip Snap — Quick Entry")
     }
 
-    func testDoneClipsSortAfterActiveClipsInBothModes() {
-        let olderActive = dropItem(
+    func testDoneSnipsSortAfterActiveSnipsInBothModes() {
+        let olderActive = dropSnip(
             id: 1,
             createdAt: 100,
-            section: "Review",
+            list: "Review",
             manualPosition: 1
         )
-        let newerDone = dropItem(
+        let newerDone = dropSnip(
             id: 2,
             createdAt: 200,
-            section: "Review",
+            list: "Review",
             manualPosition: 0,
             isDone: true
         )
-        let newestActive = dropItem(
+        let newestActive = dropSnip(
             id: 3,
             createdAt: 300,
-            section: "Review",
+            list: "Review",
             manualPosition: -1
         )
 
         XCTAssertEqual(
-            CaptureItem.sorted([olderActive, newerDone, newestActive], by: .chronological)
+            Snip.sorted([olderActive, newerDone, newestActive], by: .chronological)
                 .map(\.id),
             [newestActive.id, olderActive.id, newerDone.id]
         )
         XCTAssertEqual(
-            CaptureItem.sorted([olderActive, newerDone, newestActive], by: .manual)
+            Snip.sorted([olderActive, newerDone, newestActive], by: .manual)
                 .map(\.id),
             [newestActive.id, olderActive.id, newerDone.id]
         )
     }
 
     func testCopyFormattingUsesChronologicalOrderAndSourceContext() {
-        let old = CaptureItem(
+        let old = Snip(
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
             requestID: UUID(),
             createdAt: Date(timeIntervalSince1970: 100),
             content: "First thought",
             origin: .quickEntry
         )
-        let new = CaptureItem(
+        let new = Snip(
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
             requestID: UUID(),
             createdAt: Date(timeIntervalSince1970: 200),
             content: "Second snippet",
             origin: .selection,
-            source: CaptureSource(
+            source: SnipSource(
                 applicationName: "Safari",
                 windowTitle: "Docs",
                 url: "https://example.com/docs"
@@ -454,56 +454,56 @@ final class InboxModelsTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            CopyFormatter.format(items: [new, old]),
+            SnipFormatter.format(snips: [new, old]),
             "First thought\n\n---\n\nSecond snippet\nSource: Safari — Docs\nURL: https://example.com/docs"
         )
-        XCTAssertEqual(CopyFormatter.formatForClipboard(items: [old]), "First thought")
+        XCTAssertEqual(SnipFormatter.formatForClipboard(snips: [old]), "First thought")
         XCTAssertEqual(
-            CopyFormatter.formatForClipboard(items: [new, old]),
+            SnipFormatter.formatForClipboard(snips: [new, old]),
             "- First thought\n- Second snippet\n  Source: Safari — Docs\n  URL: https://example.com/docs"
         )
     }
 
-    func testClipDragPayloadUsesVisibleOrderAndPlainTextForOneClip() {
-        let first = CaptureItem(
+    func testSnipDragPayloadUsesVisibleOrderAndPlainTextForOneSnip() {
+        let first = Snip(
             content: "Shown first",
             origin: .selection,
-            source: CaptureSource(
+            source: SnipSource(
                 applicationName: "Safari",
                 windowTitle: "Reference",
                 url: "https://example.com"
             )
         )
-        let second = CaptureItem(content: "Shown second", origin: .quickEntry)
+        let second = Snip(content: "Shown second", origin: .quickEntry)
 
         XCTAssertEqual(
-            ClipDragPayload.make(items: [first]),
-            ClipDragPayload(
+            SnipDragPayload.make(snips: [first]),
+            SnipDragPayload(
                 ids: [first.id],
                 text: "Shown first",
                 previewSourceLabel: "Safari — Reference"
             )
         )
         XCTAssertEqual(
-            ClipDragPayload.make(items: [second, first]),
-            ClipDragPayload(
+            SnipDragPayload.make(snips: [second, first]),
+            SnipDragPayload(
                 ids: [second.id, first.id],
                 text: "Shown second\n\n---\n\nShown first\nSource: Safari — Reference\nURL: https://example.com",
-                previewSourceLabel: "2 clips"
+                previewSourceLabel: "2 snips"
             )
         )
     }
 
     func testFilteringSearchesContentAndSourceAndHonorsCompletionFilter() {
-        let done = CaptureItem(
+        let done = Snip(
             content: "Follow up tomorrow",
             origin: .quickEntry,
             isDone: true
         )
-        let safari = CaptureItem(
+        let safari = Snip(
             content: "An unrelated excerpt",
             origin: .selection,
-            source: CaptureSource(
+            source: SnipSource(
                 applicationName: "Safari",
                 windowTitle: "Swift guide",
                 url: nil
@@ -511,60 +511,60 @@ final class InboxModelsTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            InboxFilter.apply(
-                items: [done, safari],
+            SnipFilter.apply(
+                snips: [done, safari],
                 query: "swift",
                 completionFilter: .all
             ),
             [safari]
         )
         XCTAssertEqual(
-            InboxFilter.apply(
-                items: [done, safari],
+            SnipFilter.apply(
+                snips: [done, safari],
                 query: "",
                 completionFilter: .done
             ),
             [done]
         )
         XCTAssertEqual(
-            InboxFilter.apply(
-                items: [done, safari],
+            SnipFilter.apply(
+                snips: [done, safari],
                 query: "",
                 completionFilter: .notDone
             ),
             [safari]
         )
         XCTAssertTrue(
-            InboxFilter.apply(
-                items: [done, safari],
+            SnipFilter.apply(
+                snips: [done, safari],
                 query: "swift",
                 completionFilter: .done
             ).isEmpty
         )
     }
 
-    func testLargeInboxFilteringKeepsExactMatches() {
-        let items = (0..<2_500).map { index in
-            CaptureItem(
+    func testLargeSnipFilteringKeepsExactMatches() {
+        let snips = (0..<2_500).map { index in
+            Snip(
                 content: index.isMultiple(of: 250) ? "Needle \(index)" : "Item \(index)",
                 origin: .quickEntry,
-                sectionID: index.isMultiple(of: 2) ? SnipSnapSection.inboxID : sectionID("Later")
+                listID: index.isMultiple(of: 2) ? SnipList.inboxID : listID("Later")
             )
         }
-        let matches = InboxFilter.apply(
-            items: items,
+        let matches = SnipFilter.apply(
+            snips: snips,
             query: "needle",
             completionFilter: .all
         )
         XCTAssertEqual(matches.count, 10)
     }
 
-    func testInboxSelectionPlainClickDoesNotStartAndClearsBatchSelection() {
+    func testSnipSelectionPlainClickDoesNotStartAndClearsBatchSelection() {
         let first = UUID()
         let second = UUID()
         let orderedIDs = [first, second]
 
-        let untouched = InboxSelection.click(
+        let untouched = SnipSelection.click(
             first,
             orderedIDs: orderedIDs,
             selection: [],
@@ -576,7 +576,7 @@ final class InboxModelsTests: XCTestCase {
         XCTAssertNil(untouched.anchor)
         XCTAssertNil(untouched.focus)
 
-        let cleared = InboxSelection.click(
+        let cleared = SnipSelection.click(
             second,
             orderedIDs: orderedIDs,
             selection: [first],
@@ -589,12 +589,12 @@ final class InboxModelsTests: XCTestCase {
         XCTAssertNil(cleared.focus)
     }
 
-    func testInboxSelectionCommandClickStartsThenTogglesBatchSelection() {
+    func testSnipSelectionCommandClickStartsThenTogglesBatchSelection() {
         let first = UUID()
         let second = UUID()
         let orderedIDs = [first, second]
 
-        let started = InboxSelection.click(
+        let started = SnipSelection.click(
             first,
             orderedIDs: orderedIDs,
             selection: [],
@@ -606,7 +606,7 @@ final class InboxModelsTests: XCTestCase {
         XCTAssertEqual(started.anchor, first)
         XCTAssertEqual(started.focus, first)
 
-        let added = InboxSelection.click(
+        let added = SnipSelection.click(
             second,
             orderedIDs: orderedIDs,
             selection: started.selection,
@@ -618,7 +618,7 @@ final class InboxModelsTests: XCTestCase {
         XCTAssertEqual(added.anchor, second)
         XCTAssertEqual(added.focus, second)
 
-        let removed = InboxSelection.click(
+        let removed = SnipSelection.click(
             first,
             orderedIDs: orderedIDs,
             selection: added.selection,
@@ -629,9 +629,9 @@ final class InboxModelsTests: XCTestCase {
         XCTAssertEqual(removed.selection, [second])
     }
 
-    func testInboxSelectionShiftClickUsesVisibleCommandClickAnchor() {
+    func testSnipSelectionShiftClickUsesVisibleCommandClickAnchor() {
         let ids = (0..<4).map { _ in UUID() }
-        let shiftWithoutSelection = InboxSelection.click(
+        let shiftWithoutSelection = SnipSelection.click(
             ids[3],
             orderedIDs: ids,
             selection: [],
@@ -643,7 +643,7 @@ final class InboxModelsTests: XCTestCase {
         XCTAssertNil(shiftWithoutSelection.anchor)
         XCTAssertNil(shiftWithoutSelection.focus)
 
-        let start = InboxSelection.click(
+        let start = SnipSelection.click(
             ids[1],
             orderedIDs: ids,
             selection: [],
@@ -652,7 +652,7 @@ final class InboxModelsTests: XCTestCase {
             modifiers: .command
         )
 
-        let clickedRange = InboxSelection.click(
+        let clickedRange = SnipSelection.click(
             ids[3],
             orderedIDs: ids,
             selection: start.selection,
@@ -664,7 +664,7 @@ final class InboxModelsTests: XCTestCase {
         XCTAssertEqual(clickedRange.anchor, ids[1])
         XCTAssertEqual(clickedRange.focus, ids[3])
 
-        let staleAnchor = InboxSelection.click(
+        let staleAnchor = SnipSelection.click(
             ids[3],
             orderedIDs: ids,
             selection: [ids[2]],
@@ -676,7 +676,7 @@ final class InboxModelsTests: XCTestCase {
         XCTAssertEqual(staleAnchor.anchor, ids[1])
         XCTAssertEqual(staleAnchor.focus, ids[1])
 
-        let contracted = InboxSelection.move(
+        let contracted = SnipSelection.move(
             by: -1,
             orderedIDs: ids,
             selection: clickedRange.selection,
@@ -689,10 +689,10 @@ final class InboxModelsTests: XCTestCase {
         XCTAssertEqual(contracted.focus, ids[2])
     }
 
-    func testInboxSelectionArrowStartsAtTheNearestListEdge() {
+    func testSnipSelectionArrowStartsAtTheNearestListEdge() {
         let ids = (0..<3).map { _ in UUID() }
 
-        let down = InboxSelection.move(
+        let down = SnipSelection.move(
             by: 1,
             orderedIDs: ids,
             selection: [],
@@ -702,7 +702,7 @@ final class InboxModelsTests: XCTestCase {
         )
         XCTAssertEqual(down.selection, [ids[0]])
 
-        let up = InboxSelection.move(
+        let up = SnipSelection.move(
             by: -1,
             orderedIDs: ids,
             selection: [],
@@ -713,10 +713,10 @@ final class InboxModelsTests: XCTestCase {
         XCTAssertEqual(up.selection, [ids[2]])
     }
 
-    func testInboxSelectionArrowContinuesFromAnExternalSelection() {
+    func testSnipSelectionArrowContinuesFromAnExternalSelection() {
         let ids = (0..<3).map { _ in UUID() }
 
-        let moved = InboxSelection.move(
+        let moved = SnipSelection.move(
             by: 1,
             orderedIDs: ids,
             selection: [ids[1]],
@@ -729,7 +729,7 @@ final class InboxModelsTests: XCTestCase {
         XCTAssertEqual(moved.anchor, ids[2])
         XCTAssertEqual(moved.focus, ids[2])
 
-        let staleFocus = InboxSelection.move(
+        let staleFocus = SnipSelection.move(
             by: 1,
             orderedIDs: ids,
             selection: [ids[0]],
@@ -743,51 +743,51 @@ final class InboxModelsTests: XCTestCase {
     }
 
     func testListSnapshotBuildsGroupsAndSelectedPayloadOnceInListOrder() {
-        let inbox = dropItem(
+        let inbox = dropSnip(
             id: 1,
             createdAt: 100,
-            section: "Inbox",
+            list: "Inbox",
             manualPosition: 0
         )
-        let firstReview = dropItem(id: 2, createdAt: 200, section: "Review", manualPosition: 0)
-        let secondReview = dropItem(id: 3, createdAt: 300, section: "Review", manualPosition: 1)
-        let snapshot = InboxListSnapshot(
-            visibleItems: [secondReview, inbox, firstReview],
-            allItems: [secondReview, inbox, firstReview],
-            sections: [
+        let firstReview = dropSnip(id: 2, createdAt: 200, list: "Review", manualPosition: 0)
+        let secondReview = dropSnip(id: 3, createdAt: 300, list: "Review", manualPosition: 1)
+        let snapshot = SnipListSnapshot(
+            visibleSnips: [secondReview, inbox, firstReview],
+            allSnips: [secondReview, inbox, firstReview],
+            lists: [
                 .inbox,
-                SnipSnapSection(id: sectionID("Review"), name: "Review", systemImage: "star", position: 1)
+                SnipList(id: listID("Review"), name: "Review", systemImage: "star", position: 1)
             ],
             selection: [secondReview.id, inbox.id]
         )
 
-        XCTAssertEqual(snapshot.groups.map(\.section), ["Inbox", "Review"])
+        XCTAssertEqual(snapshot.groups.map(\.listName), ["Inbox", "Review"])
         XCTAssertEqual(snapshot.orderedVisibleIDs, [inbox.id, secondReview.id, firstReview.id])
         XCTAssertEqual(snapshot.dragPayload(for: secondReview).ids, [inbox.id, secondReview.id])
         XCTAssertEqual(snapshot.dragPayload(for: firstReview).ids, [firstReview.id])
     }
 
-    private func dropItem(
+    private func dropSnip(
         id: Int,
         createdAt: TimeInterval,
-        section: String,
+        list: String,
         manualPosition: Int64,
         isDone: Bool = false
-    ) -> CaptureItem {
-        CaptureItem(
+    ) -> Snip {
+        Snip(
             id: UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", id))!,
             requestID: UUID(),
             createdAt: Date(timeIntervalSince1970: createdAt),
             content: "Card \(id)",
             origin: .quickEntry,
-            sectionID: sectionID(section),
+            listID: listID(list),
             isDone: isDone,
             manualPosition: manualPosition
         )
     }
 
-    private func sectionID(_ name: String) -> UUID {
-        if name == "Inbox" { return SnipSnapSection.inboxID }
+    private func listID(_ name: String) -> UUID {
+        if name == "Inbox" { return SnipList.inboxID }
         let suffix: String
         switch name {
         case "Review": suffix = "000000000101"

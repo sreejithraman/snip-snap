@@ -19,10 +19,10 @@ final class AppModelTests: StoreBackedTestCase {
         let url = store.stageScreenCapture()
         try Data("partial".utf8).write(to: url)
 
-        store.finishScreenCapture(url, in: SnipSnapSection.inboxID, succeeded: false)
+        store.finishScreenCapture(url, in: SnipList.inboxID, succeeded: false)
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
-        XCTAssertTrue(store.draft(for: SnipSnapSection.inboxID).attachments.isEmpty)
+        XCTAssertTrue(store.draft(for: SnipList.inboxID).attachments.isEmpty)
     }
 
     @MainActor
@@ -31,16 +31,16 @@ final class AppModelTests: StoreBackedTestCase {
         let url = store.stageScreenCapture()
         try Data("image".utf8).write(to: url)
 
-        store.finishScreenCapture(url, in: SnipSnapSection.inboxID, succeeded: true)
-        XCTAssertEqual(store.draft(for: SnipSnapSection.inboxID).attachments, [url])
+        store.finishScreenCapture(url, in: SnipList.inboxID, succeeded: true)
+        XCTAssertEqual(store.draft(for: SnipList.inboxID).attachments, [url])
 
-        store.clear(sectionID: SnipSnapSection.inboxID)
+        store.clear(listID: SnipList.inboxID)
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     }
 
     @MainActor
     func testAppearanceDefaultsToSystemAndPersistsAChoice() throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let defaults = defaults()
         var model: AppModel? = AppModel(repository: repository, defaults: defaults)
 
@@ -55,7 +55,7 @@ final class AppModelTests: StoreBackedTestCase {
 
     @MainActor
     func testToggleDoneItemChangesOnlyThatItemAndKeepsSelection() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let firstResult = try await repository.add(content: "First", origin: .quickEntry)
         let secondResult = try await repository.add(content: "Second", origin: .quickEntry)
         let first = try XCTUnwrap(firstResult)
@@ -67,28 +67,28 @@ final class AppModelTests: StoreBackedTestCase {
         await model.toggleDoneNow(id: first.id)
 
         XCTAssertEqual(model.selection, [first.id, second.id])
-        XCTAssertTrue(try XCTUnwrap(model.items.first { $0.id == first.id }).isDone)
-        XCTAssertFalse(try XCTUnwrap(model.items.first { $0.id == second.id }).isDone)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == first.id }).isDone)
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == second.id }).isDone)
     }
 
     @MainActor
     func testRapidDoneTogglesApplyInOrder() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
-        let added = try await repository.add(content: "Clip", origin: .quickEntry)
-        let item = try XCTUnwrap(added)
+        let repository = try SnipRepository(fileURL: storeURL())
+        let added = try await repository.add(content: "Snip", origin: .quickEntry)
+        let snip = try XCTUnwrap(added)
         let model = AppModel(repository: repository)
         await model.reload()
 
-        async let first: Void = model.toggleDoneNow(id: item.id)
-        async let second: Void = model.toggleDoneNow(id: item.id)
+        async let first: Void = model.toggleDoneNow(id: snip.id)
+        async let second: Void = model.toggleDoneNow(id: snip.id)
         _ = await (first, second)
 
-        XCTAssertFalse(try XCTUnwrap(model.items.first).isDone)
+        XCTAssertFalse(try XCTUnwrap(model.snips.first).isDone)
     }
 
     @MainActor
-    func testSuccessfulExternalDropMarksEveryDraggedClipDone() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+    func testSuccessfulExternalDropMarksEveryDraggedSnipDone() async throws {
+        let repository = try SnipRepository(fileURL: storeURL())
         let firstResult = try await repository.add(content: "First", origin: .quickEntry)
         let secondResult = try await repository.add(content: "Second", origin: .quickEntry)
         let first = try XCTUnwrap(firstResult)
@@ -99,13 +99,13 @@ final class AppModelTests: StoreBackedTestCase {
 
         await model.markDoneAfterExternalDropNow(ids: [first.id, second.id])
 
-        XCTAssertTrue(try XCTUnwrap(model.items.first { $0.id == first.id }).isDone)
-        XCTAssertTrue(try XCTUnwrap(model.items.first { $0.id == second.id }).isDone)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == first.id }).isDone)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == second.id }).isDone)
     }
 
     @MainActor
     func testAppModelUndoDeleteRestoresTheFullSelection() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let addedFirst = try await repository.add(content: "First", origin: .quickEntry)
         let addedSecond = try await repository.add(content: "Second", origin: .quickEntry)
         let first = try XCTUnwrap(addedFirst)
@@ -115,37 +115,37 @@ final class AppModelTests: StoreBackedTestCase {
         model.selection = [first.id, second.id]
 
         await model.deleteSelectionNow()
-        XCTAssertTrue(model.items.isEmpty)
+        XCTAssertTrue(model.snips.isEmpty)
         XCTAssertTrue(model.canUndo)
 
         await model.undoNow()
-        XCTAssertEqual(Set(model.items.map(\.id)), [first.id, second.id])
+        XCTAssertEqual(Set(model.snips.map(\.id)), [first.id, second.id])
         XCTAssertEqual(model.selection, [first.id, second.id])
         XCTAssertFalse(model.canUndo)
     }
 
     @MainActor
     func testTwoRapidUndosConsumeOneOperationSafely() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let added = try await repository.add(content: "Delete me", origin: .quickEntry)
-        let item = try XCTUnwrap(added)
+        let snip = try XCTUnwrap(added)
         let model = AppModel(repository: repository)
         await model.reload()
-        model.selection = [item.id]
+        model.selection = [snip.id]
         await model.deleteSelectionNow()
 
         async let first: Void = model.undoNow()
         async let second: Void = model.undoNow()
         _ = await (first, second)
 
-        XCTAssertEqual(model.items.map(\.id), [item.id])
+        XCTAssertEqual(model.snips.map(\.id), [snip.id])
         XCTAssertFalse(model.canUndo)
         XCTAssertTrue(model.canRedo)
     }
 
     @MainActor
     func testAppModelUndoMergeRestoresTheOriginalItems() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let addedFirst = try await repository.add(content: "First", origin: .quickEntry)
         let addedSecond = try await repository.add(content: "Second", origin: .quickEntry)
         let first = try XCTUnwrap(addedFirst)
@@ -155,18 +155,18 @@ final class AppModelTests: StoreBackedTestCase {
         model.selection = [first.id, second.id]
 
         await model.mergeSelectionNow()
-        XCTAssertEqual(model.items.count, 1)
+        XCTAssertEqual(model.snips.count, 1)
         XCTAssertEqual(model.undoTitle, "Undo Merge")
 
         await model.undoNow()
-        XCTAssertEqual(Set(model.items.map(\.id)), [first.id, second.id])
+        XCTAssertEqual(Set(model.snips.map(\.id)), [first.id, second.id])
         XCTAssertEqual(model.selection, [first.id, second.id])
         XCTAssertFalse(model.canUndo)
     }
 
     @MainActor
     func testEditingAMergeClearsTheStaleMergeUndo() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let addedFirst = try await repository.add(content: "First", origin: .quickEntry)
         let addedSecond = try await repository.add(content: "Second", origin: .quickEntry)
         let first = try XCTUnwrap(addedFirst)
@@ -176,7 +176,7 @@ final class AppModelTests: StoreBackedTestCase {
         model.selection = [first.id, second.id]
 
         await model.mergeSelectionNow()
-        let merged = try XCTUnwrap(model.items.first)
+        let merged = try XCTUnwrap(model.snips.first)
         XCTAssertTrue(model.canUndo)
 
         let saved = await model.update(id: merged.id, content: "Edited merge")
@@ -184,37 +184,37 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertFalse(model.canUndo)
         await model.undoNow()
 
-        XCTAssertEqual(model.items.map(\.content), ["Edited merge"])
+        XCTAssertEqual(model.snips.map(\.content), ["Edited merge"])
     }
 
     @MainActor
     func testAddResultKeepsStoreFailureDistinctFromDuplicate() async {
-        let model = AppModel(repository: ItemRepository.unavailable())
+        let model = AppModel(repository: SnipRepository.unavailable())
 
         let result = await model.addResult(content: "Keep me", origin: .selection)
 
         guard case .failure(let error) = result else {
             return XCTFail("An unavailable store must return a failure.")
         }
-        XCTAssertEqual(error as? RepositoryError, .storeUnavailable)
+        XCTAssertEqual(error as? SnipRepositoryError, .storeUnavailable)
     }
 
     @MainActor
-    func testAddResultReturnsTheCreatedClipIdentity() async throws {
-        let model = AppModel(repository: try ItemRepository(fileURL: storeURL()))
+    func testAddResultReturnsTheCreatedSnipIdentity() async throws {
+        let model = AppModel(repository: try SnipRepository(fileURL: storeURL()))
 
         let result = await model.addResult(content: "Created", origin: .quickEntry)
 
         guard case .success(.added(let id)) = result else {
-            return XCTFail("A new clip must return its own identity.")
+            return XCTFail("A new snip must return its own identity.")
         }
-        XCTAssertEqual(model.items.first?.id, id)
-        XCTAssertEqual(model.latestAddedClipID, id)
+        XCTAssertEqual(model.snips.first?.id, id)
+        XCTAssertEqual(model.latestAddedSnipID, id)
     }
 
     @MainActor
     func testDetachedEditCannotOverwriteANewerEdit() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let addedOriginal = try await repository.add(content: "Original", origin: .quickEntry)
         let original = try XCTUnwrap(addedOriginal)
         let model = AppModel(repository: repository)
@@ -229,14 +229,14 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertTrue(savedNewerEdit)
         XCTAssertFalse(savedStaleEdit)
 
-        let saved = try XCTUnwrap(model.items.first(where: { $0.id == original.id }))
+        let saved = try XCTUnwrap(model.snips.first(where: { $0.id == original.id }))
         XCTAssertEqual(saved.content, "Newer inline edit")
-        XCTAssertEqual(model.presentedError, RepositoryError.itemChanged.localizedDescription)
+        XCTAssertEqual(model.presentedError, SnipRepositoryError.snipChanged.localizedDescription)
     }
 
     @MainActor
     func testAppModelDoesNotSelectNewlyAddedInlineItem() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let model = AppModel(repository: repository)
 
         let saved = await model.add(
@@ -246,12 +246,12 @@ final class AppModelTests: StoreBackedTestCase {
 
         XCTAssertTrue(saved)
         XCTAssertTrue(model.selection.isEmpty)
-        XCTAssertEqual(model.latestAddedClipID, model.items.first?.id)
+        XCTAssertEqual(model.latestAddedSnipID, model.snips.first?.id)
     }
 
     @MainActor
     func testSortModePersistsAndRestoresManualOrder() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let olderResult = try await repository.add(
             content: "Older", origin: .quickEntry, now: Date(timeIntervalSince1970: 100)
         )
@@ -264,29 +264,50 @@ final class AppModelTests: StoreBackedTestCase {
         let model = AppModel(repository: repository, defaults: settings)
         await model.reload()
 
-        let didMove = await model.move(ids: [older.id], to: SnipSnapSection.inboxID, before: newer.id)
+        let didMove = await model.move(ids: [older.id], to: SnipList.inboxID, before: newer.id)
         XCTAssertTrue(didMove)
         XCTAssertEqual(model.sortMode, .manual)
-        XCTAssertEqual(model.items.map(\.content), ["Older", "Newer"])
+        XCTAssertEqual(model.snips.map(\.content), ["Older", "Newer"])
         model.setSortMode(.chronological)
-        XCTAssertEqual(model.items.map(\.content), ["Newer", "Older"])
+        XCTAssertEqual(model.snips.map(\.content), ["Newer", "Older"])
         model.setSortMode(.manual)
-        XCTAssertEqual(model.items.map(\.content), ["Older", "Newer"])
+        XCTAssertEqual(model.snips.map(\.content), ["Older", "Newer"])
 
         let reopenedModel = AppModel(repository: repository, defaults: settings)
         await reopenedModel.reload()
         XCTAssertEqual(reopenedModel.sortMode, .manual)
-        XCTAssertEqual(reopenedModel.items.map(\.content), ["Older", "Newer"])
+        XCTAssertEqual(reopenedModel.snips.map(\.content), ["Older", "Newer"])
+    }
+
+    @MainActor
+    func testRenamedDefaultsKeepListStateAndDrafts() async throws {
+        let settings = defaults()
+        let repository = try SnipRepository(fileURL: storeURL())
+        let list = try await repository.createList(name: "Review", systemImage: "star")
+        let listID = list.id
+        settings.set(SnipSortMode.manual.rawValue, forKey: "clipSortMode")
+        settings.set(listID.uuidString, forKey: "activeSectionID")
+        settings.set([listID.uuidString: "Saved draft"], forKey: "sectionDrafts")
+
+        let model = AppModel(repository: repository, defaults: settings)
+        await model.reload()
+
+        XCTAssertEqual(model.sortMode, .manual)
+        XCTAssertEqual(model.activeListID, listID)
+        XCTAssertEqual(model.composerDraft(for: listID).text, "Saved draft")
+        XCTAssertEqual(settings.string(forKey: AppModel.sortModeDefaultsKey), "manual")
+        XCTAssertEqual(settings.string(forKey: AppModel.activeListDefaultsKey), listID.uuidString)
+        XCTAssertNotNil(settings.dictionary(forKey: AppModel.listDraftsDefaultsKey))
     }
 
     @MainActor
     func testMoveKeepsEditorTokenAndSupportsMultiStepUndoRedo() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let firstResult = try await repository.add(content: "First", origin: .quickEntry)
         let secondResult = try await repository.add(content: "Second", origin: .quickEntry)
         let first = try XCTUnwrap(firstResult)
         let second = try XCTUnwrap(secondResult)
-        let review = try await repository.createSection(name: "Review", systemImage: "star")
+        let review = try await repository.createList(name: "Review", systemImage: "star")
         let model = AppModel(repository: repository, defaults: defaults())
         await model.reload()
         let token = first.updatedAt
@@ -295,24 +316,24 @@ final class AppModelTests: StoreBackedTestCase {
         let movedSecond = await model.moveChronologically(ids: [second.id], to: review.id)
         XCTAssertTrue(movedFirst)
         XCTAssertTrue(movedSecond)
-        XCTAssertEqual(model.items.first { $0.id == first.id }?.updatedAt, token)
+        XCTAssertEqual(model.snips.first { $0.id == first.id }?.updatedAt, token)
         XCTAssertTrue(model.canUndo)
 
         await model.undoNow()
-        XCTAssertEqual(model.items.first { $0.id == second.id }?.sectionID, SnipSnapSection.inboxID)
+        XCTAssertEqual(model.snips.first { $0.id == second.id }?.listID, SnipList.inboxID)
         await model.undoNow()
-        XCTAssertEqual(model.items.first { $0.id == first.id }?.sectionID, SnipSnapSection.inboxID)
+        XCTAssertEqual(model.snips.first { $0.id == first.id }?.listID, SnipList.inboxID)
         XCTAssertTrue(model.canRedo)
 
         await model.redoNow()
         await model.redoNow()
-        XCTAssertEqual(Set(model.items.filter { $0.sectionID == review.id }.map(\.id)), [first.id, second.id])
+        XCTAssertEqual(Set(model.snips.filter { $0.listID == review.id }.map(\.id)), [first.id, second.id])
         XCTAssertFalse(model.canRedo)
     }
 
     @MainActor
     func testMoveUpUsesManualOrderAndCanUndo() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let firstResult = try await repository.add(content: "First", origin: .quickEntry)
         let secondResult = try await repository.add(content: "Second", origin: .quickEntry)
         let first = try XCTUnwrap(firstResult)
@@ -320,18 +341,18 @@ final class AppModelTests: StoreBackedTestCase {
         let model = AppModel(repository: repository, defaults: defaults())
         await model.reload()
         model.setSortMode(.manual)
-        XCTAssertEqual(model.items.map(\.id), [second.id, first.id])
+        XCTAssertEqual(model.snips.map(\.id), [second.id, first.id])
         model.selection = [first.id]
 
         await model.moveSelectionNow(by: -1)
-        XCTAssertEqual(model.items.map(\.id), [first.id, second.id])
+        XCTAssertEqual(model.snips.map(\.id), [first.id, second.id])
         await model.undoNow()
-        XCTAssertEqual(model.items.map(\.id), [second.id, first.id])
+        XCTAssertEqual(model.snips.map(\.id), [second.id, first.id])
     }
 
     @MainActor
     func testExactMoveFromChronologicalUsesVisibleOrderAsManualSeed() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let oldResult = try await repository.add(
             content: "Old", origin: .quickEntry, now: Date(timeIntervalSince1970: 100)
         )
@@ -346,40 +367,40 @@ final class AppModelTests: StoreBackedTestCase {
         let new = try XCTUnwrap(newResult)
         try await repository.place(
             ids: [old.id, new.id, middle.id],
-            in: SnipSnapSection.inboxID,
+            in: SnipList.inboxID,
             before: nil
         )
         let model = AppModel(repository: repository, defaults: defaults())
         await model.reload()
-        XCTAssertEqual(model.items.map(\.id), [new.id, middle.id, old.id])
+        XCTAssertEqual(model.snips.map(\.id), [new.id, middle.id, old.id])
 
         let moved = await model.move(
             ids: [middle.id],
-            to: SnipSnapSection.inboxID,
+            to: SnipList.inboxID,
             before: new.id
         )
 
         XCTAssertTrue(moved)
         XCTAssertEqual(model.sortMode, .manual)
-        XCTAssertEqual(model.items.map(\.id), [middle.id, new.id, old.id])
+        XCTAssertEqual(model.snips.map(\.id), [middle.id, new.id, old.id])
 
         await model.undoNow()
         XCTAssertEqual(model.sortMode, .chronological)
-        XCTAssertEqual(model.items.map(\.id), [new.id, middle.id, old.id])
+        XCTAssertEqual(model.snips.map(\.id), [new.id, middle.id, old.id])
 
         await model.redoNow()
         XCTAssertEqual(model.sortMode, .manual)
-        XCTAssertEqual(model.items.map(\.id), [middle.id, new.id, old.id])
+        XCTAssertEqual(model.snips.map(\.id), [middle.id, new.id, old.id])
     }
 
     @MainActor
     func testDropMoveCanPreserveSelectionThroughUndoAndRedo() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let movedResult = try await repository.add(content: "Moved", origin: .quickEntry)
         let selectedResult = try await repository.add(content: "Selected", origin: .quickEntry)
         let moved = try XCTUnwrap(movedResult)
         let selected = try XCTUnwrap(selectedResult)
-        let review = try await repository.createSection(name: "Review", systemImage: "star")
+        let review = try await repository.createList(name: "Review", systemImage: "star")
         let model = AppModel(repository: repository, defaults: defaults())
         await model.reload()
         model.selection = [selected.id]
@@ -396,12 +417,12 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(model.selection, [selected.id])
         await model.redoNow()
         XCTAssertEqual(model.selection, [selected.id])
-        XCTAssertEqual(model.items.first { $0.id == moved.id }?.sectionID, review.id)
+        XCTAssertEqual(model.snips.first { $0.id == moved.id }?.listID, review.id)
     }
 
     @MainActor
     func testMoveUpFromChronologicalUsesVisibleOrder() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let oldResult = try await repository.add(
             content: "Old", origin: .quickEntry, now: Date(timeIntervalSince1970: 100)
         )
@@ -416,7 +437,7 @@ final class AppModelTests: StoreBackedTestCase {
         let new = try XCTUnwrap(newResult)
         try await repository.place(
             ids: [old.id, new.id, middle.id],
-            in: SnipSnapSection.inboxID,
+            in: SnipList.inboxID,
             before: nil
         )
         let model = AppModel(repository: repository, defaults: defaults())
@@ -426,12 +447,12 @@ final class AppModelTests: StoreBackedTestCase {
         await model.moveSelectionNow(by: -1)
 
         XCTAssertEqual(model.sortMode, .manual)
-        XCTAssertEqual(model.items.map(\.id), [middle.id, new.id, old.id])
+        XCTAssertEqual(model.snips.map(\.id), [middle.id, new.id, old.id])
     }
 
     @MainActor
     func testMoveUpDoesNothingWhileAFilterIsActive() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+        let repository = try SnipRepository(fileURL: storeURL())
         let firstResult = try await repository.add(content: "First", origin: .quickEntry)
         let secondResult = try await repository.add(content: "Second", origin: .quickEntry)
         let first = try XCTUnwrap(firstResult)
@@ -439,14 +460,14 @@ final class AppModelTests: StoreBackedTestCase {
         let model = AppModel(repository: repository, defaults: defaults())
         await model.reload()
         model.selection = [first.id]
-        let originalIDs = model.items.map(\.id)
+        let originalIDs = model.snips.map(\.id)
         XCTAssertTrue(model.canReorder(ids: [first.id]))
 
         model.query = "First"
         XCTAssertFalse(model.canReorderSelection)
         XCTAssertFalse(model.canReorder(ids: [first.id]))
         await model.moveSelectionNow(by: -1)
-        XCTAssertEqual(model.items.map(\.id), originalIDs)
+        XCTAssertEqual(model.snips.map(\.id), originalIDs)
         XCTAssertEqual(model.sortMode, .chronological)
 
         model.query = ""
@@ -454,14 +475,14 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertFalse(model.canReorderSelection)
         XCTAssertFalse(model.canReorder(ids: [first.id]))
         await model.moveSelectionNow(by: -1)
-        XCTAssertEqual(model.items.map(\.id), originalIDs)
+        XCTAssertEqual(model.snips.map(\.id), originalIDs)
         XCTAssertEqual(model.sortMode, .chronological)
         XCTAssertEqual(Set(originalIDs), [first.id, second.id])
     }
 
     @MainActor
-    func testCreatingSectionKeepsCurrentSelectionWhereItIs() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+    func testCreatingListKeepsCurrentSelectionWhereItIs() async throws {
+        let repository = try SnipRepository(fileURL: storeURL())
         let addedSelection = try await repository.add(content: "Move me", origin: .quickEntry)
         let selected = try XCTUnwrap(addedSelection)
         _ = try await repository.add(content: "Leave me", origin: .quickEntry)
@@ -469,16 +490,16 @@ final class AppModelTests: StoreBackedTestCase {
         await model.reload()
         model.selection = [selected.id]
 
-        let didCreate = await model.createSection(name: "Agents", systemImage: "terminal.fill")
+        let didCreate = await model.createList(name: "Agents", systemImage: "terminal.fill")
         XCTAssertTrue(didCreate)
 
-        XCTAssertEqual(model.activeSection.name, "Agents")
-        XCTAssertEqual(model.items.first { $0.id == selected.id }?.sectionID, SnipSnapSection.inboxID)
+        XCTAssertEqual(model.activeList.name, "Agents")
+        XCTAssertEqual(model.snips.first { $0.id == selected.id }?.listID, SnipList.inboxID)
     }
 
     @MainActor
-    func testCreatingSectionForMoveMovesTheCurrentSelection() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+    func testCreatingListForMoveMovesTheCurrentSelection() async throws {
+        let repository = try SnipRepository(fileURL: storeURL())
         let addedSelection = try await repository.add(content: "Move me", origin: .quickEntry)
         let selected = try XCTUnwrap(addedSelection)
         _ = try await repository.add(content: "Leave me", origin: .quickEntry)
@@ -486,37 +507,37 @@ final class AppModelTests: StoreBackedTestCase {
         await model.reload()
         model.selection = [selected.id]
 
-        let didCreate = await model.createSection(
+        let didCreate = await model.createList(
             name: "Agents",
             systemImage: "terminal.fill",
             movingIDs: model.selection
         )
-        let activeSectionID = model.activeSectionID
-        let activeSectionName = model.activeSection.name
-        let movedSectionID = model.items.first { $0.id == selected.id }?.sectionID
+        let activeListID = model.activeListID
+        let activeListName = model.activeList.name
+        let movedListID = model.snips.first { $0.id == selected.id }?.listID
         let selection = model.selection
 
         XCTAssertTrue(didCreate)
-        XCTAssertEqual(activeSectionName, "Agents")
-        XCTAssertEqual(movedSectionID, activeSectionID)
+        XCTAssertEqual(activeListName, "Agents")
+        XCTAssertEqual(movedListID, activeListID)
         XCTAssertEqual(selection, [selected.id])
     }
 
     @MainActor
-    func testDeletingTheActiveSectionPersistsInboxAsActive() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
+    func testDeletingTheActiveListPersistsInboxAsActive() async throws {
+        let repository = try SnipRepository(fileURL: storeURL())
         let settings = defaults()
-        let section = try await repository.createSection(name: "Review", systemImage: "star")
+        let list = try await repository.createList(name: "Review", systemImage: "star")
         let model = AppModel(repository: repository, defaults: settings)
         await model.reload()
-        model.selectSection(section)
+        model.selectList(list)
 
-        await model.deleteSection(section)
+        await model.deleteList(list)
 
-        XCTAssertEqual(model.activeSectionID, SnipSnapSection.inboxID)
+        XCTAssertEqual(model.activeListID, SnipList.inboxID)
         XCTAssertEqual(
-            settings.string(forKey: AppModel.activeSectionDefaultsKey),
-            SnipSnapSection.inboxID.uuidString
+            settings.string(forKey: AppModel.activeListDefaultsKey),
+            SnipList.inboxID.uuidString
         )
     }
 
@@ -534,12 +555,12 @@ final class AppModelTests: StoreBackedTestCase {
                 ])
             ]
         )
-        let model = AppModel(repository: try ItemRepository(fileURL: url), defaults: defaults())
+        let model = AppModel(repository: try SnipRepository(fileURL: url), defaults: defaults())
         await model.reload()
 
         let saved = await model.saveClipboardEntry(entry)
         XCTAssertTrue(saved)
-        XCTAssertEqual(model.items.first?.attachments.count, 1)
+        XCTAssertEqual(model.snips.first?.attachments.count, 1)
     }
 
     @MainActor
@@ -547,24 +568,24 @@ final class AppModelTests: StoreBackedTestCase {
         let url = try storeURL()
         let source = url.deletingLastPathComponent().appendingPathComponent("context.md")
         try Data("Context".utf8).write(to: source)
-        let repository = try ItemRepository(fileURL: url)
+        let repository = try SnipRepository(fileURL: url)
         let addedItem = try await repository.add(
             content: "Attached",
             origin: .quickEntry,
             attachmentURLs: [source]
         )
-        let item = try XCTUnwrap(addedItem)
-        let storedURL = repository.attachmentURL(for: try XCTUnwrap(item.attachments.first))
+        let snip = try XCTUnwrap(addedItem)
+        let storedURL = repository.attachmentURL(for: try XCTUnwrap(snip.attachments.first))
         let model = AppModel(repository: repository, defaults: defaults())
         await model.reload()
-        model.selection = [item.id]
+        model.selection = [snip.id]
 
         await model.deleteSelectionNow()
         XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
         await model.undoNow()
         XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
 
-        model.selection = [item.id]
+        model.selection = [snip.id]
         await model.deleteSelectionNow()
         let didAdd = await model.add(content: "Clears undo", origin: .quickEntry)
         XCTAssertTrue(didAdd)
@@ -576,25 +597,25 @@ final class AppModelTests: StoreBackedTestCase {
         let url = try storeURL()
         let source = url.deletingLastPathComponent().appendingPathComponent("note.md")
         try Data("Note".utf8).write(to: source)
-        let repository = try ItemRepository(fileURL: url)
+        let repository = try SnipRepository(fileURL: url)
         let addedItem = try await repository.add(
             content: "Before",
             origin: .quickEntry,
             attachmentURLs: [source]
         )
-        let item = try XCTUnwrap(addedItem)
-        let originalAttachment = try XCTUnwrap(item.attachments.first)
+        let snip = try XCTUnwrap(addedItem)
+        let originalAttachment = try XCTUnwrap(snip.attachments.first)
         let model = AppModel(repository: repository, defaults: defaults())
         await model.reload()
 
         let didUpdate = await model.update(
-            id: item.id,
+            id: snip.id,
             content: "After",
             attachmentURLs: [model.attachmentURL(for: originalAttachment)]
         )
         XCTAssertTrue(didUpdate)
 
-        let saved = try XCTUnwrap(model.items.first)
+        let saved = try XCTUnwrap(model.snips.first)
         XCTAssertEqual(saved.attachments, [originalAttachment])
         let directories = try FileManager.default.contentsOfDirectory(
             at: repository.attachmentRootURL,
@@ -604,37 +625,37 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testSelectingASectionCanPreserveTheCurrentSelectionDuringDrag() async throws {
-        let repository = try ItemRepository(fileURL: storeURL())
-        let addedItem = try await repository.add(content: "Clip", origin: .quickEntry)
-        let item = try XCTUnwrap(addedItem)
-        let section = try await repository.createSection(name: "Review", systemImage: "star")
+    func testSelectingAListCanPreserveTheCurrentSelectionDuringDrag() async throws {
+        let repository = try SnipRepository(fileURL: storeURL())
+        let addedItem = try await repository.add(content: "Snip", origin: .quickEntry)
+        let snip = try XCTUnwrap(addedItem)
+        let list = try await repository.createList(name: "Review", systemImage: "star")
         let model = AppModel(repository: repository, defaults: defaults())
         await model.reload()
-        model.selection = [item.id]
+        model.selection = [snip.id]
 
-        model.selectSection(section, preservingSelection: true)
+        model.selectList(list, preservingSelection: true)
 
-        XCTAssertEqual(model.activeSectionID, section.id)
-        XCTAssertEqual(model.selection, [item.id])
+        XCTAssertEqual(model.activeListID, list.id)
+        XCTAssertEqual(model.selection, [snip.id])
     }
 
     @MainActor
     func testComposerDraftKeepsNewAttachmentsWhenAnEarlierSaveFinishes() throws {
         let store = ComposerDraftStore(defaults: defaults(), textDefaultsKey: "drafts")
-        let sectionID = UUID()
+        let listID = UUID()
         let first = URL(fileURLWithPath: "/tmp/first.md")
         let second = URL(fileURLWithPath: "/tmp/second.md")
-        store.setText("First draft", for: sectionID)
-        store.add([first], to: sectionID)
-        let snapshot = store.beginSave(sectionID: sectionID)
+        store.setText("First draft", for: listID)
+        store.add([first], to: listID)
+        let snapshot = store.beginSave(listID: listID)
 
-        store.setText("New draft", for: sectionID)
-        store.add([second], to: sectionID)
+        store.setText("New draft", for: listID)
+        store.add([second], to: listID)
         store.finishSave(snapshot, saved: true)
 
         XCTAssertEqual(
-            store.draft(for: sectionID),
+            store.draft(for: listID),
             ComposerDraft(text: "New draft", attachments: [second])
         )
     }
@@ -642,14 +663,14 @@ final class AppModelTests: StoreBackedTestCase {
     @MainActor
     func testComposerDraftFlushPersistsTheCurrentInMemoryText() throws {
         let defaults = defaults()
-        let sectionID = UUID()
+        let listID = UUID()
         let firstStore = ComposerDraftStore(defaults: defaults, textDefaultsKey: "drafts")
-        firstStore.setText("Current draft", for: sectionID)
+        firstStore.setText("Current draft", for: listID)
 
         firstStore.flushText()
 
         let reopenedStore = ComposerDraftStore(defaults: defaults, textDefaultsKey: "drafts")
-        XCTAssertEqual(reopenedStore.draft(for: sectionID).text, "Current draft")
+        XCTAssertEqual(reopenedStore.draft(for: listID).text, "Current draft")
     }
 
     @MainActor
@@ -658,11 +679,11 @@ final class AppModelTests: StoreBackedTestCase {
         let temporary = directory.appendingPathComponent("capture.png")
         try Data([1, 2, 3]).write(to: temporary)
         let store = ComposerDraftStore(defaults: defaults(), textDefaultsKey: "drafts")
-        let sectionID = UUID()
-        store.addTemporary(temporary, to: sectionID)
-        let snapshot = store.beginSave(sectionID: sectionID)
+        let listID = UUID()
+        store.addTemporary(temporary, to: listID)
+        let snapshot = store.beginSave(listID: listID)
 
-        store.clear(sectionID: sectionID)
+        store.clear(listID: listID)
         XCTAssertTrue(FileManager.default.fileExists(atPath: temporary.path))
 
         store.finishSave(snapshot, saved: false)

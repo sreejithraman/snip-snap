@@ -8,11 +8,11 @@ final class DetachedEditorWindowController: NSWindowController, NSWindowDelegate
     private let onClose: () -> Void
 
     init(
-        item: CaptureItem,
+        snip: Snip,
         onSave: @escaping @MainActor (String) async -> String?,
         onClose: @escaping () -> Void
     ) {
-        session = DetachedEditorSession(text: item.content)
+        session = DetachedEditorSession(text: snip.content)
         self.onSave = onSave
         self.onClose = onClose
 
@@ -22,7 +22,7 @@ final class DetachedEditorWindowController: NSWindowController, NSWindowDelegate
             backing: .buffered,
             defer: true
         )
-        window.title = "Edit Item"
+        window.title = "Edit Snip"
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 420, height: 280)
         window.center()

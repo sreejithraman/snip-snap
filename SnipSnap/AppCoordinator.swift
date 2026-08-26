@@ -3,7 +3,7 @@ import ApplicationServices
 import Carbon.HIToolbox
 import Combine
 
-enum InboxFocusRequest {
+enum PanelFocusRequest {
     case search
     case inlineEntry
 }
@@ -21,12 +21,12 @@ final class AppCoordinator {
     private let requestAccessibilityTrust: () -> Void
     private let selectionReader = AccessibilitySelectionReader()
     private let hud = CaptureHUDController()
-    let inboxFocusRequests = PassthroughSubject<InboxFocusRequest, Never>()
+    let panelFocusRequests = PassthroughSubject<PanelFocusRequest, Never>()
     private var hotKeys: (any GlobalHotKeyManaging)?
     private var editorWindows: [UUID: DetachedEditorWindowController] = [:]
-    private weak var inboxWindow: NSWindow?
-    private var requestedInboxComposerExpansion: CGFloat = 0
-    private var appliedInboxComposerExpansion: CGFloat = 0
+    private weak var panelWindow: NSWindow?
+    private var requestedPanelComposerExpansion: CGFloat = 0
+    private var appliedPanelComposerExpansion: CGFloat = 0
     private var previousExternalApplication: NSRunningApplication?
     private var applicationActivationObserver: NSObjectProtocol?
 
@@ -88,52 +88,52 @@ final class AppCoordinator {
         refreshAppShortcutMenu()
     }
 
-    func toggleInbox() {
-        guard let inboxWindow else { return }
-        if Self.shouldHideInbox(
-            isVisible: inboxWindow.isVisible,
-            isMiniaturized: inboxWindow.isMiniaturized,
-            isOnActiveSpace: inboxWindow.isOnActiveSpace
+    func togglePanel() {
+        guard let panelWindow else { return }
+        if Self.shouldHidePanel(
+            isVisible: panelWindow.isVisible,
+            isMiniaturized: panelWindow.isMiniaturized,
+            isOnActiveSpace: panelWindow.isOnActiveSpace
         ) {
-            hideInbox(restoringPreviousApplication: inboxWindow.isKeyWindow)
+            hidePanel(restoringPreviousApplication: panelWindow.isKeyWindow)
             return
         }
-        showInbox(inboxWindow, focusing: .inlineEntry)
+        showPanel(panelWindow, focusing: .inlineEntry)
     }
 
     func toggleClipboard() {
-        guard let inboxWindow else { return }
+        guard let panelWindow else { return }
         if model.isShowingClipboard,
-           Self.shouldHideInbox(
-               isVisible: inboxWindow.isVisible,
-               isMiniaturized: inboxWindow.isMiniaturized,
-               isOnActiveSpace: inboxWindow.isOnActiveSpace
+           Self.shouldHidePanel(
+               isVisible: panelWindow.isVisible,
+               isMiniaturized: panelWindow.isMiniaturized,
+               isOnActiveSpace: panelWindow.isOnActiveSpace
            ) {
-            hideInbox(restoringPreviousApplication: inboxWindow.isKeyWindow)
+            hidePanel(restoringPreviousApplication: panelWindow.isKeyWindow)
             return
         }
         model.showClipboard()
         model.query = ""
-        showInbox(inboxWindow, focusing: .search)
+        showPanel(panelWindow, focusing: .search)
     }
 
-    private func showInbox(_ inboxWindow: NSWindow, focusing target: InboxFocusRequest?) {
+    private func showPanel(_ panelWindow: NSWindow, focusing target: PanelFocusRequest?) {
         previousExternalApplication = frontmostExternalApplication()
         NSApp.activate(ignoringOtherApps: true)
-        if inboxWindow.isMiniaturized {
-            inboxWindow.deminiaturize(nil)
-        } else if inboxWindow.isVisible && !inboxWindow.isOnActiveSpace {
-            inboxWindow.orderOut(nil)
+        if panelWindow.isMiniaturized {
+            panelWindow.deminiaturize(nil)
+        } else if panelWindow.isVisible && !panelWindow.isOnActiveSpace {
+            panelWindow.orderOut(nil)
         }
-        inboxWindow.makeKeyAndOrderFront(nil)
+        panelWindow.makeKeyAndOrderFront(nil)
         if let target {
             DispatchQueue.main.async { [weak self] in
-                self?.inboxFocusRequests.send(target)
+                self?.panelFocusRequests.send(target)
             }
         }
     }
 
-    nonisolated static func shouldHideInbox(
+    nonisolated static func shouldHidePanel(
         isVisible: Bool,
         isMiniaturized: Bool,
         isOnActiveSpace: Bool
@@ -141,18 +141,18 @@ final class AppCoordinator {
         isVisible && !isMiniaturized && isOnActiveSpace
     }
 
-    func focusInboxSearch() {
-        inboxFocusRequests.send(.search)
+    func focusPanelSearch() {
+        panelFocusRequests.send(.search)
     }
 
-    func setInboxCommandFocusActive(_ isActive: Bool) {
+    func setSnipCommandFocusActive(_ isActive: Bool) {
         if isActive {
             refreshAppShortcutMenu()
         }
     }
 
-    func hideInbox(restoringPreviousApplication: Bool = true) {
-        inboxWindow?.orderOut(nil)
+    func hidePanel(restoringPreviousApplication: Bool = true) {
+        panelWindow?.orderOut(nil)
         if restoringPreviousApplication {
             previousExternalApplication?.activate(options: [])
         }
@@ -191,28 +191,28 @@ final class AppCoordinator {
             up?.flags = .maskCommand
             down?.postToPid(application.processIdentifier)
             up?.postToPid(application.processIdentifier)
-            inboxWindow?.orderOut(nil)
+            panelWindow?.orderOut(nil)
             previousExternalApplication = nil
         }
     }
 
     func editSelectionInNewWindow() {
         guard model.selection.count == 1,
-              let item = model.selectedItems.first else { return }
-        if let existing = editorWindows[item.id] {
+              let snip = model.selectedSnips.first else { return }
+        if let existing = editorWindows[snip.id] {
             existing.show()
             return
         }
-        let itemID = item.id
-        let itemUpdatedAt = item.updatedAt
+        let snipID = snip.id
+        let snipUpdatedAt = snip.updatedAt
         let controller = DetachedEditorWindowController(
-            item: item,
+            snip: snip,
             onSave: { [weak self] text in
-                guard let self else { return "Snip Snap closed before it could save the item." }
+                guard let self else { return "Snip Snap closed before it could save the snip." }
                 let result = await self.model.updateResult(
-                    id: itemID,
+                    id: snipID,
                     content: text,
-                    expectedUpdatedAt: itemUpdatedAt
+                    expectedUpdatedAt: snipUpdatedAt
                 )
                 switch result {
                 case .success:
@@ -222,10 +222,10 @@ final class AppCoordinator {
                 }
             },
             onClose: { [weak self] in
-                self?.editorWindows[itemID] = nil
+                self?.editorWindows[snipID] = nil
             }
         )
-        editorWindows[itemID] = controller
+        editorWindows[snipID] = controller
         controller.show()
     }
 
@@ -306,8 +306,8 @@ final class AppCoordinator {
 
     private func presentAccessibilityAccessExplanation() {
         model.isAccessibilityAccessExplanationPresented = true
-        guard let inboxWindow else { return }
-        showInbox(inboxWindow, focusing: nil)
+        guard let panelWindow else { return }
+        showPanel(panelWindow, focusing: nil)
     }
 
     nonisolated static func writeTemporaryAttachments(
@@ -342,47 +342,47 @@ final class AppCoordinator {
         }
     }
 
-    func attachInboxWindow(_ window: NSWindow) {
-        inboxWindow = window
-        appliedInboxComposerExpansion = 0
-        applyInboxComposerExpansion()
+    func attachPanelWindow(_ window: NSWindow) {
+        panelWindow = window
+        appliedPanelComposerExpansion = 0
+        applyPanelComposerExpansion()
     }
 
-    func updateInboxComposerExpansion(_ expansion: CGFloat) {
-        requestedInboxComposerExpansion = max(expansion, 0)
-        applyInboxComposerExpansion()
+    func updatePanelComposerExpansion(_ expansion: CGFloat) {
+        requestedPanelComposerExpansion = max(expansion, 0)
+        applyPanelComposerExpansion()
     }
 
-    func saveInboxWindowFrame(using frameAutosaveName: NSWindow.FrameAutosaveName) {
-        requestedInboxComposerExpansion = 0
-        applyInboxComposerExpansion()
-        inboxWindow?.saveFrame(usingName: frameAutosaveName)
+    func savePanelWindowFrame(using frameAutosaveName: NSWindow.FrameAutosaveName) {
+        requestedPanelComposerExpansion = 0
+        applyPanelComposerExpansion()
+        panelWindow?.saveFrame(usingName: frameAutosaveName)
     }
 
-    func isInboxWindow(_ window: NSWindow?) -> Bool {
-        window === inboxWindow
+    func isPanelWindow(_ window: NSWindow?) -> Bool {
+        window === panelWindow
     }
 
-    private func applyInboxComposerExpansion() {
-        guard let inboxWindow else { return }
-        let requestedDelta = requestedInboxComposerExpansion - appliedInboxComposerExpansion
+    private func applyPanelComposerExpansion() {
+        guard let panelWindow else { return }
+        let requestedDelta = requestedPanelComposerExpansion - appliedPanelComposerExpansion
         guard abs(requestedDelta) >= 0.5 else { return }
 
-        var frame = inboxWindow.frame
-        let targetHeight = max(inboxWindow.minSize.height, frame.height + requestedDelta)
+        var frame = panelWindow.frame
+        let targetHeight = max(panelWindow.minSize.height, frame.height + requestedDelta)
         let appliedDelta = targetHeight - frame.height
         frame.origin.y -= appliedDelta
         frame.size.height = targetHeight
-        inboxWindow.setFrame(frame, display: inboxWindow.isVisible, animate: false)
-        appliedInboxComposerExpansion = requestedInboxComposerExpansion
+        panelWindow.setFrame(frame, display: panelWindow.isVisible, animate: false)
+        appliedPanelComposerExpansion = requestedPanelComposerExpansion
     }
 
     private func handle(_ action: GlobalHotKeyAction) {
         switch action {
         case .captureSelection:
             captureSelection()
-        case .toggleInbox:
-            toggleInbox()
+        case .togglePanel:
+            togglePanel()
         case .toggleClipboard:
             toggleClipboard()
         }
