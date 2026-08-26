@@ -16,4 +16,9 @@ xcodebuild \
     -destination 'platform=macOS' \
     -derivedDataPath "$derived_data" \
     CODE_SIGNING_ALLOWED=NO \
+    PRODUCT_BUNDLE_IDENTIFIER=world.sree.snipsnap.compilecheck \
+    PRODUCT_NAME=SnipSnapCompileCheck \
+    'INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Compile Check' \
     build
+
+print "Compile check passed. Do not launch this build. Use scripts/run.sh to build and open the Dev app."
