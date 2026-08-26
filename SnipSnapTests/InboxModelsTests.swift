@@ -5,6 +5,79 @@ import UniformTypeIdentifiers
 @testable import SnipSnap
 
 final class InboxModelsTests: XCTestCase {
+    func testReorderTargetUsesEachRowsRealHeight() {
+        let ids = (0..<3).map { _ in UUID() }
+        let frames = [
+            ids[0]: CGRect(x: 0, y: 220, width: 200, height: 40),
+            ids[1]: CGRect(x: 0, y: 100, width: 200, height: 110),
+            ids[2]: CGRect(x: 0, y: 50, width: 200, height: 40)
+        ]
+
+        XCTAssertEqual(
+            InboxReorderPlan.target(
+                atWindowY: 165,
+                orderedIDs: ids,
+                movingIDs: [ids[2]],
+                rowFrames: frames
+            ),
+            .before(ids[1])
+        )
+        XCTAssertEqual(
+            InboxReorderPlan.target(
+                atWindowY: 95,
+                orderedIDs: ids,
+                movingIDs: [ids[2]],
+                rowFrames: frames
+            ),
+            .end
+        )
+    }
+
+    func testReorderTargetOffsetsFrozenFramesAfterScrolling() {
+        let ids = (0..<2).map { _ in UUID() }
+        let frames = [
+            ids[0]: CGRect(x: 0, y: 180, width: 200, height: 40),
+            ids[1]: CGRect(x: 0, y: 120, width: 200, height: 40)
+        ]
+
+        XCTAssertEqual(
+            InboxReorderPlan.target(
+                atWindowY: 265,
+                orderedIDs: ids,
+                movingIDs: [ids[1]],
+                rowFrames: frames,
+                rowFrameOffsetY: 60
+            ),
+            .before(ids[0])
+        )
+    }
+
+    func testReorderPlanMovesToAMiddleSlot() {
+        let ids = (0..<4).map { _ in UUID() }
+
+        XCTAssertEqual(
+            InboxReorderPlan.orderedIDs(
+                from: ids,
+                movingIDs: [ids[0]],
+                target: .before(ids[2])
+            ),
+            [ids[1], ids[0], ids[2], ids[3]]
+        )
+    }
+
+    func testReorderPlanDetectsAnUnchangedDrop() {
+        let ids = (0..<3).map { _ in UUID() }
+
+        XCTAssertEqual(
+            InboxReorderPlan.orderedIDs(
+                from: ids,
+                movingIDs: [ids[1]],
+                target: .before(ids[2])
+            ),
+            ids
+        )
+    }
+
     func testListSnapshotCanKeepTheActiveSectionHeaderWhenItIsEmpty() {
         let section = SnipSnapSection(
             id: UUID(),
@@ -25,66 +98,6 @@ final class InboxModelsTests: XCTestCase {
             [InboxItemGroup(sectionID: section.id, section: section.name, items: [])]
         )
         XCTAssertTrue(snapshot.orderedVisibleIDs.isEmpty)
-    }
-
-    @MainActor
-    func testDropGeometryIsInactiveOutsideAnActiveClipDrag() {
-        let controller = InboxDragController()
-        let payload = ClipDragPayload(ids: [UUID()], text: "Clip")
-
-        XCTAssertFalse(controller.needsDropGeometry)
-
-        controller.beginNativeDrag(payload)
-
-        XCTAssertTrue(controller.needsDropGeometry)
-
-        controller.endNativeDrag(
-            payload,
-            outcome: .cancelled,
-            markDoneAfterExternalCopy: { _ in }
-        )
-
-        XCTAssertFalse(controller.needsDropGeometry)
-    }
-
-    @MainActor
-    func testClipboardDropSessionEnablesGeometryBeforeItHasATarget() {
-        let controller = InboxDragController()
-
-        XCTAssertFalse(controller.needsDropGeometry)
-
-        controller.beginClipboardDropSession()
-
-        XCTAssertTrue(controller.needsDropGeometry)
-
-        controller.endClipboardDropSession()
-
-        XCTAssertFalse(controller.needsDropGeometry)
-    }
-
-    func testDropSurfaceStateRejectsStaleExitTokens() throws {
-        let sectionID = UUID()
-        let firstSurface = SectionDropSurface.entry(.item(UUID()))
-        let secondSurface = SectionDropSurface.entry(.item(UUID()))
-        var state = SectionDropSurfaceState()
-
-        state.activate(sectionID: sectionID, surface: firstSurface)
-        let firstExit = try XCTUnwrap(
-            state.exitToken(sectionID: sectionID, surface: firstSurface)
-        )
-
-        state.activate(sectionID: sectionID, surface: secondSurface)
-
-        XCTAssertFalse(state.owns(firstExit))
-        XCTAssertNil(state.exitToken(sectionID: sectionID, surface: firstSurface))
-
-        let secondExit = try XCTUnwrap(
-            state.exitToken(sectionID: sectionID, surface: secondSurface)
-        )
-        XCTAssertTrue(state.owns(secondExit))
-
-        state.activate(sectionID: sectionID, surface: secondSurface)
-        XCTAssertFalse(state.owns(secondExit))
     }
 
     @MainActor
@@ -109,6 +122,24 @@ final class InboxModelsTests: XCTestCase {
         XCTAssertEqual(items[1].imageComponentsProvider?().count, 0)
         XCTAssertEqual(items[2].draggingFrame.size, NSSize(width: 1, height: 1))
         XCTAssertEqual(items[2].imageComponentsProvider?().count, 0)
+    }
+
+    @MainActor
+    func testMultilineDragPreviewUsesTheExactSourceFrame() {
+        let payload = ClipDragPayload(
+            ids: [UUID()],
+            text: "First line\nSecond line"
+        )
+        let sourceFrame = NSRect(x: 18, y: 42, width: 316, height: 94)
+
+        let items = ClipDragExportPackage(payload: payload).draggingItems(
+            at: sourceFrame.origin,
+            scale: 2,
+            colorScheme: .light,
+            sourceFrame: sourceFrame
+        )
+
+        XCTAssertEqual(items.first?.draggingFrame, sourceFrame)
     }
 
     func testMixedClipDragPublishesMarkdownThenEveryAttachment() throws {
@@ -246,13 +277,6 @@ final class InboxModelsTests: XCTestCase {
         return try XCTUnwrap(
             package.pasteboardWriters().first as? NSFilePromiseProvider
         )
-    }
-
-    func testOnlySuccessfulExternalCopyMarksDraggedClipsDone() {
-        XCTAssertTrue(ExternalClipDragCompletion.shouldMarkDone(after: .copy))
-        XCTAssertFalse(ExternalClipDragCompletion.shouldMarkDone(after: .move))
-        XCTAssertFalse(ExternalClipDragCompletion.shouldMarkDone(after: .cancel))
-        XCTAssertFalse(ExternalClipDragCompletion.shouldMarkDone(after: .forbidden))
     }
 
     func testPinnedHeaderGlassRequiresRealScrollMovement() {
@@ -466,179 +490,6 @@ final class InboxModelsTests: XCTestCase {
                 ids: [second.id, first.id],
                 text: "Shown second\n\n---\n\nShown first\nSource: Safari — Reference\nURL: https://example.com",
                 previewSourceLabel: "2 clips"
-            )
-        )
-    }
-
-    func testClipDragListSlotsKeepOriginsUntilAnExactDestinationExists() {
-        let first = UUID()
-        let moving = UUID()
-        let last = UUID()
-        let itemIDs = [first, moving, last]
-
-        XCTAssertEqual(
-            ClipDragListLayout.slots(
-                itemIDs: itemIDs,
-                draggingIDs: [moving],
-                destinationBeforeID: nil,
-                showsDestinationGap: false,
-                preservesOriginGaps: true
-            ),
-            [.item(first), .originGap(moving), .item(last)]
-        )
-
-        XCTAssertEqual(
-            ClipDragListLayout.slots(
-                itemIDs: itemIDs,
-                draggingIDs: [moving],
-                destinationBeforeID: last,
-                showsDestinationGap: true,
-                preservesOriginGaps: false
-            ),
-            [.item(first), .destinationGap, .item(last)]
-        )
-
-        XCTAssertEqual(
-            ClipDragListLayout.slots(
-                itemIDs: itemIDs,
-                draggingIDs: [moving],
-                destinationBeforeID: nil,
-                showsDestinationGap: false,
-                preservesOriginGaps: false
-            ),
-            [.item(first), .item(last)]
-        )
-    }
-
-    func testClipDragListSlotsKeepEachNoncontiguousOrigin() {
-        let ids = (0..<4).map { _ in UUID() }
-
-        XCTAssertEqual(
-            ClipDragListLayout.slots(
-                itemIDs: ids,
-                draggingIDs: [ids[0], ids[2]],
-                destinationBeforeID: nil,
-                showsDestinationGap: false,
-                preservesOriginGaps: true
-            ),
-            [
-                .originGap(ids[0]),
-                .item(ids[1]),
-                .originGap(ids[2]),
-                .item(ids[3])
-            ]
-        )
-    }
-
-    func testDropPlannerAllowsPreciseSameSectionPlacementWithoutFilters() {
-        let first = dropItem(id: 1, createdAt: 300, section: "Review", manualPosition: 0)
-        let moving = dropItem(id: 2, createdAt: 200, section: "Review", manualPosition: 1)
-        let last = dropItem(id: 3, createdAt: 100, section: "Review", manualPosition: 2)
-
-        XCTAssertEqual(
-            ClipDropPlanner.plan(
-                payloadIDs: [moving.id],
-                items: [first, moving, last],
-                targetSectionID: sectionID("Review"),
-                pointerBeforeID: last.id,
-                isOverHeading: false,
-                sortMode: .manual,
-                filtersActive: false
-            ),
-            ClipDropPlan(
-                sectionID: sectionID("Review"),
-                beforeID: last.id,
-                behavior: .exact,
-                showsInsertion: true
-            )
-        )
-    }
-
-    func testDropPlannerBlocksFilteredSameSectionPlacement() {
-        let moving = dropItem(id: 1, createdAt: 200, section: "Review", manualPosition: 0)
-        let other = dropItem(id: 2, createdAt: 100, section: "Review", manualPosition: 1)
-
-        XCTAssertNil(
-            ClipDropPlanner.plan(
-                payloadIDs: [moving.id],
-                items: [moving, other],
-                targetSectionID: sectionID("Review"),
-                pointerBeforeID: other.id,
-                isOverHeading: false,
-                sortMode: .manual,
-                filtersActive: true
-            )
-        )
-    }
-
-    func testDropPlannerSendsFilteredManualSectionMoveToTop() {
-        let moving = dropItem(id: 1, createdAt: 100, section: "Inbox", manualPosition: 0)
-        let first = dropItem(id: 2, createdAt: 200, section: "Review", manualPosition: 0)
-        let last = dropItem(id: 3, createdAt: 300, section: "Review", manualPosition: 1)
-
-        XCTAssertEqual(
-            ClipDropPlanner.plan(
-                payloadIDs: [moving.id],
-                items: [moving, last, first],
-                targetSectionID: sectionID("Review"),
-                pointerBeforeID: last.id,
-                isOverHeading: false,
-                sortMode: .manual,
-                filtersActive: true
-            ),
-            ClipDropPlan(
-                sectionID: sectionID("Review"),
-                beforeID: first.id,
-                behavior: .sectionTop,
-                showsInsertion: false
-            )
-        )
-    }
-
-    func testDropPlannerShowsTheChronologicalDestinationForOneClip() {
-        let newest = dropItem(id: 1, createdAt: 300, section: "Review", manualPosition: 0)
-        let moving = dropItem(id: 2, createdAt: 200, section: "Inbox", manualPosition: 0)
-        let oldest = dropItem(id: 3, createdAt: 100, section: "Review", manualPosition: 1)
-
-        XCTAssertEqual(
-            ClipDropPlanner.plan(
-                payloadIDs: [moving.id],
-                items: [oldest, moving, newest],
-                targetSectionID: sectionID("Review"),
-                pointerBeforeID: nil,
-                isOverHeading: false,
-                sortMode: .chronological,
-                filtersActive: false
-            ),
-            ClipDropPlan(
-                sectionID: sectionID("Review"),
-                beforeID: oldest.id,
-                behavior: .chronological,
-                showsInsertion: true
-            )
-        )
-    }
-
-    func testDropPlannerOmitsPreciseInsertionForChronologicalBatchSectionMove() {
-        let firstMoving = dropItem(id: 1, createdAt: 250, section: "Inbox", manualPosition: 0)
-        let secondMoving = dropItem(id: 2, createdAt: 150, section: "Inbox", manualPosition: 1)
-        let target = dropItem(id: 3, createdAt: 200, section: "Review", manualPosition: 0)
-
-        XCTAssertEqual(
-            ClipDropPlanner.plan(
-                payloadIDs: [firstMoving.id, secondMoving.id],
-                items: [firstMoving, target, secondMoving],
-                targetSectionID: sectionID("Review"),
-                pointerBeforeID: target.id,
-                isOverHeading: false,
-                sortMode: .chronological,
-                filtersActive: false
-            ),
-            ClipDropPlan(
-                sectionID: sectionID("Review"),
-                beforeID: nil,
-                behavior: .chronological,
-                showsInsertion: false
             )
         )
     }
@@ -914,146 +765,6 @@ final class InboxModelsTests: XCTestCase {
         XCTAssertEqual(snapshot.orderedVisibleIDs, [inbox.id, secondReview.id, firstReview.id])
         XCTAssertEqual(snapshot.dragPayload(for: secondReview).ids, [inbox.id, secondReview.id])
         XCTAssertEqual(snapshot.dragPayload(for: firstReview).ids, [firstReview.id])
-    }
-
-    @MainActor
-    func testListGeometrySupportsDropPlacementWithoutWindowInputRules() {
-        let first = dropItem(id: 1, createdAt: 100, section: "Review", manualPosition: 0)
-        let second = dropItem(id: 2, createdAt: 200, section: "Review", manualPosition: 1)
-        let geometry = InboxListGeometry()
-        geometry.record(CGRect(x: 10, y: 120, width: 200, height: 40), for: .row(first.id))
-        geometry.record(CGRect(x: 10, y: 180, width: 200, height: 60), for: .row(second.id))
-        geometry.record(
-            CGRect(x: 10, y: 80, width: 200, height: 30),
-            for: .heading(sectionID("Review"))
-        )
-        geometry.record(
-            CGRect(x: 10, y: 110, width: 200, height: 40),
-            for: .dropSurface(.item(first.id))
-        )
-        geometry.record(
-            CGRect(x: 10, y: 120, width: 200, height: 40),
-            for: .entry(.item(first.id))
-        )
-        geometry.record(
-            CGRect(x: 10, y: 180, width: 200, height: 60),
-            for: .entry(.item(second.id))
-        )
-        geometry.record(
-            CGRect(x: 10, y: 250, width: 200, height: 16),
-            for: .sectionFooter(sectionID("Review"))
-        )
-        geometry.updateScroll(
-            .init(visibleOrigin: CGPoint(x: 0, y: 100), contentHeight: 500, viewportHeight: 200)
-        )
-
-        XCTAssertEqual(
-            geometry.contentPoint(fromViewportPoint: CGPoint(x: 20, y: 30)),
-            CGPoint(x: 20, y: 130)
-        )
-        XCTAssertEqual(
-            geometry.viewportPoint(fromContentPoint: CGPoint(x: 20, y: 130)),
-            CGPoint(x: 20, y: 30)
-        )
-        XCTAssertEqual(
-            geometry.insertionID(atContentPoint: CGPoint(x: 20, y: 170), among: [first, second]),
-            second.id
-        )
-        XCTAssertEqual(geometry.dragGapHeight(for: [first.id, second.id]), 108)
-        XCTAssertEqual(
-            geometry.contentPoint(
-                fromLocalPoint: CGPoint(x: 5, y: 6),
-                in: .heading(sectionID("Review"))
-            ),
-            CGPoint(x: 15, y: 86)
-        )
-        XCTAssertEqual(
-            geometry.contentPoint(
-                fromLocalPoint: CGPoint(x: 5, y: 6),
-                in: .dropSurface(.item(first.id))
-            ),
-            CGPoint(x: 15, y: 116)
-        )
-        XCTAssertEqual(
-            geometry.sectionBodyFrame(
-                sectionID: sectionID("Review"),
-                rowIDs: [first.id, second.id],
-                entryIDs: [.item(first.id), .item(second.id)]
-            ),
-            CGRect(x: 10, y: 120, width: 200, height: 120)
-        )
-        XCTAssertTrue(
-            geometry.hasPlacementFrames(
-                in: sectionID("Review"),
-                among: [first, second]
-            )
-        )
-
-        geometry.updateScroll(
-            .init(visibleOrigin: CGPoint(x: 0, y: 140), contentHeight: 500, viewportHeight: 200)
-        )
-        XCTAssertEqual(
-            geometry.contentPoint(fromViewportPoint: CGPoint(x: 20, y: 10)),
-            CGPoint(x: 20, y: 150)
-        )
-
-        geometry.remove(.row(first.id))
-        XCTAssertNil(geometry.frame(for: .row(first.id)))
-
-        geometry.record(
-            CGRect(x: 10, y: 180, width: 200, height: 60),
-            for: .dropSurface(.item(second.id))
-        )
-        geometry.record(
-            CGRect(x: 10, y: 180, width: 200, height: 60),
-            for: .entry(.originGap(second.id))
-        )
-
-        geometry.retainItems([first.id])
-
-        XCTAssertNil(geometry.frame(for: .row(second.id)))
-        XCTAssertNil(geometry.frame(for: .entry(.item(second.id))))
-        XCTAssertNil(geometry.frame(for: .entry(.originGap(second.id))))
-        XCTAssertNil(geometry.frame(for: .dropSurface(.item(second.id))))
-    }
-
-    @MainActor
-    func testListGeometryUsesHeaderForAnEmptySectionDropSurface() {
-        let geometry = InboxListGeometry()
-        let sectionID = sectionID("Empty")
-        geometry.record(
-            CGRect(x: 10, y: 80, width: 200, height: 30),
-            for: .heading(sectionID)
-        )
-
-        XCTAssertTrue(geometry.hasPlacementFrames(in: sectionID, among: []))
-        XCTAssertNil(
-            geometry.sectionBodyFrame(
-                sectionID: sectionID,
-                rowIDs: [],
-                entryIDs: []
-            )
-        )
-    }
-
-    @MainActor
-    func testListGeometryIncludesSyntheticEntriesInSectionHighlight() {
-        let geometry = InboxListGeometry()
-        let sectionID = sectionID("Review")
-        let gapID = ClipListEntryID.destinationGap(sectionID)
-        geometry.record(
-            CGRect(x: 10, y: 80, width: 200, height: 72),
-            for: .entry(gapID)
-        )
-
-        XCTAssertEqual(
-            geometry.sectionBodyFrame(
-                sectionID: sectionID,
-                rowIDs: [],
-                entryIDs: [gapID]
-            ),
-            CGRect(x: 10, y: 80, width: 200, height: 72)
-        )
     }
 
     private func dropItem(

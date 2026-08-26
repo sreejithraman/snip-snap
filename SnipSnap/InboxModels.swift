@@ -58,53 +58,113 @@ struct ClipDragPayload: Codable, Equatable, Sendable, Transferable {
     }
 }
 
-enum ExternalClipDragCompletion {
-    static func shouldMarkDone(after operation: DropOperation) -> Bool {
-        operation == .copy
-    }
-}
-
-enum ClipDragListSlot: Equatable {
-    case item(UUID)
-    case originGap(UUID)
-    case destinationGap
-}
-
-enum ClipDragListLayout {
-    static func slots(
-        itemIDs: [UUID],
-        draggingIDs: Set<UUID>,
-        destinationBeforeID: UUID?,
-        showsDestinationGap: Bool,
-        preservesOriginGaps: Bool
-    ) -> [ClipDragListSlot] {
-        guard !draggingIDs.isEmpty else { return itemIDs.map(ClipDragListSlot.item) }
-
-        if preservesOriginGaps {
-            return itemIDs.map { id in
-                draggingIDs.contains(id) ? .originGap(id) : .item(id)
-            }
-        }
-
-        var slots = itemIDs
-            .filter { !draggingIDs.contains($0) }
-            .map(ClipDragListSlot.item)
-        guard showsDestinationGap else { return slots }
-
-        let insertionIndex = destinationBeforeID.flatMap { beforeID in
-            slots.firstIndex(of: .item(beforeID))
-        } ?? slots.endIndex
-        slots.insert(.destinationGap, at: insertionIndex)
-        return slots
-    }
-}
-
 struct InboxItemGroup: Identifiable, Equatable {
     let sectionID: UUID
     let section: String
     let items: [CaptureItem]
 
     var id: UUID { sectionID }
+}
+
+enum InboxReorderTarget: Equatable {
+    case before(UUID)
+    case end
+
+    var beforeID: UUID? {
+        switch self {
+        case .before(let id): id
+        case .end: nil
+        }
+    }
+}
+
+enum InboxReorderPlan {
+    static func target(
+        atWindowY windowY: CGFloat,
+        orderedIDs: [UUID],
+        movingIDs: Set<UUID>,
+        rowFrames: [UUID: CGRect],
+        rowFrameOffsetY: CGFloat = 0
+    ) -> InboxReorderTarget {
+        let candidates = orderedIDs.compactMap { id -> (UUID, CGRect)? in
+            guard !movingIDs.contains(id), let frame = rowFrames[id] else { return nil }
+            return (id, frame.offsetBy(dx: 0, dy: rowFrameOffsetY))
+        }
+        .sorted { $0.1.midY > $1.1.midY }
+        if let candidate = candidates.first(where: { windowY > $0.1.midY }) {
+            return .before(candidate.0)
+        }
+        return .end
+    }
+
+    static func orderedIDs(
+        from originalIDs: [UUID],
+        movingIDs: [UUID],
+        target: InboxReorderTarget
+    ) -> [UUID]? {
+        let orderedMovingIDs = movingIDs.filter(originalIDs.contains)
+        guard orderedMovingIDs.count == movingIDs.count else { return nil }
+        let movingSet = Set(orderedMovingIDs)
+        var result = originalIDs.filter { !movingSet.contains($0) }
+        let destination = target.beforeID.flatMap(result.firstIndex(of:)) ?? result.endIndex
+        result.insert(contentsOf: orderedMovingIDs, at: destination)
+        return result
+    }
+}
+
+enum InboxPinnedHeaderGlass {
+    static func hasScrolled(visibleOriginY: CGFloat) -> Bool {
+        visibleOriginY > 0.5
+    }
+
+    static func isVisible(isPinned: Bool, hasScrolled: Bool) -> Bool {
+        isPinned && hasScrolled
+    }
+
+    static func updatedSections(
+        _ sections: Set<UUID>,
+        sectionID: UUID,
+        isPinned: Bool
+    ) -> Set<UUID>? {
+        guard sections.contains(sectionID) != isPinned else { return nil }
+        var updated = sections
+        if isPinned {
+            updated.insert(sectionID)
+        } else {
+            updated.remove(sectionID)
+        }
+        return updated
+    }
+}
+
+enum InboxAddedClipRevealDestination: Equatable {
+    case scrollViewTop
+}
+
+struct InboxAddedClipRevealState {
+    private var pendingID: UUID?
+
+    mutating func record(
+        clipID: UUID?,
+        wasAtTop: Bool,
+        isVisibleInModel: Bool,
+        visibleIDs: [UUID]
+    ) -> InboxAddedClipRevealDestination? {
+        guard wasAtTop, let clipID, isVisibleInModel else {
+            pendingID = nil
+            return nil
+        }
+        pendingID = clipID
+        return nextDestination(visibleIDs: visibleIDs)
+    }
+
+    mutating func nextDestination(
+        visibleIDs: [UUID]
+    ) -> InboxAddedClipRevealDestination? {
+        guard let pendingID, visibleIDs.contains(pendingID) else { return nil }
+        self.pendingID = nil
+        return .scrollViewTop
+    }
 }
 
 struct InboxListSnapshot {
@@ -160,88 +220,6 @@ struct InboxListSnapshot {
             guard !items.isEmpty || section.id == keepsEmptySectionID else { return nil }
             return InboxItemGroup(sectionID: section.id, section: section.name, items: items)
         }
-    }
-}
-
-enum ClipDropBehavior: Equatable {
-    case exact
-    case sectionTop
-    case chronological
-}
-
-struct ClipDropPlan: Equatable {
-    let sectionID: UUID
-    let beforeID: UUID?
-    let behavior: ClipDropBehavior
-    let showsInsertion: Bool
-}
-
-enum ClipDropPlanner {
-    static func plan(
-        payloadIDs: [UUID],
-        items: [CaptureItem],
-        targetSectionID: UUID,
-        pointerBeforeID: UUID?,
-        isOverHeading: Bool,
-        sortMode: ClipSortMode,
-        filtersActive: Bool
-    ) -> ClipDropPlan? {
-        let movingIDs = Set(payloadIDs)
-        guard !movingIDs.isEmpty else { return nil }
-
-        let movingItems = items.filter { movingIDs.contains($0.id) }
-        guard movingItems.count == movingIDs.count else { return nil }
-
-        let sourceSections = Set(movingItems.map(\.sectionID))
-        let sameSection = sourceSections.count == 1 && sourceSections.first == targetSectionID
-        let targetItems = CaptureItem.sorted(
-            items.filter { $0.sectionID == targetSectionID && !movingIDs.contains($0.id) },
-            by: sortMode
-        )
-
-        if !filtersActive && (sortMode == .manual || sameSection) {
-            let validPointerID = pointerBeforeID.flatMap { candidate in
-                targetItems.contains(where: { $0.id == candidate }) ? candidate : nil
-            }
-            return ClipDropPlan(
-                sectionID: targetSectionID,
-                beforeID: isOverHeading ? targetItems.first?.id : validPointerID,
-                behavior: .exact,
-                showsInsertion: true
-            )
-        }
-
-        if sortMode == .manual {
-            guard !sameSection else { return nil }
-            return ClipDropPlan(
-                sectionID: targetSectionID,
-                beforeID: targetItems.first?.id,
-                behavior: .sectionTop,
-                showsInsertion: false
-            )
-        }
-
-        guard !sameSection else { return nil }
-        let beforeID = movingItems.count == 1
-            ? chronologicalInsertionID(for: movingItems[0], in: targetItems)
-            : nil
-        return ClipDropPlan(
-            sectionID: targetSectionID,
-            beforeID: beforeID,
-            behavior: .chronological,
-            showsInsertion: movingItems.count == 1
-        )
-    }
-
-    private static func chronologicalInsertionID(
-        for movingItem: CaptureItem,
-        in targetItems: [CaptureItem]
-    ) -> UUID? {
-        let ordered = CaptureItem.sorted(targetItems + [movingItem], by: .chronological)
-        guard let movingIndex = ordered.firstIndex(where: { $0.id == movingItem.id }) else {
-            return nil
-        }
-        return ordered.dropFirst(movingIndex + 1).first(where: { $0.id != movingItem.id })?.id
     }
 }
 
