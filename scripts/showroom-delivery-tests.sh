@@ -25,12 +25,15 @@ abort unless device.fetch("verify") == ["device-verify"]
 [[ ! -d "$SNIP_SNAP_DEV_STATE_DIR/claims" ]]
 
 legacy_name="SnipSnap""Review"
-if /usr/bin/grep -F -- \
-    "$legacy_name" \
+legacy_bundle_id="world.sree.snipsnap.""review"
+if /usr/bin/grep -F \
+    -e "$legacy_name" \
+    -e "$legacy_bundle_id" \
+    -- \
     "$script_dir/dev-app.sh" \
     "$script_dir/run.sh" \
     "$script_dir/showroom-delivery.sh" >/dev/null; then
-    print -u2 "The old Showroom app identity returned."
+    print -u2 "An old Showroom identity returned."
     exit 1
 fi
 /usr/bin/grep -F -- \
