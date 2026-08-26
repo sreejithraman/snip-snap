@@ -328,13 +328,18 @@ struct GlobalShortcutConfiguration: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case captureSelection
         case togglePanel
+        // TODO: Remove after the 1.0 migration window.
+        case legacyToggleInbox = "toggleInbox"
         case toggleClipboard
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         captureSelection = try container.decode(ShortcutTrigger.self, forKey: .captureSelection)
-        togglePanel = try container.decode(ShortcutTrigger.self, forKey: .togglePanel)
+        togglePanel = try container.decodeIfPresent(
+            ShortcutTrigger.self,
+            forKey: .togglePanel
+        ) ?? container.decode(ShortcutTrigger.self, forKey: .legacyToggleInbox)
         toggleClipboard = try container.decodeIfPresent(
             ShortcutTrigger.self,
             forKey: .toggleClipboard

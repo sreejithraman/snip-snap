@@ -41,6 +41,9 @@ final class AppModel: ObservableObject {
     static let activeListDefaultsKey = "activeListID"
     static let listDraftsDefaultsKey = "listDrafts"
     static let appearanceDefaultsKey = "appAppearance"
+    private static let legacySortModeDefaultsKey = "clipSortMode"
+    private static let legacyActiveListDefaultsKey = "activeSectionID"
+    private static let legacyListDraftsDefaultsKey = "sectionDrafts"
 
     @Published private(set) var snips: [Snip] = []
     @Published private(set) var lists: [SnipList] = [.inbox]
@@ -122,6 +125,7 @@ final class AppModel: ObservableObject {
         defaults: UserDefaults = .standard,
         clipboardHistory: ClipboardHistory? = nil
     ) {
+        Self.migrateRenamedDefaults(in: defaults)
         self.defaults = defaults
         composerDrafts = ComposerDraftStore(
             defaults: defaults,
@@ -151,6 +155,20 @@ final class AppModel: ObservableObject {
             }
         }
         Task { await reload() }
+    }
+
+    private static func migrateRenamedDefaults(in defaults: UserDefaults) {
+        // TODO: Remove legacy defaults migration after the 1.0 migration window.
+        let renamedKeys = [
+            (legacySortModeDefaultsKey, sortModeDefaultsKey),
+            (legacyActiveListDefaultsKey, activeListDefaultsKey),
+            (legacyListDraftsDefaultsKey, listDraftsDefaultsKey),
+        ]
+        for (oldKey, newKey) in renamedKeys
+        where defaults.object(forKey: newKey) == nil {
+            guard let value = defaults.object(forKey: oldKey) else { continue }
+            defaults.set(value, forKey: newKey)
+        }
     }
 
     func reload() async {
@@ -216,7 +234,7 @@ final class AppModel: ObservableObject {
         attachmentURLs: [URL] = [],
         listID: UUID? = nil,
         requestID: UUID = UUID()
-    ) async -> Result<AddOutcome, Error> {
+    ) async -> Result<SnipAddOutcome, Error> {
         await withCommandLock {
             let result = await performMutationUnlocked(clearingHistory: false) {
                 try await repository.add(

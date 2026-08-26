@@ -6,7 +6,7 @@
 	objectVersion = 77;
 	objects = {
 
-/* Begin PBXBuildFile list */
+/* Begin PBXBuildFile section */
 		100000000000000000000001 /* SnipSnapApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000001 /* SnipSnapApp.swift */; };
 		100000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000002 /* ContentView.swift */; };
 		100000000000000000000003 /* AppWindowDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* AppWindowDefaults.swift */; };
@@ -58,9 +58,9 @@
 		100000000000000000000036 /* PanelMultilineTextInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003F /* PanelMultilineTextInput.swift */; };
 		100000000000000000000037 /* SnipListIconCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000040 /* SnipListIconCatalog.swift */; };
 		2230FA4B303C74F2008B20D5 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 2230FA4A303C74F2008B20D5 /* Sparkle */; };
-/* End PBXBuildFile list */
+/* End PBXBuildFile section */
 
-/* Begin PBXContainerItemProxy list */
+/* Begin PBXContainerItemProxy section */
 		300000000000000000000001 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 400000000000000000000001 /* Project object */;
@@ -68,9 +68,9 @@
 			remoteGlobalIDString = 500000000000000000000001;
 			remoteInfo = SnipSnap;
 		};
-/* End PBXContainerItemProxy list */
+/* End PBXContainerItemProxy section */
 
-/* Begin PBXFileReference list */
+/* Begin PBXFileReference section */
 		200000000000000000000001 /* SnipSnapApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipSnapApp.swift; sourceTree = "<group>"; };
 		200000000000000000000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		200000000000000000000003 /* AppWindowDefaults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppWindowDefaults.swift; sourceTree = "<group>"; };
@@ -124,9 +124,9 @@
 		20000000000000000000003E /* DevelopmentBuildBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevelopmentBuildBadge.swift; sourceTree = "<group>"; };
 		20000000000000000000003F /* PanelMultilineTextInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelMultilineTextInput.swift; sourceTree = "<group>"; };
 		200000000000000000000040 /* SnipListIconCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListIconCatalog.swift; sourceTree = "<group>"; };
-/* End PBXFileReference list */
+/* End PBXFileReference section */
 
-/* Begin PBXFrameworksBuildPhase list */
+/* Begin PBXFrameworksBuildPhase section */
 		600000000000000000000001 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -142,9 +142,9 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-/* End PBXFrameworksBuildPhase list */
+/* End PBXFrameworksBuildPhase section */
 
-/* Begin PBXGroup list */
+/* Begin PBXGroup section */
 		700000000000000000000001 = {
 			isa = PBXGroup;
 			children = (
@@ -228,9 +228,9 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-/* End PBXGroup list */
+/* End PBXGroup section */
 
-/* Begin PBXNativeTarget list */
+/* Begin PBXNativeTarget section */
 		500000000000000000000001 /* SnipSnap */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 800000000000000000000001 /* Build configuration list for PBXNativeTarget "SnipSnap" */;
@@ -271,9 +271,9 @@
 			productReference = 200000000000000000000006 /* SnipSnapTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-/* End PBXNativeTarget list */
+/* End PBXNativeTarget section */
 
-/* Begin PBXProject list */
+/* Begin PBXProject section */
 		400000000000000000000001 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
@@ -311,9 +311,9 @@
 				500000000000000000000002 /* SnipSnapTests */,
 			);
 		};
-/* End PBXProject list */
+/* End PBXProject section */
 
-/* Begin PBXResourcesBuildPhase list */
+/* Begin PBXResourcesBuildPhase section */
 		A00000000000000000000001 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -329,9 +329,9 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-/* End PBXResourcesBuildPhase list */
+/* End PBXResourcesBuildPhase section */
 
-/* Begin PBXSourcesBuildPhase list */
+/* Begin PBXSourcesBuildPhase section */
 		900000000000000000000001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -395,17 +395,17 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-/* End PBXSourcesBuildPhase list */
+/* End PBXSourcesBuildPhase section */
 
-/* Begin PBXTargetDependency list */
+/* Begin PBXTargetDependency section */
 		B00000000000000000000001 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 500000000000000000000001 /* SnipSnap */;
 			targetProxy = 300000000000000000000001 /* PBXContainerItemProxy */;
 		};
-/* End PBXTargetDependency list */
+/* End PBXTargetDependency section */
 
-/* Begin XCBuildConfiguration list */
+/* Begin XCBuildConfiguration section */
 		C00000000000000000000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -606,9 +606,9 @@
 			};
 			name = Release;
 		};
-/* End XCBuildConfiguration list */
+/* End XCBuildConfiguration section */
 
-/* Begin XCConfigurationList list */
+/* Begin XCConfigurationList section */
 		800000000000000000000001 /* Build configuration list for PBXNativeTarget "SnipSnap" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -636,9 +636,9 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-/* End XCConfigurationList list */
+/* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference list */
+/* Begin XCRemoteSwiftPackageReference section */
 		2230FA49303C74F2008B20D5 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/sparkle-project/Sparkle";
@@ -647,15 +647,15 @@
 				minimumVersion = 2.9.6;
 			};
 		};
-/* End XCRemoteSwiftPackageReference list */
+/* End XCRemoteSwiftPackageReference section */
 
-/* Begin XCSwiftPackageProductDependency list */
+/* Begin XCSwiftPackageProductDependency section */
 		2230FA4A303C74F2008B20D5 /* Sparkle */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 2230FA49303C74F2008B20D5 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
 		};
-/* End XCSwiftPackageProductDependency list */
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 400000000000000000000001 /* Project object */;
 }

@@ -145,6 +145,8 @@ struct Snip: Identifiable, Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, requestID, createdAt, updatedAt, content, origin, source, listID, isDone
+        // TODO: Remove after the 1.0 migration window.
+        case legacySectionID = "sectionID"
         case manualPosition, attachments
     }
 
@@ -157,9 +159,25 @@ struct Snip: Identifiable, Codable, Equatable, Sendable {
         content = try container.decode(String.self, forKey: .content)
         origin = try container.decode(SnipOrigin.self, forKey: .origin)
         source = try container.decodeIfPresent(SnipSource.self, forKey: .source)
-        listID = try container.decode(UUID.self, forKey: .listID)
+        listID = try container.decodeIfPresent(UUID.self, forKey: .listID)
+            ?? container.decode(UUID.self, forKey: .legacySectionID)
         isDone = try container.decode(Bool.self, forKey: .isDone)
         manualPosition = try container.decode(Int64.self, forKey: .manualPosition)
         attachments = try container.decode([SnipAttachment].self, forKey: .attachments)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(requestID, forKey: .requestID)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encode(content, forKey: .content)
+        try container.encode(origin, forKey: .origin)
+        try container.encodeIfPresent(source, forKey: .source)
+        try container.encode(listID, forKey: .listID)
+        try container.encode(isDone, forKey: .isDone)
+        try container.encode(manualPosition, forKey: .manualPosition)
+        try container.encode(attachments, forKey: .attachments)
     }
 }

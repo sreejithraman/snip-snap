@@ -3,6 +3,57 @@ import Foundation
 @testable import SnipSnap
 
 final class SnipRepositoryTests: StoreBackedTestCase {
+    func testLegacyItemStoreMovesToSnipsAndKeepsItsData() async throws {
+        let snipsURL = try storeURL()
+        let legacyURL = snipsURL.deletingLastPathComponent()
+            .appendingPathComponent("items.json")
+        let id = UUID()
+        let requestID = UUID()
+        let legacyDocument: [String: Any] = [
+            "version": 4,
+            "items": [[
+                "id": id.uuidString,
+                "requestID": requestID.uuidString,
+                "createdAt": "2026-08-26T12:00:00Z",
+                "updatedAt": "2026-08-26T12:00:00Z",
+                "content": "Saved before the rename",
+                "origin": "quickEntry",
+                "sectionID": SnipList.inboxID.uuidString,
+                "isDone": false,
+                "manualPosition": 0,
+                "attachments": [],
+            ]],
+            "sections": [[
+                "id": SnipList.inboxID.uuidString,
+                "name": "Inbox",
+                "systemImage": "tray.fill",
+                "position": 0,
+            ]],
+        ]
+        try JSONSerialization.data(
+            withJSONObject: legacyDocument,
+            options: [.prettyPrinted, .sortedKeys]
+        ).write(to: legacyURL)
+
+        let repository = try SnipRepository(fileURL: snipsURL)
+        let snips = await repository.allSnips()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: snipsURL.path))
+        XCTAssertEqual(snips.map(\.id), [id])
+        XCTAssertEqual(snips.map(\.requestID), [requestID])
+        XCTAssertEqual(snips.map(\.content), ["Saved before the rename"])
+
+        let migratedDocument = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: snipsURL)) as? [String: Any]
+        )
+        XCTAssertEqual(migratedDocument["version"] as? Int, SnipRepository.currentVersion)
+        XCTAssertNotNil(migratedDocument["snips"])
+        XCTAssertNotNil(migratedDocument["lists"])
+        XCTAssertNil(migratedDocument["items"])
+        XCTAssertNil(migratedDocument["sections"])
+    }
+
     func testStoreReopensWithSavedSnips() async throws {
         let url = try storeURL()
         let firstRepository = try SnipRepository(fileURL: url)

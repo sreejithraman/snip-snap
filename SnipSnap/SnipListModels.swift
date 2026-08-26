@@ -60,7 +60,7 @@ struct SnipDragPayload: Codable, Equatable, Sendable, Transferable {
 
 struct SnipListGroup: Identifiable, Equatable {
     let listID: UUID
-    let list: String
+    let listName: String
     let snips: [Snip]
 
     var id: UUID { listID }
@@ -218,7 +218,7 @@ struct SnipListSnapshot {
         return lists.compactMap { list in
             let snips = grouped[list.id] ?? []
             guard !snips.isEmpty || list.id == keepsEmptyListID else { return nil }
-            return SnipListGroup(listID: list.id, list: list.name, snips: snips)
+            return SnipListGroup(listID: list.id, listName: list.name, snips: snips)
         }
     }
 }

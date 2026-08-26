@@ -209,7 +209,7 @@ struct SnipListView: View {
                             }
                         } header: {
                             PanelListHeader(
-                                group.list,
+                                group.listName,
                                 showsGlass: hasScrolledFromTop
                             )
                             .background {
@@ -443,7 +443,7 @@ struct SnipListView: View {
                 }
                 .padding(.bottom, PanelListMetrics.rowSpacing)
                 .id(snip.id)
-                .listRowInsets(PanelListMetrics.inboxRowInsets)
+                .listRowInsets(PanelListMetrics.rowInsets)
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
                 .background {
@@ -753,7 +753,7 @@ struct SnipListView: View {
             selection: model.selection,
             anchor: state.anchor,
             focus: state.focus,
-            modifiers: inboxSelectionModifiers
+            modifiers: currentSelectionModifiers
         )
         state.apply(update, to: model)
         focusedTarget = .list
@@ -800,7 +800,7 @@ struct SnipListView: View {
         return .handled
     }
 
-    private var inboxSelectionModifiers: SnipSelection.Modifiers {
+    private var currentSelectionModifiers: SnipSelection.Modifiers {
         var modifiers: SnipSelection.Modifiers = []
         if selectionModifiers.contains(.command) { modifiers.insert(.command) }
         if selectionModifiers.contains(.shift) { modifiers.insert(.shift) }

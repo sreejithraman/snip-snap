@@ -56,7 +56,7 @@ enum PanelListMetrics {
     static let verticalContentInset: CGFloat = 12
     static let compactVerticalContentInset: CGFloat = 10
 
-    static let inboxRowInsets = EdgeInsets(
+    static let rowInsets = EdgeInsets(
         top: 0,
         leading: relatedListInset,
         bottom: 0,

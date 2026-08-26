@@ -95,7 +95,7 @@ final class SnipListModelsTests: XCTestCase {
 
         XCTAssertEqual(
             snapshot.groups,
-            [SnipListGroup(listID: list.id, list: list.name, snips: [])]
+            [SnipListGroup(listID: list.id, listName: list.name, snips: [])]
         )
         XCTAssertTrue(snapshot.orderedVisibleIDs.isEmpty)
     }
@@ -761,7 +761,7 @@ final class SnipListModelsTests: XCTestCase {
             selection: [secondReview.id, inbox.id]
         )
 
-        XCTAssertEqual(snapshot.groups.map(\.list), ["Inbox", "Review"])
+        XCTAssertEqual(snapshot.groups.map(\.listName), ["Inbox", "Review"])
         XCTAssertEqual(snapshot.orderedVisibleIDs, [inbox.id, secondReview.id, firstReview.id])
         XCTAssertEqual(snapshot.dragPayload(for: secondReview).ids, [inbox.id, secondReview.id])
         XCTAssertEqual(snapshot.dragPayload(for: firstReview).ids, [firstReview.id])

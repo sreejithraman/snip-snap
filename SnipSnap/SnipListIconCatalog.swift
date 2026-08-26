@@ -8,7 +8,9 @@ struct SnipListIconCategory: Identifiable {
 }
 
 enum SnipListIconOptions {
-    static let recentsDefaultsKey = "recentListIcons"
+    // TODO: Rename after the 1.0 migration window.
+    // Keep the original key so upgrades retain recent icon choices.
+    static let recentsDefaultsKey = "recentSectionIcons"
 
     static let categories = [
         SnipListIconCategory(title: "AI & Data", icons: [
