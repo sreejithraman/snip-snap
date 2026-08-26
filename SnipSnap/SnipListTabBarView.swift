@@ -1,7 +1,7 @@
 import CoreTransferable
 import SwiftUI
 
-struct ListTabBarView: View {
+struct SnipListTabBarView: View {
     private enum TabSelection: Hashable {
         case clipboard
         case list(UUID)

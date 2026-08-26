@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 enum PanelFocusTarget: Hashable {
@@ -10,6 +11,100 @@ private struct InlineEditSession {
     let snipID: UUID
     var attachments: [URL]
     var isSaving = false
+}
+
+private enum SnipListScrollTarget {
+    case top
+}
+
+@MainActor
+private final class SnipListReorderGeometry: ObservableObject {
+    var rowFrames: [UUID: CGRect] = [:]
+    var listFrame: CGRect = .zero
+    var scrollOffsetY: CGFloat = 0
+}
+
+private struct SnipListWindowFrameReader: NSViewRepresentable {
+    let onChange: @MainActor (CGRect, CGFloat) -> Void
+
+    func makeNSView(context: Context) -> SnipListWindowFrameReaderView {
+        SnipListWindowFrameReaderView(onChange: onChange)
+    }
+
+    func updateNSView(_ nsView: SnipListWindowFrameReaderView, context: Context) {
+        nsView.onChange = onChange
+        nsView.reportFrameIfNeeded()
+    }
+}
+
+@MainActor
+private final class SnipListWindowFrameReaderView: NSView {
+    var onChange: @MainActor (CGRect, CGFloat) -> Void
+    private var lastFrame: CGRect?
+    private var lastScrollOffsetY: CGFloat?
+    private weak var observedClipView: NSClipView?
+
+    init(onChange: @escaping @MainActor (CGRect, CGFloat) -> Void) {
+        self.onChange = onChange
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        observeScrollIfNeeded()
+        reportFrameIfNeeded()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        observeScrollIfNeeded()
+        reportFrameIfNeeded()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    func reportFrameIfNeeded() {
+        guard window != nil else { return }
+        let nextFrame = convert(bounds, to: nil)
+        let nextScrollOffsetY = enclosingScrollView?.contentView.bounds.origin.y ?? 0
+        guard nextFrame != lastFrame || nextScrollOffsetY != lastScrollOffsetY else { return }
+        lastFrame = nextFrame
+        lastScrollOffsetY = nextScrollOffsetY
+        onChange(nextFrame, nextScrollOffsetY)
+    }
+
+    private func observeScrollIfNeeded() {
+        let clipView = window == nil ? nil : enclosingScrollView?.contentView
+        guard observedClipView !== clipView else { return }
+        if let observedClipView {
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSView.boundsDidChangeNotification,
+                object: observedClipView
+            )
+        }
+        observedClipView = clipView
+        guard let clipView else { return }
+        clipView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(clipViewBoundsDidChange),
+            name: NSView.boundsDidChangeNotification,
+            object: clipView
+        )
+    }
+
+    @objc
+    private func clipViewBoundsDidChange(_ notification: Notification) {
+        reportFrameIfNeeded()
+    }
 }
 
 @MainActor
@@ -66,11 +161,17 @@ struct SnipListView: View {
     let onRemovePreviewURL: (URL) -> Void
 
     @State private var selectionModifiers: EventModifiers = []
-    @StateObject private var dragController = SnipListDragController()
-    @State private var pinnedLists: Set<UUID> = []
     @State private var hasScrolledFromTop = false
     @State private var addedSnipRevealState = AddedSnipRevealState()
     @State private var editSession: InlineEditSession?
+    @State private var pendingOrderByList: [UUID: [UUID]] = [:]
+    @State private var activeDragPayload: SnipDragPayload?
+    @State private var activeDragOriginalOrder: [UUID] = []
+    @State private var activeDragScrollOffsetY: CGFloat = 0
+    @State private var activeDropTarget: SnipListReorderTarget?
+    @State private var isCommittingDrop = false
+    @State private var activeDragRowFrames: [UUID: CGRect] = [:]
+    @StateObject private var reorderGeometry = SnipListReorderGeometry()
 
     private var orderedSnipIDs: [UUID] {
         state.orderedIDs(for: model.filteredSnips)
@@ -78,17 +179,6 @@ struct SnipListView: View {
 
     private var snipCommands: SnipCommandDispatcher {
         SnipCommandDispatcher(model: model, coordinator: coordinator)
-    }
-
-    private var dragContext: SnipListDragContext {
-        SnipListDragContext(
-            allSnips: model.snips,
-            visibleSnips: model.filteredSnips,
-            validListIDs: Set(model.lists.map(\.id)),
-            sortMode: model.sortMode,
-            filtersActive: model.completionFilter != .all
-                || !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        )
     }
 
     var body: some View {
@@ -102,103 +192,133 @@ struct SnipListView: View {
             ).isEmpty ? model.activeListID : nil,
             attachmentURL: model.attachmentURL
         )
+        let showsSearchLists = snapshot.groups.count > 1
         ScrollViewReader { proxy in
-            GeometryReader { viewport in
-                ScrollView {
-                    LazyVStack(
-                        alignment: .leading,
-                        spacing: 0,
-                        pinnedViews: [.sectionHeaders]
-                    ) {
-                        ForEach(snapshot.groups) { group in
-                            listGroupView(group, snapshot: snapshot, proxy: proxy)
-                        }
-                    }
-                    .padding(
-                        .bottom,
-                        PanelOverlayLayout.listBottomPadding(
-                            composerHeight: bottomContentInset
-                        )
-                    )
-                    .frame(
-                        minHeight: viewport.size.height,
-                        alignment: .top
-                    )
-                    .coordinateSpace(name: SnipListDropSpace.name)
-                    .overlay(alignment: .topLeading) {
-                        listDropHighlight(snapshot: snapshot)
-                    }
-                    .background {
-                        ZStack {
-                            PanelDragRegion()
-                                .allowsHitTesting(!dragController.isDragging)
-                            SnipListScrollBridge(
-                                scroller: dragController.scroller,
-                                onScroll: updateScroll
+            List {
+                topSpacer
+                if showsSearchLists {
+                    ForEach(snapshot.groups) { group in
+                        Section {
+                            ForEach(group.snips) { snip in
+                                reorderableSnipCard(
+                                    snip,
+                                    snapshot: snapshot,
+                                    listID: group.listID,
+                                    snips: group.snips
+                                )
+                            }
+                        } header: {
+                            PanelListHeader(
+                                group.list,
+                                showsGlass: hasScrolledFromTop
                             )
+                            .background {
+                                SnipDragBlockingRegion(
+                                    controller: snipDragSourceController,
+                                    id: group.listID
+                                )
+                            }
                         }
                     }
-                }
-                .scrollEdgeEffectStyle(.hard, for: .top)
-                .scrollEdgeEffectStyle(.soft, for: .bottom)
-                .onModifierKeysChanged(mask: [.command, .shift]) { _, modifiers in
-                    selectionModifiers = modifiers
-                }
-                .task(id: dragController.autoScrollDirection) {
-                    await dragController.autoScrollWhileNeeded { dragContext }
-                }
-                .onChange(of: model.sortMode) {
-                    if let selectedID = orderedSnipIDs.first(where: model.selection.contains) {
-                        withAnimation(.snappy(duration: 0.18)) {
-                            proxy.scrollTo(selectedID, anchor: .center)
-                        }
+                } else {
+                    let displayedSnips = displayedSnips(in: snapshot)
+                    ForEach(displayedSnips) { snip in
+                        reorderableSnipCard(
+                            snip,
+                            snapshot: snapshot,
+                            listID: model.activeListID,
+                            snips: displayedSnips
+                        )
                     }
                 }
-                .onChange(of: model.latestAddedSnipID) { _, snipID in
-                    let isVisibleInModel = snipID.map { addedID in
-                        model.filteredSnips.contains(where: { $0.id == addedID })
-                    } ?? false
-                    if let destination = addedSnipRevealState.record(
-                        snipID: snipID,
-                        wasAtTop: !hasScrolledFromTop,
-                        isVisibleInModel: isVisibleInModel,
-                        visibleIDs: snapshot.orderedVisibleIDs
-                    ) {
-                        revealAddedSnip(at: destination)
+                bottomSpacer
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .contentMargins(0, for: .scrollContent)
+            .environment(\.defaultMinListRowHeight, 1)
+            .background {
+                SnipListWindowFrameReader { frame, _ in
+                    reorderGeometry.listFrame = frame
+                }
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if !showsSearchLists {
+                    PanelListHeader(
+                        model.activeList.name,
+                        showsGlass: hasScrolledFromTop
+                    )
+                }
+            }
+            .scrollEdgeEffectStyle(.hard, for: .top)
+            .scrollEdgeEffectStyle(.soft, for: .bottom)
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y > 0.5
+            } action: { _, hasScrolled in
+                hasScrolledFromTop = hasScrolled
+            }
+            .onModifierKeysChanged(mask: [.command, .shift]) { _, modifiers in
+                selectionModifiers = modifiers
+            }
+            .onChange(of: model.sortMode) {
+                if let selectedID = orderedSnipIDs.first(where: model.selection.contains) {
+                    withAnimation(.snappy(duration: 0.18)) {
+                        proxy.scrollTo(selectedID, anchor: .center)
                     }
                 }
-                .onChange(of: snapshot.orderedVisibleIDs) { _, visibleIDs in
-                    if let destination = addedSnipRevealState.nextDestination(
-                        visibleIDs: visibleIDs
-                    ) {
-                        revealAddedSnip(at: destination)
-                    }
+            }
+            .onChange(of: model.latestAddedSnipID) { _, snipID in
+                let isVisibleInModel = snipID.map { addedID in
+                    model.filteredSnips.contains(where: { $0.id == addedID })
+                } ?? false
+                if let destination = addedSnipRevealState.record(
+                    snipID: snipID,
+                    wasAtTop: !hasScrolledFromTop,
+                    isVisibleInModel: isVisibleInModel,
+                    visibleIDs: snapshot.orderedVisibleIDs
+                ) {
+                    revealAddedSnip(
+                        at: destination,
+                        proxy: proxy
+                    )
                 }
-                .onChange(of: model.editingID, initial: true) { _, editingID in
-                    if let editingID,
-                       let snip = model.snips.first(where: { $0.id == editingID }) {
-                        editSession = InlineEditSession(
-                            snipID: editingID,
+            }
+            .onChange(of: snapshot.orderedVisibleIDs) { _, visibleIDs in
+                if let destination = addedSnipRevealState.nextDestination(
+                    visibleIDs: visibleIDs
+                ) {
+                    revealAddedSnip(
+                        at: destination,
+                        proxy: proxy
+                    )
+                }
+            }
+            .onChange(of: model.editingID, initial: true) { _, editingID in
+                editSession = editingID.flatMap { snipID in
+                    model.snips.first(where: { $0.id == snipID }).map { snip in
+                        InlineEditSession(
+                            snipID: snipID,
                             attachments: snip.attachments.map(model.attachmentURL)
                         )
-                    } else {
-                        editSession = nil
                     }
-                    guard let editingID,
-                          snapshot.orderedVisibleIDs.contains(editingID) else { return }
-                    revealEditor(editingID, proxy: proxy)
                 }
-                .overlay(alignment: .topLeading) {
-                    selectionFocusTarget(proxy: proxy)
+                guard let editingID,
+                      snapshot.orderedVisibleIDs.contains(editingID) else { return }
+                Task { @MainActor in
+                    await Task.yield()
+                    withAnimation(.snappy(duration: 0.18)) {
+                        proxy.scrollTo(editingID, anchor: .center)
+                    }
+                    try? await Task.sleep(for: .milliseconds(220))
+                    proxy.scrollTo(editingID, anchor: .center)
                 }
+            }
+            .overlay(alignment: .topLeading) {
+                selectionFocusTarget(proxy: proxy)
             }
         }
         .onAppear {
-            dragController.retainSnips(Set(snapshot.orderedVisibleIDs))
             state.reconcile(model: model)
-        }
-        .onChange(of: snapshot.orderedVisibleIDs) { _, visibleIDs in
-            dragController.retainSnips(Set(visibleIDs))
         }
         .onChange(of: model.selection) {
             state.reconcile(model: model)
@@ -214,17 +334,6 @@ struct SnipListView: View {
                 pendingEditAttachmentImport.urls,
                 to: pendingEditAttachmentImport.snipID
             )
-        }
-    }
-
-    private func revealEditor(_ snipID: UUID, proxy: ScrollViewProxy) {
-        Task { @MainActor in
-            await Task.yield()
-            withAnimation(.snappy(duration: 0.18)) {
-                proxy.scrollTo(snipID, anchor: .center)
-            }
-            try? await Task.sleep(for: .milliseconds(220))
-            proxy.scrollTo(snipID, anchor: .center)
         }
     }
 
@@ -250,303 +359,255 @@ struct SnipListView: View {
         editSession = session
     }
 
-    private func revealAddedSnip(at destination: AddedSnipRevealDestination) {
+    private func revealAddedSnip(
+        at destination: AddedSnipRevealDestination,
+        proxy: ScrollViewProxy
+    ) {
         Task { @MainActor in
             await Task.yield()
             withAnimation(.snappy(duration: 0.18)) {
                 switch destination {
                 case .scrollViewTop:
-                    dragController.scroller.scrollTo(y: 0)
+                    proxy.scrollTo(SnipListScrollTarget.top, anchor: .top)
                 }
             }
         }
     }
 
-    private func listGroupView(
-        _ group: SnipListGroup,
+    private var bottomSpacer: some View {
+        Color.clear
+            .frame(
+                height: PanelOverlayLayout.listBottomPadding(
+                    composerHeight: bottomContentInset
+                )
+            )
+            .listRowInsets(EdgeInsets())
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+    }
+
+    private var topSpacer: some View {
+        Color.clear
+            .frame(
+                height: PanelListMetrics.verticalContentInset
+                    + PanelListMetrics.rowSpacing / 2
+            )
+            .listRowInsets(EdgeInsets())
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            .id(SnipListScrollTarget.top)
+    }
+
+    private var canDragReorder: Bool {
+        model.editingID == nil
+            && model.completionFilter == .all
+            && model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func reorderableSnipCard(
+        _ snip: Snip,
         snapshot: SnipListSnapshot,
-        proxy: ScrollViewProxy
-    ) -> some View {
-        let entries = dragController.entries(for: group)
-        return Section {
-            ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-                listEntry(
-                    entry,
-                    index: index,
-                    listID: group.listID,
-                    snapshot: snapshot,
-                    proxy: proxy
-                )
-            }
-            listFooter(
-                group,
-                expandsTop: entries.isEmpty,
-                proxy: proxy
-            )
-        } header: {
-            listDropTarget(
-                listHeader(group),
-                listID: group.listID,
-                surface: .header,
-                proxy: proxy
-            )
-        }
-    }
-
-    private func listEntry(
-        _ entry: SnipListEntry,
-        index: Int,
         listID: UUID,
-        snapshot: SnipListSnapshot,
-        proxy: ScrollViewProxy
+        snips: [Snip]
     ) -> some View {
-        let entryElement = SnipListGeometry.Element.entry(entry.id)
-        let content = VStack(alignment: .leading, spacing: 0) {
-            PanelDragRegion()
-                .frame(
-                    height: index == 0
-                        ? PanelListMetrics.listSpacing
-                        : PanelListMetrics.rowSpacing
-                )
-                .allowsHitTesting(!dragController.isDragging)
-
-            dropGeometry(
-                listEntryContent(entry, snapshot: snapshot),
-                for: entryElement
-            )
-        }
-        return listContentDropTarget(
-            content,
-            listID: listID,
-            surface: .entry(entry.id),
-            expandsTop: index == 0,
-            proxy: proxy
-        )
-        .onDisappear { dragController.remove(entryElement) }
-    }
-
-    @ViewBuilder
-    private func listEntryContent(
-        _ entry: SnipListEntry,
-        snapshot: SnipListSnapshot
-    ) -> some View {
-        switch entry {
-        case .snip(let snip):
-            dropGeometry(
-                snipCard(snip, snapshot: snapshot)
-                    .id(snip.id),
-                for: .row(snip.id)
-            )
-        case .originGap(_, let height):
-            dropGap(height: height, showsDestinationEdge: false)
-        case .destinationGap(_, let height):
-            dropGap(height: height, showsDestinationEdge: true)
-        }
-    }
-
-    private func listFooter(
-        _ group: SnipListGroup,
-        expandsTop: Bool,
-        proxy: ScrollViewProxy
-    ) -> some View {
-        let footerElement = SnipListGeometry.Element.listFooter(group.listID)
-        let content = dropGeometry(
-            PanelDragRegion()
-                .frame(height: PanelListMetrics.listSpacing)
-                .allowsHitTesting(!dragController.isDragging),
-            for: footerElement
-        )
-        return listContentDropTarget(
-            content,
-            listID: group.listID,
-            surface: .footer,
-            expandsTop: expandsTop,
-            expandsBottom: true,
-            proxy: proxy
-        )
-        .onDisappear { dragController.remove(footerElement) }
-    }
-
-    private func listContentDropTarget<Content: View>(
-        _ content: Content,
-        listID: UUID,
-        surface: SnipListDropSurface,
-        expandsTop: Bool = false,
-        expandsBottom: Bool = false,
-        proxy: ScrollViewProxy
-    ) -> some View {
-        let element = surface.element(in: listID)
-        let expansion = PanelDropTargetStyle.expansion
-        let hitInsets = EdgeInsets(
-            top: expandsTop ? expansion : 0,
-            leading: expansion,
-            bottom: expandsBottom ? expansion : 0,
-            trailing: expansion
-        )
-        return listDropTarget(
-            dropGeometry(
-                content.padding(hitInsets),
-                for: element
-            ),
-            listID: listID,
-            surface: surface,
-            proxy: proxy
-        )
-        .padding(
-            EdgeInsets(
-                top: -hitInsets.top,
-                leading: -hitInsets.leading,
-                bottom: -hitInsets.bottom,
-                trailing: -hitInsets.trailing
-            )
-        )
-        .padding(.horizontal, PanelListMetrics.horizontalContentInset)
-        .onDisappear { dragController.remove(element) }
-    }
-
-    @ViewBuilder
-    private func listDropHighlight(snapshot: SnipListSnapshot) -> some View {
-        if let listID = dragController.targetListID,
-           let group = snapshot.groups.first(where: { $0.listID == listID }),
-           let frame = dragController.listBodyFrame(for: group) {
-            let expandedFrame = frame.insetBy(
-                dx: -PanelDropTargetStyle.expansion,
-                dy: -PanelDropTargetStyle.expansion
-            )
-            Color.clear
-                .frame(width: expandedFrame.width, height: expandedFrame.height)
-                .panelDropTargetState(
-                    in: RoundedRectangle(cornerRadius: 12, style: .continuous),
-                    isTargeted: true
-                )
-                .offset(x: expandedFrame.minX, y: expandedFrame.minY)
-                .allowsHitTesting(false)
-                .transition(.opacity)
-                .animation(.snappy(duration: 0.16), value: listID)
-        }
-    }
-
-    @ViewBuilder
-    private func dropGeometry<Content: View>(
-        _ content: Content,
-        for element: SnipListGeometry.Element
-    ) -> some View {
-        if dragController.needsDropGeometry {
-            content.onGeometryChange(for: CGRect.self) { proxy in
-                proxy.frame(in: .named(SnipListDropSpace.name))
-            } action: { frame in
-                dragController.record(frame, for: element)
-            }
-        } else {
-            content
-        }
-    }
-
-    private func listHeader(_ group: SnipListGroup) -> some View {
-        let isPinned = pinnedLists.contains(group.listID)
-        let showsGlass = PinnedListHeaderGlass.isVisible(
-            isPinned: isPinned,
-            hasScrolled: hasScrolledFromTop
-        )
-        return PanelListHeader(group.list, showsGlass: showsGlass)
-            .background {
-                SnipDragBlockingRegion(
-                    controller: snipDragSourceController,
-                    id: group.listID
-                )
-            }
-            .onGeometryChange(for: CGRect.self) { proxy in
-                proxy.frame(in: .named(SnipListDropSpace.name))
-            } action: { frame in
-                dragController.record(frame, for: .heading(group.listID))
-            }
-            .onDisappear {
-                dragController.remove(.heading(group.listID))
-                if let updated = PinnedListHeaderGlass.updatedLists(
-                    pinnedLists,
-                    listID: group.listID,
-                    isPinned: false
-                ) {
-                    pinnedLists = updated
+        let payload = snapshot.dragPayload(for: snip)
+        return snipCard(snip)
+                .opacity(isShowingDragGap(for: snip.id) ? 0 : 1)
+                .background {
+                    if model.editingID != snip.id {
+                        SnipDragSourceRegion(
+                            controller: snipDragSourceController,
+                            id: snip.id,
+                            payload: payload,
+                            onBegan: {
+                                beginDrag(payload, orderedIDs: snips.map(\.id))
+                            },
+                            onMoved: { point in
+                                updateDrag(
+                                    at: point,
+                                    listID: listID,
+                                    snips: snips
+                                )
+                            },
+                            onEnded: { outcome, point in
+                                endDrag(
+                                    payload,
+                                    outcome: outcome,
+                                    at: point,
+                                    listID: listID,
+                                    snips: snips
+                                )
+                            }
+                        )
+                    }
                 }
-            }
-            .overlay {
-                PanelDragRegion()
-                    .allowsHitTesting(!dragController.isDragging)
-            }
-    }
-
-    private func updateScroll(_ metrics: SnipListGeometry.ScrollSnapshot) {
-        dragController.updateScroll(metrics)
-        let hasScrolled = PinnedListHeaderGlass.hasScrolled(
-            visibleOriginY: metrics.visibleOrigin.y
-        )
-        if hasScrolledFromTop != hasScrolled {
-            hasScrolledFromTop = hasScrolled
-        }
-        let nextPinnedLists = dragController.pinnedListIDs()
-        if pinnedLists != nextPinnedLists {
-            pinnedLists = nextPinnedLists
-        }
-    }
-
-    private func listDropTarget<Content: View>(
-        _ content: Content,
-        listID: UUID,
-        surface: SnipListDropSurface,
-        proxy: ScrollViewProxy
-    ) -> some View {
-        content
-        .dropDestination(for: PanelDropPayload.self) { payloads, session in
-            handleDrop(
-                payloads: payloads,
-                session: session,
-                listID: listID,
-                surface: surface,
-                proxy: proxy
-            )
-        }
-        .onDropSessionUpdated { session in
-            if dragController.isDragging {
-                dragController.updateDropSession(
-                    session,
-                    listID: listID,
-                    surface: surface,
-                    context: dragContext
-                )
-            } else {
-                dragController.updateClipboardDropSession(
-                    session,
-                    listID: listID,
-                    surface: surface,
-                    context: dragContext
-                )
-            }
-        }
-        .dropConfiguration { session in
-            let operation: DropOperation = session.suggestedOperations.contains(.move)
-                ? .move
-                : .copy
-            var configuration = DropConfiguration(operation: operation)
-            configuration.acceptedItemCount = 1
-            return configuration
-        }
-    }
-
-    private func dropGap(
-        height: CGFloat,
-        showsDestinationEdge: Bool
-    ) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
-        return Color.clear
-            .frame(height: max(height, 2))
-            .overlay {
-                if showsDestinationEdge {
-                    shape.stroke(SnipSnapColors.insertionEdge, lineWidth: 1)
+                .padding(.bottom, PanelListMetrics.rowSpacing)
+                .id(snip.id)
+                .listRowInsets(PanelListMetrics.inboxRowInsets)
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+                .background {
+                    SnipListWindowFrameReader { frame, scrollOffsetY in
+                        reorderGeometry.rowFrames[snip.id] = frame
+                        reorderGeometry.scrollOffsetY = scrollOffsetY
+                    }
                 }
+                .onDisappear {
+                    reorderGeometry.rowFrames[snip.id] = nil
+                }
+    }
+
+    private func beginDrag(_ payload: SnipDragPayload, orderedIDs: [UUID]) {
+        activeDragPayload = payload
+        activeDropTarget = nil
+        isCommittingDrop = false
+        guard canDragReorder else {
+            activeDragOriginalOrder = []
+            activeDragRowFrames = [:]
+            return
+        }
+        activeDragOriginalOrder = orderedIDs
+        activeDragRowFrames = reorderGeometry.rowFrames
+        activeDragScrollOffsetY = reorderGeometry.scrollOffsetY
+    }
+
+    private func updateDrag(
+        at location: CGPoint,
+        listID: UUID,
+        snips: [Snip]
+    ) {
+        guard activeDragPayload != nil, !activeDragOriginalOrder.isEmpty else { return }
+        guard reorderGeometry.listFrame.contains(location) else {
+            if activeDropTarget != nil {
+                activeDropTarget = nil
+                pendingOrderByList[listID] = nil
             }
-            .contentShape(shape)
-            .transition(.opacity)
+            return
+        }
+        let target = reorderTarget(at: location, snips: snips)
+        activeDropTarget = target
+        updatePendingOrder(listID: listID, target: target)
+    }
+
+    private func reorderTarget(
+        at location: CGPoint,
+        snips: [Snip]
+    ) -> SnipListReorderTarget {
+        let placementFrames = activeDragRowFrames.isEmpty
+            ? reorderGeometry.rowFrames
+            : activeDragRowFrames
+        return SnipListReorderPlan.target(
+            atWindowY: location.y,
+            orderedIDs: snips.map(\.id),
+            movingIDs: Set(activeDragPayload?.ids ?? []),
+            rowFrames: placementFrames,
+            rowFrameOffsetY: reorderGeometry.scrollOffsetY - activeDragScrollOffsetY
+        )
+    }
+
+    private func updatePendingOrder(
+        listID: UUID,
+        target: SnipListReorderTarget
+    ) {
+        guard let payload = activeDragPayload else { return }
+        guard let reorderedIDs = SnipListReorderPlan.orderedIDs(
+            from: activeDragOriginalOrder,
+            movingIDs: payload.ids,
+            target: target
+        ) else { return }
+        guard pendingOrderByList[listID] != reorderedIDs else { return }
+        withAnimation(.easeOut(duration: 0.12)) {
+            pendingOrderByList[listID] = reorderedIDs
+        }
+    }
+
+    private func commitDrop(
+        _ payload: SnipDragPayload,
+        target: SnipListReorderTarget,
+        listID: UUID
+    ) {
+        guard payload == activeDragPayload else { return }
+        guard let reorderedIDs = SnipListReorderPlan.orderedIDs(
+            from: activeDragOriginalOrder,
+            movingIDs: payload.ids,
+            target: target
+        ), reorderedIDs != activeDragOriginalOrder else {
+            clearDrag(listID: listID)
+            return
+        }
+        activeDropTarget = target
+        updatePendingOrder(listID: listID, target: target)
+        isCommittingDrop = true
+        let selectionBeforeMove = model.selection
+        Task { @MainActor in
+            _ = await model.move(
+                ids: payload.ids,
+                to: listID,
+                before: target.beforeID,
+                selectionAfterMove: selectionBeforeMove
+            )
+            guard payload == activeDragPayload, isCommittingDrop else { return }
+            clearDrag(listID: listID)
+        }
+    }
+
+    private func endDrag(
+        _ payload: SnipDragPayload,
+        outcome: SnipDragOutcome,
+        at location: CGPoint,
+        listID: UUID,
+        snips: [Snip]
+    ) {
+        guard payload == activeDragPayload else { return }
+        if !activeDragOriginalOrder.isEmpty, reorderGeometry.listFrame.contains(location) {
+            let finalTarget = reorderTarget(at: location, snips: snips)
+            commitDrop(payload, target: finalTarget, listID: listID)
+            return
+        }
+        if outcome == .copy {
+            model.markDoneAfterExternalDrop(ids: payload.ids)
+        }
+        guard outcome == .move else {
+            clearDrag(listID: listID)
+            return
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard payload == activeDragPayload, !isCommittingDrop else { return }
+            clearDrag(listID: listID)
+        }
+    }
+
+    private func isShowingDragGap(for snipID: UUID) -> Bool {
+        activeDragPayload?.ids.contains(snipID) == true
+    }
+
+    private func clearDrag(listID: UUID) {
+        withAnimation(.snappy(duration: 0.12)) {
+            pendingOrderByList[listID] = nil
+            activeDragPayload = nil
+            activeDragOriginalOrder = []
+            activeDragScrollOffsetY = 0
+            activeDragRowFrames = [:]
+            activeDropTarget = nil
+            isCommittingDrop = false
+        }
+    }
+
+    private func displayedSnips(in snapshot: SnipListSnapshot) -> [Snip] {
+        guard snapshot.groups.count == 1, let group = snapshot.groups.first else {
+            return snapshot.groups.flatMap(\.snips)
+        }
+        return orderedSnips(in: group)
+    }
+
+    private func orderedSnips(in group: SnipListGroup) -> [Snip] {
+        guard let pendingOrder = pendingOrderByList[group.listID],
+              Set(pendingOrder) == Set(group.snips.map(\.id)) else {
+            return group.snips
+        }
+        let snipsByID = Dictionary(uniqueKeysWithValues: group.snips.map { ($0.id, $0) })
+        return pendingOrder.compactMap { snipsByID[$0] }
     }
 
     private func selectionFocusTarget(proxy: ScrollViewProxy) -> some View {
@@ -573,14 +634,11 @@ struct SnipListView: View {
             }
     }
 
-    private func snipCard(_ snip: Snip, snapshot: SnipListSnapshot) -> some View {
-        let payload = snapshot.dragPayload(for: snip)
-        return SnipCardRow(
+    private func snipCard(_ snip: Snip) -> some View {
+        SnipCardRow(
             snip: snip,
             isSelected: model.selection.contains(snip.id),
             isEditing: model.editingID == snip.id,
-            dragPayload: payload,
-            dragSourceController: snipDragSourceController,
             editAttachments: editAttachmentsBinding(for: snip),
             isSaving: savingBinding(for: snip),
             attachmentURL: model.attachmentURL,
@@ -610,17 +668,7 @@ struct SnipListView: View {
                 focusedTarget = .list
                 return true
             },
-            onEditError: { model.presentedError = $0 },
-            onDragBegan: {
-                dragController.beginNativeDrag(payload)
-            },
-            onDragEnded: { outcome in
-                dragController.endNativeDrag(
-                    payload,
-                    outcome: outcome,
-                    markDoneAfterExternalCopy: model.markDoneAfterExternalDrop
-                )
-            }
+            onEditError: { model.presentedError = $0 }
         )
         .contextMenu {
             if model.editingID != snip.id {
@@ -698,89 +746,6 @@ struct SnipListView: View {
         )
     }
 
-    private func handleDrop(
-        payloads: [PanelDropPayload],
-        session: DropSession,
-        listID: UUID,
-        surface: SnipListDropSurface,
-        proxy: ScrollViewProxy
-    ) {
-        guard payloads.count == 1, let payload = payloads.first else { return }
-        switch payload {
-        case .clipboard(let clipboardPayload):
-            guard let entry = model.clipboardHistory.entry(id: clipboardPayload.entryID) else { return }
-            let plan = dragController.clipboardDropPlan(
-                session: session,
-                listID: listID,
-                surface: surface,
-                context: dragContext
-            )
-            Task { @MainActor in
-                let saved = await model.saveClipboardEntry(
-                    entry,
-                    listID: plan.listID,
-                    before: plan.beforeID,
-                    placesManually: plan.behavior == .exact
-                )
-                if saved, let id = model.latestAddedSnipID {
-                    withAnimation(.snappy(duration: 0.18)) {
-                        proxy.scrollTo(id, anchor: .center)
-                    }
-                }
-            }
-        case .snip(let snipPayload):
-            handleSnipDrop(
-                payload: snipPayload,
-                session: session,
-                listID: listID,
-                surface: surface,
-                proxy: proxy
-            )
-        }
-    }
-
-    private func handleSnipDrop(
-        payload: SnipDragPayload,
-        session: DropSession,
-        listID: UUID,
-        surface: SnipListDropSurface,
-        proxy: ScrollViewProxy
-    ) {
-        guard let execution = dragController.beginDrop(
-            payloads: [payload],
-            session: session,
-            listID: listID,
-            surface: surface,
-            context: dragContext
-        ) else { return }
-        let selectionBeforeMove = model.selection
-
-        Task { @MainActor in
-            defer { dragController.completeDrop(execution) }
-            let moved: Bool
-            switch execution.plan.behavior {
-            case .exact, .listTop:
-                moved = await model.move(
-                    ids: execution.payload.ids,
-                    to: execution.plan.listID,
-                    before: execution.plan.beforeID,
-                    selectionAfterMove: selectionBeforeMove
-                )
-            case .chronological:
-                moved = await model.moveChronologically(
-                    ids: execution.payload.ids,
-                    to: execution.plan.listID,
-                    selectionAfterMove: selectionBeforeMove
-                )
-            }
-            if moved, let firstID = execution.payload.ids.first {
-                withAnimation(.snappy(duration: 0.18)) {
-                    proxy.scrollTo(firstID, anchor: .center)
-                }
-            }
-        }
-    }
-
     private func select(_ id: UUID) {
         let update = SnipSelection.click(
             id,
@@ -788,7 +753,7 @@ struct SnipListView: View {
             selection: model.selection,
             anchor: state.anchor,
             focus: state.focus,
-            modifiers: snipSelectionModifiers
+            modifiers: inboxSelectionModifiers
         )
         state.apply(update, to: model)
         focusedTarget = .list
@@ -835,7 +800,7 @@ struct SnipListView: View {
         return .handled
     }
 
-    private var snipSelectionModifiers: SnipSelection.Modifiers {
+    private var inboxSelectionModifiers: SnipSelection.Modifiers {
         var modifiers: SnipSelection.Modifiers = []
         if selectionModifiers.contains(.command) { modifiers.insert(.command) }
         if selectionModifiers.contains(.shift) { modifiers.insert(.shift) }

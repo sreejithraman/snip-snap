@@ -142,21 +142,24 @@ struct SnipDragExportPackage {
     func draggingItems(
         at origin: NSPoint,
         scale: CGFloat,
-        colorScheme: ColorScheme
+        colorScheme: ColorScheme,
+        sourceFrame: NSRect? = nil
     ) -> [NSDraggingItem] {
-        let preview = cardPreviewImage(scale: scale, colorScheme: colorScheme)
+        let preview = cardPreviewImage(
+            scale: scale,
+            colorScheme: colorScheme,
+            size: sourceFrame?.size
+        )
+        let previewFrame = sourceFrame ?? NSRect(
+            x: origin.x,
+            y: origin.y - preview.size.height,
+            width: preview.size.width,
+            height: preview.size.height
+        )
         return pasteboardWriters().enumerated().map { index, writer in
             let item = NSDraggingItem(pasteboardWriter: writer)
             if index == 0 {
-                item.setDraggingFrame(
-                    NSRect(
-                        x: origin.x,
-                        y: origin.y - preview.size.height,
-                        width: preview.size.width,
-                        height: preview.size.height
-                    ),
-                    contents: preview
-                )
+                item.setDraggingFrame(previewFrame, contents: preview)
             } else {
                 item.draggingFrame = NSRect(
                     origin: origin,
@@ -171,7 +174,11 @@ struct SnipDragExportPackage {
     static let privateType = NSPasteboard.PasteboardType(UTType.snipSnapSnipDrag.identifier)
 
     @MainActor
-    private func cardPreviewImage(scale: CGFloat, colorScheme: ColorScheme) -> NSImage {
+    private func cardPreviewImage(
+        scale: CGFloat,
+        colorScheme: ColorScheme,
+        size: NSSize? = nil
+    ) -> NSImage {
         let attachmentImages = payload.attachmentURLs.prefix(3).map { url in
             if let preview = PreviewImageCache.shared.cachedFileThumbnail(
                 url: url,
@@ -187,7 +194,8 @@ struct SnipDragExportPackage {
         let renderer = ImageRenderer(
             content: SnipDragPreviewCard(
                 payload: payload,
-                attachmentImages: attachmentImages
+                attachmentImages: attachmentImages,
+                size: size
             )
             .environment(\.colorScheme, colorScheme)
         )
@@ -209,8 +217,21 @@ private struct SnipDragPreviewCard: View {
 
     let payload: SnipDragPayload
     let attachmentImages: [DragPreviewAttachment]
+    let size: NSSize?
 
+    @ViewBuilder
     var body: some View {
+        if let size {
+            previewBody
+                .frame(width: size.width, height: size.height, alignment: .leading)
+        } else {
+            previewBody
+                .frame(width: Metrics.width, alignment: .leading)
+                .padding(Metrics.shadowAllowance)
+        }
+    }
+
+    private var previewBody: some View {
         SnipCardBody(
             text: payload.text,
             isDone: payload.previewIsDone,
@@ -228,9 +249,7 @@ private struct SnipDragPreviewCard: View {
                 }
             }
         }
-        .frame(width: Metrics.width, alignment: .leading)
         .panelContentCardSurface(isDone: payload.previewIsDone)
-        .padding(Metrics.shadowAllowance)
     }
 }
 
@@ -248,17 +267,20 @@ final class SnipDragSourceController: NSObject, NSDraggingSource, NSGestureRecog
         weak var view: NSView?
         let payload: SnipDragPayload
         let onBegan: () -> Void
-        let onEnded: (SnipDragOutcome) -> Void
+        let onMoved: (NSPoint) -> Void
+        let onEnded: (SnipDragOutcome, NSPoint) -> Void
 
         init(
             view: NSView,
             payload: SnipDragPayload,
             onBegan: @escaping () -> Void,
-            onEnded: @escaping (SnipDragOutcome) -> Void
+            onMoved: @escaping (NSPoint) -> Void,
+            onEnded: @escaping (SnipDragOutcome, NSPoint) -> Void
         ) {
             self.view = view
             self.payload = payload
             self.onBegan = onBegan
+            self.onMoved = onMoved
             self.onEnded = onEnded
         }
     }
@@ -293,7 +315,8 @@ final class SnipDragSourceController: NSObject, NSDraggingSource, NSGestureRecog
         view: NSView?,
         payload: SnipDragPayload,
         onBegan: @escaping () -> Void,
-        onEnded: @escaping (SnipDragOutcome) -> Void
+        onMoved: @escaping (NSPoint) -> Void,
+        onEnded: @escaping (SnipDragOutcome, NSPoint) -> Void
     ) {
         guard let view, view.window != nil else {
             regions.removeValue(forKey: id)
@@ -303,6 +326,7 @@ final class SnipDragSourceController: NSObject, NSDraggingSource, NSGestureRecog
             view: view,
             payload: payload,
             onBegan: onBegan,
+            onMoved: onMoved,
             onEnded: onEnded
         )
     }
@@ -377,6 +401,7 @@ final class SnipDragSourceController: NSObject, NSDraggingSource, NSGestureRecog
             from: [.darkAqua, .aqua]
         ) == .darkAqua ? .dark : .light
         let export = SnipDragExportPackage(payload: region.payload)
+        let sourceFrame = region.view.map { $0.convert($0.bounds, to: hostView) }
         region.onBegan()
         activeRegion = region
         activeExport = export
@@ -384,12 +409,13 @@ final class SnipDragSourceController: NSObject, NSDraggingSource, NSGestureRecog
             with: export.draggingItems(
                 at: origin,
                 scale: scale,
-                colorScheme: colorScheme
+                colorScheme: colorScheme,
+                sourceFrame: sourceFrame
             ),
             event: event,
             source: self
         )
-        session.animatesToStartingPositionsOnCancelOrFail = true
+        session.animatesToStartingPositionsOnCancelOrFail = false
         session.draggingFormation = .none
     }
 
@@ -402,6 +428,13 @@ final class SnipDragSourceController: NSObject, NSDraggingSource, NSGestureRecog
 
     func draggingSession(
         _ session: NSDraggingSession,
+        movedTo screenPoint: NSPoint
+    ) {
+        activeRegion?.onMoved(windowPoint(from: screenPoint))
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
         endedAt screenPoint: NSPoint,
         operation: NSDragOperation
     ) {
@@ -409,7 +442,14 @@ final class SnipDragSourceController: NSObject, NSDraggingSource, NSGestureRecog
         activeRegion = nil
         activeExport = nil
         pendingRegion = nil
-        region?.onEnded(SnipDragOutcome(operation: operation))
+        region?.onEnded(
+            SnipDragOutcome(operation: operation),
+            windowPoint(from: screenPoint)
+        )
+    }
+
+    private func windowPoint(from screenPoint: NSPoint) -> NSPoint {
+        hostView?.window?.convertPoint(fromScreen: screenPoint) ?? screenPoint
     }
 }
 
@@ -474,7 +514,8 @@ struct SnipDragSourceRegion: NSViewRepresentable {
     let id: UUID
     let payload: SnipDragPayload
     let onBegan: () -> Void
-    let onEnded: (SnipDragOutcome) -> Void
+    let onMoved: (NSPoint) -> Void
+    let onEnded: (SnipDragOutcome, NSPoint) -> Void
 
     func makeNSView(context: Context) -> SnipDragSourceRegionView {
         SnipDragSourceRegionView(
@@ -482,6 +523,7 @@ struct SnipDragSourceRegion: NSViewRepresentable {
             id: id,
             payload: payload,
             onBegan: onBegan,
+            onMoved: onMoved,
             onEnded: onEnded
         )
     }
@@ -490,6 +532,7 @@ struct SnipDragSourceRegion: NSViewRepresentable {
         nsView.configure(
             payload: payload,
             onBegan: onBegan,
+            onMoved: onMoved,
             onEnded: onEnded
         )
     }
@@ -505,19 +548,22 @@ final class SnipDragSourceRegionView: NSView {
     private let id: UUID
     private var payload: SnipDragPayload
     private var onBegan: () -> Void
-    private var onEnded: (SnipDragOutcome) -> Void
+    private var onMoved: (NSPoint) -> Void
+    private var onEnded: (SnipDragOutcome, NSPoint) -> Void
 
     init(
         controller: SnipDragSourceController,
         id: UUID,
         payload: SnipDragPayload,
         onBegan: @escaping () -> Void,
-        onEnded: @escaping (SnipDragOutcome) -> Void
+        onMoved: @escaping (NSPoint) -> Void,
+        onEnded: @escaping (SnipDragOutcome, NSPoint) -> Void
     ) {
         self.controller = controller
         self.id = id
         self.payload = payload
         self.onBegan = onBegan
+        self.onMoved = onMoved
         self.onEnded = onEnded
         super.init(frame: .zero)
     }
@@ -530,10 +576,12 @@ final class SnipDragSourceRegionView: NSView {
     func configure(
         payload: SnipDragPayload,
         onBegan: @escaping () -> Void,
-        onEnded: @escaping (SnipDragOutcome) -> Void
+        onMoved: @escaping (NSPoint) -> Void,
+        onEnded: @escaping (SnipDragOutcome, NSPoint) -> Void
     ) {
         self.payload = payload
         self.onBegan = onBegan
+        self.onMoved = onMoved
         self.onEnded = onEnded
         updateController()
     }
@@ -562,6 +610,7 @@ final class SnipDragSourceRegionView: NSView {
             view: window == nil ? nil : self,
             payload: payload,
             onBegan: onBegan,
+            onMoved: onMoved,
             onEnded: onEnded
         )
     }

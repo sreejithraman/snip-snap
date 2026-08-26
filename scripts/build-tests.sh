@@ -1,0 +1,42 @@
+#!/bin/zsh
+set -euo pipefail
+
+script_dir="${0:A:h}"
+unset SNIP_SNAP_DEV_SLOT
+test_dir="$(mktemp -d)"
+trap 'rm -rf "$test_dir"' EXIT
+
+mkdir -p "$test_dir/bin"
+print -r -- '#!/bin/zsh
+print -r -- "$@" > "$SNIP_SNAP_BUILD_ARGS_FILE"' > "$test_dir/bin/xcodebuild"
+chmod +x "$test_dir/bin/xcodebuild"
+
+output="$(
+    PATH="$test_dir/bin:$PATH" \
+        SNIP_SNAP_BUILD_ARGS_FILE="$test_dir/build-args" \
+        SNIP_SNAP_DERIVED_DATA="$test_dir/derived-data" \
+        "$script_dir/build.sh"
+)"
+
+grep -F -- "CODE_SIGNING_ALLOWED=NO" "$test_dir/build-args" >/dev/null
+grep -F -- "PRODUCT_BUNDLE_IDENTIFIER=world.sree.snipsnap.compilecheck" \
+    "$test_dir/build-args" >/dev/null
+grep -F -- "PRODUCT_NAME=SnipSnapCompileCheck" "$test_dir/build-args" >/dev/null
+grep -F -- "INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Compile Check" \
+    "$test_dir/build-args" >/dev/null
+[[ "$output" == *"Do not launch this build."* ]]
+[[ "$output" == *"Use scripts/run.sh"* ]]
+
+print -r -- '#!/bin/zsh
+exit 1' > "$test_dir/bin/xcodebuild"
+if failure_output="$(
+    PATH="$test_dir/bin:$PATH" \
+        SNIP_SNAP_DERIVED_DATA="$test_dir/failed-derived-data" \
+        "$script_dir/build.sh" 2>&1
+)"; then
+    print -u2 "A failed compile check reported success."
+    exit 1
+fi
+[[ "$failure_output" != *"Compile check passed."* ]]
+
+print "Build script checks passed."

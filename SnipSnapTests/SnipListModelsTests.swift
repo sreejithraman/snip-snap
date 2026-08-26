@@ -5,6 +5,79 @@ import UniformTypeIdentifiers
 @testable import SnipSnap
 
 final class SnipListModelsTests: XCTestCase {
+    func testReorderTargetUsesEachRowsRealHeight() {
+        let ids = (0..<3).map { _ in UUID() }
+        let frames = [
+            ids[0]: CGRect(x: 0, y: 220, width: 200, height: 40),
+            ids[1]: CGRect(x: 0, y: 100, width: 200, height: 110),
+            ids[2]: CGRect(x: 0, y: 50, width: 200, height: 40)
+        ]
+
+        XCTAssertEqual(
+            SnipListReorderPlan.target(
+                atWindowY: 165,
+                orderedIDs: ids,
+                movingIDs: [ids[2]],
+                rowFrames: frames
+            ),
+            .before(ids[1])
+        )
+        XCTAssertEqual(
+            SnipListReorderPlan.target(
+                atWindowY: 95,
+                orderedIDs: ids,
+                movingIDs: [ids[2]],
+                rowFrames: frames
+            ),
+            .end
+        )
+    }
+
+    func testReorderTargetOffsetsFrozenFramesAfterScrolling() {
+        let ids = (0..<2).map { _ in UUID() }
+        let frames = [
+            ids[0]: CGRect(x: 0, y: 180, width: 200, height: 40),
+            ids[1]: CGRect(x: 0, y: 120, width: 200, height: 40)
+        ]
+
+        XCTAssertEqual(
+            SnipListReorderPlan.target(
+                atWindowY: 265,
+                orderedIDs: ids,
+                movingIDs: [ids[1]],
+                rowFrames: frames,
+                rowFrameOffsetY: 60
+            ),
+            .before(ids[0])
+        )
+    }
+
+    func testReorderPlanMovesToAMiddleSlot() {
+        let ids = (0..<4).map { _ in UUID() }
+
+        XCTAssertEqual(
+            SnipListReorderPlan.orderedIDs(
+                from: ids,
+                movingIDs: [ids[0]],
+                target: .before(ids[2])
+            ),
+            [ids[1], ids[0], ids[2], ids[3]]
+        )
+    }
+
+    func testReorderPlanDetectsAnUnchangedDrop() {
+        let ids = (0..<3).map { _ in UUID() }
+
+        XCTAssertEqual(
+            SnipListReorderPlan.orderedIDs(
+                from: ids,
+                movingIDs: [ids[1]],
+                target: .before(ids[2])
+            ),
+            ids
+        )
+    }
+
     func testListSnapshotCanKeepTheActiveListHeaderWhenItIsEmpty() {
         let list = SnipList(
             id: UUID(),
@@ -25,66 +98,6 @@ final class SnipListModelsTests: XCTestCase {
             [SnipListGroup(listID: list.id, list: list.name, snips: [])]
         )
         XCTAssertTrue(snapshot.orderedVisibleIDs.isEmpty)
-    }
-
-    @MainActor
-    func testDropGeometryIsInactiveOutsideAnActiveSnipDrag() {
-        let controller = SnipListDragController()
-        let payload = SnipDragPayload(ids: [UUID()], text: "Snip")
-
-        XCTAssertFalse(controller.needsDropGeometry)
-
-        controller.beginNativeDrag(payload)
-
-        XCTAssertTrue(controller.needsDropGeometry)
-
-        controller.endNativeDrag(
-            payload,
-            outcome: .cancelled,
-            markDoneAfterExternalCopy: { _ in }
-        )
-
-        XCTAssertFalse(controller.needsDropGeometry)
-    }
-
-    @MainActor
-    func testClipboardDropSessionEnablesGeometryBeforeItHasATarget() {
-        let controller = SnipListDragController()
-
-        XCTAssertFalse(controller.needsDropGeometry)
-
-        controller.beginClipboardDropSession()
-
-        XCTAssertTrue(controller.needsDropGeometry)
-
-        controller.endClipboardDropSession()
-
-        XCTAssertFalse(controller.needsDropGeometry)
-    }
-
-    func testDropSurfaceStateRejectsStaleExitTokens() throws {
-        let listID = UUID()
-        let firstSurface = SnipListDropSurface.entry(.snip(UUID()))
-        let secondSurface = SnipListDropSurface.entry(.snip(UUID()))
-        var state = SnipListDropSurfaceState()
-
-        state.activate(listID: listID, surface: firstSurface)
-        let firstExit = try XCTUnwrap(
-            state.exitToken(listID: listID, surface: firstSurface)
-        )
-
-        state.activate(listID: listID, surface: secondSurface)
-
-        XCTAssertFalse(state.owns(firstExit))
-        XCTAssertNil(state.exitToken(listID: listID, surface: firstSurface))
-
-        let secondExit = try XCTUnwrap(
-            state.exitToken(listID: listID, surface: secondSurface)
-        )
-        XCTAssertTrue(state.owns(secondExit))
-
-        state.activate(listID: listID, surface: secondSurface)
-        XCTAssertFalse(state.owns(secondExit))
     }
 
     @MainActor
@@ -109,6 +122,24 @@ final class SnipListModelsTests: XCTestCase {
         XCTAssertEqual(snips[1].imageComponentsProvider?().count, 0)
         XCTAssertEqual(snips[2].draggingFrame.size, NSSize(width: 1, height: 1))
         XCTAssertEqual(snips[2].imageComponentsProvider?().count, 0)
+    }
+
+    @MainActor
+    func testMultilineDragPreviewUsesTheExactSourceFrame() {
+        let payload = SnipDragPayload(
+            ids: [UUID()],
+            text: "First line\nSecond line"
+        )
+        let sourceFrame = NSRect(x: 18, y: 42, width: 316, height: 94)
+
+        let snips = SnipDragExportPackage(payload: payload).draggingItems(
+            at: sourceFrame.origin,
+            scale: 2,
+            colorScheme: .light,
+            sourceFrame: sourceFrame
+        )
+
+        XCTAssertEqual(snips.first?.draggingFrame, sourceFrame)
     }
 
     func testMixedSnipDragPublishesMarkdownThenEveryAttachment() throws {
@@ -248,13 +279,6 @@ final class SnipListModelsTests: XCTestCase {
         )
     }
 
-    func testOnlySuccessfulExternalCopyMarksDraggedSnipsDone() {
-        XCTAssertTrue(ExternalSnipDragCompletion.shouldMarkDone(after: .copy))
-        XCTAssertFalse(ExternalSnipDragCompletion.shouldMarkDone(after: .move))
-        XCTAssertFalse(ExternalSnipDragCompletion.shouldMarkDone(after: .cancel))
-        XCTAssertFalse(ExternalSnipDragCompletion.shouldMarkDone(after: .forbidden))
-    }
-
     func testPinnedHeaderGlassRequiresRealScrollMovement() {
         XCTAssertFalse(
             PinnedListHeaderGlass.isVisible(
@@ -376,20 +400,20 @@ final class SnipListModelsTests: XCTestCase {
     }
 
     func testDoneSnipsSortAfterActiveSnipsInBothModes() {
-        let olderActive = makeSnip(
+        let olderActive = dropSnip(
             id: 1,
             createdAt: 100,
             list: "Review",
             manualPosition: 1
         )
-        let newerDone = makeSnip(
+        let newerDone = dropSnip(
             id: 2,
             createdAt: 200,
             list: "Review",
             manualPosition: 0,
             isDone: true
         )
-        let newestActive = makeSnip(
+        let newestActive = dropSnip(
             id: 3,
             createdAt: 300,
             list: "Review",
@@ -470,179 +494,6 @@ final class SnipListModelsTests: XCTestCase {
         )
     }
 
-    func testSnipDragListSlotsKeepOriginsUntilAnExactDestinationExists() {
-        let first = UUID()
-        let moving = UUID()
-        let last = UUID()
-        let snipIDs = [first, moving, last]
-
-        XCTAssertEqual(
-            SnipDragListLayout.slots(
-                snipIDs: snipIDs,
-                draggingIDs: [moving],
-                destinationBeforeID: nil,
-                showsDestinationGap: false,
-                preservesOriginGaps: true
-            ),
-            [.snip(first), .originGap(moving), .snip(last)]
-        )
-
-        XCTAssertEqual(
-            SnipDragListLayout.slots(
-                snipIDs: snipIDs,
-                draggingIDs: [moving],
-                destinationBeforeID: last,
-                showsDestinationGap: true,
-                preservesOriginGaps: false
-            ),
-            [.snip(first), .destinationGap, .snip(last)]
-        )
-
-        XCTAssertEqual(
-            SnipDragListLayout.slots(
-                snipIDs: snipIDs,
-                draggingIDs: [moving],
-                destinationBeforeID: nil,
-                showsDestinationGap: false,
-                preservesOriginGaps: false
-            ),
-            [.snip(first), .snip(last)]
-        )
-    }
-
-    func testSnipDragListSlotsKeepEachNoncontiguousOrigin() {
-        let ids = (0..<4).map { _ in UUID() }
-
-        XCTAssertEqual(
-            SnipDragListLayout.slots(
-                snipIDs: ids,
-                draggingIDs: [ids[0], ids[2]],
-                destinationBeforeID: nil,
-                showsDestinationGap: false,
-                preservesOriginGaps: true
-            ),
-            [
-                .originGap(ids[0]),
-                .snip(ids[1]),
-                .originGap(ids[2]),
-                .snip(ids[3])
-            ]
-        )
-    }
-
-    func testDropPlannerAllowsPreciseSameListPlacementWithoutFilters() {
-        let first = makeSnip(id: 1, createdAt: 300, list: "Review", manualPosition: 0)
-        let moving = makeSnip(id: 2, createdAt: 200, list: "Review", manualPosition: 1)
-        let last = makeSnip(id: 3, createdAt: 100, list: "Review", manualPosition: 2)
-
-        XCTAssertEqual(
-            SnipDropPlanner.plan(
-                payloadIDs: [moving.id],
-                snips: [first, moving, last],
-                targetListID: listID("Review"),
-                pointerBeforeID: last.id,
-                isOverHeading: false,
-                sortMode: .manual,
-                filtersActive: false
-            ),
-            SnipDropPlan(
-                listID: listID("Review"),
-                beforeID: last.id,
-                behavior: .exact,
-                showsInsertion: true
-            )
-        )
-    }
-
-    func testDropPlannerBlocksFilteredSameListPlacement() {
-        let moving = makeSnip(id: 1, createdAt: 200, list: "Review", manualPosition: 0)
-        let other = makeSnip(id: 2, createdAt: 100, list: "Review", manualPosition: 1)
-
-        XCTAssertNil(
-            SnipDropPlanner.plan(
-                payloadIDs: [moving.id],
-                snips: [moving, other],
-                targetListID: listID("Review"),
-                pointerBeforeID: other.id,
-                isOverHeading: false,
-                sortMode: .manual,
-                filtersActive: true
-            )
-        )
-    }
-
-    func testDropPlannerSendsFilteredManualListMoveToTop() {
-        let moving = makeSnip(id: 1, createdAt: 100, list: "Inbox", manualPosition: 0)
-        let first = makeSnip(id: 2, createdAt: 200, list: "Review", manualPosition: 0)
-        let last = makeSnip(id: 3, createdAt: 300, list: "Review", manualPosition: 1)
-
-        XCTAssertEqual(
-            SnipDropPlanner.plan(
-                payloadIDs: [moving.id],
-                snips: [moving, last, first],
-                targetListID: listID("Review"),
-                pointerBeforeID: last.id,
-                isOverHeading: false,
-                sortMode: .manual,
-                filtersActive: true
-            ),
-            SnipDropPlan(
-                listID: listID("Review"),
-                beforeID: first.id,
-                behavior: .listTop,
-                showsInsertion: false
-            )
-        )
-    }
-
-    func testDropPlannerShowsTheChronologicalDestinationForOneSnip() {
-        let newest = makeSnip(id: 1, createdAt: 300, list: "Review", manualPosition: 0)
-        let moving = makeSnip(id: 2, createdAt: 200, list: "Inbox", manualPosition: 0)
-        let oldest = makeSnip(id: 3, createdAt: 100, list: "Review", manualPosition: 1)
-
-        XCTAssertEqual(
-            SnipDropPlanner.plan(
-                payloadIDs: [moving.id],
-                snips: [oldest, moving, newest],
-                targetListID: listID("Review"),
-                pointerBeforeID: nil,
-                isOverHeading: false,
-                sortMode: .chronological,
-                filtersActive: false
-            ),
-            SnipDropPlan(
-                listID: listID("Review"),
-                beforeID: oldest.id,
-                behavior: .chronological,
-                showsInsertion: true
-            )
-        )
-    }
-
-    func testDropPlannerOmitsPreciseInsertionForChronologicalBatchListMove() {
-        let firstMoving = makeSnip(id: 1, createdAt: 250, list: "Inbox", manualPosition: 0)
-        let secondMoving = makeSnip(id: 2, createdAt: 150, list: "Inbox", manualPosition: 1)
-        let target = makeSnip(id: 3, createdAt: 200, list: "Review", manualPosition: 0)
-
-        XCTAssertEqual(
-            SnipDropPlanner.plan(
-                payloadIDs: [firstMoving.id, secondMoving.id],
-                snips: [firstMoving, target, secondMoving],
-                targetListID: listID("Review"),
-                pointerBeforeID: target.id,
-                isOverHeading: false,
-                sortMode: .chronological,
-                filtersActive: false
-            ),
-            SnipDropPlan(
-                listID: listID("Review"),
-                beforeID: nil,
-                behavior: .chronological,
-                showsInsertion: false
-            )
-        )
-    }
-
     func testFilteringSearchesContentAndSourceAndHonorsCompletionFilter() {
         let done = Snip(
             content: "Follow up tomorrow",
@@ -695,7 +546,7 @@ final class SnipListModelsTests: XCTestCase {
     func testLargeSnipFilteringKeepsExactMatches() {
         let snips = (0..<2_500).map { index in
             Snip(
-                content: index.isMultiple(of: 250) ? "Needle \(index)" : "Snip \(index)",
+                content: index.isMultiple(of: 250) ? "Needle \(index)" : "Item \(index)",
                 origin: .quickEntry,
                 listID: index.isMultiple(of: 2) ? SnipList.inboxID : listID("Later")
             )
@@ -892,171 +743,31 @@ final class SnipListModelsTests: XCTestCase {
     }
 
     func testListSnapshotBuildsGroupsAndSelectedPayloadOnceInListOrder() {
-        let inboxSnip = makeSnip(
+        let inbox = dropSnip(
             id: 1,
             createdAt: 100,
             list: "Inbox",
             manualPosition: 0
         )
-        let firstReview = makeSnip(id: 2, createdAt: 200, list: "Review", manualPosition: 0)
-        let secondReview = makeSnip(id: 3, createdAt: 300, list: "Review", manualPosition: 1)
+        let firstReview = dropSnip(id: 2, createdAt: 200, list: "Review", manualPosition: 0)
+        let secondReview = dropSnip(id: 3, createdAt: 300, list: "Review", manualPosition: 1)
         let snapshot = SnipListSnapshot(
-            visibleSnips: [secondReview, inboxSnip, firstReview],
-            allSnips: [secondReview, inboxSnip, firstReview],
+            visibleSnips: [secondReview, inbox, firstReview],
+            allSnips: [secondReview, inbox, firstReview],
             lists: [
                 .inbox,
                 SnipList(id: listID("Review"), name: "Review", systemImage: "star", position: 1)
             ],
-            selection: [secondReview.id, inboxSnip.id]
+            selection: [secondReview.id, inbox.id]
         )
 
         XCTAssertEqual(snapshot.groups.map(\.list), ["Inbox", "Review"])
-        XCTAssertEqual(snapshot.orderedVisibleIDs, [inboxSnip.id, secondReview.id, firstReview.id])
-        XCTAssertEqual(snapshot.dragPayload(for: secondReview).ids, [inboxSnip.id, secondReview.id])
+        XCTAssertEqual(snapshot.orderedVisibleIDs, [inbox.id, secondReview.id, firstReview.id])
+        XCTAssertEqual(snapshot.dragPayload(for: secondReview).ids, [inbox.id, secondReview.id])
         XCTAssertEqual(snapshot.dragPayload(for: firstReview).ids, [firstReview.id])
     }
 
-    @MainActor
-    func testListGeometrySupportsDropPlacementWithoutWindowInputRules() {
-        let first = makeSnip(id: 1, createdAt: 100, list: "Review", manualPosition: 0)
-        let second = makeSnip(id: 2, createdAt: 200, list: "Review", manualPosition: 1)
-        let geometry = SnipListGeometry()
-        geometry.record(CGRect(x: 10, y: 120, width: 200, height: 40), for: .row(first.id))
-        geometry.record(CGRect(x: 10, y: 180, width: 200, height: 60), for: .row(second.id))
-        geometry.record(
-            CGRect(x: 10, y: 80, width: 200, height: 30),
-            for: .heading(listID("Review"))
-        )
-        geometry.record(
-            CGRect(x: 10, y: 110, width: 200, height: 40),
-            for: .dropSurface(.snip(first.id))
-        )
-        geometry.record(
-            CGRect(x: 10, y: 120, width: 200, height: 40),
-            for: .entry(.snip(first.id))
-        )
-        geometry.record(
-            CGRect(x: 10, y: 180, width: 200, height: 60),
-            for: .entry(.snip(second.id))
-        )
-        geometry.record(
-            CGRect(x: 10, y: 250, width: 200, height: 16),
-            for: .listFooter(listID("Review"))
-        )
-        geometry.updateScroll(
-            .init(visibleOrigin: CGPoint(x: 0, y: 100), contentHeight: 500, viewportHeight: 200)
-        )
-
-        XCTAssertEqual(
-            geometry.contentPoint(fromViewportPoint: CGPoint(x: 20, y: 30)),
-            CGPoint(x: 20, y: 130)
-        )
-        XCTAssertEqual(
-            geometry.viewportPoint(fromContentPoint: CGPoint(x: 20, y: 130)),
-            CGPoint(x: 20, y: 30)
-        )
-        XCTAssertEqual(
-            geometry.insertionID(atContentPoint: CGPoint(x: 20, y: 170), among: [first, second]),
-            second.id
-        )
-        XCTAssertEqual(geometry.dragGapHeight(for: [first.id, second.id]), 108)
-        XCTAssertEqual(
-            geometry.contentPoint(
-                fromLocalPoint: CGPoint(x: 5, y: 6),
-                in: .heading(listID("Review"))
-            ),
-            CGPoint(x: 15, y: 86)
-        )
-        XCTAssertEqual(
-            geometry.contentPoint(
-                fromLocalPoint: CGPoint(x: 5, y: 6),
-                in: .dropSurface(.snip(first.id))
-            ),
-            CGPoint(x: 15, y: 116)
-        )
-        XCTAssertEqual(
-            geometry.listBodyFrame(
-                listID: listID("Review"),
-                rowIDs: [first.id, second.id],
-                entryIDs: [.snip(first.id), .snip(second.id)]
-            ),
-            CGRect(x: 10, y: 120, width: 200, height: 120)
-        )
-        XCTAssertTrue(
-            geometry.hasPlacementFrames(
-                in: listID("Review"),
-                among: [first, second]
-            )
-        )
-
-        geometry.updateScroll(
-            .init(visibleOrigin: CGPoint(x: 0, y: 140), contentHeight: 500, viewportHeight: 200)
-        )
-        XCTAssertEqual(
-            geometry.contentPoint(fromViewportPoint: CGPoint(x: 20, y: 10)),
-            CGPoint(x: 20, y: 150)
-        )
-
-        geometry.remove(.row(first.id))
-        XCTAssertNil(geometry.frame(for: .row(first.id)))
-
-        geometry.record(
-            CGRect(x: 10, y: 180, width: 200, height: 60),
-            for: .dropSurface(.snip(second.id))
-        )
-        geometry.record(
-            CGRect(x: 10, y: 180, width: 200, height: 60),
-            for: .entry(.originGap(second.id))
-        )
-
-        geometry.retainSnips([first.id])
-
-        XCTAssertNil(geometry.frame(for: .row(second.id)))
-        XCTAssertNil(geometry.frame(for: .entry(.snip(second.id))))
-        XCTAssertNil(geometry.frame(for: .entry(.originGap(second.id))))
-        XCTAssertNil(geometry.frame(for: .dropSurface(.snip(second.id))))
-    }
-
-    @MainActor
-    func testListGeometryUsesHeaderForAnEmptySnipListDropSurface() {
-        let geometry = SnipListGeometry()
-        let listID = listID("Empty")
-        geometry.record(
-            CGRect(x: 10, y: 80, width: 200, height: 30),
-            for: .heading(listID)
-        )
-
-        XCTAssertTrue(geometry.hasPlacementFrames(in: listID, among: []))
-        XCTAssertNil(
-            geometry.listBodyFrame(
-                listID: listID,
-                rowIDs: [],
-                entryIDs: []
-            )
-        )
-    }
-
-    @MainActor
-    func testListGeometryIncludesSyntheticEntriesInListHighlight() {
-        let geometry = SnipListGeometry()
-        let listID = listID("Review")
-        let gapID = SnipListEntryID.destinationGap(listID)
-        geometry.record(
-            CGRect(x: 10, y: 80, width: 200, height: 72),
-            for: .entry(gapID)
-        )
-
-        XCTAssertEqual(
-            geometry.listBodyFrame(
-                listID: listID,
-                rowIDs: [],
-                entryIDs: [gapID]
-            ),
-            CGRect(x: 10, y: 80, width: 200, height: 72)
-        )
-    }
-
-    private func makeSnip(
+    private func dropSnip(
         id: Int,
         createdAt: TimeInterval,
         list: String,

@@ -29,7 +29,6 @@ struct ContentView: View {
     @State private var fileImportTarget: FileImportTarget?
     @State private var pendingEditAttachmentImport: PendingEditAttachmentImport?
     @State private var showingClearClipboard = false
-    @State private var declinedClipboardOnboarding = false
     @State private var measuredInlineEntryHeight = PanelControlMetrics.inlineEntryBaseHeight
     @State private var inlineEntryFieldHeight: CGFloat = 0
     @State private var isSavingInlineEntry = false
@@ -72,9 +71,7 @@ struct ContentView: View {
         .background {
             ClipboardAlertHost(
                 history: model.clipboardHistory,
-                isShowingClipboard: model.isShowingClipboard,
-                showingClearConfirmation: $showingClearClipboard,
-                declinedOnboarding: $declinedClipboardOnboarding
+                showingClearConfirmation: $showingClearClipboard
             )
         }
         .fileImporter(
@@ -117,7 +114,7 @@ struct ContentView: View {
 
             mainPanel
 
-            ListTabBarView(
+            SnipListTabBarView(
                 model: model,
                 snipDragSourceController: snipDragSourceController
             ) {
@@ -139,8 +136,7 @@ struct ContentView: View {
             entryDraftListID = listID
             entryDraft = model.composerDraft(for: listID)
         }
-        .onChange(of: model.isShowingClipboard) { _, showing in
-            if !showing { declinedClipboardOnboarding = false }
+        .onChange(of: model.isShowingClipboard) { _, _ in
             updatePanelComposerExpansion(for: measuredInlineEntryHeight)
         }
         .onReceive(coordinator.panelFocusRequests) { request in
@@ -721,9 +717,7 @@ struct ContentView: View {
 
 private struct ClipboardAlertHost: View {
     @ObservedObject var history: ClipboardHistory
-    let isShowingClipboard: Bool
     @Binding var showingClearConfirmation: Bool
-    @Binding var declinedOnboarding: Bool
 
     var body: some View {
         Color.clear
@@ -736,12 +730,6 @@ private struct ClipboardAlertHost: View {
             } message: {
                 Text("This leaves the current Mac clipboard unchanged.")
             }
-            .alert("Turn On Clipboard History?", isPresented: onboardingPresented) {
-                Button("Not Now", role: .cancel) { }
-                Button("Turn On") { history.startMonitoring() }
-            } message: {
-                Text("Snip Snap keeps up to 100 clipboard items on this Mac. You can pause or clear history at any time.")
-            }
             .alert(
                 "Clipboard History Was Not Saved",
                 isPresented: persistenceErrorPresented
@@ -750,17 +738,6 @@ private struct ClipboardAlertHost: View {
             } message: {
                 Text(history.persistenceError ?? "")
             }
-    }
-
-    private var onboardingPresented: Binding<Bool> {
-        Binding(
-            get: {
-                isShowingClipboard
-                    && !history.hasConsent
-                    && !declinedOnboarding
-            },
-            set: { if !$0 { declinedOnboarding = true } }
-        )
     }
 
     private var persistenceErrorPresented: Binding<Bool> {

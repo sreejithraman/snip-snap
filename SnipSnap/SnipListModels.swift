@@ -58,53 +58,113 @@ struct SnipDragPayload: Codable, Equatable, Sendable, Transferable {
     }
 }
 
-enum ExternalSnipDragCompletion {
-    static func shouldMarkDone(after operation: DropOperation) -> Bool {
-        operation == .copy
-    }
-}
-
-enum SnipDragListSlot: Equatable {
-    case snip(UUID)
-    case originGap(UUID)
-    case destinationGap
-}
-
-enum SnipDragListLayout {
-    static func slots(
-        snipIDs: [UUID],
-        draggingIDs: Set<UUID>,
-        destinationBeforeID: UUID?,
-        showsDestinationGap: Bool,
-        preservesOriginGaps: Bool
-    ) -> [SnipDragListSlot] {
-        guard !draggingIDs.isEmpty else { return snipIDs.map(SnipDragListSlot.snip) }
-
-        if preservesOriginGaps {
-            return snipIDs.map { id in
-                draggingIDs.contains(id) ? .originGap(id) : .snip(id)
-            }
-        }
-
-        var slots = snipIDs
-            .filter { !draggingIDs.contains($0) }
-            .map(SnipDragListSlot.snip)
-        guard showsDestinationGap else { return slots }
-
-        let insertionIndex = destinationBeforeID.flatMap { beforeID in
-            slots.firstIndex(of: .snip(beforeID))
-        } ?? slots.endIndex
-        slots.insert(.destinationGap, at: insertionIndex)
-        return slots
-    }
-}
-
 struct SnipListGroup: Identifiable, Equatable {
     let listID: UUID
     let list: String
     let snips: [Snip]
 
     var id: UUID { listID }
+}
+
+enum SnipListReorderTarget: Equatable {
+    case before(UUID)
+    case end
+
+    var beforeID: UUID? {
+        switch self {
+        case .before(let id): id
+        case .end: nil
+        }
+    }
+}
+
+enum SnipListReorderPlan {
+    static func target(
+        atWindowY windowY: CGFloat,
+        orderedIDs: [UUID],
+        movingIDs: Set<UUID>,
+        rowFrames: [UUID: CGRect],
+        rowFrameOffsetY: CGFloat = 0
+    ) -> SnipListReorderTarget {
+        let candidates = orderedIDs.compactMap { id -> (UUID, CGRect)? in
+            guard !movingIDs.contains(id), let frame = rowFrames[id] else { return nil }
+            return (id, frame.offsetBy(dx: 0, dy: rowFrameOffsetY))
+        }
+        .sorted { $0.1.midY > $1.1.midY }
+        if let candidate = candidates.first(where: { windowY > $0.1.midY }) {
+            return .before(candidate.0)
+        }
+        return .end
+    }
+
+    static func orderedIDs(
+        from originalIDs: [UUID],
+        movingIDs: [UUID],
+        target: SnipListReorderTarget
+    ) -> [UUID]? {
+        let orderedMovingIDs = movingIDs.filter(originalIDs.contains)
+        guard orderedMovingIDs.count == movingIDs.count else { return nil }
+        let movingSet = Set(orderedMovingIDs)
+        var result = originalIDs.filter { !movingSet.contains($0) }
+        let destination = target.beforeID.flatMap(result.firstIndex(of:)) ?? result.endIndex
+        result.insert(contentsOf: orderedMovingIDs, at: destination)
+        return result
+    }
+}
+
+enum PinnedListHeaderGlass {
+    static func hasScrolled(visibleOriginY: CGFloat) -> Bool {
+        visibleOriginY > 0.5
+    }
+
+    static func isVisible(isPinned: Bool, hasScrolled: Bool) -> Bool {
+        isPinned && hasScrolled
+    }
+
+    static func updatedLists(
+        _ lists: Set<UUID>,
+        listID: UUID,
+        isPinned: Bool
+    ) -> Set<UUID>? {
+        guard lists.contains(listID) != isPinned else { return nil }
+        var updated = lists
+        if isPinned {
+            updated.insert(listID)
+        } else {
+            updated.remove(listID)
+        }
+        return updated
+    }
+}
+
+enum AddedSnipRevealDestination: Equatable {
+    case scrollViewTop
+}
+
+struct AddedSnipRevealState {
+    private var pendingID: UUID?
+
+    mutating func record(
+        snipID: UUID?,
+        wasAtTop: Bool,
+        isVisibleInModel: Bool,
+        visibleIDs: [UUID]
+    ) -> AddedSnipRevealDestination? {
+        guard wasAtTop, let snipID, isVisibleInModel else {
+            pendingID = nil
+            return nil
+        }
+        pendingID = snipID
+        return nextDestination(visibleIDs: visibleIDs)
+    }
+
+    mutating func nextDestination(
+        visibleIDs: [UUID]
+    ) -> AddedSnipRevealDestination? {
+        guard let pendingID, visibleIDs.contains(pendingID) else { return nil }
+        self.pendingID = nil
+        return .scrollViewTop
+    }
 }
 
 struct SnipListSnapshot {
@@ -160,88 +220,6 @@ struct SnipListSnapshot {
             guard !snips.isEmpty || list.id == keepsEmptyListID else { return nil }
             return SnipListGroup(listID: list.id, list: list.name, snips: snips)
         }
-    }
-}
-
-enum SnipDropBehavior: Equatable {
-    case exact
-    case listTop
-    case chronological
-}
-
-struct SnipDropPlan: Equatable {
-    let listID: UUID
-    let beforeID: UUID?
-    let behavior: SnipDropBehavior
-    let showsInsertion: Bool
-}
-
-enum SnipDropPlanner {
-    static func plan(
-        payloadIDs: [UUID],
-        snips: [Snip],
-        targetListID: UUID,
-        pointerBeforeID: UUID?,
-        isOverHeading: Bool,
-        sortMode: SnipSortMode,
-        filtersActive: Bool
-    ) -> SnipDropPlan? {
-        let movingIDs = Set(payloadIDs)
-        guard !movingIDs.isEmpty else { return nil }
-
-        let movingSnips = snips.filter { movingIDs.contains($0.id) }
-        guard movingSnips.count == movingIDs.count else { return nil }
-
-        let sourceLists = Set(movingSnips.map(\.listID))
-        let sameList = sourceLists.count == 1 && sourceLists.first == targetListID
-        let targetSnips = Snip.sorted(
-            snips.filter { $0.listID == targetListID && !movingIDs.contains($0.id) },
-            by: sortMode
-        )
-
-        if !filtersActive && (sortMode == .manual || sameList) {
-            let validPointerID = pointerBeforeID.flatMap { candidate in
-                targetSnips.contains(where: { $0.id == candidate }) ? candidate : nil
-            }
-            return SnipDropPlan(
-                listID: targetListID,
-                beforeID: isOverHeading ? targetSnips.first?.id : validPointerID,
-                behavior: .exact,
-                showsInsertion: true
-            )
-        }
-
-        if sortMode == .manual {
-            guard !sameList else { return nil }
-            return SnipDropPlan(
-                listID: targetListID,
-                beforeID: targetSnips.first?.id,
-                behavior: .listTop,
-                showsInsertion: false
-            )
-        }
-
-        guard !sameList else { return nil }
-        let beforeID = movingSnips.count == 1
-            ? chronologicalInsertionID(for: movingSnips[0], in: targetSnips)
-            : nil
-        return SnipDropPlan(
-            listID: targetListID,
-            beforeID: beforeID,
-            behavior: .chronological,
-            showsInsertion: movingSnips.count == 1
-        )
-    }
-
-    private static func chronologicalInsertionID(
-        for movingSnip: Snip,
-        in targetSnips: [Snip]
-    ) -> UUID? {
-        let ordered = Snip.sorted(targetSnips + [movingSnip], by: .chronological)
-        guard let movingIndex = ordered.firstIndex(where: { $0.id == movingSnip.id }) else {
-            return nil
-        }
-        return ordered.dropFirst(movingIndex + 1).first(where: { $0.id != movingSnip.id })?.id
     }
 }
 

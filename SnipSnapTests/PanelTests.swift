@@ -917,7 +917,8 @@ final class PanelTests: XCTestCase {
             view: snipView,
             payload: payload,
             onBegan: {},
-            onEnded: { _ in }
+            onMoved: { _ in },
+            onEnded: { _, _ in }
         )
         controller.updateBlockingView(id: UUID(), view: headerView)
 
@@ -945,7 +946,8 @@ final class PanelTests: XCTestCase {
             view: snipView,
             payload: payload,
             onBegan: {},
-            onEnded: { _ in }
+            onMoved: { _ in },
+            onEnded: { _, _ in }
         )
         controller.updateBlockingView(id: UUID(), view: tabBarView)
 
@@ -976,64 +978,12 @@ final class PanelTests: XCTestCase {
             view: snipView,
             payload: payload,
             onBegan: {},
-            onEnded: { _ in }
+            onMoved: { _ in },
+            onEnded: { _, _ in }
         )
 
         XCTAssertNil(controller.payload(atWindowPoint: NSPoint(x: 2, y: 150)))
         XCTAssertEqual(controller.payload(atWindowPoint: NSPoint(x: 150, y: 150)), payload)
-    }
-
-    @MainActor
-    func testSnipListAutoScrollUsesTheNativeScrollViewWithoutPublishedListState() {
-        let scrollView = NSScrollView(
-            frame: NSRect(x: 0, y: 0, width: 100, height: 100)
-        )
-        scrollView.documentView = NSView(
-            frame: NSRect(x: 0, y: 0, width: 100, height: 1_000)
-        )
-        let scroller = SnipListScroller()
-        scroller.attach(scrollView)
-
-        scroller.scrollTo(y: 120)
-
-        XCTAssertEqual(scrollView.contentView.bounds.origin.y, 120)
-
-        scroller.scrollTo(y: 0)
-
-        XCTAssertEqual(scrollView.contentView.bounds.origin.y, 0)
-    }
-
-    @MainActor
-    func testPinnedListFollowsTheLatestHeaderAboveTheViewport() {
-        let geometry = SnipListGeometry()
-        let firstListID = UUID()
-        let secondListID = UUID()
-        geometry.record(
-            CGRect(x: 0, y: 0, width: 100, height: 32),
-            for: .heading(firstListID)
-        )
-        geometry.record(
-            CGRect(x: 0, y: 200, width: 100, height: 32),
-            for: .heading(secondListID)
-        )
-
-        geometry.updateScroll(
-            .init(
-                visibleOrigin: CGPoint(x: 0, y: 150),
-                contentHeight: 400,
-                viewportHeight: 100
-            )
-        )
-        XCTAssertEqual(geometry.pinnedListIDs(), [firstListID])
-
-        geometry.updateScroll(
-            .init(
-                visibleOrigin: CGPoint(x: 0, y: 220),
-                contentHeight: 400,
-                viewportHeight: 100
-            )
-        )
-        XCTAssertEqual(geometry.pinnedListIDs(), [secondListID])
     }
 
     func testListBottomPaddingKeepsTheComposerHeightScrollable() {

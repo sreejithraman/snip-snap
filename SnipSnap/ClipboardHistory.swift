@@ -388,7 +388,6 @@ final class ClipboardHistory: ObservableObject {
 
     @Published private(set) var entries: [ClipboardEntry] = []
     @Published private(set) var isPaused: Bool
-    @Published private(set) var hasConsent: Bool
     @Published private(set) var persistenceError: String?
 
     private let pasteboard: NSPasteboard
@@ -403,7 +402,6 @@ final class ClipboardHistory: ObservableObject {
     private var persistenceScheduleTask: Task<Void, Never>?
     private var captureTask: Task<Void, Never>?
     private var inFlightChangeCount: Int?
-    private static let enabledDefaultsKey = "clipboardHistoryEnabled"
     private static let pausedDefaultsKey = "clipboardHistoryPaused"
 
     init(
@@ -418,7 +416,6 @@ final class ClipboardHistory: ObservableObject {
         self.storeURL = storeURL
         fileStore = ClipboardHistoryFileStore(url: storeURL)
         captureReader = ClipboardCaptureReader(pasteboardName: pasteboard.name)
-        hasConsent = defaults.bool(forKey: Self.enabledDefaultsKey)
         isPaused = defaults.bool(forKey: Self.pausedDefaultsKey)
         lastChangeCount = pasteboard.changeCount
         entries = []
@@ -439,20 +436,11 @@ final class ClipboardHistory: ObservableObject {
     }
 
     func poll() {
-        guard hasConsent else { return }
         guard !isPaused, suppressionTokens.isEmpty else {
             lastChangeCount = pasteboard.changeCount
             return
         }
         guard pasteboard.changeCount != lastChangeCount else { return }
-        captureCurrent()
-    }
-
-    func startMonitoring() {
-        hasConsent = true
-        isPaused = false
-        defaults.set(true, forKey: Self.enabledDefaultsKey)
-        defaults.set(false, forKey: Self.pausedDefaultsKey)
         captureCurrent()
     }
 
@@ -512,7 +500,7 @@ final class ClipboardHistory: ObservableObject {
 
     private func captureCurrent() {
         let capturedChangeCount = pasteboard.changeCount
-        guard hasConsent, !isPaused, suppressionTokens.isEmpty else {
+        guard !isPaused, suppressionTokens.isEmpty else {
             lastChangeCount = capturedChangeCount
             return
         }
@@ -527,7 +515,6 @@ final class ClipboardHistory: ObservableObject {
                       self.inFlightChangeCount == capturedChangeCount else { return }
                 self.inFlightChangeCount = nil
                 guard !Task.isCancelled,
-                      self.hasConsent,
                       !self.isPaused,
                       self.suppressionTokens.isEmpty,
                       self.pasteboard.changeCount == capturedChangeCount else { return }
@@ -574,7 +561,6 @@ final class ClipboardHistory: ObservableObject {
             }.value
             guard !Task.isCancelled,
                   let self,
-                  self.hasConsent,
                   !self.isPaused,
                   self.suppressionTokens.isEmpty,
                   self.pasteboard.changeCount == capturedChangeCount else { return }

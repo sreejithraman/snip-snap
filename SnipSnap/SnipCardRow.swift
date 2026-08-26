@@ -4,8 +4,6 @@ struct SnipCardRow: View {
     let snip: Snip
     let isSelected: Bool
     let isEditing: Bool
-    let dragPayload: SnipDragPayload
-    let dragSourceController: SnipDragSourceController
     @Binding var editAttachments: [URL]
     @Binding var isSaving: Bool
     let attachmentURL: (SnipAttachment) -> URL
@@ -19,8 +17,6 @@ struct SnipCardRow: View {
     let onCancelEdit: () -> Void
     let onSaveEdit: (String, [URL]) async -> Bool
     let onEditError: (String) -> Void
-    let onDragBegan: () -> Void
-    let onDragEnded: (SnipDragOutcome) -> Void
 
     @State private var editText = ""
     @State private var temporaryAttachmentURLs: Set<URL> = []
@@ -54,13 +50,10 @@ struct SnipCardRow: View {
                     .transition(.opacity)
             }
         }
-        .background {
-            if !isEditing {
-                Color.clear
-                    .snipCardTapActions(onSelect: onSelect, onOpen: onOpen)
-            }
-        }
         .panelContentCardSurface(isSelected: isSelected, isDone: snip.isDone)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2, perform: onOpen)
+        .onTapGesture(count: 1, perform: onSelect)
         .animation(.snappy(duration: 0.18), value: isEditing)
         .onChange(of: isEditing, initial: true) { _, editing in
             guard editing else {
@@ -102,16 +95,6 @@ struct SnipCardRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .snipCardTapActions(onSelect: onSelect, onOpen: onOpen)
-        .background {
-            SnipDragSourceRegion(
-                controller: dragSourceController,
-                id: snip.id,
-                payload: dragPayload,
-                onBegan: onDragBegan,
-                onEnded: onDragEnded
-            )
-        }
     }
 
     private var attachmentPreviewItems: [AttachmentPreviewItem] {
@@ -301,17 +284,6 @@ struct SnipCardRow: View {
                 editorFocused = false
             }
         }
-    }
-}
-
-private extension View {
-    func snipCardTapActions(
-        onSelect: @escaping () -> Void,
-        onOpen: @escaping () -> Void
-    ) -> some View {
-        contentShape(Rectangle())
-            .onTapGesture(count: 2, perform: onOpen)
-            .onTapGesture(perform: onSelect)
     }
 }
 

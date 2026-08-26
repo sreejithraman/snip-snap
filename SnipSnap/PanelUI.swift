@@ -55,6 +55,15 @@ enum PanelListMetrics {
     static let listSpacing = SnipSnapSpacing.paneContentInset
     static let verticalContentInset: CGFloat = 12
     static let compactVerticalContentInset: CGFloat = 10
+
+    static let inboxRowInsets = EdgeInsets(
+        top: 0,
+        leading: relatedListInset,
+        bottom: 0,
+        trailing: relatedListInset
+    )
+
+    private static let relatedListInset = horizontalContentInset - SnipSnapSpacing.relatedContent
 }
 
 enum PanelComposerMetrics {
@@ -116,7 +125,13 @@ struct PanelListHeader<Actions: View>: View {
             Text(title)
                 .font(.headline)
                 .foregroundStyle(SnipSnapColors.textPrimary)
+                .contentShape(Rectangle())
+                .gesture(WindowDragGesture())
+                .allowsWindowActivationEvents()
             Spacer(minLength: SnipSnapSpacing.relatedContent)
+                .contentShape(Rectangle())
+                .gesture(WindowDragGesture())
+                .allowsWindowActivationEvents()
             actions
         }
         .buttonStyle(.borderless)
@@ -127,7 +142,6 @@ struct PanelListHeader<Actions: View>: View {
             alignment: .leading
         )
         .panelPinnedHeaderSurface(isVisible: showsGlass)
-        .contentShape(Rectangle())
     }
 }
 
