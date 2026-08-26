@@ -2,6 +2,17 @@ import QuickLook
 import SwiftUI
 import UniformTypeIdentifiers
 
+private enum FileImportTarget {
+    case composer(UUID)
+    case edit(UUID)
+}
+
+struct PendingEditAttachmentImport: Identifiable {
+    let id = UUID()
+    let itemID: UUID
+    let urls: [URL]
+}
+
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var shortcutSettings: ShortcutSettings
@@ -15,7 +26,8 @@ struct ContentView: View {
     @State private var showingNewSection = false
     @State private var movesSelectionToNewSection = false
     @State private var showingFileImporter = false
-    @State private var fileImportSectionID: UUID?
+    @State private var fileImportTarget: FileImportTarget?
+    @State private var pendingEditAttachmentImport: PendingEditAttachmentImport?
     @State private var showingClearClipboard = false
     @State private var declinedClipboardOnboarding = false
     @State private var measuredInlineEntryHeight = PanelControlMetrics.inlineEntryBaseHeight
@@ -72,17 +84,26 @@ struct ContentView: View {
         ) { result in
             switch result {
             case .success(let urls):
-                let sectionID = fileImportSectionID ?? model.activeSectionID
-                model.addDraftAttachments(urls, to: sectionID)
-                if model.activeSectionID == sectionID {
-                    entryDraft = model.composerDraft(for: sectionID)
+                switch fileImportTarget {
+                case .edit(let itemID) where itemID == model.editingID:
+                    pendingEditAttachmentImport = PendingEditAttachmentImport(
+                        itemID: itemID,
+                        urls: urls
+                    )
+                case .composer(let sectionID):
+                    model.addDraftAttachments(urls, to: sectionID)
+                    if model.activeSectionID == sectionID {
+                        entryDraft = model.composerDraft(for: sectionID)
+                    }
+                case .edit, .none:
+                    break
                 }
             case .failure(let error):
                 if (error as NSError).code != NSUserCancelledError {
                     model.presentedError = error.localizedDescription
                 }
             }
-            fileImportSectionID = nil
+            fileImportTarget = nil
         }
         .onReceive(fileDropController.fileDrops) { urls in
             guard model.editingID == nil else { return }
@@ -356,6 +377,12 @@ struct ContentView: View {
                 movesSelectionToNewSection = true
                 showingNewSection = true
             },
+            requestFileImport: { itemID in
+                fileImportTarget = .edit(itemID)
+                showingFileImporter = true
+            },
+            pendingEditAttachmentImport: $pendingEditAttachmentImport,
+            captureScreenAreaForEdit: captureScreenAreaForEdit,
             bottomContentInset: model.isShowingClipboard ? 0 : measuredInlineEntryHeight,
             onPreviewAttachments: openAttachmentPreview,
             onRemovePreviewURL: removePreviewURL
@@ -449,7 +476,7 @@ struct ContentView: View {
     private var inlineAttachmentMenu: some View {
         Menu {
             Button("Choose Files…") {
-                fileImportSectionID = model.activeSectionID
+                fileImportTarget = .composer(model.activeSectionID)
                 showingFileImporter = true
             }
             Button("Capture Screen Area…") { captureScreenArea() }
@@ -621,6 +648,33 @@ struct ContentView: View {
     private func captureScreenArea() {
         let sectionID = model.activeSectionID
         let url = model.stageScreenCapture()
+        runScreenCapture(to: url) { succeeded in
+            model.finishScreenCapture(url, in: sectionID, succeeded: succeeded)
+            if succeeded, model.activeSectionID == sectionID {
+                entryDraft = model.composerDraft(for: sectionID)
+            }
+        }
+    }
+
+    private func captureScreenAreaForEdit(
+        completion: @escaping @MainActor (URL?) -> Void
+    ) {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Snip Snap Capture \(UUID().uuidString).png")
+        runScreenCapture(to: url) { succeeded in
+            guard succeeded else {
+                try? FileManager.default.removeItem(at: url)
+                completion(nil)
+                return
+            }
+            completion(url)
+        }
+    }
+
+    private func runScreenCapture(
+        to url: URL,
+        completion: @escaping @MainActor (Bool) -> Void
+    ) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
         process.arguments = ["-i", url.path]
@@ -628,14 +682,11 @@ struct ContentView: View {
             Task { @MainActor in
                 let succeeded = process.terminationStatus == 0
                     && FileManager.default.fileExists(atPath: url.path)
-                model.finishScreenCapture(url, in: sectionID, succeeded: succeeded)
-                if succeeded, model.activeSectionID == sectionID {
-                    entryDraft = model.composerDraft(for: sectionID)
-                }
+                completion(succeeded)
             }
         }
         do { try process.run() } catch {
-            model.finishScreenCapture(url, in: sectionID, succeeded: false)
+            completion(false)
             model.presentedError = "Snip Snap could not start screen capture."
         }
     }

@@ -58,6 +58,9 @@ struct InboxListView: View {
     @ObservedObject var state: InboxListState
     @FocusState.Binding var focusedTarget: InboxFocusTarget?
     let moveSelectionToNewSection: (Set<UUID>) -> Void
+    let requestFileImport: (UUID) -> Void
+    @Binding var pendingEditAttachmentImport: PendingEditAttachmentImport?
+    let captureScreenAreaForEdit: (@escaping @MainActor (URL?) -> Void) -> Void
     let bottomContentInset: CGFloat
     let onPreviewAttachments: ([URL], URL) -> Void
     let onRemovePreviewURL: (URL) -> Void
@@ -207,26 +210,39 @@ struct InboxListView: View {
             state.reconcile(model: model)
         }
         .onReceive(fileDropController.fileDrops) { urls in
-            guard let editingID = model.editingID,
-                  let item = model.items.first(where: { $0.id == editingID }) else { return }
-            var session: InlineEditSession
-            if let editSession, editSession.itemID == editingID {
-                session = editSession
-            } else {
-                session = InlineEditSession(
-                    itemID: editingID,
-                    attachments: item.attachments.map(model.attachmentURL)
-                )
-            }
-            guard !session.isSaving else { return }
-            session.attachments.append(
-                contentsOf: PanelFileDropValidation.newFiles(
-                    in: urls,
-                    excluding: session.attachments
-                )
-            )
-            editSession = session
+            guard let editingID = model.editingID else { return }
+            addEditAttachments(urls, to: editingID)
         }
+        .onChange(of: pendingEditAttachmentImport?.id, initial: true) {
+            guard let pendingEditAttachmentImport else { return }
+            self.pendingEditAttachmentImport = nil
+            addEditAttachments(
+                pendingEditAttachmentImport.urls,
+                to: pendingEditAttachmentImport.itemID
+            )
+        }
+    }
+
+    private func addEditAttachments(_ urls: [URL], to itemID: UUID) {
+        guard model.editingID == itemID,
+              let item = model.items.first(where: { $0.id == itemID }) else { return }
+        var session: InlineEditSession
+        if let editSession, editSession.itemID == itemID {
+            session = editSession
+        } else {
+            session = InlineEditSession(
+                itemID: itemID,
+                attachments: item.attachments.map(model.attachmentURL)
+            )
+        }
+        guard !session.isSaving else { return }
+        session.attachments.append(
+            contentsOf: PanelFileDropValidation.newFiles(
+                in: urls,
+                excluding: session.attachments
+            )
+        )
+        editSession = session
     }
 
     private func revealAddedClip(at destination: InboxAddedClipRevealDestination) {
@@ -568,6 +584,11 @@ struct InboxListView: View {
             onSelect: { select(item.id) },
             onOpen: { edit(item.id) },
             onToggleDone: { model.toggleDone(id: item.id) },
+            onChooseFiles: {
+                guard model.editingID == item.id else { return }
+                requestFileImport(item.id)
+            },
+            onCaptureScreenArea: captureScreenAreaForEdit,
             onCancelEdit: {
                 model.editingID = nil
                 focusedTarget = .list
