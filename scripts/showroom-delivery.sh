@@ -2,37 +2,6 @@
 set -euo pipefail
 
 script_dir="${0:A:h}"
-repo_dir="${script_dir:h}"
-state_dir="${SNIP_SNAP_SHOWROOM_STATE_DIR:-}"
-derived_data=""
-app_path=""
-executable_path=""
-pid_path=""
-build_log=""
-process_name="SnipSnapReview"
-
-configure_state() {
-    local output_path="$1"
-    if [[ -z "$state_dir" ]]; then
-        state_dir="${output_path:h}/runtime"
-    fi
-    derived_data="$state_dir/derived-data"
-    app_path="$derived_data/Build/Products/Debug/SnipSnapReview.app"
-    executable_path="$app_path/Contents/MacOS/$process_name"
-    pid_path="$state_dir/process.pid"
-    build_log="${output_path:h}/build.log"
-}
-
-matching_process_ids() {
-    local candidate_pid command_path
-    for candidate_pid in $(/usr/bin/pgrep -x "$process_name" 2>/dev/null || true); do
-        command_path="$(/bin/ps -p "$candidate_pid" -o command= 2>/dev/null || true)"
-        if [[ "$command_path" == "$executable_path" ||
-              "$command_path" == "$executable_path "* ]]; then
-            print -r -- "$candidate_pid"
-        fi
-    done
-}
 
 describe() {
     print -r -- '{
@@ -62,111 +31,90 @@ result_path() {
     return 2
 }
 
-write_result() {
-    local output_path="$1"
+write_fallback_dev_result() {
+    local dev_result="$1"
     local operation="$2"
-    local verification_status="$3"
-    local detail="$4"
-    local app_check="$5"
-    local process_check="$6"
-    local log_paths='[]'
-    if [[ -f "$build_log" ]]; then
-        log_paths="[\"$build_log\"]"
-    fi
+    local detail="$3"
+    /usr/bin/ruby -rjson -e '
+result = {
+  "operation" => ARGV.fetch(0),
+  "slot" => nil,
+  "status" => "failed",
+  "detail" => ARGV.fetch(1),
+  "checks" => {"app" => "failed", "process" => "failed"},
+  "pid" => nil
+}
+File.write(ARGV.fetch(2), JSON.pretty_generate(result) + "\n")
+' "$operation" "$detail" "$dev_result"
+}
+
+write_showroom_result() {
+    local dev_result="$1"
+    local output_path="$2"
+    local operation="$3"
+    local build_log="$4"
     /bin/mkdir -p "${output_path:h}"
-    print -r -- "{
-  \"protocol_version\": 1,
-  \"surface\": \"device\",
-  \"operation\": \"$operation\",
-  \"verification\": {
-    \"status\": \"$verification_status\",
-    \"detail\": \"$detail\",
-    \"checks\": {
-      \"app\": \"$app_check\",
-      \"process\": \"$process_check\"
-    }
+    /usr/bin/ruby -rjson -e '
+dev = JSON.parse(File.read(ARGV.fetch(0)))
+slot = dev["slot"]
+device = slot ? "Snip Snap Dev #{slot} on this Mac" : "Snip Snap development app on this Mac"
+limit = if slot
+  "Available only while this Mac stays logged in; it shares this worktree\u0027s Snip Snap Dev #{slot} app and data."
+else
+  "Available only while this Mac stays logged in."
+end
+build_log = ARGV.fetch(3)
+result = {
+  "protocol_version" => 1,
+  "surface" => "device",
+  "operation" => ARGV.fetch(2),
+  "verification" => {
+    "status" => dev.fetch("status"),
+    "detail" => dev.fetch("detail"),
+    "checks" => dev.fetch("checks")
   },
-  \"location\": {
-    \"device\": \"Snip Snap Review on this Mac\"
-  },
-  \"evidence_paths\": [],
-  \"log_paths\": $log_paths,
-  \"availability_limitations\": [
-    \"Available only while this Mac stays logged in; Showroom owns the private review build.\"
-  ]
-}" > "$output_path"
+  "location" => {"device" => device},
+  "evidence_paths" => [],
+  "log_paths" => File.file?(build_log) ? [build_log] : [],
+  "availability_limitations" => [limit]
+}
+File.write(ARGV.fetch(1), JSON.pretty_generate(result) + "\n")
+' "$dev_result" "$output_path" "$operation" "$build_log"
 }
 
 start_device() {
-    local output_path prior_pids_path current_pids_path
+    local output_path runtime_dir dev_result build_log
     output_path="$(result_path "$@")"
-    configure_state "$output_path"
-    /bin/mkdir -p "$state_dir"
-    /bin/rm -f "$pid_path"
-    prior_pids_path="$state_dir/prior-processes"
-    current_pids_path="$state_dir/current-processes"
-    matching_process_ids > "$prior_pids_path"
-    if ! /usr/bin/xcodebuild \
-        -project "$repo_dir/SnipSnap.xcodeproj" \
-        -scheme SnipSnap \
-        -configuration Debug \
-        -destination 'platform=macOS' \
-        -derivedDataPath "$derived_data" \
-        CODE_SIGNING_ALLOWED=YES \
-        CODE_SIGNING_REQUIRED=YES \
-        PRODUCT_BUNDLE_IDENTIFIER=world.sree.snipsnap.review \
-        PRODUCT_NAME="$process_name" \
-        INFOPLIST_KEY_CFBundleDisplayName='Snip Snap Review' \
-        build > "$build_log" 2>&1; then
-        write_result "$output_path" start failed "The review app did not build." failed blocked
-        return
+    runtime_dir="${SNIP_SNAP_SHOWROOM_STATE_DIR:-${output_path:h}/runtime}"
+    dev_result="${output_path:h}/dev-app-start.json"
+    build_log="${output_path:h}/build.log"
+    /bin/mkdir -p "${output_path:h}"
+    /bin/rm -f "$dev_result"
+    "$script_dir/dev-app.sh" start \
+        --runtime-dir "$runtime_dir" \
+        --build-log "$build_log" \
+        --result-json "$dev_result" || true
+    if [[ ! -f "$dev_result" ]]; then
+        write_fallback_dev_result "$dev_result" start "The development app did not start."
     fi
-
-    /usr/bin/open -n \
-        --env "SNIP_SNAP_STORE_PATH=$state_dir/items.json" \
-        --env "SNIP_SNAP_SHOW_PANEL_ON_LAUNCH=1" \
-        "$app_path"
-    for _ in {1..30}; do
-        local launched_pid
-        matching_process_ids > "$current_pids_path"
-        launched_pid="$(
-            /usr/bin/comm -13 \
-                <(/usr/bin/sort -n "$prior_pids_path") \
-                <(/usr/bin/sort -n "$current_pids_path") \
-                | /usr/bin/head -n 1
-        )"
-        if [[ "$launched_pid" =~ '^[1-9][0-9]*$' ]]; then
-            print -r -- "$launched_pid" > "$pid_path"
-            write_result "$output_path" start passed "The signed review app built and opened." passed passed
-            return
-        fi
-        /bin/sleep 0.1
-    done
-    write_result "$output_path" start failed "The review app built but did not stay open." passed failed
+    write_showroom_result "$dev_result" "$output_path" start "$build_log"
 }
 
 verify_device() {
-    local output_path app_check=failed process_check=failed verification_status=failed
-    local detail="The review app is not running."
+    local output_path runtime_dir dev_result build_log
     output_path="$(result_path "$@")"
-    configure_state "$output_path"
-    [[ -d "$app_path" ]] && app_check=passed
-    if [[ -f "$pid_path" ]]; then
-        local review_pid command_path
-        review_pid="$(<"$pid_path")"
-        if [[ "$review_pid" =~ '^[1-9][0-9]*$' ]] && /bin/kill -0 "$review_pid" 2>/dev/null; then
-            command_path="$(/bin/ps -p "$review_pid" -o command= 2>/dev/null || true)"
-            if [[ "$command_path" == "$executable_path" ||
-                  "$command_path" == "$executable_path "* ]]; then
-                process_check=passed
-            fi
-        fi
+    runtime_dir="${SNIP_SNAP_SHOWROOM_STATE_DIR:-${output_path:h}/runtime}"
+    dev_result="${output_path:h}/dev-app-status.json"
+    build_log="${output_path:h}/build.log"
+    /bin/mkdir -p "${output_path:h}"
+    /bin/rm -f "$dev_result"
+    "$script_dir/dev-app.sh" status \
+        --runtime-dir "$runtime_dir" \
+        --result-json "$dev_result" || true
+    if [[ ! -f "$dev_result" ]]; then
+        write_fallback_dev_result "$dev_result" status "The development app status could not be read."
     fi
-    if [[ "$app_check" == passed && "$process_check" == passed ]]; then
-        verification_status=passed
-        detail="The signed review app is present and running."
-    fi
-    write_result "$output_path" verify "$verification_status" "$detail" "$app_check" "$process_check"
+    write_showroom_result "$dev_result" "$output_path" verify "$build_log"
 }
 
 case "${1:-}" in
