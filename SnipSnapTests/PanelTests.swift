@@ -31,15 +31,43 @@ private final class PanelTextValue {
 }
 
 final class PanelTests: XCTestCase {
-    func testListIconCatalogHasThreeHundredUniqueAvailableSymbols() {
+    func testListIconCatalogHasUsefulUniqueAvailableSymbols() {
         let icons = SnipListIconOptions.categories.flatMap(\.icons)
 
-        XCTAssertEqual(SnipListIconOptions.categories.count, 15)
-        XCTAssertTrue(SnipListIconOptions.categories.allSatisfy { $0.icons.count == 20 })
-        XCTAssertEqual(icons.count, 300)
+        XCTAssertTrue(SnipListIconOptions.categories.allSatisfy { !$0.icons.isEmpty })
         XCTAssertEqual(Set(icons).count, icons.count)
-        XCTAssertTrue(icons.allSatisfy { NSImage(systemSymbolName: $0, accessibilityDescription: nil) != nil })
+        let unavailableIcons = icons.filter {
+            NSImage(systemSymbolName: $0, accessibilityDescription: nil) == nil
+        }
+        XCTAssertEqual(unavailableIcons, [])
         XCTAssertTrue(SnipListIconOptions.matches("lizard.fill", query: "dinosaur"))
+        XCTAssertEqual(icons.filter { $0.contains("magnifyingglass") }, ["magnifyingglass"])
+        let representativeSymbols = [
+            "paperplane.fill", "flag.fill", "star.fill", "hand.thumbsup.fill", "hand.thumbsdown.fill",
+            "dog.fill", "carrot.fill", "motorcycle.fill", "baseball.fill", "tshirt.fill",
+            "syringe.fill", "wheelchair", "infinity.circle.fill", "arrow.triangle.branch",
+            "square.3.layers.3d", "sidebar.left", "firewall.fill", "circle.dotted"
+        ]
+        let reviewedEmojiEquivalents = [
+            "figure.gymnastics", "figure.wrestling", "figure.equestrian.sports", "figure.rower",
+            "figure.waterpolo", "figure.handball", "figure.bowling", "figure.archery",
+            "figure.skating", "figure.fishing", "figure.curling", "figure.lacrosse",
+            "figure.table.tennis", "figure.badminton", "figure.martial.arts",
+            "lifepreserver.fill", "person.text.rectangle.fill", "arrow.3.trianglepath",
+            "peacesign", "hand.palm.facing.fill", "graduationcap.fill", "spoon.serving",
+            "train.side.front.car", "truck.pickup.side.fill", "cloud.sun.rain.fill",
+            "figure.softball", "figure.field.hockey", "l.joystick.fill",
+            "suit.spade.fill", "suit.heart.fill", "suit.diamond.fill", "suit.club.fill",
+            "coat.fill", "hat.widebrim.fill", "helmet.fill", "ring", "horn.fill",
+            "bell.slash.fill", "battery.0percent", "door.left.hand.closed",
+            "window.vertical.closed", "bubbles.and.sparkles.fill", "staroflife.fill",
+            "sos.circle.fill", "r.circle.fill", "thermometer.medium"
+        ]
+        let missingRepresentativeSymbols = representativeSymbols.filter { !icons.contains($0) }
+        let missingReviewedEmojiEquivalents = reviewedEmojiEquivalents.filter { !icons.contains($0) }
+        XCTAssertEqual(missingRepresentativeSymbols, [])
+        XCTAssertEqual(missingReviewedEmojiEquivalents, [])
+        XCTAssertTrue(SnipListIconOptions.matches("paperplane.fill", query: "rocket"))
     }
 
     func testDevelopmentBuildIdentityReadsTheSlotFromTheBundleIdentifier() {
