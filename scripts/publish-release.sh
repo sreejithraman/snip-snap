@@ -164,6 +164,7 @@ if [[ -f "$release_checkout/appcast.xml" ]] &&
     /bin/cp -p "$feed_notes" "$expected_feed_dir/"
     "$sparkle_tool" \
         --account "$sparkle_account" \
+        --maximum-versions 0 \
         --download-url-prefix "https://github.com/$release_repo/releases/download/v$version/" \
         --link "https://github.com/$release_repo/releases/tag/v$version" \
         --versions "$build_number" \
@@ -174,6 +175,7 @@ if [[ -f "$release_checkout/appcast.xml" ]] &&
 else
     "$sparkle_tool" \
         --account "$sparkle_account" \
+        --maximum-versions 0 \
         --download-url-prefix "https://github.com/$release_repo/releases/download/v$version/" \
         --link "https://github.com/$release_repo/releases/tag/v$version" \
         --versions "$build_number" \
