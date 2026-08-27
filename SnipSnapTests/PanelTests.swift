@@ -1209,4 +1209,160 @@ final class PanelTests: XCTestCase {
         XCTAssertEqual(SnipSnapColors.primaryActionTint(for: .light), .black)
         XCTAssertEqual(SnipSnapColors.primaryActionTint(for: .dark), .white)
     }
+
+    @MainActor
+    func testPanelContextMenuKeepsActionsAndDisabledState() throws {
+        var actionCount = 0
+        let menu = NSMenu()
+        menu.addPanelAction("Copy") { actionCount += 1 }
+        menu.addPanelAction("Merge Snips", isEnabled: false) {}
+        menu.addPanelSubmenu("Move to") { submenu in
+            submenu.addPanelAction("Inbox") {}
+        }
+
+        let copyItem = try XCTUnwrap(menu.items.first)
+        XCTAssertTrue(
+            NSApp.sendAction(copyItem.action!, to: copyItem.target, from: copyItem)
+        )
+        XCTAssertEqual(actionCount, 1)
+        XCTAssertFalse(menu.items[1].isEnabled)
+        XCTAssertEqual(menu.items[2].submenu?.items.map(\.title), ["Inbox"])
+    }
+
+    @MainActor
+    func testPanelCardInteractionRegionPassesPrimaryClicksThroughToCard() {
+        let source = PanelCardInteractionRegionView(
+            controller: PanelCardInteractionController(),
+            id: UUID(),
+            contextMenu: PanelCardContextMenu(
+                makeMenu: NSMenu.init,
+                onOpen: {},
+                onClose: {}
+            )
+        )
+        source.frame = NSRect(x: 0, y: 0, width: 200, height: 80)
+
+        XCTAssertNil(source.hitTest(NSPoint(x: 100, y: 40)))
+    }
+
+    @MainActor
+    func testPanelCardInteractionControllerClearsOnlyWhenClickingAwayFromCards() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 200),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let host = NSView(frame: window.contentView?.bounds ?? .zero)
+        window.contentView = host
+        let card = NSView(frame: NSRect(x: 20, y: 40, width: 200, height: 80))
+        host.addSubview(card)
+        let id = UUID()
+        let controller = PanelCardInteractionController()
+        var clearCount = 0
+        controller.configure { clearCount += 1 }
+        controller.attach(to: host)
+        controller.updateRegion(
+            id: id,
+            view: card
+        )
+
+        let clipView = NSClipView(frame: NSRect(x: 240, y: 20, width: 40, height: 60))
+        let documentView = NSView(frame: NSRect(x: 0, y: 0, width: 40, height: 160))
+        let clippedCard = NSView(frame: NSRect(x: 0, y: 80, width: 40, height: 40))
+        host.addSubview(clipView)
+        clipView.documentView = documentView
+        documentView.addSubview(clippedCard)
+        controller.updateRegion(
+            id: UUID(),
+            view: clippedCard
+        )
+
+        let cardPoint = card.convert(NSPoint(x: 100, y: 40), to: nil)
+        XCTAssertEqual(controller.regionID(atWindowPoint: cardPoint), id)
+        controller.clearSelectionIfClickAway(atWindowPoint: cardPoint)
+        XCTAssertEqual(clearCount, 0)
+
+        controller.clearSelectionIfClickAway(atWindowPoint: NSPoint(x: 280, y: 180))
+        XCTAssertEqual(clearCount, 1)
+
+        let clippedPoint = clippedCard.convert(NSPoint(x: 20, y: 20), to: nil)
+        XCTAssertNil(controller.regionID(atWindowPoint: clippedPoint))
+    }
+
+    @MainActor
+    func testPanelCardInteractionControllerTreatsControlClickAsContextClick() throws {
+        XCTAssertTrue(
+            PanelCardInteractionController.isContextClick(
+                buttonNumber: 0,
+                modifiers: .control
+            )
+        )
+        XCTAssertTrue(
+            PanelCardInteractionController.isContextClick(
+                buttonNumber: 1,
+                modifiers: []
+            )
+        )
+        XCTAssertFalse(
+            PanelCardInteractionController.isPrimaryClick(
+                buttonNumber: 0,
+                modifiers: .control
+            )
+        )
+        XCTAssertTrue(
+            PanelCardInteractionController.isPrimaryClick(
+                buttonNumber: 0,
+                modifiers: []
+            )
+        )
+        let nonMouseEvent = try XCTUnwrap(NSEvent.otherEvent(
+            with: .applicationDefined,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            subtype: 0,
+            data1: 0,
+            data2: 0
+        ))
+        XCTAssertFalse(PanelCardInteractionController.isContextClick(event: nonMouseEvent))
+        XCTAssertFalse(PanelCardInteractionController.isPrimaryClick(event: nonMouseEvent))
+    }
+
+    @MainActor
+    func testPanelCardInteractionRegionHandlesRightMouseEvent() throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 200),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let host = NSView(frame: window.contentView?.bounds ?? .zero)
+        window.contentView = host
+        var menuBuildCount = 0
+        let controller = PanelCardInteractionController()
+        controller.attach(to: host)
+        let card = PanelCardInteractionRegionView(
+            controller: controller,
+            id: UUID(),
+            contextMenu: PanelCardContextMenu(
+                makeMenu: {
+                    menuBuildCount += 1
+                    return NSMenu()
+                },
+                onOpen: {},
+                onClose: {}
+            )
+        )
+        card.frame = NSRect(x: 20, y: 40, width: 200, height: 80)
+        host.addSubview(card)
+
+        let location = NSPoint(x: 120, y: 80)
+        XCTAssertNotNil(controller.regionID(atWindowPoint: location))
+        card.rightMouseDown(with: try mouseEvent(.rightMouseDown, at: location, in: window))
+
+        XCTAssertEqual(menuBuildCount, 1)
+    }
 }
