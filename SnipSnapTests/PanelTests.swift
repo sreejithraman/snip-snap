@@ -5,19 +5,24 @@ import SwiftUI
 
 private final class PanelResizeTrackingEvent: NSEvent {
     private let generatingTrackingArea: NSTrackingArea
-    private let eventLocation: NSPoint
 
     override var trackingArea: NSTrackingArea? { generatingTrackingArea }
-    override var locationInWindow: NSPoint { eventLocation }
 
-    init(trackingArea: NSTrackingArea, locationInWindow: NSPoint) {
+    init(trackingArea: NSTrackingArea) {
         generatingTrackingArea = trackingArea
-        eventLocation = locationInWindow
         super.init()
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+}
+
+private final class PanelResizeCancelResponder: NSResponder {
+    private(set) var didCancel = false
+
+    override func cancelOperation(_ sender: Any?) {
+        didCancel = true
     }
 }
 
@@ -113,7 +118,14 @@ final class PanelTests: XCTestCase {
             backing: .buffered,
             defer: false
         )
-        let view = PanelResizeView(frame: window.contentView?.bounds ?? .zero)
+        let view = PanelResizeView(
+            frame: window.contentView?.bounds ?? .zero,
+            screenMouseLocation: { [unowned window] event in
+                window.convertPoint(
+                    toScreen: event?.locationInWindow ?? CGPoint(x: 150, y: 200)
+                )
+            }
+        )
         window.contentView = view
         return (window, view)
     }
@@ -616,15 +628,15 @@ final class PanelTests: XCTestCase {
         XCTAssertTrue(PanelResizeHitTesting.edges(at: CGPoint(x: 150, y: 200), in: bounds).isEmpty)
     }
 
-    func testVisiblePaneResizeRimProvidesAForgivingHoverTarget() {
+    func testVisiblePaneResizeRimStaysCloseToTheGlassEdge() {
         let bounds = CGRect(x: 0, y: 0, width: 300, height: 400)
 
         XCTAssertEqual(
-            PanelResizeHitTesting.edges(at: CGPoint(x: 9, y: 200), in: bounds),
+            PanelResizeHitTesting.edges(at: CGPoint(x: 4, y: 200), in: bounds),
             .left
         )
         XCTAssertTrue(
-            PanelResizeHitTesting.edges(at: CGPoint(x: 11, y: 200), in: bounds).isEmpty
+            PanelResizeHitTesting.edges(at: CGPoint(x: 6, y: 200), in: bounds).isEmpty
         )
         XCTAssertTrue(
             PanelResizeHitTesting.edges(at: CGPoint(x: -1, y: 200), in: bounds).isEmpty
@@ -710,41 +722,65 @@ final class PanelTests: XCTestCase {
     }
 
     @MainActor
-    func testVisiblePaneResizeTrackingAreasDriveCursorByIdentity() throws {
+    func testVisiblePaneResizeTracksHoverWhileTheAppIsInactive() throws {
         let (_, view) = makeResizeView()
-        view.updateTrackingAreas()
-        let resizeTrackingAreas = view.trackingAreas.filter {
-            $0.options.contains(.cursorUpdate)
-        }
 
-        XCTAssertEqual(resizeTrackingAreas.count, 8)
-        XCTAssertTrue(resizeTrackingAreas.allSatisfy {
-            $0.options.contains(.activeInActiveApp)
-        })
-        XCTAssertEqual(
-            Set(resizeTrackingAreas.compactMap { area in
-                (area.userInfo?[PanelResizeView.trackingEdgesKey] as? Int)
-            }),
-            Set(PanelResizeHitTesting.regions(in: view.bounds).map(\.edges.rawValue))
-        )
+        view.updateTrackingAreas()
+        let resizeAreas = view.trackingAreas.filter {
+            $0.options.contains(.mouseEnteredAndExited)
+        }
         let leftArea = try XCTUnwrap(
-            resizeTrackingAreas.first { area in
+            resizeAreas.first { area in
                 (area.userInfo?[PanelResizeView.trackingEdgesKey] as? Int)
                     == PanelResizeEdges.left.rawValue
             }
         )
-        let event = PanelResizeTrackingEvent(
-            trackingArea: leftArea,
-            locationInWindow: CGPoint(x: -1, y: -1)
-        )
+
+        XCTAssertEqual(resizeAreas.count, 8)
+        XCTAssertTrue(resizeAreas.allSatisfy {
+            $0.options.contains(.activeAlways)
+        })
 
         NSCursor.arrow.set()
-        view.cursorUpdate(with: event)
+        view.mouseEntered(with: PanelResizeTrackingEvent(trackingArea: leftArea))
 
         XCTAssertEqual(
             NSCursor.current.image.tiffRepresentation,
             NSCursor.frameResize(position: .left, directions: .all)
                 .image.tiffRepresentation
+        )
+    }
+
+    @MainActor
+    func testVisiblePaneResizeRefreshesHoverWhenTrackingAreasChange() throws {
+        let (_, view) = makeResizeView()
+        view.updateTrackingAreas()
+        let leftArea = try XCTUnwrap(
+            view.trackingAreas.first { area in
+                (area.userInfo?[PanelResizeView.trackingEdgesKey] as? Int)
+                    == PanelResizeEdges.left.rawValue
+            }
+        )
+        view.mouseEntered(with: PanelResizeTrackingEvent(trackingArea: leftArea))
+
+        view.updateTrackingAreas()
+
+        XCTAssertEqual(
+            NSCursor.current.image.tiffRepresentation,
+            NSCursor.arrow.image.tiffRepresentation
+        )
+    }
+
+    @MainActor
+    func testVisiblePaneResizeDoesNotClaimCursorOnAnUnrelatedTrackingUpdate() {
+        let (_, view) = makeResizeView()
+        NSCursor.iBeam.set()
+
+        view.updateTrackingAreas()
+
+        XCTAssertEqual(
+            NSCursor.current.image.tiffRepresentation,
+            NSCursor.iBeam.image.tiffRepresentation
         )
     }
 
@@ -768,6 +804,112 @@ final class PanelTests: XCTestCase {
 
         view.mouseUp(with: upEvent)
         XCTAssertTrue(window.areCursorRectsEnabled)
+    }
+
+    @MainActor
+    func testVisiblePaneResizeViewChangesTheWindowFrameDuringDrag() throws {
+        let (window, view) = makeResizeView()
+        let downEvent = try mouseEvent(
+            .leftMouseDown,
+            at: CGPoint(x: 298, y: 200),
+            in: window
+        )
+        let dragEvent = try mouseEvent(
+            .leftMouseDragged,
+            at: CGPoint(x: 318, y: 200),
+            in: window
+        )
+        let upEvent = try mouseEvent(
+            .leftMouseUp,
+            at: CGPoint(x: 318, y: 200),
+            in: window
+        )
+
+        view.mouseDown(with: downEvent)
+        view.mouseDragged(with: dragEvent)
+        view.mouseUp(with: upEvent)
+
+        XCTAssertEqual(window.frame.width, 320)
+    }
+
+    @MainActor
+    func testVisiblePaneResizeClearsStaleHoverAfterDraggingAwayFromTheEdge() throws {
+        let (window, view) = makeResizeView()
+        view.updateTrackingAreas()
+        let leftArea = try XCTUnwrap(
+            view.trackingAreas.first { area in
+                (area.userInfo?[PanelResizeView.trackingEdgesKey] as? Int)
+                    == PanelResizeEdges.left.rawValue
+            }
+        )
+        let downEvent = try mouseEvent(
+            .leftMouseDown,
+            at: CGPoint(x: 2, y: 200),
+            in: window
+        )
+        let dragEvent = try mouseEvent(
+            .leftMouseDragged,
+            at: CGPoint(x: 20, y: 200),
+            in: window
+        )
+        let upEvent = try mouseEvent(
+            .leftMouseUp,
+            at: CGPoint(x: 100, y: 200),
+            in: window
+        )
+
+        view.mouseEntered(with: PanelResizeTrackingEvent(trackingArea: leftArea))
+        view.mouseDown(with: downEvent)
+        view.mouseDragged(with: dragEvent)
+        view.mouseUp(with: upEvent)
+
+        XCTAssertEqual(
+            NSCursor.current.image.tiffRepresentation,
+            NSCursor.arrow.image.tiffRepresentation
+        )
+    }
+
+    @MainActor
+    func testVisiblePaneResizeRefreshesHoverWhenEscapeCancelsTheDrag() throws {
+        let (window, view) = makeResizeView()
+        view.updateTrackingAreas()
+        let leftArea = try XCTUnwrap(
+            view.trackingAreas.first { area in
+                (area.userInfo?[PanelResizeView.trackingEdgesKey] as? Int)
+                    == PanelResizeEdges.left.rawValue
+            }
+        )
+        let downEvent = try mouseEvent(
+            .leftMouseDown,
+            at: CGPoint(x: 2, y: 200),
+            in: window
+        )
+        let dragEvent = try mouseEvent(
+            .leftMouseDragged,
+            at: CGPoint(x: 20, y: 200),
+            in: window
+        )
+
+        view.mouseEntered(with: PanelResizeTrackingEvent(trackingArea: leftArea))
+        view.mouseDown(with: downEvent)
+        view.mouseDragged(with: dragEvent)
+        view.cancelOperation(nil)
+
+        XCTAssertEqual(
+            NSCursor.current.image.tiffRepresentation,
+            NSCursor.arrow.image.tiffRepresentation
+        )
+    }
+
+    @MainActor
+    func testVisiblePaneResizeForwardsEscapeWhenNoDragIsActive() {
+        let view = PanelResizeView(frame: CGRect(x: 0, y: 0, width: 300, height: 400))
+        let responder = PanelResizeCancelResponder()
+        view.nextResponder = responder
+
+        view.cancelOperation(nil)
+
+        XCTAssertTrue(responder.didCancel)
     }
 
     @MainActor

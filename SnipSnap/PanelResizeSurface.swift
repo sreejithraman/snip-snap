@@ -69,8 +69,8 @@ enum PanelResizeGeometry {
 }
 
 enum PanelResizeHitTesting {
-    static let edgeWidth: CGFloat = 10
-    static let cornerSize: CGFloat = 14
+    static let edgeWidth: CGFloat = 5
+    static let cornerSize: CGFloat = 10
 
     struct Region: Equatable {
         let rect: CGRect
@@ -171,7 +171,7 @@ enum PanelResizeHitTesting {
 
 struct PanelResizeSurface: NSViewRepresentable {
     func makeNSView(context: Context) -> PanelResizeView {
-        PanelResizeView()
+        PanelResizeView(frame: .zero)
     }
 
     func updateNSView(_ nsView: PanelResizeView, context: Context) { }
@@ -180,19 +180,40 @@ struct PanelResizeSurface: NSViewRepresentable {
 final class PanelResizeView: NSView {
     static let trackingEdgesKey = "PanelResizeEdges"
 
+    private let screenMouseLocation: (NSEvent?) -> CGPoint
     private var initialMouseLocation: CGPoint?
     private var initialWindowFrame: CGRect?
     private var activeEdges: PanelResizeEdges = []
+    private var hoverEdges: PanelResizeEdges = []
     private var resizeTrackingAreas: [NSTrackingArea] = []
     private weak var cursorRectsWindow: NSWindow?
 
     override var isOpaque: Bool { false }
     override var mouseDownCanMoveWindow: Bool { false }
 
+    override init(frame frameRect: NSRect) {
+        screenMouseLocation = { _ in NSEvent.mouseLocation }
+        super.init(frame: frameRect)
+    }
+
+    init(
+        frame frameRect: NSRect,
+        screenMouseLocation: @escaping (NSEvent?) -> CGPoint
+    ) {
+        self.screenMouseLocation = screenMouseLocation
+        super.init(frame: frameRect)
+    }
+
+    required init?(coder: NSCoder) {
+        screenMouseLocation = { _ in NSEvent.mouseLocation }
+        super.init(coder: coder)
+    }
+
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         if newWindow !== window {
+            hoverEdges = []
             finishResize()
         }
         super.viewWillMove(toWindow: newWindow)
@@ -208,12 +229,25 @@ final class PanelResizeView: NSView {
         for region in PanelResizeHitTesting.regions(in: bounds) {
             let area = NSTrackingArea(
                 rect: region.rect,
-                options: [.cursorUpdate, .activeInActiveApp],
+                options: [.mouseEnteredAndExited, .activeAlways],
                 owner: self,
                 userInfo: [Self.trackingEdgesKey: region.edges.rawValue]
             )
             addTrackingArea(area)
             resizeTrackingAreas.append(area)
+        }
+
+        if let window {
+            let previousHoverEdges = hoverEdges
+            updateHover(
+                atWindowPoint: window.convertPoint(
+                    fromScreen: screenMouseLocation(nil)
+                )
+            )
+            if activeEdges.isEmpty,
+               !previousHoverEdges.isEmpty || !hoverEdges.isEmpty {
+                updateCursorForHover()
+            }
         }
     }
 
@@ -222,15 +256,17 @@ final class PanelResizeView: NSView {
         return edges.isEmpty ? nil : self
     }
 
-    override func cursorUpdate(with event: NSEvent) {
-        let edges = activeEdges.isEmpty
-            ? trackedEdges(from: event)
-            : activeEdges
-        guard !edges.isEmpty else {
-            super.cursorUpdate(with: event)
-            return
-        }
-        resizeCursor(for: edges).set()
+    override func mouseEntered(with event: NSEvent) {
+        hoverEdges = trackedEdges(from: event)
+        guard !hoverEdges.isEmpty else { return }
+        resizeCursor(for: hoverEdges).set()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        guard trackedEdges(from: event) == hoverEdges else { return }
+        hoverEdges = []
+        guard activeEdges.isEmpty else { return }
+        NSCursor.arrow.set()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -240,7 +276,7 @@ final class PanelResizeView: NSView {
         )
         guard !edges.isEmpty, let window else { return }
         activeEdges = edges
-        initialMouseLocation = NSEvent.mouseLocation
+        initialMouseLocation = screenMouseLocation(event)
         initialWindowFrame = window.frame
         if cursorRectsWindow == nil {
             cursorRectsWindow = window
@@ -254,7 +290,7 @@ final class PanelResizeView: NSView {
               let initialMouseLocation,
               let initialWindowFrame,
               !activeEdges.isEmpty else { return }
-        let currentLocation = NSEvent.mouseLocation
+        let currentLocation = screenMouseLocation(event)
         let dragDelta = CGPoint(
             x: currentLocation.x - initialMouseLocation.x,
             y: currentLocation.y - initialMouseLocation.y
@@ -271,12 +307,35 @@ final class PanelResizeView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        updateHover(atWindowPoint: event.locationInWindow)
         finishResize()
     }
 
     override func cancelOperation(_ sender: Any?) {
+        guard !activeEdges.isEmpty else {
+            nextResponder?.tryToPerform(
+                #selector(cancelOperation(_:)),
+                with: sender
+            )
+            return
+        }
+        if let window {
+            updateHover(
+                atWindowPoint: window.convertPoint(
+                    fromScreen: screenMouseLocation(nil)
+                )
+            )
+        } else {
+            hoverEdges = []
+        }
         finishResize()
-        super.cancelOperation(sender)
+    }
+
+    private func updateHover(atWindowPoint point: CGPoint) {
+        hoverEdges = PanelResizeHitTesting.edges(
+            at: convert(point, from: nil),
+            in: bounds
+        )
     }
 
     private func finishResize() {
@@ -285,6 +344,15 @@ final class PanelResizeView: NSView {
         initialWindowFrame = nil
         cursorRectsWindow?.enableCursorRects()
         cursorRectsWindow = nil
+        updateCursorForHover()
+    }
+
+    private func updateCursorForHover() {
+        if hoverEdges.isEmpty {
+            NSCursor.arrow.set()
+        } else {
+            resizeCursor(for: hoverEdges).set()
+        }
     }
 
     private func trackedEdges(from event: NSEvent) -> PanelResizeEdges {
