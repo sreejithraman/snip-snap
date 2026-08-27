@@ -25,6 +25,57 @@ assert_fails() {
     fi
 }
 
+publish_keeps_all_appcast_versions() {
+    /usr/bin/awk '
+        BEGIN {
+            safe = 1
+        }
+
+        function finish_call() {
+            if (!keeps_all_versions) {
+                safe = 0
+            }
+            in_call = 0
+        }
+
+        /^[[:space:]]*"\$sparkle_tool"([[:space:]]|$)/ {
+            calls++
+            in_call = 1
+            keeps_all_versions = ($0 ~ /--maximum-versions[[:space:]]+0([[:space:]]|$)/)
+            if ($0 !~ /\\[[:space:]]*$/) {
+                finish_call()
+            }
+            next
+        }
+
+        in_call {
+            if ($0 ~ /--maximum-versions[[:space:]]+0([[:space:]]|$)/) {
+                keeps_all_versions = 1
+            }
+            if ($0 !~ /\\[[:space:]]*$/) {
+                finish_call()
+            }
+        }
+
+        END {
+            if (in_call) {
+                finish_call()
+            }
+            exit !(calls > 0 && safe != 0)
+        }
+    ' "$1"
+}
+
+assert_succeeds publish_keeps_all_appcast_versions "$script_dir/publish-release.sh"
+publish_missing_history_limit="$test_root/publish-missing-history-limit.sh"
+/usr/bin/awk '
+    /^[[:space:]]*"\$sparkle_tool"([[:space:]]|$)/ { in_call = 1 }
+    in_call && !removed && sub(/--maximum-versions[[:space:]]+0/, "") { removed = 1 }
+    { print }
+    in_call && $0 !~ /\\[[:space:]]*$/ { in_call = 0 }
+' "$script_dir/publish-release.sh" > "$publish_missing_history_limit"
+assert_fails publish_keeps_all_appcast_versions "$publish_missing_history_limit"
+
 manifest="$test_root/release.json"
 print '{"version":"0.1.0","build":1}' > "$manifest"
 assert_succeeds release_policy_load_manifest "$manifest"
