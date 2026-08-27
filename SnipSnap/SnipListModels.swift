@@ -113,8 +113,15 @@ enum SnipListReorderPlan {
 }
 
 enum PinnedListHeaderGlass {
+    private static let movementTolerance: CGFloat = 0.5
+
+    static func isPinned(frame: CGRect, topEdgeY: CGFloat = 0) -> Bool {
+        let threshold = topEdgeY + movementTolerance
+        return frame.minY <= threshold && frame.maxY > threshold
+    }
+
     static func hasScrolled(visibleOriginY: CGFloat) -> Bool {
-        visibleOriginY > 0.5
+        visibleOriginY > movementTolerance
     }
 
     static func isVisible(isPinned: Bool, hasScrolled: Bool) -> Bool {

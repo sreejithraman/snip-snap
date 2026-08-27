@@ -300,6 +300,29 @@ final class SnipListModelsTests: XCTestCase {
         )
     }
 
+    func testPinnedHeaderGeometryOnlyMatchesAHeaderAtTheTopEdge() {
+        XCTAssertFalse(
+            PinnedListHeaderGlass.isPinned(
+                frame: CGRect(x: 0, y: 12, width: 200, height: 32)
+            )
+        )
+        XCTAssertTrue(
+            PinnedListHeaderGlass.isPinned(
+                frame: CGRect(x: 0, y: 0, width: 200, height: 32)
+            )
+        )
+        XCTAssertTrue(
+            PinnedListHeaderGlass.isPinned(
+                frame: CGRect(x: 0, y: -12, width: 200, height: 32)
+            )
+        )
+        XCTAssertFalse(
+            PinnedListHeaderGlass.isPinned(
+                frame: CGRect(x: 0, y: -32, width: 200, height: 32)
+            )
+        )
+    }
+
     func testPinnedHeaderStateIgnoresDuplicateGeometryReports() {
         let listID = UUID()
 
