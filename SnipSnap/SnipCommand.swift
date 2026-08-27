@@ -6,6 +6,28 @@ enum SnipCommand {
     case merge
     case delete
 
+    var title: String {
+        switch self {
+        case .copy:
+            "Copy"
+        case .toggleDone:
+            "Mark Done"
+        case .edit:
+            "Edit"
+        case .editInNewWindow:
+            "Edit in New Window"
+        case .merge:
+            "Merge Snips"
+        case .delete:
+            "Delete"
+        }
+    }
+
+    func title(allSelectedAreDone: Bool) -> String {
+        guard self == .toggleDone, allSelectedAreDone else { return title }
+        return "Mark Not Done"
+    }
+
     func isAvailable(for selectionCount: Int) -> Bool {
         switch self {
         case .edit, .editInNewWindow:

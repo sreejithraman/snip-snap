@@ -193,6 +193,7 @@ struct SnipListView: View {
     let onRemovePreviewURL: (URL) -> Void
 
     @State private var selectionModifiers: EventModifiers = []
+    @State private var contextMenuSelection: Set<UUID>?
     @State private var hasScrolledFromTop = false
     @State private var addedSnipRevealState = AddedSnipRevealState()
     @State private var editSession: InlineEditSession?
@@ -203,6 +204,7 @@ struct SnipListView: View {
     @State private var activeDropTarget: SnipListReorderTarget?
     @State private var isCommittingDrop = false
     @State private var activeDragRowFrames: [UUID: CGRect] = [:]
+    @StateObject private var cardInteractionController = PanelCardInteractionController()
     @StateObject private var reorderGeometry = SnipListReorderGeometry()
 
     private var orderedSnipIDs: [UUID] {
@@ -361,6 +363,17 @@ struct SnipListView: View {
             addEditAttachments(
                 pendingEditAttachmentImport.urls,
                 to: pendingEditAttachmentImport.snipID
+            )
+        }
+        .background {
+            PanelCardInteractionHost(
+                controller: cardInteractionController,
+                onClickAway: { [state, model] in
+                    state.apply(
+                        SnipSelection.Update(selection: [], anchor: nil, focus: nil),
+                        to: model
+                    )
+                }
             )
         }
     }
@@ -665,7 +678,7 @@ struct SnipListView: View {
     private func snipCard(_ snip: Snip) -> some View {
         SnipCardRow(
             snip: snip,
-            isSelected: model.selection.contains(snip.id),
+            isSelected: (contextMenuSelection ?? model.selection).contains(snip.id),
             isEditing: model.editingID == snip.id,
             editAttachments: editAttachmentsBinding(for: snip),
             isSaving: savingBinding(for: snip),
@@ -698,27 +711,40 @@ struct SnipListView: View {
             },
             onEditError: { model.presentedError = $0 }
         )
-        .contextMenu {
+        .overlay {
             if model.editingID != snip.id {
-                selectionMenu(for: contextSelection(for: snip.id))
+                PanelCardInteractionRegion(
+                    controller: cardInteractionController,
+                    id: snip.id,
+                    contextMenu: PanelCardContextMenu(
+                        makeMenu: { makeContextMenu(for: snip.id) },
+                        onOpen: {
+                            contextMenuSelection = contextSelection(for: snip.id)
+                        },
+                        onClose: { contextMenuSelection = nil }
+                    )
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .accessibilityAddTraits(model.selection.contains(snip.id) ? .isSelected : [])
         .accessibilityAction(named: "Select") {
             selectExclusively(snip.id)
         }
-        .accessibilityAction(named: "Copy") {
+        .accessibilityAction(named: SnipCommand.copy.title) {
             selectExclusively(snip.id)
             snipCommands.perform(.copy)
         }
-        .accessibilityAction(named: "Edit") {
+        .accessibilityAction(named: SnipCommand.edit.title) {
             edit(snip.id)
         }
-        .accessibilityAction(named: "Edit in New Window") {
+        .accessibilityAction(named: SnipCommand.editInNewWindow.title) {
             selectExclusively(snip.id)
             snipCommands.perform(.editInNewWindow)
         }
-        .accessibilityAction(named: snip.isDone ? "Mark Not Done" : "Mark Done") {
+        .accessibilityAction(
+            named: SnipCommand.toggleDone.title(allSelectedAreDone: snip.isDone)
+        ) {
             model.toggleDone(id: snip.id)
         }
         .accessibilityAction(named: "Move Up") {
@@ -729,7 +755,7 @@ struct SnipListView: View {
             model.selection = contextSelection(for: snip.id)
             model.moveSelectionDown()
         }
-        .accessibilityAction(named: "Delete") {
+        .accessibilityAction(named: SnipCommand.delete.title) {
             selectExclusively(snip.id)
             snipCommands.perform(.delete)
         }
@@ -844,43 +870,63 @@ struct SnipListView: View {
         model.selection.contains(id) ? model.selection : [id]
     }
 
-    @ViewBuilder
-    private func selectionMenu(for ids: Set<UUID>) -> some View {
-        if !ids.isEmpty {
-            Button("Copy") { perform(.copy, on: ids) }
-            Divider()
-            Button(doneCommandTitle(for: ids)) { perform(.toggleDone, on: ids) }
-            Button("Edit") { perform(.edit, on: ids) }
-                .disabled(!SnipCommand.edit.isAvailable(for: ids.count))
-            Button("Edit in New Window") { perform(.editInNewWindow, on: ids) }
-                .disabled(!SnipCommand.editInNewWindow.isAvailable(for: ids.count))
-            Button("Merge Snips") { perform(.merge, on: ids) }
-                .disabled(!SnipCommand.merge.isAvailable(for: ids.count))
-            Menu("Move to") {
-                ForEach(model.lists) { list in
-                    Button(list.name) {
-                        model.selection = ids
-                        model.moveSelection(to: list.id)
-                    }
-                }
-                Divider()
-                Button("New List…") {
-                    moveSelectionToNewList(ids)
-                }
-            }
-            Button("Move Up") {
-                model.selection = ids
-                model.moveSelectionUp()
-            }
-            .disabled(!canReorder(ids))
-            Button("Move Down") {
-                model.selection = ids
-                model.moveSelectionDown()
-            }
-            .disabled(!canReorder(ids))
-            Divider()
-            Button("Delete", role: .destructive) { perform(.delete, on: ids) }
+    private func makeContextMenu(for id: UUID) -> NSMenu {
+        makeSelectionMenu(for: contextSelection(for: id))
+    }
+
+    private func makeSelectionMenu(for ids: Set<UUID>) -> NSMenu {
+        let menu = NSMenu()
+        guard !ids.isEmpty else { return menu }
+
+        menu.addPanelAction(SnipCommand.copy.title) { perform(.copy, on: ids) }
+        menu.addItem(.separator())
+        menu.addPanelAction(doneCommandTitle(for: ids)) {
+            perform(.toggleDone, on: ids)
         }
+        menu.addPanelAction(
+            SnipCommand.edit.title,
+            isEnabled: SnipCommand.edit.isAvailable(for: ids.count)
+        ) {
+            perform(.edit, on: ids)
+        }
+        menu.addPanelAction(
+            SnipCommand.editInNewWindow.title,
+            isEnabled: SnipCommand.editInNewWindow.isAvailable(for: ids.count)
+        ) {
+            perform(.editInNewWindow, on: ids)
+        }
+        menu.addPanelAction(
+            SnipCommand.merge.title,
+            isEnabled: SnipCommand.merge.isAvailable(for: ids.count)
+        ) {
+            perform(.merge, on: ids)
+        }
+        menu.addPanelSubmenu("Move to") { submenu in
+            for list in model.lists {
+                submenu.addPanelAction(list.name) {
+                    model.selection = ids
+                    model.moveSelection(to: list.id)
+                }
+            }
+            submenu.addItem(.separator())
+            submenu.addPanelAction("New List…") {
+                moveSelectionToNewList(ids)
+            }
+        }
+        menu.addPanelAction("Move Up", isEnabled: canReorder(ids)) {
+            model.selection = ids
+            model.moveSelectionUp()
+        }
+        menu.addPanelAction("Move Down", isEnabled: canReorder(ids)) {
+            model.selection = ids
+            model.moveSelectionDown()
+        }
+        menu.addItem(.separator())
+        menu.addPanelAction(SnipCommand.delete.title) {
+            perform(.delete, on: ids)
+        }
+
+        return menu
     }
 
     private func perform(_ command: SnipCommand, on ids: Set<UUID>) {
@@ -893,7 +939,9 @@ struct SnipListView: View {
 
     private func doneCommandTitle(for ids: Set<UUID>) -> String {
         let selectedSnips = model.snips.filter { ids.contains($0.id) }
-        return selectedSnips.allSatisfy(\.isDone) ? "Mark Not Done" : "Mark Done"
+        return SnipCommand.toggleDone.title(
+            allSelectedAreDone: selectedSnips.allSatisfy(\.isDone)
+        )
     }
 
     private func canReorder(_ ids: Set<UUID>) -> Bool {

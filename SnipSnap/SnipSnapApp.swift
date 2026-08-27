@@ -209,20 +209,20 @@ private struct SnipCommands: Commands {
             }
         }
         CommandMenu("Snips") {
-            Button("Copy") { perform(.copy) }
+            Button(SnipCommand.copy.title) { perform(.copy) }
                 .keyboardShortcut("c", modifiers: .command)
                 .disabled(!isAvailable(.copy))
             Divider()
             Button("Done or Not Done") { perform(.toggleDone) }
                 .appKeyboardShortcut(coordinator.shortcutSettings.chord(for: .toggleDone))
                 .disabled(!isAvailable(.toggleDone))
-            Button("Edit") { perform(.edit) }
+            Button(SnipCommand.edit.title) { perform(.edit) }
                 .keyboardShortcut(.return, modifiers: [])
                 .disabled(!isAvailable(.edit))
-            Button("Edit in New Window") { perform(.editInNewWindow) }
+            Button(SnipCommand.editInNewWindow.title) { perform(.editInNewWindow) }
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(!isAvailable(.editInNewWindow))
-            Button("Merge Snips") { perform(.merge) }
+            Button(SnipCommand.merge.title) { perform(.merge) }
                 .appKeyboardShortcut(coordinator.shortcutSettings.chord(for: .merge))
                 .disabled(!isAvailable(.merge))
             Divider()
@@ -231,7 +231,7 @@ private struct SnipCommands: Commands {
             Button("Move Down") { model?.moveSelectionDown() }
                 .disabled(model?.canReorderSelection != true)
             Divider()
-            Button("Delete") { perform(.delete) }
+            Button(SnipCommand.delete.title) { perform(.delete) }
                 .keyboardShortcut(.delete, modifiers: [])
                 .disabled(!isAvailable(.delete))
         }

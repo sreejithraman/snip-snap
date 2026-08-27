@@ -489,7 +489,7 @@ private struct PanelContentCardSurfaceModifier: ViewModifier {
                         }
                     }
                     .overlay {
-                        shape.stroke(
+                        shape.strokeBorder(
                             edge.color,
                             lineWidth: edge.width
                         )
