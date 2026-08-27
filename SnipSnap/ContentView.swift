@@ -483,7 +483,7 @@ struct ContentView: View {
                     width: PanelControlMetrics.floatingIconLength,
                     height: PanelControlMetrics.floatingIconLength
                 )
-                .panelStandaloneActionControl()
+                .panelStandaloneActionControl(edge: .emphasized)
         }
         .menuIndicator(.hidden)
         .buttonStyle(.plain)

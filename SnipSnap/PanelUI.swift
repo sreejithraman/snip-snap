@@ -152,32 +152,64 @@ extension PanelListHeader where Actions == EmptyView {
 }
 
 enum PanelDropTargetStyle {
-    static let edgeWidth: CGFloat = 1.5
     static let expansion: CGFloat = 6
 }
 
-enum PanelSurfaceStyle {
-    static let glassEdgeWidth: CGFloat = 0.5
+enum PanelEdgeThickness {
+    static let subtle: CGFloat = 0.5
+    static let regular: CGFloat = 0.75
+    static let strong: CGFloat = 1
+    static let prominent: CGFloat = 1.5
+}
+
+struct PanelEdgeStyle: Equatable {
+    let color: Color
+    let width: CGFloat
+
+    static let hidden = PanelEdgeStyle(color: .clear, width: 0)
+    static let content = PanelEdgeStyle(
+        color: SnipSnapColors.contentCardEdge,
+        width: PanelEdgeThickness.regular
+    )
+    static let media = PanelEdgeStyle(
+        color: SnipSnapColors.attachmentEdge,
+        width: PanelEdgeThickness.regular
+    )
+    static let selected = PanelEdgeStyle(
+        color: SnipSnapColors.selectionEdge,
+        width: PanelEdgeThickness.strong
+    )
+    static let dropTarget = PanelEdgeStyle(
+        color: SnipSnapColors.dropTargetEdge,
+        width: PanelEdgeThickness.prominent
+    )
 }
 
 enum PanelGlassEdgeState: Equatable {
     case hidden
     case standard
+    case emphasized
     case focused
 
-    var color: Color {
+    var style: PanelEdgeStyle {
         switch self {
-        case .hidden: .clear
-        case .standard: SnipSnapColors.glassEdge
-        case .focused: SnipSnapColors.focusedGlassEdge
-        }
-    }
-
-    var width: CGFloat {
-        switch self {
-        case .hidden: 0
-        case .standard: PanelSurfaceStyle.glassEdgeWidth
-        case .focused: 0.75
+        case .hidden:
+            .hidden
+        case .standard:
+            PanelEdgeStyle(
+                color: SnipSnapColors.glassEdge,
+                width: PanelEdgeThickness.subtle
+            )
+        case .emphasized:
+            PanelEdgeStyle(
+                color: SnipSnapColors.emphasizedGlassEdge,
+                width: PanelEdgeThickness.regular
+            )
+        case .focused:
+            PanelEdgeStyle(
+                color: SnipSnapColors.focusedGlassEdge,
+                width: PanelEdgeThickness.strong
+            )
         }
     }
 }
@@ -204,7 +236,9 @@ extension View {
             .contentShape(shape)
     }
 
-    func panelStandaloneActionControl() -> some View {
+    func panelStandaloneActionControl(
+        edge: PanelGlassEdgeState = .standard
+    ) -> some View {
         let shape = Circle()
         return frame(
             width: PanelControlMetrics.floatingRowHeight,
@@ -216,7 +250,8 @@ extension View {
         }
         .panelGlassSurface(
             in: shape,
-            interactive: true
+            interactive: true,
+            edge: edge
         )
         .contentShape(shape)
     }
@@ -251,7 +286,7 @@ extension View {
         return frame(minHeight: minHeight)
             .panelGlassSurface(
                 in: shape,
-                edge: isFocused ? .focused : .standard
+                edge: isFocused ? .focused : .emphasized
             )
             .contentShape(shape)
     }
@@ -276,12 +311,13 @@ extension View {
     ) -> some View {
         overlay {
             if isTargeted {
+                let edge = PanelEdgeStyle.dropTarget
                 shape
                     .fill(SnipSnapColors.dropTargetFill)
                     .overlay {
                         shape.strokeBorder(
-                            SnipSnapColors.dropTargetEdge,
-                            lineWidth: PanelDropTargetStyle.edgeWidth
+                            edge.color,
+                            lineWidth: edge.width
                         )
                     }
                     .allowsHitTesting(false)
@@ -420,14 +456,15 @@ private struct PanelGlassSurfaceModifier<S: InsettableShape>: ViewModifier {
 
     func body(content: Content) -> some View {
         let glass: Glass = interactive ? .regular.interactive() : .regular
+        let style = edge.style
         content
             .glassEffect(glass, in: shape)
             .overlay {
                 if edge != .hidden {
                     shape
                         .strokeBorder(
-                            edge.color,
-                            lineWidth: edge.width
+                            style.color,
+                            lineWidth: style.width
                         )
                         .allowsHitTesting(false)
                 }
@@ -444,6 +481,7 @@ private struct PanelContentCardSurfaceModifier: ViewModifier {
             cornerRadius: PanelShapeMetrics.contentCardCornerRadius,
             style: .continuous
         )
+        let edge = isSelected ? PanelEdgeStyle.selected : .content
         content
             .background {
                 shape
@@ -455,10 +493,8 @@ private struct PanelContentCardSurfaceModifier: ViewModifier {
                     }
                     .overlay {
                         shape.stroke(
-                            isSelected
-                                ? SnipSnapColors.selectionEdge
-                                : SnipSnapColors.contentCardEdge,
-                            lineWidth: isSelected ? 1 : 0.75
+                            edge.color,
+                            lineWidth: edge.width
                         )
                     }
                     .shadow(

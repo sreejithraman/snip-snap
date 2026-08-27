@@ -81,7 +81,7 @@ struct DevelopmentBuildBadge: View {
                 Capsule(style: .continuous)
                     .stroke(
                         SnipSnapColors.developmentBadgeEdge(tone: identity.badgeTone),
-                        lineWidth: 0.5
+                        lineWidth: PanelEdgeThickness.subtle
                     )
             }
             .allowsHitTesting(false)

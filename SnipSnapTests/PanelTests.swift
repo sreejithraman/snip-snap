@@ -1025,8 +1025,42 @@ final class PanelTests: XCTestCase {
         )
     }
 
-    func testTopLevelGlassUsesTheSharedFaintEdge() {
-        XCTAssertEqual(PanelSurfaceStyle.glassEdgeWidth, 0.5)
+    func testPanelEdgeStylesUseTheSharedThicknessScale() {
+        XCTAssertEqual(PanelEdgeThickness.subtle, 0.5)
+        XCTAssertEqual(PanelEdgeThickness.regular, 0.75)
+        XCTAssertEqual(PanelEdgeThickness.strong, 1)
+        XCTAssertEqual(PanelEdgeThickness.prominent, 1.5)
+        XCTAssertEqual(PanelGlassEdgeState.hidden.style.width, 0)
+        XCTAssertEqual(PanelGlassEdgeState.standard.style.width, 0.5)
+        XCTAssertEqual(PanelGlassEdgeState.emphasized.style.width, 0.75)
+        XCTAssertEqual(PanelGlassEdgeState.focused.style.width, 1)
+        XCTAssertEqual(PanelEdgeStyle.content.width, 0.75)
+        XCTAssertEqual(PanelEdgeStyle.media.width, 0.75)
+        XCTAssertEqual(PanelEdgeStyle.selected.width, 1)
+        XCTAssertEqual(PanelEdgeStyle.dropTarget.width, 1.5)
+    }
+
+    func testPanelEdgeStylesUseSemanticColors() {
+        XCTAssertEqual(PanelEdgeStyle.hidden.color, .clear)
+        XCTAssertEqual(PanelGlassEdgeState.hidden.style.color, .clear)
+        XCTAssertEqual(PanelGlassEdgeState.standard.style.color, SnipSnapColors.glassEdge)
+        XCTAssertEqual(
+            PanelGlassEdgeState.emphasized.style.color,
+            SnipSnapColors.emphasizedGlassEdge
+        )
+        XCTAssertEqual(PanelGlassEdgeState.focused.style.color, SnipSnapColors.focusedGlassEdge)
+        XCTAssertEqual(PanelEdgeStyle.content.color, SnipSnapColors.contentCardEdge)
+        XCTAssertEqual(PanelEdgeStyle.media.color, SnipSnapColors.attachmentEdge)
+        XCTAssertEqual(PanelEdgeStyle.selected.color, SnipSnapColors.selectionEdge)
+        XCTAssertEqual(PanelEdgeStyle.dropTarget.color, SnipSnapColors.dropTargetEdge)
+        XCTAssertNotEqual(
+            PanelGlassEdgeState.standard.style.color,
+            PanelGlassEdgeState.emphasized.style.color
+        )
+        XCTAssertNotEqual(
+            PanelGlassEdgeState.emphasized.style.color,
+            PanelGlassEdgeState.focused.style.color
+        )
     }
 
     func testPrimaryActionTintUsesExactThemeContrast() {
