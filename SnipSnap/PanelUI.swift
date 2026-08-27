@@ -125,13 +125,7 @@ struct PanelListHeader<Actions: View>: View {
             Text(title)
                 .font(.headline)
                 .foregroundStyle(SnipSnapColors.textPrimary)
-                .contentShape(Rectangle())
-                .gesture(WindowDragGesture())
-                .allowsWindowActivationEvents()
             Spacer(minLength: SnipSnapSpacing.relatedContent)
-                .contentShape(Rectangle())
-                .gesture(WindowDragGesture())
-                .allowsWindowActivationEvents()
             actions
         }
         .buttonStyle(.borderless)
@@ -141,6 +135,9 @@ struct PanelListHeader<Actions: View>: View {
             minHeight: PanelControlMetrics.compactControlLength,
             alignment: .leading
         )
+        .background {
+            PanelDragRegion()
+        }
         .panelPinnedHeaderSurface(isVisible: showsGlass)
     }
 }

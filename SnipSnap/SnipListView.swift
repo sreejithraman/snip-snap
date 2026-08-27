@@ -24,6 +24,38 @@ private final class SnipListReorderGeometry: ObservableObject {
     var scrollOffsetY: CGFloat = 0
 }
 
+private struct SnipListSectionHeader: View {
+    let listID: UUID
+    let title: String
+    let hasScrolledFromTop: Bool
+    let snipDragSourceController: SnipDragSourceController
+
+    @State private var isPinned = false
+
+    var body: some View {
+        PanelListHeader(
+            title,
+            showsGlass: PinnedListHeaderGlass.isVisible(
+                isPinned: isPinned,
+                hasScrolled: hasScrolledFromTop
+            )
+        )
+        .onGeometryChange(for: Bool.self) { proxy in
+            PinnedListHeaderGlass.isPinned(
+                frame: proxy.frame(in: .scrollView(axis: .vertical))
+            )
+        } action: { isPinned in
+            self.isPinned = isPinned
+        }
+        .background {
+            SnipDragBlockingRegion(
+                controller: snipDragSourceController,
+                id: listID
+            )
+        }
+    }
+}
+
 private struct SnipListWindowFrameReader: NSViewRepresentable {
     let onChange: @MainActor (CGRect, CGFloat) -> Void
 
@@ -208,16 +240,12 @@ struct SnipListView: View {
                                 )
                             }
                         } header: {
-                            PanelListHeader(
-                                group.listName,
-                                showsGlass: hasScrolledFromTop
+                            SnipListSectionHeader(
+                                listID: group.listID,
+                                title: group.listName,
+                                hasScrolledFromTop: hasScrolledFromTop,
+                                snipDragSourceController: snipDragSourceController
                             )
-                            .background {
-                                SnipDragBlockingRegion(
-                                    controller: snipDragSourceController,
-                                    id: group.listID
-                                )
-                            }
                         }
                     }
                 } else {
