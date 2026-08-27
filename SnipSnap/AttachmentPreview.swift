@@ -4,7 +4,6 @@ import SwiftUI
 enum AttachmentPreviewMetrics {
     static let side: CGFloat = 64
     static let cornerRadius: CGFloat = 10
-    static let edgeWidth: CGFloat = 0.75
     static let artworkInset: CGFloat = 12
     static let removeButtonOverflow: CGFloat = 4
 }
@@ -172,12 +171,13 @@ private extension View {
             cornerRadius: AttachmentPreviewMetrics.cornerRadius,
             style: .continuous
         )
+        let edge = PanelEdgeStyle.media
         return background(SnipSnapColors.attachmentFill)
             .clipShape(shape)
             .overlay {
                 shape.stroke(
-                    SnipSnapColors.attachmentEdge,
-                    lineWidth: AttachmentPreviewMetrics.edgeWidth
+                    edge.color,
+                    lineWidth: edge.width
                 )
             }
     }

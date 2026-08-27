@@ -120,7 +120,8 @@ private struct SnipListIconBrowser: View {
     }
 
     private func iconButton(_ icon: String) -> some View {
-        Button {
+        let edge = selection == icon ? PanelEdgeStyle.selected : .hidden
+        return Button {
             selection = icon
             SnipListIconOptions.recordRecentIcon(icon)
             dismiss()
@@ -136,8 +137,8 @@ private struct SnipListIconBrowser: View {
                 .overlay {
                     RoundedRectangle(cornerRadius: 8)
                         .stroke(
-                            selection == icon ? SnipSnapColors.selectionEdge : .clear,
-                            lineWidth: 1
+                            edge.color,
+                            lineWidth: edge.width
                         )
                 }
                 .contentShape(Rectangle())

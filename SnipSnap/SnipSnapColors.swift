@@ -62,7 +62,8 @@ enum SnipSnapColors {
 
     static let standaloneActionFill = Color.primary.opacity(0.08)
     static let glassEdge = Color.primary.opacity(0.10)
-    static let focusedGlassEdge = Color.primary.opacity(0.20)
+    static let emphasizedGlassEdge = Color.primary.opacity(0.20)
+    static let focusedGlassEdge = Color.primary.opacity(0.32)
     static let attachmentFill = Color.primary.opacity(0.055)
     static let attachmentEdge = Color.primary.opacity(0.12)
     static let contentCardEdge = Color(nsColor: .separatorColor)
