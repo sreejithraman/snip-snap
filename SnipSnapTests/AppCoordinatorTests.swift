@@ -4,6 +4,54 @@ import Carbon.HIToolbox
 @testable import SnipSnap
 
 final class AppCoordinatorTests: StoreBackedTestCase {
+    @MainActor
+    func testCopyClipboardEntryRestoresContentWithoutClosingThePanel() throws {
+        let pasteboard = NSPasteboard(
+            name: .init("world.sree.snipsnap.coordinator-copy-tests.\(UUID().uuidString)")
+        )
+        let defaultsName = "Snip SnapCoordinatorCopyTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let history = ClipboardHistory(
+            pasteboard: pasteboard,
+            defaults: defaults,
+            storeURL: try storeURL().deletingLastPathComponent().appendingPathComponent("clipboard.json")
+        )
+        let model = AppModel(
+            repository: try SnipRepository(fileURL: storeURL()),
+            defaults: defaults,
+            clipboardHistory: history
+        )
+        let coordinator = AppCoordinator(
+            model: model,
+            shortcutSettings: ShortcutSettings(defaults: defaults),
+            isAccessibilityTrusted: { true }
+        )
+        let panel = NSWindow()
+        coordinator.attachPanelWindow(panel)
+        panel.orderFront(nil)
+        defer { panel.orderOut(nil) }
+        let entry = ClipboardEntry(
+            sourceApplication: "Tests",
+            items: [
+                ClipboardPayloadItem(
+                    representations: [
+                        ClipboardRepresentation(
+                            type: NSPasteboard.PasteboardType.string.rawValue,
+                            data: Data("Copied from history".utf8)
+                        )
+                    ]
+                )
+            ]
+        )
+
+        XCTAssertTrue(coordinator.copyClipboardEntry(entry))
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "Copied from history")
+        XCTAssertTrue(panel.isVisible)
+        XCTAssertNil(model.presentedError)
+    }
+
     func testSelectionAttachmentStagingReportsWriteFailure() throws {
         let baseFile = try storeURL().deletingLastPathComponent()
             .appendingPathComponent("not-a-folder")

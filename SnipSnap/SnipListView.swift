@@ -150,7 +150,7 @@ final class SnipListState: ObservableObject {
 struct SnipListView: View {
     @ObservedObject var model: AppModel
     let coordinator: AppCoordinator
-    let snipDragSourceController: SnipDragSourceController
+    let dragSessionController: PanelDragSessionController
     let fileDropController: PanelFileDropController
     @ObservedObject var state: SnipListState
     @FocusState.Binding var focusedTarget: PanelFocusTarget?
@@ -427,8 +427,8 @@ struct SnipListView: View {
     private func listSectionHeader(_ title: String, listID: UUID) -> some View {
         PanelListSectionHeader(title, hasScrolledFromTop: hasScrolledFromTop)
             .background {
-                SnipDragBlockingRegion(
-                    controller: snipDragSourceController,
+                PanelDragBlockingRegion(
+                    controller: dragSessionController,
                     id: listID
                 )
             }
@@ -446,7 +446,7 @@ struct SnipListView: View {
                 .background {
                     if model.editingID != snip.id {
                         SnipDragSourceRegion(
-                            controller: snipDragSourceController,
+                            controller: dragSessionController,
                             id: snip.id,
                             payload: payload,
                             onBegan: {
@@ -485,8 +485,11 @@ struct SnipListView: View {
     }
 
     private func clipboardEntryRow(_ entry: ClipboardEntry) -> some View {
-        ClipboardEntryRow(entry: entry) {
-            coordinator.useClipboardEntry(entry)
+        ClipboardEntryRow(
+            entry: entry,
+            dragSessionController: dragSessionController
+        ) {
+            coordinator.copyClipboardEntry(entry)
         } save: {
             Task { _ = await model.saveClipboardEntry(entry) }
         }
@@ -589,7 +592,7 @@ struct SnipListView: View {
 
     private func endDrag(
         _ payload: SnipDragPayload,
-        outcome: SnipDragOutcome,
+        outcome: PanelDragSessionOutcome,
         at location: CGPoint,
         listID: UUID,
         snips: [Snip]

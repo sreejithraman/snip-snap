@@ -24,7 +24,12 @@ struct SnipCardRow: View {
     @FocusState private var editorFocused: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
+        PanelContentCard(
+            state: PanelContentCardState(
+                isSelected: isSelected,
+                isSubdued: snip.isDone
+            )
+        ) {
             Toggle(
                 "Done",
                 isOn: Binding(
@@ -36,12 +41,9 @@ struct SnipCardRow: View {
             .labelsHidden()
             .tint(SnipSnapColors.controlTint)
             .focusable(false)
-            .padding(.leading, SnipSnapSpacing.cardContentInset)
-            .padding(.trailing, SnipSnapSpacing.relatedContent)
-            .padding(.vertical, SnipSnapSpacing.cardContentInset)
             .disabled(isEditing)
             .help(snip.isDone ? "Mark Not Done" : "Mark Done")
-
+        } main: {
             if isEditing {
                 editingBody
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -50,8 +52,6 @@ struct SnipCardRow: View {
                     .transition(.opacity)
             }
         }
-        .panelContentCardSurface(isSelected: isSelected, isDone: snip.isDone)
-        .contentShape(Rectangle())
         .onTapGesture(count: 2, perform: onOpen)
         .onTapGesture(count: 1, perform: onSelect)
         .animation(.snappy(duration: 0.18), value: isEditing)
@@ -79,12 +79,7 @@ struct SnipCardRow: View {
     }
 
     private var draggableBody: some View {
-        SnipCardBody(
-            text: snip.content,
-            isDone: snip.isDone,
-            hasAttachments: !snip.attachments.isEmpty,
-            leadingInset: 0
-        ) {
+        PanelContentCardMain {
             if !snip.attachments.isEmpty {
                 AttachmentPreviewStrip(
                     items: attachmentPreviewItems,
@@ -93,8 +88,12 @@ struct SnipCardRow: View {
                     }
                 )
             }
+        } content: {
+            SnipCardText(
+                text: snip.content,
+                isDone: snip.isDone
+            )
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var attachmentPreviewItems: [AttachmentPreviewItem] {
@@ -119,8 +118,6 @@ struct SnipCardRow: View {
                         editAttachments.removeAll { $0 == snip.url }
                     }
                 )
-                .padding(.top, SnipSnapSpacing.cardContentInset)
-                .padding(.trailing, SnipSnapSpacing.cardContentInset)
             }
 
             PanelMultilineTextInput(
@@ -142,12 +139,8 @@ struct SnipCardRow: View {
                     saveEdit()
                     return .handled
                 }
-                .padding(.top, editAttachments.isEmpty ? SnipSnapSpacing.cardContentInset : 0)
-                .padding(.trailing, SnipSnapSpacing.cardContentInset)
 
             editActions
-                .padding(.trailing, SnipSnapSpacing.cardContentInset)
-                .padding(.bottom, SnipSnapSpacing.cardContentInset)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -287,55 +280,19 @@ struct SnipCardRow: View {
     }
 }
 
-struct SnipCardBody<AttachmentContent: View>: View {
+struct SnipCardText: View {
     let text: String
     let isDone: Bool
-    let hasAttachments: Bool
-    let leadingInset: CGFloat
-    @ViewBuilder let attachments: () -> AttachmentContent
 
     var body: some View {
-        VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
-            if hasAttachments {
-                attachments()
-                    .padding(.top, SnipSnapSpacing.cardContentInset)
-                    .padding(.leading, leadingInset)
-                    .padding(.trailing, SnipSnapSpacing.cardContentInset)
-            }
-
-            SnipCardTextBlock(
-                text: text,
-                isDone: isDone,
-                hasAttachments: hasAttachments,
-                leadingPadding: leadingInset
-            )
+        if !text.isEmpty {
+            Text(text)
+                .foregroundStyle(SnipSnapColors.textPrimary)
+                .strikethrough(isDone, color: SnipSnapColors.doneStrikethrough)
+                .opacity(isDone ? SnipSnapColors.doneTextOpacity : 1)
+                .lineLimit(5)
+                .lineSpacing(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-    }
-}
-
-struct SnipCardTextBlock: View {
-    let text: String
-    let isDone: Bool
-    let hasAttachments: Bool
-    let leadingPadding: CGFloat
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
-            if !text.isEmpty {
-                Text(text)
-                    .foregroundStyle(SnipSnapColors.textPrimary)
-                    .strikethrough(isDone, color: SnipSnapColors.doneStrikethrough)
-                    .opacity(isDone ? SnipSnapColors.doneTextOpacity : 1)
-                    .lineLimit(5)
-                    .lineSpacing(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-        }
-        .padding(.leading, leadingPadding)
-        .padding(.trailing, SnipSnapSpacing.cardContentInset)
-        .padding(.top, hasAttachments ? 0 : SnipSnapSpacing.cardContentInset)
-        .padding(.bottom, SnipSnapSpacing.cardContentInset)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

@@ -114,13 +114,13 @@ final class PanelFileDropHostingView<Content: View>: NSHostingView<Content> {
     init(
         rootView: Content,
         controller: PanelFileDropController,
-        snipDragSourceController: SnipDragSourceController
+        dragSessionController: PanelDragSessionController
     ) {
         self.controller = controller
         super.init(rootView: rootView)
         sizingOptions = []
         registerForDraggedTypes([.fileURL])
-        snipDragSourceController.attach(to: self)
+        dragSessionController.attach(to: self)
     }
 
     @available(*, unavailable, message: "Use init(rootView:controller:)")
@@ -173,7 +173,7 @@ final class PanelFileDropHostingView<Content: View>: NSHostingView<Content> {
     }
 
     private func accepts(_ sender: any NSDraggingInfo) -> Bool {
-        guard !(sender.draggingSource is SnipDragSourceController) else {
+        guard !(sender.draggingSource is PanelDragSessionController) else {
             return false
         }
         guard sender.draggingPasteboard.types?.contains(SnipDragExportPackage.privateType) != true else {

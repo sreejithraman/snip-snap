@@ -20,7 +20,7 @@ struct ContentView: View {
     let coordinator: AppCoordinator
     @ObservedObject private var accessibilityPermissions: AccessibilityPermissionController
     @ObservedObject private var fileDropController: PanelFileDropController
-    private let snipDragSourceController: SnipDragSourceController
+    private let dragSessionController: PanelDragSessionController
 
     @State private var entryDraft = ComposerDraft()
     @State private var entryDraftListID = SnipList.inboxID
@@ -42,13 +42,13 @@ struct ContentView: View {
     init(
         coordinator: AppCoordinator,
         fileDropController: PanelFileDropController,
-        snipDragSourceController: SnipDragSourceController
+        dragSessionController: PanelDragSessionController
     ) {
         self.coordinator = coordinator
-        self.snipDragSourceController = snipDragSourceController
         _accessibilityPermissions = ObservedObject(
             wrappedValue: coordinator.accessibilityPermissions
         )
+        self.dragSessionController = dragSessionController
         _fileDropController = ObservedObject(wrappedValue: fileDropController)
     }
 
@@ -124,7 +124,7 @@ struct ContentView: View {
 
             SnipListTabBarView(
                 model: model,
-                snipDragSourceController: snipDragSourceController
+                dragSessionController: dragSessionController
             ) {
                 movesSelectionToNewList = false
                 showingNewList = true
@@ -206,8 +206,8 @@ struct ContentView: View {
                     .background {
                         ZStack {
                             PanelDragRegion()
-                            SnipDragBlockingRegion(
-                                controller: snipDragSourceController,
+                            PanelDragBlockingRegion(
+                                controller: dragSessionController,
                                 id: inlineEntryDragBlockingID
                             )
                         }
@@ -289,6 +289,7 @@ struct ContentView: View {
             ClipboardListView(
                 model: model,
                 coordinator: coordinator,
+                dragSessionController: dragSessionController,
                 showingClearConfirmation: $showingClearClipboard
             )
         } else {
@@ -317,7 +318,7 @@ struct ContentView: View {
         SnipListView(
             model: model,
             coordinator: coordinator,
-            snipDragSourceController: snipDragSourceController,
+            dragSessionController: dragSessionController,
             fileDropController: fileDropController,
             state: listState,
             focusedTarget: $focusedTarget,
