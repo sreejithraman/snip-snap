@@ -14,4 +14,4 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 
 Use GitHub's native issue dependencies when available. Create tickets that block other work first, then link each blocked ticket to the database IDs of its blockers. If the repository does not support native dependencies, add a `Blocked by: #<number>` line to the ticket body.
 
-A ticket is ready only when all blocking issues are closed.
+A ticket is ready only when all blockers have closed.

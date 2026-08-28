@@ -79,7 +79,7 @@ Do not record the numbers as settled yet. Use 25 MiB and 100 MiB as test candida
 - Apple says to call `accountStatus()` before using the private database. The possible states include available, no account, restricted, temporarily unavailable, and unable to determine. [`accountStatus()`](https://developer.apple.com/documentation/cloudkit/ckcontainer/accountstatus%28completionhandler%3A%29), [`CKAccountStatus`](https://developer.apple.com/documentation/cloudkit/ckaccountstatus)
 - A temporarily unavailable account is not a reason to delete cached data or queue more CloudKit work. The app should wait for an account-change notice and check again. [`CKAccountStatus.temporarilyUnavailable`](https://developer.apple.com/documentation/cloudkit/ckaccountstatus/temporarilyunavailable)
 - `CKSyncEngine` can exist without an account or network. It stays dormant until conditions allow sync. Manual `fetchChanges()` waits until the delegate processes the related fetch events and reports failures such as no network or no account. [`CKSyncEngine`](https://developer.apple.com/documentation/cloudkit/cksyncengine-5sie5), [`fetchChanges(_:)`](https://developer.apple.com/documentation/cloudkit/cksyncengine-5sie5/fetchchanges%28_%3A%29)
-- `automaticallySync` can be disabled when an app needs controlled manual fetches and sends. [`CKSyncEngine.Configuration.automaticallySync`](https://developer.apple.com/documentation/cloudkit/cksyncengine-5sie5/configuration/automaticallysync)
+- An app can disable `automaticallySync` when it needs controlled manual fetches and sends. [`CKSyncEngine.Configuration.automaticallySync`](https://developer.apple.com/documentation/cloudkit/cksyncengine-5sie5/configuration/automaticallysync)
 - On an account change, `CKSyncEngine` resets its state, including pending record and zone changes. The app must update or isolate its local data. [`CKSyncEngine.Event.AccountChange`](https://developer.apple.com/documentation/cloudkit/cksyncengine-5sie5/event/accountchange)
 
 ### Inference
@@ -123,11 +123,11 @@ Permanent CloudKit tombstone records are one way to stop resurrection, but they 
 Snip Snap can meet its chosen delete-versus-offline-edit rule without permanent server tombstones if it enforces all of these rules:
 
 - Save the last known server system fields for every synced record. Do not rebuild a stale record as a fresh `CKRecord` with the same ID.
-- Do not send local records during a new bootstrap or state reset until the remote snapshot is fetched and reconciled.
+- Do not send local records during a new bootstrap or state reset until the app fetches and reconciles the remote snapshot.
 - Keep a local deletion change only until CloudKit acknowledges it.
 - On a remote deletion, delete the original identity locally. If that identity has an unsent local edit, copy the edit to a new recovered snip ID in Inbox.
 - On `unknownItem` while sending a stale edit, do not recreate the old record ID. Create a recovered snip with a new ID, then sync that new record.
-- When sync state is lost or must restart, rebuild the cloud cache from the current remote set instead of treating an old local cache as the server snapshot.
+- When the app loses or must restart sync state, rebuild the cloud cache from the current remote set instead of treating an old local cache as the server snapshot.
 
 This makes the outcome independent of whether fetch or send happens first. The original stays deleted, while edited text survives under a new identity.
 
@@ -174,7 +174,7 @@ Apple describes three levels:
 
 [Choosing a CloudKit approach](https://developer.apple.com/documentation/cloudkit/deciding-whether-cloudkit-is-right-for-your-app)
 
-SwiftData History records ordered local transactions, can retain stable IDs for deleted objects, and is meant for uses such as remote-server sync and changes from app extensions. [SwiftData History](https://developer.apple.com/documentation/SwiftData/Fetching-and-filtering-time-based-model-changes), [WWDC24: Track model changes with SwiftData history](https://developer.apple.com/videos/play/wwdc2024/10075/)
+SwiftData History records ordered local transactions, can retain stable IDs for deleted objects, and supports remote-server sync and changes from app extensions. [SwiftData History](https://developer.apple.com/documentation/SwiftData/Fetching-and-filtering-time-based-model-changes), [WWDC24: Track model changes with SwiftData history](https://developer.apple.com/videos/play/wwdc2024/10075/)
 
 ### Inference
 

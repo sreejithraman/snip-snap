@@ -4,4 +4,4 @@ Official Snip Snap builds will offer optional sync through a CloudKit container 
 
 ## Consequences
 
-Normal contributor builds and tests must work without the maintainer's Apple team, signing keys, paid services, or iCloud account. Production container changes and schema promotion remain maintainer release tasks. The storage interface must keep another sync adapter possible if the product later gains a real non-Apple requirement.
+Normal contributor builds and tests must work without the maintainer's Apple team, signing keys, paid services, or iCloud account. Production container changes and schema promotion remain maintainer release tasks.

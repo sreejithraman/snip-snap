@@ -4,4 +4,4 @@ When a device signs out of iCloud or changes Apple Accounts, Snip Snap will stop
 
 ## Consequences
 
-The app must observe CloudKit account changes and keep account caches separate from both the local-only store and other account caches. A temporary CloudKit failure must not look like an account change or cause cached data to be removed. Recovery and removal paths need tests that cover sign-out, sign-in to the same account, and a switch to a different account.
+The app must observe CloudKit account changes and keep account caches separate from both the local-only store and other account caches. A temporary CloudKit failure must not look like an account change or cause the app to remove cached data. Recovery and removal paths need tests that cover sign-out, sign-in to the same account, and a switch to a different account.

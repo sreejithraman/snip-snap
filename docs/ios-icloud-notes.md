@@ -38,7 +38,7 @@ These notes record the accepted product direction and the facts that support it.
 ## Existing data
 
 - Import the current versioned JSON store into the new local persistence schema once.
-- Keep the old JSON file as a backup until the import has been checked.
+- Keep the old JSON file as a backup until the app checks the import.
 - Keep JSON as an export format rather than the permanent store.
 - ADR 0012 supersedes ADR 0001. JSON remains a migration, backup, import, and export format rather than the live store.
 - When the user imports a backup while sync is on, show a preview and merge it through the normal record rules. Send the accepted result through the normal sync path.
@@ -93,6 +93,12 @@ These notes record the accepted product direction and the facts that support it.
 - Forks use local-only mode or configure a CloudKit container that they own.
 - A shared community backend and self-hosted sync are out of scope.
 - Normal contributor builds and tests must not require an Apple team, signing key, paid service, or iCloud account.
+- Keep normal numbered Dev-slot and contributor builds local-only and unable to reach CloudKit.
+- Give signed Cloud Dev builds fixed app identities, an isolated App Group and local store, a clear badge, and the CloudKit development environment.
+- Keep safe local-only defaults and a blank settings template in the repository. Put team, signing, device, and machine values in ignored local settings, environment variables, or CI.
+- Let normal builds work when signed-only settings are absent. Make Cloud Dev, device, and release commands list the settings they need when those settings are missing.
+- Keep public app, App Group, and CloudKit identifiers as project settings, but apply restricted entitlements only in explicit signed build lanes. Let forks replace those identifiers.
+- Scan tracked build and release inputs for personal paths, team IDs, profile IDs, device IDs, and signing choices.
 
 ## Release order
 
@@ -136,6 +142,14 @@ Sources: [SwiftData iCloud sync](https://developer.apple.com/documentation/swift
 
 Sources: [Choosing a CloudKit approach](https://developer.apple.com/documentation/cloudkit/deciding-whether-cloudkit-is-right-for-your-app), [`CKSyncEngine`](https://developer.apple.com/documentation/cloudkit/cksyncengine-5sie5), and [`CKAsset`](https://developer.apple.com/documentation/cloudkit/ckasset).
 
+## iOS Copy and Share
+
+- Copy writes formatted plain text first and adds one file item provider for each attachment.
+- Add separate Copy Text and Copy Attachments actions.
+- Fetch attachments that are not local before copying them.
+- If any attachment remains unavailable, offer Copy Text Only or Cancel. Never omit a file without notice.
+- Use Share as the reliable full-content path for a mixed text-and-attachment snip because another app decides which pasteboard forms it accepts.
+
 ## Share extension constraints
 
 - The app and Share extension run in separate containers. An App Group gives both processes one shared container.
@@ -164,7 +178,7 @@ Sources: [Shared data](https://developer.apple.com/documentation/technologyoverv
 - Upload and confirm the payload before publishing its metadata.
 - Fetch a payload directly by record ID only when the user previews, opens, copies, or exports the attachment.
 - Copy downloaded bytes out of CloudKit staging, verify their size and hash, and keep them in a bounded local cache.
-- Delete metadata first, then delete its payload. Keep a cleanup job until an abandoned or deleted payload is removed.
+- Delete metadata first, then delete its payload. Keep a cleanup job until it removes an abandoned or deleted payload.
 - Replace an attachment by publishing a new immutable payload before removing the old payload.
 - Provide Clear Downloaded Files and do not add offline pinning in the first release.
 
@@ -219,7 +233,7 @@ Automate these checks with temporary durable SwiftData stores, a fake Cloud tran
 - Test both orders of delete versus offline edit and require the recovered edit to use a new ID.
 - Delete saved sync-engine state and prove bootstrap does not upload stale records before fetching the remote collection.
 - Create equal list names on offline client stores and prove every client produces the same suffixes.
-- Run the Share extension in iPhone and iPad Simulators while the app is closed and prove the main app queues each change exactly once.
+- Run the Share extension in iPhone and iPad Simulators while the main app is open, closed, and unable to migrate. Prove that each accepted share enters the main store exactly once.
 - Exercise text, image, file, mixed, and multi-snip Copy and Share flows in both iPhone and iPad Simulators.
 - Run the same SwiftData migration, repository, merge, sync, and recovery test suites for the Mac and iOS targets.
 

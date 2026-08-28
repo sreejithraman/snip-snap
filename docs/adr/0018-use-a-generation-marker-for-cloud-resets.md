@@ -1,6 +1,6 @@
 # 0018: Use a generation marker for cloud resets
 
-Snip Snap will keep a small control record in a dedicated CloudKit zone. It will contain a random sync generation and the IDs of the active metadata and payload zones. Every device must fetch this record and match its generation before it may send changes. The user-facing reset action will be named Delete Synced Content because the control record contains no user content but remains after a normal reset.
+Snip Snap will keep a small control record in a dedicated CloudKit zone. It will contain a random sync generation and the IDs of the active metadata and payload zones. Every device must fetch this record and match its generation before it may send changes. The app will name the user-facing reset action Delete Synced Content because the control record contains no user content but remains after a normal reset.
 
 ## Consequences
 
