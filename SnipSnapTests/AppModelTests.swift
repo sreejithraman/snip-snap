@@ -66,9 +66,12 @@ final class AppModelTests: StoreBackedTestCase {
         let library = InMemorySnipLibrary(snips: [saved])
         let model = AppModel(library: library, defaults: defaults())
         await model.reload()
-        await Task.yield()
-        await Task.yield()
+        for _ in 0..<100 where await library.snapshotCallCount < 2 {
+            try? await Task.sleep(for: .milliseconds(1))
+        }
 
+        let completedStartupReloads = await library.snapshotCallCount
+        XCTAssertGreaterThanOrEqual(completedStartupReloads, 2)
         XCTAssertEqual(model.snips.map(\.id), [saved.id])
         let snapshotCallsBeforeAdd = await library.snapshotCallCount
         let didAdd = await model.add(content: "New", origin: .quickEntry)

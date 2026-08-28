@@ -44,6 +44,55 @@ private final class PanelTextValue {
 
 final class PanelTests: StoreBackedTestCase {
     @MainActor
+    func testMacApplicationBootstrapUsesMigratedSwiftDataForSavedSnipCommands() async throws {
+        let jsonURL = try storeURL()
+        let json = try JSONSnipLibrary(fileURL: jsonURL)
+        _ = try await json.perform(
+            .add(
+                content: "Before migration",
+                origin: .selection,
+                source: SnipSource(
+                    applicationName: "Safari",
+                    windowTitle: "Reference",
+                    url: "https://example.com"
+                ),
+                listID: SnipList.inboxID,
+                attachmentURLs: [],
+                requestID: UUID(),
+                now: Date(timeIntervalSince1970: 100)
+            ),
+            sortedBy: .manual
+        )
+
+        let opened = SnipSnapApplicationDelegate.openLibrary(jsonURL: jsonURL)
+        XCTAssertEqual(opened.mode, .swiftData)
+        let defaultsName = "SnipSnapSwiftDataWiring-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        addTeardownBlock { UserDefaults.standard.removePersistentDomain(forName: defaultsName) }
+        let clipboardURL = jsonURL.deletingLastPathComponent().appendingPathComponent("clipboard.json")
+        let clipboard = ClipboardHistory(
+            pasteboard: NSPasteboard(name: .init("SnipSnapSwiftDataWiring-\(UUID().uuidString)")),
+            defaults: defaults,
+            storeURL: clipboardURL
+        )
+        let model = AppModel(
+            library: opened.library,
+            defaults: defaults,
+            clipboardHistory: clipboard,
+            initialError: opened.errorMessage
+        )
+        await model.reload()
+        XCTAssertEqual(model.snips.map(\.content), ["Before migration"])
+
+        let added = await model.add(content: "After migration", origin: .quickEntry)
+        XCTAssertTrue(added)
+        let reopened = SnipSnapApplicationDelegate.openLibrary(jsonURL: jsonURL)
+        XCTAssertEqual(reopened.mode, .swiftData)
+        let snapshot = await reopened.library.snapshot(sortedBy: .chronological)
+        XCTAssertEqual(Set(snapshot.snips.map(\.content)), ["Before migration", "After migration"])
+    }
+
+    @MainActor
     func testGlobalSearchUsesOneScrollViewForSavedAndClipboardResults() async throws {
         let clipboardEntry = ClipboardEntry(
             sourceApplication: "Tests",

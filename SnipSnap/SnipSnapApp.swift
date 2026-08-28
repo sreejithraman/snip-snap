@@ -43,7 +43,10 @@ struct SnipSnapApp: App {
         .defaultSize(width: 400, height: 230)
         .windowResizability(.contentSize)
         .commands {
-            SnipCommands(coordinator: appDelegate.coordinator)
+            SnipCommands(
+                applicationModel: appDelegate.model,
+                coordinator: appDelegate.coordinator
+            )
             ShortcutCommands()
             if appDelegate.updateChecksEnabled {
                 UpdateCommands(updaterController: appDelegate.updaterController)
@@ -78,21 +81,8 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
 
     override init() {
         let isReleaseApp = Bundle.main.bundleIdentifier == "world.sree.snipsnap"
-        let library: JSONSnipLibrary
-        let initialError: String?
-        do {
-            let result = try JSONSnipLibrary.openRecoveringCorruptStore()
-            library = result.repository
-            if let backupURL = result.backupURL {
-                initialError = "Snip Snap kept the unreadable snips file as \(backupURL.lastPathComponent) and started a new one."
-            } else {
-                initialError = nil
-            }
-        } catch {
-            library = JSONSnipLibrary.unavailable()
-            initialError = "Snip Snap could not read or safely back up its snips file. Snip Snap cannot save new snips."
-        }
-        let model = AppModel(library: library, initialError: initialError)
+        let store = Self.openLibrary()
+        let model = AppModel(library: store.library, initialError: store.errorMessage)
         let shortcutSettings = ShortcutSettings()
         let fileDropController = PanelFileDropController()
         let snipDragSourceController = SnipDragSourceController()
@@ -109,6 +99,12 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         )
         coordinator = AppCoordinator(model: model, shortcutSettings: shortcutSettings)
         super.init()
+    }
+
+    static func openLibrary(
+        jsonURL: URL = JSONSnipLibrary.defaultStoreURL()
+    ) -> LocalSnipLibraryOpenResult {
+        MacLocalSnipLibraryBootstrap.open(jsonURL: jsonURL)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -199,9 +195,11 @@ extension FocusedValues {
 
 private struct SnipCommands: Commands {
     @FocusedValue(\.snipCommandModel) private var model
+    let applicationModel: AppModel
     let coordinator: AppCoordinator
 
-    init(coordinator: AppCoordinator) {
+    init(applicationModel: AppModel, coordinator: AppCoordinator) {
+        self.applicationModel = applicationModel
         self.coordinator = coordinator
     }
 
@@ -250,6 +248,13 @@ private struct SnipCommands: Commands {
             Button(SnipCommand.delete.title) { perform(.delete) }
                 .keyboardShortcut(.delete, modifiers: [])
                 .disabled(!isAvailable(.delete))
+            Divider()
+            Button("Import JSON Backup…") {
+                importJSONBackup(into: applicationModel)
+            }
+            Button("Export JSON Backup…") {
+                exportJSONBackup(from: applicationModel)
+            }
         }
     }
 
@@ -260,5 +265,48 @@ private struct SnipCommands: Commands {
     private func perform(_ command: SnipCommand) {
         guard let model else { return }
         SnipCommandDispatcher(model: model, coordinator: coordinator).perform(command)
+    }
+
+    private func importJSONBackup(into model: AppModel) {
+        let panel = NSOpenPanel()
+        panel.title = "Import JSON Backup"
+        panel.prompt = "Import"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { @MainActor in
+            let didAccess = url.startAccessingSecurityScopedResource()
+            defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let archive = try await Task.detached {
+                    try JSONSnipArchiveTransfer.read(from: url)
+                }.value
+                _ = await model.importArchive(archive)
+            } catch {
+                model.presentedError = error.localizedDescription
+            }
+        }
+    }
+
+    private func exportJSONBackup(from model: AppModel) {
+        let panel = NSSavePanel()
+        panel.title = "Export JSON Backup"
+        panel.prompt = "Export"
+        panel.nameFieldStringValue = "Snip Snap Backup"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { @MainActor in
+            let didAccess = url.startAccessingSecurityScopedResource()
+            defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let archive = try await model.exportArchive()
+                try await Task.detached {
+                    try JSONSnipArchiveTransfer.write(archive, to: url)
+                }.value
+            } catch {
+                model.presentedError = error.localizedDescription
+            }
+        }
     }
 }

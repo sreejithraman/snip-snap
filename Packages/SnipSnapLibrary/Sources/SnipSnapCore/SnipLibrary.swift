@@ -56,6 +56,25 @@ public struct SnipLibrarySnapshot: Equatable, Sendable {
     }
 }
 
+public struct SnipLibraryArchive: Sendable {
+    public let snips: [Snip]
+    public let lists: [SnipList]
+    public let seenRequestIDs: Set<UUID>
+    public let attachmentURLs: [UUID: URL]
+
+    public init(
+        snips: [Snip],
+        lists: [SnipList],
+        seenRequestIDs: Set<UUID>,
+        attachmentURLs: [UUID: URL]
+    ) {
+        self.snips = snips
+        self.lists = lists
+        self.seenRequestIDs = seenRequestIDs
+        self.attachmentURLs = attachmentURLs
+    }
+}
+
 public enum SnipLibraryCommand: Sendable {
     case add(
         content: String,
@@ -86,6 +105,7 @@ public enum SnipLibraryCommand: Sendable {
     case moveChronologically(ids: [UUID], to: UUID)
     case place(ids: [UUID], in: UUID, before: UUID?, basedOn: SnipSortMode)
     case replaceAll([Snip])
+    case importArchive(SnipLibraryArchive)
     case pruneAttachments(retaining: Set<UUID>)
 }
 
@@ -113,4 +133,18 @@ public protocol SnipLibrary: Sendable {
         _ command: SnipLibraryCommand,
         sortedBy sortMode: SnipSortMode
     ) async throws -> SnipLibraryUpdate
+
+    func archive() async throws -> SnipLibraryArchive
+}
+
+public extension SnipLibrary {
+    func archive() async throws -> SnipLibraryArchive {
+        let snapshot = await snapshot(sortedBy: .manual)
+        return SnipLibraryArchive(
+            snips: snapshot.snips,
+            lists: snapshot.lists,
+            seenRequestIDs: Set(snapshot.snips.map(\.requestID)),
+            attachmentURLs: snapshot.attachmentURLs
+        )
+    }
 }
