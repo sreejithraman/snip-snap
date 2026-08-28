@@ -1,4 +1,5 @@
 import QuickLook
+import SnipSnapCore
 import SwiftUI
 import UniformTypeIdentifiers
 

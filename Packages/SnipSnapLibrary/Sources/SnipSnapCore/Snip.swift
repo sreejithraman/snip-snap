@@ -1,46 +1,67 @@
 import Foundation
 
-enum SnipOrigin: String, Codable, Sendable {
+public enum SnipOrigin: String, Codable, Sendable {
     case selection
     case quickEntry
     case clipboard
 }
 
-struct SnipList: Identifiable, Codable, Equatable, Sendable, Hashable {
-    static let inboxID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+public struct SnipList: Identifiable, Codable, Equatable, Sendable, Hashable {
+    public static let inboxID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
 
-    let id: UUID
-    var name: String
-    var systemImage: String
-    var position: Int
+    public let id: UUID
+    public var name: String
+    public var systemImage: String
+    public var position: Int
 
-    static let inbox = SnipList(
+    public static let inbox = SnipList(
         id: inboxID,
         name: "Inbox",
         systemImage: "tray.fill",
         position: 0
     )
+
+    public init(id: UUID, name: String, systemImage: String, position: Int) {
+        self.id = id
+        self.name = name
+        self.systemImage = systemImage
+        self.position = position
+    }
 }
 
-struct SnipAttachment: Identifiable, Codable, Equatable, Sendable, Hashable {
-    let id: UUID
-    var fileName: String
-    var relativePath: String
-    var contentType: String?
-    var byteCount: Int64
+public struct SnipAttachment: Identifiable, Codable, Equatable, Sendable, Hashable {
+    public let id: UUID
+    public var fileName: String
+    package var relativePath: String
+    public var contentType: String?
+    public var byteCount: Int64
+
+    package init(
+        id: UUID,
+        fileName: String,
+        relativePath: String,
+        contentType: String?,
+        byteCount: Int64
+    ) {
+        self.id = id
+        self.fileName = fileName
+        self.relativePath = relativePath
+        self.contentType = contentType
+        self.byteCount = byteCount
+    }
 }
 
-enum SnipSortMode: String, CaseIterable, Codable, Sendable, Hashable {
+public enum SnipSortMode: String, CaseIterable, Codable, Sendable, Hashable {
     case chronological
     case manual
 }
 
-enum SnipCompletionFilter: String, CaseIterable, Sendable, Hashable {
+public enum SnipCompletionFilter: String, CaseIterable, Sendable, Hashable {
     case all
     case done
     case notDone
 
-    var title: String {
+    public var title: String {
         switch self {
         case .all: "All"
         case .done: "Done"
@@ -48,7 +69,7 @@ enum SnipCompletionFilter: String, CaseIterable, Sendable, Hashable {
         }
     }
 
-    var emptyStateTitle: String {
+    public var emptyStateTitle: String {
         switch self {
         case .all: "Nothing captured yet"
         case .done: "No done snips"
@@ -57,12 +78,12 @@ enum SnipCompletionFilter: String, CaseIterable, Sendable, Hashable {
     }
 }
 
-struct SnipSource: Codable, Equatable, Sendable {
-    var applicationName: String
-    var windowTitle: String?
-    var url: String?
+public struct SnipSource: Codable, Equatable, Sendable {
+    public var applicationName: String
+    public var windowTitle: String?
+    public var url: String?
 
-    var conciseLabel: String {
+    public var conciseLabel: String {
         [applicationName, windowTitle]
             .compactMap { value in
                 guard let value, !value.isEmpty else { return nil }
@@ -70,22 +91,32 @@ struct SnipSource: Codable, Equatable, Sendable {
             }
             .joined(separator: " — ")
     }
+
+    public init(
+        applicationName: String,
+        windowTitle: String? = nil,
+        url: String? = nil
+    ) {
+        self.applicationName = applicationName
+        self.windowTitle = windowTitle
+        self.url = url
+    }
 }
 
-struct Snip: Identifiable, Codable, Equatable, Sendable {
-    let id: UUID
-    let requestID: UUID
-    let createdAt: Date
-    var updatedAt: Date
-    var content: String
-    var origin: SnipOrigin
-    var source: SnipSource?
-    var listID: UUID
-    var isDone: Bool
-    var manualPosition: Int64
-    var attachments: [SnipAttachment]
+public struct Snip: Identifiable, Codable, Equatable, Sendable {
+    public let id: UUID
+    public let requestID: UUID
+    public let createdAt: Date
+    public var updatedAt: Date
+    public var content: String
+    public var origin: SnipOrigin
+    public var source: SnipSource?
+    public var listID: UUID
+    public var isDone: Bool
+    public var manualPosition: Int64
+    public var attachments: [SnipAttachment]
 
-    var displaySourceLabel: String {
+    public var displaySourceLabel: String {
         if let source {
             let label = source.conciseLabel
             if !label.isEmpty { return label }
@@ -97,7 +128,7 @@ struct Snip: Identifiable, Codable, Equatable, Sendable {
         }
     }
 
-    init(
+    public init(
         id: UUID = UUID(),
         requestID: UUID = UUID(),
         createdAt: Date = Date(),
@@ -123,7 +154,7 @@ struct Snip: Identifiable, Codable, Equatable, Sendable {
         self.attachments = attachments
     }
 
-    static func sorted(_ snips: [Snip], by mode: SnipSortMode) -> [Snip] {
+    public static func sorted(_ snips: [Snip], by mode: SnipSortMode) -> [Snip] {
         snips.sorted { lhs, rhs in
             switch mode {
             case .chronological:
@@ -150,7 +181,7 @@ struct Snip: Identifiable, Codable, Equatable, Sendable {
         case manualPosition, attachments
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         requestID = try container.decode(UUID.self, forKey: .requestID)
@@ -166,7 +197,7 @@ struct Snip: Identifiable, Codable, Equatable, Sendable {
         attachments = try container.decode([SnipAttachment].self, forKey: .attachments)
     }
 
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(requestID, forKey: .requestID)

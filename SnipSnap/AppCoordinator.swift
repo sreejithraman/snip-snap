@@ -1,4 +1,5 @@
 import AppKit
+import SnipSnapCore
 import ApplicationServices
 import Carbon.HIToolbox
 import Combine

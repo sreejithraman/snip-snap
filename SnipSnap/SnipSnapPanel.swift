@@ -1,4 +1,5 @@
 import AppKit
+import SnipSnapCore
 
 @MainActor
 final class SnipSnapPanel: NSPanel {

@@ -1,4 +1,5 @@
 import SwiftUI
+import SnipSnapCore
 
 struct SnipCardRow: View {
     let snip: Snip

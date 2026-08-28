@@ -1,4 +1,5 @@
 import AppKit
+import SnipSnapCore
 import Foundation
 
 enum SelectionCaptureFailure: Error, Equatable, LocalizedError, Sendable {

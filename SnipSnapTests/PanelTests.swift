@@ -1,7 +1,9 @@
 import XCTest
+import SnipSnapCore
 import AppKit
 import SwiftUI
 @testable import SnipSnap
+@testable import SnipSnapPersistence
 
 // SwiftUI may still resolve Transferable metadata after this test returns.
 // Keep its host alive until the short-lived test process exits.
@@ -76,7 +78,7 @@ final class PanelTests: StoreBackedTestCase {
         await history.waitForInitialLoad()
 
         let model = AppModel(
-            repository: try SnipRepository(fileURL: try storeURL()),
+            library: try JSONSnipLibrary(fileURL: try storeURL()),
             defaults: defaults,
             clipboardHistory: history
         )

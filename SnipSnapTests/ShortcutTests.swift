@@ -1,4 +1,5 @@
 import XCTest
+import SnipSnapCore
 import Carbon.HIToolbox
 @testable import SnipSnap
 

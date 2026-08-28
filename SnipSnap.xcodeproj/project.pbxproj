@@ -10,7 +10,6 @@
 		100000000000000000000001 /* SnipSnapApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000001 /* SnipSnapApp.swift */; };
 		100000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000002 /* ContentView.swift */; };
 		100000000000000000000003 /* AppWindowDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* AppWindowDefaults.swift */; };
-		100000000000000000000005 /* Snip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000007 /* Snip.swift */; };
 		100000000000000000000006 /* SelectionCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000008 /* SelectionCapture.swift */; };
 		100000000000000000000007 /* DetachedEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000009 /* DetachedEditor.swift */; };
 		100000000000000000000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000010 /* Assets.xcassets */; };
@@ -20,7 +19,6 @@
 		10000000000000000000000C /* AppCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000014 /* AppCoordinator.swift */; };
 		10000000000000000000000D /* CaptureHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000015 /* CaptureHUD.swift */; };
 		10000000000000000000000E /* SnipCardRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000016 /* SnipCardRow.swift */; };
-		100000000000000000000010 /* SnipRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000018 /* SnipRepository.swift */; };
 		100000000000000000000011 /* SnipListModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000019 /* SnipListModels.swift */; };
 		100000000000000000000012 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001A /* AppModel.swift */; };
 		100000000000000000000013 /* PasteboardSnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001B /* PasteboardSnapshotStore.swift */; };
@@ -59,6 +57,11 @@
 		100000000000000000000037 /* SnipListIconCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000040 /* SnipListIconCatalog.swift */; };
 		100000000000000000000038 /* PanelCardInteraction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000041 /* PanelCardInteraction.swift */; };
 		2230FA4B303C74F2008B20D5 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 2230FA4A303C74F2008B20D5 /* Sparkle */; };
+		D00000000000000000000033 /* AppDataPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000032 /* AppDataPaths.swift */; };
+		D00000000000000000000020 /* SnipSnapCore in Frameworks */ = {isa = PBXBuildFile; productRef = D00000000000000000000010 /* SnipSnapCore */; };
+		D00000000000000000000021 /* SnipSnapPersistence in Frameworks */ = {isa = PBXBuildFile; productRef = D00000000000000000000011 /* SnipSnapPersistence */; };
+		D00000000000000000000022 /* SnipSnapCore in Frameworks */ = {isa = PBXBuildFile; productRef = D00000000000000000000012 /* SnipSnapCore */; };
+		D00000000000000000000023 /* SnipSnapPersistence in Frameworks */ = {isa = PBXBuildFile; productRef = D00000000000000000000013 /* SnipSnapPersistence */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -77,7 +80,6 @@
 		200000000000000000000003 /* AppWindowDefaults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppWindowDefaults.swift; sourceTree = "<group>"; };
 		200000000000000000000005 /* Snip Snap.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Snip Snap.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		200000000000000000000006 /* SnipSnapTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SnipSnapTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		200000000000000000000007 /* Snip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Snip.swift; sourceTree = "<group>"; };
 		200000000000000000000008 /* SelectionCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionCapture.swift; sourceTree = "<group>"; };
 		200000000000000000000009 /* DetachedEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetachedEditor.swift; sourceTree = "<group>"; };
 		200000000000000000000010 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -87,7 +89,6 @@
 		200000000000000000000014 /* AppCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoordinator.swift; sourceTree = "<group>"; };
 		200000000000000000000015 /* CaptureHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureHUD.swift; sourceTree = "<group>"; };
 		200000000000000000000016 /* SnipCardRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipCardRow.swift; sourceTree = "<group>"; };
-		200000000000000000000018 /* SnipRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipRepository.swift; sourceTree = "<group>"; };
 		200000000000000000000019 /* SnipListModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListModels.swift; sourceTree = "<group>"; };
 		20000000000000000000001A /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		20000000000000000000001B /* PasteboardSnapshotStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PasteboardSnapshotStore.swift; sourceTree = "<group>"; };
@@ -130,6 +131,7 @@
 		D00000000000000000000002 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
 		D00000000000000000000003 /* Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Shared.xcconfig; sourceTree = "<group>"; };
 		D00000000000000000000004 /* Local.example.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Local.example.xcconfig; sourceTree = "<group>"; };
+		D00000000000000000000032 /* AppDataPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDataPaths.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -138,6 +140,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				2230FA4B303C74F2008B20D5 /* Sparkle in Frameworks */,
+				D00000000000000000000020 /* SnipSnapCore in Frameworks */,
+				D00000000000000000000021 /* SnipSnapPersistence in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -145,6 +149,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D00000000000000000000022 /* SnipSnapCore in Frameworks */,
+				D00000000000000000000023 /* SnipSnapPersistence in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -167,8 +173,7 @@
 				200000000000000000000001 /* SnipSnapApp.swift */,
 				200000000000000000000002 /* ContentView.swift */,
 				200000000000000000000003 /* AppWindowDefaults.swift */,
-				200000000000000000000007 /* Snip.swift */,
-				200000000000000000000018 /* SnipRepository.swift */,
+				D00000000000000000000032 /* AppDataPaths.swift */,
 				200000000000000000000019 /* SnipListModels.swift */,
 				20000000000000000000001A /* AppModel.swift */,
 				200000000000000000000008 /* SelectionCapture.swift */,
@@ -265,6 +270,8 @@
 			name = SnipSnap;
 			packageProductDependencies = (
 				2230FA4A303C74F2008B20D5 /* Sparkle */,
+				D00000000000000000000010 /* SnipSnapCore */,
+				D00000000000000000000011 /* SnipSnapPersistence */,
 			);
 			productName = SnipSnap;
 			productReference = 200000000000000000000005 /* Snip Snap.app */;
@@ -285,6 +292,8 @@
 			);
 			name = SnipSnapTests;
 			packageProductDependencies = (
+				D00000000000000000000012 /* SnipSnapCore */,
+				D00000000000000000000013 /* SnipSnapPersistence */,
 			);
 			productName = SnipSnapTests;
 			productReference = 200000000000000000000006 /* SnipSnapTests.xctest */;
@@ -320,6 +329,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				2230FA49303C74F2008B20D5 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				D00000000000000000000030 /* XCLocalSwiftPackageReference "SnipSnapLibrary" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 700000000000000000000004 /* Products */;
@@ -358,8 +368,7 @@
 				100000000000000000000001 /* SnipSnapApp.swift in Sources */,
 				100000000000000000000002 /* ContentView.swift in Sources */,
 				100000000000000000000003 /* AppWindowDefaults.swift in Sources */,
-				100000000000000000000005 /* Snip.swift in Sources */,
-				100000000000000000000010 /* SnipRepository.swift in Sources */,
+				D00000000000000000000033 /* AppDataPaths.swift in Sources */,
 				100000000000000000000011 /* SnipListModels.swift in Sources */,
 				100000000000000000000012 /* AppModel.swift in Sources */,
 				100000000000000000000006 /* SelectionCapture.swift in Sources */,
@@ -608,6 +617,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		D00000000000000000000030 /* XCLocalSwiftPackageReference "SnipSnapLibrary" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/SnipSnapLibrary;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		2230FA49303C74F2008B20D5 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -624,6 +640,22 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 2230FA49303C74F2008B20D5 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		D00000000000000000000010 /* SnipSnapCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SnipSnapCore;
+		};
+		D00000000000000000000011 /* SnipSnapPersistence */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SnipSnapPersistence;
+		};
+		D00000000000000000000012 /* SnipSnapCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SnipSnapCore;
+		};
+		D00000000000000000000013 /* SnipSnapPersistence */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SnipSnapPersistence;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -1,4 +1,5 @@
 import SwiftUI
+import SnipSnapCore
 
 struct PanelMoreButton: View {
     @ObservedObject var model: AppModel

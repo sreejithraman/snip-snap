@@ -1,4 +1,5 @@
 import Foundation
+import SnipSnapCore
 
 struct ComposerDraft: Equatable {
     var text = ""

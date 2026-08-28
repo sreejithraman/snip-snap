@@ -1,4 +1,5 @@
 import AppKit
+import SnipSnapCore
 import XCTest
 import Foundation
 import UniformTypeIdentifiers
@@ -378,7 +379,8 @@ final class SnipListModelsTests: XCTestCase {
             origin: .selection,
             source: SnipSource(
                 applicationName: "TextEdit",
-                windowTitle: "Draft"
+                windowTitle: "Draft",
+                url: nil
             )
         )
         let quickEntry = Snip(content: "Typed", origin: .quickEntry)

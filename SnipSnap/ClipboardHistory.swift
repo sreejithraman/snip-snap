@@ -1,4 +1,5 @@
 import AppKit
+import SnipSnapCore
 import CoreTransferable
 import CryptoKit
 import Foundation
@@ -407,9 +408,7 @@ final class ClipboardHistory: ObservableObject {
     init(
         pasteboard: NSPasteboard = .general,
         defaults: UserDefaults = .standard,
-        storeURL: URL = SnipRepository.defaultStoreURL()
-            .deletingLastPathComponent()
-            .appendingPathComponent("clipboard.json")
+        storeURL: URL = AppDataPaths.clipboardHistory()
     ) {
         self.pasteboard = pasteboard
         self.defaults = defaults

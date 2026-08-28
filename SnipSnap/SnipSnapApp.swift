@@ -1,5 +1,7 @@
 import AppKit
+import SnipSnapCore
 import Sparkle
+import SnipSnapPersistence
 import SwiftUI
 
 private extension ShortcutKeyChord {
@@ -76,7 +78,21 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
 
     override init() {
         let isReleaseApp = Bundle.main.bundleIdentifier == "world.sree.snipsnap"
-        let model = AppModel()
+        let library: JSONSnipLibrary
+        let initialError: String?
+        do {
+            let result = try JSONSnipLibrary.openRecoveringCorruptStore()
+            library = result.repository
+            if let backupURL = result.backupURL {
+                initialError = "Snip Snap kept the unreadable snips file as \(backupURL.lastPathComponent) and started a new one."
+            } else {
+                initialError = nil
+            }
+        } catch {
+            library = JSONSnipLibrary.unavailable()
+            initialError = "Snip Snap could not read or safely back up its snips file. Snip Snap cannot save new snips."
+        }
+        let model = AppModel(library: library, initialError: initialError)
         let shortcutSettings = ShortcutSettings()
         let fileDropController = PanelFileDropController()
         let snipDragSourceController = SnipDragSourceController()

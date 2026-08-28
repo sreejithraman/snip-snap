@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import SnipSnapCore
 
 private actor AppModelCommandLock {
     private var isLocked = false
@@ -80,7 +81,8 @@ final class AppModel: ObservableObject {
         return Set(snips.filter { ids.contains($0.id) }.map(\.listID)).count == 1
     }
 
-    private let repository: SnipRepository
+    private let library: any SnipLibrary
+    private var attachmentURLs: [UUID: URL] = [:]
     private let defaults: UserDefaults
     private let commandLock = AppModelCommandLock()
     private let composerDrafts: ComposerDraftStore
@@ -117,13 +119,15 @@ final class AppModel: ObservableObject {
     }
 
     func attachmentURL(for attachment: SnipAttachment) -> URL {
-        repository.attachmentURL(for: attachment)
+        attachmentURLs[attachment.id]
+            ?? URL(fileURLWithPath: "/missing-snip-attachment/\(attachment.id.uuidString)")
     }
 
     init(
-        repository: SnipRepository? = nil,
+        library: any SnipLibrary,
         defaults: UserDefaults = .standard,
-        clipboardHistory: ClipboardHistory? = nil
+        clipboardHistory: ClipboardHistory? = nil,
+        initialError: String? = nil
     ) {
         Self.migrateRenamedDefaults(in: defaults)
         self.defaults = defaults
@@ -140,20 +144,8 @@ final class AppModel: ObservableObject {
         appearance = AppAppearance(
             rawValue: defaults.string(forKey: Self.appearanceDefaultsKey) ?? ""
         ) ?? .system
-        if let repository {
-            self.repository = repository
-        } else {
-            do {
-                let result = try SnipRepository.openRecoveringCorruptStore()
-                self.repository = result.repository
-                if let backupURL = result.backupURL {
-                    presentedError = "Snip Snap kept the unreadable snips file as \(backupURL.lastPathComponent) and started a new one."
-                }
-            } catch {
-                self.repository = SnipRepository.unavailable()
-                presentedError = "Snip Snap could not read or safely back up its snips file. Snip Snap cannot save new snips."
-            }
-        }
+        self.library = library
+        presentedError = initialError
         Task { await reload() }
     }
 
@@ -176,10 +168,14 @@ final class AppModel: ObservableObject {
     }
 
     private func reloadUnlocked() async {
-        async let loadedSnips = repository.allSnips(sortMode: sortMode)
-        async let loadedLists = repository.allLists()
-        snips = await loadedSnips
-        lists = await loadedLists
+        let snapshot = await library.snapshot(sortedBy: sortMode)
+        apply(snapshot)
+    }
+
+    private func apply(_ snapshot: SnipLibrarySnapshot) {
+        snips = snapshot.snips
+        lists = snapshot.lists
+        attachmentURLs = snapshot.attachmentURLs
         if !lists.contains(where: { $0.id == activeListID }) {
             activeListID = SnipList.inboxID
             defaults.set(SnipList.inboxID.uuidString, forKey: Self.activeListDefaultsKey)
@@ -237,24 +233,34 @@ final class AppModel: ObservableObject {
     ) async -> Result<SnipAddOutcome, Error> {
         await withCommandLock {
             let result = await performMutationUnlocked(clearingHistory: false) {
-                try await repository.add(
-                    content: content,
-                    origin: origin,
-                    source: source,
-                    listID: listID ?? activeList.id,
-                    attachmentURLs: attachmentURLs,
-                    requestID: requestID
+                let update = try await library.perform(
+                    .add(
+                        content: content,
+                        origin: origin,
+                        source: source,
+                        listID: listID ?? activeList.id,
+                        attachmentURLs: attachmentURLs,
+                        requestID: requestID,
+                        now: Date()
+                    ),
+                    sortedBy: sortMode
                 )
+                return (update, update)
             }
             switch result {
-            case .success(let snip):
-                if let snip {
-                    latestAddedSnipID = snip.id
+            case .success(let update):
+                guard case .add(let outcome) = update.outcome else {
+                    preconditionFailure("The library returned the wrong add outcome.")
+                }
+                switch outcome {
+                case .added(let id):
+                    latestAddedSnipID = id
                     clearHistory()
                     await reconcileAttachmentStorage()
-                    return .success(.added(snip.id))
+                    return .success(.added(id))
+                case .duplicate:
+                    return .success(.duplicate)
                 }
-                return .success(.duplicate)
             case .failure(let error):
                 return .failure(error)
             }
@@ -288,12 +294,17 @@ final class AppModel: ObservableObject {
         expectedUpdatedAt: Date? = nil
     ) async -> Result<Void, Error> {
         await performMutation {
-            try await repository.update(
-                id: id,
-                content: content,
-                attachmentURLs: attachmentURLs,
-                expectedUpdatedAt: expectedUpdatedAt
+            let update = try await library.perform(
+                .update(
+                    id: id,
+                    content: content,
+                    attachmentURLs: attachmentURLs,
+                    expectedUpdatedAt: expectedUpdatedAt,
+                    now: Date()
+                ),
+                sortedBy: sortMode
             )
+            return (update, ())
         }
     }
 
@@ -364,7 +375,14 @@ final class AppModel: ObservableObject {
         movingIDs: Set<UUID> = []
     ) async -> Bool {
         let result = await performMutation(clearingHistory: false) {
-            try await repository.createList(name: name, systemImage: systemImage)
+            let update = try await library.perform(
+                .createList(name: name, systemImage: systemImage),
+                sortedBy: sortMode
+            )
+            guard case .listCreated(let list) = update.outcome else {
+                preconditionFailure("The library returned the wrong list outcome.")
+            }
+            return (update, list)
         }
         switch result {
         case .success(let list):
@@ -385,7 +403,8 @@ final class AppModel: ObservableObject {
     func deleteList(_ list: SnipList) async {
         guard list.id != SnipList.inboxID else { return }
         let result = await performMutation {
-            try await repository.deleteList(id: list.id)
+            let update = try await library.perform(.deleteList(id: list.id), sortedBy: sortMode)
+            return (update, ())
         }
         if case .failure(let error) = result {
             presentedError = error.localizedDescription
@@ -396,11 +415,11 @@ final class AppModel: ObservableObject {
 
     func updateList(_ list: SnipList, name: String, systemImage: String) async -> Bool {
         let result = await performMutation {
-            try await repository.updateList(
-                id: list.id,
-                name: name,
-                systemImage: systemImage
+            let update = try await library.perform(
+                .updateList(id: list.id, name: name, systemImage: systemImage),
+                sortedBy: sortMode
             )
+            return (update, ())
         }
         if case .failure(let error) = result {
             presentedError = error.localizedDescription
@@ -454,7 +473,8 @@ final class AppModel: ObservableObject {
         let snipsToDelete = selectedSnips
         guard !ids.isEmpty, !snipsToDelete.isEmpty else { return }
         let result = await performHistoryMutation(name: "Delete", afterSelection: { _ in [] }) {
-            try await repository.delete(ids: ids)
+            let update = try await library.perform(.delete(ids: ids), sortedBy: sortMode)
+            return (update, ())
         }
         switch result {
         case .success:
@@ -472,7 +492,11 @@ final class AppModel: ObservableObject {
         await withCommandLock {
             guard let operation = undoHistory.last else { return }
             switch await performMutationUnlocked(clearingHistory: false, {
-                try await repository.replaceAll(with: operation.beforeSnips)
+                let update = try await library.perform(
+                    .replaceAll(operation.beforeSnips),
+                    sortedBy: sortMode
+                )
+                return (update, ())
             }) {
             case .success:
                 undoHistory.removeLast()
@@ -495,7 +519,11 @@ final class AppModel: ObservableObject {
         await withCommandLock {
             guard let operation = redoHistory.last else { return }
             switch await performMutationUnlocked(clearingHistory: false, {
-                try await repository.replaceAll(with: operation.afterSnips)
+                let update = try await library.perform(
+                    .replaceAll(operation.afterSnips),
+                    sortedBy: sortMode
+                )
+                return (update, ())
             }) {
             case .success:
                 redoHistory.removeLast()
@@ -515,7 +543,8 @@ final class AppModel: ObservableObject {
         guard !ids.isEmpty else { return }
         Task {
             await performUserMutation {
-                try await repository.toggleDone(ids: ids)
+                let update = try await library.perform(.toggleDoneMany(ids: ids), sortedBy: sortMode)
+                return (update, ())
             }
         }
     }
@@ -526,7 +555,8 @@ final class AppModel: ObservableObject {
 
     func toggleDoneNow(id: UUID) async {
         await performUserMutation {
-            try await repository.toggleDone(id: id)
+            let update = try await library.perform(.toggleDone(id: id), sortedBy: sortMode)
+            return (update, ())
         }
     }
 
@@ -542,7 +572,11 @@ final class AppModel: ObservableObject {
         )
         guard !unfinishedIDs.isEmpty else { return }
         await performUserMutation {
-            try await repository.setDone(ids: unfinishedIDs, done: true)
+            let update = try await library.perform(
+                .setDone(ids: unfinishedIDs, done: true),
+                sortedBy: sortMode
+            )
+            return (update, ())
         }
     }
 
@@ -595,12 +629,16 @@ final class AppModel: ObservableObject {
             afterSelection: { _ in finalSelection },
             afterSortMode: .manual
         ) {
-            try await repository.place(
-                ids: ids,
-                in: listID,
-                before: destinationID,
-                basedOn: currentSortMode
+            let update = try await library.perform(
+                .place(
+                    ids: ids,
+                    in: listID,
+                    before: destinationID,
+                    basedOn: currentSortMode
+                ),
+                sortedBy: sortMode
             )
+            return (update, ())
         }
         if case .success = result {
             selection = finalSelection
@@ -620,7 +658,11 @@ final class AppModel: ObservableObject {
         guard !ids.isEmpty else { return false }
         let finalSelection = selectionAfterMove ?? selectedIDs
         let result = await performHistoryMutation(name: "Move", afterSelection: { _ in finalSelection }) {
-            try await repository.moveChronologically(ids: ids, to: listID)
+            let update = try await library.perform(
+                .moveChronologically(ids: ids, to: listID),
+                sortedBy: sortMode
+            )
+            return (update, ())
         }
         if case .success = result {
             selection = finalSelection
@@ -687,7 +729,14 @@ final class AppModel: ObservableObject {
         let snipsToMerge = selectedSnips
         guard ids.count >= 2, snipsToMerge.count >= 2 else { return }
         let result = await performHistoryMutation(name: "Merge", afterSelection: { [$0.id] }) {
-            try await repository.merge(ids: ids)
+            let update = try await library.perform(
+                .merge(ids: ids, now: Date()),
+                sortedBy: sortMode
+            )
+            guard case .merged(let snip) = update.outcome else {
+                preconditionFailure("The library returned the wrong merge outcome.")
+            }
+            return (update, snip)
         }
         switch result {
         case .success(let mergedSnip):
@@ -699,7 +748,7 @@ final class AppModel: ObservableObject {
 
     private func performMutation<Value>(
         clearingHistory: Bool = true,
-        _ mutation: () async throws -> Value
+        _ mutation: () async throws -> (SnipLibraryUpdate, Value)
     ) async -> Result<Value, Error> {
         await withCommandLock {
             await performMutationUnlocked(clearingHistory: clearingHistory, mutation)
@@ -708,11 +757,11 @@ final class AppModel: ObservableObject {
 
     private func performMutationUnlocked<Value>(
         clearingHistory: Bool,
-        _ mutation: () async throws -> Value
+        _ mutation: () async throws -> (SnipLibraryUpdate, Value)
     ) async -> Result<Value, Error> {
         do {
-            let value = try await mutation()
-            await reloadUnlocked()
+            let (update, value) = try await mutation()
+            apply(update.snapshot)
             if clearingHistory {
                 clearHistory()
                 await reconcileAttachmentStorage()
@@ -724,7 +773,7 @@ final class AppModel: ObservableObject {
     }
 
     private func performUserMutation(
-        _ mutation: () async throws -> Void
+        _ mutation: () async throws -> (SnipLibraryUpdate, Void)
     ) async {
         if case .failure(let error) = await performMutation(mutation) {
             presentedError = error.localizedDescription
@@ -735,7 +784,7 @@ final class AppModel: ObservableObject {
         name: String,
         afterSelection: ((Value) -> Set<UUID>)? = nil,
         afterSortMode: SnipSortMode? = nil,
-        _ mutation: () async throws -> Value
+        _ mutation: () async throws -> (SnipLibraryUpdate, Value)
     ) async -> Result<Value, Error> {
         await withCommandLock {
             let beforeSnips = snips
@@ -789,7 +838,10 @@ final class AppModel: ObservableObject {
     private func reconcileAttachmentStorage() async {
         let historySnips = undoHistory.flatMap { $0.beforeSnips + $0.afterSnips }
             + redoHistory.flatMap { $0.beforeSnips + $0.afterSnips }
-        let retainedPaths = Set(historySnips.flatMap(\.attachments).map(\.relativePath))
-        await repository.removeUnreferencedAttachments(keepingAdditional: retainedPaths)
+        let retainedIDs = Set(historySnips.flatMap(\.attachments).map(\.id))
+        _ = try? await library.perform(
+            .pruneAttachments(retaining: retainedIDs),
+            sortedBy: sortMode
+        )
     }
 }

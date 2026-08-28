@@ -1,4 +1,5 @@
 import SwiftUI
+import SnipSnapCore
 
 private struct SnipListNameAndIconField: View {
     @Binding var name: String
