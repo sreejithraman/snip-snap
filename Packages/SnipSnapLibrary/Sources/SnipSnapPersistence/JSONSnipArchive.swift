@@ -128,16 +128,18 @@ public enum JSONSnipArchiveTransfer {
     let archive = try JSONSnipArchiveReader.read(from: documentURL)
     let attachmentRoot = documentURL.deletingLastPathComponent()
       .appendingPathComponent("Attachments", isDirectory: true)
+    var attachmentURLs: [UUID: URL] = [:]
+    for attachment in archive.snips.flatMap(\.attachments) where attachmentURLs[attachment.id] == nil {
+      attachmentURLs[attachment.id] = try checkedAttachmentURL(
+        root: attachmentRoot,
+        relativePath: attachment.relativePath
+      )
+    }
     return SnipLibraryArchive(
       snips: archive.snips,
       lists: archive.lists,
       seenRequestIDs: archive.seenRequestIDs,
-      attachmentURLs: Dictionary(
-        archive.snips.flatMap(\.attachments).map {
-          ($0.id, attachmentRoot.appendingPathComponent($0.relativePath))
-        },
-        uniquingKeysWith: { first, _ in first }
-      )
+      attachmentURLs: attachmentURLs
     )
   }
 
@@ -203,5 +205,39 @@ public enum JSONSnipArchiveTransfer {
       return selectedURL.appendingPathComponent("snips.json", isDirectory: false)
     }
     return selectedURL
+  }
+
+  private static func checkedAttachmentURL(root: URL, relativePath: String) throws -> URL {
+    guard JSONSnipArchiveReader.isSafeRelativePath(relativePath) else {
+      throw SnipLibraryError.invalidStore
+    }
+    let rootValues = try root.resourceValues(forKeys: [
+      .isDirectoryKey, .isSymbolicLinkKey,
+    ])
+    guard rootValues.isDirectory == true, rootValues.isSymbolicLink != true else {
+      throw SnipLibraryError.invalidStore
+    }
+    let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL
+    let candidate = root.appendingPathComponent(relativePath).standardizedFileURL
+    guard FileManager.default.fileExists(atPath: candidate.path) else {
+      throw SnipLibraryError.invalidStore
+    }
+    let candidateValues = try candidate.resourceValues(forKeys: [
+      .isRegularFileKey, .isSymbolicLinkKey,
+    ])
+    guard candidateValues.isSymbolicLink != true else {
+      throw SnipLibraryError.invalidStore
+    }
+    let resolvedCandidate = candidate.resolvingSymlinksInPath().standardizedFileURL
+    guard resolvedCandidate.path.hasPrefix(resolvedRoot.path + "/") else {
+      throw SnipLibraryError.invalidStore
+    }
+    let resolvedValues = try resolvedCandidate.resourceValues(forKeys: [
+      .isRegularFileKey, .isSymbolicLinkKey,
+    ])
+    guard resolvedValues.isRegularFile == true, resolvedValues.isSymbolicLink != true else {
+      throw SnipLibraryError.invalidStore
+    }
+    return resolvedCandidate
   }
 }

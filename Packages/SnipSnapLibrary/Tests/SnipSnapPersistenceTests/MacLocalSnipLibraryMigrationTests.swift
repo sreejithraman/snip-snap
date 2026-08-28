@@ -186,6 +186,82 @@ final class MacLocalSnipLibraryMigrationTests: XCTestCase {
     )
   }
 
+  func testJSONChangeAtFinalActivationCheckpointAbortsMigration() async throws {
+    let fixture = try makeVersionSixFixture()
+    let paths = LocalSnipStorePaths(jsonURL: fixture.jsonURL)
+    let lateSnip = Snip(
+      id: UUID(),
+      requestID: UUID(),
+      createdAt: Date(timeIntervalSince1970: 800),
+      content: "Arrived during migration",
+      origin: .quickEntry
+    )
+
+    let result = MacLocalSnipLibraryBootstrap.open(jsonURL: fixture.jsonURL) { checkpoint in
+      guard checkpoint == .beforeActivation else { return }
+      try self.write(
+        VersionSixDocument(
+          version: 6,
+          snips: Array(fixture.snipsByID.values) + [lateSnip],
+          lists: Array(fixture.listsByID.values),
+          seenRequestIDs: Set(fixture.snipsByID.values.map(\.requestID)).union([lateSnip.requestID])
+        ),
+        to: fixture.jsonURL
+      )
+    }
+
+    XCTAssertEqual(result.mode, .jsonFallback)
+    XCTAssertTrue(result.errorMessage?.contains("changed") == true)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: paths.localDirectory.path))
+    let snapshot = await result.library.snapshot(sortedBy: .manual)
+    XCTAssertTrue(snapshot.snips.contains(where: { $0.id == lateSnip.id }))
+  }
+
+  func testAttachmentChangeAtFinalActivationCheckpointAbortsMigration() async throws {
+    let fixture = try makeVersionSixFixture()
+    let paths = LocalSnipStorePaths(jsonURL: fixture.jsonURL)
+    let attachmentURL = paths.legacyAttachmentDirectory
+      .appendingPathComponent(fixture.attachment.relativePath)
+    let changedBytes = Data(repeating: 0x78, count: fixture.attachmentData.count)
+
+    let result = MacLocalSnipLibraryBootstrap.open(jsonURL: fixture.jsonURL) { checkpoint in
+      guard checkpoint == .beforeActivation else { return }
+      try changedBytes.write(to: attachmentURL, options: .atomic)
+    }
+
+    XCTAssertEqual(result.mode, .jsonFallback)
+    XCTAssertTrue(result.errorMessage?.contains("attachment") == true)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: paths.localDirectory.path))
+    let snapshot = await result.library.snapshot(sortedBy: .manual)
+    XCTAssertEqual(
+      Dictionary(uniqueKeysWithValues: snapshot.snips.map { ($0.id, $0) }),
+      fixture.snipsByID
+    )
+  }
+
+  func testFinalStoreOpenFailureRollsActivationBackBeforeJSONFallback() async throws {
+    let fixture = try makeVersionSixFixture()
+    let paths = LocalSnipStorePaths(jsonURL: fixture.jsonURL)
+
+    let result = MacLocalSnipLibraryBootstrap.open(
+      jsonURL: fixture.jsonURL,
+      checkpoint: { _ in },
+      libraryFactory: { storeURL in
+        if storeURL == paths.swiftDataStoreURL { throw InjectedFailure.stop }
+        return try SwiftDataSnipLibrary(storeURL: storeURL)
+      }
+    )
+
+    XCTAssertEqual(result.mode, .jsonFallback)
+    XCTAssertNotNil(result.errorMessage)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: paths.localDirectory.path))
+    let snapshot = await result.library.snapshot(sortedBy: .manual)
+    XCTAssertEqual(
+      Dictionary(uniqueKeysWithValues: snapshot.snips.map { ($0.id, $0) }),
+      fixture.snipsByID
+    )
+  }
+
   func testChangedStagedAttachmentFailsHashCheckAndLeavesJSONActive() async throws {
     let fixture = try makeVersionSixFixture()
     let paths = LocalSnipStorePaths(jsonURL: fixture.jsonURL)
@@ -304,6 +380,23 @@ final class MacLocalSnipLibraryMigrationTests: XCTestCase {
     XCTAssertEqual(snapshot.lists, [.inbox])
     XCTAssertEqual(try markerJSON(jsonURL: jsonURL)["sourceJSONPath"] as? String, "snips.json")
     XCTAssertNil(try markerJSON(jsonURL: jsonURL)["backupPath"])
+  }
+
+  func testNewInstallCreatesMissingStoreRootBeforeStaging() async throws {
+    let base = try makeRoot()
+    let missingRoot = base.appendingPathComponent("Missing/Application Support/Snip Snap")
+    let jsonURL = missingRoot.appendingPathComponent("snips.json")
+    XCTAssertFalse(FileManager.default.fileExists(atPath: missingRoot.path))
+
+    let result = MacLocalSnipLibraryBootstrap.open(jsonURL: jsonURL)
+
+    XCTAssertEqual(result.mode, .swiftData)
+    XCTAssertNil(result.errorMessage)
+    let paths = LocalSnipStorePaths(jsonURL: jsonURL)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: paths.swiftDataStoreURL.path))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: paths.markerURL.path))
+    let snapshot = await result.library.snapshot(sortedBy: .manual)
+    XCTAssertEqual(snapshot.lists, [.inbox])
   }
 
   func testDeletingACompletedBackupDoesNotSwitchTheLiveStoreBackToJSON() async throws {
@@ -438,6 +531,29 @@ final class MacLocalSnipLibraryMigrationTests: XCTestCase {
       sortedBy: .manual
     )
     XCTAssertEqual(replay.outcome, .add(.duplicate))
+  }
+
+  func testJSONImportRejectsAttachmentSymlinkOutsideSelectedAttachments() throws {
+    let fixture = try makeVersionSixFixture()
+    let paths = LocalSnipStorePaths(jsonURL: fixture.jsonURL)
+    let attachmentParent = paths.legacyAttachmentDirectory
+      .appendingPathComponent(fixture.attachment.relativePath)
+      .deletingLastPathComponent()
+    try FileManager.default.removeItem(at: attachmentParent)
+    let escapedDirectory = paths.rootDirectory.appendingPathComponent("Escaped")
+    try FileManager.default.createDirectory(
+      at: escapedDirectory,
+      withIntermediateDirectories: false
+    )
+    try fixture.attachmentData.write(
+      to: escapedDirectory.appendingPathComponent(fixture.attachment.fileName)
+    )
+    try FileManager.default.createSymbolicLink(
+      at: attachmentParent,
+      withDestinationURL: escapedDirectory
+    )
+
+    XCTAssertThrowsError(try JSONSnipArchiveTransfer.read(from: paths.rootDirectory))
   }
 
   private struct VersionSixFixture {

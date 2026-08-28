@@ -125,8 +125,28 @@ public enum MacLocalSnipLibraryBootstrap {
     jsonURL: URL,
     checkpoint: (LocalStoreMigrationCheckpoint) throws -> Void
   ) -> LocalSnipLibraryOpenResult {
+    open(
+      jsonURL: jsonURL,
+      checkpoint: checkpoint,
+      libraryFactory: { try SwiftDataSnipLibrary(storeURL: $0) }
+    )
+  }
+
+  package static func open(
+    jsonURL: URL,
+    checkpoint: (LocalStoreMigrationCheckpoint) throws -> Void,
+    libraryFactory: (URL) throws -> any SnipLibrary
+  ) -> LocalSnipLibraryOpenResult {
     let fileManager = FileManager.default
     let paths = LocalSnipStorePaths(jsonURL: jsonURL)
+    do {
+      try fileManager.createDirectory(
+        at: paths.rootDirectory,
+        withIntermediateDirectories: true
+      )
+    } catch {
+      return unavailableStoreRoot(paths: paths, error: error)
+    }
     cleanupStaleWork(paths: paths, fileManager: fileManager)
 
     if fileManager.fileExists(atPath: paths.localDirectory.path) {
@@ -145,7 +165,7 @@ public enum MacLocalSnipLibraryBootstrap {
       }
       do {
         return LocalSnipLibraryOpenResult(
-          library: try SwiftDataSnipLibrary(storeURL: paths.swiftDataStoreURL),
+          library: try libraryFactory(paths.swiftDataStoreURL),
           mode: .swiftData
         )
       } catch {
@@ -229,14 +249,36 @@ public enum MacLocalSnipLibraryBootstrap {
       try writeMarker(marker, to: stagingDirectory.appendingPathComponent("migration.json"))
       try checkpoint(.afterMarkerWrite)
       try checkpoint(.beforeActivation)
-      try fileManager.moveItem(at: stagingDirectory, to: paths.localDirectory)
-
-      try validateMarker(at: paths.markerURL, paths: paths)
-      return LocalSnipLibraryOpenResult(
-        library: try SwiftDataSnipLibrary(storeURL: paths.swiftDataStoreURL),
-        mode: .swiftData,
-        backupURL: backupDirectory
+      try verifyAttachmentFiles(
+        archive: archive,
+        sourceRoot: paths.legacyAttachmentDirectory,
+        backupRoot: backupDirectory?.appendingPathComponent("Attachments", isDirectory: true),
+        stagingRoot: stagingAttachments
       )
+      if let sourceJSONURL, let backupJSONURL,
+        try hash(fileURL: sourceJSONURL) != hash(fileURL: backupJSONURL)
+      {
+        throw LocalStoreMigrationError.sourceChanged
+      }
+      try fileManager.moveItem(at: stagingDirectory, to: paths.localDirectory)
+      do {
+        try validateMarker(at: paths.markerURL, paths: paths)
+        return LocalSnipLibraryOpenResult(
+          library: try libraryFactory(paths.swiftDataStoreURL),
+          mode: .swiftData,
+          backupURL: backupDirectory
+        )
+      } catch let activationError {
+        do {
+          try fileManager.moveItem(at: paths.localDirectory, to: stagingDirectory)
+        } catch {
+          return unavailableAfterActivationRollbackFailure(
+            paths: paths,
+            activationError: activationError
+          )
+        }
+        throw activationError
+      }
     } catch {
       try? fileManager.removeItem(at: stagingDirectory)
       return jsonFallback(
@@ -374,6 +416,30 @@ public enum MacLocalSnipLibraryBootstrap {
       library: SwiftDataSnipLibrary.unavailable(storeURL: paths.swiftDataStoreURL),
       mode: .unavailable,
       errorMessage: "Snip Snap could not open its SwiftData store. It left the Local and JSON stores unchanged, so it cannot save new snips."
+    )
+  }
+
+  private static func unavailableStoreRoot(
+    paths: LocalSnipStorePaths,
+    error: Error
+  ) -> LocalSnipLibraryOpenResult {
+    LocalSnipLibraryOpenResult(
+      library: JSONSnipLibrary.unavailable(fileURL: paths.jsonURL),
+      mode: .unavailable,
+      errorMessage: "Snip Snap could not create its local storage folder, so it cannot save new snips. \(error.localizedDescription)"
+    )
+  }
+
+  private static func unavailableAfterActivationRollbackFailure(
+    paths: LocalSnipStorePaths,
+    activationError: Error
+  ) -> LocalSnipLibraryOpenResult {
+    let detail = (activationError as? LocalizedError)?.errorDescription
+      ?? activationError.localizedDescription
+    return LocalSnipLibraryOpenResult(
+      library: SwiftDataSnipLibrary.unavailable(storeURL: paths.swiftDataStoreURL),
+      mode: .unavailable,
+      errorMessage: "Snip Snap could not open its migrated SwiftData store and could not safely move Local back to staging. It left Local and JSON in place and will not save new snips. \(detail)"
     )
   }
 
