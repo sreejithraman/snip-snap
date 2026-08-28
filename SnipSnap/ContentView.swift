@@ -290,7 +290,8 @@ struct ContentView: View {
                 model: model,
                 coordinator: coordinator,
                 dragSessionController: dragSessionController,
-                showingClearConfirmation: $showingClearClipboard
+                showingClearConfirmation: $showingClearClipboard,
+                onPreviewAttachments: openAttachmentPreview
             )
         } else {
             if model.filteredSnips.isEmpty {

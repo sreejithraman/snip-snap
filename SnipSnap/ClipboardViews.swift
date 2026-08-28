@@ -1,24 +1,26 @@
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct ClipboardListView: View {
     @ObservedObject var model: AppModel
     let coordinator: AppCoordinator
     let dragSessionController: PanelDragSessionController
     @Binding var showingClearConfirmation: Bool
+    let onPreviewAttachments: ([URL], URL) -> Void
     @ObservedObject private var history: ClipboardHistory
 
     init(
         model: AppModel,
         coordinator: AppCoordinator,
         dragSessionController: PanelDragSessionController,
-        showingClearConfirmation: Binding<Bool>
+        showingClearConfirmation: Binding<Bool>,
+        onPreviewAttachments: @escaping ([URL], URL) -> Void
     ) {
         self.model = model
         self.coordinator = coordinator
         self.dragSessionController = dragSessionController
         _showingClearConfirmation = showingClearConfirmation
+        self.onPreviewAttachments = onPreviewAttachments
         history = model.clipboardHistory
     }
 
@@ -29,7 +31,8 @@ struct ClipboardListView: View {
             coordinator: coordinator,
             dragSessionController: dragSessionController,
             verticalContentPadding: PanelListMetrics.verticalContentInset,
-            maxHeight: .infinity
+            maxHeight: .infinity,
+            onPreviewAttachments: onPreviewAttachments
         ) {
             HStack(spacing: SnipSnapSpacing.relatedContent) {
                 Button(history.isPaused ? "Resume" : "Pause") {
@@ -49,6 +52,7 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
     let dragSessionController: PanelDragSessionController
     let verticalContentPadding: CGFloat
     let maxHeight: CGFloat
+    let onPreviewAttachments: ([URL], URL) -> Void
     @ViewBuilder let headerActions: () -> HeaderActions
     @State private var contentHeight: CGFloat = 0
     @State private var viewportHeight: CGFloat = 0
@@ -70,7 +74,8 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
                         ForEach(entries) { entry in
                             ClipboardEntryRow(
                                 entry: entry,
-                                dragSessionController: dragSessionController
+                                dragSessionController: dragSessionController,
+                                onPreviewAttachments: onPreviewAttachments
                             ) {
                                 coordinator.copyClipboardEntry(entry)
                             } save: {
@@ -132,6 +137,7 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
 struct ClipboardEntryRow: View {
     let entry: ClipboardEntry
     let dragSessionController: PanelDragSessionController
+    let onPreviewAttachments: ([URL], URL) -> Void
     let copy: () -> Bool
     let save: () -> Void
     @Environment(\.displayScale) private var displayScale
@@ -140,15 +146,13 @@ struct ClipboardEntryRow: View {
     @State private var copyConfirmationTask: Task<Void, Never>?
 
     var body: some View {
-        Button(action: performCopy) {
-            ClipboardEntryCard(
-                entry: entry,
-                previewImages: previewImages,
-                isCopied: isShowingCopyConfirmation
-            )
-        }
-        .buttonStyle(.plain)
-        .help(isShowingCopyConfirmation ? "Copied" : "Copy")
+        ClipboardEntryCard(
+            entry: entry,
+            previewImages: previewImages,
+            isCopied: isShowingCopyConfirmation,
+            copy: performCopy,
+            onPreviewAttachments: onPreviewAttachments
+        )
         .background {
             ClipboardEntryDragSourceRegion(
                 controller: dragSessionController,
@@ -187,7 +191,9 @@ struct ClipboardEntryRow: View {
             content: ClipboardEntryCard(
                 entry: entry,
                 previewImages: previewImages,
-                isCopied: false
+                isCopied: false,
+                copy: {},
+                onPreviewAttachments: { _, _ in }
             )
             .frame(width: size.width, height: size.height, alignment: .leading)
             .environment(\.colorScheme, colorScheme)
@@ -211,27 +217,7 @@ struct ClipboardEntryRow: View {
                 images.append(image)
             }
         }
-
-        for url in imageFileURLs {
-            guard images.count < ClipboardEntryCardMetrics.previewLimit,
-                  !Task.isCancelled else { return images }
-            if let image = await PreviewImageCache.shared.fileThumbnail(
-                url: url,
-                size: ClipboardEntryCardMetrics.previewSize,
-                scale: displayScale
-            ) {
-                images.append(image)
-            }
-        }
         return images
-    }
-
-    private var imageFileURLs: [URL] {
-        entry.fileURLs.filter { url in
-            let contentType = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType
-            return contentType?.conforms(to: .image) == true
-                || UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
-        }
     }
 }
 
@@ -248,14 +234,27 @@ private struct ClipboardEntryCard: View {
     let entry: ClipboardEntry
     let previewImages: [NSImage]
     let isCopied: Bool
+    let copy: () -> Void
+    let onPreviewAttachments: ([URL], URL) -> Void
 
     var body: some View {
         PanelContentCard(alignment: .top) {
-            ClipboardEntryCopyLabel(isCopied: isCopied)
+            ClipboardEntryCopyButton(
+                isCopied: isCopied,
+                action: copy
+            )
         } main: {
             PanelContentCardMain {
                 if !previewImages.isEmpty {
                     AttachmentPreviewImageStrip(images: previewImages)
+                }
+                if !entry.fileURLs.isEmpty {
+                    AttachmentPreviewStrip(
+                        items: attachmentPreviewItems,
+                        onPreview: { url in
+                            onPreviewAttachments(entry.fileURLs, url)
+                        }
+                    )
                 }
             } content: {
                 VStack(alignment: .leading, spacing: 2) {
@@ -269,6 +268,10 @@ private struct ClipboardEntryCard: View {
         }
     }
 
+    private var attachmentPreviewItems: [AttachmentPreviewItem] {
+        entry.fileURLs.map(AttachmentPreviewItem.init(url:))
+    }
+
     @ViewBuilder
     private var sourceApplication: some View {
         if let source = entry.sourceApplication {
@@ -279,19 +282,51 @@ private struct ClipboardEntryCard: View {
     }
 }
 
-private struct ClipboardEntryCopyLabel: View {
+private struct ClipboardEntryCopyButton: View {
     let isCopied: Bool
+    let action: () -> Void
+    @State private var isHovered = false
 
     var body: some View {
-        Label(
-            isCopied ? "Copied" : "Copy",
-            systemImage: isCopied ? "checkmark" : "doc.on.doc"
-        )
-        .labelStyle(.iconOnly)
-        .foregroundStyle(SnipSnapColors.textSecondary)
-        .frame(
-            width: ClipboardEntryCardMetrics.actionSide,
-            height: ClipboardEntryCardMetrics.actionSide
-        )
+        Button(action: action) {
+            Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 12, weight: .semibold))
+                .symbolRenderingMode(.monochrome)
+                .frame(
+                    width: ClipboardEntryCardMetrics.actionSide,
+                    height: ClipboardEntryCardMetrics.actionSide
+                )
+        }
+        .buttonStyle(ClipboardEntryCopyButtonStyle(isHovered: isHovered))
+        .onHover { isHovered = $0 }
+        .help(isCopied ? "Copied" : "Copy")
+        .accessibilityLabel(isCopied ? "Copied" : "Copy")
+    }
+}
+
+private struct ClipboardEntryCopyButtonStyle: ButtonStyle {
+    let isHovered: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 7, style: .continuous)
+        let edge = PanelEdgeStyle.media
+        configuration.label
+            .foregroundStyle(SnipSnapColors.textPrimary)
+            .background {
+                shape
+                    .fill(.regularMaterial)
+                    .overlay {
+                        shape.fill(
+                            Color.primary.opacity(
+                                configuration.isPressed ? 0.14 : isHovered ? 0.08 : 0.035
+                            )
+                        )
+                    }
+            }
+            .overlay {
+                shape.stroke(edge.color, lineWidth: edge.width)
+            }
+            .contentShape(shape)
+            .opacity(configuration.isPressed ? 0.78 : 1)
     }
 }

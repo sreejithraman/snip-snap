@@ -487,7 +487,8 @@ struct SnipListView: View {
     private func clipboardEntryRow(_ entry: ClipboardEntry) -> some View {
         ClipboardEntryRow(
             entry: entry,
-            dragSessionController: dragSessionController
+            dragSessionController: dragSessionController,
+            onPreviewAttachments: onPreviewAttachments
         ) {
             coordinator.copyClipboardEntry(entry)
         } save: {
