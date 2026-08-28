@@ -63,6 +63,17 @@ package struct SnipLibraryState {
       lists.append(list)
       return .listCreated(list)
 
+    case .restoreList(let list):
+      guard list.id != SnipList.inboxID,
+        !lists.contains(where: { $0.id == list.id }),
+        !lists.contains(where: { $0.name.caseInsensitiveCompare(list.name) == .orderedSame })
+      else { throw SnipLibraryError.invalidList }
+      for index in lists.indices where lists[index].position >= list.position {
+        lists[index].position += 1
+      }
+      lists.append(list)
+      return .none
+
     case .updateList(let id, let name, let systemImage):
       guard id != SnipList.inboxID,
         let index = lists.firstIndex(where: { $0.id == id })
@@ -125,6 +136,7 @@ package struct SnipLibraryState {
       try validateImportedSnips(restored)
       let existingIDs = Set(snips.map(\.id))
       let additions = restored.filter { !existingIDs.contains($0.id) }
+      for listID in Set(additions.map(\.listID)) { try validateList(id: listID) }
       snips.append(contentsOf: additions)
       seenRequestIDs.formUnion(additions.map(\.requestID))
       return .none
@@ -136,9 +148,11 @@ package struct SnipLibraryState {
         throw SnipLibraryError.snipNotFound
       }
       guard replaced.updatedAt == expectedUpdatedAt else { throw SnipLibraryError.snipChanged }
+      let existingIDs = Set(snips.lazy.filter { $0.id != id }.map(\.id))
+      let additions = restored.filter { !existingIDs.contains($0.id) }
+      for listID in Set(additions.map(\.listID)) { try validateList(id: listID) }
       snips.removeAll { $0.id == id }
-      let existingIDs = Set(snips.map(\.id))
-      snips.append(contentsOf: restored.filter { !existingIDs.contains($0.id) })
+      snips.append(contentsOf: additions)
       seenRequestIDs.formUnion(restored.map(\.requestID))
       return .none
 
@@ -228,7 +242,45 @@ package struct SnipLibraryState {
     case .pruneAttachments(let retainedIDs):
       pruneAttachments(retainedIDs, snips)
       return .none
+
+    case .batch(let commands):
+      guard !commands.contains(where: \.containsPruneSideEffect) else {
+        throw SnipLibraryError.invalidCommand
+      }
+      var outcome: SnipLibraryOutcome = .none
+      for command in commands {
+        let nextOutcome = try perform(
+          command,
+          prepareAttachments: prepareAttachments,
+          pruneAttachments: pruneAttachments
+        )
+        if nextOutcome != .none { outcome = nextOutcome }
+      }
+      return outcome
+
+    case .guarded(let expectation, let command):
+      try validate(expectation)
+      return try perform(
+        command,
+        prepareAttachments: prepareAttachments,
+        pruneAttachments: pruneAttachments
+      )
     }
+  }
+
+  private func validate(_ expectation: SnipLibraryExpectation) throws {
+    let snipsByID = Dictionary(uniqueKeysWithValues: snips.map { ($0.id, $0) })
+    let listsByID = Dictionary(uniqueKeysWithValues: lists.map { ($0.id, $0) })
+    guard expectation.expectedSnips.allSatisfy({ snipsByID[$0.id] == $0 }),
+      expectation.absentSnipIDs.allSatisfy({ snipsByID[$0] == nil }),
+      expectation.expectedLists.allSatisfy({ listsByID[$0.id] == $0 }),
+      expectation.absentListIDs.allSatisfy({ listsByID[$0] == nil }),
+      expectation.requiredListIDs.allSatisfy({ listsByID[$0] != nil }),
+      expectation.expectedListMemberships.allSatisfy({ listID, expectedIDs in
+        listsByID[listID] != nil
+          && Set(snips.lazy.filter { $0.listID == listID }.map(\.id)) == expectedIDs
+      })
+    else { throw SnipLibraryError.snipChanged }
   }
 
   private func validateList(id: UUID) throws {
@@ -269,6 +321,21 @@ package struct SnipLibraryState {
     for (position, id) in ids.enumerated() {
       guard let index = snips.firstIndex(where: { $0.id == id }) else { continue }
       snips[index].manualPosition = Int64(position)
+    }
+  }
+}
+
+private extension SnipLibraryCommand {
+  var containsPruneSideEffect: Bool {
+    switch self {
+    case .pruneAttachments:
+      true
+    case .batch(let commands):
+      commands.contains(where: \.containsPruneSideEffect)
+    case .guarded(_, let command):
+      command.containsPruneSideEffect
+    default:
+      false
     }
   }
 }

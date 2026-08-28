@@ -64,6 +64,8 @@
 		D00000000000000000000023 /* SnipSnapPersistence in Frameworks */ = {isa = PBXBuildFile; productRef = D00000000000000000000013 /* SnipSnapPersistence */; };
 		E10000000000000000000001 /* SnipSnapiOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000001 /* SnipSnapiOSApp.swift */; };
 		E10000000000000000000002 /* IOSAppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000002 /* IOSAppModel.swift */; };
+		E1000000000000000000000E /* IOSUndoHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000011 /* IOSUndoHistory.swift */; };
+		E1000000000000000000000F /* WorkflowControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000012 /* WorkflowControls.swift */; };
 		E10000000000000000000003 /* AppPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000003 /* AppPresentation.swift */; };
 		E10000000000000000000004 /* IOSAppRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000004 /* IOSAppRootView.swift */; };
 		E10000000000000000000005 /* LibraryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000005 /* LibraryViews.swift */; };
@@ -161,6 +163,8 @@
 		D00000000000000000000032 /* AppDataPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDataPaths.swift; sourceTree = "<group>"; };
 		E20000000000000000000001 /* SnipSnapiOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipSnapiOSApp.swift; sourceTree = "<group>"; };
 		E20000000000000000000002 /* IOSAppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAppModel.swift; sourceTree = "<group>"; };
+		E20000000000000000000011 /* IOSUndoHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSUndoHistory.swift; sourceTree = "<group>"; };
+		E20000000000000000000012 /* WorkflowControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkflowControls.swift; sourceTree = "<group>"; };
 		E20000000000000000000003 /* AppPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPresentation.swift; sourceTree = "<group>"; };
 		E20000000000000000000004 /* IOSAppRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAppRootView.swift; sourceTree = "<group>"; };
 		E20000000000000000000005 /* LibraryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryViews.swift; sourceTree = "<group>"; };
@@ -333,6 +337,8 @@
 			children = (
 				E20000000000000000000001 /* SnipSnapiOSApp.swift */,
 				E20000000000000000000002 /* IOSAppModel.swift */,
+				E20000000000000000000011 /* IOSUndoHistory.swift */,
+				E20000000000000000000012 /* WorkflowControls.swift */,
 				E20000000000000000000003 /* AppPresentation.swift */,
 				E20000000000000000000004 /* IOSAppRootView.swift */,
 				E20000000000000000000005 /* LibraryViews.swift */,
@@ -635,6 +641,8 @@
 			files = (
 				E10000000000000000000001 /* SnipSnapiOSApp.swift in Sources */,
 				E10000000000000000000002 /* IOSAppModel.swift in Sources */,
+				E1000000000000000000000E /* IOSUndoHistory.swift in Sources */,
+				E1000000000000000000000F /* WorkflowControls.swift in Sources */,
 				E10000000000000000000003 /* AppPresentation.swift in Sources */,
 				E10000000000000000000004 /* IOSAppRootView.swift in Sources */,
 				E10000000000000000000005 /* LibraryViews.swift in Sources */,
