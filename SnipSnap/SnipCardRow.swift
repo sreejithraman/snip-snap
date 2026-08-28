@@ -84,7 +84,7 @@ struct SnipCardRow: View {
                 AttachmentPreviewStrip(
                     items: attachmentPreviewItems,
                     onPreview: { url in
-                        onPreviewAttachments(attachmentPreviewItems.map(\.url), url)
+                        onPreviewAttachments(attachmentPreviewItems.compactMap(\.url), url)
                     }
                 )
             }
@@ -114,8 +114,9 @@ struct SnipCardRow: View {
                         onPreviewAttachments(editAttachments, url)
                     },
                     onRemove: { snip in
-                        onRemovePreviewURL(snip.url)
-                        editAttachments.removeAll { $0 == snip.url }
+                        guard let url = snip.url else { return }
+                        onRemovePreviewURL(url)
+                        editAttachments.removeAll { $0 == url }
                     }
                 )
             }

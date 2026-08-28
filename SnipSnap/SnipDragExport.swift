@@ -264,17 +264,10 @@ struct SnipDragSourceRegion: NSViewRepresentable {
 }
 
 @MainActor
-final class SnipDragSourceRegionView: NSView {
+final class SnipDragSourceRegionView: PanelDragSourceRegionView {
     private struct RegionKey: Hashable {
         let id: UUID
     }
-
-    private let controller: PanelDragSessionController
-    private let id: UUID
-    private var payload: SnipDragPayload
-    private var onBegan: () -> Void
-    private var onMoved: (NSPoint) -> Void
-    private var onEnded: (PanelDragSessionOutcome, NSPoint) -> Void
 
     init(
         controller: PanelDragSessionController,
@@ -284,13 +277,16 @@ final class SnipDragSourceRegionView: NSView {
         onMoved: @escaping (NSPoint) -> Void,
         onEnded: @escaping (PanelDragSessionOutcome, NSPoint) -> Void
     ) {
-        self.controller = controller
-        self.id = id
-        self.payload = payload
-        self.onBegan = onBegan
-        self.onMoved = onMoved
-        self.onEnded = onEnded
-        super.init(frame: .zero)
+        super.init(
+            controller: controller,
+            regionID: PanelDragSessionRegionID(RegionKey(id: id)),
+            adapter: Self.makeAdapter(
+                payload: payload,
+                onBegan: onBegan,
+                onMoved: onMoved,
+                onEnded: onEnded
+            )
+        )
     }
 
     @available(*, unavailable)
@@ -304,29 +300,23 @@ final class SnipDragSourceRegionView: NSView {
         onMoved: @escaping (NSPoint) -> Void,
         onEnded: @escaping (PanelDragSessionOutcome, NSPoint) -> Void
     ) {
-        self.payload = payload
-        self.onBegan = onBegan
-        self.onMoved = onMoved
-        self.onEnded = onEnded
-        updateController()
+        super.configure(
+            adapter: Self.makeAdapter(
+                payload: payload,
+                onBegan: onBegan,
+                onMoved: onMoved,
+                onEnded: onEnded
+            )
+        )
     }
 
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        updateController()
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
-
-    func removeFromController() {
-        controller.unregisterRegion(id: regionID)
-    }
-
-    private func updateController() {
-        let payload = payload
-        let adapter = PanelDragSessionAdapter(
+    private static func makeAdapter(
+        payload: SnipDragPayload,
+        onBegan: @escaping () -> Void,
+        onMoved: @escaping (NSPoint) -> Void,
+        onEnded: @escaping (PanelDragSessionOutcome, NSPoint) -> Void
+    ) -> PanelDragSessionAdapter {
+        PanelDragSessionAdapter(
             makeSession: { origin, scale, colorScheme, sourceFrame in
                 let export = SnipDragExportPackage(payload: payload)
                 return PanelDragSessionContent(
@@ -346,14 +336,5 @@ final class SnipDragSourceRegionView: NSView {
             onMoved: onMoved,
             onEnded: onEnded
         )
-        controller.registerRegion(
-            id: regionID,
-            view: window == nil ? nil : self,
-            adapter: adapter
-        )
-    }
-
-    private var regionID: PanelDragSessionRegionID {
-        PanelDragSessionRegionID(RegionKey(id: id))
     }
 }

@@ -9,29 +9,24 @@ struct PanelContentCardState: Equatable {
     var isSubdued = false
 }
 
-struct PanelContentCard<Leading: View, Main: View, Trailing: View>: View {
+struct PanelContentCard<Leading: View, Main: View>: View {
     let state: PanelContentCardState
     let alignment: VerticalAlignment
     private let hasLeading: Bool
-    private let hasTrailing: Bool
     private let leading: Leading
     private let main: Main
-    private let trailing: Trailing
 
     init(
         state: PanelContentCardState = .init(),
         alignment: VerticalAlignment = .top,
         @ViewBuilder leading: () -> Leading,
-        @ViewBuilder main: () -> Main,
-        @ViewBuilder trailing: () -> Trailing
+        @ViewBuilder main: () -> Main
     ) {
         self.state = state
         self.alignment = alignment
         hasLeading = true
-        hasTrailing = true
         self.leading = leading()
         self.main = main()
-        self.trailing = trailing()
     }
 
     var body: some View {
@@ -44,10 +39,6 @@ struct PanelContentCard<Leading: View, Main: View, Trailing: View>: View {
             main
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            if hasTrailing {
-                trailing
-                    .fixedSize(horizontal: true, vertical: false)
-            }
         }
         .padding(SnipSnapSpacing.cardContentInset)
         .background {
@@ -86,24 +77,7 @@ struct PanelContentCard<Leading: View, Main: View, Trailing: View>: View {
     }
 }
 
-extension PanelContentCard where Trailing == EmptyView {
-    init(
-        state: PanelContentCardState = .init(),
-        alignment: VerticalAlignment = .top,
-        @ViewBuilder leading: () -> Leading,
-        @ViewBuilder main: () -> Main
-    ) {
-        self.state = state
-        self.alignment = alignment
-        hasLeading = true
-        hasTrailing = false
-        self.leading = leading()
-        self.main = main()
-        trailing = EmptyView()
-    }
-}
-
-extension PanelContentCard where Leading == EmptyView, Trailing == EmptyView {
+extension PanelContentCard where Leading == EmptyView {
     init(
         state: PanelContentCardState = .init(),
         alignment: VerticalAlignment = .top,
@@ -112,10 +86,8 @@ extension PanelContentCard where Leading == EmptyView, Trailing == EmptyView {
         self.state = state
         self.alignment = alignment
         hasLeading = false
-        hasTrailing = false
         leading = EmptyView()
         self.main = main()
-        trailing = EmptyView()
     }
 }
 

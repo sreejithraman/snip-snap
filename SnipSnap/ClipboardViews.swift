@@ -148,7 +148,7 @@ struct ClipboardEntryRow: View {
     var body: some View {
         ClipboardEntryCard(
             entry: entry,
-            previewImages: previewImages,
+            attachmentPreviewItems: liveAttachmentPreviewItems,
             isCopied: isShowingCopyConfirmation,
             copy: performCopy,
             onPreviewAttachments: onPreviewAttachments
@@ -190,7 +190,7 @@ struct ClipboardEntryRow: View {
         let renderer = ImageRenderer(
             content: ClipboardEntryCard(
                 entry: entry,
-                previewImages: previewImages,
+                attachmentPreviewItems: dragAttachmentPreviewItems(scale: scale),
                 isCopied: false,
                 copy: {},
                 onPreviewAttachments: { _, _ in }
@@ -219,6 +219,51 @@ struct ClipboardEntryRow: View {
         }
         return images
     }
+
+    private var liveAttachmentPreviewItems: [AttachmentPreviewItem] {
+        let images = previewImages.enumerated().map { index, image in
+            AttachmentPreviewItem(
+                id: "\(entry.id.uuidString)-image-\(index)",
+                image: image
+            )
+        }
+        return images + entry.fileURLs.map(AttachmentPreviewItem.init(url:))
+    }
+
+    private func dragAttachmentPreviewItems(scale: CGFloat) -> [AttachmentPreviewItem] {
+        var items = previewImages.prefix(ClipboardEntryCardMetrics.previewLimit).enumerated().map {
+            index, image in
+            AttachmentPreviewItem(
+                id: "\(entry.id.uuidString)-image-\(index)",
+                image: image
+            )
+        }
+        guard items.count < ClipboardEntryCardMetrics.previewLimit else { return items }
+        for url in entry.fileURLs {
+            guard items.count < ClipboardEntryCardMetrics.previewLimit else { break }
+            if let thumbnail = PreviewImageCache.shared.cachedFileThumbnail(
+                url: url,
+                scale: scale
+            ) {
+                items.append(
+                    AttachmentPreviewItem(
+                        url: url,
+                        previewImage: thumbnail,
+                        fillsTile: true
+                    )
+                )
+            } else {
+                items.append(
+                    AttachmentPreviewItem(
+                        url: url,
+                        previewImage: NSWorkspace.shared.icon(forFile: url.path),
+                        fillsTile: false
+                    )
+                )
+            }
+        }
+        return items
+    }
 }
 
 private enum ClipboardEntryCardMetrics {
@@ -232,7 +277,7 @@ private enum ClipboardEntryCardMetrics {
 
 private struct ClipboardEntryCard: View {
     let entry: ClipboardEntry
-    let previewImages: [NSImage]
+    let attachmentPreviewItems: [AttachmentPreviewItem]
     let isCopied: Bool
     let copy: () -> Void
     let onPreviewAttachments: ([URL], URL) -> Void
@@ -245,10 +290,7 @@ private struct ClipboardEntryCard: View {
             )
         } main: {
             PanelContentCardMain {
-                if !previewImages.isEmpty {
-                    AttachmentPreviewImageStrip(images: previewImages)
-                }
-                if !entry.fileURLs.isEmpty {
+                if !attachmentPreviewItems.isEmpty {
                     AttachmentPreviewStrip(
                         items: attachmentPreviewItems,
                         onPreview: { url in
@@ -266,10 +308,6 @@ private struct ClipboardEntryCard: View {
                 }
             }
         }
-    }
-
-    private var attachmentPreviewItems: [AttachmentPreviewItem] {
-        entry.fileURLs.map(AttachmentPreviewItem.init(url:))
     }
 
     @ViewBuilder

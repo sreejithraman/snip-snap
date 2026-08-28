@@ -59,6 +59,59 @@ struct PanelDragSessionInspection: Equatable {
     let regionID: PanelDragSessionRegionID
 }
 
+/// Shared AppKit bridge for registering one SwiftUI card as a drag source.
+///
+/// Content-specific views only build the adapter; this view owns registration,
+/// window attachment, hit testing, updates, and teardown.
+@MainActor
+class PanelDragSourceRegionView: NSView {
+    private let controller: PanelDragSessionController
+    private let regionID: PanelDragSessionRegionID
+    private var adapter: PanelDragSessionAdapter
+
+    init(
+        controller: PanelDragSessionController,
+        regionID: PanelDragSessionRegionID,
+        adapter: PanelDragSessionAdapter
+    ) {
+        self.controller = controller
+        self.regionID = regionID
+        self.adapter = adapter
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func configure(adapter: PanelDragSessionAdapter) {
+        self.adapter = adapter
+        updateController()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateController()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    func removeFromController() {
+        controller.unregisterRegion(id: regionID)
+    }
+
+    private func updateController() {
+        controller.registerRegion(
+            id: regionID,
+            view: window == nil ? nil : self,
+            adapter: adapter
+        )
+    }
+}
+
 /// Owns the panel's single drag gesture and drag-session lifecycle.
 ///
 /// Content adapters provide their own writers, previews, and operation policy

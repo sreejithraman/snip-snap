@@ -33,37 +33,47 @@ struct AttachmentPreviewArtwork: View {
     }
 }
 
-struct AttachmentPreviewImageStrip: View {
-    let images: [NSImage]
-
-    var body: some View {
-        ScrollView(.horizontal) {
-            LazyHStack(spacing: SnipSnapSpacing.relatedContent) {
-                ForEach(Array(images.enumerated()), id: \.offset) { _, image in
-                    AttachmentPreviewArtwork(image: image, fillsTile: true)
-                }
-            }
-        }
-        .frame(height: AttachmentPreviewMetrics.side)
-        .scrollIndicators(.hidden)
-    }
-}
-
-struct AttachmentPreviewItem: Identifiable, Hashable {
+struct AttachmentPreviewItem: Identifiable {
     let id: String
-    let url: URL
+    let url: URL?
     let fileName: String
+    let previewImage: NSImage?
+    let fillsTile: Bool
 
     init(url: URL) {
         id = url.standardizedFileURL.absoluteString
         self.url = url
         fileName = url.lastPathComponent
+        previewImage = nil
+        fillsTile = true
+    }
+
+    init(
+        url: URL,
+        previewImage: NSImage,
+        fillsTile: Bool
+    ) {
+        id = url.standardizedFileURL.absoluteString
+        self.url = url
+        fileName = url.lastPathComponent
+        self.previewImage = previewImage
+        self.fillsTile = fillsTile
+    }
+
+    init(id: String, image: NSImage) {
+        self.id = id
+        url = nil
+        fileName = "Clipboard image"
+        previewImage = image
+        fillsTile = true
     }
 
     init(attachment: SnipAttachment, url: URL) {
         id = attachment.id.uuidString
         self.url = url
         fileName = attachment.fileName
+        previewImage = nil
+        fillsTile = true
     }
 }
 
@@ -95,9 +105,8 @@ struct AttachmentPreviewStrip: View {
     private func preview(_ item: AttachmentPreviewItem) -> some View {
         ZStack(alignment: .topTrailing) {
             AttachmentPreviewTile(
-                url: item.url,
-                fileName: item.fileName,
-                onPreview: { onPreview(item.url) }
+                item: item,
+                onPreview: onPreview
             )
 
             if let onRemove {
@@ -123,61 +132,66 @@ struct AttachmentPreviewStrip: View {
 }
 
 private struct AttachmentPreviewTile: View {
-    let url: URL
-    let fileName: String
-    let onPreview: () -> Void
+    let item: AttachmentPreviewItem
+    let onPreview: (URL) -> Void
 
     @Environment(\.displayScale) private var displayScale
     @State private var thumbnail: NSImage?
 
     var body: some View {
-        Button(action: onPreview) {
-            previewImage
-                .accessibilityHidden(true)
-            .contentShape(
-                RoundedRectangle(
-                    cornerRadius: AttachmentPreviewMetrics.cornerRadius,
-                    style: .continuous
+        if let url = item.url {
+            Button { onPreview(url) } label: {
+                previewImage
+                    .accessibilityHidden(true)
+                .contentShape(
+                    RoundedRectangle(
+                        cornerRadius: AttachmentPreviewMetrics.cornerRadius,
+                        style: .continuous
+                    )
                 )
-            )
-        }
-        .buttonStyle(.plain)
-        .help("Quick Look \(fileName)")
-        .accessibilityLabel("Preview \(fileName)")
-        .accessibilityHint("Shows a Quick Look preview")
-        .task(id: thumbnailRequestID) {
-            thumbnail = await PreviewImageCache.shared.fileThumbnail(
-                url: url,
-                size: CGSize(
-                    width: AttachmentPreviewMetrics.side,
-                    height: AttachmentPreviewMetrics.side
-                ),
-                scale: displayScale
-            )
+            }
+            .buttonStyle(.plain)
+            .help("Quick Look \(item.fileName)")
+            .accessibilityLabel("Preview \(item.fileName)")
+            .accessibilityHint("Shows a Quick Look preview")
+            .task(id: thumbnailRequestID) {
+                guard item.previewImage == nil else { return }
+                thumbnail = await PreviewImageCache.shared.fileThumbnail(
+                    url: url,
+                    size: CGSize(
+                        width: AttachmentPreviewMetrics.side,
+                        height: AttachmentPreviewMetrics.side
+                    ),
+                    scale: displayScale
+                )
+            }
+        } else {
+            previewImage
+                .accessibilityLabel(item.fileName)
         }
     }
 
     @ViewBuilder
     private var previewImage: some View {
-        if let thumbnail {
-            AttachmentPreviewArtwork(image: thumbnail, fillsTile: true)
+        if let image = item.previewImage ?? thumbnail {
+            AttachmentPreviewArtwork(image: image, fillsTile: item.fillsTile)
         } else {
             Color.clear
-            .frame(
-                width: AttachmentPreviewMetrics.side,
-                height: AttachmentPreviewMetrics.side
-            )
-            .attachmentPreviewSurface()
-            .overlay {
-                Image(systemName: "doc")
-                    .font(.system(size: 24))
-                    .foregroundStyle(SnipSnapColors.textSecondary)
-            }
+                .frame(
+                    width: AttachmentPreviewMetrics.side,
+                    height: AttachmentPreviewMetrics.side
+                )
+                .attachmentPreviewSurface()
+                .overlay {
+                    Image(systemName: "doc")
+                        .font(.system(size: 24))
+                        .foregroundStyle(SnipSnapColors.textSecondary)
+                }
         }
     }
 
     private var thumbnailRequestID: String {
-        "\(url.standardizedFileURL.path)|\(displayScale)"
+        "\(item.url?.standardizedFileURL.path ?? item.id)|\(displayScale)"
     }
 }
 

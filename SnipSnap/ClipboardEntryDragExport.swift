@@ -80,15 +80,10 @@ struct ClipboardEntryDragSourceRegion: NSViewRepresentable {
 }
 
 @MainActor
-final class ClipboardEntryDragSourceRegionView: NSView {
+final class ClipboardEntryDragSourceRegionView: PanelDragSourceRegionView {
     private struct RegionKey: Hashable {
         let id: UUID
     }
-
-    private let controller: PanelDragSessionController
-    private let id: UUID
-    private var package: ClipboardEntryDragExportPackage
-    private var previewRenderer: ClipboardEntryDragPreviewRenderer
 
     init(
         controller: PanelDragSessionController,
@@ -96,11 +91,14 @@ final class ClipboardEntryDragSourceRegionView: NSView {
         package: ClipboardEntryDragExportPackage,
         previewRenderer: @escaping ClipboardEntryDragPreviewRenderer
     ) {
-        self.controller = controller
-        self.id = id
-        self.package = package
-        self.previewRenderer = previewRenderer
-        super.init(frame: .zero)
+        super.init(
+            controller: controller,
+            regionID: PanelDragSessionRegionID(RegionKey(id: id)),
+            adapter: Self.makeAdapter(
+                package: package,
+                previewRenderer: previewRenderer
+            )
+        )
     }
 
     @available(*, unavailable)
@@ -112,28 +110,19 @@ final class ClipboardEntryDragSourceRegionView: NSView {
         package: ClipboardEntryDragExportPackage,
         previewRenderer: @escaping ClipboardEntryDragPreviewRenderer
     ) {
-        self.package = package
-        self.previewRenderer = previewRenderer
-        updateController()
+        super.configure(
+            adapter: Self.makeAdapter(
+                package: package,
+                previewRenderer: previewRenderer
+            )
+        )
     }
 
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        updateController()
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
-
-    func removeFromController() {
-        controller.unregisterRegion(id: regionID)
-    }
-
-    private func updateController() {
-        let package = package
-        let previewRenderer = previewRenderer
-        let adapter = PanelDragSessionAdapter(
+    private static func makeAdapter(
+        package: ClipboardEntryDragExportPackage,
+        previewRenderer: @escaping ClipboardEntryDragPreviewRenderer
+    ) -> PanelDragSessionAdapter {
+        PanelDragSessionAdapter(
             makeSession: { _, scale, colorScheme, sourceFrame in
                 guard let sourceFrame else {
                     return PanelDragSessionContent(
@@ -155,14 +144,5 @@ final class ClipboardEntryDragSourceRegionView: NSView {
             onMoved: { _ in },
             onEnded: { _, _ in }
         )
-        controller.registerRegion(
-            id: regionID,
-            view: window == nil ? nil : self,
-            adapter: adapter
-        )
-    }
-
-    private var regionID: PanelDragSessionRegionID {
-        PanelDragSessionRegionID(RegionKey(id: id))
     }
 }
