@@ -304,6 +304,128 @@ final class SnipLibraryBehaviorTests: XCTestCase {
     }
   }
 
+  func testDurableAdaptersEditAttachmentsWithoutReplacingUnchangedFiles() async throws {
+    try await forEachAdapter { adapter, directory, library in
+      let sourceDirectory = temporaryDirectory()
+      defer { try? FileManager.default.removeItem(at: sourceDirectory) }
+      let firstSource = sourceDirectory.appendingPathComponent("first.txt")
+      let secondSource = sourceDirectory.appendingPathComponent("second.txt")
+      let replacementSource = sourceDirectory.appendingPathComponent("replacement.txt")
+      try Data("First".utf8).write(to: firstSource)
+      try Data("Second".utf8).write(to: secondSource)
+      try Data("Replacement".utf8).write(to: replacementSource)
+
+      let added = try await library.perform(
+        .add(
+          content: "Two files",
+          origin: .quickEntry,
+          source: nil,
+          listID: SnipList.inboxID,
+          attachmentURLs: [firstSource, secondSource],
+          requestID: UUID(),
+          now: Date(timeIntervalSince1970: 100)
+        ),
+        sortedBy: .chronological
+      )
+      let original = try XCTUnwrap(added.snapshot.snips.first)
+      let first = try XCTUnwrap(original.attachments.first)
+      let second = try XCTUnwrap(original.attachments.last)
+      let firstStoredURL = try XCTUnwrap(added.snapshot.attachmentURLs[first.id])
+      let secondStoredURL = try XCTUnwrap(added.snapshot.attachmentURLs[second.id])
+
+      let edited = try await library.perform(
+        .editAttachments(
+          snipID: original.id,
+          content: "Two files, revised",
+          edits: [
+            .replacement(attachmentID: first.id, sourceURL: replacementSource),
+            .existing(attachmentID: second.id),
+          ],
+          expectedUpdatedAt: original.updatedAt,
+          now: Date(timeIntervalSince1970: 200)
+        ),
+        sortedBy: .chronological
+      )
+      let revised = try XCTUnwrap(edited.snapshot.snips.first)
+      XCTAssertEqual(revised.content, "Two files, revised", adapter.rawValue)
+      XCTAssertNotEqual(revised.attachments[0].id, first.id, adapter.rawValue)
+      XCTAssertEqual(revised.attachments[1].id, second.id, adapter.rawValue)
+      XCTAssertFalse(FileManager.default.fileExists(atPath: firstStoredURL.path), adapter.rawValue)
+      XCTAssertTrue(FileManager.default.fileExists(atPath: secondStoredURL.path), adapter.rawValue)
+
+      let reopened = try adapter.open(in: directory)
+      let snapshot = await reopened.snapshot(sortedBy: .chronological)
+      let reopenedSnip = try XCTUnwrap(snapshot.snips.first)
+      XCTAssertEqual(reopenedSnip.attachments.map(\.id), revised.attachments.map(\.id), adapter.rawValue)
+      let replacementURL = try XCTUnwrap(snapshot.attachmentURLs[reopenedSnip.attachments[0].id])
+      XCTAssertEqual(try Data(contentsOf: replacementURL), Data("Replacement".utf8), adapter.rawValue)
+      XCTAssertEqual(snapshot.attachmentURLs[second.id], secondStoredURL, adapter.rawValue)
+    }
+  }
+
+  func testDurableAdaptersKeepSharedFileUntilLastReferenceIsRemoved() async throws {
+    try await forEachAdapter { adapter, _, library in
+      let sourceDirectory = temporaryDirectory()
+      defer { try? FileManager.default.removeItem(at: sourceDirectory) }
+      let sourceURL = sourceDirectory.appendingPathComponent("shared.txt")
+      try Data("Shared".utf8).write(to: sourceURL)
+
+      let firstAdd = try await library.perform(
+        .add(
+          content: "First reference",
+          origin: .quickEntry,
+          source: nil,
+          listID: SnipList.inboxID,
+          attachmentURLs: [sourceURL],
+          requestID: UUID(),
+          now: Date(timeIntervalSince1970: 100)
+        ),
+        sortedBy: .chronological
+      )
+      let first = try XCTUnwrap(firstAdd.snapshot.snips.first)
+      let attachment = try XCTUnwrap(first.attachments.first)
+      let storedURL = try XCTUnwrap(firstAdd.snapshot.attachmentURLs[attachment.id])
+      let secondAdd = try await library.perform(
+        .add(
+          content: "Second reference",
+          origin: .quickEntry,
+          source: nil,
+          listID: SnipList.inboxID,
+          attachmentURLs: [storedURL],
+          requestID: UUID(),
+          now: Date(timeIntervalSince1970: 200)
+        ),
+        sortedBy: .chronological
+      )
+      let second = try XCTUnwrap(secondAdd.snapshot.snips.first(where: { $0.id != first.id }))
+      XCTAssertEqual(second.attachments.first?.id, attachment.id, adapter.rawValue)
+
+      _ = try await library.perform(
+        .editAttachments(
+          snipID: first.id,
+          content: first.content,
+          edits: [],
+          expectedUpdatedAt: first.updatedAt,
+          now: Date(timeIntervalSince1970: 300)
+        ),
+        sortedBy: .chronological
+      )
+      XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path), adapter.rawValue)
+
+      _ = try await library.perform(
+        .editAttachments(
+          snipID: second.id,
+          content: second.content,
+          edits: [],
+          expectedUpdatedAt: second.updatedAt,
+          now: Date(timeIntervalSince1970: 400)
+        ),
+        sortedBy: .chronological
+      )
+      XCTAssertFalse(FileManager.default.fileExists(atPath: storedURL.path), adapter.rawValue)
+    }
+  }
+
   func testDurableAdaptersTreatEmptyMovesAsNoOpsBeforeListValidation() async throws {
     try await forEachAdapter { adapter, _, library in
       let missingList = UUID()

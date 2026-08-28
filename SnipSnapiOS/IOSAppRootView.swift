@@ -4,12 +4,15 @@ import SwiftUI
 struct IOSAppRootView: View {
     @State private var model: IOSAppModel
     @State private var sheet: AppSheet?
+    private let uiTestAttachmentURLs: [URL]
 
     init(
         library: any SnipLibrary,
         initialSnapshot: SnipLibrarySnapshot? = nil,
-        startupError: String? = nil
+        startupError: String? = nil,
+        uiTestAttachmentURLs: [URL] = []
     ) {
+        self.uiTestAttachmentURLs = uiTestAttachmentURLs
         _model = State(
             initialValue: IOSAppModel(
                 library: library,
@@ -52,6 +55,13 @@ struct IOSAppRootView: View {
         }
         .task {
             await model.load()
+            if !uiTestAttachmentURLs.isEmpty, model.snips.isEmpty {
+                _ = await model.createSnip(
+                    content: "Attachment fixture",
+                    in: SnipList.inboxID,
+                    attachmentURLs: uiTestAttachmentURLs
+                )
+            }
         }
     }
 }

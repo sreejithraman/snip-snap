@@ -375,6 +375,14 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       seenRequestIDs = state.seenRequestIDs
       lastKnownState = state
       rememberAttachments(in: state)
+      if command.editsAttachments {
+        let liveIDs = Set(state.snips.flatMap(\.attachments).map(\.id))
+        Self.removeUnreferencedAttachmentDirectories(
+          at: attachmentRootURL,
+          keeping: Set(state.snips.flatMap(\.attachments).map(\.relativePath))
+        )
+        knownAttachmentPaths = knownAttachmentPaths.filter { liveIDs.contains($0.key) }
+      }
       return SnipLibraryUpdate(
         snapshot: makeSnapshot(state: state, sortedBy: sortMode),
         outcome: outcome
@@ -450,13 +458,16 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
         )
         createdDirectories.append(destinationDirectory)
         try FileManager.default.copyItem(at: sourceURL, to: destination)
-        let values = try destination.resourceValues(forKeys: [.fileSizeKey, .contentTypeKey])
+        let values = try destination.resourceValues(forKeys: [.fileSizeKey])
+        let contentType = (try? destination.resourceValues(forKeys: [.contentTypeKey]))?
+          .contentType?.identifier
+          ?? UTType(filenameExtension: destination.pathExtension)?.identifier
         prepared.append(
           SnipAttachment(
             id: id,
             fileName: sourceURL.lastPathComponent,
             relativePath: relativePath,
-            contentType: values.contentType?.identifier,
+            contentType: contentType,
             byteCount: Int64(values.fileSize ?? 0)
           ))
       }
@@ -673,5 +684,13 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
           )
         }
       })
+  }
+}
+
+
+private extension SnipLibraryCommand {
+  var editsAttachments: Bool {
+    if case .editAttachments = self { return true }
+    return false
   }
 }

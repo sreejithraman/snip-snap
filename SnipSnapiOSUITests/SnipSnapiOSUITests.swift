@@ -2,10 +2,14 @@ import XCTest
 
 @MainActor
 final class SnipSnapiOSUITests: XCTestCase {
-    private func launchApp() -> XCUIApplication {
+    private func launchApp(
+        storeName: String = "ui-\(UUID().uuidString)",
+        withAttachments: Bool = false
+    ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["SNIP_SNAP_UI_TESTING"] = "1"
-        app.launchEnvironment["SNIP_SNAP_UI_TEST_STORE"] = "ui-\(UUID().uuidString)"
+        app.launchEnvironment["SNIP_SNAP_UI_TEST_STORE"] = storeName
+        if withAttachments { app.launchEnvironment["SNIP_SNAP_UI_TEST_ATTACHMENTS"] = "1" }
         app.launch()
         return app
     }
@@ -50,7 +54,12 @@ final class SnipSnapiOSUITests: XCTestCase {
         let app = launchApp()
         let newList = app.buttons["new-list"]
         if !newList.waitForExistence(timeout: 1) {
-            app.buttons["BackButton"].tap()
+            let showSidebar = app.buttons["Show Sidebar"]
+            if showSidebar.exists {
+                showSidebar.tap()
+            } else {
+                app.buttons["BackButton"].tap()
+            }
         }
         XCTAssertTrue(newList.waitForExistence(timeout: 3))
         newList.tap()
@@ -66,7 +75,14 @@ final class SnipSnapiOSUITests: XCTestCase {
         } else {
             XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
         }
-        app.buttons["new-snip"].tap()
+        let newSnip = app.buttons["new-snip"]
+        if !newSnip.isHittable {
+            let hideSidebar = app.navigationBars["Lists"].buttons["Hide Sidebar"].firstMatch
+            XCTAssertTrue(hideSidebar.waitForExistence(timeout: 3))
+            hideSidebar.tap()
+        }
+        XCTAssertTrue(newSnip.waitForExistence(timeout: 3))
+        newSnip.tap()
         let editor = app.textViews["snip-text"]
         editor.tap()
         editor.typeText("Move this")
@@ -90,6 +106,129 @@ final class SnipSnapiOSUITests: XCTestCase {
         let emptyDetail = app.staticTexts["Choose a Snip"]
         if !emptyDetail.waitForExistence(timeout: 1) {
             XCTAssertTrue(app.staticTexts["No Snips"].waitForExistence(timeout: 3))
+        }
+    }
+
+    func testLocalAttachmentsPreviewRemoveAndSurviveRelaunch() {
+        continueAfterFailure = false
+        let storeName = "attachments-\(UUID().uuidString)"
+        var app = launchApp(storeName: storeName, withAttachments: true)
+
+        openAttachmentFixture(in: app)
+        let imagePreview = app.buttons["attachment-preview-sample.png"]
+        XCTAssertTrue(imagePreview.waitForExistence(timeout: 5))
+        let textPreview = app.buttons["attachment-preview-notes.txt"]
+        XCTAssertTrue(textPreview.waitForExistence(timeout: 3))
+        imagePreview.tap()
+        let preview = app.otherElements["QLPreviewControllerView"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 5))
+        dismissQuickLook(preview, in: app)
+        XCTAssertFalse(preview.waitForExistence(timeout: 3))
+
+        app.buttons["edit-snip"].tap()
+        let imageRow = app.buttons["attachment-row-sample.png"]
+        XCTAssertTrue(imageRow.waitForExistence(timeout: 3))
+        let removeAttachment = app.buttons["remove-attachment-sample.png"]
+        XCTAssertTrue(removeAttachment.waitForExistence(timeout: 3))
+        removeAttachment.tap()
+        app.buttons["save-snip"].tap()
+        XCTAssertTrue(textPreview.waitForExistence(timeout: 3))
+
+        app.terminate()
+        app = launchApp(storeName: storeName, withAttachments: true)
+        openAttachmentFixture(in: app)
+        XCTAssertTrue(app.buttons["attachment-preview-notes.txt"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["attachment-preview-sample.png"].exists)
+    }
+
+    func testNativePickerAddReplacePreviewAndSaveWhenFixturesAreSeeded() throws {
+        guard ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_PICKER_FIXTURES"] == "1"
+        else {
+            throw XCTSkip("Seed attachment-one.txt and attachment-two.txt in local Files to run.")
+        }
+        continueAfterFailure = false
+        let app = launchApp(storeName: "picker-manual-\(UUID().uuidString)")
+        app.buttons["new-snip"].tap()
+        let editor = app.textViews["snip-text"]
+        editor.tap()
+        editor.typeText("Picker flow")
+
+        app.buttons["add-attachments"].tap()
+        pickFile(named: "attachment-one.txt", in: app, confirmsSelection: true)
+        let added = app.buttons["attachment-row-attachment-one.txt"]
+        XCTAssertTrue(added.waitForExistence(timeout: 5))
+        added.tap()
+        let preview = app.otherElements["QLPreviewControllerView"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 5))
+        dismissQuickLook(preview, in: app)
+        XCTAssertFalse(preview.waitForExistence(timeout: 3))
+
+        app.buttons["replace-attachment-attachment-one.txt"].tap()
+        pickFile(named: "attachment-two.txt", in: app, confirmsSelection: false)
+        XCTAssertTrue(
+            app.buttons["attachment-row-attachment-two.txt"].waitForExistence(timeout: 5)
+        )
+        app.buttons["save-snip"].tap()
+        XCTAssertTrue(
+            app.buttons["attachment-preview-attachment-two.txt"].waitForExistence(timeout: 5)
+        )
+    }
+
+    private func pickFile(named fileName: String, in app: XCUIApplication, confirmsSelection: Bool) {
+        let url = URL(fileURLWithPath: fileName)
+        let fileLabel = "\(url.deletingPathExtension().lastPathComponent), \(url.pathExtension)"
+        var file = app.cells.matching(
+            NSPredicate(format: "identifier == %@ OR label BEGINSWITH %@", fileName, fileLabel)
+        ).firstMatch
+        if !file.waitForExistence(timeout: 1) {
+            let tabletLocalStorage = app.cells["DOC.sidebar.item.On My iPad"]
+            if tabletLocalStorage.exists {
+                tabletLocalStorage.tap()
+            } else if !app.staticTexts["On My iPhone"].exists {
+                app.tabBars.buttons["Browse"].firstMatch.tap()
+            }
+            file = app.cells.matching(
+                NSPredicate(format: "identifier == %@ OR label BEGINSWITH %@", fileName, fileLabel)
+            ).firstMatch
+        }
+        XCTAssertTrue(file.waitForExistence(timeout: 5))
+        file.tap()
+        if confirmsSelection {
+            let open = app.buttons["Open"]
+            XCTAssertTrue(open.waitForExistence(timeout: 3))
+            open.tap()
+        }
+    }
+
+    private func dismissQuickLook(_ preview: XCUIElement, in app: XCUIApplication) {
+        let candidates = [
+            app.buttons["Done"],
+            app.buttons["Close"],
+            app.buttons["QLOverlayDoneButtonAccessibilityIdentifier"],
+        ]
+        if let visibleButton = candidates.first(where: { $0.waitForExistence(timeout: 1) }) {
+            visibleButton.tap()
+            return
+        }
+
+        preview.tap()
+        if let visibleButton = candidates.first(where: { $0.waitForExistence(timeout: 2) }) {
+            visibleButton.tap()
+            return
+        }
+
+        preview.swipeDown()
+        XCTAssertFalse(preview.waitForExistence(timeout: 2))
+    }
+
+    private func openAttachmentFixture(in app: XCUIApplication) {
+        let fixtureRow = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Attachment fixture")
+        ).firstMatch
+        if fixtureRow.waitForExistence(timeout: 5) {
+            fixtureRow.tap()
+        } else {
+            XCTAssertTrue(app.navigationBars["Snip"].waitForExistence(timeout: 3))
         }
     }
 }

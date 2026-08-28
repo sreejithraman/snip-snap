@@ -9,6 +9,7 @@ final class IOSAppModel {
 
     private(set) var snips: [Snip]
     private(set) var lists: [SnipList]
+    private(set) var attachmentURLs: [UUID: URL]
     var selectedListID: UUID
     var selectedSnipID: UUID?
     var errorMessage: String?
@@ -24,6 +25,7 @@ final class IOSAppModel {
         self.library = library
         snips = initialSnapshot.snips
         lists = initialSnapshot.lists
+        attachmentURLs = initialSnapshot.attachmentURLs
         selectedListID = SnipList.inboxID
         errorMessage = startupError
     }
@@ -46,14 +48,18 @@ final class IOSAppModel {
     }
 
     @discardableResult
-    func createSnip(content: String, in listID: UUID) async -> Bool {
+    func createSnip(
+        content: String,
+        in listID: UUID,
+        attachmentURLs: [URL] = []
+    ) async -> Bool {
         await perform(
             .add(
                 content: content,
                 origin: .quickEntry,
                 source: nil,
                 listID: listID,
-                attachmentURLs: [],
+                attachmentURLs: attachmentURLs,
                 requestID: UUID(),
                 now: Date()
             )
@@ -66,23 +72,46 @@ final class IOSAppModel {
     }
 
     @discardableResult
-    func editSnip(_ snip: Snip, content: String) async -> Bool {
-        await perform(
-            .update(
-                id: snip.id,
-                content: content,
-                attachmentURLs: nil,
-                expectedUpdatedAt: snip.updatedAt,
-                now: Date()
+    func editSnip(
+        _ snip: Snip,
+        content: String,
+        attachmentEdits: [SnipAttachmentEdit]? = nil
+    ) async -> Bool {
+        if let attachmentEdits {
+            await perform(
+                .editAttachments(
+                    snipID: snip.id,
+                    content: content,
+                    edits: attachmentEdits,
+                    expectedUpdatedAt: snip.updatedAt,
+                    now: Date()
+                )
             )
-        )
+        } else {
+            await perform(
+                .update(
+                    id: snip.id,
+                    content: content,
+                    attachmentURLs: nil,
+                    expectedUpdatedAt: snip.updatedAt,
+                    now: Date()
+                )
+            )
+        }
+    }
+
+    func attachmentURL(for attachmentID: UUID) -> URL? {
+        attachmentURLs[attachmentID]
     }
 
     @discardableResult
     func deleteSnip(id: UUID) async -> Bool {
-        await perform(.delete(ids: [id])) { _ in
+        let deleted = await perform(.delete(ids: [id])) { _ in
             if selectedSnipID == id { selectedSnipID = nil }
         }
+        guard deleted else { return false }
+        _ = await perform(.pruneAttachments(retaining: []))
+        return true
     }
 
     @discardableResult
@@ -134,6 +163,7 @@ final class IOSAppModel {
     private func apply(_ snapshot: SnipLibrarySnapshot) {
         snips = snapshot.snips
         lists = snapshot.lists
+        attachmentURLs = snapshot.attachmentURLs
 
         if !lists.contains(where: { $0.id == selectedListID }) {
             selectedListID = SnipList.inboxID

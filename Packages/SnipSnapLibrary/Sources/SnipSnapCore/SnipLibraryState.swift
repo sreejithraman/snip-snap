@@ -115,6 +115,50 @@ package struct SnipLibraryState {
       snips[index].updatedAt = now
       return .none
 
+    case .editAttachments(let snipID, let content, let edits, let expectedUpdatedAt, let now):
+      let cleanContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard let index = snips.firstIndex(where: { $0.id == snipID }) else {
+        throw SnipLibraryError.snipNotFound
+      }
+      if let expectedUpdatedAt, snips[index].updatedAt != expectedUpdatedAt {
+        throw SnipLibraryError.snipChanged
+      }
+      let originals = Dictionary(
+        uniqueKeysWithValues: snips[index].attachments.map { ($0.id, $0) }
+      )
+      var usedOriginalIDs: Set<UUID> = []
+      var attachments: [SnipAttachment] = []
+      for edit in edits {
+        switch edit {
+        case .existing(let attachmentID):
+          guard let attachment = originals[attachmentID],
+            usedOriginalIDs.insert(attachmentID).inserted
+          else { throw SnipLibraryError.attachmentCopyFailed }
+          attachments.append(attachment)
+        case .added(let sourceURL):
+          let prepared = try prepareAttachments([sourceURL], snips)
+          guard prepared.count == 1 else { throw SnipLibraryError.attachmentCopyFailed }
+          attachments.append(prepared[0])
+        case .replacement(let attachmentID, let sourceURL):
+          guard originals[attachmentID] != nil,
+            usedOriginalIDs.insert(attachmentID).inserted
+          else { throw SnipLibraryError.attachmentCopyFailed }
+          let prepared = try prepareAttachments([sourceURL], snips)
+          guard prepared.count == 1 else { throw SnipLibraryError.attachmentCopyFailed }
+          attachments.append(prepared[0])
+        }
+      }
+      guard !cleanContent.isEmpty || !attachments.isEmpty else {
+        throw SnipLibraryError.emptyContent
+      }
+      guard Set(attachments.map(\.id)).count == attachments.count else {
+        throw SnipLibraryError.attachmentCopyFailed
+      }
+      snips[index].content = cleanContent
+      snips[index].attachments = attachments
+      snips[index].updatedAt = now
+      return .none
+
     case .delete(let ids):
       guard !ids.isEmpty else { return .none }
       snips.removeAll { ids.contains($0.id) }

@@ -256,6 +256,12 @@ public actor JSONSnipLibrary: SnipLibrary {
             snips.flatMap(\.attachments).map { ($0.id, $0.relativePath) },
             uniquingKeysWith: { _, latest in latest }
         )
+        if command.editsAttachments {
+            removeUnreferencedAttachments(currentSnips: snips, keepingAdditional: [])
+            knownAttachmentPaths = knownAttachmentPaths.filter { id, _ in
+                snips.contains { snip in snip.attachments.contains { $0.id == id } }
+            }
+        }
 
         return SnipLibraryUpdate(
             snapshot: makeSnapshot(sortedBy: sortMode),
@@ -544,12 +550,15 @@ public actor JSONSnipLibrary: SnipLibrary {
                 )
                 createdDirectories.append(destinationDirectory)
                 try FileManager.default.copyItem(at: sourceURL, to: destination)
-                let values = try destination.resourceValues(forKeys: [.fileSizeKey, .contentTypeKey])
+                let values = try destination.resourceValues(forKeys: [.fileSizeKey])
+                let contentType = (try? destination.resourceValues(forKeys: [.contentTypeKey]))?
+                    .contentType?.identifier
+                    ?? UTType(filenameExtension: destination.pathExtension)?.identifier
                 let attachment = SnipAttachment(
                     id: id,
                     fileName: sourceURL.lastPathComponent,
                     relativePath: relativePath,
-                    contentType: values.contentType?.identifier,
+                    contentType: contentType,
                     byteCount: Int64(values.fileSize ?? 0)
                 )
                 prepared.append(attachment)
@@ -587,5 +596,12 @@ public actor JSONSnipLibrary: SnipLibrary {
         result.insert(.inbox, at: 0)
         for index in result.indices { result[index].position = index }
         return result
+    }
+}
+
+private extension SnipLibraryCommand {
+    var editsAttachments: Bool {
+        if case .editAttachments = self { return true }
+        return false
     }
 }

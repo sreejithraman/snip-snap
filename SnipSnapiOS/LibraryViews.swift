@@ -1,3 +1,4 @@
+import QuickLook
 import SnipSnapCore
 import SwiftUI
 
@@ -70,7 +71,7 @@ struct SnipCollectionView: View {
                 List(selection: selection) {
                     ForEach(model.visibleSnips) { snip in
                         NavigationLink(value: snip.id) {
-                            SnipRow(snip: snip)
+                            SnipRow(snip: snip, model: model)
                         }
                         .tag(snip.id)
                         .accessibilityIdentifier("snip-\(snip.id)")
@@ -105,6 +106,7 @@ struct SnipCollectionView: View {
 
 private struct SnipRow: View {
     let snip: Snip
+    let model: IOSAppModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -115,6 +117,30 @@ private struct SnipRow: View {
             Text(snip.updatedAt, format: .relative(presentation: .named))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            let attachmentItems = snip.attachments.compactMap { attachment -> AttachmentPreviewItem? in
+                guard let url = model.attachmentURL(for: attachment.id) else { return nil }
+                return AttachmentPreviewItem(
+                    id: attachment.id,
+                    fileName: attachment.fileName,
+                    byteCount: attachment.byteCount,
+                    url: url
+                )
+            }
+            if !attachmentItems.isEmpty {
+                HStack(spacing: 8) {
+                    ForEach(attachmentItems.prefix(3)) { attachment in
+                        AttachmentThumbnail(url: attachment.url)
+                            .frame(width: 48, height: 48)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .accessibilityLabel(attachment.fileName)
+                    }
+                    if attachmentItems.count > 3 {
+                        Text("+\(attachmentItems.count - 3)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
         .padding(.vertical, 4)
     }
@@ -123,6 +149,20 @@ private struct SnipRow: View {
 struct SnipDetailView: View {
     let model: IOSAppModel
     @Binding var sheet: AppSheet?
+    @State private var previewURL: URL?
+
+    private var attachmentItems: [AttachmentPreviewItem] {
+        guard let snip = model.selectedSnip else { return [] }
+        return snip.attachments.compactMap { attachment in
+            guard let url = model.attachmentURL(for: attachment.id) else { return nil }
+            return AttachmentPreviewItem(
+                id: attachment.id,
+                fileName: attachment.fileName,
+                byteCount: attachment.byteCount,
+                url: url
+            )
+        }
+    }
 
     var body: some View {
         if let snip = model.selectedSnip {
@@ -134,6 +174,23 @@ struct SnipDetailView: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
+                    if !attachmentItems.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Attachments")
+                                .font(.headline)
+                            LazyVGrid(
+                                columns: [GridItem(.adaptive(minimum: 144), spacing: 12)],
+                                spacing: 12
+                            ) {
+                                ForEach(attachmentItems) { attachment in
+                                    AttachmentPreviewTile(item: attachment) {
+                                        previewURL = attachment.url
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     Divider()
 
                     LabeledContent("Saved", value: snip.createdAt.formatted(date: .abbreviated, time: .shortened))
@@ -142,6 +199,7 @@ struct SnipDetailView: View {
                 .padding(24)
             }
             .navigationTitle("Snip")
+            .quickLookPreview($previewURL, in: attachmentItems.map(\.url))
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
                     MoveSnipMenu(model: model, snip: snip)

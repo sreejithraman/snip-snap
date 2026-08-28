@@ -56,6 +56,12 @@ public struct SnipLibrarySnapshot: Equatable, Sendable {
     }
 }
 
+public enum SnipAttachmentEdit: Equatable, Sendable {
+    case existing(attachmentID: UUID)
+    case added(sourceURL: URL)
+    case replacement(attachmentID: UUID, sourceURL: URL)
+}
+
 public enum SnipLibraryCommand: Sendable {
     case add(
         content: String,
@@ -73,6 +79,13 @@ public enum SnipLibraryCommand: Sendable {
         id: UUID,
         content: String,
         attachmentURLs: [URL]?,
+        expectedUpdatedAt: Date?,
+        now: Date
+    )
+    case editAttachments(
+        snipID: UUID,
+        content: String,
+        edits: [SnipAttachmentEdit],
         expectedUpdatedAt: Date?,
         now: Date
     )

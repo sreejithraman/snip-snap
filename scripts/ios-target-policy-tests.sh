@@ -11,7 +11,8 @@ for required_file in \
     IOSAppModel.swift \
     IOSAppRootView.swift \
     LibraryViews.swift \
-    EditorViews.swift; do
+    EditorViews.swift \
+    AttachmentViews.swift; do
     grep -F -- "$required_file" "$project_file" >/dev/null
 done
 
