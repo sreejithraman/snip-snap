@@ -1,0 +1,677 @@
+import Darwin
+import Foundation
+import SnipSnapCore
+import SwiftData
+import UniformTypeIdentifiers
+
+@Model
+private final class StoredSnipRecord {
+  @Attribute(.unique) var id: UUID
+  var requestID: UUID
+  var createdAt: Date
+  var updatedAt: Date
+  var content: String
+  var origin: String
+  var sourceApplicationName: String?
+  var sourceWindowTitle: String?
+  var sourceURL: String?
+  var listID: UUID
+  var isDone: Bool
+  var manualPosition: Int64
+
+  init(_ snip: Snip) {
+    id = snip.id
+    requestID = snip.requestID
+    createdAt = snip.createdAt
+    updatedAt = snip.updatedAt
+    content = snip.content
+    origin = snip.origin.rawValue
+    sourceApplicationName = snip.source?.applicationName
+    sourceWindowTitle = snip.source?.windowTitle
+    sourceURL = snip.source?.url
+    listID = snip.listID
+    isDone = snip.isDone
+    manualPosition = snip.manualPosition
+  }
+
+  func update(from snip: Snip) {
+    requestID = snip.requestID
+    createdAt = snip.createdAt
+    updatedAt = snip.updatedAt
+    content = snip.content
+    origin = snip.origin.rawValue
+    sourceApplicationName = snip.source?.applicationName
+    sourceWindowTitle = snip.source?.windowTitle
+    sourceURL = snip.source?.url
+    listID = snip.listID
+    isDone = snip.isDone
+    manualPosition = snip.manualPosition
+  }
+}
+
+@Model
+private final class StoredListRecord {
+  @Attribute(.unique) var id: UUID
+  var name: String
+  var systemImage: String
+  var position: Int
+
+  init(_ list: SnipList) {
+    id = list.id
+    name = list.name
+    systemImage = list.systemImage
+    position = list.position
+  }
+
+  func update(from list: SnipList) {
+    name = list.name
+    systemImage = list.systemImage
+    position = list.position
+  }
+}
+
+@Model
+private final class StoredAttachmentRecord {
+  @Attribute(.unique) var id: UUID
+  var fileName: String
+  var relativePath: String
+  var contentType: String?
+  var byteCount: Int64
+
+  init(_ attachment: SnipAttachment) {
+    id = attachment.id
+    fileName = attachment.fileName
+    relativePath = attachment.relativePath
+    contentType = attachment.contentType
+    byteCount = attachment.byteCount
+  }
+
+  func update(from attachment: SnipAttachment) {
+    fileName = attachment.fileName
+    relativePath = attachment.relativePath
+    contentType = attachment.contentType
+    byteCount = attachment.byteCount
+  }
+}
+
+@Model
+private final class StoredSnipAttachmentReference {
+  @Attribute(.unique) var id: String
+  var snipID: UUID
+  var attachmentID: UUID
+  var position: Int
+
+  init(snipID: UUID, attachmentID: UUID, position: Int) {
+    id = Self.identifier(snipID: snipID, attachmentID: attachmentID)
+    self.snipID = snipID
+    self.attachmentID = attachmentID
+    self.position = position
+  }
+
+  static func identifier(snipID: UUID, attachmentID: UUID) -> String {
+    "\(snipID.uuidString)/\(attachmentID.uuidString)"
+  }
+
+  func update(position: Int) {
+    self.position = position
+  }
+}
+
+@Model
+package final class StoredRequestRecord {
+  @Attribute(.unique) package var id: UUID
+
+  package init(id: UUID) {
+    self.id = id
+  }
+}
+
+public enum SnipSnapStoreSchemaContract {
+  public static let currentVersion = 1
+}
+
+package enum SnipSnapSchemaV1: VersionedSchema {
+  package static let versionIdentifier = Schema.Version(1, 0, 0)
+  package static var models: [any PersistentModel.Type] {
+    [
+      StoredSnipRecord.self,
+      StoredListRecord.self,
+      StoredAttachmentRecord.self,
+      StoredSnipAttachmentReference.self,
+      StoredRequestRecord.self,
+    ]
+  }
+}
+
+package enum SnipSnapSchemaMigrationPlan: SchemaMigrationPlan {
+  package static var schemas: [any VersionedSchema.Type] { [SnipSnapSchemaV1.self] }
+  package static var stages: [MigrationStage] { [] }
+}
+
+private final class SnipStoreFileLock {
+  private let descriptor: Int32
+
+  init(url: URL) throws {
+    descriptor = Darwin.open(url.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+    guard descriptor >= 0, flock(descriptor, LOCK_EX) == 0 else {
+      if descriptor >= 0 { Darwin.close(descriptor) }
+      throw SnipLibraryError.storeUnavailable
+    }
+  }
+
+  deinit {
+    flock(descriptor, LOCK_UN)
+    Darwin.close(descriptor)
+  }
+}
+
+/// A durable local snip library backed by record-based SwiftData storage.
+public actor SwiftDataSnipLibrary: SnipLibrary {
+  private struct LoadedStore {
+    let state: SnipLibraryState
+    let snips: [StoredSnipRecord]
+    let lists: [StoredListRecord]
+    let attachments: [StoredAttachmentRecord]
+    let references: [StoredSnipAttachmentReference]
+    let requests: [StoredRequestRecord]
+
+    var isEmpty: Bool {
+      snips.isEmpty && lists.isEmpty && attachments.isEmpty && references.isEmpty
+        && requests.isEmpty
+    }
+  }
+
+  private struct PreparedAttachments {
+    var attachments: [SnipAttachment]
+    var createdDirectories: [URL]
+  }
+
+  private let lockURL: URL
+  private let attachmentRootURL: URL
+  private let container: ModelContainer?
+  private let isAvailable: Bool
+  private let afterMutationBeforeSave: @Sendable () throws -> Void
+  private var seenRequestIDs: Set<UUID>
+  private var knownAttachmentPaths: [UUID: String]
+  private var lastKnownState: SnipLibraryState
+
+  public init(storeURL: URL = SwiftDataSnipLibrary.defaultStoreURL()) throws {
+    try self.init(storeURL: storeURL, afterMutationBeforeSave: {})
+  }
+
+  package init(
+    storeURL: URL,
+    afterMutationBeforeSave: @escaping @Sendable () throws -> Void
+  ) throws {
+    let directory = storeURL.deletingLastPathComponent()
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let lockURL = storeURL.appendingPathExtension("lock")
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let schema = Schema(versionedSchema: SnipSnapSchemaV1.self)
+    let configuration = ModelConfiguration(
+      "SnipSnapLocal",
+      schema: schema,
+      url: storeURL,
+      cloudKitDatabase: .none
+    )
+    let container: ModelContainer
+    do {
+      container = try ModelContainer(
+        for: schema,
+        migrationPlan: SnipSnapSchemaMigrationPlan.self,
+        configurations: [configuration]
+      )
+    } catch {
+      throw SnipLibraryError.invalidStore
+    }
+
+    self.lockURL = lockURL
+    attachmentRootURL = Self.attachmentRootURL(forStoreURL: storeURL)
+    self.container = container
+    isAvailable = true
+    self.afterMutationBeforeSave = afterMutationBeforeSave
+    seenRequestIDs = []
+    knownAttachmentPaths = [:]
+    lastKnownState = SnipLibraryState(snips: [], lists: [.inbox], seenRequestIDs: [])
+
+    let context = Self.makeContext(container: container)
+    var loaded = try Self.load(context: context, seenRequestIDs: [])
+    if loaded.lists.isEmpty {
+      guard loaded.isEmpty else { throw SnipLibraryError.invalidStore }
+      context.insert(StoredListRecord(.inbox))
+      try context.save()
+      loaded = try Self.load(context: Self.makeContext(container: container), seenRequestIDs: [])
+    }
+    try Self.validate(loaded.state)
+    seenRequestIDs = loaded.state.seenRequestIDs
+    lastKnownState = loaded.state
+    knownAttachmentPaths = Dictionary(
+      loaded.attachments.map { ($0.id, $0.relativePath) },
+      uniquingKeysWith: { first, _ in first }
+    )
+    Self.removeUnreferencedAttachmentDirectories(
+      at: attachmentRootURL,
+      keeping: Set(loaded.attachments.map(\.relativePath))
+    )
+  }
+
+  private init(unavailableAt storeURL: URL) {
+    lockURL = storeURL.appendingPathExtension("lock")
+    attachmentRootURL = Self.attachmentRootURL(forStoreURL: storeURL)
+    container = nil
+    isAvailable = false
+    afterMutationBeforeSave = {}
+    seenRequestIDs = []
+    knownAttachmentPaths = [:]
+    lastKnownState = SnipLibraryState(snips: [], lists: [.inbox], seenRequestIDs: [])
+  }
+
+  public static func unavailable(
+    storeURL: URL = SwiftDataSnipLibrary.defaultStoreURL()
+  ) -> SwiftDataSnipLibrary {
+    SwiftDataSnipLibrary(unavailableAt: storeURL)
+  }
+
+  public static func defaultStoreURL(fileManager: FileManager = .default) -> URL {
+    defaultStoreURL(
+      fileManager: fileManager,
+      environment: ProcessInfo.processInfo.environment
+    )
+  }
+
+  package static func defaultStoreURL(
+    fileManager: FileManager,
+    environment: [String: String]
+  ) -> URL {
+    if let jsonOverride = environment["SNIP_SNAP_STORE_PATH"],
+      !jsonOverride.isEmpty
+    {
+      return URL(fileURLWithPath: jsonOverride)
+        .deletingLastPathComponent()
+        .appendingPathComponent("Local", isDirectory: true)
+        .appendingPathComponent("snips.store", isDirectory: false)
+    }
+    let base =
+      fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+      ?? fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
+      ?? fileManager.temporaryDirectory
+    return
+      base
+      .appendingPathComponent("Snip Snap", isDirectory: true)
+      .appendingPathComponent("Local", isDirectory: true)
+      .appendingPathComponent("snips.store", isDirectory: false)
+  }
+
+  package static func attachmentRootURL(forStoreURL storeURL: URL) -> URL {
+    storeURL.deletingLastPathComponent()
+      .appendingPathComponent("Attachments", isDirectory: true)
+  }
+
+  public func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
+    guard let container, isAvailable else {
+      return SnipLibrarySnapshot(snips: [], lists: [.inbox])
+    }
+    if let lock = try? SnipStoreFileLock(url: lockURL) {
+      defer { withExtendedLifetime(lock) {} }
+      if let loaded = try? Self.load(
+        context: Self.makeContext(container: container),
+        seenRequestIDs: seenRequestIDs
+      ) {
+        lastKnownState = loaded.state
+        seenRequestIDs = loaded.state.seenRequestIDs
+        rememberAttachments(in: loaded.state)
+      }
+    }
+    return makeSnapshot(state: lastKnownState, sortedBy: sortMode)
+  }
+
+  public func perform(
+    _ command: SnipLibraryCommand,
+    sortedBy sortMode: SnipSortMode
+  ) throws -> SnipLibraryUpdate {
+    guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    let loaded = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
+    try Self.validate(loaded.state)
+    knownAttachmentPaths.merge(
+      loaded.attachments.map { ($0.id, $0.relativePath) },
+      uniquingKeysWith: { _, latest in latest }
+    )
+    var state = loaded.state
+    var createdDirectories: [URL] = []
+
+    do {
+      let outcome = try state.perform(
+        command,
+        prepareAttachments: { sourceURLs, currentSnips in
+          let prepared = try self.prepareAttachments(sourceURLs, currentSnips: currentSnips)
+          createdDirectories.append(contentsOf: prepared.createdDirectories)
+          return prepared.attachments
+        },
+        pruneAttachments: { retainedIDs, currentSnips in
+          let liveIDs = Set(currentSnips.flatMap(\.attachments).map(\.id)).union(retainedIDs)
+          let retainedPaths = Set(liveIDs.compactMap { self.knownAttachmentPaths[$0] })
+          Self.removeUnreferencedAttachmentDirectories(
+            at: self.attachmentRootURL,
+            keeping: retainedPaths.union(currentSnips.flatMap(\.attachments).map(\.relativePath))
+          )
+          self.knownAttachmentPaths = self.knownAttachmentPaths.filter {
+            liveIDs.contains($0.key)
+          }
+        }
+      )
+      let storedRequestIDs = Set(loaded.requests.map(\.id))
+      let hasNewRequestIDs = !state.seenRequestIDs.subtracting(storedRequestIDs).isEmpty
+      if state.snips != loaded.state.snips || state.lists != loaded.state.lists
+        || hasNewRequestIDs
+      {
+        try Self.applyChanges(from: loaded, to: state, context: context)
+        try afterMutationBeforeSave()
+        try context.save()
+      }
+      seenRequestIDs = state.seenRequestIDs
+      lastKnownState = state
+      rememberAttachments(in: state)
+      return SnipLibraryUpdate(
+        snapshot: makeSnapshot(state: state, sortedBy: sortMode),
+        outcome: outcome
+      )
+    } catch {
+      context.rollback()
+      removeAttachmentDirectories(createdDirectories)
+      throw error
+    }
+  }
+
+  private static func makeContext(container: ModelContainer) -> ModelContext {
+    let context = ModelContext(container)
+    context.autosaveEnabled = false
+    return context
+  }
+
+  private func makeSnapshot(
+    state: SnipLibraryState,
+    sortedBy sortMode: SnipSortMode
+  ) -> SnipLibrarySnapshot {
+    let orderedSnips = state.allSnips(sortMode: sortMode)
+    return SnipLibrarySnapshot(
+      snips: orderedSnips,
+      lists: state.allLists(),
+      attachmentURLs: Dictionary(
+        orderedSnips.flatMap(\.attachments).map {
+          ($0.id, attachmentRootURL.appendingPathComponent($0.relativePath))
+        },
+        uniquingKeysWith: { first, _ in first }
+      )
+    )
+  }
+
+  private func prepareAttachments(
+    _ sourceURLs: [URL],
+    currentSnips: [Snip]
+  ) throws -> PreparedAttachments {
+    guard !sourceURLs.isEmpty else {
+      return PreparedAttachments(attachments: [], createdDirectories: [])
+    }
+    let existingByPath = Dictionary(
+      currentSnips.flatMap(\.attachments).map { attachment in
+        (
+          attachmentRootURL.appendingPathComponent(attachment.relativePath).standardizedFileURL
+            .path,
+          attachment
+        )
+      },
+      uniquingKeysWith: { first, _ in first }
+    )
+    var prepared: [SnipAttachment] = []
+    var createdDirectories: [URL] = []
+    do {
+      for sourceURL in sourceURLs {
+        if let existing = existingByPath[sourceURL.standardizedFileURL.path] {
+          if !prepared.contains(where: { $0.id == existing.id }) { prepared.append(existing) }
+          continue
+        }
+        let didAccess = sourceURL.startAccessingSecurityScopedResource()
+        defer { if didAccess { sourceURL.stopAccessingSecurityScopedResource() } }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory),
+          !isDirectory.boolValue
+        else { throw SnipLibraryError.attachmentCopyFailed }
+        let id = UUID()
+        let relativePath = "\(id.uuidString)/\(sourceURL.lastPathComponent)"
+        let destination = attachmentRootURL.appendingPathComponent(relativePath)
+        let destinationDirectory = destination.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+          at: destinationDirectory,
+          withIntermediateDirectories: true
+        )
+        createdDirectories.append(destinationDirectory)
+        try FileManager.default.copyItem(at: sourceURL, to: destination)
+        let values = try destination.resourceValues(forKeys: [.fileSizeKey, .contentTypeKey])
+        prepared.append(
+          SnipAttachment(
+            id: id,
+            fileName: sourceURL.lastPathComponent,
+            relativePath: relativePath,
+            contentType: values.contentType?.identifier,
+            byteCount: Int64(values.fileSize ?? 0)
+          ))
+      }
+      return PreparedAttachments(attachments: prepared, createdDirectories: createdDirectories)
+    } catch {
+      removeAttachmentDirectories(createdDirectories)
+      throw error
+    }
+  }
+
+  private func rememberAttachments(in state: SnipLibraryState) {
+    knownAttachmentPaths.merge(
+      state.snips.flatMap(\.attachments).map { ($0.id, $0.relativePath) },
+      uniquingKeysWith: { _, latest in latest }
+    )
+  }
+
+  private func removeAttachmentDirectories(_ directories: [URL]) {
+    for directory in directories { try? FileManager.default.removeItem(at: directory) }
+  }
+
+  private static func removeUnreferencedAttachmentDirectories(
+    at rootURL: URL,
+    keeping relativePaths: Set<String>
+  ) {
+    let keptDirectories = Set(
+      relativePaths.compactMap {
+        $0.split(separator: "/", maxSplits: 1).first.map(String.init)
+      })
+    guard
+      let directories = try? FileManager.default.contentsOfDirectory(
+        at: rootURL,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles]
+      )
+    else { return }
+    for directory in directories where !keptDirectories.contains(directory.lastPathComponent) {
+      try? FileManager.default.removeItem(at: directory)
+    }
+  }
+
+  private static func load(
+    context: ModelContext,
+    seenRequestIDs: Set<UUID>
+  ) throws -> LoadedStore {
+    let storedSnips = try context.fetch(FetchDescriptor<StoredSnipRecord>())
+    let storedLists = try context.fetch(FetchDescriptor<StoredListRecord>())
+    let storedAttachments = try context.fetch(FetchDescriptor<StoredAttachmentRecord>())
+    let storedReferences = try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>())
+    let storedRequests = try context.fetch(FetchDescriptor<StoredRequestRecord>())
+    let attachmentsByID = Dictionary(uniqueKeysWithValues: storedAttachments.map { ($0.id, $0) })
+    let referencesBySnip = Dictionary(grouping: storedReferences, by: \.snipID)
+    let snips = try storedSnips.map { record -> Snip in
+      guard let origin = SnipOrigin(rawValue: record.origin) else {
+        throw SnipLibraryError.invalidStore
+      }
+      let source = record.sourceApplicationName.map {
+        SnipSource(
+          applicationName: $0, windowTitle: record.sourceWindowTitle, url: record.sourceURL)
+      }
+      return Snip(
+        id: record.id,
+        requestID: record.requestID,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+        content: record.content,
+        origin: origin,
+        source: source,
+        listID: record.listID,
+        isDone: record.isDone,
+        manualPosition: record.manualPosition,
+        attachments: try (referencesBySnip[record.id] ?? []).sorted { $0.position < $1.position }
+          .map { reference in
+            guard let attachment = attachmentsByID[reference.attachmentID] else {
+              throw SnipLibraryError.invalidStore
+            }
+            return SnipAttachment(
+              id: attachment.id,
+              fileName: attachment.fileName,
+              relativePath: attachment.relativePath,
+              contentType: attachment.contentType,
+              byteCount: attachment.byteCount
+            )
+          }
+      )
+    }
+    let lists = storedLists.map {
+      SnipList(id: $0.id, name: $0.name, systemImage: $0.systemImage, position: $0.position)
+    }
+    return LoadedStore(
+      state: SnipLibraryState(
+        snips: snips,
+        lists: lists,
+        seenRequestIDs: seenRequestIDs
+          .union(storedRequests.map(\.id))
+          .union(snips.map(\.requestID))
+      ),
+      snips: storedSnips,
+      lists: storedLists,
+      attachments: storedAttachments,
+      references: storedReferences,
+      requests: storedRequests
+    )
+  }
+
+  private static func validate(_ state: SnipLibraryState) throws {
+    guard !state.lists.isEmpty,
+      Set(state.lists.map(\.id)).count == state.lists.count,
+      Set(state.lists.map { $0.name.lowercased() }).count == state.lists.count,
+      state.lists.contains(where: { $0.id == SnipList.inboxID }),
+      Set(state.snips.map(\.listID)).isSubset(of: Set(state.lists.map(\.id)))
+    else { throw SnipLibraryError.invalidStore }
+  }
+
+  private static func applyChanges(
+    from loaded: LoadedStore,
+    to state: SnipLibraryState,
+    context: ModelContext
+  ) throws {
+    let storedRequestIDs = Set(loaded.requests.map(\.id))
+    for id in state.seenRequestIDs.subtracting(storedRequestIDs) {
+      context.insert(StoredRequestRecord(id: id))
+    }
+
+    let oldSnips = Dictionary(uniqueKeysWithValues: loaded.state.snips.map { ($0.id, $0) })
+    let newSnips = Dictionary(uniqueKeysWithValues: state.snips.map { ($0.id, $0) })
+    let snipRecords = Dictionary(uniqueKeysWithValues: loaded.snips.map { ($0.id, $0) })
+    for id in Set(oldSnips.keys).subtracting(newSnips.keys) {
+      if let record = snipRecords[id] { context.delete(record) }
+    }
+    for (id, snip) in newSnips where oldSnips[id] != snip {
+      if let record = snipRecords[id] {
+        record.update(from: snip)
+      } else {
+        context.insert(StoredSnipRecord(snip))
+      }
+    }
+
+    let oldLists = Dictionary(uniqueKeysWithValues: loaded.state.lists.map { ($0.id, $0) })
+    let newLists = Dictionary(uniqueKeysWithValues: state.lists.map { ($0.id, $0) })
+    let listRecords = Dictionary(uniqueKeysWithValues: loaded.lists.map { ($0.id, $0) })
+    for id in Set(oldLists.keys).subtracting(newLists.keys) {
+      if let record = listRecords[id] { context.delete(record) }
+    }
+    for (id, list) in newLists where oldLists[id] != list {
+      if let record = listRecords[id] {
+        record.update(from: list)
+      } else {
+        context.insert(StoredListRecord(list))
+      }
+    }
+
+    let oldAttachments = attachmentMap(loaded.state.snips)
+    let newAttachments = attachmentMap(state.snips)
+    let attachmentRecords = Dictionary(uniqueKeysWithValues: loaded.attachments.map { ($0.id, $0) })
+    for id in Set(oldAttachments.keys).subtracting(newAttachments.keys) {
+      if let record = attachmentRecords[id] { context.delete(record) }
+    }
+    for (id, attachment) in newAttachments where oldAttachments[id] != attachment {
+      if let record = attachmentRecords[id] {
+        record.update(from: attachment)
+      } else {
+        context.insert(StoredAttachmentRecord(attachment))
+      }
+    }
+
+    let oldReferences = referenceMap(loaded.state.snips)
+    let newReferences = referenceMap(state.snips)
+    let referenceRecords = Dictionary(uniqueKeysWithValues: loaded.references.map { ($0.id, $0) })
+    for id in Set(oldReferences.keys).subtracting(newReferences.keys) {
+      if let record = referenceRecords[id] { context.delete(record) }
+    }
+    for (id, value) in newReferences where oldReferences[id] != value {
+      if let record = referenceRecords[id] {
+        record.update(position: value.position)
+      } else {
+        context.insert(
+          StoredSnipAttachmentReference(
+            snipID: value.snipID,
+            attachmentID: value.attachmentID,
+            position: value.position
+          ))
+      }
+    }
+  }
+
+  private struct AttachmentReferenceValue: Equatable {
+    let snipID: UUID
+    let attachmentID: UUID
+    let position: Int
+  }
+
+  private static func attachmentMap(_ snips: [Snip]) -> [UUID: SnipAttachment] {
+    Dictionary(
+      snips.flatMap(\.attachments).map { ($0.id, $0) },
+      uniquingKeysWith: { first, _ in first }
+    )
+  }
+
+  private static func referenceMap(_ snips: [Snip]) -> [String: AttachmentReferenceValue] {
+    Dictionary(
+      uniqueKeysWithValues: snips.flatMap { snip in
+        snip.attachments.enumerated().map { position, attachment in
+          let value = AttachmentReferenceValue(
+            snipID: snip.id,
+            attachmentID: attachment.id,
+            position: position
+          )
+          return (
+            StoredSnipAttachmentReference.identifier(
+              snipID: snip.id,
+              attachmentID: attachment.id
+            ), value
+          )
+        }
+      })
+  }
+}

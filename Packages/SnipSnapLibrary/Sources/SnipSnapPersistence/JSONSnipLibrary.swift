@@ -7,19 +7,27 @@ public actor JSONSnipLibrary: SnipLibrary {
         let version: Int
         var snips: [Snip]
         var lists: [SnipList]
+        var seenRequestIDs: Set<UUID>
 
         private enum CodingKeys: String, CodingKey {
             case version
             case snips
             case lists
+            case seenRequestIDs
             case legacyItems = "items"
             case legacySections = "sections"
         }
 
-        init(version: Int, snips: [Snip], lists: [SnipList]) {
+        init(
+            version: Int,
+            snips: [Snip],
+            lists: [SnipList],
+            seenRequestIDs: Set<UUID>
+        ) {
             self.version = version
             self.snips = snips
             self.lists = lists
+            self.seenRequestIDs = seenRequestIDs
         }
 
         init(from decoder: Decoder) throws {
@@ -29,6 +37,11 @@ public actor JSONSnipLibrary: SnipLibrary {
                 ?? container.decode([Snip].self, forKey: .legacyItems)
             lists = try container.decodeIfPresent([SnipList].self, forKey: .lists)
                 ?? container.decode([SnipList].self, forKey: .legacySections)
+            let storedRequestIDs = try container.decodeIfPresent(
+                [UUID].self,
+                forKey: .seenRequestIDs
+            ) ?? []
+            seenRequestIDs = Set(storedRequestIDs).union(snips.map(\.requestID))
         }
 
         func encode(to encoder: Encoder) throws {
@@ -36,6 +49,10 @@ public actor JSONSnipLibrary: SnipLibrary {
             try container.encode(version, forKey: .version)
             try container.encode(snips, forKey: .snips)
             try container.encode(lists, forKey: .lists)
+            try container.encode(
+                seenRequestIDs.sorted { $0.uuidString < $1.uuidString },
+                forKey: .seenRequestIDs
+            )
         }
     }
 
@@ -49,8 +66,8 @@ public actor JSONSnipLibrary: SnipLibrary {
     private var snips: [Snip]
     private var lists: [SnipList]
     private var knownAttachmentPaths: [UUID: String]
-    // Keep deleted request IDs for this repository lifetime so delayed retries
-    // cannot recreate a snip the user already removed.
+    // Keep request IDs in the store so delayed retries cannot recreate a snip
+    // after the user removes it or the repository reopens.
     private var seenRequestIDs: Set<UUID>
 
     public init(fileURL: URL = JSONSnipLibrary.defaultStoreURL()) throws {
@@ -84,9 +101,14 @@ public actor JSONSnipLibrary: SnipLibrary {
                 uniquingKeysWith: { first, _ in first }
             )
             guard !lists.isEmpty else { throw SnipLibraryError.invalidStore }
-            seenRequestIDs = Set(document.snips.map(\.requestID))
+            seenRequestIDs = document.seenRequestIDs
             if document.version == Self.legacyVersion {
-                try Self.write(snips: snips, lists: lists, to: fileURL)
+                try Self.write(
+                    snips: snips,
+                    lists: lists,
+                    seenRequestIDs: seenRequestIDs,
+                    to: fileURL
+                )
             }
         } catch let error as SnipLibraryError {
             throw error
@@ -181,75 +203,53 @@ public actor JSONSnipLibrary: SnipLibrary {
         _ command: SnipLibraryCommand,
         sortedBy sortMode: SnipSortMode
     ) throws -> SnipLibraryUpdate {
+        try ensureAvailable()
+        var state = SnipLibraryState(
+            snips: snips,
+            lists: lists,
+            seenRequestIDs: seenRequestIDs
+        )
+        var createdDirectories: [URL] = []
         let outcome: SnipLibraryOutcome
-        switch command {
-        case let .add(content, origin, source, listID, attachmentURLs, requestID, now):
-            let snip = try add(
-                content: content,
-                origin: origin,
-                source: source,
-                listID: listID,
-                attachmentURLs: attachmentURLs,
-                requestID: requestID,
-                now: now
+        do {
+            outcome = try state.perform(
+                command,
+                prepareAttachments: { sourceURLs, currentSnips in
+                    let prepared = try self.prepareAttachments(
+                        sourceURLs,
+                        currentSnips: currentSnips
+                    )
+                    createdDirectories.append(contentsOf: prepared.createdDirectories)
+                    return prepared.attachments
+                },
+                pruneAttachments: { retainedIDs, currentSnips in
+                    let liveIDs = Set(currentSnips.flatMap(\.attachments).map(\.id))
+                        .union(retainedIDs)
+                    let retainedPaths = Set(liveIDs.compactMap { self.knownAttachmentPaths[$0] })
+                    self.removeUnreferencedAttachments(
+                        currentSnips: currentSnips,
+                        keepingAdditional: retainedPaths
+                    )
+                    self.knownAttachmentPaths = self.knownAttachmentPaths.filter {
+                        liveIDs.contains($0.key)
+                    }
+                }
             )
-            outcome = .add(snip.map { .added($0.id) } ?? .duplicate)
-        case let .createList(name, systemImage):
-            outcome = .listCreated(try createList(name: name, systemImage: systemImage))
-        case let .updateList(id, name, systemImage):
-            try updateList(id: id, name: name, systemImage: systemImage)
-            outcome = .none
-        case let .deleteList(id):
-            try deleteList(id: id)
-            outcome = .none
-        case let .update(id, content, attachmentURLs, expectedUpdatedAt, now):
-            try update(
-                id: id,
-                content: content,
-                attachmentURLs: attachmentURLs,
-                expectedUpdatedAt: expectedUpdatedAt,
-                now: now
-            )
-            outcome = .none
-        case let .delete(ids):
-            try delete(ids: ids)
-            outcome = .none
-        case let .restore(restoredSnips):
-            try restore(snips: restoredSnips)
-            outcome = .none
-        case let .restoreReplacing(restoredSnips, id, expectedUpdatedAt):
-            try restore(
-                snips: restoredSnips,
-                replacing: id,
-                expectedUpdatedAt: expectedUpdatedAt
-            )
-            outcome = .none
-        case let .merge(ids, now):
-            outcome = .merged(try merge(ids: ids, now: now))
-        case let .setDone(ids, done):
-            try setDone(ids: ids, done: done)
-            outcome = .none
-        case let .toggleDone(id):
-            try toggleDone(id: id)
-            outcome = .none
-        case let .toggleDoneMany(ids):
-            try toggleDone(ids: ids)
-            outcome = .none
-        case let .moveChronologically(ids, listID):
-            try moveChronologically(ids: ids, to: listID)
-            outcome = .none
-        case let .place(ids, listID, destinationID, sortMode):
-            try place(ids: ids, in: listID, before: destinationID, basedOn: sortMode)
-            outcome = .none
-        case let .replaceAll(replacement):
-            try replaceAll(with: replacement)
-            outcome = .none
-        case let .pruneAttachments(retainedIDs):
-            let liveIDs = Set(snips.flatMap(\.attachments).map(\.id)).union(retainedIDs)
-            let retainedPaths = Set(liveIDs.compactMap { knownAttachmentPaths[$0] })
-            removeUnreferencedAttachments(keepingAdditional: retainedPaths)
-            knownAttachmentPaths = knownAttachmentPaths.filter { liveIDs.contains($0.key) }
-            outcome = .none
+            if snips != state.snips
+                || lists != state.lists
+                || seenRequestIDs != state.seenRequestIDs
+            {
+                try persistMutation {
+                    snips = state.snips
+                    lists = state.lists
+                    seenRequestIDs = state.seenRequestIDs
+                }
+            } else {
+                seenRequestIDs = state.seenRequestIDs
+            }
+        } catch {
+            removeAttachmentDirectories(createdDirectories)
+            throw error
         }
 
         knownAttachmentPaths.merge(
@@ -278,14 +278,12 @@ public actor JSONSnipLibrary: SnipLibrary {
     }
 
     func allSnips(sortMode: SnipSortMode = .chronological) -> [Snip] {
-        let snipsByList = Dictionary(grouping: snips, by: \.listID)
-        return allLists().flatMap { list in
-            Snip.sorted(snipsByList[list.id] ?? [], by: sortMode)
-        }
+        SnipLibraryState(snips: snips, lists: lists, seenRequestIDs: seenRequestIDs)
+            .allSnips(sortMode: sortMode)
     }
 
     func allLists() -> [SnipList] {
-        lists.sorted { $0.position < $1.position }
+        SnipLibraryState(snips: snips, lists: lists, seenRequestIDs: seenRequestIDs).allLists()
     }
 
     @discardableResult
@@ -298,93 +296,39 @@ public actor JSONSnipLibrary: SnipLibrary {
         requestID: UUID = UUID(),
         now: Date = Date()
     ) throws -> Snip? {
-        try ensureAvailable()
-        let cleanContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanContent.isEmpty || !attachmentURLs.isEmpty else { throw SnipLibraryError.emptyContent }
-        guard !seenRequestIDs.contains(requestID) else { return nil }
-        guard lists.contains(where: { $0.id == listID }) else { throw SnipLibraryError.invalidList }
-        let storedContent = origin == .selection ? content : cleanContent
-        let prepared = try prepareAttachments(attachmentURLs)
-
-        let snip = Snip(
-            requestID: requestID,
-            createdAt: now,
-            content: storedContent,
-            origin: origin,
-            source: source,
-            listID: listID,
-            manualPosition: nextTopPosition(in: listID),
-            attachments: prepared.attachments
+        let update = try perform(
+            .add(
+                content: content,
+                origin: origin,
+                source: source,
+                listID: listID,
+                attachmentURLs: attachmentURLs,
+                requestID: requestID,
+                now: now
+            ),
+            sortedBy: .chronological
         )
-        do {
-            return try persistMutation {
-                snips.append(snip)
-                seenRequestIDs.insert(requestID)
-                return snip
-            }
-        } catch {
-            removeAttachmentDirectories(prepared.createdDirectories)
-            throw error
-        }
+        guard case .add(.added(let id)) = update.outcome else { return nil }
+        return update.snapshot.snips.first { $0.id == id }
     }
 
     func createList(name: String, systemImage: String) throws -> SnipList {
-        try ensureAvailable()
-        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanName.isEmpty else { throw SnipLibraryError.invalidList }
-        guard !lists.contains(where: { $0.name.caseInsensitiveCompare(cleanName) == .orderedSame }) else {
-            throw SnipLibraryError.duplicateList
-        }
-        let list = SnipList(
-            id: UUID(),
-            name: cleanName,
-            systemImage: systemImage.isEmpty ? "circle.grid.2x2.fill" : systemImage,
-            position: (lists.map(\.position).max() ?? 0) + 1
+        let update = try perform(
+            .createList(name: name, systemImage: systemImage),
+            sortedBy: .chronological
         )
-        return try persistMutation {
-            lists.append(list)
-            return list
+        guard case .listCreated(let list) = update.outcome else {
+            throw SnipLibraryError.invalidList
         }
+        return list
     }
 
     func updateList(id: UUID, name: String, systemImage: String) throws {
-        try ensureAvailable()
-        guard id != SnipList.inboxID,
-              let index = lists.firstIndex(where: { $0.id == id }) else {
-            throw SnipLibraryError.invalidList
-        }
-        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanName.isEmpty else { throw SnipLibraryError.invalidList }
-        guard !lists.contains(where: {
-            $0.id != id && $0.name.caseInsensitiveCompare(cleanName) == .orderedSame
-        }) else { throw SnipLibraryError.duplicateList }
-        try persistMutation {
-            lists[index].name = cleanName
-            lists[index].systemImage = systemImage
-        }
+        _ = try perform(.updateList(id: id, name: name, systemImage: systemImage), sortedBy: .manual)
     }
 
     func deleteList(id: UUID) throws {
-        try ensureAvailable()
-        guard id != SnipList.inboxID,
-              let list = lists.first(where: { $0.id == id }) else {
-            throw SnipLibraryError.invalidList
-        }
-        let movingIDs = Snip.sorted(
-            snips.filter { $0.listID == list.id },
-            by: .manual
-        ).map(\.id)
-        let firstPosition = nextTopPosition(in: SnipList.inboxID)
-            - Int64(max(0, movingIDs.count - 1))
-        try persistMutation {
-            lists.removeAll { $0.id == id }
-            for (offset, snipID) in movingIDs.enumerated() {
-                guard let index = snips.firstIndex(where: { $0.id == snipID }) else { continue }
-                snips[index].listID = SnipList.inboxID
-                snips[index].manualPosition = firstPosition + Int64(offset)
-            }
-            for index in lists.indices { lists[index].position = index }
-        }
+        _ = try perform(.deleteList(id: id), sortedBy: .manual)
     }
 
     func update(
@@ -394,151 +338,59 @@ public actor JSONSnipLibrary: SnipLibrary {
         expectedUpdatedAt: Date? = nil,
         now: Date = Date()
     ) throws {
-        try ensureAvailable()
-        let cleanContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let index = snips.firstIndex(where: { $0.id == id }) else {
-            throw SnipLibraryError.snipNotFound
-        }
-        if let expectedUpdatedAt, snips[index].updatedAt != expectedUpdatedAt {
-            throw SnipLibraryError.snipChanged
-        }
-        let willHaveAttachments = attachmentURLs.map { !$0.isEmpty }
-            ?? !snips[index].attachments.isEmpty
-        guard !cleanContent.isEmpty || willHaveAttachments else {
-            throw SnipLibraryError.emptyContent
-        }
-        let prepared = try attachmentURLs.map(prepareAttachments)
-
-        do {
-            try persistMutation {
-                snips[index].content = cleanContent
-                if let prepared {
-                    snips[index].attachments = prepared.attachments
-                }
-                snips[index].updatedAt = now
-            }
-        } catch {
-            if let prepared { removeAttachmentDirectories(prepared.createdDirectories) }
-            throw error
-        }
+        _ = try perform(
+            .update(
+                id: id,
+                content: content,
+                attachmentURLs: attachmentURLs,
+                expectedUpdatedAt: expectedUpdatedAt,
+                now: now
+            ),
+            sortedBy: .manual
+        )
     }
 
     func delete(ids: Set<UUID>) throws {
-        try ensureAvailable()
-        guard !ids.isEmpty else { return }
-        try persistMutation {
-            snips.removeAll { ids.contains($0.id) }
-        }
+        _ = try perform(.delete(ids: ids), sortedBy: .manual)
     }
 
-    func restore(snips restoredSnips: [Snip]) throws {
-        try ensureAvailable()
-        guard !restoredSnips.isEmpty else { return }
-        let existingIDs = Set(snips.map(\.id))
-        let additions = restoredSnips.filter { !existingIDs.contains($0.id) }
-        guard !additions.isEmpty else { return }
-        try persistMutation {
-            snips.append(contentsOf: additions)
-            seenRequestIDs.formUnion(additions.map(\.requestID))
-        }
+    func restore(snips: [Snip]) throws {
+        _ = try perform(.restore(snips: snips), sortedBy: .manual)
     }
 
     func restore(
-        snips restoredSnips: [Snip],
-        replacing snipID: UUID,
+        snips: [Snip],
+        replacing id: UUID,
         expectedUpdatedAt: Date
     ) throws {
-        try ensureAvailable()
-        guard !restoredSnips.isEmpty else { return }
-        guard let replacedSnip = snips.first(where: { $0.id == snipID }) else {
-            throw SnipLibraryError.snipNotFound
-        }
-        guard replacedSnip.updatedAt == expectedUpdatedAt else {
-            throw SnipLibraryError.snipChanged
-        }
-        try persistMutation {
-            snips.removeAll { $0.id == snipID }
-            let existingIDs = Set(snips.map(\.id))
-            snips.append(contentsOf: restoredSnips.filter { !existingIDs.contains($0.id) })
-            seenRequestIDs.formUnion(restoredSnips.map(\.requestID))
-        }
+        _ = try perform(
+            .restoreReplacing(snips: snips, id: id, expectedUpdatedAt: expectedUpdatedAt),
+            sortedBy: .manual
+        )
     }
 
-    func merge(
-        ids: Set<UUID>,
-        now: Date = Date()
-    ) throws -> Snip {
-        try ensureAvailable()
-        let selectedSnips = Snip.sorted(snips.filter { ids.contains($0.id) }, by: .chronological)
-        guard selectedSnips.count >= 2 else { throw SnipLibraryError.requiresMultipleSnips }
-        let listIDs = Set(selectedSnips.map(\.listID))
-        let destinationListID = listIDs.count == 1 ? selectedSnips[0].listID : SnipList.inboxID
-        let manualPosition: Int64
-        if listIDs.count == 1 {
-            manualPosition = selectedSnips.map(\.manualPosition).min() ?? 0
-        } else {
-            manualPosition = nextTopPosition(in: destinationListID)
+    func merge(ids: Set<UUID>, now: Date = Date()) throws -> Snip {
+        let update = try perform(.merge(ids: ids, now: now), sortedBy: .manual)
+        guard case .merged(let snip) = update.outcome else {
+            throw SnipLibraryError.requiresMultipleSnips
         }
-        var seenAttachmentIDs: Set<UUID> = []
-        let mergedAttachments = selectedSnips
-            .flatMap(\.attachments)
-            .filter { seenAttachmentIDs.insert($0.id).inserted }
-        let mergedSnip = Snip(
-            createdAt: now,
-            content: SnipFormatter.format(snips: selectedSnips),
-            origin: .quickEntry,
-            listID: destinationListID,
-            manualPosition: manualPosition,
-            attachments: mergedAttachments
-        )
-        return try persistMutation {
-            snips.removeAll { ids.contains($0.id) }
-            snips.append(mergedSnip)
-            seenRequestIDs.insert(mergedSnip.requestID)
-            return mergedSnip
-        }
+        return snip
     }
 
     func setDone(ids: Set<UUID>, done: Bool) throws {
-        try ensureAvailable()
-        guard !ids.isEmpty else { return }
-        try update(ids: ids) { snip in
-            snip.isDone = done
-        }
+        _ = try perform(.setDone(ids: ids, done: done), sortedBy: .manual)
     }
 
     func toggleDone(id: UUID) throws {
-        try ensureAvailable()
-        guard let snip = snips.first(where: { $0.id == id }) else {
-            throw SnipLibraryError.snipNotFound
-        }
-        try setDone(ids: [id], done: !snip.isDone)
+        _ = try perform(.toggleDone(id: id), sortedBy: .manual)
     }
 
     func toggleDone(ids: Set<UUID>) throws {
-        try ensureAvailable()
-        let selected = snips.filter { ids.contains($0.id) }
-        guard !selected.isEmpty else { return }
-        try setDone(ids: ids, done: selected.contains { !$0.isDone })
+        _ = try perform(.toggleDoneMany(ids: ids), sortedBy: .manual)
     }
 
     func moveChronologically(ids: [UUID], to listID: UUID) throws {
-        try ensureAvailable()
-        guard !ids.isEmpty else { return }
-        guard lists.contains(where: { $0.id == listID }) else { throw SnipLibraryError.invalidList }
-        let orderedIDs = ids.filter { id in
-            snips.contains { $0.id == id && $0.listID != listID }
-        }
-        guard !orderedIDs.isEmpty else { return }
-        try persistMutation {
-            let top = nextTopPosition(in: listID, excluding: Set(orderedIDs))
-                - Int64(orderedIDs.count - 1)
-            for (offset, id) in orderedIDs.enumerated() {
-                guard let index = snips.firstIndex(where: { $0.id == id }) else { continue }
-                snips[index].listID = listID
-                snips[index].manualPosition = top + Int64(offset)
-            }
-        }
+        _ = try perform(.moveChronologically(ids: ids, to: listID), sortedBy: .manual)
     }
 
     func place(
@@ -547,42 +399,21 @@ public actor JSONSnipLibrary: SnipLibrary {
         before destinationID: UUID?,
         basedOn sortMode: SnipSortMode = .manual
     ) throws {
-        try ensureAvailable()
-        guard !ids.isEmpty else { return }
-        guard lists.contains(where: { $0.id == listID }) else { throw SnipLibraryError.invalidList }
-        let movingSet = Set(ids)
-        let orderedMovingIDs = ids.filter { id in snips.contains { $0.id == id } }
-        guard !orderedMovingIDs.isEmpty else { return }
-        let sourceLists = Set(snips.filter { movingSet.contains($0.id) }.map(\.listID))
-
-        try persistMutation {
-            var destinationIDs = Snip.sorted(
-                snips.filter { $0.listID == listID && !movingSet.contains($0.id) },
-                by: sortMode
-            ).map(\.id)
-            let insertionIndex = destinationID.flatMap(destinationIDs.firstIndex) ?? destinationIDs.endIndex
-            destinationIDs.insert(contentsOf: orderedMovingIDs, at: insertionIndex)
-            for id in orderedMovingIDs {
-                guard let index = snips.firstIndex(where: { $0.id == id }) else { continue }
-                snips[index].listID = listID
-            }
-            reindex(listID: listID, orderedIDs: destinationIDs)
-            for sourceList in sourceLists where sourceList != listID {
-                reindex(listID: sourceList)
-            }
-        }
+        _ = try perform(
+            .place(ids: ids, in: listID, before: destinationID, basedOn: sortMode),
+            sortedBy: sortMode
+        )
     }
 
     func replaceAll(with replacement: [Snip]) throws {
-        try ensureAvailable()
-        try persistMutation {
-            snips = replacement
-            seenRequestIDs.formUnion(replacement.map(\.requestID))
-        }
+        _ = try perform(.replaceAll(replacement), sortedBy: .manual)
     }
 
-    func removeUnreferencedAttachments(keepingAdditional relativePaths: Set<String>) {
-        let livePaths = Set(snips.flatMap(\.attachments).map(\.relativePath))
+    func removeUnreferencedAttachments(
+        currentSnips: [Snip],
+        keepingAdditional relativePaths: Set<String>
+    ) {
+        let livePaths = Set(currentSnips.flatMap(\.attachments).map(\.relativePath))
         Self.removeUnreferencedAttachmentDirectories(
             at: attachmentRootURL,
             keeping: relativePaths.union(livePaths)
@@ -603,18 +434,6 @@ public actor JSONSnipLibrary: SnipLibrary {
         ) else { return }
         for directory in directories where !keptDirectories.contains(directory.lastPathComponent) {
             try? FileManager.default.removeItem(at: directory)
-        }
-    }
-
-    private func update(
-        ids: Set<UUID>,
-        change: (inout Snip) -> Void
-    ) throws {
-        try persistMutation {
-            for index in snips.indices where ids.contains(snips[index].id) {
-                change(&snips[index])
-                snips[index].updatedAt = Date()
-            }
         }
     }
 
@@ -645,10 +464,20 @@ public actor JSONSnipLibrary: SnipLibrary {
 
     private func persist() throws {
         try ensureAvailable()
-        try Self.write(snips: snips, lists: lists, to: fileURL)
+        try Self.write(
+            snips: snips,
+            lists: lists,
+            seenRequestIDs: seenRequestIDs,
+            to: fileURL
+        )
     }
 
-    private static func write(snips: [Snip], lists: [SnipList], to fileURL: URL) throws {
+    private static func write(
+        snips: [Snip],
+        lists: [SnipList],
+        seenRequestIDs: Set<UUID>,
+        to fileURL: URL
+    ) throws {
         let directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(
             at: directory,
@@ -658,7 +487,12 @@ public actor JSONSnipLibrary: SnipLibrary {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(
-            Document(version: Self.currentVersion, snips: snips, lists: lists)
+            Document(
+                version: Self.currentVersion,
+                snips: snips,
+                lists: lists,
+                seenRequestIDs: seenRequestIDs
+            )
         )
         try data.write(to: fileURL, options: .atomic)
     }
@@ -672,12 +506,15 @@ public actor JSONSnipLibrary: SnipLibrary {
         var createdDirectories: [URL]
     }
 
-    private func prepareAttachments(_ sourceURLs: [URL]) throws -> PreparedAttachments {
+    private func prepareAttachments(
+        _ sourceURLs: [URL],
+        currentSnips: [Snip]
+    ) throws -> PreparedAttachments {
         guard !sourceURLs.isEmpty else {
             return PreparedAttachments(attachments: [], createdDirectories: [])
         }
         let existingByPath = Dictionary(
-            snips.flatMap(\.attachments).map { attachment in
+            currentSnips.flatMap(\.attachments).map { attachment in
                 (attachmentURL(for: attachment).standardizedFileURL.path, attachment)
             },
             uniquingKeysWith: { first, _ in first }
@@ -731,33 +568,8 @@ public actor JSONSnipLibrary: SnipLibrary {
         attachmentRootURL.appendingPathComponent(attachment.relativePath, isDirectory: false)
     }
 
-    private func removeAttachmentDirectories(for attachments: [SnipAttachment]) {
-        removeAttachmentDirectories(
-            attachments.map { attachmentURL(for: $0).deletingLastPathComponent() }
-        )
-    }
-
     private func removeAttachmentDirectories(_ directories: [URL]) {
         for directory in directories { try? FileManager.default.removeItem(at: directory) }
-    }
-
-    private func nextTopPosition(in listID: UUID, excluding excluded: Set<UUID> = []) -> Int64 {
-        let minimum = snips
-            .filter { $0.listID == listID && !excluded.contains($0.id) }
-            .map(\.manualPosition)
-            .min() ?? 1
-        return minimum - 1
-    }
-
-    private func reindex(listID: UUID, orderedIDs: [UUID]? = nil) {
-        let ids = orderedIDs ?? Snip.sorted(
-            snips.filter { $0.listID == listID },
-            by: .manual
-        ).map(\.id)
-        for (position, id) in ids.enumerated() {
-            guard let index = snips.firstIndex(where: { $0.id == id }) else { continue }
-            snips[index].manualPosition = Int64(position)
-        }
     }
 
     private static func validatedLists(

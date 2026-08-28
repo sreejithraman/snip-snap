@@ -52,6 +52,10 @@ final class SnipRepositoryTests: StoreBackedTestCase {
         XCTAssertEqual(migratedDocument["version"] as? Int, JSONSnipLibrary.currentVersion)
         XCTAssertNotNil(migratedDocument["snips"])
         XCTAssertNotNil(migratedDocument["lists"])
+        XCTAssertEqual(
+            Set((migratedDocument["seenRequestIDs"] as? [String]) ?? []),
+            [requestID.uuidString]
+        )
         XCTAssertNil(migratedDocument["items"])
         XCTAssertNil(migratedDocument["sections"])
     }
@@ -83,6 +87,10 @@ final class SnipRepositoryTests: StoreBackedTestCase {
         XCTAssertNil(storedSnips?.first?["sectionID"])
         XCTAssertNil(storedDocument["items"])
         XCTAssertEqual((storedDocument["lists"] as? [[String: Any]])?.count, 1)
+        XCTAssertEqual(
+            Set((storedDocument["seenRequestIDs"] as? [String]) ?? []),
+            [requestID.uuidString]
+        )
 
         let reopened = try JSONSnipLibrary(fileURL: url)
         let snips = await reopened.allSnips()
@@ -90,6 +98,45 @@ final class SnipRepositoryTests: StoreBackedTestCase {
         XCTAssertEqual(snips[0].content, "A saved selection")
         XCTAssertEqual(snips[0].requestID, requestID)
         XCTAssertEqual(snips[0].source, source)
+    }
+
+    func testVersionSixWithoutRequestLedgerSeedsItFromSavedSnips() async throws {
+        let url = try storeURL()
+        let requestID = UUID()
+        let firstRepository = try JSONSnipLibrary(fileURL: url)
+        let saved = try await firstRepository.add(
+            content: "Saved by an older version-six build",
+            origin: .selection,
+            requestID: requestID
+        )
+        let savedSnip = try XCTUnwrap(saved)
+
+        var legacyVersionSix = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+        )
+        legacyVersionSix.removeValue(forKey: "seenRequestIDs")
+        try JSONSerialization.data(
+            withJSONObject: legacyVersionSix,
+            options: [.prettyPrinted, .sortedKeys]
+        ).write(to: url, options: .atomic)
+
+        let reopened = try JSONSnipLibrary(fileURL: url)
+        try await reopened.delete(ids: [savedSnip.id])
+        let replay = try await reopened.add(
+            content: "Do not recreate",
+            origin: .selection,
+            requestID: requestID
+        )
+
+        XCTAssertNil(replay)
+        let rewrittenDocument = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+        )
+        XCTAssertEqual(rewrittenDocument["version"] as? Int, 6)
+        XCTAssertEqual(
+            Set((rewrittenDocument["seenRequestIDs"] as? [String]) ?? []),
+            [requestID.uuidString]
+        )
     }
 
     func testSelectionStoragePreservesContentWhileManualEntryStillTrims() async throws {
