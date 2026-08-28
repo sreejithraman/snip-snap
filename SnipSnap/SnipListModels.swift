@@ -127,21 +127,6 @@ enum PinnedListHeaderGlass {
     static func isVisible(isPinned: Bool, hasScrolled: Bool) -> Bool {
         isPinned && hasScrolled
     }
-
-    static func updatedLists(
-        _ lists: Set<UUID>,
-        listID: UUID,
-        isPinned: Bool
-    ) -> Set<UUID>? {
-        guard lists.contains(listID) != isPinned else { return nil }
-        var updated = lists
-        if isPinned {
-            updated.insert(listID)
-        } else {
-            updated.remove(listID)
-        }
-        return updated
-    }
 }
 
 enum AddedSnipRevealDestination: Equatable {

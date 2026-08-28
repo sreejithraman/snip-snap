@@ -17,43 +17,13 @@ private enum SnipListScrollTarget {
     case top
 }
 
+private let clipboardSectionHeaderID = UUID()
+
 @MainActor
 private final class SnipListReorderGeometry: ObservableObject {
     var rowFrames: [UUID: CGRect] = [:]
     var listFrame: CGRect = .zero
     var scrollOffsetY: CGFloat = 0
-}
-
-private struct SnipListSectionHeader: View {
-    let listID: UUID
-    let title: String
-    let hasScrolledFromTop: Bool
-    let snipDragSourceController: SnipDragSourceController
-
-    @State private var isPinned = false
-
-    var body: some View {
-        PanelListHeader(
-            title,
-            showsGlass: PinnedListHeaderGlass.isVisible(
-                isPinned: isPinned,
-                hasScrolled: hasScrolledFromTop
-            )
-        )
-        .onGeometryChange(for: Bool.self) { proxy in
-            PinnedListHeaderGlass.isPinned(
-                frame: proxy.frame(in: .scrollView(axis: .vertical))
-            )
-        } action: { isPinned in
-            self.isPinned = isPinned
-        }
-        .background {
-            SnipDragBlockingRegion(
-                controller: snipDragSourceController,
-                id: listID
-            )
-        }
-    }
 }
 
 private struct SnipListWindowFrameReader: NSViewRepresentable {
@@ -189,6 +159,7 @@ struct SnipListView: View {
     @Binding var pendingEditAttachmentImport: PendingEditAttachmentImport?
     let captureScreenAreaForEdit: (@escaping @MainActor (URL?) -> Void) -> Void
     let bottomContentInset: CGFloat
+    let clipboardEntries: [ClipboardEntry]
     let onPreviewAttachments: ([URL], URL) -> Void
     let onRemovePreviewURL: (URL) -> Void
 
@@ -227,63 +198,78 @@ struct SnipListView: View {
             attachmentURL: model.attachmentURL
         )
         let showsSearchLists = snapshot.groups.count > 1
+        let showsActiveListHeader = !showsSearchLists
+            && (clipboardEntries.isEmpty || !snapshot.orderedVisibleIDs.isEmpty)
         ScrollViewReader { proxy in
-            List {
-                topSpacer
-                if showsSearchLists {
-                    ForEach(snapshot.groups) { group in
+            ScrollView {
+                LazyVStack(
+                    alignment: .leading,
+                    spacing: 0,
+                    pinnedViews: [.sectionHeaders]
+                ) {
+                    Color.clear
+                        .frame(height: 0)
+                        .id(SnipListScrollTarget.top)
+                    if showsSearchLists {
+                        ForEach(snapshot.groups) { group in
+                            Section {
+                                sectionContentTopSpacer
+                                ForEach(group.snips) { snip in
+                                    reorderableSnipCard(
+                                        snip,
+                                        snapshot: snapshot,
+                                        listID: group.listID,
+                                        snips: group.snips
+                                    )
+                                }
+                            } header: {
+                                listSectionHeader(group.listName, listID: group.listID)
+                            }
+                        }
+                    } else if showsActiveListHeader {
+                        let displayedSnips = displayedSnips(in: snapshot)
                         Section {
-                            ForEach(group.snips) { snip in
+                            sectionContentTopSpacer
+                            ForEach(displayedSnips) { snip in
                                 reorderableSnipCard(
                                     snip,
                                     snapshot: snapshot,
-                                    listID: group.listID,
-                                    snips: group.snips
+                                    listID: model.activeListID,
+                                    snips: displayedSnips
                                 )
                             }
                         } header: {
-                            SnipListSectionHeader(
-                                listID: group.listID,
-                                title: group.listName,
-                                hasScrolledFromTop: hasScrolledFromTop,
-                                snipDragSourceController: snipDragSourceController
+                            listSectionHeader(
+                                model.activeList.name,
+                                listID: model.activeListID
                             )
                         }
                     }
-                } else {
-                    let displayedSnips = displayedSnips(in: snapshot)
-                    ForEach(displayedSnips) { snip in
-                        reorderableSnipCard(
-                            snip,
-                            snapshot: snapshot,
-                            listID: model.activeListID,
-                            snips: displayedSnips
-                        )
+                    if !clipboardEntries.isEmpty {
+                        Section {
+                            sectionContentTopSpacer
+                            ForEach(clipboardEntries) { entry in
+                                clipboardEntryRow(entry)
+                            }
+                        } header: {
+                            listSectionHeader("Clipboard", listID: clipboardSectionHeaderID)
+                        }
                     }
+                    bottomSpacer
                 }
-                bottomSpacer
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
             .contentMargins(0, for: .scrollContent)
-            .environment(\.defaultMinListRowHeight, 1)
             .background {
                 SnipListWindowFrameReader { frame, _ in
                     reorderGeometry.listFrame = frame
                 }
             }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                if !showsSearchLists {
-                    PanelListHeader(
-                        model.activeList.name,
-                        showsGlass: hasScrolledFromTop
-                    )
-                }
-            }
-            .scrollEdgeEffectStyle(.hard, for: .top)
             .scrollEdgeEffectStyle(.soft, for: .bottom)
             .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentOffset.y > 0.5
+                PinnedListHeaderGlass.hasScrolled(
+                    visibleOriginY: geometry.contentOffset.y
+                        + geometry.contentInsets.top
+                )
             } action: { _, hasScrolled in
                 hasScrolledFromTop = hasScrolled
             }
@@ -422,27 +408,30 @@ struct SnipListView: View {
                     composerHeight: bottomContentInset
                 )
             )
-            .listRowInsets(EdgeInsets())
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
     }
 
-    private var topSpacer: some View {
+    private var sectionContentTopSpacer: some View {
         Color.clear
             .frame(
                 height: PanelListMetrics.verticalContentInset
                     + PanelListMetrics.rowSpacing / 2
             )
-            .listRowInsets(EdgeInsets())
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
-            .id(SnipListScrollTarget.top)
     }
 
     private var canDragReorder: Bool {
         model.editingID == nil
             && model.completionFilter == .all
             && model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func listSectionHeader(_ title: String, listID: UUID) -> some View {
+        PanelListSectionHeader(title, hasScrolledFromTop: hasScrolledFromTop)
+            .background {
+                SnipDragBlockingRegion(
+                    controller: snipDragSourceController,
+                    id: listID
+                )
+            }
     }
 
     private func reorderableSnipCard(
@@ -482,11 +471,8 @@ struct SnipListView: View {
                         )
                     }
                 }
-                .padding(.bottom, PanelListMetrics.rowSpacing)
+                .panelListRowLayout()
                 .id(snip.id)
-                .listRowInsets(PanelListMetrics.rowInsets)
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
                 .background {
                     SnipListWindowFrameReader { frame, scrollOffsetY in
                         reorderGeometry.rowFrames[snip.id] = frame
@@ -496,6 +482,15 @@ struct SnipListView: View {
                 .onDisappear {
                     reorderGeometry.rowFrames[snip.id] = nil
                 }
+    }
+
+    private func clipboardEntryRow(_ entry: ClipboardEntry) -> some View {
+        ClipboardEntryRow(entry: entry) {
+            coordinator.useClipboardEntry(entry)
+        } save: {
+            Task { _ = await model.saveClipboardEntry(entry) }
+        }
+        .panelListRowLayout()
     }
 
     private func beginDrag(_ payload: SnipDragPayload, orderedIDs: [UUID]) {
@@ -946,5 +941,12 @@ struct SnipListView: View {
 
     private func canReorder(_ ids: Set<UUID>) -> Bool {
         model.canReorder(ids: ids)
+    }
+}
+
+private extension View {
+    func panelListRowLayout() -> some View {
+        padding(PanelListMetrics.rowInsets)
+            .padding(.bottom, PanelListMetrics.rowSpacing)
     }
 }

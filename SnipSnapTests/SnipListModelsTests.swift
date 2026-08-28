@@ -323,41 +323,6 @@ final class SnipListModelsTests: XCTestCase {
         )
     }
 
-    func testPinnedHeaderStateIgnoresDuplicateGeometryReports() {
-        let listID = UUID()
-
-        XCTAssertEqual(
-            PinnedListHeaderGlass.updatedLists(
-                [],
-                listID: listID,
-                isPinned: true
-            ),
-            [listID]
-        )
-        XCTAssertNil(
-            PinnedListHeaderGlass.updatedLists(
-                [listID],
-                listID: listID,
-                isPinned: true
-            )
-        )
-        XCTAssertEqual(
-            PinnedListHeaderGlass.updatedLists(
-                [listID],
-                listID: listID,
-                isPinned: false
-            ),
-            []
-        )
-        XCTAssertNil(
-            PinnedListHeaderGlass.updatedLists(
-                [],
-                listID: listID,
-                isPinned: false
-            )
-        )
-    }
-
     func testNewSnipRevealWaitsForTheAddedRowWhenTheListWasAtTheTop() {
         let existingID = UUID()
         let addedID = UUID()
