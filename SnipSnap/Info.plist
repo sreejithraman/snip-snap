@@ -46,6 +46,16 @@
 			<key>UTTypeIdentifier</key>
 			<string>world.sree.snipsnap.snip-drag</string>
 		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Snip Snap Clipboard Entry</string>
+			<key>UTTypeIdentifier</key>
+			<string>world.sree.snipsnap.clipboard-entry</string>
+		</dict>
 	</array>
 </dict>
 </plist>

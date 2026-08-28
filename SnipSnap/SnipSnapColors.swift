@@ -67,6 +67,8 @@ enum SnipSnapColors {
     static let attachmentFill = Color.primary.opacity(0.055)
     static let attachmentEdge = Color.primary.opacity(0.12)
     static let contentCardEdge = Color(nsColor: .separatorColor)
+    static let inversePrimary = Color("InversePrimary")
+    static let elevatedListHeaderGlassTint = inversePrimary.opacity(0.20)
 
     static func contentCardShadow(isSelected: Bool) -> Color {
         Color.black.opacity(isSelected ? 0.14 : 0.10)

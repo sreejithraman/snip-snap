@@ -33,33 +33,6 @@ struct ClipboardListView: View {
 
 }
 
-struct ClipboardSearchStrip: View {
-    @ObservedObject var model: AppModel
-    let coordinator: AppCoordinator
-    let fillsAvailableSpace: Bool
-    @ObservedObject private var history: ClipboardHistory
-
-    init(model: AppModel, coordinator: AppCoordinator, fillsAvailableSpace: Bool) {
-        self.model = model
-        self.coordinator = coordinator
-        self.fillsAvailableSpace = fillsAvailableSpace
-        history = model.clipboardHistory
-    }
-
-    var body: some View {
-        let matches = model.clipboardSearchMatches
-        if !matches.isEmpty {
-            ClipboardEntriesList(
-                entries: matches,
-                model: model,
-                coordinator: coordinator,
-                verticalContentPadding: PanelListMetrics.compactVerticalContentInset,
-                maxHeight: fillsAvailableSpace ? .infinity : 220
-            ) { EmptyView() }
-        }
-    }
-}
-
 private struct ClipboardEntriesList<HeaderActions: View>: View {
     let entries: [ClipboardEntry]
     @ObservedObject var model: AppModel
@@ -94,9 +67,9 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
                     .padding(.horizontal, PanelListMetrics.horizontalContentInset)
                     .padding(.vertical, verticalContentPadding)
                 } header: {
-                    PanelListHeader(
+                    PanelListSectionHeader(
                         "Clipboard",
-                        showsGlass: hasScrolledFromTop,
+                        hasScrolledFromTop: hasScrolledFromTop,
                         actions: headerActions
                     )
                 }
@@ -136,7 +109,7 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
     }
 }
 
-private struct ClipboardEntryRow: View {
+struct ClipboardEntryRow: View {
     let entry: ClipboardEntry
     let copy: () -> Void
     let save: () -> Void

@@ -3,6 +3,11 @@ import AppKit
 import SwiftUI
 @testable import SnipSnap
 
+// SwiftUI may still resolve Transferable metadata after this test returns.
+// Keep its host alive until the short-lived test process exits.
+@MainActor
+private var processLifetimePanelSearchWindows: [NSWindow] = []
+
 private final class PanelResizeTrackingEvent: NSEvent {
     private let generatingTrackingArea: NSTrackingArea
 
@@ -35,7 +40,70 @@ private final class PanelTextValue {
     }
 }
 
-final class PanelTests: XCTestCase {
+final class PanelTests: StoreBackedTestCase {
+    @MainActor
+    func testGlobalSearchUsesOneScrollViewForSavedAndClipboardResults() async throws {
+        let clipboardEntry = ClipboardEntry(
+            sourceApplication: "Tests",
+            items: [
+                ClipboardPayloadItem(
+                    representations: [
+                        ClipboardRepresentation(
+                            type: NSPasteboard.PasteboardType.string.rawValue,
+                            data: Data("shared search term".utf8)
+                        )
+                    ]
+                )
+            ]
+        )
+        let clipboardURL = try storeURL()
+            .deletingLastPathComponent()
+            .appendingPathComponent("clipboard.json")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode([clipboardEntry]).write(to: clipboardURL, options: .atomic)
+
+        let pasteboard = NSPasteboard(
+            name: .init("world.sree.snipsnap.panel-search-tests.\(UUID().uuidString)")
+        )
+        let defaultsName = "Snip SnapPanelSearchTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        let history = ClipboardHistory(
+            pasteboard: pasteboard,
+            defaults: defaults,
+            storeURL: clipboardURL
+        )
+        await history.waitForInitialLoad()
+
+        let model = AppModel(
+            repository: try SnipRepository(fileURL: try storeURL()),
+            defaults: defaults,
+            clipboardHistory: history
+        )
+        _ = await model.add(content: "shared search term", origin: .quickEntry)
+        model.query = "shared search term"
+        let settings = ShortcutSettings(defaults: defaults)
+        let rootView = ContentView(
+            coordinator: AppCoordinator(model: model, shortcutSettings: settings),
+            fileDropController: PanelFileDropController(),
+            snipDragSourceController: SnipDragSourceController()
+        )
+        .environmentObject(model)
+        .environmentObject(settings)
+        let hostingView = NSHostingView(rootView: rootView)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 760, height: 760)
+        let window = NSWindow(contentRect: hostingView.frame, styleMask: [], backing: .buffered, defer: false)
+        window.contentView = hostingView
+
+        hostingView.layoutSubtreeIfNeeded()
+        hostingView.displayIfNeeded()
+        await Task.yield()
+        hostingView.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(scrollViews(in: hostingView).count, 1)
+        processLifetimePanelSearchWindows.append(window)
+    }
+
     func testListIconCatalogHasUsefulUniqueAvailableSymbols() {
         let icons = SnipListIconOptions.categories.flatMap(\.icons)
 
@@ -1210,6 +1278,13 @@ final class PanelTests: XCTestCase {
         XCTAssertEqual(SnipSnapColors.primaryActionTint(for: .dark), .white)
     }
 
+    func testElevatedListHeaderTintUsesTheInversePrimaryAsset() {
+        XCTAssertEqual(
+            SnipSnapColors.elevatedListHeaderGlassTint,
+            Color("InversePrimary").opacity(0.20)
+        )
+    }
+
     @MainActor
     func testPanelContextMenuKeepsActionsAndDisabledState() throws {
         var actionCount = 0
@@ -1364,5 +1439,11 @@ final class PanelTests: XCTestCase {
         card.rightMouseDown(with: try mouseEvent(.rightMouseDown, at: location, in: window))
 
         XCTAssertEqual(menuBuildCount, 1)
+    }
+
+    @MainActor
+    private func scrollViews(in view: NSView) -> [NSScrollView] {
+        let current = (view as? NSScrollView).map { [$0] } ?? []
+        return current + view.subviews.flatMap(scrollViews)
     }
 }

@@ -307,56 +307,10 @@ struct ContentView: View {
 
     @ViewBuilder
     private var globalSearchResults: some View {
-        ClipboardSearchLayout(
-            history: model.clipboardHistory,
-            query: model.query,
-            hasSavedMatches: !model.filteredSnips.isEmpty
-        ) {
-            savedSnipList
-        } clipboardResults: { fillsAvailableSpace in
-            ClipboardSearchStrip(
-                model: model,
-                coordinator: coordinator,
-                fillsAvailableSpace: fillsAvailableSpace
-            )
-        } empty: {
+        if model.filteredSnips.isEmpty && model.clipboardSearchMatches.isEmpty {
             emptyState
-        }
-    }
-
-    private struct ClipboardSearchLayout<
-        SavedResults: View,
-        ClipboardResults: View,
-        Empty: View
-    >: View {
-        @ObservedObject var history: ClipboardHistory
-        let query: String
-        let hasSavedMatches: Bool
-        @ViewBuilder let savedResults: () -> SavedResults
-        @ViewBuilder let clipboardResults: (Bool) -> ClipboardResults
-        @ViewBuilder let empty: () -> Empty
-
-        var body: some View {
-            if !hasSavedMatches && !hasClipboardMatches {
-                empty()
-            } else {
-                VStack(spacing: 0) {
-                    if hasSavedMatches {
-                        savedResults()
-                    }
-                    if hasClipboardMatches {
-                        clipboardResults(!hasSavedMatches)
-                    }
-                }
-            }
-        }
-
-        private var hasClipboardMatches: Bool {
-            let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !needle.isEmpty else { return false }
-            return history.entries.contains {
-                $0.searchText.localizedCaseInsensitiveContains(needle)
-            }
+        } else {
+            savedSnipList
         }
     }
 
@@ -380,6 +334,7 @@ struct ContentView: View {
             pendingEditAttachmentImport: $pendingEditAttachmentImport,
             captureScreenAreaForEdit: captureScreenAreaForEdit,
             bottomContentInset: model.isShowingClipboard ? 0 : measuredInlineEntryHeight,
+            clipboardEntries: model.clipboardSearchMatches,
             onPreviewAttachments: openAttachmentPreview,
             onRemovePreviewURL: removePreviewURL
         )
