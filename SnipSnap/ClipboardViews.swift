@@ -290,7 +290,7 @@ private struct ClipboardEntryCopyButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 12, weight: .medium))
                 .symbolRenderingMode(.monochrome)
                 .frame(
                     width: ClipboardEntryCardMetrics.actionSide,
