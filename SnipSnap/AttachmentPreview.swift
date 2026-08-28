@@ -33,6 +33,22 @@ struct AttachmentPreviewArtwork: View {
     }
 }
 
+struct AttachmentPreviewImageStrip: View {
+    let images: [NSImage]
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            LazyHStack(spacing: SnipSnapSpacing.relatedContent) {
+                ForEach(Array(images.enumerated()), id: \.offset) { _, image in
+                    AttachmentPreviewArtwork(image: image, fillsTile: true)
+                }
+            }
+        }
+        .frame(height: AttachmentPreviewMetrics.side)
+        .scrollIndicators(.hidden)
+    }
+}
+
 struct AttachmentPreviewItem: Identifiable, Hashable {
     let id: String
     let url: URL

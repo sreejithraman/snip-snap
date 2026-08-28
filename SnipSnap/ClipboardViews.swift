@@ -134,17 +134,18 @@ struct ClipboardEntryRow: View {
     let copy: () -> Bool
     let save: () -> Void
     @Environment(\.displayScale) private var displayScale
-    @State private var previewImage: NSImage?
+    @State private var previewImages: [NSImage] = []
     @State private var isShowingCopyConfirmation = false
     @State private var copyConfirmationTask: Task<Void, Never>?
 
     var body: some View {
         Button(action: performCopy) {
-            ClipboardEntryCard(entry: entry, previewImage: previewImage) {
+            ClipboardEntryCard(entry: entry, previewImages: previewImages) {
                 ClipboardEntryCopyLabel(isCopied: isShowingCopyConfirmation)
             }
         }
         .buttonStyle(.plain)
+        .help(isShowingCopyConfirmation ? "Copied" : "Copy")
         .background {
             ClipboardEntryDragSourceRegion(
                 controller: dragSessionController,
@@ -155,16 +156,24 @@ struct ClipboardEntryRow: View {
         }
         .contextMenu { Button("Add to Active List", action: save) }
         .task(id: entry.id) {
-            guard let data = entry.imageRepresentations.first?.data else {
-                previewImage = nil
-                return
+            var images: [NSImage] = []
+            let representations = entry.standaloneImageRepresentations
+                .prefix(3)
+                .enumerated()
+            for (index, representation) in representations {
+                guard !Task.isCancelled else { return }
+                if let image = await PreviewImageCache.shared.clipboardImage(
+                    id: entry.id,
+                    variant: index,
+                    data: representation.data,
+                    size: ClipboardEntryCardMetrics.previewSize,
+                    scale: displayScale
+                ) {
+                    images.append(image)
+                }
             }
-            previewImage = await PreviewImageCache.shared.clipboardImage(
-                id: entry.id,
-                data: data,
-                size: ClipboardEntryCardMetrics.previewSize,
-                scale: displayScale
-            )
+            guard !Task.isCancelled else { return }
+            previewImages = images
         }
         .onDisappear {
             copyConfirmationTask?.cancel()
@@ -189,7 +198,7 @@ struct ClipboardEntryRow: View {
         size: NSSize
     ) -> NSImage {
         let renderer = ImageRenderer(
-            content: ClipboardEntryCard(entry: entry, previewImage: previewImage) {
+            content: ClipboardEntryCard(entry: entry, previewImages: previewImages) {
                 ClipboardEntryCopyLabel(isCopied: false)
             }
             .frame(width: size.width, height: size.height, alignment: .leading)
@@ -201,62 +210,45 @@ struct ClipboardEntryRow: View {
 }
 
 private enum ClipboardEntryCardMetrics {
-    static let previewSize = CGSize(width: 42, height: 42)
-    static let actionWidth: CGFloat = 72
+    static let previewSize = CGSize(
+        width: AttachmentPreviewMetrics.side,
+        height: AttachmentPreviewMetrics.side
+    )
+    static let actionSide: CGFloat = 24
 }
 
 private struct ClipboardEntryCard<Trailing: View>: View {
     let entry: ClipboardEntry
-    let previewImage: NSImage?
+    let previewImages: [NSImage]
     @ViewBuilder let trailing: () -> Trailing
 
     var body: some View {
-        PanelContentCard(alignment: .center) {
-            ClipboardEntryArtwork(
-                hasImage: !entry.imageRepresentations.isEmpty,
-                hasFiles: !entry.fileURLs.isEmpty,
-                image: previewImage
-            )
-        } main: {
+        PanelContentCard(alignment: .top, main: {
             PanelContentCardMain {
+                if !previewImages.isEmpty {
+                    AttachmentPreviewImageStrip(images: previewImages)
+                }
+            } content: {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.text.isEmpty ? "Clipboard item" : entry.text)
-                        .foregroundStyle(SnipSnapColors.textPrimary)
-                        .lineLimit(3)
-                        .lineSpacing(2)
-                    if let source = entry.sourceApplication {
-                        Text(source)
-                            .font(.caption2)
-                            .foregroundStyle(SnipSnapColors.textSecondary)
-                    }
+                    SnipCardText(
+                        text: entry.text.isEmpty ? "Clipboard item" : entry.text,
+                        isDone: false
+                    )
+                    sourceApplication
                 }
             }
-        } trailing: {
+        }, trailing: {
             trailing()
-        }
+        })
     }
-}
 
-private struct ClipboardEntryArtwork: View {
-    let hasImage: Bool
-    let hasFiles: Bool
-    let image: NSImage?
-
-    var body: some View {
-        Group {
-            if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                Image(systemName: hasImage ? "photo" : (hasFiles ? "doc.fill" : "doc.on.clipboard"))
-            }
+    @ViewBuilder
+    private var sourceApplication: some View {
+        if let source = entry.sourceApplication {
+            Text(source)
+                .font(.caption2)
+                .foregroundStyle(SnipSnapColors.textSecondary)
         }
-        .frame(
-            width: ClipboardEntryCardMetrics.previewSize.width,
-            height: ClipboardEntryCardMetrics.previewSize.height
-        )
-        .clipped()
     }
 }
 
@@ -268,6 +260,11 @@ private struct ClipboardEntryCopyLabel: View {
             isCopied ? "Copied" : "Copy",
             systemImage: isCopied ? "checkmark" : "doc.on.doc"
         )
-        .frame(width: ClipboardEntryCardMetrics.actionWidth, alignment: .trailing)
+        .labelStyle(.iconOnly)
+        .foregroundStyle(SnipSnapColors.textSecondary)
+        .frame(
+            width: ClipboardEntryCardMetrics.actionSide,
+            height: ClipboardEntryCardMetrics.actionSide
+        )
     }
 }
