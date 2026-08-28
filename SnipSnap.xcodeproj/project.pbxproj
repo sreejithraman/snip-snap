@@ -62,6 +62,19 @@
 		D00000000000000000000021 /* SnipSnapPersistence in Frameworks */ = {isa = PBXBuildFile; productRef = D00000000000000000000011 /* SnipSnapPersistence */; };
 		D00000000000000000000022 /* SnipSnapCore in Frameworks */ = {isa = PBXBuildFile; productRef = D00000000000000000000012 /* SnipSnapCore */; };
 		D00000000000000000000023 /* SnipSnapPersistence in Frameworks */ = {isa = PBXBuildFile; productRef = D00000000000000000000013 /* SnipSnapPersistence */; };
+		E10000000000000000000001 /* SnipSnapiOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000001 /* SnipSnapiOSApp.swift */; };
+		E10000000000000000000002 /* IOSAppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000002 /* IOSAppModel.swift */; };
+		E10000000000000000000003 /* AppPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000003 /* AppPresentation.swift */; };
+		E10000000000000000000004 /* IOSAppRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000004 /* IOSAppRootView.swift */; };
+		E10000000000000000000005 /* LibraryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000005 /* LibraryViews.swift */; };
+		E10000000000000000000006 /* EditorViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000006 /* EditorViews.swift */; };
+		E10000000000000000000007 /* PreviewSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000007 /* PreviewSupport.swift */; };
+		E10000000000000000000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000008 /* Assets.xcassets */; };
+		E10000000000000000000009 /* SnipSnapCore in Frameworks */ = {isa = PBXBuildFile; productRef = EF0000000000000000000001 /* SnipSnapCore */; };
+		E1000000000000000000000A /* SnipSnapPersistence in Frameworks */ = {isa = PBXBuildFile; productRef = EF0000000000000000000002 /* SnipSnapPersistence */; };
+		E1000000000000000000000B /* IOSAppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000009 /* IOSAppModelTests.swift */; };
+		E1000000000000000000000C /* SnipSnapiOSUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2000000000000000000000A /* SnipSnapiOSUITests.swift */; };
+		E1000000000000000000000D /* SnipSnapCore in Frameworks */ = {isa = PBXBuildFile; productRef = EF0000000000000000000003 /* SnipSnapCore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -71,6 +84,20 @@
 			proxyType = 1;
 			remoteGlobalIDString = 500000000000000000000001;
 			remoteInfo = SnipSnap;
+		};
+		E30000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 400000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E50000000000000000000001;
+			remoteInfo = SnipSnapiOS;
+		};
+		E30000000000000000000002 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 400000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E50000000000000000000001;
+			remoteInfo = SnipSnapiOS;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -132,6 +159,22 @@
 		D00000000000000000000003 /* Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Shared.xcconfig; sourceTree = "<group>"; };
 		D00000000000000000000004 /* Local.example.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Local.example.xcconfig; sourceTree = "<group>"; };
 		D00000000000000000000032 /* AppDataPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDataPaths.swift; sourceTree = "<group>"; };
+		E20000000000000000000001 /* SnipSnapiOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipSnapiOSApp.swift; sourceTree = "<group>"; };
+		E20000000000000000000002 /* IOSAppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAppModel.swift; sourceTree = "<group>"; };
+		E20000000000000000000003 /* AppPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPresentation.swift; sourceTree = "<group>"; };
+		E20000000000000000000004 /* IOSAppRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAppRootView.swift; sourceTree = "<group>"; };
+		E20000000000000000000005 /* LibraryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryViews.swift; sourceTree = "<group>"; };
+		E20000000000000000000006 /* EditorViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorViews.swift; sourceTree = "<group>"; };
+		E20000000000000000000007 /* PreviewSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewSupport.swift; sourceTree = "<group>"; };
+		E20000000000000000000008 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		E20000000000000000000009 /* IOSAppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAppModelTests.swift; sourceTree = "<group>"; };
+		E2000000000000000000000A /* SnipSnapiOSUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipSnapiOSUITests.swift; sourceTree = "<group>"; };
+		E2000000000000000000000B /* Snip Snap iOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Snip Snap iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E2000000000000000000000C /* SnipSnapiOSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SnipSnapiOSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E2000000000000000000000D /* SnipSnapiOSUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SnipSnapiOSUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E2000000000000000000000E /* iOSDebug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = iOSDebug.xcconfig; sourceTree = "<group>"; };
+		E2000000000000000000000F /* iOSRelease.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = iOSRelease.xcconfig; sourceTree = "<group>"; };
+		E20000000000000000000010 /* iOSShared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = iOSShared.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -154,6 +197,30 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E60000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E10000000000000000000009 /* SnipSnapCore in Frameworks */,
+				E1000000000000000000000A /* SnipSnapPersistence in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E60000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E1000000000000000000000D /* SnipSnapCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E60000000000000000000003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -163,6 +230,9 @@
 				D00000000000000000000005 /* Config */,
 				700000000000000000000002 /* SnipSnap */,
 				700000000000000000000003 /* SnipSnapTests */,
+				E70000000000000000000001 /* SnipSnapiOS */,
+				E70000000000000000000002 /* SnipSnapiOSTests */,
+				E70000000000000000000003 /* SnipSnapiOSUITests */,
 				700000000000000000000004 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -237,6 +307,9 @@
 			children = (
 				200000000000000000000005 /* Snip Snap.app */,
 				200000000000000000000006 /* SnipSnapTests.xctest */,
+				E2000000000000000000000B /* Snip Snap iOS.app */,
+				E2000000000000000000000C /* SnipSnapiOSTests.xctest */,
+				E2000000000000000000000D /* SnipSnapiOSUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -248,8 +321,42 @@
 				D00000000000000000000002 /* Release.xcconfig */,
 				D00000000000000000000003 /* Shared.xcconfig */,
 				D00000000000000000000004 /* Local.example.xcconfig */,
+				E2000000000000000000000E /* iOSDebug.xcconfig */,
+				E2000000000000000000000F /* iOSRelease.xcconfig */,
+				E20000000000000000000010 /* iOSShared.xcconfig */,
 			);
 			path = Config;
+			sourceTree = "<group>";
+		};
+		E70000000000000000000001 /* SnipSnapiOS */ = {
+			isa = PBXGroup;
+			children = (
+				E20000000000000000000001 /* SnipSnapiOSApp.swift */,
+				E20000000000000000000002 /* IOSAppModel.swift */,
+				E20000000000000000000003 /* AppPresentation.swift */,
+				E20000000000000000000004 /* IOSAppRootView.swift */,
+				E20000000000000000000005 /* LibraryViews.swift */,
+				E20000000000000000000006 /* EditorViews.swift */,
+				E20000000000000000000007 /* PreviewSupport.swift */,
+				E20000000000000000000008 /* Assets.xcassets */,
+			);
+			path = SnipSnapiOS;
+			sourceTree = "<group>";
+		};
+		E70000000000000000000002 /* SnipSnapiOSTests */ = {
+			isa = PBXGroup;
+			children = (
+				E20000000000000000000009 /* IOSAppModelTests.swift */,
+			);
+			path = SnipSnapiOSTests;
+			sourceTree = "<group>";
+		};
+		E70000000000000000000003 /* SnipSnapiOSUITests */ = {
+			isa = PBXGroup;
+			children = (
+				E2000000000000000000000A /* SnipSnapiOSUITests.swift */,
+			);
+			path = SnipSnapiOSUITests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -299,6 +406,68 @@
 			productReference = 200000000000000000000006 /* SnipSnapTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		E50000000000000000000001 /* SnipSnapiOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E80000000000000000000001 /* Build configuration list for PBXNativeTarget "SnipSnapiOS" */;
+			buildPhases = (
+				E90000000000000000000001 /* Sources */,
+				E60000000000000000000001 /* Frameworks */,
+				EA0000000000000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SnipSnapiOS;
+			packageProductDependencies = (
+				EF0000000000000000000001 /* SnipSnapCore */,
+				EF0000000000000000000002 /* SnipSnapPersistence */,
+			);
+			productName = SnipSnapiOS;
+			productReference = E2000000000000000000000B /* Snip Snap iOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E50000000000000000000002 /* SnipSnapiOSTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E80000000000000000000002 /* Build configuration list for PBXNativeTarget "SnipSnapiOSTests" */;
+			buildPhases = (
+				E90000000000000000000002 /* Sources */,
+				E60000000000000000000002 /* Frameworks */,
+				EA0000000000000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				EB0000000000000000000001 /* PBXTargetDependency */,
+			);
+			name = SnipSnapiOSTests;
+			packageProductDependencies = (
+				EF0000000000000000000003 /* SnipSnapCore */,
+			);
+			productName = SnipSnapiOSTests;
+			productReference = E2000000000000000000000C /* SnipSnapiOSTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		E50000000000000000000003 /* SnipSnapiOSUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E80000000000000000000003 /* Build configuration list for PBXNativeTarget "SnipSnapiOSUITests" */;
+			buildPhases = (
+				E90000000000000000000003 /* Sources */,
+				E60000000000000000000003 /* Frameworks */,
+				EA0000000000000000000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				EB0000000000000000000002 /* PBXTargetDependency */,
+			);
+			name = SnipSnapiOSUITests;
+			packageProductDependencies = (
+			);
+			productName = SnipSnapiOSUITests;
+			productReference = E2000000000000000000000D /* SnipSnapiOSUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -315,6 +484,17 @@
 					500000000000000000000002 = {
 						CreatedOnToolsVersion = 26.6;
 						TestTargetID = 500000000000000000000001;
+					};
+					E50000000000000000000001 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					E50000000000000000000002 = {
+						CreatedOnToolsVersion = 26.6;
+						TestTargetID = E50000000000000000000001;
+					};
+					E50000000000000000000003 = {
+						CreatedOnToolsVersion = 26.6;
+						TestTargetID = E50000000000000000000001;
 					};
 				};
 			};
@@ -338,6 +518,9 @@
 			targets = (
 				500000000000000000000001 /* SnipSnap */,
 				500000000000000000000002 /* SnipSnapTests */,
+				E50000000000000000000001 /* SnipSnapiOS */,
+				E50000000000000000000002 /* SnipSnapiOSTests */,
+				E50000000000000000000003 /* SnipSnapiOSUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -352,6 +535,28 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		A00000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EA0000000000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E10000000000000000000008 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EA0000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EA0000000000000000000003 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -424,6 +629,36 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E90000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E10000000000000000000001 /* SnipSnapiOSApp.swift in Sources */,
+				E10000000000000000000002 /* IOSAppModel.swift in Sources */,
+				E10000000000000000000003 /* AppPresentation.swift in Sources */,
+				E10000000000000000000004 /* IOSAppRootView.swift in Sources */,
+				E10000000000000000000005 /* LibraryViews.swift in Sources */,
+				E10000000000000000000006 /* EditorViews.swift in Sources */,
+				E10000000000000000000007 /* PreviewSupport.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E90000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E1000000000000000000000B /* IOSAppModelTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E90000000000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E1000000000000000000000C /* SnipSnapiOSUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -431,6 +666,16 @@
 			isa = PBXTargetDependency;
 			target = 500000000000000000000001 /* SnipSnap */;
 			targetProxy = 300000000000000000000001 /* PBXContainerItemProxy */;
+		};
+		EB0000000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E50000000000000000000001 /* SnipSnapiOS */;
+			targetProxy = E30000000000000000000001 /* PBXContainerItemProxy */;
+		};
+		EB0000000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E50000000000000000000001 /* SnipSnapiOS */;
+			targetProxy = E30000000000000000000002 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -585,6 +830,70 @@
 			};
 			name = Release;
 		};
+		EC0000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = E2000000000000000000000E /* iOSDebug.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		EC0000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = E2000000000000000000000F /* iOSRelease.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
+		EC0000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = E2000000000000000000000E /* iOSDebug.xcconfig */;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).ios.tests";
+				PRODUCT_MODULE_NAME = SnipSnapiOSTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Snip Snap iOS.app/Snip Snap iOS";
+			};
+			name = Debug;
+		};
+		EC0000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = E2000000000000000000000F /* iOSRelease.xcconfig */;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).ios.tests";
+				PRODUCT_MODULE_NAME = SnipSnapiOSTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Snip Snap iOS.app/Snip Snap iOS";
+			};
+			name = Release;
+		};
+		EC0000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = E2000000000000000000000E /* iOSDebug.xcconfig */;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).ios.uitests";
+				PRODUCT_MODULE_NAME = SnipSnapiOSUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TEST_TARGET_NAME = SnipSnapiOS;
+			};
+			name = Debug;
+		};
+		EC0000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = E2000000000000000000000F /* iOSRelease.xcconfig */;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).ios.uitests";
+				PRODUCT_MODULE_NAME = SnipSnapiOSUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TEST_TARGET_NAME = SnipSnapiOS;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -611,6 +920,33 @@
 			buildConfigurations = (
 				C00000000000000000000005 /* Debug */,
 				C00000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E80000000000000000000001 /* Build configuration list for PBXNativeTarget "SnipSnapiOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EC0000000000000000000001 /* Debug */,
+				EC0000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E80000000000000000000002 /* Build configuration list for PBXNativeTarget "SnipSnapiOSTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EC0000000000000000000003 /* Debug */,
+				EC0000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E80000000000000000000003 /* Build configuration list for PBXNativeTarget "SnipSnapiOSUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EC0000000000000000000005 /* Debug */,
+				EC0000000000000000000006 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -656,6 +992,18 @@
 		D00000000000000000000013 /* SnipSnapPersistence */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = SnipSnapPersistence;
+		};
+		EF0000000000000000000001 /* SnipSnapCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SnipSnapCore;
+		};
+		EF0000000000000000000002 /* SnipSnapPersistence */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SnipSnapPersistence;
+		};
+		EF0000000000000000000003 /* SnipSnapCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SnipSnapCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

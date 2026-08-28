@@ -1,0 +1,7 @@
+#include "Shared.xcconfig"
+#include "iOSShared.xcconfig"
+
+SNIP_SNAP_BUILD_LANE = local-dev
+
+// A developer may keep signing and fork-specific names in this ignored file.
+#include? "Local.xcconfig"
