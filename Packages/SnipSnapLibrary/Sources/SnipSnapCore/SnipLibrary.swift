@@ -9,6 +9,7 @@ public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {
     case snipChanged
     case duplicateList
     case invalidList
+    case invalidCommand
     case attachmentCopyFailed
 
     public var errorDescription: String? {
@@ -29,6 +30,8 @@ public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {
             "A list with that name already exists."
         case .invalidList:
             "That list is not available."
+        case .invalidCommand:
+            "That change cannot run with other changes."
         case .attachmentCopyFailed:
             "Snip Snap could not copy one of the files."
         }
@@ -62,7 +65,32 @@ public enum SnipAttachmentEdit: Equatable, Sendable {
     case replacement(attachmentID: UUID, sourceURL: URL)
 }
 
-public enum SnipLibraryCommand: Sendable {
+public struct SnipLibraryExpectation: Sendable {
+    public let expectedSnips: [Snip]
+    public let absentSnipIDs: Set<UUID>
+    public let expectedLists: [SnipList]
+    public let absentListIDs: Set<UUID>
+    public let requiredListIDs: Set<UUID>
+    public let expectedListMemberships: [UUID: Set<UUID>]
+
+    public init(
+        expectedSnips: [Snip] = [],
+        absentSnipIDs: Set<UUID> = [],
+        expectedLists: [SnipList] = [],
+        absentListIDs: Set<UUID> = [],
+        requiredListIDs: Set<UUID> = [],
+        expectedListMemberships: [UUID: Set<UUID>] = [:]
+    ) {
+        self.expectedSnips = expectedSnips
+        self.absentSnipIDs = absentSnipIDs
+        self.expectedLists = expectedLists
+        self.absentListIDs = absentListIDs
+        self.requiredListIDs = requiredListIDs
+        self.expectedListMemberships = expectedListMemberships
+    }
+}
+
+public indirect enum SnipLibraryCommand: Sendable {
     case add(
         content: String,
         origin: SnipOrigin,
@@ -73,6 +101,7 @@ public enum SnipLibraryCommand: Sendable {
         now: Date
     )
     case createList(name: String, systemImage: String)
+    case restoreList(SnipList)
     case updateList(id: UUID, name: String, systemImage: String)
     case deleteList(id: UUID)
     case update(
@@ -100,6 +129,8 @@ public enum SnipLibraryCommand: Sendable {
     case place(ids: [UUID], in: UUID, before: UUID?, basedOn: SnipSortMode)
     case replaceAll([Snip])
     case pruneAttachments(retaining: Set<UUID>)
+    case batch([SnipLibraryCommand])
+    case guarded(expectation: SnipLibraryExpectation, command: SnipLibraryCommand)
 }
 
 public enum SnipLibraryOutcome: Equatable, Sendable {

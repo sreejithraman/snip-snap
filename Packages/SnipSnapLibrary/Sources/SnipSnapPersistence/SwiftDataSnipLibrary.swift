@@ -375,14 +375,6 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       seenRequestIDs = state.seenRequestIDs
       lastKnownState = state
       rememberAttachments(in: state)
-      if command.editsAttachments {
-        let liveIDs = Set(state.snips.flatMap(\.attachments).map(\.id))
-        Self.removeUnreferencedAttachmentDirectories(
-          at: attachmentRootURL,
-          keeping: Set(state.snips.flatMap(\.attachments).map(\.relativePath))
-        )
-        knownAttachmentPaths = knownAttachmentPaths.filter { liveIDs.contains($0.key) }
-      }
       return SnipLibraryUpdate(
         snapshot: makeSnapshot(state: state, sortedBy: sortMode),
         outcome: outcome
@@ -684,13 +676,5 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
           )
         }
       })
-  }
-}
-
-
-private extension SnipLibraryCommand {
-  var editsAttachments: Bool {
-    if case .editAttachments = self { return true }
-    return false
   }
 }
