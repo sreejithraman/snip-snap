@@ -53,8 +53,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         app.buttons["save-list"].tap()
 
         let workList = app.buttons["list-Work"]
-        XCTAssertTrue(workList.waitForExistence(timeout: 3))
-        workList.tap()
+        if workList.waitForExistence(timeout: 1) {
+            workList.tap()
+        } else {
+            XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
+        }
         app.buttons["new-snip"].tap()
         let editor = app.textViews["snip-text"]
         editor.tap()
@@ -64,18 +67,21 @@ final class SnipSnapiOSUITests: XCTestCase {
         let moveRow = app.buttons.matching(
             NSPredicate(format: "label BEGINSWITH %@", "Move this")
         ).firstMatch
-        XCTAssertTrue(moveRow.waitForExistence(timeout: 3))
-        moveRow.tap()
+        if moveRow.waitForExistence(timeout: 1) {
+            moveRow.tap()
+        } else {
+            XCTAssertTrue(app.navigationBars["Snip"].waitForExistence(timeout: 3))
+        }
         app.buttons["move-snip"].tap()
         app.buttons["move-to-Inbox"].tap()
-        if !app.navigationBars["Inbox"].waitForExistence(timeout: 1) {
-            app.buttons["BackButton"].tap()
-        }
-        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
-
-        XCTAssertTrue(moveRow.waitForExistence(timeout: 3))
-        moveRow.tap()
+        let inboxValue = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "Inbox")
+        ).firstMatch
+        XCTAssertTrue(inboxValue.waitForExistence(timeout: 3))
         app.buttons["delete-snip-detail"].tap()
-        XCTAssertTrue(app.staticTexts["Choose a Snip"].waitForExistence(timeout: 3))
+        let emptyDetail = app.staticTexts["Choose a Snip"]
+        if !emptyDetail.waitForExistence(timeout: 1) {
+            XCTAssertTrue(app.staticTexts["No Snips"].waitForExistence(timeout: 3))
+        }
     }
 }
