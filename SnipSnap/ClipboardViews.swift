@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ClipboardListView: View {
     @ObservedObject var model: AppModel
@@ -140,9 +141,11 @@ struct ClipboardEntryRow: View {
 
     var body: some View {
         Button(action: performCopy) {
-            ClipboardEntryCard(entry: entry, previewImages: previewImages) {
-                ClipboardEntryCopyLabel(isCopied: isShowingCopyConfirmation)
-            }
+            ClipboardEntryCard(
+                entry: entry,
+                previewImages: previewImages,
+                isCopied: isShowingCopyConfirmation
+            )
         }
         .buttonStyle(.plain)
         .help(isShowingCopyConfirmation ? "Copied" : "Copy")
@@ -156,24 +159,7 @@ struct ClipboardEntryRow: View {
         }
         .contextMenu { Button("Add to Active List", action: save) }
         .task(id: entry.id) {
-            var images: [NSImage] = []
-            let representations = entry.standaloneImageRepresentations
-                .prefix(3)
-                .enumerated()
-            for (index, representation) in representations {
-                guard !Task.isCancelled else { return }
-                if let image = await PreviewImageCache.shared.clipboardImage(
-                    id: entry.id,
-                    variant: index,
-                    data: representation.data,
-                    size: ClipboardEntryCardMetrics.previewSize,
-                    scale: displayScale
-                ) {
-                    images.append(image)
-                }
-            }
-            guard !Task.isCancelled else { return }
-            previewImages = images
+            previewImages = await loadPreviewImages()
         }
         .onDisappear {
             copyConfirmationTask?.cancel()
@@ -198,14 +184,54 @@ struct ClipboardEntryRow: View {
         size: NSSize
     ) -> NSImage {
         let renderer = ImageRenderer(
-            content: ClipboardEntryCard(entry: entry, previewImages: previewImages) {
-                ClipboardEntryCopyLabel(isCopied: false)
-            }
+            content: ClipboardEntryCard(
+                entry: entry,
+                previewImages: previewImages,
+                isCopied: false
+            )
             .frame(width: size.width, height: size.height, alignment: .leading)
             .environment(\.colorScheme, colorScheme)
         )
         renderer.scale = scale
         return renderer.nsImage ?? NSWorkspace.shared.icon(for: .data)
+    }
+
+    private func loadPreviewImages() async -> [NSImage] {
+        var images: [NSImage] = []
+        for (index, representation) in entry.standaloneImageRepresentations.enumerated() {
+            guard images.count < ClipboardEntryCardMetrics.previewLimit,
+                  !Task.isCancelled else { return images }
+            if let image = await PreviewImageCache.shared.clipboardImage(
+                id: entry.id,
+                variant: index,
+                data: representation.data,
+                size: ClipboardEntryCardMetrics.previewSize,
+                scale: displayScale
+            ) {
+                images.append(image)
+            }
+        }
+
+        for url in imageFileURLs {
+            guard images.count < ClipboardEntryCardMetrics.previewLimit,
+                  !Task.isCancelled else { return images }
+            if let image = await PreviewImageCache.shared.fileThumbnail(
+                url: url,
+                size: ClipboardEntryCardMetrics.previewSize,
+                scale: displayScale
+            ) {
+                images.append(image)
+            }
+        }
+        return images
+    }
+
+    private var imageFileURLs: [URL] {
+        entry.fileURLs.filter { url in
+            let contentType = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType
+            return contentType?.conforms(to: .image) == true
+                || UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
+        }
     }
 }
 
@@ -214,16 +240,19 @@ private enum ClipboardEntryCardMetrics {
         width: AttachmentPreviewMetrics.side,
         height: AttachmentPreviewMetrics.side
     )
+    static let previewLimit = 3
     static let actionSide: CGFloat = 24
 }
 
-private struct ClipboardEntryCard<Trailing: View>: View {
+private struct ClipboardEntryCard: View {
     let entry: ClipboardEntry
     let previewImages: [NSImage]
-    @ViewBuilder let trailing: () -> Trailing
+    let isCopied: Bool
 
     var body: some View {
-        PanelContentCard(alignment: .top, main: {
+        PanelContentCard(alignment: .top) {
+            ClipboardEntryCopyLabel(isCopied: isCopied)
+        } main: {
             PanelContentCardMain {
                 if !previewImages.isEmpty {
                     AttachmentPreviewImageStrip(images: previewImages)
@@ -237,9 +266,7 @@ private struct ClipboardEntryCard<Trailing: View>: View {
                     sourceApplication
                 }
             }
-        }, trailing: {
-            trailing()
-        })
+        }
     }
 
     @ViewBuilder

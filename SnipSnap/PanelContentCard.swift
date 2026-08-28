@@ -103,23 +103,6 @@ extension PanelContentCard where Trailing == EmptyView {
     }
 }
 
-extension PanelContentCard where Leading == EmptyView {
-    init(
-        state: PanelContentCardState = .init(),
-        alignment: VerticalAlignment = .top,
-        @ViewBuilder main: () -> Main,
-        @ViewBuilder trailing: () -> Trailing
-    ) {
-        self.state = state
-        self.alignment = alignment
-        hasLeading = false
-        hasTrailing = true
-        leading = EmptyView()
-        self.main = main()
-        self.trailing = trailing()
-    }
-}
-
 extension PanelContentCard where Leading == EmptyView, Trailing == EmptyView {
     init(
         state: PanelContentCardState = .init(),
