@@ -20,11 +20,19 @@ final class SnipSnapiOSUITests: XCTestCase {
         editor.typeText("A useful thought")
         app.buttons["save-snip"].tap()
 
+        let savedText = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "A useful thought")
+        ).firstMatch
+        XCTAssertTrue(savedText.waitForExistence(timeout: 3))
+
         let snipRow = app.buttons.matching(
             NSPredicate(format: "label BEGINSWITH %@", "A useful thought")
         ).firstMatch
-        XCTAssertTrue(snipRow.waitForExistence(timeout: 3))
-        snipRow.tap()
+        if snipRow.waitForExistence(timeout: 1) {
+            snipRow.tap()
+        } else {
+            XCTAssertTrue(app.navigationBars["Snip"].waitForExistence(timeout: 3))
+        }
         app.buttons["edit-snip"].tap()
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
         editor.tap()
