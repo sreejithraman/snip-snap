@@ -9,3 +9,17 @@
 - Contributor baseline: a clean checkout and the documented tools, with no maintainer account, signing key, paid service, or machine-specific setting. Keep normal build and test paths usable within this baseline.
 - Put machine-specific values in ignored local state or environment variables. Keep credentials, personal paths, machine IDs, and team IDs out of tracked files.
 - License gate: before adding a dependency or asset, verify that its license permits use and redistribution, then add every required notice.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live in this repo's GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default triage label vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repo using the root glossary and ADR directory. See `docs/agents/domain.md`.

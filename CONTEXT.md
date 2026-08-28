@@ -23,3 +23,19 @@ _Avoid_: Panel, snip list
 **Panel**:
 The main Snip Snap window that shows lists, snips, and clipboard history.
 _Avoid_: Inbox, inbox window
+
+**Local-only mode**:
+A per-device storage choice that keeps saved snips on that device and does not use iCloud.
+_Avoid_: Offline mode, local account
+
+**iCloud sync**:
+A per-device storage choice that keeps saved snips in a local cache and syncs them through the user's private iCloud database.
+_Avoid_: Cloud mode, online mode, Snip Snap account
+
+**Recovered snip**:
+A saved copy created when a three-way merge finds different edits to the same field. It links to the current snip until the user chooses which edit to keep or keeps both as normal snips.
+_Avoid_: Conflict, error copy
+
+**Sync generation**:
+A random identity for one version of the user's synced collection. Devices must match it before they may upload.
+_Avoid_: Schema version, account ID
