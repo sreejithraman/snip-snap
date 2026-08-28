@@ -148,6 +148,10 @@ final class PanelTests: StoreBackedTestCase {
             DevelopmentBuildIdentity(bundleIdentifier: "world.sree.snipsnap.dev3")?.slot,
             3
         )
+        XCTAssertEqual(
+            DevelopmentBuildIdentity(bundleIdentifier: "org.example.fork.dev4")?.slot,
+            4
+        )
         XCTAssertNil(DevelopmentBuildIdentity(bundleIdentifier: "world.sree.snipsnap"))
         XCTAssertNil(DevelopmentBuildIdentity(bundleIdentifier: "world.sree.snipsnap.dev03"))
         XCTAssertNil(DevelopmentBuildIdentity(bundleIdentifier: "world.sree.snipsnap.dev0"))

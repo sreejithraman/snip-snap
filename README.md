@@ -41,13 +41,17 @@ new versions.
 
 ## Build from source
 
-Use Xcode 26 or later:
+Use Xcode 26 or later. A clean checkout needs no Apple Developer account:
 
 ```sh
 ./scripts/build.sh
 ./scripts/test.sh
 ./scripts/run.sh
 ```
+
+The Dev app uses ad hoc signing by default. See
+[Build and signing setup](docs/building.md) for optional developer signing,
+Cloud and device needs, fork identifiers, and official releases.
 
 ## License
 

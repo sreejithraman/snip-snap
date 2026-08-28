@@ -24,17 +24,16 @@ enum DevelopmentBadgeTone: CaseIterable, Equatable {
 }
 
 struct DevelopmentBuildIdentity: Equatable {
-    private static let bundleIdentifierPrefix = "world.sree.snipsnap.dev"
-
     let slot: Int
 
     init?(bundleIdentifier: String?) {
         guard let bundleIdentifier,
-              bundleIdentifier.hasPrefix(Self.bundleIdentifierPrefix) else {
+              let markerRange = bundleIdentifier.range(of: ".dev", options: .backwards),
+              markerRange.lowerBound != bundleIdentifier.startIndex else {
             return nil
         }
 
-        let suffix = bundleIdentifier.dropFirst(Self.bundleIdentifierPrefix.count)
+        let suffix = bundleIdentifier[markerRange.upperBound...]
         guard let slot = Int(suffix), slot > 0, String(slot) == suffix else { return nil }
         self.slot = slot
     }

@@ -19,13 +19,21 @@ output="$(
 )"
 
 grep -F -- "CODE_SIGNING_ALLOWED=NO" "$test_dir/build-args" >/dev/null
-grep -F -- "PRODUCT_BUNDLE_IDENTIFIER=world.sree.snipsnap.compilecheck" \
+grep -F -- 'PRODUCT_BUNDLE_IDENTIFIER=$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).compilecheck' \
     "$test_dir/build-args" >/dev/null
 grep -F -- "PRODUCT_NAME=SnipSnapCompileCheck" "$test_dir/build-args" >/dev/null
 grep -F -- "INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Compile Check" \
     "$test_dir/build-args" >/dev/null
 [[ "$output" == *"Do not launch this build."* ]]
 [[ "$output" == *"Use scripts/run.sh"* ]]
+
+SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER=org.example.environment \
+    PATH="$test_dir/bin:$PATH" \
+    SNIP_SNAP_BUILD_ARGS_FILE="$test_dir/build-args" \
+    SNIP_SNAP_DERIVED_DATA="$test_dir/derived-data" \
+    "$script_dir/build.sh" >/dev/null
+grep -F -- "SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER=org.example.environment" \
+    "$test_dir/build-args" >/dev/null
 
 print -r -- '#!/bin/zsh
 exit 1' > "$test_dir/bin/xcodebuild"

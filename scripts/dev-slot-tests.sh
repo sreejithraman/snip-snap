@@ -95,7 +95,12 @@ pending_list="$(
 
 mkdir -p "$test_dir/bin"
 print -r -- '#!/bin/zsh
-print -r -- "$@" > "$SNIP_SNAP_BUILD_ARGS_FILE"' > "$test_dir/bin/xcodebuild"
+if [[ "$*" == *-showBuildSettings* ]]; then
+    print "    DEVELOPMENT_TEAM ="
+    print "    SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER = world.sree.snipsnap"
+else
+    print -r -- "$@" > "$SNIP_SNAP_BUILD_ARGS_FILE"
+fi' > "$test_dir/bin/xcodebuild"
 chmod +x "$test_dir/bin/xcodebuild"
 
 if PATH="$test_dir/bin:$PATH" \
@@ -120,6 +125,56 @@ grep -F -- "PRODUCT_BUNDLE_IDENTIFIER=world.sree.snipsnap.dev2" \
 grep -F -- "PRODUCT_NAME=SnipSnapDev2" "$test_dir/build-args" >/dev/null
 grep -F -- "INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Dev 2" \
     "$test_dir/build-args" >/dev/null
+grep -F -- "CODE_SIGN_IDENTITY=-" "$test_dir/build-args" >/dev/null
+grep -F -- "DEVELOPMENT_TEAM=" "$test_dir/build-args" >/dev/null
+grep -F -- "CODE_SIGN_ENTITLEMENTS=" "$test_dir/build-args" >/dev/null
+grep -F -- "SNIP_SNAP_APP_GROUP_IDENTIFIER=" "$test_dir/build-args" >/dev/null
+grep -F -- "SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER=" "$test_dir/build-args" >/dev/null
+
+print -r -- '#!/bin/zsh
+if [[ "$*" == *-showBuildSettings* ]]; then
+    print "    DEVELOPMENT_TEAM = FAKE123456"
+    print "    SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER = org.example.snipsnap"
+else
+    print -r -- "$@" > "$SNIP_SNAP_BUILD_ARGS_FILE"
+fi' > "$test_dir/bin/xcodebuild"
+chmod +x "$test_dir/bin/xcodebuild"
+PATH="$test_dir/bin:$PATH" \
+    SNIP_SNAP_BUILD_ARGS_FILE="$test_dir/team-build-args" \
+    SNIP_SNAP_DEV_STATE_DIR="$test_dir/state" \
+    SNIP_SNAP_DEV_WORKTREE="$test_dir/worktree-e" \
+    SNIP_SNAP_DEV_SLOT=2 \
+    "$script_dir/build.sh" >/dev/null
+grep -F -- "CODE_SIGN_STYLE=Automatic" "$test_dir/team-build-args" >/dev/null
+grep -F -- "DEVELOPMENT_TEAM=FAKE123456" "$test_dir/team-build-args" >/dev/null
+grep -F -- "SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER=org.example.snipsnap" \
+    "$test_dir/team-build-args" >/dev/null
+grep -F -- "PRODUCT_BUNDLE_IDENTIFIER=org.example.snipsnap.dev2" \
+    "$test_dir/team-build-args" >/dev/null
+if grep -F -- "CODE_SIGN_IDENTITY=-" "$test_dir/team-build-args" >/dev/null; then
+    print -u2 "A team-signed Dev build used ad hoc signing."
+    exit 1
+fi
+
+print -r -- '#!/bin/zsh
+if [[ "$*" == *-showBuildSettings* ]]; then
+    print "    DEVELOPMENT_TEAM ="
+    print "    SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER = org.example.environment"
+else
+    print -r -- "$@" > "$SNIP_SNAP_BUILD_ARGS_FILE"
+fi' > "$test_dir/bin/xcodebuild"
+chmod +x "$test_dir/bin/xcodebuild"
+SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER=org.example.environment \
+    PATH="$test_dir/bin:$PATH" \
+    SNIP_SNAP_BUILD_ARGS_FILE="$test_dir/environment-build-args" \
+    SNIP_SNAP_DEV_STATE_DIR="$test_dir/state" \
+    SNIP_SNAP_DEV_WORKTREE="$test_dir/worktree-e" \
+    SNIP_SNAP_DEV_SLOT=2 \
+    "$script_dir/build.sh" >/dev/null
+grep -F -- "SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER=org.example.environment" \
+    "$test_dir/environment-build-args" >/dev/null
+grep -F -- "PRODUCT_BUNDLE_IDENTIFIER=org.example.environment.dev2" \
+    "$test_dir/environment-build-args" >/dev/null
 
 display_name_source="$(
     /usr/libexec/PlistBuddy \
