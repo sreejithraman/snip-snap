@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PanelMoreButton: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var accessibilityPermissions: AccessibilityPermissionController
     @FocusState.Binding var focusedTarget: PanelFocusTarget?
     let moveSelectionToNewList: () -> Void
     let selectAllVisible: () -> Void
@@ -62,6 +63,10 @@ struct PanelMoreButton: View {
         .disabled(model.filteredSnips.isEmpty)
 
         Divider()
+
+        Button(accessibilityPermissions.menuActionTitle) {
+            accessibilityPermissions.performMenuAction()
+        }
 
         Button("Keyboard Shortcuts…") {
             openSettings()

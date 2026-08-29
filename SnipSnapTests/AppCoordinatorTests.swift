@@ -41,7 +41,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testDoubleShiftStartExplainsAccessibilityBeforeRequestingIt() throws {
+    func testStartShowsAccessibilitySetupCardBeforeRequestingIt() throws {
         let repository = try SnipRepository(fileURL: storeURL())
         let model = AppModel(repository: repository)
         let suiteName = "Snip SnapShortcutTrustTests-\(UUID().uuidString)"
@@ -52,6 +52,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         let panel = NSWindow()
         defer { panel.orderOut(nil) }
         var requestCount = 0
+        var openSettingsCount = 0
         let coordinator = AppCoordinator(
             model: model,
             shortcutSettings: settings,
@@ -59,7 +60,11 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             isAccessibilityTrusted: { false },
             requestAccessibilityTrust: {
                 requestCount += 1
-            }
+            },
+            openAccessibilitySettings: {
+                openSettingsCount += 1
+            },
+            accessibilitySetupDefaults: defaults
         )
         coordinator.attachPanelWindow(panel)
 
@@ -67,18 +72,37 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
         XCTAssertEqual(requestCount, 0)
         XCTAssertEqual(manager.registeredConfigurations, [.snipSnapDefaults])
-        XCTAssertTrue(model.isAccessibilityAccessExplanationPresented)
+        XCTAssertTrue(coordinator.accessibilityPermissions.isSetupCardVisible)
+        XCTAssertFalse(coordinator.accessibilityPermissions.hasRequestedAccess)
+        XCTAssertEqual(
+            coordinator.accessibilityPermissions.menuActionTitle,
+            "Allow Accessibility Access…"
+        )
         XCTAssertTrue(panel.isVisible)
         XCTAssertNil(model.presentedError)
 
-        coordinator.requestAccessibilityAccess()
+        coordinator.accessibilityPermissions.performPrimaryAction()
 
         XCTAssertEqual(requestCount, 1)
-        XCTAssertFalse(model.isAccessibilityAccessExplanationPresented)
+        XCTAssertTrue(coordinator.accessibilityPermissions.isSetupCardVisible)
+        XCTAssertTrue(coordinator.accessibilityPermissions.hasRequestedAccess)
+        XCTAssertEqual(
+            defaults.bool(forKey: AccessibilityPermissionController.didHandleSetupDefaultsKey),
+            true
+        )
+        XCTAssertEqual(
+            coordinator.accessibilityPermissions.menuActionTitle,
+            "Open Accessibility Settings…"
+        )
+
+        coordinator.accessibilityPermissions.performMenuAction()
+
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(openSettingsCount, 1)
     }
 
     @MainActor
-    func testStartExplainsAccessibilityWithoutDoubleShiftShortcuts() throws {
+    func testStartOffersAccessibilitySetupWithoutDoubleShiftShortcuts() throws {
         let repository = try SnipRepository(fileURL: storeURL())
         let model = AppModel(repository: repository)
         let suiteName = "Snip SnapShortcutTrustTests-\(UUID().uuidString)"
@@ -108,35 +132,46 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             model: model,
             shortcutSettings: settings,
             makeHotKeyManager: { _ in StubGlobalHotKeyManager() },
-            isAccessibilityTrusted: { false }
+            isAccessibilityTrusted: { false },
+            accessibilitySetupDefaults: defaults
         )
 
         coordinator.start()
 
-        XCTAssertTrue(model.isAccessibilityAccessExplanationPresented)
+        XCTAssertTrue(coordinator.accessibilityPermissions.isSetupCardVisible)
     }
 
     @MainActor
-    func testTrustedStartDoesNotExplainOrRequestAccessibility() throws {
+    func testTrustedStartDoesNotOfferOrRequestAccessibility() throws {
         let repository = try SnipRepository(fileURL: storeURL())
         let model = AppModel(repository: repository)
         var requestCount = 0
+        var openSettingsCount = 0
         let coordinator = AppCoordinator(
             model: model,
             shortcutSettings: ShortcutSettings(),
             makeHotKeyManager: { _ in StubGlobalHotKeyManager() },
             isAccessibilityTrusted: { true },
-            requestAccessibilityTrust: { requestCount += 1 }
+            requestAccessibilityTrust: { requestCount += 1 },
+            openAccessibilitySettings: { openSettingsCount += 1 }
         )
 
         coordinator.start()
 
-        XCTAssertFalse(model.isAccessibilityAccessExplanationPresented)
+        XCTAssertFalse(coordinator.accessibilityPermissions.isSetupCardVisible)
         XCTAssertEqual(requestCount, 0)
+        XCTAssertEqual(
+            coordinator.accessibilityPermissions.menuActionTitle,
+            "Accessibility Settings…"
+        )
+
+        coordinator.accessibilityPermissions.performMenuAction()
+
+        XCTAssertEqual(openSettingsCount, 1)
     }
 
     @MainActor
-    func testCaptureExplainsMissingAccessibilityWithoutRequestingIt() throws {
+    func testCapturePresentsAccessibilityRepairWithoutRequestingIt() throws {
         let repository = try SnipRepository(fileURL: storeURL())
         let model = AppModel(repository: repository)
         let panel = NSWindow()
@@ -152,9 +187,75 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
         coordinator.captureSelection()
 
-        XCTAssertTrue(model.isAccessibilityAccessExplanationPresented)
+        XCTAssertTrue(coordinator.accessibilityPermissions.isRepairPresented)
         XCTAssertTrue(panel.isVisible)
         XCTAssertEqual(requestCount, 0)
+    }
+
+    @MainActor
+    func testDeferredAccessibilitySetupStaysQuietOnNextStart() throws {
+        let repository = try SnipRepository(fileURL: storeURL())
+        let model = AppModel(repository: repository)
+        let suiteName = "Snip SnapDeferredAccessibilityTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(
+            true,
+            forKey: AccessibilityPermissionController.didHandleSetupDefaultsKey
+        )
+        let panel = NSWindow()
+        defer { panel.orderOut(nil) }
+        let coordinator = AppCoordinator(
+            model: model,
+            shortcutSettings: ShortcutSettings(defaults: defaults),
+            makeHotKeyManager: { _ in StubGlobalHotKeyManager() },
+            isAccessibilityTrusted: { false },
+            accessibilitySetupDefaults: defaults
+        )
+        coordinator.attachPanelWindow(panel)
+
+        coordinator.start()
+
+        XCTAssertFalse(coordinator.accessibilityPermissions.isSetupCardVisible)
+        XCTAssertFalse(panel.isVisible)
+
+        coordinator.captureSelection()
+
+        XCTAssertTrue(coordinator.accessibilityPermissions.isRepairPresented)
+        XCTAssertTrue(panel.isVisible)
+    }
+
+    @MainActor
+    func testGrantRefreshRestartsShortcutsAndHidesPermissionUI() throws {
+        let repository = try SnipRepository(fileURL: storeURL())
+        let model = AppModel(repository: repository)
+        let suiteName = "Snip SnapAccessibilityGrantTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let manager = StubGlobalHotKeyManager()
+        var isTrusted = false
+        let coordinator = AppCoordinator(
+            model: model,
+            shortcutSettings: ShortcutSettings(defaults: defaults),
+            makeHotKeyManager: { _ in manager },
+            isAccessibilityTrusted: { isTrusted },
+            accessibilitySetupDefaults: defaults
+        )
+
+        coordinator.start()
+        coordinator.accessibilityPermissions.presentRepair()
+        isTrusted = true
+
+        coordinator.accessibilityPermissions.refresh()
+
+        XCTAssertTrue(coordinator.accessibilityPermissions.isGranted)
+        XCTAssertFalse(coordinator.accessibilityPermissions.isSetupCardVisible)
+        XCTAssertFalse(coordinator.accessibilityPermissions.isRepairPresented)
+        XCTAssertEqual(
+            manager.registeredConfigurations,
+            [.snipSnapDefaults, .snipSnapDefaults]
+        )
+        XCTAssertEqual(manager.unregisterCount, 1)
     }
 
     @MainActor

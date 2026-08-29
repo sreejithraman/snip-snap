@@ -58,6 +58,7 @@
 		100000000000000000000036 /* PanelMultilineTextInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003F /* PanelMultilineTextInput.swift */; };
 		100000000000000000000037 /* SnipListIconCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000040 /* SnipListIconCatalog.swift */; };
 		100000000000000000000038 /* PanelCardInteraction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000041 /* PanelCardInteraction.swift */; };
+		100000000000000000000039 /* AccessibilityPermissionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000042 /* AccessibilityPermissionController.swift */; };
 		2230FA4B303C74F2008B20D5 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 2230FA4A303C74F2008B20D5 /* Sparkle */; };
 /* End PBXBuildFile section */
 
@@ -126,6 +127,7 @@
 		20000000000000000000003F /* PanelMultilineTextInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelMultilineTextInput.swift; sourceTree = "<group>"; };
 		200000000000000000000040 /* SnipListIconCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListIconCatalog.swift; sourceTree = "<group>"; };
 		200000000000000000000041 /* PanelCardInteraction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelCardInteraction.swift; sourceTree = "<group>"; };
+		200000000000000000000042 /* AccessibilityPermissionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityPermissionController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -171,6 +173,7 @@
 				200000000000000000000022 /* SelectionCaptureSnapshotReader.swift */,
 				20000000000000000000001B /* PasteboardSnapshotStore.swift */,
 				200000000000000000000014 /* AppCoordinator.swift */,
+				200000000000000000000042 /* AccessibilityPermissionController.swift */,
 				200000000000000000000015 /* CaptureHUD.swift */,
 				200000000000000000000009 /* DetachedEditor.swift */,
 				200000000000000000000011 /* ShortcutModel.swift */,
@@ -351,6 +354,7 @@
 				10000000000000000000001A /* SelectionCaptureSnapshotReader.swift in Sources */,
 				100000000000000000000013 /* PasteboardSnapshotStore.swift in Sources */,
 				10000000000000000000000C /* AppCoordinator.swift in Sources */,
+				100000000000000000000039 /* AccessibilityPermissionController.swift in Sources */,
 				10000000000000000000000D /* CaptureHUD.swift in Sources */,
 				100000000000000000000007 /* DetachedEditor.swift in Sources */,
 				100000000000000000000009 /* ShortcutModel.swift in Sources */,

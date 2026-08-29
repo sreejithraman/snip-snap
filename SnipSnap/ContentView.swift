@@ -18,6 +18,7 @@ struct ContentView: View {
     @EnvironmentObject private var shortcutSettings: ShortcutSettings
     @Environment(\.controlActiveState) private var controlActiveState
     let coordinator: AppCoordinator
+    @ObservedObject private var accessibilityPermissions: AccessibilityPermissionController
     @ObservedObject private var fileDropController: PanelFileDropController
     private let snipDragSourceController: SnipDragSourceController
 
@@ -45,6 +46,9 @@ struct ContentView: View {
     ) {
         self.coordinator = coordinator
         self.snipDragSourceController = snipDragSourceController
+        _accessibilityPermissions = ObservedObject(
+            wrappedValue: coordinator.accessibilityPermissions
+        )
         _fileDropController = ObservedObject(wrappedValue: fileDropController)
     }
 
@@ -112,6 +116,10 @@ struct ContentView: View {
         VStack(spacing: SnipSnapSpacing.relatedContent) {
             floatingHeader
 
+            if accessibilityPermissions.isSetupCardVisible {
+                AccessibilitySetupCard(controller: accessibilityPermissions)
+            }
+
             mainPanel
 
             SnipListTabBarView(
@@ -168,18 +176,8 @@ struct ContentView: View {
                 movesSelection: movesSelectionToNewList
             )
         }
-        .alert(
-            "Allow Accessibility Access?",
-            isPresented: $model.isAccessibilityAccessExplanationPresented
-        ) {
-            Button("Not Now", role: .cancel) {}
-            Button("Continue") {
-                coordinator.requestAccessibilityAccess()
-            }
-        } message: {
-            Text(
-                "Snip Snap uses Accessibility to detect Shift shortcuts and capture selected content. macOS will ask you to allow access in System Settings."
-            )
+        .sheet(isPresented: $accessibilityPermissions.isRepairPresented) {
+            AccessibilityRepairView(controller: accessibilityPermissions)
         }
         .alert(
             "Snip Snap",
@@ -263,6 +261,7 @@ struct ContentView: View {
 
             PanelMoreButton(
                 model: model,
+                accessibilityPermissions: accessibilityPermissions,
                 focusedTarget: $focusedTarget,
                 moveSelectionToNewList: {
                     movesSelectionToNewList = true
@@ -668,6 +667,91 @@ struct ContentView: View {
         }
     }
 
+}
+
+private struct AccessibilitySetupCard: View {
+    @ObservedObject var controller: AccessibilityPermissionController
+
+    var body: some View {
+        let presentation = controller.setupCardState.presentation
+        HStack(alignment: .top, spacing: SnipSnapSpacing.cardContentInset) {
+            Image(systemName: "accessibility")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(SnipSnapColors.textSecondary)
+                .frame(width: 32, height: 32)
+                .background(SnipSnapColors.compactSubduedFill, in: Circle())
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
+                Text(presentation.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(SnipSnapColors.textPrimary)
+
+                Text(presentation.message)
+                    .font(.caption)
+                    .foregroundStyle(SnipSnapColors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: SnipSnapSpacing.relatedContent) {
+                    Spacer(minLength: 0)
+                    Button("Later") {
+                        controller.deferSetup()
+                    }
+                    .buttonStyle(.borderless)
+
+                    Button(presentation.primaryActionTitle) {
+                        controller.performPrimaryAction()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(SnipSnapSpacing.cardContentInset)
+        .panelContentCardSurface()
+        .accessibilityElement(children: .contain)
+    }
+
+}
+
+private struct AccessibilityRepairView: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var controller: AccessibilityPermissionController
+
+    var body: some View {
+        let presentation = controller.setupCardState.presentation
+        VStack(alignment: .leading, spacing: SnipSnapSpacing.paneContentInset) {
+            Label("Accessibility Access Needed", systemImage: "accessibility")
+                .font(.headline)
+
+            Text(
+                "Capture Selection and global Shift shortcuts need Accessibility access. You can keep using other parts of Snip Snap without it."
+            )
+            .foregroundStyle(SnipSnapColors.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            if presentation.showsRepairInstructions {
+                Text(AccessibilitySetupCardState.repairInstructions)
+                .font(.caption)
+                .foregroundStyle(SnipSnapColors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: SnipSnapSpacing.relatedContent) {
+                Spacer()
+                Button("Not Now") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(presentation.primaryActionTitle) {
+                    dismiss()
+                    controller.performPrimaryAction()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(SnipSnapSpacing.paneContentInset)
+        .frame(width: 380)
+    }
 }
 
 private struct ClipboardAlertHost: View {
