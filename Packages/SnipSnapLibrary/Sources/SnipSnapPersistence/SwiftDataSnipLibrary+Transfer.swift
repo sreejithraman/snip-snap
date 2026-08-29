@@ -30,9 +30,10 @@ extension SwiftDataSnipLibrary {
 
   public func mergeTransferSnapshot(
     _ source: SnipLibraryTransferSnapshot,
-    transitionID: UUID
+    transitionID: UUID,
+    expectedTargetDigest: Data?
   ) async throws -> SnipLibraryTransferResult {
-    try await mergeTransferSnapshot(
+    let plan = try await prepareTransferPlan(
       source,
       transitionID: transitionID,
       replacingTargetSnipIDs: [],
@@ -40,6 +41,14 @@ extension SwiftDataSnipLibrary {
       priorServerAcceptedSnipIDs: [],
       priorSeededListIDs: []
     )
+    if let expectedTargetDigest, plan.targetDigest != expectedTargetDigest {
+      throw SnipLibraryError.importChanged
+    }
+    do {
+      return try await applyTransferPlan(plan)
+    } catch SnipLibraryError.invalidStore where expectedTargetDigest != nil {
+      throw SnipLibraryError.importChanged
+    }
   }
 
   package func mergeTransferSnapshot(

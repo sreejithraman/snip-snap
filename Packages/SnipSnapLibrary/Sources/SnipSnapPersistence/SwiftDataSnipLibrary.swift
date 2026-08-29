@@ -278,6 +278,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
   let container: ModelContainer?
   let isAvailable: Bool
   let afterMutationBeforeSave: @Sendable () throws -> Void
+  let beforeImportCommit: @Sendable () async throws -> Void
   var seenRequestIDs: Set<UUID>
   var knownAttachmentPaths: [UUID: String]
   var lastKnownState: SnipLibraryState
@@ -289,6 +290,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
   package init(
     storeURL: URL,
     afterMutationBeforeSave: @escaping @Sendable () throws -> Void = {},
+    beforeImportCommit: @escaping @Sendable () async throws -> Void = {},
     metadataBackfillHook: @escaping @Sendable (LibraryMetadataBackfillPoint) throws -> Void = { _ in },
     cloudFullRecordBackfillHook: @escaping @Sendable (CloudFullRecordBackfillPoint) throws -> Void = { _ in }
   ) throws {
@@ -320,6 +322,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     self.container = container
     isAvailable = true
     self.afterMutationBeforeSave = afterMutationBeforeSave
+    self.beforeImportCommit = beforeImportCommit
     seenRequestIDs = []
     knownAttachmentPaths = [:]
     lastKnownState = SnipLibraryState(snips: [], lists: [.inbox], seenRequestIDs: [])
@@ -363,6 +366,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     container = nil
     isAvailable = false
     afterMutationBeforeSave = {}
+    beforeImportCommit = {}
     seenRequestIDs = []
     knownAttachmentPaths = [:]
     lastKnownState = SnipLibraryState(snips: [], lists: [.inbox], seenRequestIDs: [])

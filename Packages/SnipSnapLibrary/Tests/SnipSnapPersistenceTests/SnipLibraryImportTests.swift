@@ -5,6 +5,103 @@ import XCTest
 @testable import SnipSnapPersistence
 
 final class SnipLibraryImportTests: XCTestCase {
+  func testCommitRejectsSameIDSnipThatArrivesAfterValidation() async throws {
+    let directory = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let storeURL = directory.appendingPathComponent("target.store")
+    let remoteLibrary = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let sharedID = UUID()
+    let remote = snip(id: sharedID, content: "Remote")
+    let target = try SwiftDataSnipLibrary(
+      storeURL: storeURL,
+      beforeImportCommit: {
+        _ = try await remoteLibrary.perform(.restore(snips: [remote]), sortedBy: .manual)
+      }
+    )
+    let source = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("source.json"))
+    _ = try await source.perform(
+      .restore(snips: [snip(id: sharedID, content: "Backup")]),
+      sortedBy: .manual
+    )
+    let preview = try await SnipLibraryImport.preview(source: source, target: target)
+    let actions = SnipLibraryDeviceActions(
+      library: target,
+      journalURL: directory.appendingPathComponent("device-actions.json")
+    )
+
+    do {
+      _ = try await actions.applyImport(preview, sortedBy: .manual)
+      XCTFail("Expected a changed target to reject the import")
+    } catch SnipLibraryError.importChanged {
+    }
+
+    let current = try await target.checkedSnapshot(sortedBy: .manual)
+    let history = try await actions.state(sortedBy: .manual)
+    XCTAssertEqual(current.snips.map(\.content), ["Remote"])
+    XCTAssertFalse(history.canUndo)
+  }
+
+  func testCommitRejectsSameIDListThatArrivesAfterValidation() async throws {
+    let directory = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let storeURL = directory.appendingPathComponent("target.store")
+    let remoteLibrary = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let sharedID = UUID()
+    let remoteList = SnipList(
+      id: sharedID,
+      name: "Remote",
+      systemImage: "tray",
+      position: 1
+    )
+    let target = try SwiftDataSnipLibrary(
+      storeURL: storeURL,
+      beforeImportCommit: {
+        _ = try await remoteLibrary.mergeTransferSnapshot(
+          SnipLibraryTransferSnapshot(
+            revision: 0,
+            snips: [],
+            lists: [.inbox, remoteList],
+            attachmentData: [:]
+          ),
+          transitionID: UUID()
+        )
+      }
+    )
+    let source = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("source.json"))
+    let backupList = SnipList(
+      id: sharedID,
+      name: "Backup",
+      systemImage: "archivebox",
+      position: 1
+    )
+    _ = try await source.mergeTransferSnapshot(
+      SnipLibraryTransferSnapshot(
+        revision: 0,
+        snips: [snip(content: "Filed", listID: sharedID)],
+        lists: [.inbox, backupList],
+        attachmentData: [:]
+      ),
+      transitionID: UUID()
+    )
+    let preview = try await SnipLibraryImport.preview(source: source, target: target)
+    let actions = SnipLibraryDeviceActions(
+      library: target,
+      journalURL: directory.appendingPathComponent("device-actions.json")
+    )
+
+    do {
+      _ = try await actions.applyImport(preview, sortedBy: .manual)
+      XCTFail("Expected a changed target to reject the import")
+    } catch SnipLibraryError.importChanged {
+    }
+
+    let current = try await target.checkedSnapshot(sortedBy: .manual)
+    let history = try await actions.state(sortedBy: .manual)
+    XCTAssertEqual(current.lists.first { $0.id == sharedID }?.name, "Remote")
+    XCTAssertTrue(current.snips.isEmpty)
+    XCTAssertFalse(history.canUndo)
+  }
+
   func testRenamedListInBackupKeepsCurrentFieldsAndImportsItsSnips() async throws {
     let directory = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }

@@ -55,9 +55,9 @@ public actor SnipLibraryDeviceActions: SnipLibraryUserActions {
     let fallbackBefore = try await library.checkedSnapshot(sortedBy: sortMode)
     let update = try await library.perform(command, sortedBy: sortMode)
     let patch = update.devicePatch ?? .between(fallbackBefore, update.snapshot)
-    let touchesAttachments = record(name: name, patch: patch)
+    record(name: name, patch: patch)
     persistOrClear()
-    if touchesAttachments { await reconcileAttachmentStorage(sortMode: sortMode) }
+    await reconcileAttachmentStorage(sortMode: sortMode)
     return update
   }
 
@@ -81,12 +81,12 @@ public actor SnipLibraryDeviceActions: SnipLibraryUserActions {
       addedSnipCount: applied.addedSnipCount,
       recoveredSnipCount: applied.recoveredSnipCount
     )
-    let touchesAttachments = record(
+    record(
       name: "Import Backup",
       patch: applied.devicePatch ?? preview.devicePatch
     )
     persistOrClear()
-    if touchesAttachments { await reconcileAttachmentStorage(sortMode: sortMode) }
+    await reconcileAttachmentStorage(sortMode: sortMode)
     return result
   }
 
@@ -125,12 +125,12 @@ public actor SnipLibraryDeviceActions: SnipLibraryUserActions {
         journal.redo.append(entry)
         trim(&journal.redo)
         persistOrClear()
-        if entry.patch.touchesAttachments {
-          await reconcileAttachmentStorage(sortMode: sortMode)
-        }
+        await reconcileAttachmentStorage(sortMode: sortMode)
         return update
       } catch SnipLibraryError.deviceActionChanged {
         journal.undo.removeLast()
+        persistOrClear()
+        await reconcileAttachmentStorage(sortMode: sortMode)
       }
     }
   }
@@ -159,12 +159,12 @@ public actor SnipLibraryDeviceActions: SnipLibraryUserActions {
         journal.undo.append(entry)
         trim(&journal.undo)
         persistOrClear()
-        if entry.patch.touchesAttachments {
-          await reconcileAttachmentStorage(sortMode: sortMode)
-        }
+        await reconcileAttachmentStorage(sortMode: sortMode)
         return update
       } catch SnipLibraryError.deviceActionChanged {
         journal.redo.removeLast()
+        persistOrClear()
+        await reconcileAttachmentStorage(sortMode: sortMode)
       }
     }
   }
@@ -202,16 +202,15 @@ public actor SnipLibraryDeviceActions: SnipLibraryUserActions {
     name: String,
     before: SnipLibrarySnapshot,
     after: SnipLibrarySnapshot
-  ) -> Bool {
+  ) {
     record(name: name, patch: .between(before, after))
   }
 
-  private func record(name: String, patch: SnipLibraryDevicePatch) -> Bool {
-    guard !patch.isEmpty else { return false }
+  private func record(name: String, patch: SnipLibraryDevicePatch) {
+    guard !patch.isEmpty else { return }
     journal.undo.append(Entry(name: name, patch: patch))
     trim(&journal.undo)
     journal.redo = []
-    return patch.touchesAttachments
   }
 
   private func reconcile(with snapshot: SnipLibrarySnapshot) -> Bool {
@@ -289,13 +288,5 @@ public actor SnipLibraryDeviceActions: SnipLibraryUserActions {
       value.version == 2
     else { return Journal(collectionIdentity: nil) }
     return value
-  }
-}
-
-private extension SnipLibraryDevicePatch {
-  var touchesAttachments: Bool {
-    snips.contains {
-      ($0.before?.attachments ?? []) != ($0.after?.attachments ?? [])
-    }
   }
 }

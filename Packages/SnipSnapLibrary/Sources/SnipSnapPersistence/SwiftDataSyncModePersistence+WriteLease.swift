@@ -201,8 +201,10 @@ private actor ModeManagedSnipLibrary: SnipLibrary {
 
   func mergeTransferSnapshot(
     _ source: SnipLibraryTransferSnapshot,
-    transitionID: UUID
+    transitionID: UUID,
+    expectedTargetDigest: Data?
   ) async throws -> SnipLibraryTransferResult {
+    _ = (source, transitionID, expectedTargetDigest)
     throw SnipLibraryError.transferUnsupported
   }
 

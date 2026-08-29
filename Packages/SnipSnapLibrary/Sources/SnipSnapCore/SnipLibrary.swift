@@ -340,7 +340,8 @@ public protocol SnipLibrary: Sendable {
 
     func mergeTransferSnapshot(
         _ source: SnipLibraryTransferSnapshot,
-        transitionID: UUID
+        transitionID: UUID,
+        expectedTargetDigest: Data?
     ) async throws -> SnipLibraryTransferResult
 
     func previewImport(
@@ -371,9 +372,22 @@ public extension SnipLibrary {
 
     func mergeTransferSnapshot(
         _ source: SnipLibraryTransferSnapshot,
+        transitionID: UUID,
+        expectedTargetDigest: Data?
+    ) async throws -> SnipLibraryTransferResult {
+        _ = (source, transitionID, expectedTargetDigest)
+        throw SnipLibraryError.transferUnsupported
+    }
+
+    func mergeTransferSnapshot(
+        _ source: SnipLibraryTransferSnapshot,
         transitionID: UUID
     ) async throws -> SnipLibraryTransferResult {
-        throw SnipLibraryError.transferUnsupported
+        try await mergeTransferSnapshot(
+            source,
+            transitionID: transitionID,
+            expectedTargetDigest: nil
+        )
     }
 
     func previewImport(

@@ -298,7 +298,8 @@ public actor JSONSnipLibrary: SnipLibrary {
 
     public func mergeTransferSnapshot(
         _ source: SnipLibraryTransferSnapshot,
-        transitionID: UUID
+        transitionID: UUID,
+        expectedTargetDigest: Data?
     ) async throws -> SnipLibraryTransferResult {
         try ensureAvailable()
         let target = try await transferSnapshot(revision: 0)
@@ -307,6 +308,9 @@ public actor JSONSnipLibrary: SnipLibrary {
             target: target,
             transitionID: transitionID
         )
+        if let expectedTargetDigest, plan.targetDigest != expectedTargetDigest {
+            throw SnipLibraryError.importChanged
+        }
         var transferredSnips = plan.snips
         let targetAttachmentIDs = Set(target.attachmentData.keys)
         var createdDirectories: [URL] = []

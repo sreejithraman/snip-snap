@@ -5,6 +5,87 @@ import XCTest
 @testable import SnipSnapPersistence
 
 final class SnipLibraryDeviceActionsTests: XCTestCase {
+  func testNewActionPrunesAttachmentBytesHeldOnlyByClearedRedo() async throws {
+    let directory = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let sourceURL = directory.appendingPathComponent("source.txt")
+    try Data("redo attachment".utf8).write(to: sourceURL)
+    let library = try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("snips.store"))
+    let actions = SnipLibraryDeviceActions(
+      library: library,
+      journalURL: directory.appendingPathComponent("device-actions.json")
+    )
+    let added = try await actions.perform(
+      name: "Add",
+      command: .add(
+        content: "With file",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inboxID,
+        attachmentURLs: [sourceURL],
+        requestID: UUID(),
+        now: Date(timeIntervalSince1970: 100)
+      ),
+      sortedBy: .manual
+    )
+    let attachmentURL = try XCTUnwrap(added.snapshot.attachmentURLs.values.first)
+    _ = try await actions.undo(sortedBy: .manual)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: attachmentURL.path))
+
+    _ = try await actions.perform(
+      name: "Create List",
+      command: .createList(name: "Work", systemImage: "folder"),
+      sortedBy: .manual
+    )
+
+    XCTAssertFalse(FileManager.default.fileExists(atPath: attachmentURL.path))
+  }
+
+  func testHistoryDepthTrimPrunesAttachmentBytesHeldOnlyByOldestEntry() async throws {
+    let directory = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let sourceURL = directory.appendingPathComponent("source.txt")
+    try Data("trim attachment".utf8).write(to: sourceURL)
+    let library = try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("snips.store"))
+    let added = try await library.perform(
+      .add(
+        content: "With file",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inboxID,
+        attachmentURLs: [sourceURL],
+        requestID: UUID(),
+        now: Date(timeIntervalSince1970: 100)
+      ),
+      sortedBy: .manual
+    )
+    let attachmentSnip = try XCTUnwrap(added.snapshot.snips.first)
+    let attachmentURL = try XCTUnwrap(added.snapshot.attachmentURLs.values.first)
+    let plain = try await add("Plain", in: library)
+    let actions = SnipLibraryDeviceActions(
+      library: library,
+      journalURL: directory.appendingPathComponent("device-actions.json")
+    )
+    _ = try await actions.perform(
+      name: "Delete file snip",
+      command: .delete(ids: [attachmentSnip.id]),
+      sortedBy: .manual
+    )
+    XCTAssertTrue(FileManager.default.fileExists(atPath: attachmentURL.path))
+
+    for index in 0..<100 {
+      _ = try await actions.perform(
+        name: "Toggle \(index)",
+        command: .toggleDone(id: plain.id),
+        sortedBy: .manual
+      )
+    }
+
+    let state = try await actions.state(sortedBy: .manual)
+    XCTAssertEqual(state.undoCount, 100)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: attachmentURL.path))
+  }
+
   func testImportUndoKeepsAWriteThatArrivesBetweenTheImportSnapshots() async throws {
     let directory = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }

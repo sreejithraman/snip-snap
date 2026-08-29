@@ -72,7 +72,11 @@ extension SwiftDataSnipLibrary {
   }
 
   public func applyImport(_ preview: SnipImportPreview) async throws -> SnipImportResult {
-    try await SnipLibraryImport.applyPrepared(preview, to: self)
+    try await SnipLibraryImport.applyPrepared(
+      preview,
+      to: self,
+      beforeCommit: beforeImportCommit
+    )
   }
 }
 
@@ -106,15 +110,18 @@ extension SnipLibraryImport {
 
   fileprivate static func applyPrepared(
     _ preview: SnipImportPreview,
-    to target: any SnipLibrary
+    to target: any SnipLibrary,
+    beforeCommit: @escaping @Sendable () async throws -> Void = {}
   ) async throws -> SnipImportResult {
     let current = try await target.transferSnapshot(revision: 0)
     guard SnipLibraryTransferPlanner.digest(snapshot: current) == preview.targetDigest else {
       throw SnipLibraryError.importChanged
     }
+    try await beforeCommit()
     let transfer = try await target.mergeTransferSnapshot(
       preview.source,
-      transitionID: preview.transitionID
+      transitionID: preview.transitionID,
+      expectedTargetDigest: preview.targetDigest
     )
     return SnipImportResult(
       snapshot: try await target.checkedSnapshot(sortedBy: .chronological),
