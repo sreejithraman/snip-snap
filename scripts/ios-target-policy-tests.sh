@@ -60,16 +60,16 @@ for required_file in \
     grep -F -- "$required_file" "$project_file" >/dev/null
 done
 
-if rg -n \
+if /usr/bin/grep -En \
     '(^|[^A-Za-z])(import AppKit|import CloudKit|NSPasteboard|SelectionCapture|GlobalHotKey|ClipboardHistory|SnipSnapPanel)' \
-    "$ios_source_dir"; then
+    "$ios_source_dir"/*.swift; then
     print -u2 "The iOS source tree includes a forbidden Mac or cloud dependency."
     exit 1
 fi
 
-if rg -n \
+if /usr/bin/grep -En \
     '(^|[^A-Za-z])(import AppKit|import CloudKit|SnipSnapCloud|SwiftDataSnipLibrary|ModelContainer|UIApplication\.shared|openURL|NSExtensionContext\.open)' \
-    "$share_source_dir"; then
+    "$share_source_dir"/*.swift; then
     print -u2 "The Share extension source tree includes a forbidden app, store, or cloud dependency."
     exit 1
 fi
