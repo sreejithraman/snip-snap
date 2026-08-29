@@ -6,7 +6,7 @@ This note compares the main ways Snip Snap can ask for macOS Accessibility acces
 
 ## Short answer
 
-Keep this flow in Snip Snap for now. Use Apple's native prompt after a short Snip Snap note, check access again when the app comes to the front, and add a status row in Settings for later repair.
+Keep this flow in Snip Snap for now. Use Apple's native prompt after a short Snip Snap note, check access again when the app comes to the front, and add a direct, state-aware command to the panel's More menu for later repair.
 
 Do not add PermissionFlow in the first pass. It gives strong drag-and-drop help, but Snip Snap needs one permission and already owns the two key calls. The package would add exact System Settings links, window tracking, more permission code, a license notice, and a fast-moving release to watch. Add it later only if tests show that users often fail to finish Apple's flow.
 
@@ -21,14 +21,14 @@ Apple says the prompt runs at once in the background and does not change the cal
 
 Apple's macOS 26 guide says the system alert can take the user to System Settings. The user then turns on the app. If the app does not appear, the user can add it with the Add button. Apple does not list drag-and-drop as part of this flow. [Allow accessibility apps to access your Mac](https://support.apple.com/guide/mac-help/allow-accessibility-apps-to-access-your-mac-mh43185/mac)
 
-The current app explains the need before it calls Apple. It asks at app start, has no lasting status row, and does not update the shown state when the user comes back from System Settings.
+Before this work, the app explained the need before it called Apple, asked at app start, offered no lasting repair action, and did not update the shown state when the user came back from System Settings.
 
 ## Options
 
 | Choice | User flow | Code and upkeep | Risk | Fit for Snip Snap |
 | --- | --- | --- | --- | --- |
 | Apple prompt only | Snip Snap explains, then macOS shows its alert and opens Settings | Very small; Apple owns the alert | Lowest; public API only | Good base, but gives little help when access stays off |
-| Snip Snap guide plus Apple prompt | Add a clear reason, live status, repair steps, and a Settings row around the Apple call | Small and easy to test | Low; an exact Settings link needs a fallback | Best choice |
+| Snip Snap guide plus Apple prompt | Add a clear reason, live status, repair steps, and a More-menu command around the Apple call | Small and easy to test | Low; an exact Settings link needs a fallback | Best choice |
 | PermissionFlow | Open the right pane and show a floating app card that the user can drag into it | Package handles the panel, drag source, pane links, and window tracking | More OS layout and package churn | Useful only if tests show the base flow fails often |
 | PermissionPilot | Use a full permission wizard with many status checks and restart paths | Much broader package and UI | Very new; more code than this app needs | Poor fit for one permission |
 
@@ -38,7 +38,7 @@ The current app explains the need before it calls Apple. It asks at app start, h
 2. Show a Snip Snap sheet first. State that access lets Snip Snap detect its Shift shortcuts and read selected content. State that the user can turn access off later.
 3. On Continue, call `AXIsProcessTrustedWithOptions` once with the prompt option. Do not poll with the prompt option.
 4. Use `AXIsProcessTrusted()` without a prompt when Snip Snap becomes active and before each protected action.
-5. Add a Settings row with `Accessibility: On` or `Accessibility: Off`, `Open System Settings`, and `Check Again`.
+5. Add one direct command to the panel's More menu. Let its title state the next action: request access, open System Settings for repair, or open Accessibility settings when access is already on.
 6. If access stays off, show Apple's manual path: System Settings → Privacy & Security → Accessibility → turn on Snip Snap. Also say to use Add if Snip Snap is missing.
 7. Let the rest of the app work when access stays off. Disable only the actions that need it, and keep their repair action close at hand.
 

@@ -163,7 +163,7 @@ private struct ShortcutCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .appSettings) {
             SettingsLink {
-                Text("Snip Snap Settings…")
+                Text("Keyboard Shortcuts…")
             }
             .keyboardShortcut("/", modifiers: .command)
         }
