@@ -48,6 +48,12 @@ struct ListSidebarView: View {
         }
         .navigationTitle("Lists")
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Settings", systemImage: "gearshape") {
+                    sheet = .settings
+                }
+                .accessibilityIdentifier("settings")
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button("New List", systemImage: "folder.badge.plus") {
                     sheet = .newList

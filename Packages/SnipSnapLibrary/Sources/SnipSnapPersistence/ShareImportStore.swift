@@ -455,7 +455,7 @@ package enum DurableFile {
     }
   }
 
-  static func write(_ data: Data, to url: URL) throws {
+  package static func write(_ data: Data, to url: URL) throws {
     try createDirectory(url.deletingLastPathComponent())
     try data.write(to: url, options: .atomic)
     try syncFile(url)

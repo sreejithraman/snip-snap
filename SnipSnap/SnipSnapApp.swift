@@ -37,10 +37,11 @@ struct SnipSnapApp: App {
             AppSettingsContent(
                 model: appDelegate.model,
                 shortcutSettings: appDelegate.shortcutSettings,
+                syncedContentSettings: appDelegate.syncedContentSettings,
                 coordinator: appDelegate.coordinator
             )
         }
-        .defaultSize(width: 400, height: 230)
+        .defaultSize(width: 440, height: 290)
         .windowResizability(.contentSize)
         .commands {
             SnipCommands(coordinator: appDelegate.coordinator)
@@ -55,12 +56,19 @@ struct SnipSnapApp: App {
 private struct AppSettingsContent: View {
     @ObservedObject var model: AppModel
     let shortcutSettings: ShortcutSettings
+    let syncedContentSettings: SyncedContentSettingsModel
     let coordinator: AppCoordinator
 
     var body: some View {
-        ShortcutSettingsView(coordinator: coordinator)
-            .environmentObject(shortcutSettings)
-            .preferredColorScheme(model.appearance.colorScheme)
+        TabView {
+            ShortcutSettingsView(coordinator: coordinator)
+                .environmentObject(shortcutSettings)
+                .tabItem { Label("Shortcuts", systemImage: "keyboard") }
+
+            SyncedContentSettingsView(model: syncedContentSettings)
+                .tabItem { Label("Sync", systemImage: "icloud") }
+        }
+        .preferredColorScheme(model.appearance.colorScheme)
     }
 }
 
@@ -68,6 +76,7 @@ private struct AppSettingsContent: View {
 final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     let model: AppModel
     let shortcutSettings: ShortcutSettings
+    let syncedContentSettings: SyncedContentSettingsModel
     let coordinator: AppCoordinator
     let fileDropController: PanelFileDropController
     let snipDragSourceController: SnipDragSourceController
@@ -104,10 +113,24 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             recoveryScope: assembly.recoveryScope
         )
         let shortcutSettings = ShortcutSettings()
+        let syncedContentSettings: SyncedContentSettingsModel
+#if DEBUG
+        if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1" {
+            syncedContentSettings = SyncedContentSettingsModel(
+                mode: .iCloudSync,
+                deleteAction: {}
+            )
+        } else {
+            syncedContentSettings = SyncedContentSettingsModel(mode: .localOnly)
+        }
+#else
+        syncedContentSettings = SyncedContentSettingsModel(mode: .localOnly)
+#endif
         let fileDropController = PanelFileDropController()
         let snipDragSourceController = SnipDragSourceController()
         self.model = model
         self.shortcutSettings = shortcutSettings
+        self.syncedContentSettings = syncedContentSettings
         self.fileDropController = fileDropController
         self.snipDragSourceController = snipDragSourceController
         updateChecksEnabled = isReleaseApp &&

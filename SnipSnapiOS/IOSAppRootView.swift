@@ -7,6 +7,7 @@ struct IOSAppRootView: View {
     @State private var appGraph: IOSAppGraph
     @State private var sheet: AppSheet?
     private let uiTestAttachmentURLs: [URL]
+    private let syncedContentSettings: SyncedContentSettingsModel
 
     init(
         library: any SnipLibrary,
@@ -15,9 +16,12 @@ struct IOSAppRootView: View {
         initialSnapshot: SnipLibrarySnapshot? = nil,
         startupError: String? = nil,
         uiTestAttachmentURLs: [URL] = [],
+        syncedContentSettings: SyncedContentSettingsModel? = nil,
         shareImportOperation: (@Sendable () async -> Int)? = nil
     ) {
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
+        self.syncedContentSettings = syncedContentSettings
+            ?? SyncedContentSettingsModel(mode: .localOnly)
         _appGraph = State(initialValue: IOSAppGraph(
             library: library,
             recoveryScope: recoveryScope,
@@ -48,6 +52,8 @@ struct IOSAppRootView: View {
                 ListEditorView(model: model, mode: .create)
             case .editList(let id):
                 ListEditorView(model: model, mode: .edit(id: id))
+            case .settings:
+                SyncedContentSettingsView(model: syncedContentSettings)
             case .recoveryCenter:
                 RecoveryCenterView(model: model, sheet: $sheet)
             case .recoverSnip(let id):

@@ -14,6 +14,14 @@ package enum FakeCloudTransportEvent: Equatable, Sendable {
     case confirmed(UUID)
 }
 
+package enum FakeCloudControlTransportEvent: Equatable, Sendable {
+    case fetchedControl
+    case createdZones(Set<CloudZoneID>)
+    case savedControl(UUID)
+    case controlConflict(UUID)
+    case deletedZones(Set<CloudZoneID>)
+}
+
 package actor FakeCloudServer {
     private enum Event {
         case saved(sequence: Int, CloudRecordSnapshot)
@@ -43,6 +51,9 @@ package actor FakeCloudServer {
     private var acceptedCounts: [CloudRecordID: Int] = [:]
     private var acceptedDeleteCount = 0
     private var assets: [CloudRecordID: [String: URL]] = [:]
+    private var zones: Set<CloudZoneID> = []
+    private var control: CloudCollectionDescriptor?
+    private var controlVersion = 0
     private let assetRoot: URL
 
     package init() {
@@ -197,6 +208,132 @@ package actor FakeCloudServer {
         let event = CloudDatabaseEvent.zoneDeleted(zone, reason: reason)
         events.append(.database(sequence: nextSequence, event, zone))
         nextSequence += 1
+    }
+
+    package func seedControl(_ descriptor: CloudCollectionDescriptor) {
+        control = descriptor
+        controlVersion += 1
+        zones.formUnion(descriptor.zones)
+    }
+
+    package func removeControl() {
+        control = nil
+        controlVersion += 1
+    }
+
+    package func fetchControl() -> CloudCollectionControlRecord? {
+        control.map {
+            CloudCollectionControlRecord(
+                descriptor: $0,
+                version: Data(String(controlVersion).utf8)
+            )
+        }
+    }
+
+    package func createZones(_ values: Set<CloudZoneID>) {
+        zones.formUnion(values)
+    }
+
+    package func saveControl(
+        _ descriptor: CloudCollectionDescriptor,
+        replacing version: Data?
+    ) -> CloudCollectionControlSaveResult {
+        let current = fetchControl()
+        guard current?.version == version else {
+            if let current { return .conflict(current) }
+            control = descriptor
+            controlVersion += 1
+            return .accepted(fetchControl()!)
+        }
+        control = descriptor
+        controlVersion += 1
+        return .accepted(fetchControl()!)
+    }
+
+    package func deleteZones(_ values: Set<CloudZoneID>) {
+        zones.subtract(values)
+        let recordIDs = records.keys.filter { values.contains($0.zone) }
+        for id in recordIDs {
+            records[id] = nil
+            assets[id] = nil
+        }
+    }
+
+    package func controlDescriptor() -> CloudCollectionDescriptor? { control }
+    package func hasZone(_ zone: CloudZoneID) -> Bool { zones.contains(zone) }
+}
+
+package actor FakeCloudControlTransport: CloudCollectionControlTransport {
+    private let server: FakeCloudServer
+    private var eventLog: [FakeCloudControlTransportEvent] = []
+    private var shouldPauseNextControlSave = false
+    private var controlSavePaused = false
+    private var controlSavePauseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var controlSaveRelease: CheckedContinuation<Void, Never>?
+
+    package init(server: FakeCloudServer) {
+        self.server = server
+    }
+
+    package func seedControl(_ descriptor: CloudCollectionDescriptor) async {
+        await server.seedControl(descriptor)
+    }
+
+    package func removeControl() async {
+        await server.removeControl()
+    }
+
+    package func fetchControl() async -> CloudCollectionControlRecord? {
+        eventLog.append(.fetchedControl)
+        return await server.fetchControl()
+    }
+
+    package func createZones(_ zones: Set<CloudZoneID>) async {
+        eventLog.append(.createdZones(zones))
+        await server.createZones(zones)
+    }
+
+    package func saveControl(
+        _ descriptor: CloudCollectionDescriptor,
+        replacing version: Data?
+    ) async -> CloudCollectionControlSaveResult {
+        if shouldPauseNextControlSave {
+            shouldPauseNextControlSave = false
+            controlSavePaused = true
+            controlSavePauseWaiters.forEach { $0.resume() }
+            controlSavePauseWaiters = []
+            await withCheckedContinuation { controlSaveRelease = $0 }
+        }
+        let result = await server.saveControl(descriptor, replacing: version)
+        switch result {
+        case .accepted:
+            eventLog.append(.savedControl(descriptor.generation))
+        case .conflict(let current):
+            eventLog.append(.controlConflict(current.descriptor.generation))
+        }
+        return result
+    }
+
+    package func deleteZones(_ zones: Set<CloudZoneID>) async {
+        eventLog.append(.deletedZones(zones))
+        await server.deleteZones(zones)
+    }
+
+    package func events() -> [FakeCloudControlTransportEvent] { eventLog }
+
+    package func pauseNextControlSave() {
+        shouldPauseNextControlSave = true
+    }
+
+    package func waitUntilControlSavePauses() async {
+        if controlSavePaused { return }
+        await withCheckedContinuation { controlSavePauseWaiters.append($0) }
+    }
+
+    package func resumeControlSave() {
+        controlSaveRelease?.resume()
+        controlSaveRelease = nil
+        controlSavePaused = false
     }
 }
 

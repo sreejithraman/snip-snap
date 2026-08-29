@@ -69,7 +69,7 @@ package enum SyncModeStoreKind: String, Codable, Equatable, Sendable {
 }
 
 package enum SyncModeStoreLifecycle: String, Codable, Equatable, Sendable {
-  case creating, ready, retired, deleting
+  case creating, ready, recovery, retired, deleting
 }
 
 package enum SyncModeSyncProtocol: String, Codable, Equatable, Sendable {
@@ -783,6 +783,52 @@ package actor SwiftDataSyncModePersistence {
         try? recordAttention(.storageFailure)
         throw error
       }
+    }
+  }
+
+  /// Activates a fresh empty store while keeping the prior store as a recovery copy.
+  package func activateEmptyCollection(
+    namespace: ICloudSyncNamespaceBinding?
+  ) throws {
+    guard manifest.transition == nil,
+      manifest.writeReservation == nil,
+      !writeAdmissionInProgress,
+      let current = store(id: manifest.activeStoreID)
+    else { throw SyncModePersistenceError.transitionInProgress }
+    if current.namespace == namespace,
+      (namespace == nil ? current.kind == .localOnly : current.kind == .iCloudSync)
+    {
+      return
+    }
+    let kind: SyncModeStoreKind = namespace == nil ? .localOnly : .iCloudSync
+    var candidate = Self.newStore(
+      kind: kind,
+      namespace: namespace,
+      syncProtocol: current.syncProtocol
+    )
+    var declared = manifest
+    declared.stores.append(candidate)
+    declared.attentionReason = nil
+    try commit(declared)
+    do {
+      let candidateRoot = storeURL(candidate)
+      _ = try SwiftDataSnipLibrary(
+        storeURL: candidateRoot.appendingPathComponent("snips.store", isDirectory: false)
+      )
+      try DurableFile.syncDirectory(candidateRoot)
+      try DurableFile.syncDirectory(candidateRoot.deletingLastPathComponent())
+      candidate.lifecycle = .ready
+      var activated = manifest
+      activated.stores[try storeIndex(id: candidate.id)] = candidate
+      activated.stores[try storeIndex(id: current.id)].lifecycle = .recovery
+      activated.activeStoreID = candidate.id
+      try commit(activated)
+    } catch {
+      var restored = manifest
+      restored.stores.removeAll { $0.id == candidate.id }
+      try? FileManager.default.removeItem(at: storeURL(candidate))
+      try? commit(restored)
+      throw error
     }
   }
 

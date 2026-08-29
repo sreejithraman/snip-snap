@@ -9,6 +9,7 @@ struct SnipSnapiOSApp: App {
     private let startupError: String?
     private let uiTestAttachmentURLs: [URL]
     private let recoveryScope: SnipRecoveryScope?
+    private let syncedContentSettings: SyncedContentSettingsModel
 
     init() {
         let startup = Self.makeLibrary()
@@ -17,6 +18,18 @@ struct SnipSnapiOSApp: App {
         startupError = startup.error
         uiTestAttachmentURLs = startup.uiTestAttachmentURLs
         recoveryScope = startup.recoveryScope
+#if DEBUG
+        if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1" {
+            syncedContentSettings = SyncedContentSettingsModel(
+                mode: .iCloudSync,
+                deleteAction: {}
+            )
+        } else {
+            syncedContentSettings = SyncedContentSettingsModel(mode: .localOnly)
+        }
+#else
+        syncedContentSettings = SyncedContentSettingsModel(mode: .localOnly)
+#endif
     }
 
     var body: some Scene {
@@ -26,7 +39,8 @@ struct SnipSnapiOSApp: App {
                 recoveryScope: recoveryScope,
                 shareImports: shareImports,
                 startupError: startupError,
-                uiTestAttachmentURLs: uiTestAttachmentURLs
+                uiTestAttachmentURLs: uiTestAttachmentURLs,
+                syncedContentSettings: syncedContentSettings
             )
         }
     }

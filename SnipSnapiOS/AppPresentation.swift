@@ -5,6 +5,7 @@ enum AppSheet: Identifiable, Hashable {
     case editSnip(id: UUID)
     case newList
     case editList(id: UUID)
+    case settings
     case recoveryCenter
     case recoverSnip(id: UUID)
     case recoverList(id: UUID)
@@ -19,6 +20,8 @@ enum AppSheet: Identifiable, Hashable {
             "new-list"
         case .editList(let id):
             "edit-list-\(id)"
+        case .settings:
+            "settings"
         case .recoveryCenter:
             "recovery-center"
         case .recoverSnip(let id):

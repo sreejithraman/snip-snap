@@ -56,6 +56,7 @@
 		100000000000000000000036 /* PanelMultilineTextInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003F /* PanelMultilineTextInput.swift */; };
 		100000000000000000000037 /* SnipListIconCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000040 /* SnipListIconCatalog.swift */; };
 		100000000000000000000038 /* PanelCardInteraction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000041 /* PanelCardInteraction.swift */; };
+		100000000000000000000039 /* SyncedContentSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000042 /* SyncedContentSettingsView.swift */; };
 		2230FA4B303C74F2008B20D5 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 2230FA4A303C74F2008B20D5 /* Sparkle */; };
 		D00000000000000000000033 /* AppDataPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000032 /* AppDataPaths.swift */; };
 		D00000000000000000000020 /* SnipSnapCore in Frameworks */ = {isa = PBXBuildFile; productRef = D00000000000000000000010 /* SnipSnapCore */; };
@@ -76,6 +77,7 @@
 		E1000000000000000000000C /* SnipSnapiOSUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2000000000000000000000A /* SnipSnapiOSUITests.swift */; };
 		E1000000000000000000000D /* SnipSnapCore in Frameworks */ = {isa = PBXBuildFile; productRef = EF0000000000000000000003 /* SnipSnapCore */; };
 		E10000000000000000000020 /* AttachmentViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000020 /* AttachmentViews.swift */; };
+		E10000000000000000000021 /* SyncedContentSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000021 /* SyncedContentSettingsView.swift */; };
 		F10000000000000000000001 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000001 /* ShareViewController.swift */; };
 		F10000000000000000000002 /* ShareExtensionModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000002 /* ShareExtensionModel.swift */; };
 		F10000000000000000000003 /* ShareExtensionInputLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000003 /* ShareExtensionInputLoader.swift */; };
@@ -183,6 +185,7 @@
 		20000000000000000000003F /* PanelMultilineTextInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelMultilineTextInput.swift; sourceTree = "<group>"; };
 		200000000000000000000040 /* SnipListIconCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListIconCatalog.swift; sourceTree = "<group>"; };
 		200000000000000000000041 /* PanelCardInteraction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelCardInteraction.swift; sourceTree = "<group>"; };
+		200000000000000000000042 /* SyncedContentSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncedContentSettingsView.swift; sourceTree = "<group>"; };
 		D00000000000000000000001 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
 		D00000000000000000000002 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
 		D00000000000000000000003 /* Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Shared.xcconfig; sourceTree = "<group>"; };
@@ -205,6 +208,7 @@
 		E2000000000000000000000F /* iOSRelease.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = iOSRelease.xcconfig; sourceTree = "<group>"; };
 		E20000000000000000000010 /* iOSShared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = iOSShared.xcconfig; sourceTree = "<group>"; };
 		E20000000000000000000020 /* AttachmentViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentViews.swift; sourceTree = "<group>"; };
+		E20000000000000000000021 /* SyncedContentSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncedContentSettingsView.swift; sourceTree = "<group>"; };
 		F20000000000000000000001 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		F20000000000000000000002 /* ShareExtensionModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareExtensionModel.swift; sourceTree = "<group>"; };
 		F20000000000000000000003 /* ShareExtensionInputLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareExtensionInputLoader.swift; sourceTree = "<group>"; };
@@ -309,6 +313,7 @@
 				200000000000000000000013 /* SnipSnapPanel.swift */,
 				20000000000000000000003B /* PanelFileDrop.swift */,
 				200000000000000000000041 /* PanelCardInteraction.swift */,
+				200000000000000000000042 /* SyncedContentSettingsView.swift */,
 				20000000000000000000003D /* PanelResizeSurface.swift */,
 				20000000000000000000003F /* PanelMultilineTextInput.swift */,
 				200000000000000000000016 /* SnipCardRow.swift */,
@@ -388,6 +393,7 @@
 				E20000000000000000000005 /* LibraryViews.swift */,
 				E20000000000000000000006 /* EditorViews.swift */,
 				E20000000000000000000020 /* AttachmentViews.swift */,
+				E20000000000000000000021 /* SyncedContentSettingsView.swift */,
 				E20000000000000000000007 /* PreviewSupport.swift */,
 				E20000000000000000000008 /* Assets.xcassets */,
 				F20000000000000000000008 /* SnipSnapiOS.entitlements */,
@@ -690,6 +696,7 @@
 				10000000000000000000000B /* SnipSnapPanel.swift in Sources */,
 				100000000000000000000032 /* PanelFileDrop.swift in Sources */,
 				100000000000000000000038 /* PanelCardInteraction.swift in Sources */,
+				100000000000000000000039 /* SyncedContentSettingsView.swift in Sources */,
 				100000000000000000000034 /* PanelResizeSurface.swift in Sources */,
 				100000000000000000000036 /* PanelMultilineTextInput.swift in Sources */,
 				10000000000000000000000E /* SnipCardRow.swift in Sources */,
@@ -740,6 +747,7 @@
 				E10000000000000000000005 /* LibraryViews.swift in Sources */,
 				E10000000000000000000006 /* EditorViews.swift in Sources */,
 				E10000000000000000000020 /* AttachmentViews.swift in Sources */,
+				E10000000000000000000021 /* SyncedContentSettingsView.swift in Sources */,
 				E10000000000000000000007 /* PreviewSupport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

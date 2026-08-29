@@ -5,15 +5,47 @@ final class SnipSnapiOSUITests: XCTestCase {
     private func launchApp(
         storeName: String = "ui-\(UUID().uuidString)",
         withAttachments: Bool = false,
-        withRecovery: Bool = false
+        withRecovery: Bool = false,
+        withSyncedContent: Bool = false
     ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["SNIP_SNAP_UI_TESTING"] = "1"
         app.launchEnvironment["SNIP_SNAP_UI_TEST_STORE"] = storeName
         if withAttachments { app.launchEnvironment["SNIP_SNAP_UI_TEST_ATTACHMENTS"] = "1" }
         if withRecovery { app.launchEnvironment["SNIP_SNAP_UI_TEST_RECOVERY"] = "1" }
+        if withSyncedContent {
+            app.launchEnvironment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] = "1"
+        }
         app.launch()
         return app
+    }
+
+    func testDeleteSyncedContentExplainsAndConfirmsReset() {
+        continueAfterFailure = false
+        let app = launchApp(withSyncedContent: true)
+        let settings = app.buttons["settings"]
+        if !settings.waitForExistence(timeout: 1) {
+            let showSidebar = app.buttons["Show Sidebar"]
+            if showSidebar.exists {
+                showSidebar.tap()
+            } else if app.buttons["BackButton"].exists {
+                app.buttons["BackButton"].tap()
+            }
+        }
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        settings.tap()
+
+        XCTAssertTrue(app.staticTexts["iCloud Sync On"].waitForExistence(timeout: 3))
+        app.buttons["delete-synced-content"].tap()
+        XCTAssertTrue(app.alerts["Delete Synced Content?"].waitForExistence(timeout: 3))
+        app.alerts.buttons["Delete Synced Content"].tap()
+
+        XCTAssertTrue(app.staticTexts["Synced Content Deleted"].waitForExistence(timeout: 3))
+        let controlRecordNote = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "control record remains")
+        ).firstMatch
+        XCTAssertTrue(controlRecordNote.exists)
+        XCTAssertFalse(app.buttons["delete-synced-content"].exists)
     }
 
     func testReviewsRecoveredSnipAndListEdits() {
