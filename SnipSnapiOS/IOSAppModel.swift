@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SnipSnapCore
+import SnipSnapPersistence
 
 @MainActor
 @Observable
@@ -171,5 +172,87 @@ final class IOSAppModel {
         if let selectedSnipID, !snips.contains(where: { $0.id == selectedSnipID }) {
             self.selectedSnipID = nil
         }
+    }
+}
+
+@MainActor
+final class IOSAppGraph {
+    let model: IOSAppModel
+    let shareImporter: IOSShareImportCoordinator?
+
+    init(
+        library: any SnipLibrary,
+        shareImports: ShareImportStore?,
+        initialSnapshot: SnipLibrarySnapshot,
+        startupError: String?,
+        shareImportOperation: (@Sendable () async -> Int)? = nil
+    ) {
+        let model = IOSAppModel(
+            library: library,
+            initialSnapshot: initialSnapshot,
+            startupError: startupError
+        )
+        self.model = model
+        if let shareImportOperation {
+            shareImporter = IOSShareImportCoordinator(
+                model: model,
+                importOperation: shareImportOperation
+            )
+        } else if let shareImports {
+            shareImporter = IOSShareImportCoordinator(
+                library: library,
+                imports: shareImports,
+                model: model
+            )
+        } else {
+            shareImporter = nil
+        }
+    }
+}
+
+@MainActor
+final class IOSShareImportCoordinator {
+    private let model: IOSAppModel
+    private let importOperation: @Sendable () async -> Int
+    private var inFlight: Task<Int, Never>?
+
+    convenience init(
+        library: any SnipLibrary,
+        imports: ShareImportStore,
+        model: IOSAppModel
+    ) {
+        self.init(
+            model: model,
+            importOperation: {
+                await imports.importPending(into: library).failed
+            }
+        )
+    }
+
+    init(
+        model: IOSAppModel,
+        importOperation: @escaping @Sendable () async -> Int
+    ) {
+        self.model = model
+        self.importOperation = importOperation
+    }
+
+    func importPendingAndReload() async {
+        if let inFlight {
+            _ = await inFlight.value
+            return
+        }
+        let task = Task { [model, importOperation] in
+            let failed = await importOperation()
+            await model.load()
+            if failed > 0 {
+                model.errorMessage =
+                    "One or more shared items could not be added yet. Snip Snap will try again next time."
+            }
+            return failed
+        }
+        inFlight = task
+        _ = await task.value
+        inFlight = nil
     }
 }

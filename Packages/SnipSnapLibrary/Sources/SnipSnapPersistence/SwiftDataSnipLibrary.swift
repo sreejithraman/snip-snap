@@ -126,10 +126,6 @@ package final class StoredRequestRecord {
   }
 }
 
-public enum SnipSnapStoreSchemaContract {
-  public static let currentVersion = 1
-}
-
 package enum SnipSnapSchemaV1: VersionedSchema {
   package static let versionIdentifier = Schema.Version(1, 0, 0)
   package static var models: [any PersistentModel.Type] {
@@ -204,7 +200,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     afterMutationBeforeSave: @escaping @Sendable () throws -> Void
   ) throws {
     let directory = storeURL.deletingLastPathComponent()
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try DurableFile.createDirectory(directory)
     let lockURL = storeURL.appendingPathExtension("lock")
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
@@ -254,6 +250,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       at: attachmentRootURL,
       keeping: Set(loaded.attachments.map(\.relativePath))
     )
+    try? Self.publishShareDestinations(loaded.state.lists, storeURL: storeURL)
   }
 
   private init(unavailableAt storeURL: URL) {
@@ -306,6 +303,14 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
   package static func attachmentRootURL(forStoreURL storeURL: URL) -> URL {
     storeURL.deletingLastPathComponent()
       .appendingPathComponent("Attachments", isDirectory: true)
+  }
+
+  private static func publishShareDestinations(_ lists: [SnipList], storeURL: URL) throws {
+    guard let rootURL = ShareImportPaths.sharedRoot(forStoreURL: storeURL) else { return }
+    try ShareDestinationCatalog.write(
+      lists,
+      to: ShareImportPaths(rootURL: rootURL).catalogURL
+    )
   }
 
   public func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
@@ -375,6 +380,10 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       seenRequestIDs = state.seenRequestIDs
       lastKnownState = state
       rememberAttachments(in: state)
+      try? Self.publishShareDestinations(
+        state.lists,
+        storeURL: lockURL.deletingPathExtension()
+      )
       if command.editsAttachments {
         let liveIDs = Set(state.snips.flatMap(\.attachments).map(\.id))
         Self.removeUnreferencedAttachmentDirectories(
@@ -452,12 +461,11 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
         let relativePath = "\(id.uuidString)/\(sourceURL.lastPathComponent)"
         let destination = attachmentRootURL.appendingPathComponent(relativePath)
         let destinationDirectory = destination.deletingLastPathComponent()
-        try FileManager.default.createDirectory(
-          at: destinationDirectory,
-          withIntermediateDirectories: true
-        )
+        try DurableFile.createDirectory(destinationDirectory)
         createdDirectories.append(destinationDirectory)
         try FileManager.default.copyItem(at: sourceURL, to: destination)
+        try DurableFile.syncFile(destination)
+        try DurableFile.syncDirectory(destinationDirectory)
         let values = try destination.resourceValues(forKeys: [.fileSizeKey])
         let contentType = (try? destination.resourceValues(forKeys: [.contentTypeKey]))?
           .contentType?.identifier

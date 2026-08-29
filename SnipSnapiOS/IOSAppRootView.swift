@@ -1,26 +1,32 @@
 import SnipSnapCore
+import SnipSnapPersistence
 import SwiftUI
 
 struct IOSAppRootView: View {
-    @State private var model: IOSAppModel
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var appGraph: IOSAppGraph
     @State private var sheet: AppSheet?
     private let uiTestAttachmentURLs: [URL]
 
     init(
         library: any SnipLibrary,
+        shareImports: ShareImportStore? = nil,
         initialSnapshot: SnipLibrarySnapshot? = nil,
         startupError: String? = nil,
-        uiTestAttachmentURLs: [URL] = []
+        uiTestAttachmentURLs: [URL] = [],
+        shareImportOperation: (@Sendable () async -> Int)? = nil
     ) {
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
-        _model = State(
-            initialValue: IOSAppModel(
-                library: library,
-                initialSnapshot: initialSnapshot ?? SnipLibrarySnapshot(snips: [], lists: [.inbox]),
-                startupError: startupError
-            )
-        )
+        _appGraph = State(initialValue: IOSAppGraph(
+            library: library,
+            shareImports: shareImports,
+            initialSnapshot: initialSnapshot ?? SnipLibrarySnapshot(snips: [], lists: [.inbox]),
+            startupError: startupError,
+            shareImportOperation: shareImportOperation
+        ))
     }
+
+    private var model: IOSAppModel { appGraph.model }
 
     var body: some View {
         NavigationSplitView {
@@ -54,7 +60,11 @@ struct IOSAppRootView: View {
             Text(model.errorMessage ?? "Please try again.")
         }
         .task {
-            await model.load()
+            if let shareImporter = appGraph.shareImporter {
+                await shareImporter.importPendingAndReload()
+            } else {
+                await model.load()
+            }
             if !uiTestAttachmentURLs.isEmpty, model.snips.isEmpty {
                 _ = await model.createSnip(
                     content: "Attachment fixture",
@@ -62,6 +72,10 @@ struct IOSAppRootView: View {
                     attachmentURLs: uiTestAttachmentURLs
                 )
             }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active, let shareImporter = appGraph.shareImporter else { return }
+            Task { await shareImporter.importPendingAndReload() }
         }
     }
 }

@@ -1,9 +1,78 @@
 import SnipSnapCore
+import SwiftUI
+import UIKit
 import XCTest
 @testable import SnipSnapiOS
 
 @MainActor
 final class IOSAppModelTests: XCTestCase {
+    func testRootReinitializationKeepsForegroundImportOnRetainedGraph() async throws {
+        let library = ModelTestLibrary()
+        let firstProbe = ImportCallProbe()
+        let secondProbe = ImportCallProbe()
+        let state = RootReinitHarnessState()
+        let host = UIHostingController(
+            rootView: RootReinitHarness(
+                state: state,
+                library: library,
+                firstProbe: firstProbe,
+                secondProbe: secondProbe
+            )
+        )
+        let windowScene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        )
+        let window = UIWindow(windowScene: windowScene)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+
+        let didLaunch = await waitForCalls(1, from: firstProbe)
+        XCTAssertTrue(didLaunch)
+        state.generation = 1
+        try? await Task.sleep(for: .milliseconds(30))
+        state.phase = .background
+        try? await Task.sleep(for: .milliseconds(30))
+        state.phase = .active
+
+        let didImportOnForeground = await waitForCalls(2, from: firstProbe)
+        XCTAssertTrue(didImportOnForeground)
+        let discardedGraphCalls = await secondProbe.callCount()
+        XCTAssertEqual(discardedGraphCalls, 0)
+    }
+
+    func testLaunchAndForegroundShareOneImportThenALaterForegroundRunsAgain() async {
+        let snip = Snip(
+            requestID: UUID(),
+            content: "From Share",
+            origin: .share,
+            listID: SnipList.inboxID
+        )
+        let library = ModelTestLibrary(snips: [snip])
+        let model = IOSAppModel(library: library)
+        let probe = PendingImportProbe()
+        let coordinator = IOSShareImportCoordinator(
+            model: model,
+            importOperation: { await probe.run() }
+        )
+
+        let launch = Task { await coordinator.importPendingAndReload() }
+        await probe.waitUntilFirstImportStarts()
+        let overlappingForeground = Task { await coordinator.importPendingAndReload() }
+        await Task.yield()
+        await probe.finishFirstImport()
+        await launch.value
+        await overlappingForeground.value
+
+        let overlappingCallCount = await probe.callCount()
+        XCTAssertEqual(overlappingCallCount, 1)
+        XCTAssertEqual(model.snips.map(\.id), [snip.id])
+
+        await coordinator.importPendingAndReload()
+        let foregroundCallCount = await probe.callCount()
+        XCTAssertEqual(foregroundCallCount, 2)
+    }
+
     func testAttachmentDraftCleanupWaitsForChildPresentations() {
         XCTAssertFalse(
             AttachmentDraftLifecycle.allowsDismissal(isSaving: false, isStaging: true)
@@ -234,14 +303,49 @@ final class IOSAppModelTests: XCTestCase {
         XCTFail("The universal iOS target must not compile AppKit.")
         #endif
     }
+
+    private func waitForCalls(_ expected: Int, from probe: ImportCallProbe) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while await probe.callCount() < expected, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return await probe.callCount() >= expected
+    }
+}
+
+@MainActor
+private final class RootReinitHarnessState: ObservableObject {
+    @Published var generation = 0
+    @Published var phase: ScenePhase = .active
+}
+
+private struct RootReinitHarness: View {
+    @ObservedObject var state: RootReinitHarnessState
+    let library: any SnipLibrary
+    let firstProbe: ImportCallProbe
+    let secondProbe: ImportCallProbe
+
+    var body: some View {
+        let probe = state.generation == 0 ? firstProbe : secondProbe
+        IOSAppRootView(
+            library: library,
+            shareImportOperation: { await probe.run() }
+        )
+        .environment(\.scenePhase, state.phase)
+    }
 }
 
 private actor ModelTestLibrary: SnipLibrary {
-    private var snips: [Snip] = []
+    private var snips: [Snip]
     private var lists: [SnipList] = [.inbox]
     private(set) var lastAddedAttachmentURLs: [URL] = []
     private(set) var lastAttachmentEdit: (snipID: UUID, content: String, edits: [SnipAttachmentEdit])?
     private var attachmentPruneCalls = 0
+
+    init(snips: [Snip] = []) {
+        self.snips = snips
+    }
 
     func addedAttachmentURLs() -> [URL] {
         lastAddedAttachmentURLs
@@ -338,4 +442,47 @@ private actor ModelTestLibrary: SnipLibrary {
             lists: lists
         )
     }
+}
+
+private actor PendingImportProbe {
+    private var calls = 0
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var firstImportContinuation: CheckedContinuation<Void, Never>?
+
+    func run() async -> Int {
+        calls += 1
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        if calls == 1 {
+            await withCheckedContinuation { continuation in
+                firstImportContinuation = continuation
+            }
+        }
+        return 0
+    }
+
+    func waitUntilFirstImportStarts() async {
+        if calls > 0 { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func finishFirstImport() {
+        firstImportContinuation?.resume()
+        firstImportContinuation = nil
+    }
+
+    func callCount() -> Int { calls }
+}
+
+private actor ImportCallProbe {
+    private var calls = 0
+
+    func run() -> Int {
+        calls += 1
+        return 0
+    }
+
+    func callCount() -> Int { calls }
 }

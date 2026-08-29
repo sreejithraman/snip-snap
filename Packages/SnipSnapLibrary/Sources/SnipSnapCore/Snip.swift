@@ -4,6 +4,7 @@ public enum SnipOrigin: String, Codable, Sendable {
     case selection
     case quickEntry
     case clipboard
+    case share
 }
 
 public struct SnipList: Identifiable, Codable, Equatable, Sendable, Hashable {
@@ -125,6 +126,7 @@ public struct Snip: Identifiable, Codable, Equatable, Sendable {
         case .selection: "Captured Selection"
         case .quickEntry: "Snip Snap — Quick Entry"
         case .clipboard: "Clipboard"
+        case .share: "Shared"
         }
     }
 

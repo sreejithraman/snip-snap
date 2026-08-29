@@ -36,6 +36,13 @@ paths.each do |path|
 
     rules << "personal home path" if line.match?(%r{/(?:Users|home)/[A-Za-z0-9._-]+/})
 
+    build_input = path.end_with?(".xcconfig", ".entitlements", ".plist") ||
+      path.end_with?("project.pbxproj")
+    app_group_values = line.scan(/\bgroup\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+\b/)
+    if build_input && app_group_values.any? { |value| value != "group.org.example.snipsnap" }
+      rules << "non-placeholder App Group ID"
+    end
+
     team_context = line.match?(/DEVELOPMENT_TEAM|teamID|TeamIdentifier|Developer ID Application/i)
     team_values = line.scan(/\b[A-Z0-9]{10}\b/)
     rules << "Apple team ID" if team_context && team_values.any? { |value| !clear_fake_value?(value) }

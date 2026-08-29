@@ -740,7 +740,6 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       SwiftDataSnipLibrary.attachmentRootURL(forStoreURL: url).path,
       "/tmp/snip-snap-dev-slot/Local/Attachments"
     )
-    XCTAssertEqual(SnipSnapStoreSchemaContract.currentVersion, 1)
   }
 
   func testSwiftDataRejectsAStoreWithRecordsButNoLists() throws {
