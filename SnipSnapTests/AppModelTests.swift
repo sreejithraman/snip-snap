@@ -107,10 +107,11 @@ final class AppModelTests: StoreBackedTestCase {
         let saved = Snip(content: "Already here", origin: .quickEntry)
         let library = InMemorySnipLibrary(snips: [saved])
         let model = AppModel(library: library, defaults: defaults())
-        await model.reload()
-        await Task.yield()
-        await Task.yield()
+        let didFinishStartupLoad = await waitUntil {
+            model.snips.map(\.id) == [saved.id]
+        }
 
+        XCTAssertTrue(didFinishStartupLoad)
         XCTAssertEqual(model.snips.map(\.id), [saved.id])
         let snapshotCallsBeforeAdd = await library.snapshotCallCount
         let didAdd = await model.add(content: "New", origin: .quickEntry)
@@ -120,6 +121,19 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(addedContents, ["New"])
         XCTAssertEqual(snapshotCallsAfterAdd, snapshotCallsBeforeAdd)
         XCTAssertEqual(Set(model.snips.map(\.content)), ["Already here", "New"])
+    }
+
+    @MainActor
+    private func waitUntil(
+        timeout: Duration = .seconds(1),
+        condition: @escaping @MainActor () -> Bool
+    ) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !condition(), clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        return condition()
     }
 
     @MainActor
