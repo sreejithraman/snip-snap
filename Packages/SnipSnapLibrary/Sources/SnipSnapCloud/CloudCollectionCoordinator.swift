@@ -119,9 +119,21 @@ package enum CloudCollectionStatus: Equatable, Sendable {
   case requiresEnable
 }
 
-package enum CloudCollectionError: Error, Equatable, Sendable {
+package enum CloudCollectionError: LocalizedError, Equatable, Sendable {
   case noActiveCollection
   case invalidDescriptor
+  case operationInProgress
+
+  package var errorDescription: String? {
+    switch self {
+    case .noActiveCollection:
+      "iCloud Sync does not have an active collection."
+    case .invalidDescriptor:
+      "The iCloud Sync collection is not valid."
+    case .operationInProgress:
+      "Another iCloud Sync task is still running."
+    }
+  }
 }
 
 package enum CloudCollectionStep: Equatable, Sendable {
@@ -144,6 +156,7 @@ package actor CloudCollectionCoordinator {
   private let syncDriver: any CloudCollectionSyncDriver
   private let makeDescriptor: DescriptorFactory
   private let afterStep: StepHook
+  private var operationInProgress = false
 
   package init(
     cloudScope: String,
@@ -166,6 +179,8 @@ package actor CloudCollectionCoordinator {
   }
 
   package func deleteSyncedContent() async throws -> CloudCollectionStatus {
+    try beginOperation()
+    defer { finishOperation() }
     guard let current = try await transport.fetchControl() else {
       throw CloudCollectionError.noActiveCollection
     }
@@ -193,20 +208,23 @@ package actor CloudCollectionCoordinator {
       try await localStore.finishCleanup(oldZones)
       return .deletedSyncedContent(namespace)
     case .conflict(let winning):
-      try await transport.deleteZones(fresh.zones.subtracting(winning.descriptor.zones))
-      try await localStore.finishCleanup(fresh.zones)
+      let oldZones = current.descriptor.zones.subtracting(winning.descriptor.zones)
+      try await localStore.stageCleanup(oldZones)
       let namespace = winning.descriptor.namespace(
         cloudScope: cloudScope,
         accountLineage: accountLineage
       )
       try await localStore.adopt(namespace)
       try await syncDriver.fetch(context(winning.descriptor))
+      try? await cleanPendingZones(protecting: winning.descriptor.zones)
       return .adoptedRemoteCollection(namespace)
     }
   }
 
   /// Fetches the control record before work and again immediately before the only send.
   package func synchronize() async throws -> CloudCollectionStatus {
+    try beginOperation()
+    defer { finishOperation() }
     let local = try await localStore.state()
     guard let control = try await transport.fetchControl() else {
       if local.hasSyncedBefore {
@@ -258,6 +276,8 @@ package actor CloudCollectionCoordinator {
 
   /// Explicit user intent is required before a missing control record may be recreated.
   package func enableSync() async throws -> CloudCollectionStatus {
+    try beginOperation()
+    defer { finishOperation() }
     if let current = try await transport.fetchControl() {
       try validate(current.descriptor)
       try await localStore.finishCleanup(current.descriptor.zones)
@@ -289,15 +309,13 @@ package actor CloudCollectionCoordinator {
       try await syncDriver.fetch(context(accepted.descriptor))
       return .enabled(namespace)
     case .conflict(let winning):
-      let unused = fresh.zones.subtracting(winning.descriptor.zones)
-      try await transport.deleteZones(unused)
-      try await localStore.finishCleanup(fresh.zones)
       let namespace = winning.descriptor.namespace(
         cloudScope: cloudScope,
         accountLineage: accountLineage
       )
       try await localStore.adopt(namespace)
       try await syncDriver.fetch(context(winning.descriptor))
+      try? await cleanPendingZones(protecting: winning.descriptor.zones)
       return .enabled(namespace)
     }
   }
@@ -307,6 +325,15 @@ package actor CloudCollectionCoordinator {
     guard !pending.isEmpty else { return }
     try await transport.deleteZones(pending)
     try await localStore.finishCleanup(pending)
+  }
+
+  private func beginOperation() throws {
+    guard !operationInProgress else { throw CloudCollectionError.operationInProgress }
+    operationInProgress = true
+  }
+
+  private func finishOperation() {
+    operationInProgress = false
   }
 
   private func context(_ descriptor: CloudCollectionDescriptor) -> CloudCollectionSyncContext {

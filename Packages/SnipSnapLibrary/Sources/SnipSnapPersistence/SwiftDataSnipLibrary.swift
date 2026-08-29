@@ -283,6 +283,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
 
   let lockURL: URL
   let attachmentRootURL: URL
+  let readOnlyRecoveryMarkerURL: URL
   let container: ModelContainer?
   let isAvailable: Bool
   let afterMutationBeforeSave: @Sendable () throws -> Void
@@ -325,6 +326,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
 
     self.lockURL = lockURL
     attachmentRootURL = Self.attachmentRootURL(forStoreURL: storeURL)
+    readOnlyRecoveryMarkerURL = Self.readOnlyRecoveryMarkerURL(forStoreURL: storeURL)
     self.container = container
     isAvailable = true
     self.afterMutationBeforeSave = afterMutationBeforeSave
@@ -368,6 +370,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
   private init(unavailableAt storeURL: URL) {
     lockURL = storeURL.appendingPathExtension("lock")
     attachmentRootURL = Self.attachmentRootURL(forStoreURL: storeURL)
+    readOnlyRecoveryMarkerURL = Self.readOnlyRecoveryMarkerURL(forStoreURL: storeURL)
     container = nil
     isAvailable = false
     afterMutationBeforeSave = {}
@@ -417,6 +420,20 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       .appendingPathComponent("Attachments", isDirectory: true)
   }
 
+  package static func readOnlyRecoveryMarkerURL(forStoreURL storeURL: URL) -> URL {
+    storeURL.deletingLastPathComponent()
+      .appendingPathComponent(".snipsnap-read-only-recovery", isDirectory: false)
+  }
+
+  package func markReadOnlyRecovery() throws {
+    try DurableFile.write(Data("1".utf8), to: readOnlyRecoveryMarkerURL)
+  }
+
+  package func removeReadOnlyRecoveryMarker() throws {
+    guard FileManager.default.fileExists(atPath: readOnlyRecoveryMarkerURL.path) else { return }
+    try FileManager.default.removeItem(at: readOnlyRecoveryMarkerURL)
+  }
+
   private static func publishShareDestinations(_ lists: [SnipList], storeURL: URL) throws {
     guard let rootURL = ShareImportPaths.sharedRoot(forStoreURL: storeURL) else { return }
     try ShareDestinationCatalog.write(
@@ -451,6 +468,9 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
+    guard !FileManager.default.fileExists(atPath: readOnlyRecoveryMarkerURL.path) else {
+      throw SnipLibraryError.readOnlyRecovery
+    }
     let context = Self.makeContext(container: container)
     let loaded = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
     try Self.validate(loaded.state)

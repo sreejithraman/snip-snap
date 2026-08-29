@@ -789,7 +789,7 @@ package actor SwiftDataSyncModePersistence {
   /// Activates a fresh empty store while keeping the prior store as a recovery copy.
   package func activateEmptyCollection(
     namespace: ICloudSyncNamespaceBinding?
-  ) throws {
+  ) async throws {
     guard manifest.transition == nil,
       manifest.writeReservation == nil,
       !writeAdmissionInProgress,
@@ -810,6 +810,7 @@ package actor SwiftDataSyncModePersistence {
     declared.stores.append(candidate)
     declared.attentionReason = nil
     try commit(declared)
+    var activationCommitted = false
     do {
       let candidateRoot = storeURL(candidate)
       _ = try SwiftDataSnipLibrary(
@@ -817,13 +818,28 @@ package actor SwiftDataSyncModePersistence {
       )
       try DurableFile.syncDirectory(candidateRoot)
       try DurableFile.syncDirectory(candidateRoot.deletingLastPathComponent())
+      let currentLibrary = try libraryForTransition(storeID: current.id)
+      try await currentLibrary.markReadOnlyRecovery()
       candidate.lifecycle = .ready
       var activated = manifest
       activated.stores[try storeIndex(id: candidate.id)] = candidate
       activated.stores[try storeIndex(id: current.id)].lifecycle = .recovery
       activated.activeStoreID = candidate.id
       try commit(activated)
+      activationCommitted = true
+      if let currentNamespace = current.namespace {
+        try await currentLibrary.clearCloudTextSyncState(
+          namespaceKey: Self.namespaceKey(currentNamespace)
+        )
+      }
     } catch {
+      if activationCommitted {
+        try? recordAttention(.storageFailure)
+        throw error
+      }
+      if let currentLibrary = try? libraryForTransition(storeID: current.id) {
+        try? await currentLibrary.removeReadOnlyRecoveryMarker()
+      }
       var restored = manifest
       restored.stores.removeAll { $0.id == candidate.id }
       try? FileManager.default.removeItem(at: storeURL(candidate))

@@ -5,7 +5,13 @@ extension SwiftDataSyncModePersistence {
   package func activeLibrary() async throws -> any SnipLibrary {
     try reconcileWriteReservation()
     let initial = try await managedSnapshot(sortedBy: .chronological)
-    return ModeManagedSnipLibrary(persistence: self, lastKnown: initial)
+    return ModeManagedSnipLibrary(persistence: self, fallback: nil, lastKnown: initial)
+  }
+
+  nonisolated package func activeLibrary(
+    fallback: any SnipLibrary
+  ) -> any SnipLibrary {
+    ModeManagedSnipLibrary(persistence: self, fallback: fallback, lastKnown: nil)
   }
 
   package func activeCloudMutationLease(storeID: UUID) throws -> SyncModeActiveMutationLease {
@@ -112,10 +118,16 @@ extension SwiftDataSyncModePersistence {
 
 private actor ModeManagedSnipLibrary: SnipLibrary {
   let persistence: SwiftDataSyncModePersistence
-  private var lastKnown: SnipLibrarySnapshot
+  private let fallback: (any SnipLibrary)?
+  private var lastKnown: SnipLibrarySnapshot?
 
-  init(persistence: SwiftDataSyncModePersistence, lastKnown: SnipLibrarySnapshot) {
+  init(
+    persistence: SwiftDataSyncModePersistence,
+    fallback: (any SnipLibrary)?,
+    lastKnown: SnipLibrarySnapshot?
+  ) {
     self.persistence = persistence
+    self.fallback = fallback
     self.lastKnown = lastKnown
   }
 
@@ -123,7 +135,9 @@ private actor ModeManagedSnipLibrary: SnipLibrary {
     do {
       return try await checkedSnapshot(sortedBy: sortMode)
     } catch {
-      return lastKnown
+      if let lastKnown { return lastKnown }
+      if let fallback { return await fallback.snapshot(sortedBy: sortMode) }
+      return SnipLibrarySnapshot(snips: [], lists: [.inbox])
     }
   }
 

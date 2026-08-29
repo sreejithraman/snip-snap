@@ -24,6 +24,8 @@
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>SnipSnapCloudKitContainerIdentifier</key>
+	<string>$(SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER)</string>
 	<key>SUAutomaticallyUpdate</key>
 	<true/>
 	<key>SUEnableAutomaticChecks</key>

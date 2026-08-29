@@ -54,6 +54,47 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
     XCTAssertNil(malformed.recoveryScope)
   }
 
+  func testAppAssemblyRoutesLibraryCallsToTheActiveSyncModeStore() async throws {
+    let location = temporaryStore()
+    defer { try? FileManager.default.removeItem(at: location.root) }
+    let syncModeRoot = location.root.appendingPathComponent("SyncMode", isDirectory: true)
+    let persistence = try SwiftDataSyncModePersistence(rootURL: syncModeRoot)
+    let active = try await persistence.activeLibrary()
+    _ = try await active.perform(
+      .add(
+        content: "active sync-mode value",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [],
+        requestID: UUID(),
+        now: Date(timeIntervalSince1970: 1)
+      ),
+      sortedBy: .manual
+    )
+    let original = try SwiftDataSnipLibrary(storeURL: location.store)
+    _ = try await original.perform(
+      .add(
+        content: "wrong original value",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [],
+        requestID: UUID(),
+        now: Date(timeIntervalSince1970: 2)
+      ),
+      sortedBy: .manual
+    )
+
+    let assembly = SnipLibraryAssembly(
+      library: original,
+      syncModeRootURL: syncModeRoot
+    )
+    let snapshot = await assembly.library.snapshot(sortedBy: .manual)
+
+    XCTAssertEqual(snapshot.snips.map(\.content), ["active sync-mode value"])
+  }
+
   func testAppAssemblyUsesTheActiveCloudNamespaceWithARealRecoveryLibrary() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }

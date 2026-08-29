@@ -61,6 +61,7 @@
 		D00000000000000000000033 /* AppDataPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000032 /* AppDataPaths.swift */; };
 		D00000000000000000000020 /* SnipSnapCore in Frameworks */ = {isa = PBXBuildFile; productRef = D00000000000000000000010 /* SnipSnapCore */; };
 		D00000000000000000000021 /* SnipSnapPersistence in Frameworks */ = {isa = PBXBuildFile; productRef = D00000000000000000000011 /* SnipSnapPersistence */; };
+		D00000000000000000000024 /* SnipSnapCloud in Frameworks */ = {isa = PBXBuildFile; productRef = D00000000000000000000014 /* SnipSnapCloud */; };
 		D00000000000000000000022 /* SnipSnapCore in Frameworks */ = {isa = PBXBuildFile; productRef = D00000000000000000000012 /* SnipSnapCore */; };
 		D00000000000000000000023 /* SnipSnapPersistence in Frameworks */ = {isa = PBXBuildFile; productRef = D00000000000000000000013 /* SnipSnapPersistence */; };
 		E10000000000000000000001 /* SnipSnapiOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000001 /* SnipSnapiOSApp.swift */; };
@@ -73,6 +74,7 @@
 		E10000000000000000000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000008 /* Assets.xcassets */; };
 		E10000000000000000000009 /* SnipSnapCore in Frameworks */ = {isa = PBXBuildFile; productRef = EF0000000000000000000001 /* SnipSnapCore */; };
 		E1000000000000000000000A /* SnipSnapPersistence in Frameworks */ = {isa = PBXBuildFile; productRef = EF0000000000000000000002 /* SnipSnapPersistence */; };
+		E1000000000000000000000E /* SnipSnapCloud in Frameworks */ = {isa = PBXBuildFile; productRef = EF0000000000000000000004 /* SnipSnapCloud */; };
 		E1000000000000000000000B /* IOSAppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000009 /* IOSAppModelTests.swift */; };
 		E1000000000000000000000C /* SnipSnapiOSUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2000000000000000000000A /* SnipSnapiOSUITests.swift */; };
 		E1000000000000000000000D /* SnipSnapCore in Frameworks */ = {isa = PBXBuildFile; productRef = EF0000000000000000000003 /* SnipSnapCore */; };
@@ -228,6 +230,7 @@
 				2230FA4B303C74F2008B20D5 /* Sparkle in Frameworks */,
 				D00000000000000000000020 /* SnipSnapCore in Frameworks */,
 				D00000000000000000000021 /* SnipSnapPersistence in Frameworks */,
+				D00000000000000000000024 /* SnipSnapCloud in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -246,6 +249,7 @@
 			files = (
 				E10000000000000000000009 /* SnipSnapCore in Frameworks */,
 				E1000000000000000000000A /* SnipSnapPersistence in Frameworks */,
+				E1000000000000000000000E /* SnipSnapCloud in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -451,6 +455,7 @@
 				2230FA4A303C74F2008B20D5 /* Sparkle */,
 				D00000000000000000000010 /* SnipSnapCore */,
 				D00000000000000000000011 /* SnipSnapPersistence */,
+				D00000000000000000000014 /* SnipSnapCloud */,
 			);
 			productName = SnipSnap;
 			productReference = 200000000000000000000005 /* Snip Snap.app */;
@@ -496,6 +501,7 @@
 			packageProductDependencies = (
 				EF0000000000000000000001 /* SnipSnapCore */,
 				EF0000000000000000000002 /* SnipSnapPersistence */,
+				EF0000000000000000000004 /* SnipSnapCloud */,
 			);
 			productName = SnipSnapiOS;
 			productReference = E2000000000000000000000B /* Snip Snap iOS.app */;
@@ -1165,6 +1171,10 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = SnipSnapPersistence;
 		};
+		D00000000000000000000014 /* SnipSnapCloud */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SnipSnapCloud;
+		};
 		EF0000000000000000000001 /* SnipSnapCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = SnipSnapCore;
@@ -1176,6 +1186,10 @@
 		EF0000000000000000000003 /* SnipSnapCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = SnipSnapCore;
+		};
+		EF0000000000000000000004 /* SnipSnapCloud */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SnipSnapCloud;
 		};
 		FD0000000000000000000001 /* SnipSnapCore */ = {
 			isa = XCSwiftPackageProductDependency;

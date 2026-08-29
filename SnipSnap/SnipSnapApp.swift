@@ -1,4 +1,5 @@
 import AppKit
+import SnipSnapCloud
 import SnipSnapCore
 import Sparkle
 import SnipSnapPersistence
@@ -102,10 +103,13 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             library = JSONSnipLibrary.unavailable()
             initialError = "Snip Snap could not read or safely back up its snips file. Snip Snap cannot save new snips."
         }
+        let syncModeRootURL = libraryStoreURL.deletingLastPathComponent()
+            .appendingPathComponent("SyncMode", isDirectory: true)
         let assembly = SnipLibraryAssembly(
             library: library,
-            syncModeRootURL: libraryStoreURL.deletingLastPathComponent()
-                .appendingPathComponent("SyncMode", isDirectory: true)
+            syncModeRootURL: syncModeRootURL,
+            initializeSyncModeStore:
+                ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1"
         )
         let model = AppModel(
             library: assembly.library,
@@ -116,15 +120,27 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let syncedContentSettings: SyncedContentSettingsModel
 #if DEBUG
         if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1" {
-            syncedContentSettings = SyncedContentSettingsModel(
-                mode: .iCloudSync,
-                deleteAction: {}
+            syncedContentSettings = SnipSnapCloudAppAssembly.simulatedSyncedContentSettings(
+                rootURL: syncModeRootURL,
+                syncModeStore: assembly.syncModeStore
             )
         } else {
-            syncedContentSettings = SyncedContentSettingsModel(mode: .localOnly)
+            syncedContentSettings = SnipSnapCloudAppAssembly.syncedContentSettings(
+                rootURL: syncModeRootURL,
+                syncModeStore: assembly.syncModeStore,
+                containerIdentifier: Bundle.main.object(
+                    forInfoDictionaryKey: "SnipSnapCloudKitContainerIdentifier"
+                ) as? String
+            )
         }
 #else
-        syncedContentSettings = SyncedContentSettingsModel(mode: .localOnly)
+        syncedContentSettings = SnipSnapCloudAppAssembly.syncedContentSettings(
+            rootURL: syncModeRootURL,
+            syncModeStore: assembly.syncModeStore,
+            containerIdentifier: Bundle.main.object(
+                forInfoDictionaryKey: "SnipSnapCloudKitContainerIdentifier"
+            ) as? String
+        )
 #endif
         let fileDropController = PanelFileDropController()
         let snipDragSourceController = SnipDragSourceController()

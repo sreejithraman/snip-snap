@@ -11,6 +11,7 @@ public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {
     case invalidList
     case attachmentCopyFailed
     case modeTransitionInProgress
+    case readOnlyRecovery
     case transferUnsupported
     case transferConflict(SnipLibraryTransferConflict)
     case recoveryNotFound
@@ -39,6 +40,8 @@ public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {
             "Snip Snap could not copy one of the files."
         case .modeTransitionInProgress:
             "This device is changing its storage choice. Try again when setup finishes."
+        case .readOnlyRecovery:
+            "This is a recovery copy. Restore it to an active library before making changes."
         case .transferUnsupported:
             "This snip store cannot change storage modes."
         case .transferConflict:

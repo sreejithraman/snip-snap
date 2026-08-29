@@ -16,6 +16,16 @@ extension SwiftDataSyncModePersistence {
       _ = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("snips.store"))
       value.stores[activeIndex].lifecycle = .ready
     }
+    if let active = value.stores.first(where: { $0.id == value.activeStoreID }),
+      let root = storeRoots[active.id]
+    {
+      let marker = SwiftDataSnipLibrary.readOnlyRecoveryMarkerURL(
+        forStoreURL: root.appendingPathComponent("snips.store", isDirectory: false)
+      )
+      if FileManager.default.fileExists(atPath: marker.path) {
+        try FileManager.default.removeItem(at: marker)
+      }
+    }
     let removable = value.stores.filter {
       $0.id != value.activeStoreID && ($0.lifecycle == .creating || $0.lifecycle == .deleting)
     }.prefix(2)

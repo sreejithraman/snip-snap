@@ -1,6 +1,14 @@
 import Foundation
 import SnipSnapCore
 
+public struct SnipSyncModeStore: Sendable {
+  package let persistence: SwiftDataSyncModePersistence
+
+  package init(_ persistence: SwiftDataSyncModePersistence) {
+    self.persistence = persistence
+  }
+}
+
 public enum SnipRecoveryScopeFactory {
   public static func scope(
     forActiveCloudNamespace namespace: ICloudSyncNamespaceBinding?
@@ -33,6 +41,7 @@ public enum SnipRecoveryScopeFactory {
 public struct SnipLibraryAssembly: Sendable {
   public let library: any SnipLibrary
   public let recoveryScope: SnipRecoveryScope?
+  public let syncModeStore: SnipSyncModeStore?
 
   public init(
     library: any SnipLibrary,
@@ -42,17 +51,29 @@ public struct SnipLibraryAssembly: Sendable {
     recoveryScope = SnipRecoveryScopeFactory.scope(
       forActiveCloudNamespace: activeCloudNamespace
     )
+    syncModeStore = nil
   }
 
   public init(
     library: any SnipLibrary,
-    syncModeRootURL: URL
+    syncModeRootURL: URL,
+    initializeSyncModeStore: Bool = false
   ) {
-    self.init(
-      library: library,
-      activeCloudNamespace: SyncModeActivationManifestReader.activeCloudNamespace(
-        atSyncModeRootURL: syncModeRootURL
-      )
+    let namespace = SyncModeActivationManifestReader.activeCloudNamespace(
+      atSyncModeRootURL: syncModeRootURL
     )
+    recoveryScope = SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: namespace)
+    let manifestURL = syncModeRootURL.appendingPathComponent(
+      "activation.json", isDirectory: false
+    )
+    guard (initializeSyncModeStore || FileManager.default.fileExists(atPath: manifestURL.path)),
+      let persistence = try? SwiftDataSyncModePersistence(rootURL: syncModeRootURL)
+    else {
+      self.library = library
+      syncModeStore = nil
+      return
+    }
+    self.library = persistence.activeLibrary(fallback: library)
+    syncModeStore = SnipSyncModeStore(persistence)
   }
 }

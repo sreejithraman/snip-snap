@@ -68,13 +68,17 @@ package actor CloudKitCollectionControlTransport: CloudCollectionControlTranspor
     self.controlID = controlID
   }
 
+  package nonisolated static func isMissingControl(_ code: CKError.Code) -> Bool {
+    code == .unknownItem || code == .zoneNotFound
+  }
+
   package func fetchControl() async throws -> CloudCollectionControlRecord? {
     do {
       let record = try await database.record(
         for: CloudKitRecordMapper.recordID(for: controlID)
       )
       return try CloudCollectionControlCodec.decode(record, expectedID: controlID)
-    } catch let error as CKError where error.code == .unknownItem {
+    } catch let error as CKError where Self.isMissingControl(error.code) {
       return nil
     } catch let error as CloudCollectionError {
       throw error
