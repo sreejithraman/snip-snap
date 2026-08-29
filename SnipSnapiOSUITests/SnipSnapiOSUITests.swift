@@ -4,14 +4,32 @@ import XCTest
 final class SnipSnapiOSUITests: XCTestCase {
     private func launchApp(
         storeName: String = "ui-\(UUID().uuidString)",
-        withAttachments: Bool = false
+        withAttachments: Bool = false,
+        accountNotice: Bool = false
     ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["SNIP_SNAP_UI_TESTING"] = "1"
         app.launchEnvironment["SNIP_SNAP_UI_TEST_STORE"] = storeName
         if withAttachments { app.launchEnvironment["SNIP_SNAP_UI_TEST_ATTACHMENTS"] = "1" }
+        if accountNotice {
+            app.launchEnvironment["SNIP_SNAP_UI_TEST_ACCOUNT_NOTICE"] = "signedOut"
+        }
         app.launch()
         return app
+    }
+
+    func testSignedOutNoticeOffersBothSafeChoicesWithoutAnAlert() {
+        continueAfterFailure = false
+        let app = launchApp(accountNotice: true)
+
+        let notice = app.staticTexts["apple-account-notice"]
+        XCTAssertTrue(notice.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["keep-account-cache"].exists)
+        XCTAssertTrue(app.buttons["remove-account-cache"].exists)
+        XCTAssertFalse(app.alerts.firstMatch.exists)
+
+        app.buttons["keep-account-cache"].tap()
+        XCTAssertFalse(notice.waitForExistence(timeout: 1))
     }
 
     func testCreatesAndEditsTextSnip() {

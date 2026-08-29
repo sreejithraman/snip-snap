@@ -6,6 +6,7 @@ struct IOSAppRootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var appGraph: IOSAppGraph
     @State private var sheet: AppSheet?
+    @State private var accountNoticeModel: AppleAccountNoticeModel?
     private let uiTestAttachmentURLs: [URL]
 
     init(
@@ -14,7 +15,8 @@ struct IOSAppRootView: View {
         initialSnapshot: SnipLibrarySnapshot? = nil,
         startupError: String? = nil,
         uiTestAttachmentURLs: [URL] = [],
-        shareImportOperation: (@Sendable () async -> Int)? = nil
+        shareImportOperation: (@Sendable () async -> Int)? = nil,
+        accountNoticeModel: AppleAccountNoticeModel? = nil
     ) {
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         _appGraph = State(initialValue: IOSAppGraph(
@@ -24,6 +26,7 @@ struct IOSAppRootView: View {
             startupError: startupError,
             shareImportOperation: shareImportOperation
         ))
+        _accountNoticeModel = State(initialValue: accountNoticeModel)
     }
 
     private var model: IOSAppModel { appGraph.model }
@@ -35,6 +38,11 @@ struct IOSAppRootView: View {
             SnipCollectionView(model: model, sheet: $sheet)
         } detail: {
             SnipDetailView(model: model, sheet: $sheet)
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let accountNoticeModel, accountNoticeModel.notice != nil {
+                AppleAccountNoticeBanner(model: accountNoticeModel)
+            }
         }
         .sheet(item: $sheet) { destination in
             switch destination {
@@ -72,11 +80,68 @@ struct IOSAppRootView: View {
                     attachmentURLs: uiTestAttachmentURLs
                 )
             }
+            await accountNoticeModel?.refresh()
         }
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .active, let shareImporter = appGraph.shareImporter else { return }
-            Task { await shareImporter.importPendingAndReload() }
+            guard phase == .active else { return }
+            Task {
+                if let shareImporter = appGraph.shareImporter {
+                    await shareImporter.importPendingAndReload()
+                }
+                await accountNoticeModel?.refresh()
+            }
         }
+    }
+}
+
+private struct AppleAccountNoticeBanner: View {
+    let model: AppleAccountNoticeModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: iconName)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(model.title)
+                        .font(.headline)
+                        .accessibilityIdentifier("apple-account-notice")
+                    Text(model.message)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if model.showsResolutionActions {
+                HStack(spacing: 12) {
+                    Button("Keep Local Copy") {
+                        Task { await model.resolve(.keepLocalCopy) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("keep-account-cache")
+                    Button("Remove", role: .destructive) {
+                        Task { await model.resolve(.remove) }
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("remove-account-cache")
+                }
+                .disabled(model.isResolving)
+            }
+            if let errorMessage = model.errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private var iconName: String {
+        model.notice == .paused ? "icloud.slash" : "person.crop.circle.badge.exclamationmark"
     }
 }
 

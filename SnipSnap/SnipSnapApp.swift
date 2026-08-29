@@ -1,4 +1,6 @@
 import AppKit
+import Observation
+import SnipSnapCloud
 import SnipSnapCore
 import Sparkle
 import SnipSnapPersistence
@@ -37,7 +39,8 @@ struct SnipSnapApp: App {
             AppSettingsContent(
                 model: appDelegate.model,
                 shortcutSettings: appDelegate.shortcutSettings,
-                coordinator: appDelegate.coordinator
+                coordinator: appDelegate.coordinator,
+                accountNoticeModel: appDelegate.accountNoticeModel
             )
         }
         .defaultSize(width: 400, height: 230)
@@ -56,9 +59,19 @@ private struct AppSettingsContent: View {
     @ObservedObject var model: AppModel
     let shortcutSettings: ShortcutSettings
     let coordinator: AppCoordinator
+    @State var accountNoticeModel: AppleAccountNoticeModel?
 
     var body: some View {
-        ShortcutSettingsView(coordinator: coordinator)
+        VStack(spacing: 0) {
+            if let accountNoticeModel, accountNoticeModel.notice != nil {
+                AppleAccountNoticeView(
+                    model: accountNoticeModel,
+                    accessibilityIdentifier: "apple-account-notice-settings"
+                )
+                Divider()
+            }
+            ShortcutSettingsView(coordinator: coordinator)
+        }
             .environmentObject(shortcutSettings)
             .preferredColorScheme(model.appearance.colorScheme)
     }
@@ -73,6 +86,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     let snipDragSourceController: SnipDragSourceController
     let updaterController: SPUStandardUpdaterController
     let updateChecksEnabled: Bool
+    let accountNoticeModel: AppleAccountNoticeModel?
     private var mainPanel: SnipSnapPanel?
     private var isFlushingBeforeTermination = false
 
@@ -102,6 +116,16 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         self.snipDragSourceController = snipDragSourceController
         updateChecksEnabled = isReleaseApp &&
             ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
+        if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_ACCOUNT_NOTICE"] == "signedOut" {
+            accountNoticeModel = AppleAccountNoticeModel(
+                notice: .signedOut,
+                handler: UITestAppleAccountCacheHandler()
+            )
+        } else if let handler = Self.makeAccountCacheHandler() {
+            accountNoticeModel = AppleAccountNoticeModel(handler: handler)
+        } else {
+            accountNoticeModel = nil
+        }
         updaterController = SPUStandardUpdaterController(
             startingUpdater: updateChecksEnabled,
             updaterDelegate: nil,
@@ -118,7 +142,8 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let rootView = ContentView(
                 coordinator: coordinator,
                 fileDropController: fileDropController,
-                snipDragSourceController: snipDragSourceController
+                snipDragSourceController: snipDragSourceController,
+                accountNoticeModel: accountNoticeModel
             )
                 .environmentObject(model)
                 .environmentObject(shortcutSettings)
@@ -146,6 +171,24 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
 #endif
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        guard let accountNoticeModel else { return }
+        Task { await accountNoticeModel.refresh() }
+    }
+
+    private static func makeAccountCacheHandler() -> AppleAccountCacheCoordinatorHandler? {
+        guard let containerIdentifier = Bundle.main.object(
+            forInfoDictionaryKey: "SnipSnapCloudKitContainerIdentifier"
+        ) as? String else { return nil }
+        let syncRootURL = JSONSnipLibrary.defaultStoreURL()
+            .deletingLastPathComponent()
+            .appendingPathComponent("SyncMode", isDirectory: true)
+        return AppleAccountCacheCoordinatorHandler(
+            syncRootURL: syncRootURL,
+            containerIdentifier: containerIdentifier
+        )
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
@@ -160,6 +203,128 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
+    }
+}
+
+@MainActor
+@Observable
+final class AppleAccountNoticeModel {
+    private(set) var notice: AppleAccountNotice?
+    private(set) var isResolving = false
+    private(set) var errorMessage: String?
+    private let handler: (any AppleAccountCacheHandling)?
+
+    init(
+        notice: AppleAccountNotice? = nil,
+        handler: (any AppleAccountCacheHandling)? = nil
+    ) {
+        self.notice = handler == nil ? nil : notice
+        self.handler = handler
+    }
+
+    var title: String {
+        switch notice {
+        case .paused: "iCloud Sync Paused"
+        case .signedOut: "Signed Out of iCloud"
+        case .accountChanged: "Apple Account Changed"
+        case nil: ""
+        }
+    }
+
+    var message: String {
+        switch notice {
+        case .paused:
+            "Your synced cache is still on this Mac. Snip Snap will try again when iCloud is available."
+        case .signedOut, .accountChanged:
+            "Snip Snap kept the prior account’s cache apart. Keep it as a local copy or remove it from this Mac."
+        case nil:
+            ""
+        }
+    }
+
+    var showsResolutionActions: Bool {
+        notice == .signedOut || notice == .accountChanged
+    }
+
+    func resolve(_ choice: AppleAccountCacheChoice) async {
+        guard let handler, notice != nil, !isResolving else { return }
+        isResolving = true
+        defer { isResolving = false }
+        do {
+            try await handler.resolveAppleAccountCache(choice)
+            notice = try await handler.refreshAppleAccountNotice()
+            errorMessage = nil
+        } catch {
+            errorMessage = "Snip Snap could not finish that choice. Please try again."
+        }
+    }
+
+    func refresh() async {
+        guard let handler, !isResolving else { return }
+        do {
+            notice = try await handler.refreshAppleAccountNotice()
+            errorMessage = nil
+        } catch {
+            // Keep the last safe state. Account lookup failures must not prompt removal.
+        }
+    }
+}
+
+struct AppleAccountNoticeView: View {
+    let model: AppleAccountNoticeModel
+    let accessibilityIdentifier: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Needs Attention")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+            Label(
+                model.title,
+                systemImage: model.notice == .paused
+                    ? "icloud.slash" : "person.crop.circle.badge.exclamationmark"
+            )
+                .font(.headline)
+            Text(model.message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if model.showsResolutionActions {
+                HStack(spacing: 12) {
+                    Button("Keep Local Copy") {
+                        Task { await model.resolve(.keepLocalCopy) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("keep-account-cache")
+                    Button("Remove", role: .destructive) {
+                        Task { await model.resolve(.remove) }
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("remove-account-cache")
+                }
+                .disabled(model.isResolving)
+            }
+            if let errorMessage = model.errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityIdentifier(accessibilityIdentifier)
+    }
+}
+
+private actor UITestAppleAccountCacheHandler: AppleAccountCacheHandling {
+    private var didResolve = false
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? {
+        didResolve ? nil : .signedOut
+    }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {
+        didResolve = true
     }
 }
 

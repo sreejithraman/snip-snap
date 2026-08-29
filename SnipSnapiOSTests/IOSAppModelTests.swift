@@ -6,6 +6,49 @@ import XCTest
 
 @MainActor
 final class IOSAppModelTests: XCTestCase {
+    func testAccountNoticeInvokesHandlerAndHidesAfterKeepLocalCopy() async {
+        let handler = IOSAppleAccountCacheHandlerProbe()
+        let model = AppleAccountNoticeModel(notice: .signedOut, handler: handler)
+        XCTAssertEqual(model.notice, .signedOut)
+
+        await model.resolve(.keepLocalCopy)
+
+        XCTAssertNil(model.notice)
+        let choices = await handler.choices()
+        XCTAssertEqual(choices, [.keepLocalCopy])
+    }
+
+    func testLocalOnlyAssemblyCannotShowAnAccountNoticeWithoutAHandler() {
+        let model = AppleAccountNoticeModel(notice: .accountChanged, handler: nil)
+        XCTAssertNil(model.notice)
+    }
+
+    func testPausedNoticeRendersWithoutCacheChoices() {
+        let model = AppleAccountNoticeModel(
+            notice: .paused,
+            handler: IOSAppleAccountCacheHandlerProbe()
+        )
+
+        XCTAssertEqual(model.title, "iCloud Sync Paused")
+        XCTAssertTrue(model.message.contains("still on this device"))
+        XCTAssertFalse(model.showsResolutionActions)
+    }
+
+    func testAccountNoticeRefreshReadsTheProductionHandlerSeam() async {
+        let handler = IOSAppleAccountCacheHandlerProbe(notices: [.accountChanged, nil])
+        let model = AppleAccountNoticeModel(handler: handler)
+
+        await model.refresh()
+        XCTAssertEqual(model.notice, .accountChanged)
+
+        await model.resolve(.remove)
+        XCTAssertNil(model.notice)
+        let choices = await handler.choices()
+        let refreshCount = await handler.refreshCount()
+        XCTAssertEqual(choices, [.remove])
+        XCTAssertEqual(refreshCount, 2)
+    }
+
     func testRootReinitializationKeepsForegroundImportOnRetainedGraph() async throws {
         let library = ModelTestLibrary()
         let firstProbe = ImportCallProbe()
@@ -312,6 +355,28 @@ final class IOSAppModelTests: XCTestCase {
         }
         return await probe.callCount() >= expected
     }
+}
+
+private actor IOSAppleAccountCacheHandlerProbe: AppleAccountCacheHandling {
+    private var received: [AppleAccountCacheChoice] = []
+    private var notices: [AppleAccountNotice?]
+    private var noticeReads = 0
+
+    init(notices: [AppleAccountNotice?] = []) {
+        self.notices = notices
+    }
+
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? {
+        defer { noticeReads += 1 }
+        return notices.indices.contains(noticeReads) ? notices[noticeReads] : nil
+    }
+
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {
+        received.append(choice)
+    }
+
+    func choices() -> [AppleAccountCacheChoice] { received }
+    func refreshCount() -> Int { noticeReads }
 }
 
 @MainActor

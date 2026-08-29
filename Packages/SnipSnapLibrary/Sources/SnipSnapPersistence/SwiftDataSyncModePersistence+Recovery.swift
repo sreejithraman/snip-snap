@@ -7,6 +7,23 @@ extension SwiftDataSyncModePersistence {
     // The revision advances before the store write starts. A leftover reservation means the
     // write may or may not have reached SwiftData, so keep that revision and reopen writes.
     value.writeReservation = nil
+    if let isolation = value.accountIsolation,
+      value.activeStoreID == isolation.storeID,
+      let sourceIndex = value.stores.firstIndex(where: { $0.id == isolation.storeID }),
+      let replacementIndex = value.stores.firstIndex(where: {
+        $0.id == isolation.replacementStoreID
+      })
+    {
+      guard let replacementRoot = storeRoots[isolation.replacementStoreID] else {
+        throw SyncModePersistenceError.invalidManifest
+      }
+      _ = try SwiftDataSnipLibrary(
+        storeURL: replacementRoot.appendingPathComponent("snips.store")
+      )
+      value.stores[replacementIndex].lifecycle = .ready
+      value.stores[sourceIndex].lifecycle = .isolated
+      value.activeStoreID = isolation.replacementStoreID
+    }
     if let activeIndex = value.stores.firstIndex(where: { $0.id == value.activeStoreID }),
       value.stores[activeIndex].lifecycle == .creating
     {
@@ -105,6 +122,7 @@ extension SwiftDataSyncModePersistence {
     else { throw SyncModePersistenceError.invalidManifest }
     for store in value.stores {
       guard (store.kind == .iCloudSync) == (store.namespace != nil),
+        (store.kind == .localOnly || store.quarantinedNamespace == nil),
         store.relativeRoot == canonicalRelativeRoot(for: store)
       else { throw SyncModePersistenceError.invalidManifest }
     }
@@ -163,6 +181,27 @@ extension SwiftDataSyncModePersistence {
       } else if !transition.pendingSettlementSnipIDs.isEmpty {
         throw SyncModePersistenceError.invalidManifest
       }
+    }
+    if let isolation = value.accountIsolation {
+      guard value.transition == nil,
+        let source = value.stores.first(where: { $0.id == isolation.storeID }),
+        let replacement = value.stores.first(where: {
+          $0.id == isolation.replacementStoreID
+        }),
+        source.kind == .iCloudSync,
+        source.namespace == isolation.namespace,
+        replacement.kind == .localOnly,
+        replacement.namespace == nil
+      else { throw SyncModePersistenceError.invalidManifest }
+      let declared = value.activeStoreID == source.id
+        && source.lifecycle == .ready
+        && replacement.lifecycle == .creating
+      let isolated = value.activeStoreID == replacement.id
+        && source.lifecycle == .isolated
+        && replacement.lifecycle == .ready
+      guard declared || isolated else { throw SyncModePersistenceError.invalidManifest }
+    } else if value.stores.contains(where: { $0.lifecycle == .isolated }) {
+      throw SyncModePersistenceError.invalidManifest
     }
   }
 

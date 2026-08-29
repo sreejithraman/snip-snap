@@ -26,6 +26,8 @@
 	<true/>
 	<key>SnipSnapAppGroupIdentifier</key>
 	<string>$(SNIP_SNAP_APP_GROUP_IDENTIFIER)</string>
+	<key>SnipSnapCloudKitContainerIdentifier</key>
+	<string>$(SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER)</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

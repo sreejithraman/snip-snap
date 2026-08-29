@@ -21,6 +21,7 @@ struct ContentView: View {
     let coordinator: AppCoordinator
     @ObservedObject private var fileDropController: PanelFileDropController
     private let snipDragSourceController: SnipDragSourceController
+    private let accountNoticeModel: AppleAccountNoticeModel?
 
     @State private var entryDraft = ComposerDraft()
     @State private var entryDraftListID = SnipList.inboxID
@@ -42,10 +43,12 @@ struct ContentView: View {
     init(
         coordinator: AppCoordinator,
         fileDropController: PanelFileDropController,
-        snipDragSourceController: SnipDragSourceController
+        snipDragSourceController: SnipDragSourceController,
+        accountNoticeModel: AppleAccountNoticeModel? = nil
     ) {
         self.coordinator = coordinator
         self.snipDragSourceController = snipDragSourceController
+        self.accountNoticeModel = accountNoticeModel
         _fileDropController = ObservedObject(wrappedValue: fileDropController)
     }
 
@@ -112,6 +115,13 @@ struct ContentView: View {
     private var panelShell: some View {
         VStack(spacing: SnipSnapSpacing.relatedContent) {
             floatingHeader
+
+            if let accountNoticeModel, accountNoticeModel.notice != nil {
+                AppleAccountNoticeView(
+                    model: accountNoticeModel,
+                    accessibilityIdentifier: "apple-account-notice-main"
+                )
+            }
 
             mainPanel
 
@@ -193,6 +203,10 @@ struct ContentView: View {
         } message: {
             Text(model.presentedError ?? "")
         }
+    }
+
+    var showsAccountNoticeInMainPanel: Bool {
+        accountNoticeModel?.notice != nil
     }
 
     private var mainPanel: some View {

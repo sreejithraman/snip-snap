@@ -25,8 +25,15 @@ package actor CloudFullSyncCoordinator {
     try await run(fetch: true, send: true, beforeSend: { _ in })
   }
 
-  package func fetchRemote() async throws {
-    try await run(fetch: true, send: false, beforeSend: { _ in })
+  package func fetchRemote(
+    beforeApply: @escaping @Sendable () async throws -> Void = {}
+  ) async throws {
+    try await run(
+      fetch: true,
+      send: false,
+      beforeFetchApply: beforeApply,
+      beforeSend: { _ in }
+    )
   }
 
   package func sendPending() async throws {
@@ -42,6 +49,7 @@ package actor CloudFullSyncCoordinator {
   private func run(
     fetch: Bool,
     send: Bool,
+    beforeFetchApply: @escaping @Sendable () async throws -> Void = {},
     beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void
   ) async throws {
     guard !syncing else { throw CloudTransportError.syncAlreadyRunning }
@@ -53,7 +61,9 @@ package actor CloudFullSyncCoordinator {
       started = true
     }
     if fetch {
-      try await commit(.fetched(transport.fetch(scope: .all)), outbound: nil)
+      let fetched = try await transport.fetch(scope: .all)
+      try await beforeFetchApply()
+      try await commit(.fetched(fetched), outbound: nil)
     }
     if send {
       let outbound = try await store.pendingChanges()

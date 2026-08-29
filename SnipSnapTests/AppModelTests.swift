@@ -6,6 +6,80 @@ import AppKit
 @testable import SnipSnapPersistence
 
 final class AppModelTests: StoreBackedTestCase {
+    @MainActor
+    func testMacAccountNoticeInvokesHandlerAndHidesAfterRemove() async {
+        let handler = MacAppleAccountCacheHandlerProbe()
+        let model = AppleAccountNoticeModel(notice: .accountChanged, handler: handler)
+        XCTAssertEqual(model.notice, .accountChanged)
+
+        await model.resolve(.remove)
+
+        XCTAssertNil(model.notice)
+        let choices = await handler.choices()
+        XCTAssertEqual(choices, [.remove])
+    }
+
+    @MainActor
+    func testMacLocalOnlyAssemblyHidesNoticeWithoutAHandler() {
+        let model = AppleAccountNoticeModel(notice: .signedOut, handler: nil)
+        XCTAssertNil(model.notice)
+    }
+
+    @MainActor
+    func testMacPausedNoticeRendersWithoutCacheChoices() {
+        let model = AppleAccountNoticeModel(
+            notice: .paused,
+            handler: MacAppleAccountCacheHandlerProbe()
+        )
+
+        XCTAssertEqual(model.title, "iCloud Sync Paused")
+        XCTAssertTrue(model.message.contains("still on this Mac"))
+        XCTAssertFalse(model.showsResolutionActions)
+    }
+
+    @MainActor
+    func testMacAccountNoticeRefreshReadsTheProductionHandlerSeam() async {
+        let handler = MacAppleAccountCacheHandlerProbe(notices: [.signedOut, nil])
+        let model = AppleAccountNoticeModel(handler: handler)
+
+        await model.refresh()
+        XCTAssertEqual(model.notice, .signedOut)
+
+        await model.resolve(.keepLocalCopy)
+        XCTAssertNil(model.notice)
+        let choices = await handler.choices()
+        let refreshCount = await handler.refreshCount()
+        XCTAssertEqual(choices, [.keepLocalCopy])
+        XCTAssertEqual(refreshCount, 2)
+    }
+
+    @MainActor
+    func testMacMainPanelReceivesNeedsAttentionModel() throws {
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: "Snip SnapAccountNoticePanelTests-\(UUID().uuidString)")
+        )
+        let appModel = AppModel(
+            library: try JSONSnipLibrary(fileURL: try storeURL()),
+            defaults: defaults
+        )
+        let settings = ShortcutSettings(defaults: defaults)
+        let noticeModel = AppleAccountNoticeModel(
+            notice: .accountChanged,
+            handler: MacAppleAccountCacheHandlerProbe()
+        )
+
+        let view = ContentView(
+            coordinator: AppCoordinator(model: appModel, shortcutSettings: settings),
+            fileDropController: PanelFileDropController(),
+            snipDragSourceController: SnipDragSourceController(),
+            accountNoticeModel: noticeModel
+        )
+
+        XCTAssertTrue(view.showsAccountNoticeInMainPanel)
+        XCTAssertEqual(noticeModel.title, "Apple Account Changed")
+        XCTAssertTrue(noticeModel.showsResolutionActions)
+    }
+
     private actor InMemorySnipLibrary: SnipLibrary {
         private var snips: [Snip]
         private(set) var addedContents: [String] = []
@@ -756,4 +830,26 @@ final class AppModelTests: StoreBackedTestCase {
         store.finishSave(snapshot, saved: false)
         XCTAssertFalse(FileManager.default.fileExists(atPath: temporary.path))
     }
+}
+
+private actor MacAppleAccountCacheHandlerProbe: AppleAccountCacheHandling {
+    private var received: [AppleAccountCacheChoice] = []
+    private var notices: [AppleAccountNotice?]
+    private var noticeReads = 0
+
+    init(notices: [AppleAccountNotice?] = []) {
+        self.notices = notices
+    }
+
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? {
+        defer { noticeReads += 1 }
+        return notices.indices.contains(noticeReads) ? notices[noticeReads] : nil
+    }
+
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {
+        received.append(choice)
+    }
+
+    func choices() -> [AppleAccountCacheChoice] { received }
+    func refreshCount() -> Int { noticeReads }
 }

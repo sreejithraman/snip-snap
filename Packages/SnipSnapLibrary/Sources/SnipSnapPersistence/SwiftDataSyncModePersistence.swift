@@ -37,7 +37,61 @@ package enum SyncModeStoreKind: String, Codable, Equatable, Sendable {
 }
 
 package enum SyncModeStoreLifecycle: String, Codable, Equatable, Sendable {
-  case creating, ready, retired, deleting
+  case creating, ready, isolated, retired, deleting
+}
+
+package enum ICloudAccountIsolationReason: String, Codable, Equatable, Sendable {
+  case signedOut, accountChanged
+}
+
+package enum ICloudAccountIsolationChoice: String, Codable, Equatable, Sendable {
+  case keepLocalCopy, remove
+}
+
+package enum ICloudAccountIsolationResolution: String, Codable, Equatable, Sendable {
+  case undecided, keepingLocalCopy, removing
+}
+
+package struct ICloudAccountIsolation: Codable, Equatable, Sendable {
+  package let id: UUID
+  package let storeID: UUID
+  package let replacementStoreID: UUID
+  package let namespace: ICloudSyncNamespaceBinding
+  package let reason: ICloudAccountIsolationReason
+  package var resolution: ICloudAccountIsolationResolution
+
+  package init(
+    id: UUID,
+    storeID: UUID,
+    replacementStoreID: UUID,
+    namespace: ICloudSyncNamespaceBinding,
+    reason: ICloudAccountIsolationReason,
+    resolution: ICloudAccountIsolationResolution = .undecided
+  ) {
+    self.id = id
+    self.storeID = storeID
+    self.replacementStoreID = replacementStoreID
+    self.namespace = namespace
+    self.reason = reason
+    self.resolution = resolution
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id, storeID, replacementStoreID, namespace, reason, resolution
+  }
+
+  package init(from decoder: any Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    id = try values.decode(UUID.self, forKey: .id)
+    storeID = try values.decode(UUID.self, forKey: .storeID)
+    replacementStoreID = try values.decode(UUID.self, forKey: .replacementStoreID)
+    namespace = try values.decode(ICloudSyncNamespaceBinding.self, forKey: .namespace)
+    reason = try values.decode(ICloudAccountIsolationReason.self, forKey: .reason)
+    resolution = try values.decodeIfPresent(
+      ICloudAccountIsolationResolution.self,
+      forKey: .resolution
+    ) ?? .undecided
+  }
 }
 
 package enum SyncModeSyncProtocol: String, Codable, Equatable, Sendable {
@@ -51,6 +105,8 @@ package struct SyncModeStore: Codable, Equatable, Sendable {
   package let namespace: ICloudSyncNamespaceBinding?
   package let relativeRoot: String
   package let syncProtocol: SyncModeSyncProtocol
+  /// The exact cloud collection whose data this local-only store may rejoin.
+  package var quarantinedNamespace: ICloudSyncNamespaceBinding?
   package var revision: UInt64
   package var lifecycle: SyncModeStoreLifecycle
 
@@ -60,6 +116,7 @@ package struct SyncModeStore: Codable, Equatable, Sendable {
     namespace: ICloudSyncNamespaceBinding?,
     relativeRoot: String,
     syncProtocol: SyncModeSyncProtocol,
+    quarantinedNamespace: ICloudSyncNamespaceBinding? = nil,
     revision: UInt64 = 0,
     lifecycle: SyncModeStoreLifecycle = .creating
   ) {
@@ -68,12 +125,14 @@ package struct SyncModeStore: Codable, Equatable, Sendable {
     self.namespace = namespace
     self.relativeRoot = relativeRoot
     self.syncProtocol = syncProtocol
+    self.quarantinedNamespace = quarantinedNamespace
     self.revision = revision
     self.lifecycle = lifecycle
   }
 
   private enum CodingKeys: String, CodingKey {
-    case id, kind, namespace, relativeRoot, syncProtocol, revision, lifecycle
+    case id, kind, namespace, relativeRoot, syncProtocol, quarantinedNamespace
+    case revision, lifecycle
   }
 
   package init(from decoder: any Decoder) throws {
@@ -86,6 +145,10 @@ package struct SyncModeStore: Codable, Equatable, Sendable {
       SyncModeSyncProtocol.self,
       forKey: .syncProtocol
     ) ?? .legacyTextV1
+    quarantinedNamespace = try values.decodeIfPresent(
+      ICloudSyncNamespaceBinding.self,
+      forKey: .quarantinedNamespace
+    )
     revision = try values.decode(UInt64.self, forKey: .revision)
     lifecycle = try values.decode(SyncModeStoreLifecycle.self, forKey: .lifecycle)
   }
@@ -409,11 +472,14 @@ package struct SyncModeTransition: Codable, Equatable, Sendable {
 package enum ICloudSyncAttentionReason: String, Codable, Equatable, Sendable {
   case enrollmentBlocked, firstSyncFailed, namespaceChanged, transferConflict, storageFailure
   case storeReadFailed, terminalFetchFailure, transitionFailure
+  case accountTemporarilyUnavailable, accountStatusUnknown, accountSignedOut
+  case accountRestricted, accountChanged
 }
 
 package struct SyncModeStorageSnapshot: Equatable, Sendable {
   package let activeStore: SyncModeStore
   package let transition: SyncModeTransition?
+  package let accountIsolation: ICloudAccountIsolation?
   package let attentionReason: ICloudSyncAttentionReason?
   package let hasActiveMutationReservation: Bool
 }
@@ -467,6 +533,16 @@ package enum SyncModeCrashPoint: Equatable, Sendable {
   case beforePointerSwap
   case afterPointerSwap
   case afterRetiredCleanupDeclared
+  case afterAccountIsolationManifest
+  case beforeAccountIsolationDurability
+  case afterAccountIsolationDurability
+  case beforeAccountIsolationPointerSwap
+  case afterAccountIsolationPointerSwap
+  case afterAccountResolutionIntent
+  case afterAccountLocalCopyMerge
+  case beforeAccountIsolationRemovalCommit
+  case afterAccountIsolationRemovalCommit
+  case afterAccountIsolationRootRemoval
 }
 
 
@@ -486,8 +562,52 @@ package actor SwiftDataSyncModePersistence {
     var activeStoreID: UUID
     var stores: [SyncModeStore]
     var transition: SyncModeTransition?
+    var accountIsolation: ICloudAccountIsolation?
     var attentionReason: ICloudSyncAttentionReason?
     var writeReservation: SyncModeWriteReservation?
+
+    private enum CodingKeys: String, CodingKey {
+      case version, activeStoreID, stores, transition, accountIsolation
+      case attentionReason, writeReservation
+    }
+
+    init(
+      version: Int,
+      activeStoreID: UUID,
+      stores: [SyncModeStore],
+      transition: SyncModeTransition?,
+      accountIsolation: ICloudAccountIsolation? = nil,
+      attentionReason: ICloudSyncAttentionReason?,
+      writeReservation: SyncModeWriteReservation?
+    ) {
+      self.version = version
+      self.activeStoreID = activeStoreID
+      self.stores = stores
+      self.transition = transition
+      self.accountIsolation = accountIsolation
+      self.attentionReason = attentionReason
+      self.writeReservation = writeReservation
+    }
+
+    init(from decoder: any Decoder) throws {
+      let values = try decoder.container(keyedBy: CodingKeys.self)
+      version = try values.decode(Int.self, forKey: .version)
+      activeStoreID = try values.decode(UUID.self, forKey: .activeStoreID)
+      stores = try values.decode([SyncModeStore].self, forKey: .stores)
+      transition = try values.decodeIfPresent(SyncModeTransition.self, forKey: .transition)
+      accountIsolation = try values.decodeIfPresent(
+        ICloudAccountIsolation.self,
+        forKey: .accountIsolation
+      )
+      attentionReason = try values.decodeIfPresent(
+        ICloudSyncAttentionReason.self,
+        forKey: .attentionReason
+      )
+      writeReservation = try values.decodeIfPresent(
+        SyncModeWriteReservation.self,
+        forKey: .writeReservation
+      )
+    }
   }
 
   let rootURL: URL
@@ -537,6 +657,7 @@ package actor SwiftDataSyncModePersistence {
         activeStoreID: store.id,
         stores: [store],
         transition: nil,
+        accountIsolation: nil,
         attentionReason: nil,
         writeReservation: nil
       )
@@ -552,11 +673,23 @@ package actor SwiftDataSyncModePersistence {
         activeStoreID: store.id,
         stores: [store],
         transition: nil,
+        accountIsolation: nil,
         attentionReason: nil,
         writeReservation: nil
       )
       try Self.write(manifest, to: manifestURL, using: manifestWriter)
     }
+  }
+
+  package nonisolated static func existingCloudNamespace(
+    rootURL: URL
+  ) throws -> ICloudSyncNamespaceBinding? {
+    let manifestURL = rootURL.appendingPathComponent("activation.json", isDirectory: false)
+    guard FileManager.default.fileExists(atPath: manifestURL.path) else { return nil }
+    let stored = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: manifestURL))
+    return stored.accountIsolation?.namespace
+      ?? stored.transition?.namespace
+      ?? stored.stores.first(where: { $0.id == stored.activeStoreID })?.namespace
   }
 
   package func snapshot() throws -> SyncModeStorageSnapshot {
@@ -566,9 +699,148 @@ package actor SwiftDataSyncModePersistence {
     return SyncModeStorageSnapshot(
       activeStore: active,
       transition: manifest.transition,
+      accountIsolation: manifest.accountIsolation,
       attentionReason: manifest.attentionReason,
       hasActiveMutationReservation: manifest.writeReservation != nil
     )
+  }
+
+  package func isolateActiveCloudStore(
+    reason: ICloudAccountIsolationReason
+  ) throws -> ICloudAccountIsolation {
+    if let isolation = manifest.accountIsolation { return isolation }
+    guard manifest.writeReservation == nil, !writeAdmissionInProgress,
+      let active = store(id: manifest.activeStoreID),
+      active.kind == .iCloudSync,
+      let namespace = active.namespace
+    else { throw SyncModePersistenceError.transitionInProgress }
+    if let transition = manifest.transition {
+      guard transition.sourceStoreID == active.id,
+        transition.targetKind == .localOnly,
+        transition.phase != .pointerSwapped
+      else { throw SyncModePersistenceError.transitionInProgress }
+    }
+
+    let replacement = Self.newStore(
+      kind: .localOnly,
+      namespace: nil,
+      syncProtocol: active.syncProtocol
+    )
+    let isolation = ICloudAccountIsolation(
+      id: UUID(),
+      storeID: active.id,
+      replacementStoreID: replacement.id,
+      namespace: namespace,
+      reason: reason
+    )
+    var declared = manifest
+    if let transition = declared.transition {
+      declared.stores[try storeIndex(id: transition.candidateStoreID)].lifecycle = .deleting
+      declared.transition = nil
+    }
+    declared.stores.append(replacement)
+    declared.accountIsolation = isolation
+    declared.attentionReason = reason == .signedOut ? .accountSignedOut : .accountChanged
+    try commit(declared)
+    try crashHook(.afterAccountIsolationManifest)
+
+    let replacementRoot = storeURL(replacement)
+    try crashHook(.beforeAccountIsolationDurability)
+    _ = try SwiftDataSnipLibrary(
+      storeURL: replacementRoot.appendingPathComponent("snips.store", isDirectory: false)
+    )
+    try DurableFile.syncDirectory(replacementRoot)
+    try DurableFile.syncDirectory(replacementRoot.deletingLastPathComponent())
+    try crashHook(.afterAccountIsolationDurability)
+
+    var isolated = manifest
+    isolated.activeStoreID = replacement.id
+    isolated.stores[try storeIndex(id: replacement.id)].lifecycle = .ready
+    isolated.stores[try storeIndex(id: active.id)].lifecycle = .isolated
+    try crashHook(.beforeAccountIsolationPointerSwap)
+    try commit(isolated)
+    try crashHook(.afterAccountIsolationPointerSwap)
+    return isolation
+  }
+
+  package func resolveAccountIsolation(
+    _ choice: ICloudAccountIsolationChoice
+  ) async throws {
+    guard var isolation = manifest.accountIsolation else {
+      throw SyncModePersistenceError.transitionInProgress
+    }
+    let requested: ICloudAccountIsolationResolution = choice == .keepLocalCopy
+      ? .keepingLocalCopy : .removing
+    guard isolation.resolution == .undecided || isolation.resolution == requested else {
+      throw SyncModePersistenceError.transitionInProgress
+    }
+    if isolation.resolution == .undecided {
+      isolation.resolution = requested
+      var intended = manifest
+      intended.accountIsolation = isolation
+      try commit(intended)
+      try crashHook(.afterAccountResolutionIntent)
+    }
+    try await reconcileAccountIsolationResolution()
+  }
+
+  package func reconcileAccountIsolationResolution() async throws {
+    guard let isolation = manifest.accountIsolation,
+      isolation.resolution != .undecided
+    else { return }
+    if isolation.resolution == .keepingLocalCopy {
+      let sourceStore = try storeForIsolation(id: isolation.storeID)
+      let source = try await libraryForTransition(storeID: sourceStore.id)
+        .transferSnapshot(revision: sourceStore.revision)
+      let target = try libraryForTransition(storeID: manifest.activeStoreID)
+      _ = try await target.mergeTransferSnapshot(source, transitionID: isolation.id)
+      try crashHook(.afterAccountLocalCopyMerge)
+    }
+    try finishAccountIsolationResolution(isolation)
+  }
+
+  private func finishAccountIsolationResolution(
+    _ isolation: ICloudAccountIsolation
+  ) throws {
+    guard manifest.accountIsolation == isolation,
+      isolation.resolution != .undecided,
+      isolation.storeID != manifest.activeStoreID
+    else { throw SyncModePersistenceError.transitionInProgress }
+    let roots = try Self.validatedStoreRoots(manifest.stores, rootURL: rootURL)
+    guard let isolatedRoot = roots[isolation.storeID] else {
+      throw SyncModePersistenceError.invalidManifest
+    }
+    var deleting = manifest
+    deleting.stores[try storeIndex(id: isolation.storeID)].lifecycle = .deleting
+    let activeIndex = try storeIndex(id: manifest.activeStoreID)
+    deleting.stores[activeIndex].revision += 1
+    if isolation.resolution == .keepingLocalCopy {
+      deleting.stores[activeIndex].quarantinedNamespace = isolation.namespace
+    }
+    deleting.accountIsolation = nil
+    deleting.attentionReason = nil
+    try crashHook(.beforeAccountIsolationRemovalCommit)
+    try commit(deleting)
+    try crashHook(.afterAccountIsolationRemovalCommit)
+    do {
+      if FileManager.default.fileExists(atPath: isolatedRoot.path) {
+        try FileManager.default.removeItem(at: isolatedRoot)
+      }
+    } catch {
+      try? recordAttention(.storageFailure)
+      throw error
+    }
+    try crashHook(.afterAccountIsolationRootRemoval)
+    var removed = manifest
+    removed.stores.removeAll { $0.id == isolation.storeID }
+    try commit(removed)
+  }
+
+  private func storeForIsolation(id: UUID) throws -> SyncModeStore {
+    guard let value = store(id: id), value.lifecycle == .isolated else {
+      throw SyncModePersistenceError.missingStore
+    }
+    return value
   }
 
   /// The only library later app assembly should retain.
@@ -591,7 +863,9 @@ package actor SwiftDataSyncModePersistence {
     to targetKind: SyncModeStoreKind,
     namespace: ICloudSyncNamespaceBinding?
   ) throws -> SyncModeTransition {
-    guard manifest.writeReservation == nil, !writeAdmissionInProgress else {
+    guard manifest.writeReservation == nil, !writeAdmissionInProgress,
+      manifest.accountIsolation == nil
+    else {
       throw SyncModePersistenceError.transitionInProgress
     }
     if let transition = manifest.transition {
@@ -601,6 +875,12 @@ package actor SwiftDataSyncModePersistence {
       return transition
     }
     guard (targetKind == .iCloudSync) == (namespace != nil) else {
+      throw SyncModePersistenceError.namespaceMismatch
+    }
+    if targetKind == .iCloudSync,
+      let quarantine = store(id: manifest.activeStoreID)?.quarantinedNamespace,
+      quarantine != namespace
+    {
       throw SyncModePersistenceError.namespaceMismatch
     }
     let syncProtocol = targetKind == .iCloudSync
@@ -732,6 +1012,8 @@ package actor SwiftDataSyncModePersistence {
       Optional(manifest.activeStoreID),
       manifest.transition?.sourceStoreID,
       manifest.transition?.candidateStoreID,
+      manifest.accountIsolation?.storeID,
+      manifest.accountIsolation?.replacementStoreID,
     ].compactMap { $0 })
     for value in manifest.stores
       .filter({ [.retired, .deleting].contains($0.lifecycle) && !protected.contains($0.id) })

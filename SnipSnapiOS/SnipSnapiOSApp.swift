@@ -1,13 +1,16 @@
+import SnipSnapCloud
 import SnipSnapCore
 import SnipSnapPersistence
 import SwiftUI
 
 @main
+@MainActor
 struct SnipSnapiOSApp: App {
     private let library: any SnipLibrary
     private let shareImports: ShareImportStore?
     private let startupError: String?
     private let uiTestAttachmentURLs: [URL]
+    private let accountNoticeModel: AppleAccountNoticeModel?
 
     init() {
         let startup = Self.makeLibrary()
@@ -15,6 +18,28 @@ struct SnipSnapiOSApp: App {
         shareImports = startup.shareImports
         startupError = startup.error
         uiTestAttachmentURLs = startup.uiTestAttachmentURLs
+        if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_ACCOUNT_NOTICE"] == "signedOut" {
+            accountNoticeModel = AppleAccountNoticeModel(
+                notice: .signedOut,
+                handler: UITestAppleAccountCacheHandler()
+            )
+        } else if let handler = Self.makeAccountCacheHandler() {
+            accountNoticeModel = AppleAccountNoticeModel(handler: handler)
+        } else {
+            accountNoticeModel = nil
+        }
+    }
+
+    private static func makeAccountCacheHandler() -> AppleAccountCacheCoordinatorHandler? {
+        guard let sharedRootURL = SnipSnapAppGroupContainer.resolve()?.url,
+              let containerIdentifier = Bundle.main.object(
+                forInfoDictionaryKey: "SnipSnapCloudKitContainerIdentifier"
+              ) as? String
+        else { return nil }
+        return AppleAccountCacheCoordinatorHandler(
+            syncRootURL: sharedRootURL.appendingPathComponent("SyncMode", isDirectory: true),
+            containerIdentifier: containerIdentifier
+        )
     }
 
     var body: some Scene {
@@ -23,7 +48,8 @@ struct SnipSnapiOSApp: App {
                 library: library,
                 shareImports: shareImports,
                 startupError: startupError,
-                uiTestAttachmentURLs: uiTestAttachmentURLs
+                uiTestAttachmentURLs: uiTestAttachmentURLs,
+                accountNoticeModel: accountNoticeModel
             )
         }
     }
@@ -88,5 +114,15 @@ struct SnipSnapiOSApp: App {
         } catch {
             return []
         }
+    }
+}
+
+private actor UITestAppleAccountCacheHandler: AppleAccountCacheHandling {
+    private var didResolve = false
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? {
+        didResolve ? nil : .signedOut
+    }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {
+        didResolve = true
     }
 }

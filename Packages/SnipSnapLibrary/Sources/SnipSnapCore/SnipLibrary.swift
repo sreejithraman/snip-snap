@@ -1,5 +1,21 @@
 import Foundation
 
+public enum AppleAccountCacheChoice: Equatable, Sendable {
+    case keepLocalCopy
+    case remove
+}
+
+public protocol AppleAccountCacheHandling: Sendable {
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice?
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws
+}
+
+public enum AppleAccountNotice: Equatable, Sendable {
+    case paused
+    case signedOut
+    case accountChanged
+}
+
 public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {
     case emptyContent
     case snipNotFound
