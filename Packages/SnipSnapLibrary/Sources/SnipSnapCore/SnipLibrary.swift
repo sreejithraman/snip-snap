@@ -270,6 +270,7 @@ public struct SnipImportPreview: Equatable, Sendable {
     package let transitionID: UUID
     package let source: SnipLibraryTransferSnapshot
     package let targetDigest: Data
+    package let devicePatch: SnipLibraryDevicePatch
 
     package init(
         totalSnipCount: Int,
@@ -279,7 +280,8 @@ public struct SnipImportPreview: Equatable, Sendable {
         addedAttachmentCount: Int,
         transitionID: UUID,
         source: SnipLibraryTransferSnapshot,
-        targetDigest: Data
+        targetDigest: Data,
+        devicePatch: SnipLibraryDevicePatch
     ) {
         self.totalSnipCount = totalSnipCount
         self.addedSnipCount = addedSnipCount
@@ -289,6 +291,7 @@ public struct SnipImportPreview: Equatable, Sendable {
         self.transitionID = transitionID
         self.source = source
         self.targetDigest = targetDigest
+        self.devicePatch = devicePatch
     }
 }
 
@@ -296,6 +299,7 @@ public struct SnipImportResult: Equatable, Sendable {
     public let snapshot: SnipLibrarySnapshot
     public let addedSnipCount: Int
     public let recoveredSnipCount: Int
+    package let devicePatch: SnipLibraryDevicePatch?
 
     public init(
         snapshot: SnipLibrarySnapshot,
@@ -305,6 +309,19 @@ public struct SnipImportResult: Equatable, Sendable {
         self.snapshot = snapshot
         self.addedSnipCount = addedSnipCount
         self.recoveredSnipCount = recoveredSnipCount
+        devicePatch = nil
+    }
+
+    package init(
+        snapshot: SnipLibrarySnapshot,
+        addedSnipCount: Int,
+        recoveredSnipCount: Int,
+        devicePatch: SnipLibraryDevicePatch
+    ) {
+        self.snapshot = snapshot
+        self.addedSnipCount = addedSnipCount
+        self.recoveredSnipCount = recoveredSnipCount
+        self.devicePatch = devicePatch
     }
 }
 

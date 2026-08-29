@@ -187,7 +187,7 @@ final class IOSAppModelTests: XCTestCase {
         let journalURL = root.appendingPathComponent("DeviceActions.json")
         let library = try JSONSnipLibrary(fileURL: storeURL)
         let actions = SnipLibraryDeviceActions(library: library, journalURL: journalURL)
-        let model = IOSAppModel(library: library, deviceActions: actions)
+        let model = IOSAppModel(library: library, userActions: actions)
         await model.load()
 
         let created = await model.createSnip(content: "Keep me", in: SnipList.inboxID)
@@ -205,7 +205,7 @@ final class IOSAppModelTests: XCTestCase {
         )
         let reopenedModel = IOSAppModel(
             library: reopenedLibrary,
-            deviceActions: reopenedActions
+            userActions: reopenedActions
         )
         await reopenedModel.load()
 
@@ -241,7 +241,7 @@ final class IOSAppModelTests: XCTestCase {
             library: target,
             journalURL: root.appendingPathComponent("DeviceActions.json")
         )
-        let model = IOSAppModel(library: target, deviceActions: actions)
+        let model = IOSAppModel(library: target, userActions: actions)
         await model.load()
 
         await model.previewBackupImport(from: backupURL)

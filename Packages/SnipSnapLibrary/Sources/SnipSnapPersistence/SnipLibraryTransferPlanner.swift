@@ -87,12 +87,7 @@ package enum SnipLibraryTransferPlanner {
     var lists = retainedTargetLists
     var listByID = Dictionary(uniqueKeysWithValues: retainedTargetLists.map { ($0.id, $0) })
     for list in source.lists {
-      if let existing = listByID[list.id] {
-        guard existing == list else {
-          throw SnipLibraryError.transferConflict(.listIdentity(list.id))
-        }
-        continue
-      }
+      if listByID[list.id] != nil { continue }
       lists.append(list)
       listByID[list.id] = list
     }

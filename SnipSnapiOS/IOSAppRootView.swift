@@ -12,7 +12,7 @@ struct IOSAppRootView: View {
 
     init(
         library: any SnipLibrary,
-        deviceActions: SnipLibraryDeviceActions? = nil,
+        userActions: (any SnipLibraryUserActions)? = nil,
         recoveryScope: SnipRecoveryScope? = nil,
         shareImports: ShareImportStore? = nil,
         initialSnapshot: SnipLibrarySnapshot? = nil,
@@ -23,7 +23,7 @@ struct IOSAppRootView: View {
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         _appGraph = State(initialValue: IOSAppGraph(
             library: library,
-            deviceActions: deviceActions,
+            userActions: userActions,
             recoveryScope: recoveryScope,
             shareImports: shareImports,
             initialSnapshot: initialSnapshot ?? SnipLibrarySnapshot(snips: [], lists: [.inbox]),

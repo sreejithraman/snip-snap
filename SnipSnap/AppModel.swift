@@ -2,7 +2,6 @@ import AppKit
 import Combine
 import Foundation
 import SnipSnapCore
-import SnipSnapPersistence
 
 private actor AppModelCommandLock {
     private var isLocked = false
@@ -27,7 +26,6 @@ private actor AppModelCommandLock {
 
 @MainActor
 final class AppModel: ObservableObject {
-    private static let historyLimit = 100
 
     private struct HistoryPresentation {
         let beforeSortMode: SnipSortMode
@@ -60,14 +58,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var recoverySnapshot: SnipRecoverySnapshot = .empty
     @Published private var deviceActionState = SnipDeviceActionState(
         undoTitle: "Undo",
-        redoTitle: "Redo",
-        canUndo: false,
-        canRedo: false,
-        undoCount: 0,
-        redoCount: 0
+        redoTitle: "Redo"
     )
-    private var undoPresentationHistory: [HistoryPresentation?] = []
-    private var redoPresentationHistory: [HistoryPresentation?] = []
+    private var historyPresentations: [UUID: HistoryPresentation] = [:]
     @Published private(set) var pendingImportPreview: SnipImportPreview?
 
     var undoTitle: String {
@@ -90,7 +83,7 @@ final class AppModel: ObservableObject {
     }
 
     private let library: any SnipLibrary
-    private let deviceActions: SnipLibraryDeviceActions
+    private let userActions: any SnipLibraryUserActions
     private let recoveryScope: SnipRecoveryScope?
     private var attachmentURLs: [UUID: URL] = [:]
     private let defaults: UserDefaults
@@ -139,7 +132,7 @@ final class AppModel: ObservableObject {
         clipboardHistory: ClipboardHistory? = nil,
         initialError: String? = nil,
         recoveryScope: SnipRecoveryScope? = nil,
-        deviceActions: SnipLibraryDeviceActions? = nil
+        userActions: (any SnipLibraryUserActions)? = nil
     ) {
         Self.migrateRenamedDefaults(in: defaults)
         self.defaults = defaults
@@ -157,11 +150,7 @@ final class AppModel: ObservableObject {
             rawValue: defaults.string(forKey: Self.appearanceDefaultsKey) ?? ""
         ) ?? .system
         self.library = library
-        self.deviceActions = deviceActions ?? SnipLibraryDeviceActions(
-            library: library,
-            journalURL: FileManager.default.temporaryDirectory
-                .appendingPathComponent("SnipSnap-AppModel-\(UUID().uuidString).json")
-        )
+        self.userActions = userActions ?? DirectSnipLibraryUserActions(library: library)
         self.recoveryScope = recoveryScope
         presentedError = initialError
         Task { await reload() }
@@ -565,21 +554,20 @@ final class AppModel: ObservableObject {
         await withCommandLock {
             await refreshDeviceActionStateUnlocked()
             guard deviceActionState.canUndo else { return }
-            let presentation = undoPresentationHistory.last ?? nil
             do {
-                guard let update = try await deviceActions.undo(sortedBy: sortMode) else {
+                guard let update = try await userActions.undo(sortedBy: sortMode) else {
                     await refreshDeviceActionStateUnlocked()
                     return
                 }
                 apply(update.snapshot)
+                await refreshDeviceActionStateUnlocked()
+                let presentation = deviceActionState.redoActionIDs.last.flatMap {
+                    historyPresentations[$0]
+                }
                 if let presentation {
-                    undoPresentationHistory.removeLast()
-                    redoPresentationHistory.append(presentation)
-                    trimHistory(&redoPresentationHistory)
                     setSortMode(presentation.beforeSortMode)
                     selection = presentation.beforeSelection
                 }
-                await refreshDeviceActionStateUnlocked()
             } catch {
                 presentedError = error.localizedDescription
             }
@@ -594,21 +582,20 @@ final class AppModel: ObservableObject {
         await withCommandLock {
             await refreshDeviceActionStateUnlocked()
             guard deviceActionState.canRedo else { return }
-            let presentation = redoPresentationHistory.last ?? nil
             do {
-                guard let update = try await deviceActions.redo(sortedBy: sortMode) else {
+                guard let update = try await userActions.redo(sortedBy: sortMode) else {
                     await refreshDeviceActionStateUnlocked()
                     return
                 }
                 apply(update.snapshot)
+                await refreshDeviceActionStateUnlocked()
+                let presentation = deviceActionState.undoActionIDs.last.flatMap {
+                    historyPresentations[$0]
+                }
                 if let presentation {
-                    redoPresentationHistory.removeLast()
-                    undoPresentationHistory.append(presentation)
-                    trimHistory(&undoPresentationHistory)
                     setSortMode(presentation.afterSortMode)
                     selection = presentation.afterSelection
                 }
-                await refreshDeviceActionStateUnlocked()
             } catch {
                 presentedError = error.localizedDescription
             }
@@ -643,10 +630,7 @@ final class AppModel: ObservableObject {
         let didAccess = url.startAccessingSecurityScopedResource()
         defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
         do {
-            pendingImportPreview = try await SnipLibraryImport.preview(
-                backupURL: url,
-                target: library
-            )
+            pendingImportPreview = try await userActions.previewImport(backupURL: url)
         } catch {
             pendingImportPreview = nil
             presentedError = error.localizedDescription
@@ -661,10 +645,9 @@ final class AppModel: ObservableObject {
         guard let preview = pendingImportPreview else { return }
         await withCommandLock {
             do {
-                let result = try await deviceActions.applyImport(preview, sortedBy: sortMode)
+                let result = try await userActions.applyImport(preview, sortedBy: sortMode)
                 pendingImportPreview = nil
                 apply(result.snapshot)
-                redoPresentationHistory = []
                 await refreshDeviceActionStateUnlocked()
                 await refreshRecoveryUnlocked()
             } catch {
@@ -918,28 +901,27 @@ final class AppModel: ObservableObject {
         await withCommandLock {
             let beforeSortMode = sortMode
             let beforeSelection = selection
-            let priorUndoCount = deviceActionState.undoCount
+            let priorUndoActionIDs = Set(deviceActionState.undoActionIDs)
             do {
-                let update = try await deviceActions.perform(
+                let update = try await userActions.perform(
                     name: name,
                     command: command,
                     sortedBy: sortMode
                 )
                 apply(update.snapshot)
                 await refreshDeviceActionStateUnlocked()
-                if deviceActionState.undoCount > priorUndoCount {
+                if let actionID = deviceActionState.undoActionIDs.last,
+                   !priorUndoActionIDs.contains(actionID) {
                     let savedAfterSortMode = afterSortMode ?? sortMode
                     setSortMode(savedAfterSortMode)
                     let savedSelection = afterSelection?(update.outcome) ?? selection
                     selection = savedSelection
-                    undoPresentationHistory[undoPresentationHistory.count - 1] = HistoryPresentation(
+                    historyPresentations[actionID] = HistoryPresentation(
                         beforeSortMode: beforeSortMode,
                         afterSortMode: savedAfterSortMode,
                         beforeSelection: beforeSelection,
                         afterSelection: savedSelection
                     )
-                    trimHistory(&undoPresentationHistory)
-                    redoPresentationHistory = []
                 }
                 return .success(update.outcome)
             } catch {
@@ -958,62 +940,28 @@ final class AppModel: ObservableObject {
     }
 
     private func clearHistory() async {
-        await deviceActions.clear(sortedBy: sortMode)
-        undoPresentationHistory = []
-        redoPresentationHistory = []
+        try? await userActions.clear(sortedBy: sortMode)
+        historyPresentations = [:]
         deviceActionState = SnipDeviceActionState(
             undoTitle: "Undo",
-            redoTitle: "Redo",
-            canUndo: false,
-            canRedo: false,
-            undoCount: 0,
-            redoCount: 0
+            redoTitle: "Redo"
         )
-    }
-
-    private func trimHistory(_ history: inout [HistoryPresentation?]) {
-        if history.count > Self.historyLimit {
-            history.removeFirst(history.count - Self.historyLimit)
-        }
     }
 
     private func refreshDeviceActionStateUnlocked() async {
         do {
-            deviceActionState = try await deviceActions.state(sortedBy: sortMode)
-            if undoPresentationHistory.count > deviceActionState.undoCount {
-                undoPresentationHistory.removeLast(
-                    undoPresentationHistory.count - deviceActionState.undoCount
-                )
-            }
-            if undoPresentationHistory.count < deviceActionState.undoCount {
-                undoPresentationHistory.append(
-                    contentsOf: repeatElement(
-                        nil,
-                        count: deviceActionState.undoCount - undoPresentationHistory.count
-                    )
-                )
-            }
-            if redoPresentationHistory.count > deviceActionState.redoCount {
-                redoPresentationHistory.removeLast(
-                    redoPresentationHistory.count - deviceActionState.redoCount
-                )
-            }
-            if redoPresentationHistory.count < deviceActionState.redoCount {
-                redoPresentationHistory.append(
-                    contentsOf: repeatElement(
-                        nil,
-                        count: deviceActionState.redoCount - redoPresentationHistory.count
-                    )
-                )
+            deviceActionState = try await userActions.state(sortedBy: sortMode)
+            let retainedActionIDs = Set(
+                deviceActionState.undoActionIDs + deviceActionState.redoActionIDs
+            )
+            historyPresentations = historyPresentations.filter {
+                retainedActionIDs.contains($0.key)
             }
         } catch {
+            historyPresentations = [:]
             deviceActionState = SnipDeviceActionState(
                 undoTitle: "Undo",
-                redoTitle: "Redo",
-                canUndo: false,
-                canRedo: false,
-                undoCount: 0,
-                redoCount: 0
+                redoTitle: "Redo"
             )
         }
     }

@@ -96,7 +96,11 @@ extension SnipLibraryImport {
       },
       transitionID: transitionID,
       source: source,
-      targetDigest: plan.targetDigest
+      targetDigest: plan.targetDigest,
+      devicePatch: .between(
+        SnipLibrarySnapshot(snips: target.snips, lists: target.lists),
+        SnipLibrarySnapshot(snips: plan.snips, lists: plan.lists)
+      )
     )
   }
 
@@ -115,7 +119,8 @@ extension SnipLibraryImport {
     return SnipImportResult(
       snapshot: try await target.checkedSnapshot(sortedBy: .chronological),
       addedSnipCount: preview.addedSnipCount,
-      recoveredSnipCount: transfer.recoveredSourceSnipIDs.count
+      recoveredSnipCount: transfer.recoveredSourceSnipIDs.count,
+      devicePatch: preview.devicePatch
     )
   }
 }

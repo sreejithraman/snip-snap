@@ -66,6 +66,10 @@ package extension SnipLibraryDevicePatch {
   }
 
   func canApply(to snapshot: SnipLibrarySnapshot) -> Bool {
+    applying(to: snapshot) != nil
+  }
+
+  func applying(to snapshot: SnipLibrarySnapshot) -> SnipLibrarySnapshot? {
     var state = SnipLibraryState(
       snips: snapshot.snips,
       lists: snapshot.lists,
@@ -77,9 +81,13 @@ package extension SnipLibraryDevicePatch {
         prepareAttachments: { _, _ in throw SnipLibraryError.attachmentCopyFailed },
         pruneAttachments: { _, _ in }
       )
-      return true
+      return SnipLibrarySnapshot(
+        snips: state.allSnips(sortMode: .manual),
+        lists: state.allLists(),
+        attachmentURLs: snapshot.attachmentURLs
+      )
     } catch {
-      return false
+      return nil
     }
   }
 }

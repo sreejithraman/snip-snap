@@ -327,7 +327,7 @@ final class AppModelTests: StoreBackedTestCase {
         let addedSecond = try await repository.add(content: "Second", origin: .quickEntry)
         let first = try XCTUnwrap(addedFirst)
         let second = try XCTUnwrap(addedSecond)
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, userActions: userActions(for: repository))
         await model.reload()
         model.selection = [first.id, second.id]
 
@@ -346,7 +346,7 @@ final class AppModelTests: StoreBackedTestCase {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let added = try await repository.add(content: "Delete me", origin: .quickEntry)
         let snip = try XCTUnwrap(added)
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, userActions: userActions(for: repository))
         await model.reload()
         model.selection = [snip.id]
         await model.deleteSelectionNow()
@@ -367,7 +367,7 @@ final class AppModelTests: StoreBackedTestCase {
         let addedSecond = try await repository.add(content: "Second", origin: .quickEntry)
         let first = try XCTUnwrap(addedFirst)
         let second = try XCTUnwrap(addedSecond)
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, userActions: userActions(for: repository))
         await model.reload()
         model.selection = [first.id, second.id]
 
@@ -388,7 +388,7 @@ final class AppModelTests: StoreBackedTestCase {
         let addedSecond = try await repository.add(content: "Second", origin: .quickEntry)
         let first = try XCTUnwrap(addedFirst)
         let second = try XCTUnwrap(addedSecond)
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, userActions: userActions(for: repository))
         await model.reload()
         model.selection = [first.id, second.id]
 
@@ -478,7 +478,11 @@ final class AppModelTests: StoreBackedTestCase {
         let older = try XCTUnwrap(olderResult)
         let newer = try XCTUnwrap(newerResult)
         let settings = defaults()
-        let model = AppModel(library: repository, defaults: settings)
+        let model = AppModel(
+            library: repository,
+            defaults: settings,
+            userActions: userActions(for: repository)
+        )
         await model.reload()
 
         let didMove = await model.move(ids: [older.id], to: SnipList.inboxID, before: newer.id)
@@ -525,7 +529,11 @@ final class AppModelTests: StoreBackedTestCase {
         let first = try XCTUnwrap(firstResult)
         let second = try XCTUnwrap(secondResult)
         let review = try await repository.createList(name: "Review", systemImage: "star")
-        let model = AppModel(library: repository, defaults: defaults())
+        let model = AppModel(
+            library: repository,
+            defaults: defaults(),
+            userActions: userActions(for: repository)
+        )
         await model.reload()
         let token = first.updatedAt
 
@@ -549,13 +557,52 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testNewActionKeepsItsPresentationWhenRemoteWorkDropsAnOlderUndo() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let firstResult = try await repository.add(content: "First", origin: .quickEntry)
+        let secondResult = try await repository.add(content: "Second", origin: .quickEntry)
+        let thirdResult = try await repository.add(content: "Third", origin: .quickEntry)
+        let first = try XCTUnwrap(firstResult)
+        let second = try XCTUnwrap(secondResult)
+        let third = try XCTUnwrap(thirdResult)
+        let work = try await repository.createList(name: "Work", systemImage: "folder")
+        let model = AppModel(
+            library: repository,
+            defaults: defaults(),
+            userActions: userActions(for: repository)
+        )
+        await model.reload()
+
+        let movedFirst = await model.moveChronologically(ids: [first.id], to: work.id)
+        let movedSecond = await model.moveChronologically(ids: [second.id], to: work.id)
+        XCTAssertTrue(movedFirst)
+        XCTAssertTrue(movedSecond)
+        _ = try await repository.perform(
+            .moveChronologically(ids: [first.id], to: SnipList.inboxID),
+            sortedBy: .manual
+        )
+
+        let movedThird = await model.moveChronologically(ids: [third.id], to: work.id)
+        XCTAssertTrue(movedThird)
+        await model.undoNow()
+
+        XCTAssertEqual(model.selection, [second.id])
+        XCTAssertEqual(model.snips.first { $0.id == third.id }?.listID, SnipList.inboxID)
+        XCTAssertEqual(model.undoTitle, "Undo Move")
+    }
+
+    @MainActor
     func testMoveUpUsesManualOrderAndCanUndo() async throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let firstResult = try await repository.add(content: "First", origin: .quickEntry)
         let secondResult = try await repository.add(content: "Second", origin: .quickEntry)
         let first = try XCTUnwrap(firstResult)
         let second = try XCTUnwrap(secondResult)
-        let model = AppModel(library: repository, defaults: defaults())
+        let model = AppModel(
+            library: repository,
+            defaults: defaults(),
+            userActions: userActions(for: repository)
+        )
         await model.reload()
         model.setSortMode(.manual)
         XCTAssertEqual(model.snips.map(\.id), [second.id, first.id])
@@ -587,7 +634,11 @@ final class AppModelTests: StoreBackedTestCase {
             in: SnipList.inboxID,
             before: nil
         )
-        let model = AppModel(library: repository, defaults: defaults())
+        let model = AppModel(
+            library: repository,
+            defaults: defaults(),
+            userActions: userActions(for: repository)
+        )
         await model.reload()
         XCTAssertEqual(model.snips.map(\.id), [new.id, middle.id, old.id])
 
@@ -618,7 +669,11 @@ final class AppModelTests: StoreBackedTestCase {
         let moved = try XCTUnwrap(movedResult)
         let selected = try XCTUnwrap(selectedResult)
         let review = try await repository.createList(name: "Review", systemImage: "star")
-        let model = AppModel(library: repository, defaults: defaults())
+        let model = AppModel(
+            library: repository,
+            defaults: defaults(),
+            userActions: userActions(for: repository)
+        )
         await model.reload()
         model.selection = [selected.id]
 
@@ -657,7 +712,11 @@ final class AppModelTests: StoreBackedTestCase {
             in: SnipList.inboxID,
             before: nil
         )
-        let model = AppModel(library: repository, defaults: defaults())
+        let model = AppModel(
+            library: repository,
+            defaults: defaults(),
+            userActions: userActions(for: repository)
+        )
         await model.reload()
         model.selection = [middle.id]
 
@@ -793,7 +852,11 @@ final class AppModelTests: StoreBackedTestCase {
         )
         let snip = try XCTUnwrap(addedItem)
         let storedURL = repository.attachmentURL(for: try XCTUnwrap(snip.attachments.first))
-        let model = AppModel(library: repository, defaults: defaults())
+        let model = AppModel(
+            library: repository,
+            defaults: defaults(),
+            userActions: userActions(for: repository)
+        )
         await model.reload()
         model.selection = [snip.id]
 
@@ -924,7 +987,7 @@ final class AppModelTests: StoreBackedTestCase {
         let model = AppModel(
             library: target,
             defaults: defaults(),
-            deviceActions: actions
+            userActions: actions
         )
         await model.reload()
 
@@ -940,6 +1003,14 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(model.undoTitle, "Undo Import Backup")
         await model.undoNow()
         XCTAssertTrue(model.snips.isEmpty)
+    }
+
+    private func userActions(for library: any SnipLibrary) -> SnipLibraryDeviceActions {
+        SnipLibraryDeviceActions(
+            library: library,
+            journalURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("AppModelTests-Actions-\(UUID().uuidString).json")
+        )
     }
 }
 

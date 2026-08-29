@@ -102,10 +102,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             library: assembly.library,
             initialError: initialError,
             recoveryScope: assembly.recoveryScope,
-            deviceActions: SnipLibraryDeviceActions(
-                library: assembly.library,
-                journalURL: SnipLibraryDeviceActions.defaultJournalURL(nextTo: libraryStoreURL)
-            )
+            userActions: assembly.userActions
         )
         let shortcutSettings = ShortcutSettings()
         let fileDropController = PanelFileDropController()

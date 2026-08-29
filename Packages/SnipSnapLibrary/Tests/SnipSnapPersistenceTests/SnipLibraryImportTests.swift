@@ -5,6 +5,44 @@ import XCTest
 @testable import SnipSnapPersistence
 
 final class SnipLibraryImportTests: XCTestCase {
+  func testRenamedListInBackupKeepsCurrentFieldsAndImportsItsSnips() async throws {
+    let directory = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let target = try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("target.store"))
+    let listID = UUID()
+    let currentList = SnipList(
+      id: listID,
+      name: "Current name",
+      systemImage: "tray",
+      position: 1
+    )
+    let backupList = SnipList(
+      id: listID,
+      name: "Backup name",
+      systemImage: "archivebox",
+      position: 1
+    )
+    let transitionID = UUID()
+    _ = try await target.mergeTransferSnapshot(
+      transferSnapshot(lists: [.inbox, currentList]),
+      transitionID: transitionID
+    )
+    let sourceSnip = snip(content: "Filed in backup", listID: listID)
+    let source = transferSnapshot(
+      snips: [sourceSnip],
+      lists: [.inbox, backupList]
+    )
+
+    let preview = try await target.previewImport(source, transitionID: UUID())
+
+    XCTAssertEqual(preview.addedListCount, 0)
+    XCTAssertEqual(preview.addedSnipCount, 1)
+    let result = try await target.applyImport(preview)
+    XCTAssertEqual(result.snapshot.lists.first { $0.id == listID }?.desiredName, "Current name")
+    XCTAssertEqual(result.snapshot.lists.first { $0.id == listID }?.systemImage, "tray")
+    XCTAssertEqual(result.snapshot.snips.first { $0.id == sourceSnip.id }?.listID, listID)
+  }
+
   func testPreviewDoesNotWriteAndConfirmedApplyMergesStableIdentities() async throws {
     let directory = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -89,6 +127,47 @@ final class SnipLibraryImportTests: XCTestCase {
     XCTAssertEqual(undone?.snapshot.snips, [])
   }
 
+  func testConfirmedImportReturnsTheRequestedManualOrder() async throws {
+    let directory = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let target = try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("target.store"))
+    let source = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("source.json"))
+    let first = Snip(
+      createdAt: Date(timeIntervalSince1970: 100),
+      content: "First",
+      origin: .quickEntry,
+      manualPosition: -1
+    )
+    let second = Snip(
+      createdAt: Date(timeIntervalSince1970: 300),
+      content: "Second",
+      origin: .quickEntry,
+      manualPosition: 1
+    )
+    _ = try await target.perform(.restore(snips: [first, second]), sortedBy: .manual)
+    _ = try await source.perform(
+      .restore(snips: [Snip(
+        createdAt: Date(timeIntervalSince1970: 200),
+        content: "Imported",
+        origin: .quickEntry,
+        manualPosition: 0
+      )]),
+      sortedBy: .manual
+    )
+    let preview = try await SnipLibraryImport.preview(source: source, target: target)
+    let actions = SnipLibraryDeviceActions(
+      library: target,
+      journalURL: directory.appendingPathComponent("device-actions.json")
+    )
+
+    let result = try await actions.applyImport(preview, sortedBy: .manual)
+
+    let expected = try await target.checkedSnapshot(sortedBy: .manual)
+    let chronological = try await target.checkedSnapshot(sortedBy: .chronological)
+    XCTAssertEqual(result.snapshot, expected)
+    XCTAssertNotEqual(result.snapshot.snips.map(\.id), chronological.snips.map(\.id))
+  }
+
   func testModeManagedLibraryImportsThroughItsReservedWritePath() async throws {
     let directory = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -117,6 +196,7 @@ final class SnipLibraryImportTests: XCTestCase {
   private func snip(
     id: UUID = UUID(),
     content: String,
+    listID: UUID = SnipList.inboxID,
     updatedAt: TimeInterval = 100
   ) -> Snip {
     Snip(
@@ -125,7 +205,20 @@ final class SnipLibraryImportTests: XCTestCase {
       createdAt: Date(timeIntervalSince1970: 50),
       updatedAt: Date(timeIntervalSince1970: updatedAt),
       content: content,
-      origin: .quickEntry
+      origin: .quickEntry,
+      listID: listID
+    )
+  }
+
+  private func transferSnapshot(
+    snips: [Snip] = [],
+    lists: [SnipList]
+  ) -> SnipLibraryTransferSnapshot {
+    SnipLibraryTransferSnapshot(
+      revision: 0,
+      snips: snips,
+      lists: lists,
+      attachmentData: [:]
     )
   }
 

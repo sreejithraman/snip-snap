@@ -7,7 +7,7 @@ import SnipSnapPersistence
 @Observable
 final class IOSAppModel {
     private let library: any SnipLibrary
-    private let deviceActions: SnipLibraryDeviceActions
+    private let userActions: any SnipLibraryUserActions
     private let recoveryScope: SnipRecoveryScope?
     private var mutationInProgress = false
     private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
@@ -18,11 +18,7 @@ final class IOSAppModel {
     private(set) var recoverySnapshot: SnipRecoverySnapshot = .empty
     private(set) var deviceActionState = SnipDeviceActionState(
         undoTitle: "Undo",
-        redoTitle: "Redo",
-        canUndo: false,
-        canRedo: false,
-        undoCount: 0,
-        redoCount: 0
+        redoTitle: "Redo"
     )
     private(set) var pendingImportPreview: SnipImportPreview?
     var selectedListID: UUID
@@ -35,7 +31,7 @@ final class IOSAppModel {
 
     init(
         library: any SnipLibrary,
-        deviceActions: SnipLibraryDeviceActions? = nil,
+        userActions: (any SnipLibraryUserActions)? = nil,
         recoveryScope: SnipRecoveryScope? = nil,
         initialSnapshot: SnipLibrarySnapshot = SnipLibrarySnapshot(
             snips: [],
@@ -44,11 +40,7 @@ final class IOSAppModel {
         startupError: String? = nil
     ) {
         self.library = library
-        self.deviceActions = deviceActions ?? SnipLibraryDeviceActions(
-            library: library,
-            journalURL: FileManager.default.temporaryDirectory
-                .appendingPathComponent("SnipSnap-IOSAppModel-\(UUID().uuidString).json")
-        )
+        self.userActions = userActions ?? DirectSnipLibraryUserActions(library: library)
         self.recoveryScope = recoveryScope
         snips = initialSnapshot.snips
         lists = initialSnapshot.lists
@@ -458,7 +450,7 @@ final class IOSAppModel {
 
     private func undoUnlocked() async -> Bool {
         do {
-            guard let update = try await deviceActions.undo(sortedBy: sortMode) else {
+            guard let update = try await userActions.undo(sortedBy: sortMode) else {
                 await loadDeviceActions()
                 return false
             }
@@ -475,7 +467,7 @@ final class IOSAppModel {
 
     private func redoUnlocked() async -> Bool {
         do {
-            guard let update = try await deviceActions.redo(sortedBy: sortMode) else {
+            guard let update = try await userActions.redo(sortedBy: sortMode) else {
                 await loadDeviceActions()
                 return false
             }
@@ -518,7 +510,7 @@ final class IOSAppModel {
         _ = touchedListIDs
         _ = inverse
         do {
-            let update = try await deviceActions.perform(
+            let update = try await userActions.perform(
                 name: name,
                 command: command,
                 sortedBy: sortMode
@@ -556,10 +548,7 @@ final class IOSAppModel {
         let didAccess = url.startAccessingSecurityScopedResource()
         defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
         do {
-            pendingImportPreview = try await SnipLibraryImport.preview(
-                backupURL: url,
-                target: library
-            )
+            pendingImportPreview = try await userActions.previewImport(backupURL: url)
         } catch {
             pendingImportPreview = nil
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -573,7 +562,7 @@ final class IOSAppModel {
     func confirmBackupImport() async {
         guard let preview = pendingImportPreview else { return }
         do {
-            let result = try await deviceActions.applyImport(preview, sortedBy: .chronological)
+            let result = try await userActions.applyImport(preview, sortedBy: .chronological)
             pendingImportPreview = nil
             apply(result.snapshot)
             await loadDeviceActions()
@@ -587,15 +576,11 @@ final class IOSAppModel {
 
     private func loadDeviceActions() async {
         do {
-            deviceActionState = try await deviceActions.state(sortedBy: .chronological)
+            deviceActionState = try await userActions.state(sortedBy: .chronological)
         } catch {
             deviceActionState = SnipDeviceActionState(
                 undoTitle: "Undo",
-                redoTitle: "Redo",
-                canUndo: false,
-                canRedo: false,
-                undoCount: 0,
-                redoCount: 0
+                redoTitle: "Redo"
             )
         }
     }
@@ -661,7 +646,7 @@ final class IOSAppGraph {
 
     init(
         library: any SnipLibrary,
-        deviceActions: SnipLibraryDeviceActions? = nil,
+        userActions: (any SnipLibraryUserActions)? = nil,
         recoveryScope: SnipRecoveryScope? = nil,
         shareImports: ShareImportStore?,
         initialSnapshot: SnipLibrarySnapshot,
@@ -670,7 +655,7 @@ final class IOSAppGraph {
     ) {
         let model = IOSAppModel(
             library: library,
-            deviceActions: deviceActions,
+            userActions: userActions,
             recoveryScope: recoveryScope,
             initialSnapshot: initialSnapshot,
             startupError: startupError
