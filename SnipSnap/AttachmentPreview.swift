@@ -34,18 +34,19 @@ struct AttachmentPreviewArtwork: View {
 }
 
 struct AttachmentPreviewItem: Identifiable {
+    enum Source {
+        case file(URL, previewImage: NSImage?, fillsTile: Bool)
+        case image(id: String, image: NSImage)
+    }
+
     let id: String
-    let url: URL?
     let fileName: String
-    let previewImage: NSImage?
-    let fillsTile: Bool
+    let source: Source
 
     init(url: URL) {
         id = url.standardizedFileURL.absoluteString
-        self.url = url
         fileName = url.lastPathComponent
-        previewImage = nil
-        fillsTile = true
+        source = .file(url, previewImage: nil, fillsTile: true)
     }
 
     init(
@@ -54,33 +55,27 @@ struct AttachmentPreviewItem: Identifiable {
         fillsTile: Bool
     ) {
         id = url.standardizedFileURL.absoluteString
-        self.url = url
         fileName = url.lastPathComponent
-        self.previewImage = previewImage
-        self.fillsTile = fillsTile
+        source = .file(url, previewImage: previewImage, fillsTile: fillsTile)
     }
 
     init(id: String, image: NSImage) {
         self.id = id
-        url = nil
         fileName = "Clipboard image"
-        previewImage = image
-        fillsTile = true
+        source = .image(id: id, image: image)
     }
 
     init(attachment: SnipAttachment, url: URL) {
         id = attachment.id.uuidString
-        self.url = url
         fileName = attachment.fileName
-        previewImage = nil
-        fillsTile = true
+        source = .file(url, previewImage: nil, fillsTile: true)
     }
 }
 
 struct AttachmentPreviewStrip: View {
     let items: [AttachmentPreviewItem]
     let onPreview: (URL) -> Void
-    var onRemove: ((AttachmentPreviewItem) -> Void)?
+    var onRemove: ((URL) -> Void)?
 
     var body: some View {
         ScrollView(.horizontal) {
@@ -109,9 +104,9 @@ struct AttachmentPreviewStrip: View {
                 onPreview: onPreview
             )
 
-            if let onRemove {
+            if let onRemove, case let .file(url, _, _) = item.source {
                 Button {
-                    onRemove(item)
+                    onRemove(url)
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 8, weight: .bold))
@@ -139,9 +134,10 @@ private struct AttachmentPreviewTile: View {
     @State private var thumbnail: NSImage?
 
     var body: some View {
-        if let url = item.url {
+        switch item.source {
+        case let .file(url, previewImage, fillsTile):
             Button { onPreview(url) } label: {
-                previewImage
+                previewImageView(preloaded: previewImage, fillsTile: fillsTile)
                     .accessibilityHidden(true)
                 .contentShape(
                     RoundedRectangle(
@@ -155,7 +151,7 @@ private struct AttachmentPreviewTile: View {
             .accessibilityLabel("Preview \(item.fileName)")
             .accessibilityHint("Shows a Quick Look preview")
             .task(id: thumbnailRequestID) {
-                guard item.previewImage == nil else { return }
+                guard previewImage == nil else { return }
                 thumbnail = await PreviewImageCache.shared.fileThumbnail(
                     url: url,
                     size: CGSize(
@@ -165,16 +161,16 @@ private struct AttachmentPreviewTile: View {
                     scale: displayScale
                 )
             }
-        } else {
-            previewImage
+        case let .image(_, image):
+            AttachmentPreviewArtwork(image: image, fillsTile: true)
                 .accessibilityLabel(item.fileName)
         }
     }
 
     @ViewBuilder
-    private var previewImage: some View {
-        if let image = item.previewImage ?? thumbnail {
-            AttachmentPreviewArtwork(image: image, fillsTile: item.fillsTile)
+    private func previewImageView(preloaded: NSImage?, fillsTile: Bool) -> some View {
+        if let image = preloaded ?? thumbnail {
+            AttachmentPreviewArtwork(image: image, fillsTile: fillsTile)
         } else {
             Color.clear
                 .frame(
@@ -191,7 +187,7 @@ private struct AttachmentPreviewTile: View {
     }
 
     private var thumbnailRequestID: String {
-        "\(item.url?.standardizedFileURL.path ?? item.id)|\(displayScale)"
+        "\(item.id)|\(displayScale)"
     }
 }
 

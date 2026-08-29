@@ -391,8 +391,7 @@ struct ContentView: View {
                         onPreview: { url in
                             openAttachmentPreview(entryDraft.attachments, selectedURL: url)
                         },
-                        onRemove: { item in
-                            guard let url = item.url else { return }
+                        onRemove: { url in
                             removePreviewURL(url)
                             model.removeDraftAttachment(url, from: model.activeListID)
                             entryDraft = model.composerDraft(for: model.activeListID)

@@ -71,14 +71,13 @@ final class ClipboardEntryDragExportTests: XCTestCase {
         XCTAssertNil(items[1].string(forType: .string))
     }
 
-    func testExportIsCopyOnly() {
-        let entry = ClipboardEntry(
-            sourceApplication: "Tests",
-            items: [payload(.string, Data("Copy me".utf8))]
-        )
-
+    func testClipboardDragPolicyIsCopyOnly() {
         XCTAssertEqual(
-            ClipboardEntryDragExportPackage(entry: entry).sourceOperationMask,
+            ClipboardEntryDragExportPackage.sourceOperationMask(for: .withinApplication),
+            .copy
+        )
+        XCTAssertEqual(
+            ClipboardEntryDragExportPackage.sourceOperationMask(for: .outsideApplication),
             .copy
         )
     }
@@ -88,12 +87,46 @@ final class ClipboardEntryDragExportTests: XCTestCase {
         let package = ClipboardEntryDragExportPackage(entry: entry)
 
         XCTAssertTrue(package.pasteboardWriters().isEmpty)
+        let sourceFrame = NSRect(x: 0, y: 0, width: 20, height: 20)
         XCTAssertTrue(
-            package.draggingItems(
-                preview: NSImage(size: NSSize(width: 20, height: 20)),
-                sourceFrame: NSRect(x: 0, y: 0, width: 20, height: 20)
-            ).isEmpty
+            PanelDragSessionContent(
+                retaining: package,
+                context: PanelDragSourceContext(
+                scale: 2,
+                colorScheme: .light,
+                sourceFrame: sourceFrame
+                ),
+                previewImage: NSImage(size: sourceFrame.size)
+            ).draggingItems.isEmpty
         )
+    }
+
+    func testClipboardDragUsesSharedSourceFrameAndHidesSecondaryItems() {
+        let entry = ClipboardEntry(
+            sourceApplication: "Tests",
+            items: [
+                payload(.string, Data("First".utf8)),
+                payload(.string, Data("Second".utf8))
+            ]
+        )
+        let sourceFrame = NSRect(x: 18, y: 42, width: 316, height: 94)
+        let package = ClipboardEntryDragExportPackage(entry: entry)
+
+        let context = PanelDragSourceContext(
+            scale: 2,
+            colorScheme: .light,
+            sourceFrame: sourceFrame
+        )
+        let items = PanelDragSessionContent(
+            retaining: package,
+            context: context,
+            previewImage: NSImage(size: sourceFrame.size)
+        ).draggingItems
+
+        XCTAssertEqual(items.count, 2)
+        XCTAssertEqual(items[0].draggingFrame, sourceFrame)
+        XCTAssertEqual(items[1].draggingFrame.size, NSSize(width: 1, height: 1))
+        XCTAssertEqual(items[1].imageComponentsProvider?().count, 0)
     }
 
     private func payload(

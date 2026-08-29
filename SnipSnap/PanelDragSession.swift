@@ -27,32 +27,93 @@ enum PanelDragSessionOutcome: Equatable {
     }
 }
 
-struct PanelDragSessionRegionID: Hashable {
-    private let value: AnyHashable
+enum PanelDragSessionRegionID: Hashable {
+    case snip(UUID)
+    case clipboardEntry(UUID)
+}
 
-    init<Value: Hashable>(_ value: Value) {
-        self.value = AnyHashable(value)
-    }
+struct PanelDragSourceContext {
+    let scale: CGFloat
+    let colorScheme: ColorScheme
+    let sourceFrame: NSRect
+}
+
+protocol PanelDragExportPackage {
+    static func sourceOperationMask(for context: NSDraggingContext) -> NSDragOperation
+
+    func pasteboardWriters() -> [NSPasteboardWriting]
+}
+
+@MainActor
+struct PanelDragSessionCallbacks {
+    let onBegan: () -> Void
+    let onMoved: (NSPoint) -> Void
+    let onEnded: (PanelDragSessionOutcome, NSPoint) -> Void
+
+    static let none = Self(
+        onBegan: {},
+        onMoved: { _ in },
+        onEnded: { _, _ in }
+    )
 }
 
 @MainActor
 struct PanelDragSessionContent {
     let draggingItems: [NSDraggingItem]
     let retainedExport: Any
+
+    init<Export: PanelDragExportPackage>(
+        retaining export: Export,
+        context: PanelDragSourceContext,
+        previewImage: NSImage
+    ) {
+        draggingItems = export.pasteboardWriters().enumerated().map { index, writer in
+            let item = NSDraggingItem(pasteboardWriter: writer)
+            if index == 0 {
+                item.setDraggingFrame(context.sourceFrame, contents: previewImage)
+            } else {
+                item.draggingFrame = NSRect(
+                    origin: context.sourceFrame.origin,
+                    size: NSSize(width: 1, height: 1)
+                )
+                item.imageComponentsProvider = { [] }
+            }
+            return item
+        }
+        retainedExport = export
+    }
 }
 
 @MainActor
 struct PanelDragSessionAdapter {
-    let makeSession: (
-        _ origin: NSPoint,
-        _ scale: CGFloat,
-        _ colorScheme: ColorScheme,
-        _ sourceFrame: NSRect?
-    ) -> PanelDragSessionContent
+    let makeSession: (PanelDragSourceContext) -> PanelDragSessionContent
     let sourceOperationMask: (NSDraggingContext) -> NSDragOperation
     let onBegan: () -> Void
     let onMoved: (NSPoint) -> Void
     let onEnded: (PanelDragSessionOutcome, NSPoint) -> Void
+
+    static func exporting<Export: PanelDragExportPackage>(
+        makeExport: @escaping () -> Export,
+        previewImage: @escaping (Export, PanelDragSourceContext) -> NSImage,
+        callbacks: PanelDragSessionCallbacks = .none
+    ) -> Self {
+        Self(
+            makeSession: { context in
+                let export = makeExport()
+                return PanelDragSessionContent(
+                    retaining: export,
+                    context: context,
+                    previewImage: previewImage(export, context)
+                )
+            },
+            sourceOperationMask: { context in
+                Export.sourceOperationMask(for: context)
+            },
+            onBegan: callbacks.onBegan,
+            onMoved: callbacks.onMoved,
+            onEnded: callbacks.onEnded
+        )
+    }
 }
 
 struct PanelDragSessionInspection: Equatable {
@@ -63,8 +124,30 @@ struct PanelDragSessionInspection: Equatable {
 ///
 /// Content-specific views only build the adapter; this view owns registration,
 /// window attachment, hit testing, updates, and teardown.
+struct PanelDragSourceRegion: NSViewRepresentable {
+    let controller: PanelDragSessionController
+    let regionID: PanelDragSessionRegionID
+    let adapter: PanelDragSessionAdapter
+
+    func makeNSView(context: Context) -> PanelDragSourceRegionView {
+        PanelDragSourceRegionView(
+            controller: controller,
+            regionID: regionID,
+            adapter: adapter
+        )
+    }
+
+    func updateNSView(_ nsView: PanelDragSourceRegionView, context: Context) {
+        nsView.configure(adapter: adapter)
+    }
+
+    static func dismantleNSView(_ nsView: PanelDragSourceRegionView, coordinator: ()) {
+        nsView.removeFromController()
+    }
+}
+
 @MainActor
-class PanelDragSourceRegionView: NSView {
+final class PanelDragSourceRegionView: NSView {
     private let controller: PanelDragSessionController
     private let regionID: PanelDragSessionRegionID
     private var adapter: PanelDragSessionAdapter
@@ -276,17 +359,17 @@ final class PanelDragSessionController: NSObject, NSDraggingSource, NSGestureRec
             return
         }
         defer { pendingRegion = nil }
-        let origin = hostView.convert(event.locationInWindow, from: nil)
         let scale = hostView.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         let colorScheme: ColorScheme = hostView.effectiveAppearance.bestMatch(
             from: [.darkAqua, .aqua]
         ) == .darkAqua ? .dark : .light
         let sourceFrame = regionView.convert(regionView.bounds, to: hostView)
         let sessionContent = region.adapter.makeSession(
-            origin,
-            scale,
-            colorScheme,
-            sourceFrame
+            PanelDragSourceContext(
+                scale: scale,
+                colorScheme: colorScheme,
+                sourceFrame: sourceFrame
+            )
         )
         guard !sessionContent.draggingItems.isEmpty else { return }
         region.adapter.onBegan()

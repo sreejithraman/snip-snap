@@ -445,29 +445,14 @@ struct SnipListView: View {
                 .opacity(isShowingDragGap(for: snip.id) ? 0 : 1)
                 .background {
                     if model.editingID != snip.id {
-                        SnipDragSourceRegion(
+                        PanelDragSourceRegion(
                             controller: dragSessionController,
-                            id: snip.id,
-                            payload: payload,
-                            onBegan: {
-                                beginDrag(payload, orderedIDs: snips.map(\.id))
-                            },
-                            onMoved: { point in
-                                updateDrag(
-                                    at: point,
-                                    listID: listID,
-                                    snips: snips
-                                )
-                            },
-                            onEnded: { outcome, point in
-                                endDrag(
-                                    payload,
-                                    outcome: outcome,
-                                    at: point,
-                                    listID: listID,
-                                    snips: snips
-                                )
-                            }
+                            regionID: .snip(snip.id),
+                            adapter: snipDragAdapter(
+                                payload: payload,
+                                listID: listID,
+                                snips: snips
+                            )
                         )
                     }
                 }
@@ -509,6 +494,36 @@ struct SnipListView: View {
         activeDragOriginalOrder = orderedIDs
         activeDragRowFrames = reorderGeometry.rowFrames
         activeDragScrollOffsetY = reorderGeometry.scrollOffsetY
+    }
+
+    private func snipDragAdapter(
+        payload: SnipDragPayload,
+        listID: UUID,
+        snips: [Snip]
+    ) -> PanelDragSessionAdapter {
+        .exporting(
+            makeExport: { SnipDragExportPackage(payload: payload) },
+            previewImage: { export, context in
+                SnipDragPreview.image(for: export.payload, in: context)
+            },
+            callbacks: PanelDragSessionCallbacks(
+                onBegan: {
+                    beginDrag(payload, orderedIDs: snips.map(\.id))
+                },
+                onMoved: { point in
+                    updateDrag(at: point, listID: listID, snips: snips)
+                },
+                onEnded: { outcome, point in
+                    endDrag(
+                        payload,
+                        outcome: outcome,
+                        at: point,
+                        listID: listID,
+                        snips: snips
+                    )
+                }
+            )
+        )
     }
 
     private func updateDrag(

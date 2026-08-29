@@ -1147,13 +1147,10 @@ final class PanelTests: StoreBackedTestCase {
         let controller = PanelDragSessionController()
         controller.attach(to: host)
         let id = UUID()
-        let row = SnipDragSourceRegionView(
+        let row = snipDragRegionView(
             controller: controller,
             id: id,
-            payload: SnipDragPayload(ids: [UUID()], text: "Pending"),
-            onBegan: {},
-            onMoved: { _ in },
-            onEnded: { _, _ in }
+            text: "Pending"
         )
         row.frame = NSRect(x: 20, y: 20, width: 200, height: 60)
         host.addSubview(row)
@@ -1199,13 +1196,10 @@ final class PanelTests: StoreBackedTestCase {
         let clipView = NSClipView(frame: host.bounds)
         let documentView = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 300))
         let controller = PanelDragSessionController()
-        let row = SnipDragSourceRegionView(
+        let row = snipDragRegionView(
             controller: controller,
             id: UUID(),
-            payload: SnipDragPayload(ids: [UUID()], text: "Clipped"),
-            onBegan: {},
-            onMoved: { _ in },
-            onEnded: { _, _ in }
+            text: "Clipped"
         )
         row.frame = NSRect(x: 0, y: 0, width: 300, height: 300)
         documentView.addSubview(row)
@@ -1226,14 +1220,10 @@ final class PanelTests: StoreBackedTestCase {
         )
         let host = try XCTUnwrap(window.contentView)
         let controller = PanelDragSessionController()
-        let payload = SnipDragPayload(ids: [UUID()], text: "Hidden snip")
-        let snipView = SnipDragSourceRegionView(
+        let snipView = snipDragRegionView(
             controller: controller,
             id: UUID(),
-            payload: payload,
-            onBegan: {},
-            onMoved: { _ in },
-            onEnded: { _, _ in }
+            text: "Hidden snip"
         )
         snipView.frame = NSRect(x: 0, y: 180, width: 300, height: 100)
         let headerView = PanelDragBlockingRegionView(controller: controller, id: UUID())
@@ -1268,11 +1258,17 @@ final class PanelTests: StoreBackedTestCase {
                 )
             ]
         )
-        let entryView = ClipboardEntryDragSourceRegionView(
+        let entryView = PanelDragSourceRegionView(
             controller: controller,
-            id: entry.id,
-            package: ClipboardEntryDragExportPackage(entry: entry),
-            previewRenderer: { _, _, size in NSImage(size: size) }
+            regionID: .clipboardEntry(entry.id),
+            adapter: .exporting(
+                makeExport: {
+                    ClipboardEntryDragExportPackage(
+                        entry: entry
+                    )
+                },
+                previewImage: { _, context in NSImage(size: context.sourceFrame.size) }
+            )
         )
         entryView.frame = NSRect(x: 0, y: 180, width: 300, height: 100)
         let headerView = PanelDragBlockingRegionView(controller: controller, id: UUID())
@@ -1294,14 +1290,10 @@ final class PanelTests: StoreBackedTestCase {
         )
         let host = try XCTUnwrap(window.contentView)
         let controller = PanelDragSessionController()
-        let payload = SnipDragPayload(ids: [UUID()], text: "Hidden snip")
-        let snipView = SnipDragSourceRegionView(
+        let snipView = snipDragRegionView(
             controller: controller,
             id: UUID(),
-            payload: payload,
-            onBegan: {},
-            onMoved: { _ in },
-            onEnded: { _, _ in }
+            text: "Hidden snip"
         )
         snipView.frame = NSRect(x: 0, y: 0, width: 300, height: 100)
         let tabBarView = PanelDragBlockingRegionView(controller: controller, id: UUID())
@@ -1325,14 +1317,10 @@ final class PanelTests: StoreBackedTestCase {
         )
         let host = try XCTUnwrap(window.contentView)
         let controller = PanelDragSessionController()
-        let payload = SnipDragPayload(ids: [UUID()], text: "Hidden snip")
-        let snipView = SnipDragSourceRegionView(
+        let snipView = snipDragRegionView(
             controller: controller,
             id: UUID(),
-            payload: payload,
-            onBegan: {},
-            onMoved: { _ in },
-            onEnded: { _, _ in }
+            text: "Hidden snip"
         )
         snipView.frame = host.bounds
         let resizeView = PanelResizeView(frame: host.bounds)
@@ -1559,6 +1547,23 @@ final class PanelTests: StoreBackedTestCase {
         card.rightMouseDown(with: try mouseEvent(.rightMouseDown, at: location, in: window))
 
         XCTAssertEqual(menuBuildCount, 1)
+    }
+
+    @MainActor
+    private func snipDragRegionView(
+        controller: PanelDragSessionController,
+        id: UUID,
+        text: String
+    ) -> PanelDragSourceRegionView {
+        let payload = SnipDragPayload(ids: [UUID()], text: text)
+        return PanelDragSourceRegionView(
+            controller: controller,
+            regionID: .snip(id),
+            adapter: .exporting(
+                makeExport: { SnipDragExportPackage(payload: payload) },
+                previewImage: { _, context in NSImage(size: context.sourceFrame.size) }
+            )
+        )
     }
 
     @MainActor

@@ -145,6 +145,21 @@ struct ClipboardEntryRow: View {
     @State private var isShowingCopyConfirmation = false
     @State private var copyConfirmationTask: Task<Void, Never>?
 
+    private var dragAdapter: PanelDragSessionAdapter {
+        .exporting(
+            makeExport: {
+                ClipboardEntryDragExportPackage(entry: entry)
+            },
+            previewImage: { _, context in
+                renderDragPreview(
+                    scale: context.scale,
+                    colorScheme: context.colorScheme,
+                    size: context.sourceFrame.size
+                )
+            }
+        )
+    }
+
     var body: some View {
         ClipboardEntryCard(
             entry: entry,
@@ -154,11 +169,10 @@ struct ClipboardEntryRow: View {
             onPreviewAttachments: onPreviewAttachments
         )
         .background {
-            ClipboardEntryDragSourceRegion(
+            PanelDragSourceRegion(
                 controller: dragSessionController,
-                id: entry.id,
-                package: ClipboardEntryDragExportPackage(entry: entry),
-                previewRenderer: renderDragPreview
+                regionID: .clipboardEntry(entry.id),
+                adapter: dragAdapter
             )
         }
         .contextMenu { Button("Add to Active List", action: save) }
