@@ -14,7 +14,8 @@ struct IOSAppRootView: View {
         initialSnapshot: SnipLibrarySnapshot? = nil,
         startupError: String? = nil,
         uiTestAttachmentURLs: [URL] = [],
-        shareImportOperation: (@Sendable () async -> Int)? = nil
+        shareImportOperation: (@Sendable () async -> Int)? = nil,
+        syncOperation: (@Sendable () async throws -> Void)? = nil
     ) {
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         _appGraph = State(initialValue: IOSAppGraph(
@@ -22,7 +23,8 @@ struct IOSAppRootView: View {
             shareImports: shareImports,
             initialSnapshot: initialSnapshot ?? SnipLibrarySnapshot(snips: [], lists: [.inbox]),
             startupError: startupError,
-            shareImportOperation: shareImportOperation
+            shareImportOperation: shareImportOperation,
+            syncOperation: syncOperation
         ))
     }
 
