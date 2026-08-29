@@ -292,6 +292,10 @@ package final class StoredRequestRecord {
   }
 }
 
+public enum SnipSnapStoreSchemaContract {
+  public static let currentVersion = 4
+}
+
 package enum StoredLibraryMetadataKind: String, Codable {
   case snip, list
 }
@@ -477,20 +481,9 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     let lockURL = storeURL.appendingPathExtension("lock")
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
-    let schema = Schema(versionedSchema: SnipSnapSchemaV4.self)
-    let configuration = ModelConfiguration(
-      "SnipSnapLocal",
-      schema: schema,
-      url: storeURL,
-      cloudKitDatabase: .none
-    )
     let container: ModelContainer
     do {
-      container = try ModelContainer(
-        for: schema,
-        migrationPlan: SnipSnapSchemaMigrationPlan.self,
-        configurations: [configuration]
-      )
+      container = try Self.makeContainer(storeURL: storeURL)
     } catch {
       throw SnipLibraryError.invalidStore
     }
@@ -638,6 +631,49 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     )
   }
 
+  package static func importArchive(_ archive: JSONSnipArchive, storeURL: URL) throws {
+    let directory = storeURL.deletingLastPathComponent()
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let lock = try SnipStoreFileLock(url: storeURL.appendingPathExtension("lock"))
+    defer { withExtendedLifetime(lock) {} }
+    let container: ModelContainer
+    do {
+      container = try makeContainer(storeURL: storeURL)
+    } catch {
+      throw SnipLibraryError.invalidStore
+    }
+    let context = makeContext(container: container)
+    let loaded = try load(context: context, seenRequestIDs: [])
+    guard loaded.isEmpty else { throw SnipLibraryError.invalidStore }
+    let state = SnipLibraryState(
+      snips: archive.snips,
+      lists: archive.lists,
+      seenRequestIDs: archive.seenRequestIDs
+    )
+    try validate(state)
+    try applyChanges(from: loaded, to: state, context: context)
+    try context.save()
+  }
+
+  package static func readArchive(storeURL: URL) throws -> JSONSnipArchive {
+    let lock = try SnipStoreFileLock(url: storeURL.appendingPathExtension("lock"))
+    defer { withExtendedLifetime(lock) {} }
+    let container: ModelContainer
+    do {
+      container = try makeContainer(storeURL: storeURL)
+    } catch {
+      throw SnipLibraryError.invalidStore
+    }
+    let loaded = try load(context: makeContext(container: container), seenRequestIDs: [])
+    try validate(loaded.state)
+    return JSONSnipArchive(
+      version: JSONSnipLibrary.currentVersion,
+      snips: loaded.state.snips,
+      lists: loaded.state.lists,
+      seenRequestIDs: loaded.state.seenRequestIDs
+    )
+  }
+
   public func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
     _ = try? checkedSnapshot(sortedBy: sortMode)
     return makeSnapshot(state: lastKnownState, sortedBy: sortMode)
@@ -655,6 +691,28 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     seenRequestIDs = loaded.state.seenRequestIDs
     rememberAttachments(in: loaded.state)
     return makeSnapshot(state: loaded.state, sortedBy: sortMode)
+  }
+
+  public func archive() async throws -> SnipLibraryArchive {
+    guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let loaded = try Self.load(
+      context: Self.makeContext(container: container),
+      seenRequestIDs: seenRequestIDs
+    )
+    try Self.validate(loaded.state)
+    return SnipLibraryArchive(
+      snips: loaded.state.snips,
+      lists: loaded.state.allLists(),
+      seenRequestIDs: loaded.state.seenRequestIDs,
+      attachmentURLs: Dictionary(
+        loaded.state.snips.flatMap(\.attachments).map {
+          ($0.id, attachmentRootURL.appendingPathComponent($0.relativePath))
+        },
+        uniquingKeysWith: { first, _ in first }
+      )
+    )
   }
 
   public func perform(
@@ -676,6 +734,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     )
     var state = loaded.state
     var createdDirectories: [URL] = []
+    var importedFiles: [URL] = []
 
     do {
       let outcome = try state.perform(
@@ -684,6 +743,16 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
           let prepared = try self.prepareAttachments(sourceURLs, currentSnips: currentSnips)
           createdDirectories.append(contentsOf: prepared.createdDirectories)
           return prepared.attachments
+        },
+        prepareImportedSnips: { imported, sourceURLs, currentSnips in
+          let prepared = try ImportedAttachmentPreparer.prepare(
+            snips: imported,
+            sourceURLs: sourceURLs,
+            currentSnips: currentSnips,
+            destinationRoot: self.attachmentRootURL
+          )
+          importedFiles.append(contentsOf: prepared.createdFiles)
+          return prepared.snips
         },
         pruneAttachments: { retainedIDs, currentSnips in
           let liveIDs = Set(currentSnips.flatMap(\.attachments).map(\.id)).union(retainedIDs)
@@ -720,6 +789,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     } catch {
       context.rollback()
       removeAttachmentDirectories(createdDirectories)
+      ImportedAttachmentPreparer.remove(createdFiles: importedFiles)
       throw error
     }
   }
@@ -729,6 +799,21 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     let context = ModelContext(container)
     context.autosaveEnabled = false
     return context
+  }
+
+  private static func makeContainer(storeURL: URL) throws -> ModelContainer {
+    let schema = Schema(versionedSchema: SnipSnapSchemaV4.self)
+    let configuration = ModelConfiguration(
+      "SnipSnapLocal",
+      schema: schema,
+      url: storeURL,
+      cloudKitDatabase: .none
+    )
+    return try ModelContainer(
+      for: schema,
+      migrationPlan: SnipSnapSchemaMigrationPlan.self,
+      configurations: [configuration]
+    )
   }
 
   private func makeSnapshot(

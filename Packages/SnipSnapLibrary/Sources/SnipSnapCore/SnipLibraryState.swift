@@ -27,6 +27,9 @@ package struct SnipLibraryState {
   package mutating func perform(
     _ command: SnipLibraryCommand,
     prepareAttachments: ([URL], [Snip]) throws -> [SnipAttachment],
+    prepareImportedSnips: ([Snip], [UUID: URL], [Snip]) throws -> [Snip] = {
+      imported, _, _ in imported
+    },
     pruneAttachments: (Set<UUID>, [Snip]) -> Void
   ) throws -> SnipLibraryOutcome {
     switch command {
@@ -320,6 +323,29 @@ package struct SnipLibraryState {
       seenRequestIDs.formUnion(replacement.map(\.requestID))
       return .none
 
+    case .importArchive(let archive):
+      try validateArchive(archive)
+      let existingListIDs = Set(lists.map(\.id))
+      let additions = archive.lists
+        .filter { $0.id != SnipList.inboxID && !existingListIDs.contains($0.id) }
+        .sorted { $0.position < $1.position }
+      for addition in additions {
+        guard !lists.contains(where: {
+          $0.name.caseInsensitiveCompare(addition.name) == .orderedSame
+        }) else { throw SnipLibraryError.duplicateList }
+        var positioned = addition
+        positioned.position = (lists.map(\.position).max() ?? 0) + 1
+        lists.append(positioned)
+      }
+      let existingSnipIDs = Set(snips.map(\.id))
+      let missing = archive.snips.filter { !existingSnipIDs.contains($0.id) }
+      let prepared = try prepareImportedSnips(missing, archive.attachmentURLs, snips)
+      try validateImportedSnips(prepared)
+      snips.append(contentsOf: prepared)
+      seenRequestIDs.formUnion(archive.seenRequestIDs)
+      seenRequestIDs.formUnion(archive.snips.map(\.requestID))
+      return .none
+
     case .pruneAttachments(let retainedIDs):
       pruneAttachments(retainedIDs, snips)
       return .none
@@ -374,6 +400,16 @@ package struct SnipLibraryState {
         Set(snip.attachments.map(\.id)).count == snip.attachments.count
       })
     else { throw SnipLibraryError.invalidStore }
+  }
+
+  private func validateArchive(_ archive: SnipLibraryArchive) throws {
+    guard !archive.lists.isEmpty,
+      Set(archive.lists.map(\.id)).count == archive.lists.count,
+      Set(archive.lists.map { $0.name.lowercased() }).count == archive.lists.count,
+      archive.lists.contains(where: { $0.id == SnipList.inboxID }),
+      Set(archive.snips.map(\.listID)).isSubset(of: Set(archive.lists.map(\.id)))
+    else { throw SnipLibraryError.invalidStore }
+    try validateImportedSnips(archive.snips)
   }
 
   private mutating func update(ids: Set<UUID>, change: (inout Snip) -> Void) {

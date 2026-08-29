@@ -58,7 +58,7 @@ public actor JSONSnipLibrary: SnipLibrary {
 
     static let currentVersion = 6
     // TODO: Remove version 4 decoding after the 1.0 migration window.
-    private static let legacyVersion = 4
+    package static let legacyVersion = 4
 
     private let fileURL: URL
     nonisolated let attachmentRootURL: URL
@@ -204,6 +204,19 @@ public actor JSONSnipLibrary: SnipLibrary {
         return makeSnapshot(sortedBy: sortMode)
     }
 
+    public func archive() async throws -> SnipLibraryArchive {
+        try ensureAvailable()
+        return SnipLibraryArchive(
+            snips: snips,
+            lists: allLists(),
+            seenRequestIDs: seenRequestIDs,
+            attachmentURLs: Dictionary(
+                snips.flatMap(\.attachments).map { ($0.id, attachmentURL(for: $0)) },
+                uniquingKeysWith: { first, _ in first }
+            )
+        )
+    }
+
     public func perform(
         _ command: SnipLibraryCommand,
         sortedBy sortMode: SnipSortMode
@@ -215,6 +228,7 @@ public actor JSONSnipLibrary: SnipLibrary {
             seenRequestIDs: seenRequestIDs
         )
         var createdDirectories: [URL] = []
+        var importedFiles: [URL] = []
         let outcome: SnipLibraryOutcome
         do {
             outcome = try state.perform(
@@ -226,6 +240,16 @@ public actor JSONSnipLibrary: SnipLibrary {
                     )
                     createdDirectories.append(contentsOf: prepared.createdDirectories)
                     return prepared.attachments
+                },
+                prepareImportedSnips: { imported, sourceURLs, currentSnips in
+                    let prepared = try ImportedAttachmentPreparer.prepare(
+                        snips: imported,
+                        sourceURLs: sourceURLs,
+                        currentSnips: currentSnips,
+                        destinationRoot: self.attachmentRootURL
+                    )
+                    importedFiles.append(contentsOf: prepared.createdFiles)
+                    return prepared.snips
                 },
                 pruneAttachments: { retainedIDs, currentSnips in
                     let liveIDs = Set(currentSnips.flatMap(\.attachments).map(\.id))
@@ -254,6 +278,7 @@ public actor JSONSnipLibrary: SnipLibrary {
             }
         } catch {
             removeAttachmentDirectories(createdDirectories)
+            ImportedAttachmentPreparer.remove(createdFiles: importedFiles)
             throw error
         }
 

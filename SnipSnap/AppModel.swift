@@ -186,6 +186,28 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func exportArchive() async throws -> SnipLibraryArchive {
+        try await library.archive()
+    }
+
+    func importArchive(_ archive: SnipLibraryArchive) async -> Bool {
+        let result: Result<Void, Error> = await performMutation {
+            let update = try await library.perform(
+                .importArchive(archive),
+                sortedBy: sortMode
+            )
+            return (update, ())
+        }
+        switch result {
+        case .success:
+            clearHistory()
+            return true
+        case .failure(let error):
+            presentedError = error.localizedDescription
+            return false
+        }
+    }
+
     private func reloadUnlocked() async {
         let snapshot = await library.snapshot(sortedBy: sortMode)
         apply(snapshot)

@@ -119,6 +119,25 @@ public struct SnipLibrarySnapshot: Equatable, Sendable {
     }
 }
 
+public struct SnipLibraryArchive: Sendable {
+    public let snips: [Snip]
+    public let lists: [SnipList]
+    public let seenRequestIDs: Set<UUID>
+    public let attachmentURLs: [UUID: URL]
+
+    public init(
+        snips: [Snip],
+        lists: [SnipList],
+        seenRequestIDs: Set<UUID>,
+        attachmentURLs: [UUID: URL]
+    ) {
+        self.snips = snips
+        self.lists = lists
+        self.seenRequestIDs = seenRequestIDs
+        self.attachmentURLs = attachmentURLs
+    }
+}
+
 public enum SnipAttachmentEdit: Equatable, Sendable {
     case existing(attachmentID: UUID)
     case added(sourceURL: URL)
@@ -188,6 +207,7 @@ public indirect enum SnipLibraryCommand: Sendable {
     case moveChronologically(ids: [UUID], to: UUID)
     case place(ids: [UUID], in: UUID, before: UUID?, basedOn: SnipSortMode)
     case replaceAll([Snip])
+    case importArchive(SnipLibraryArchive)
     case pruneAttachments(retaining: Set<UUID>)
     case batch([SnipLibraryCommand])
     case guarded(expectation: SnipLibraryExpectation, command: SnipLibraryCommand)
@@ -310,6 +330,8 @@ public protocol SnipLibrary: Sendable {
         in scope: SnipRecoveryScope,
         choice: SnipRecoveryChoice
     ) async throws -> SnipLibrarySnapshot
+
+    func archive() async throws -> SnipLibraryArchive
 }
 
 public extension SnipLibrary {
@@ -341,5 +363,15 @@ public extension SnipLibrary {
     ) async throws -> SnipLibrarySnapshot {
         _ = (id, scope, choice)
         throw SnipLibraryError.recoveryNotFound
+    }
+
+    func archive() async throws -> SnipLibraryArchive {
+        let snapshot = await snapshot(sortedBy: .manual)
+        return SnipLibraryArchive(
+            snips: snapshot.snips,
+            lists: snapshot.lists,
+            seenRequestIDs: Set(snapshot.snips.map(\.requestID)),
+            attachmentURLs: snapshot.attachmentURLs
+        )
     }
 }
