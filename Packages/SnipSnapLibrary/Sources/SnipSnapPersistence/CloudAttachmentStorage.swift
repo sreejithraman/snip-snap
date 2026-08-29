@@ -172,6 +172,12 @@ package enum CloudAttachmentTransition: Codable, Equatable, Sendable {
     failure: CloudAttachmentFailure
   )
   case metadataDeleteAccepted(attachmentID: UUID, expectedRevision: UInt64)
+  case metadataDeleteConflict(
+    attachmentID: UUID, expectedRevision: UInt64, shadowData: Data, systemFields: Data
+  )
   case remoteMetadataDeleted(metadataIdentity: CloudTextStorageIdentity)
   case cleanupAccepted(identity: CloudTextStorageIdentity, expectedRevision: UInt64)
+  case cleanupConflict(
+    identity: CloudTextStorageIdentity, expectedRevision: UInt64, shadowData: Data
+  )
 }

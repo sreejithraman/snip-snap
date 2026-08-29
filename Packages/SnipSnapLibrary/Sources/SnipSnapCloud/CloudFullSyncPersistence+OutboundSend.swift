@@ -4,6 +4,10 @@ import SnipSnapPersistence
 
 extension CloudFullSyncPersistence {
   package func pendingChanges() async throws -> CloudOutboundBatch {
+    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
+    guard stored.namespaceState.phase != .blocked else {
+      return CloudOutboundBatch(operations: [], zonesToSave: [])
+    }
     if let payloadZone {
       try await library.reconcileCloudAttachments(
         namespaceKey: namespaceKey,
@@ -14,7 +18,6 @@ extension CloudFullSyncPersistence {
       )
     }
     let local = try await library.checkedSnapshot(sortedBy: .manual)
-    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
     let accepted = Dictionary(uniqueKeysWithValues:
       (stored.readyEntities + stored.deferredEntities).map { ($0.reference, $0) }
@@ -104,13 +107,15 @@ extension CloudFullSyncPersistence {
     }
     let payloads = try publications.compactMap { publication -> CloudOutboundOperation? in
       guard publication.isLocallyPresent, !publication.payloadAccepted else { return nil }
+      if publication.lastFailure == .rejected || publication.lastFailure == .invalidRecord
+        || publication.lastFailure == .zoneMissing
+      { return nil }
       guard publication.metadata.payloadIdentity.zoneName == payloadZone.name,
         publication.metadata.payloadIdentity.ownerName == payloadZone.ownerName
       else { throw CloudAttachmentStorageError.invalidMetadata }
       return .save(try CloudAttachmentRecordCodec.payloadDraft(publication))
     }
     if !payloads.isEmpty { return payloads }
-
     let metadata = try publications.compactMap { publication -> CloudOutboundOperation? in
       guard publication.isLocallyPresent, publication.payloadAccepted,
         !publication.metadataAccepted
@@ -123,25 +128,28 @@ extension CloudFullSyncPersistence {
       return .save(CloudAttachmentRecordCodec.metadataDraft(publication))
     }
     if !metadata.isEmpty { return metadata }
-
-    var deletions: [CloudOutboundOperation] = []
+    var metadataDeletions: [CloudOutboundOperation] = []
     for publication in publications where !publication.isLocallyPresent
       && publication.metadataAccepted
     {
       let base = try publication.metadataShadowData.map(CloudRecordShadow.init(data:))
-      deletions.append(.delete(
+      metadataDeletions.append(.delete(
         CloudAttachmentRecordCodec.recordID(publication.metadataIdentity),
         base: base
       ))
     }
+    if !metadataDeletions.isEmpty { return metadataDeletions }
+    var cleanupDeletions: [CloudOutboundOperation] = []
     for cleanup in snapshot.cleanups {
       guard cleanup.identity.zoneName == payloadZone.name,
         cleanup.identity.ownerName == payloadZone.ownerName
       else { throw CloudAttachmentStorageError.invalidMetadata }
       let base = try cleanup.shadowData.map(CloudRecordShadow.init(data:))
-      deletions.append(.delete(CloudAttachmentRecordCodec.recordID(cleanup.identity), base: base))
+      cleanupDeletions.append(
+        .delete(CloudAttachmentRecordCodec.recordID(cleanup.identity), base: base)
+      )
     }
-    return deletions
+    return cleanupDeletions
   }
   static func uniqueOperations(
     _ operations: [CloudOutboundOperation]

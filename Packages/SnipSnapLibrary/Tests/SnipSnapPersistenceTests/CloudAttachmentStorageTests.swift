@@ -39,6 +39,8 @@ final class CloudAttachmentStorageTests: XCTestCase {
     XCTAssertFalse(first.payloadAccepted)
     XCTAssertNotNil(first.sourceURL)
     XCTAssertNotEqual(first.metadata.attachmentID.uuidString.lowercased(), first.metadata.payloadIdentity.recordName)
+    let stagedURL = try XCTUnwrap(first.sourceURL)
+    try Data(repeating: 0x78, count: Int(first.metadata.byteCount)).write(to: stagedURL)
 
     library = nil
     let reopened = try SwiftDataSnipLibrary(storeURL: storeURL)
@@ -55,6 +57,7 @@ final class CloudAttachmentStorageTests: XCTestCase {
     let second = try XCTUnwrap(secondSnapshot.publications.first)
     XCTAssertEqual(second.metadata.payloadIdentity, first.metadata.payloadIdentity)
     XCTAssertEqual(second.metadata.sha256, first.metadata.sha256)
+    XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(second.sourceURL)), Data("hello attachment".utf8))
   }
 
   func testNamespaceGenerationKeepsSeparatePayloadLedgers() async throws {

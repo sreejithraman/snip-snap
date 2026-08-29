@@ -112,12 +112,21 @@ extension CloudFullSyncPersistence {
             })
           {
             if case .conflict? = sentItemResults[snapshot.id] {
-              attachmentTransitions.append(.metadataConflict(
-                attachmentID: local.metadata.attachmentID,
-                expectedRevision: local.revision,
-                shadowData: snapshot.shadow.data,
-                systemFields: snapshot.shadow.systemFields
-              ))
+              if case .delete? = outboundOperations[snapshot.id] {
+                attachmentTransitions.append(.metadataDeleteConflict(
+                  attachmentID: local.metadata.attachmentID,
+                  expectedRevision: local.revision,
+                  shadowData: snapshot.shadow.data,
+                  systemFields: snapshot.shadow.systemFields
+                ))
+              } else {
+                attachmentTransitions.append(.metadataConflict(
+                  attachmentID: local.metadata.attachmentID,
+                  expectedRevision: local.revision,
+                  shadowData: snapshot.shadow.data,
+                  systemFields: snapshot.shadow.systemFields
+                ))
+              }
             } else {
               attachmentTransitions.append(.metadataAccepted(
                 attachmentID: local.metadata.attachmentID,
@@ -162,6 +171,19 @@ extension CloudFullSyncPersistence {
               systemFields: snapshot.shadow.systemFields
             ))
           }
+          continue
+        }
+        if snapshot.recordType == CloudAttachmentRecordCodec.payloadRecordType,
+          case .conflict? = sentItemResults[snapshot.id],
+          let cleanup = attachmentStorage.cleanups.first(where: {
+            CloudAttachmentRecordCodec.recordID($0.identity) == snapshot.id
+          })
+        {
+          attachmentTransitions.append(.cleanupConflict(
+            identity: cleanup.identity,
+            expectedRevision: cleanup.revision,
+            shadowData: snapshot.shadow.data
+          ))
           continue
         }
         if let item = try Self.recordItem(

@@ -98,13 +98,13 @@ extension SwiftDataSnipLibrary {
           row.payloadShadowData = nil
           row.payloadSystemFields = nil
           row.metadataAccepted = false
-        } else if !row.payloadAccepted, row.uploadRelativePath == nil {
+        } else if !row.payloadAccepted {
           let upload = try stageCloudAttachmentUpload(
             sourceURL: sourceURL,
             namespaceKey: namespaceKey,
             payloadRecordName: row.payloadRecordName
           )
-          createdUploadFiles.append(upload.url)
+          if row.uploadRelativePath == nil { createdUploadFiles.append(upload.url) }
           row.uploadRelativePath = upload.relativePath
         }
         if metadataChanged {
@@ -299,6 +299,9 @@ extension SwiftDataSnipLibrary {
           row.contentType = metadata.contentType
           row.byteCount = metadata.byteCount
           row.sha256 = metadata.sha256
+          row.payloadZoneName = metadata.payloadIdentity.zoneName
+          row.payloadOwnerName = metadata.payloadIdentity.ownerName
+          row.payloadRecordName = metadata.payloadIdentity.recordName
           row.payloadAccepted = true
           row.metadataAccepted = true
           row.metadataShadowData = shadow
@@ -416,6 +419,15 @@ extension SwiftDataSnipLibrary {
           context: context
         )
         context.delete(row)
+      case .metadataDeleteConflict(let attachmentID, let expected, let shadow, let systemFields):
+        guard let row = byAttachment[attachmentID], row.revision == expected,
+          !row.isLocallyPresent
+        else { throw CloudAttachmentStorageError.staleTransition }
+        row.metadataAccepted = true
+        row.metadataShadowData = shadow
+        row.metadataSystemFields = systemFields
+        row.lastFailure = nil
+        row.revision += 1
       case .remoteMetadataDeleted(let metadataIdentity):
         guard let row = publications.first(where: { $0.metadataIdentity == metadataIdentity })
         else { continue }
@@ -434,6 +446,12 @@ extension SwiftDataSnipLibrary {
         guard let row = byCleanup[identity] else { continue }
         guard row.revision == expected else { throw CloudAttachmentStorageError.staleTransition }
         context.delete(row)
+      case .cleanupConflict(let identity, let expected, let shadow):
+        guard let row = byCleanup[identity], row.revision == expected else {
+          throw CloudAttachmentStorageError.staleTransition
+        }
+        row.shadowData = shadow
+        row.revision += 1
       }
     }
   }
@@ -661,7 +679,15 @@ extension SwiftDataSnipLibrary {
     let directory = destination.deletingLastPathComponent()
     try DurableFile.createDirectory(directory)
     if FileManager.default.fileExists(atPath: destination.path) {
-      return (relativePath, destination)
+      let sourceValues = try sourceURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+      let stagedValues = try destination.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+      if sourceValues.isRegularFile == true, stagedValues.isRegularFile == true,
+        sourceValues.fileSize == stagedValues.fileSize,
+        try Self.sha256(of: sourceURL) == Self.sha256(of: destination)
+      {
+        return (relativePath, destination)
+      }
+      try FileManager.default.removeItem(at: destination)
     }
     do {
       try FileManager.default.copyItem(at: sourceURL, to: destination)
