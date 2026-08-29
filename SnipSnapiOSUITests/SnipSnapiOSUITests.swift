@@ -4,14 +4,79 @@ import XCTest
 final class SnipSnapiOSUITests: XCTestCase {
     private func launchApp(
         storeName: String = "ui-\(UUID().uuidString)",
-        withAttachments: Bool = false
+        withAttachments: Bool = false,
+        withCopyShareFixtures: Bool = false
     ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["SNIP_SNAP_UI_TESTING"] = "1"
         app.launchEnvironment["SNIP_SNAP_UI_TEST_STORE"] = storeName
         if withAttachments { app.launchEnvironment["SNIP_SNAP_UI_TEST_ATTACHMENTS"] = "1" }
+        if withCopyShareFixtures {
+            app.launchEnvironment["SNIP_SNAP_UI_TEST_COPY_SHARE"] = "1"
+        }
         app.launch()
         return app
+    }
+
+    func testCopiesTextOnlySnip() {
+        continueAfterFailure = false
+        let app = launchApp(withCopyShareFixtures: true)
+
+        openCopyShareFixture(matching: "Copy text fixture", in: app)
+        chooseDetailAction("copy-snip", in: app)
+
+        XCTAssertEqual(copyStatus(in: app).label, "Copied")
+    }
+
+    func testCopiesFileOnlySnipAttachments() {
+        continueAfterFailure = false
+        let app = launchApp(withCopyShareFixtures: true)
+
+        openCopyShareFixture(matching: "notes.txt", in: app)
+        chooseDetailAction("copy-attachments-snip", in: app)
+
+        XCTAssertEqual(copyStatus(in: app).label, "Copied Attachments")
+    }
+
+    func testCopiesMixedSnipText() {
+        continueAfterFailure = false
+        let app = launchApp(withCopyShareFixtures: true)
+
+        openCopyShareFixture(matching: "Copy mixed fixture", in: app)
+        chooseDetailAction("copy-text-snip", in: app)
+
+        XCTAssertEqual(copyStatus(in: app).label, "Copied Text")
+    }
+
+    func testSharesMultipleSelectedSnips() {
+        continueAfterFailure = false
+        let app = launchApp(withCopyShareFixtures: true)
+        returnToCollection(in: app)
+        XCTAssertTrue(
+            collectionRow(named: "Copy text fixture", in: app).waitForExistence(timeout: 5)
+        )
+        enterSelection(in: app)
+        row(named: "Copy text fixture", in: app).tap()
+        row(named: "Copy mixed fixture", in: app).tap()
+        app.buttons["selection-actions"].tap()
+        let share = app.buttons["share-selection"]
+        XCTAssertTrue(share.waitForExistence(timeout: 3))
+        share.tap()
+
+        XCTAssertTrue(activityView(in: app).waitForExistence(timeout: 5))
+    }
+
+    func testUnavailableAttachmentOffersOnlyCopyTextOrCancel() {
+        continueAfterFailure = false
+        let app = launchApp(withCopyShareFixtures: true)
+
+        openCopyShareFixture(matching: "Copy unavailable fixture", in: app)
+        chooseDetailAction("copy-snip", in: app)
+        XCTAssertTrue(app.alerts["Some Files Are Unavailable"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Copy Text Only"].exists)
+        XCTAssertTrue(app.buttons["Cancel"].exists)
+        app.buttons["Copy Text Only"].tap()
+        XCTAssertEqual(copyStatus(in: app).label, "Copied Text")
     }
 
     func testCreatesAndEditsTextSnip() {
@@ -230,6 +295,35 @@ final class SnipSnapiOSUITests: XCTestCase {
         } else {
             XCTAssertTrue(app.navigationBars["Snip"].waitForExistence(timeout: 3))
         }
+    }
+
+    private func openCopyShareFixture(matching text: String, in app: XCUIApplication) {
+        if app.navigationBars["Snip"].exists, app.buttons["BackButton"].exists {
+            app.buttons["BackButton"].tap()
+        }
+        let fixture = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS %@", text)
+        ).firstMatch
+        XCTAssertTrue(fixture.waitForExistence(timeout: 5))
+        fixture.tap()
+        XCTAssertTrue(app.buttons["copy-share-snip"].waitForExistence(timeout: 5))
+    }
+
+    private func chooseDetailAction(_ identifier: String, in app: XCUIApplication) {
+        app.buttons["copy-share-snip"].tap()
+        let action = app.buttons[identifier]
+        XCTAssertTrue(action.waitForExistence(timeout: 3))
+        action.tap()
+    }
+
+    private func copyStatus(in app: XCUIApplication) -> XCUIElement {
+        let status = app.staticTexts["copy-status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 3))
+        return status
+    }
+
+    private func activityView(in app: XCUIApplication) -> XCUIElement {
+        app.otherElements["ActivityListView"]
     }
 
     func testSearchDoneFilterAndUndo() {

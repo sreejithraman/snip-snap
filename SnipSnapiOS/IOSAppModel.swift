@@ -43,6 +43,10 @@ final class IOSAppModel {
         return snips.first(where: { $0.id == selectedSnipID })
     }
 
+    var selectedVisibleSnips: [Snip] {
+        visibleSnips.filter { selectedSnipIDs.contains($0.id) }
+    }
+
     var visibleSnips: [Snip] {
         let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let matches = snips.filter { snip in

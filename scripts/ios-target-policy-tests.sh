@@ -14,7 +14,8 @@ for required_file in \
     LibraryViews.swift \
     WorkflowControls.swift \
     EditorViews.swift \
-    AttachmentViews.swift; do
+    AttachmentViews.swift \
+    IOSCopyShare.swift; do
     grep -F -- "$required_file" "$project_file" >/dev/null
 done
 

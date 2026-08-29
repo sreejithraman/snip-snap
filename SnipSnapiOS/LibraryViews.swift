@@ -50,6 +50,7 @@ struct ListSidebarView: View {
 
 struct SnipCollectionView: View {
     let model: IOSAppModel
+    let copyShare: IOSCopyShareCoordinator
     @Binding var sheet: AppSheet?
     @State private var editMode: EditMode = .inactive
     @State private var isSelecting = false
@@ -125,6 +126,14 @@ struct SnipCollectionView: View {
                             }
                             Button("Edit") { sheet = .editSnip(id: snip.id) }
                             MoveSnipMenu(model: model, snip: snip)
+                            Divider()
+                            CopyShareActions(
+                                snips: [snip],
+                                model: model,
+                                coordinator: copyShare,
+                                identifierSuffix: "snip"
+                            )
+                            Divider()
                             Button("Delete", role: .destructive) {
                                 Task { await model.deleteSnip(id: snip.id) }
                             }
@@ -156,7 +165,11 @@ struct SnipCollectionView: View {
             }
             ToolbarItemGroup(placement: .primaryAction) {
                 if isSelecting {
-                    SelectionActionsMenu(model: model, endSelection: endSelection)
+                    SelectionActionsMenu(
+                        model: model,
+                        copyShare: copyShare,
+                        endSelection: endSelection
+                    )
                         .disabled(model.selectedSnipIDs.isEmpty)
                 } else {
                     WorkflowOptionsMenu(model: model)
@@ -277,12 +290,25 @@ private struct SnipRow: View {
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(snip.isDone ? "Done" : "Not Done")
+    }
+
+    private var accessibilityLabel: String {
+        let text = snip.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let attachments = snip.attachments.map(\.fileName).joined(separator: ", ")
+        return [
+            text.isEmpty ? nil : text,
+            attachments.isEmpty ? nil : "Attachments: \(attachments)",
+        ]
+        .compactMap { $0 }
+        .joined(separator: ", ")
     }
 }
 
 struct SnipDetailView: View {
     let model: IOSAppModel
+    let copyShare: IOSCopyShareCoordinator
     @Binding var sheet: AppSheet?
     @State private var previewURL: URL?
 
@@ -340,6 +366,15 @@ struct SnipDetailView: View {
             .quickLookPreview($previewURL, in: attachmentItems.map(\.url))
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
+                    Menu("Copy and Share", systemImage: "square.and.arrow.up") {
+                        CopyShareActions(
+                            snips: [snip],
+                            model: model,
+                            coordinator: copyShare,
+                            identifierSuffix: "snip"
+                        )
+                    }
+                    .accessibilityIdentifier("copy-share-snip")
                     MoveSnipMenu(model: model, snip: snip)
                     Button("Edit", systemImage: "pencil") {
                         sheet = .editSnip(id: snip.id)

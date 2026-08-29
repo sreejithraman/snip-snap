@@ -1,10 +1,207 @@
 import SnipSnapCore
 import SnipSnapPersistence
+import UIKit
 import XCTest
 @testable import SnipSnapiOS
 
 @MainActor
 final class IOSAppModelTests: XCTestCase {
+    func testCopySharePayloadsCoverTextFileMixedMultiAndUnavailableCases() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapCopyPayload-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let firstURL = directory.appendingPathComponent("first.txt")
+        let secondURL = directory.appendingPathComponent("second.txt")
+        try Data("First".utf8).write(to: firstURL)
+        try Data("Second".utf8).write(to: secondURL)
+        let firstID = UUID()
+        let secondID = UUID()
+        let missingID = UUID()
+        let firstAttachment = try testAttachment(id: firstID, fileName: "first.txt")
+        let secondAttachment = try testAttachment(id: secondID, fileName: "second.txt")
+        let missingAttachment = try testAttachment(id: missingID, fileName: "missing.txt")
+        let old = Snip(
+            createdAt: Date(timeIntervalSince1970: 1),
+            content: "Old text",
+            origin: .quickEntry
+        )
+        let fileOnly = Snip(
+            createdAt: Date(timeIntervalSince1970: 2),
+            content: "",
+            origin: .quickEntry,
+            attachments: [firstAttachment]
+        )
+        let mixed = Snip(
+            createdAt: Date(timeIntervalSince1970: 3),
+            content: "Mixed text",
+            origin: .quickEntry,
+            attachments: [secondAttachment]
+        )
+        let missing = Snip(
+            createdAt: Date(timeIntervalSince1970: 4),
+            content: "Keep this text",
+            origin: .quickEntry,
+            attachments: [missingAttachment]
+        )
+        let urls = [firstID: firstURL, secondID: secondURL]
+        let builder = IOSCopySharePayloadBuilder()
+
+        let textPayload = builder.payload(for: [old]) { urls[$0] }
+        XCTAssertEqual(textPayload.copyItems, [.text("Old text")])
+
+        let filePayload = builder.payload(for: [fileOnly]) { urls[$0] }
+        XCTAssertEqual(filePayload.copyItems, [.text(""), .file(firstURL)])
+        XCTAssertEqual(filePayload.attachmentItems, [.file(firstURL)])
+
+        let mixedPayload = builder.payload(for: [mixed]) { urls[$0] }
+        XCTAssertEqual(mixedPayload.copyItems, [.text("Mixed text"), .file(secondURL)])
+
+        let multiPayload = builder.payload(for: [mixed, fileOnly, old]) { urls[$0] }
+        XCTAssertEqual(multiPayload.text, SnipFormatter.formatForClipboard(snips: [mixed, fileOnly, old]))
+        XCTAssertEqual(multiPayload.attachments, [firstURL, secondURL])
+
+        let unavailablePayload = builder.payload(for: [missing]) { urls[$0] }
+        XCTAssertEqual(unavailablePayload.unavailableFileNames, ["missing.txt"])
+        XCTAssertEqual(unavailablePayload.copyItems, [.text("Keep this text")])
+    }
+
+    func testCopyShareCoordinatorWritesWholePlansAndStopsForUnavailableFiles() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapCopyCoordinator-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fileURL = directory.appendingPathComponent("file.txt")
+        try Data("File".utf8).write(to: fileURL)
+        let availableID = UUID()
+        let missingID = UUID()
+        let available = try testAttachment(id: availableID, fileName: "file.txt")
+        let unavailable = try testAttachment(id: missingID, fileName: "missing.txt")
+        let mixed = Snip(content: "Text", origin: .quickEntry, attachments: [available])
+        let missing = Snip(content: "Safe text", origin: .quickEntry, attachments: [unavailable])
+        let snapshot = SnipLibrarySnapshot(
+            snips: [mixed, missing],
+            lists: [.inbox],
+            attachmentURLs: [availableID: fileURL]
+        )
+        let model = IOSAppModel(library: ModelTestLibrary(), initialSnapshot: snapshot)
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+
+        coordinator.copy(snips: [mixed], model: model)
+        XCTAssertEqual(pasteboard.writes, [[.text("Text"), .file(fileURL)]])
+        coordinator.copyText(snips: [mixed], model: model)
+        XCTAssertEqual(pasteboard.writes.last, [.text("Text")])
+        coordinator.copyAttachments(snips: [mixed], model: model)
+        XCTAssertEqual(pasteboard.writes.last, [.file(fileURL)])
+        coordinator.share(snips: [mixed], model: model)
+        XCTAssertEqual(coordinator.shareRequest?.items, [.text("Text"), .file(fileURL)])
+
+        let writeCount = pasteboard.writes.count
+        coordinator.copy(snips: [missing], model: model)
+        XCTAssertEqual(pasteboard.writes.count, writeCount)
+        XCTAssertEqual(coordinator.unavailableFilesNotice?.payload.unavailableFileNames, ["missing.txt"])
+        coordinator.copyTextFromNotice()
+        XCTAssertEqual(pasteboard.writes.last, [.text("Safe text")])
+        XCTAssertNil(coordinator.unavailableFilesNotice)
+    }
+
+    func testPasteboardProviderLoadsStagedBytesAfterLibrarySourceIsPruned() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapPasteboardLease-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let sourceURL = directory.appendingPathComponent("source.txt")
+        let expected = Data("Deferred bytes".utf8)
+        try expected.write(to: sourceURL)
+        let pasteboardName = UIPasteboard.Name("SnipSnapTests.\(UUID().uuidString)")
+        let pasteboard = try XCTUnwrap(UIPasteboard(name: pasteboardName, create: true))
+        defer { UIPasteboard.remove(withName: pasteboardName) }
+        let stagingRoot = directory.appendingPathComponent("staging", isDirectory: true)
+        let writer = IOSSystemPasteboard(
+            pasteboard: pasteboard,
+            stagingRoot: stagingRoot
+        )
+
+        XCTAssertTrue(writer.write([.text("Text"), .file(sourceURL)]))
+        try FileManager.default.removeItem(at: sourceURL)
+        let provider = try XCTUnwrap(pasteboard.itemProviders.last)
+        let typeIdentifier = try XCTUnwrap(provider.registeredTypeIdentifiers.first)
+        let loadedData = await withCheckedContinuation { continuation in
+            provider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { url, _ in
+                continuation.resume(returning: url.flatMap { try? Data(contentsOf: $0) })
+            }
+        }
+
+        XCTAssertEqual(loadedData, expected)
+        let leaseDirectory = try XCTUnwrap(writer.activeLeaseDirectory)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: leaseDirectory.path))
+        pasteboard.string = "External replacement"
+        await Task.yield()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: leaseDirectory.path))
+        XCTAssertNil(writer.activeLeaseDirectory)
+    }
+
+    func testPasteboardLeaseSurvivesRelaunchOnlyWhileItsChangeCountMatches() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapPasteboardReload-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let sourceURL = directory.appendingPathComponent("source.txt")
+        try Data("Lease".utf8).write(to: sourceURL)
+        let pasteboardName = UIPasteboard.Name("SnipSnapTests.\(UUID().uuidString)")
+        let pasteboard = try XCTUnwrap(UIPasteboard(name: pasteboardName, create: true))
+        defer { UIPasteboard.remove(withName: pasteboardName) }
+        let stagingRoot = directory.appendingPathComponent("staging", isDirectory: true)
+        var firstWriter: IOSSystemPasteboard? = IOSSystemPasteboard(
+            pasteboard: pasteboard,
+            stagingRoot: stagingRoot
+        )
+        XCTAssertTrue(firstWriter?.write([.file(sourceURL)]) == true)
+        let leaseDirectory = try XCTUnwrap(firstWriter?.activeLeaseDirectory)
+        firstWriter = nil
+
+        var reloadedWriter: IOSSystemPasteboard? = IOSSystemPasteboard(
+            pasteboard: pasteboard,
+            stagingRoot: stagingRoot
+        )
+        XCTAssertEqual(reloadedWriter?.activeLeaseDirectory, leaseDirectory)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: leaseDirectory.path))
+        reloadedWriter = nil
+
+        pasteboard.string = "Changed while Snip Snap was not running"
+        let finalWriter = IOSSystemPasteboard(
+            pasteboard: pasteboard,
+            stagingRoot: stagingRoot
+        )
+        await Task.yield()
+        XCTAssertNil(finalWriter.activeLeaseDirectory)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: leaseDirectory.path))
+    }
+
+    func testRemovingNamedPasteboardReleasesItsFileLease() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapPasteboardRemove-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let sourceURL = directory.appendingPathComponent("source.txt")
+        try Data("Remove".utf8).write(to: sourceURL)
+        let pasteboardName = UIPasteboard.Name("SnipSnapTests.\(UUID().uuidString)")
+        let pasteboard = try XCTUnwrap(UIPasteboard(name: pasteboardName, create: true))
+        let writer = IOSSystemPasteboard(
+            pasteboard: pasteboard,
+            stagingRoot: directory.appendingPathComponent("staging", isDirectory: true)
+        )
+        XCTAssertTrue(writer.write([.file(sourceURL)]))
+        let leaseDirectory = try XCTUnwrap(writer.activeLeaseDirectory)
+
+        UIPasteboard.remove(withName: pasteboardName)
+        await Task.yield()
+
+        XCTAssertNil(writer.activeLeaseDirectory)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: leaseDirectory.path))
+    }
+
     func testAttachmentDraftCleanupWaitsForChildPresentations() {
         XCTAssertFalse(
             AttachmentDraftLifecycle.allowsDismissal(isSaving: false, isStaging: true)
@@ -210,6 +407,104 @@ final class IOSAppModelTests: XCTestCase {
 
         let undone = await model.undo()
         XCTAssertFalse(undone)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: storedURL.path))
+    }
+
+    func testReplacingAttachmentRetainsOldBytesUntilUndoAndThenPrunesReplacement() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapReplaceUndo-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let firstSource = directory.appendingPathComponent("first-source.txt")
+        let secondSource = directory.appendingPathComponent("second-source.txt")
+        try Data("A".utf8).write(to: firstSource)
+        try Data("B".utf8).write(to: secondSource)
+        let library = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("snips.json"))
+        let model = IOSAppModel(library: library)
+        await model.load()
+        let created = await model.createSnip(
+            content: "Attachment",
+            in: SnipList.inboxID,
+            attachmentURLs: [firstSource]
+        )
+        XCTAssertTrue(created)
+        let before = try XCTUnwrap(model.selectedSnip)
+        let oldID = try XCTUnwrap(before.attachments.first?.id)
+        let oldURL = try XCTUnwrap(model.attachmentURL(for: oldID))
+
+        let edited = await model.editSnip(
+            before,
+            content: before.content,
+            attachmentEdits: [.replacement(attachmentID: oldID, sourceURL: secondSource)]
+        )
+        XCTAssertTrue(edited)
+        let replacementID = try XCTUnwrap(model.selectedSnip?.attachments.first?.id)
+        let replacementURL = try XCTUnwrap(model.attachmentURL(for: replacementID))
+        XCTAssertEqual(try Data(contentsOf: oldURL), Data("A".utf8))
+        XCTAssertEqual(try Data(contentsOf: replacementURL), Data("B".utf8))
+
+        let undone = await model.undo()
+        XCTAssertTrue(undone)
+        XCTAssertEqual(model.selectedSnip?.attachments.first?.id, oldID)
+        XCTAssertEqual(try Data(contentsOf: oldURL), Data("A".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: replacementURL.path))
+    }
+
+    func testUndoCapacityEvictionPrunesDeletedAttachmentBytes() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapUndoEviction-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("source.txt")
+        try Data("Evict".utf8).write(to: source)
+        let library = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("snips.json"))
+        let model = IOSAppModel(library: library)
+        await model.load()
+        let created = await model.createSnip(
+            content: "Attachment",
+            in: SnipList.inboxID,
+            attachmentURLs: [source]
+        )
+        XCTAssertTrue(created)
+        let snip = try XCTUnwrap(model.selectedSnip)
+        let storedURL = try XCTUnwrap(model.attachmentURL(for: snip.attachments[0].id))
+        let deleted = await model.deleteSnip(id: snip.id)
+        XCTAssertTrue(deleted)
+
+        for index in 0..<99 {
+            let createdList = await model.createList(name: "List \(index)")
+            XCTAssertTrue(createdList)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
+        let finalList = await model.createList(name: "List 99")
+        XCTAssertTrue(finalList)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: storedURL.path))
+    }
+
+    func testFreshModelLoadPrunesAttachmentHeldOnlyByOldMemoryUndo() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapUndoReload-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("source.txt")
+        try Data("Reload".utf8).write(to: source)
+        let library = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("snips.json"))
+        let firstModel = IOSAppModel(library: library)
+        await firstModel.load()
+        let created = await firstModel.createSnip(
+            content: "Attachment",
+            in: SnipList.inboxID,
+            attachmentURLs: [source]
+        )
+        XCTAssertTrue(created)
+        let snip = try XCTUnwrap(firstModel.selectedSnip)
+        let storedURL = try XCTUnwrap(firstModel.attachmentURL(for: snip.attachments[0].id))
+        let deleted = await firstModel.deleteSnip(id: snip.id)
+        XCTAssertTrue(deleted)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
+
+        let reloadedModel = IOSAppModel(library: library)
+        await reloadedModel.load()
         XCTAssertFalse(FileManager.default.fileExists(atPath: storedURL.path))
     }
 
@@ -570,6 +865,16 @@ final class IOSAppModelTests: XCTestCase {
         #endif
     }
 
+}
+
+@MainActor
+private final class RecordingPasteboard: IOSPasteboardWriting {
+    private(set) var writes: [[IOSCopyItem]] = []
+
+    func write(_ items: [IOSCopyItem]) -> Bool {
+        writes.append(items)
+        return true
+    }
 }
 
 private func testAttachment(id: UUID, fileName: String) throws -> SnipAttachment {

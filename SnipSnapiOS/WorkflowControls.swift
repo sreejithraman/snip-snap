@@ -41,6 +41,7 @@ struct WorkflowOptionsMenu: View {
 
 struct SelectionActionsMenu: View {
     let model: IOSAppModel
+    let copyShare: IOSCopyShareCoordinator
     let endSelection: () -> Void
 
     var body: some View {
@@ -82,6 +83,14 @@ struct SelectionActionsMenu: View {
                 }
                 .accessibilityIdentifier("move-selection-down")
             }
+
+            Divider()
+            CopyShareActions(
+                snips: model.selectedVisibleSnips,
+                model: model,
+                coordinator: copyShare,
+                identifierSuffix: "selection"
+            )
 
             Divider()
             Button("Delete", systemImage: "trash", role: .destructive) {
