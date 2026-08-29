@@ -4,8 +4,18 @@ import SnipSnapPersistence
 
 extension CloudFullSyncPersistence {
   package func pendingChanges() async throws -> CloudOutboundBatch {
+    if let payloadZone {
+      try await library.reconcileCloudAttachments(
+        namespaceKey: namespaceKey,
+        metadataZoneName: dataZone.name,
+        metadataOwnerName: dataZone.ownerName,
+        payloadZoneName: payloadZone.name,
+        payloadOwnerName: payloadZone.ownerName
+      )
+    }
     let local = try await library.checkedSnapshot(sortedBy: .manual)
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
+    let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
     let accepted = Dictionary(uniqueKeysWithValues:
       (stored.readyEntities + stored.deferredEntities).map { ($0.reference, $0) }
     )
@@ -65,10 +75,73 @@ extension CloudFullSyncPersistence {
         }
       }
     }
+    if let payloadZone {
+      let attachmentOperations = try Self.attachmentOperations(
+        attachments,
+        dataZone: dataZone,
+        payloadZone: payloadZone
+      )
+      operations.append(contentsOf: attachmentOperations)
+    }
+    var zonesToSave: Set<CloudZoneID> = stored.namespaceState.zoneCreationPending
+      ? [dataZone] : []
+    if let payloadZone, attachments.publications.contains(where: { $0.isLocallyPresent }) {
+      zonesToSave.insert(payloadZone)
+    }
     return CloudOutboundBatch(
       operations: operations.sorted { Self.operationOrder($0) < Self.operationOrder($1) },
-      zonesToSave: stored.namespaceState.zoneCreationPending ? [dataZone] : []
+      zonesToSave: zonesToSave
     )
+  }
+
+  private static func attachmentOperations(
+    _ snapshot: CloudAttachmentStorageSnapshot,
+    dataZone: CloudZoneID,
+    payloadZone: CloudZoneID
+  ) throws -> [CloudOutboundOperation] {
+    let publications = snapshot.publications.sorted {
+      $0.metadata.attachmentID.uuidString < $1.metadata.attachmentID.uuidString
+    }
+    let payloads = try publications.compactMap { publication -> CloudOutboundOperation? in
+      guard publication.isLocallyPresent, !publication.payloadAccepted else { return nil }
+      guard publication.metadata.payloadIdentity.zoneName == payloadZone.name,
+        publication.metadata.payloadIdentity.ownerName == payloadZone.ownerName
+      else { throw CloudAttachmentStorageError.invalidMetadata }
+      return .save(try CloudAttachmentRecordCodec.payloadDraft(publication))
+    }
+    if !payloads.isEmpty { return payloads }
+
+    let metadata = try publications.compactMap { publication -> CloudOutboundOperation? in
+      guard publication.isLocallyPresent, publication.payloadAccepted,
+        !publication.metadataAccepted
+      else { return nil }
+      guard publication.metadataIdentity.zoneName == dataZone.name,
+        publication.metadataIdentity.ownerName == dataZone.ownerName,
+        publication.metadata.payloadIdentity.zoneName == payloadZone.name,
+        publication.metadata.payloadIdentity.ownerName == payloadZone.ownerName
+      else { throw CloudAttachmentStorageError.invalidMetadata }
+      return .save(CloudAttachmentRecordCodec.metadataDraft(publication))
+    }
+    if !metadata.isEmpty { return metadata }
+
+    var deletions: [CloudOutboundOperation] = []
+    for publication in publications where !publication.isLocallyPresent
+      && publication.metadataAccepted
+    {
+      let base = try publication.metadataShadowData.map(CloudRecordShadow.init(data:))
+      deletions.append(.delete(
+        CloudAttachmentRecordCodec.recordID(publication.metadataIdentity),
+        base: base
+      ))
+    }
+    for cleanup in snapshot.cleanups {
+      guard cleanup.identity.zoneName == payloadZone.name,
+        cleanup.identity.ownerName == payloadZone.ownerName
+      else { throw CloudAttachmentStorageError.invalidMetadata }
+      let base = try cleanup.shadowData.map(CloudRecordShadow.init(data:))
+      deletions.append(.delete(CloudAttachmentRecordCodec.recordID(cleanup.identity), base: base))
+    }
+    return deletions
   }
   static func uniqueOperations(
     _ operations: [CloudOutboundOperation]

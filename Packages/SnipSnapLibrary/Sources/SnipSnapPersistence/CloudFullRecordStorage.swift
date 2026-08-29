@@ -691,12 +691,13 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
   package let rawBatchData: Data?
   package let outboundBindings: [CloudFullOutboundBinding]
   package let recoveryInputs: [CloudFullRecoveryInput]
+  package let attachmentTransitions: [CloudAttachmentTransition]
   package let items: [CloudFullBatchItem]
 
   private enum CodingKeys: String, CodingKey {
     case storageVersion, namespaceKey, batchID, expectedEngineState, nextEngineState
     case nextEnrollment, expectedNamespaceRevision, nextNamespaceState, rawBatchData
-    case outboundBindings, recoveryInputs, items
+    case outboundBindings, recoveryInputs, attachmentTransitions, items
   }
 
   package init(
@@ -710,6 +711,7 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
     rawBatchData: Data? = nil,
     outboundBindings: [CloudFullOutboundBinding] = [],
     recoveryInputs: [CloudFullRecoveryInput] = [],
+    attachmentTransitions: [CloudAttachmentTransition] = [],
     items: [CloudFullBatchItem]
   ) {
     storageVersion = 1
@@ -723,6 +725,7 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
     self.rawBatchData = rawBatchData
     self.outboundBindings = outboundBindings
     self.recoveryInputs = recoveryInputs
+    self.attachmentTransitions = attachmentTransitions
     self.items = items
   }
 
@@ -754,6 +757,10 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
       [CloudFullRecoveryInput].self,
       forKey: .recoveryInputs
     ) ?? []
+    attachmentTransitions = try container.decodeIfPresent(
+      [CloudAttachmentTransition].self,
+      forKey: .attachmentTransitions
+    ) ?? []
     items = try container.decode([CloudFullBatchItem].self, forKey: .items)
   }
 
@@ -776,6 +783,7 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
     try container.encodeIfPresent(rawBatchData, forKey: .rawBatchData)
     try container.encode(outboundBindings, forKey: .outboundBindings)
     try container.encode(recoveryInputs, forKey: .recoveryInputs)
+    try container.encode(attachmentTransitions, forKey: .attachmentTransitions)
     try container.encode(items, forKey: .items)
   }
 }

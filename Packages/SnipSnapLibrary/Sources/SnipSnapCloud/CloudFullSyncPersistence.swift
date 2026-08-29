@@ -13,12 +13,18 @@ package protocol CloudFullSyncStore: Sendable {
 package actor CloudFullSyncCoordinator {
   private let store: any CloudFullSyncStore
   private let transport: any CloudRecordTransport
+  private let fetchScope: CloudFetchScope
   private var started = false
   private var syncing = false
 
-  package init(store: any CloudFullSyncStore, transport: any CloudRecordTransport) {
+  package init(
+    store: any CloudFullSyncStore,
+    transport: any CloudRecordTransport,
+    fetchScope: CloudFetchScope = .all
+  ) {
     self.store = store
     self.transport = transport
+    self.fetchScope = fetchScope
   }
 
   package func sync() async throws {
@@ -61,7 +67,7 @@ package actor CloudFullSyncCoordinator {
       started = true
     }
     if fetch {
-      let fetched = try await transport.fetch(scope: .all)
+      let fetched = try await transport.fetch(scope: fetchScope)
       try await beforeFetchApply()
       try await commit(.fetched(fetched), outbound: nil)
     }
@@ -106,6 +112,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   let library: SwiftDataSnipLibrary
   let namespace: CloudSyncNamespace
   let dataZone: CloudZoneID
+  let payloadZone: CloudZoneID?
   let namespaceKey: String
   let now: @Sendable () -> Date
   let afterCommitHook: ApplyHook
@@ -114,13 +121,16 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     library: SwiftDataSnipLibrary,
     namespace: CloudSyncNamespace,
     dataZone: CloudZoneID,
+    payloadZone: CloudZoneID? = nil,
     now: @escaping @Sendable () -> Date = Date.init,
     afterCommitHook: @escaping ApplyHook = {}
   ) {
     precondition(namespace.zones.contains(dataZone))
+    precondition(payloadZone.map(namespace.zones.contains) ?? true)
     self.library = library
     self.namespace = namespace
     self.dataZone = dataZone
+    self.payloadZone = payloadZone
     self.now = now
     self.afterCommitHook = afterCommitHook
     namespaceKey = namespace.canonicalKey

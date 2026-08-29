@@ -51,6 +51,21 @@ extension SwiftDataSnipLibrary {
     var batchDomains: Set<String> = []
     var batchIdentities: Set<String> = []
     var outboundIdentities: Set<String> = []
+    let acceptedAttachmentIDs = Set(batch.attachmentTransitions.compactMap {
+      transition -> UUID? in
+      guard case .payloadAccepted(let attachmentID, _, _, _) = transition else { return nil }
+      return attachmentID
+    })
+    let uploadRoot = try cloudAttachmentUploadRoot(namespaceKey: batch.namespaceKey)
+    let acceptedUploadFiles = try context.fetch(FetchDescriptor<StoredCloudAttachmentPublication>())
+      .filter {
+        $0.namespaceKey == batch.namespaceKey && acceptedAttachmentIDs.contains($0.attachmentID)
+      }
+      .compactMap { row in
+        try row.uploadRelativePath.map {
+          try Self.validatedChild(relativePath: $0, root: uploadRoot)
+        }
+      }
     for binding in batch.outboundBindings {
       let identityKey = StoredCloudEntityRecord.identityKey(
         namespaceKey: batch.namespaceKey,
@@ -271,6 +286,12 @@ extension SwiftDataSnipLibrary {
         record.isDeferred = false
         record.deferredMutationData = nil
       }
+      try applyCloudAttachmentTransitions(
+        namespaceKey: batch.namespaceKey,
+        transitions: batch.attachmentTransitions,
+        context: context
+      )
+      try materializeCloudAttachments(namespaceKey: batch.namespaceKey, context: context)
       try Self.resolveStoredListNames(context: context)
       let final = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
       do {
@@ -335,6 +356,10 @@ extension SwiftDataSnipLibrary {
     } catch {
       context.rollback()
       throw error
+    }
+    for file in acceptedUploadFiles {
+      try? FileManager.default.removeItem(at: file)
+      try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
     }
     let loaded = try Self.load(
       context: Self.makeContext(container: container),

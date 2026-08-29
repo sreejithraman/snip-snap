@@ -4,6 +4,57 @@ import SnipSnapPersistence
 import XCTest
 
 extension ICloudSyncModeCoordinatorTests {
+    func testAttachmentSetupListsAllUnsupportedFilesBeforeStartingTransition() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let first = root.appendingPathComponent("first.bin")
+        let second = root.appendingPathComponent("second.bin")
+        try Data(repeating: 1, count: 5).write(to: first)
+        try Data(repeating: 2, count: 6).write(to: second)
+        let local = try await persistence.activeLibrary()
+        _ = try await local.perform(
+            .add(
+                content: "local files",
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inbox.id,
+                attachmentURLs: [first, second],
+                requestID: UUID(),
+                now: .distantPast
+            ),
+            sortedBy: .manual
+        )
+        let dataZone = CloudZoneID(name: "data", ownerName: "owner")
+        let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
+        let namespace = CloudSyncNamespace(
+            cloudScope: "private",
+            accountLineage: "account",
+            generation: UUID(),
+            zones: [dataZone, payloadZone]
+        )
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: dataZone,
+            payloadZone: payloadZone,
+            attachmentPolicy: CloudAttachmentCompatibilityPolicy(maximumFileBytes: 4),
+            makeTransport: {
+                FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
+            }
+        )
+
+        do {
+            _ = try await coordinator.enableOrRetry()
+            XCTFail("Expected setup to report unsupported files")
+        } catch let CloudAttachmentSetupError.unsupportedFiles(files) {
+            XCTAssertEqual(files.map(\.fileName), ["first.bin", "second.bin"])
+        }
+        let after = try await persistence.snapshot()
+        XCTAssertEqual(after.activeStore.kind, .localOnly)
+        XCTAssertNil(after.transition)
+    }
+
     func testNewStoresAndTransitionsPinFullRecordProtocol() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

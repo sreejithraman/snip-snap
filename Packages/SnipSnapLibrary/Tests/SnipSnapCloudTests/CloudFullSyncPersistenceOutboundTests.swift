@@ -30,7 +30,7 @@ extension CloudFullSyncPersistenceTests {
     guard case .add(.added(let snipID)) = added.outcome else {
       return XCTFail("Expected a saved snip")
     }
-    let schema = Schema(versionedSchema: SnipSnapSchemaV3.self)
+    let schema = Schema(versionedSchema: SnipSnapSchemaV4.self)
     let configuration = ModelConfiguration(
       "SnipSnapLocal",
       schema: schema,

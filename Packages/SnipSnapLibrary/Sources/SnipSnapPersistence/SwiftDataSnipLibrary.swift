@@ -119,6 +119,166 @@ final class StoredSnipAttachmentReference {
 }
 
 @Model
+final class StoredCloudAttachmentPublication {
+  @Attribute(.unique) var id: String
+  var namespaceKey: String
+  var attachmentID: UUID
+  var snipID: UUID
+  var position: Int
+  var fileName: String
+  var contentType: String?
+  var byteCount: Int64
+  var sha256: Data
+  var isLocallyPresent: Bool
+  var sourceRelativePath: String?
+  var uploadRelativePath: String?
+  var metadataZoneName: String
+  var metadataOwnerName: String
+  var metadataRecordName: String
+  var payloadZoneName: String
+  var payloadOwnerName: String
+  var payloadRecordName: String
+  var payloadAccepted: Bool
+  var payloadShadowData: Data?
+  var payloadSystemFields: Data?
+  var metadataAccepted: Bool
+  var metadataShadowData: Data?
+  var metadataSystemFields: Data?
+  var priorPayloadZoneName: String?
+  var priorPayloadOwnerName: String?
+  var priorPayloadRecordName: String?
+  var priorPayloadShadowData: Data?
+  var lastFailure: String?
+  var revision: UInt64
+
+  init(
+    namespaceKey: String,
+    attachmentID: UUID,
+    snipID: UUID,
+    position: Int,
+    fileName: String,
+    contentType: String?,
+    byteCount: Int64,
+    sha256: Data,
+    sourceRelativePath: String?,
+    metadataIdentity: CloudTextStorageIdentity,
+    payloadIdentity: CloudTextStorageIdentity
+  ) {
+    id = Self.key(namespaceKey: namespaceKey, attachmentID: attachmentID)
+    self.namespaceKey = namespaceKey
+    self.attachmentID = attachmentID
+    self.snipID = snipID
+    self.position = position
+    self.fileName = fileName
+    self.contentType = contentType
+    self.byteCount = byteCount
+    self.sha256 = sha256
+    isLocallyPresent = true
+    self.sourceRelativePath = sourceRelativePath
+    uploadRelativePath = nil
+    metadataZoneName = metadataIdentity.zoneName
+    metadataOwnerName = metadataIdentity.ownerName
+    metadataRecordName = metadataIdentity.recordName
+    payloadZoneName = payloadIdentity.zoneName
+    payloadOwnerName = payloadIdentity.ownerName
+    payloadRecordName = payloadIdentity.recordName
+    payloadAccepted = false
+    payloadShadowData = nil
+    payloadSystemFields = nil
+    metadataAccepted = false
+    metadataShadowData = nil
+    metadataSystemFields = nil
+    priorPayloadZoneName = nil
+    priorPayloadOwnerName = nil
+    priorPayloadRecordName = nil
+    priorPayloadShadowData = nil
+    lastFailure = nil
+    revision = 1
+  }
+
+  static func key(namespaceKey: String, attachmentID: UUID) -> String {
+    "\(namespaceKey)|attachment|\(attachmentID.uuidString.lowercased())"
+  }
+}
+
+@Model
+final class StoredCloudAttachmentCleanup {
+  @Attribute(.unique) var id: String
+  var namespaceKey: String
+  var zoneName: String
+  var ownerName: String
+  var recordName: String
+  var shadowData: Data?
+  var revision: UInt64
+
+  init(
+    namespaceKey: String,
+    identity: CloudTextStorageIdentity,
+    shadowData: Data?
+  ) {
+    id = Self.key(namespaceKey: namespaceKey, identity: identity)
+    self.namespaceKey = namespaceKey
+    zoneName = identity.zoneName
+    ownerName = identity.ownerName
+    recordName = identity.recordName
+    self.shadowData = shadowData
+    revision = 1
+  }
+
+  var identity: CloudTextStorageIdentity {
+    CloudTextStorageIdentity(zoneName: zoneName, ownerName: ownerName, recordName: recordName)
+  }
+
+  static func key(namespaceKey: String, identity: CloudTextStorageIdentity) -> String {
+    "\(namespaceKey)|cleanup|\(identity.key)"
+  }
+}
+
+@Model
+final class StoredCloudAttachmentCacheEntry {
+  @Attribute(.unique) var id: String
+  var namespaceKey: String
+  var attachmentID: UUID
+  var payloadZoneName: String
+  var payloadOwnerName: String
+  var payloadRecordName: String
+  var relativePath: String
+  var byteCount: Int64
+  var lastAccessedAt: Date
+
+  init(
+    namespaceKey: String,
+    attachmentID: UUID,
+    payloadIdentity: CloudTextStorageIdentity,
+    relativePath: String,
+    byteCount: Int64,
+    lastAccessedAt: Date
+  ) {
+    id = Self.key(namespaceKey: namespaceKey, attachmentID: attachmentID)
+    self.namespaceKey = namespaceKey
+    self.attachmentID = attachmentID
+    payloadZoneName = payloadIdentity.zoneName
+    payloadOwnerName = payloadIdentity.ownerName
+    payloadRecordName = payloadIdentity.recordName
+    self.relativePath = relativePath
+    self.byteCount = byteCount
+    self.lastAccessedAt = lastAccessedAt
+  }
+
+  var payloadIdentity: CloudTextStorageIdentity {
+    CloudTextStorageIdentity(
+      zoneName: payloadZoneName,
+      ownerName: payloadOwnerName,
+      recordName: payloadRecordName
+    )
+  }
+
+  static func key(namespaceKey: String, attachmentID: UUID) -> String {
+    "\(namespaceKey)|cache|\(attachmentID.uuidString.lowercased())"
+  }
+}
+
+@Model
 package final class StoredRequestRecord {
   @Attribute(.unique) package var id: UUID
 
@@ -222,14 +382,26 @@ package enum SnipSnapSchemaV3: VersionedSchema {
   }
 }
 
+package enum SnipSnapSchemaV4: VersionedSchema {
+  package static let versionIdentifier = Schema.Version(4, 0, 0)
+  package static var models: [any PersistentModel.Type] {
+    SnipSnapSchemaV3.models + [
+      StoredCloudAttachmentPublication.self,
+      StoredCloudAttachmentCleanup.self,
+      StoredCloudAttachmentCacheEntry.self,
+    ]
+  }
+}
+
 package enum SnipSnapSchemaMigrationPlan: SchemaMigrationPlan {
   package static var schemas: [any VersionedSchema.Type] {
-    [SnipSnapSchemaV1.self, SnipSnapSchemaV2.self, SnipSnapSchemaV3.self]
+    [SnipSnapSchemaV1.self, SnipSnapSchemaV2.self, SnipSnapSchemaV3.self, SnipSnapSchemaV4.self]
   }
   package static var stages: [MigrationStage] {
     [
       .lightweight(fromVersion: SnipSnapSchemaV1.self, toVersion: SnipSnapSchemaV2.self),
       .lightweight(fromVersion: SnipSnapSchemaV2.self, toVersion: SnipSnapSchemaV3.self),
+      .lightweight(fromVersion: SnipSnapSchemaV3.self, toVersion: SnipSnapSchemaV4.self),
     ]
   }
 }
@@ -297,7 +469,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     let lockURL = storeURL.appendingPathExtension("lock")
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
-    let schema = Schema(versionedSchema: SnipSnapSchemaV3.self)
+    let schema = Schema(versionedSchema: SnipSnapSchemaV4.self)
     let configuration = ModelConfiguration(
       "SnipSnapLocal",
       schema: schema,
@@ -524,8 +696,9 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       snips: orderedSnips,
       lists: state.allLists(),
       attachmentURLs: Dictionary(
-        orderedSnips.flatMap(\.attachments).map {
-          ($0.id, attachmentRootURL.appendingPathComponent($0.relativePath))
+        orderedSnips.flatMap(\.attachments).compactMap {
+          let url = attachmentRootURL.appendingPathComponent($0.relativePath)
+          return FileManager.default.fileExists(atPath: url.path) ? ($0.id, url) : nil
         },
         uniquingKeysWith: { first, _ in first }
       )
@@ -607,10 +780,11 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     at rootURL: URL,
     keeping relativePaths: Set<String>
   ) {
-    let keptDirectories = Set(
+    var keptDirectories = Set(
       relativePaths.compactMap {
         $0.split(separator: "/", maxSplits: 1).first.map(String.init)
       })
+    keptDirectories.insert("CloudDownloads")
     guard
       let directories = try? FileManager.default.contentsOfDirectory(
         at: rootURL,

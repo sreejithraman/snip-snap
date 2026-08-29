@@ -135,7 +135,11 @@ private actor FullRecordModeSyncAdapter: ICloudModeSyncAdapter {
 
     init(raw: CloudFullSyncPersistence, transport: any CloudRecordTransport) {
         self.raw = raw
-        syncDriver = CloudFullSyncCoordinator(store: raw, transport: transport)
+        syncDriver = CloudFullSyncCoordinator(
+            store: raw,
+            transport: transport,
+            fetchScope: .zones([raw.dataZone])
+        )
     }
 
     func sync() async throws { try await syncDriver.sync() }
@@ -248,6 +252,8 @@ package actor ICloudSyncModeCoordinator {
     private let persistence: SwiftDataSyncModePersistence
     private let namespace: CloudSyncNamespace
     private let textZone: CloudZoneID
+    private let payloadZone: CloudZoneID?
+    private let attachmentPolicy: CloudAttachmentCompatibilityPolicy
     private let makeTransport: TransportFactory
     private let applyHook: SwiftDataCloudTextPersistence.ApplyHook
     private let accountStateSource: any ICloudAccountStateSource
@@ -258,14 +264,19 @@ package actor ICloudSyncModeCoordinator {
         persistence: SwiftDataSyncModePersistence,
         namespace: CloudSyncNamespace,
         textZone: CloudZoneID,
+        payloadZone: CloudZoneID? = nil,
+        attachmentPolicy: CloudAttachmentCompatibilityPolicy = .openSourceDefault,
         makeTransport: @escaping TransportFactory,
         applyHook: @escaping SwiftDataCloudTextPersistence.ApplyHook = {},
         accountStateSource: (any ICloudAccountStateSource)? = nil
     ) {
         precondition(namespace.zones.contains(textZone))
+        precondition(payloadZone.map(namespace.zones.contains) ?? true)
         self.persistence = persistence
         self.namespace = namespace
         self.textZone = textZone
+        self.payloadZone = payloadZone
+        self.attachmentPolicy = attachmentPolicy
         self.makeTransport = makeTransport
         self.applyHook = applyHook
         self.accountStateSource = accountStateSource ?? FixedICloudAccountStateSource(
@@ -367,6 +378,17 @@ package actor ICloudSyncModeCoordinator {
         if initial.activeStore.kind == .iCloudSync, initial.transition == nil {
             try await persistence.requireActiveNamespace(namespace.binding)
             return try await statusUnchecked()
+        }
+        if initial.transition == nil, payloadZone != nil {
+            let localLibrary = try await persistence.activeLibrary()
+            let local = try await localLibrary.checkedSnapshot(sortedBy: .manual)
+            let unsupported = CloudAttachmentTransferCoordinator.unsupportedFiles(
+                in: local,
+                policy: attachmentPolicy
+            )
+            if !unsupported.isEmpty {
+                throw CloudAttachmentSetupError.unsupportedFiles(unsupported)
+            }
         }
 
         var transition = try await persistence.beginTransition(
@@ -619,7 +641,8 @@ package actor ICloudSyncModeCoordinator {
         return CloudFullSyncPersistence(
             library: library,
             namespace: namespace,
-            dataZone: textZone
+            dataZone: textZone,
+            payloadZone: payloadZone
         )
     }
 
