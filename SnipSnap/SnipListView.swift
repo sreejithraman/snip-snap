@@ -674,6 +674,7 @@ struct SnipListView: View {
     private func snipCard(_ snip: Snip) -> some View {
         SnipCardRow(
             snip: snip,
+            isRecovered: model.isRecoveredSnip(snip.id),
             isSelected: (contextMenuSelection ?? model.selection).contains(snip.id),
             isEditing: model.editingID == snip.id,
             editAttachments: editAttachmentsBinding(for: snip),

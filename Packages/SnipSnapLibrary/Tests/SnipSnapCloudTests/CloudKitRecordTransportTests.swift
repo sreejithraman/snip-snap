@@ -1,5 +1,6 @@
 import CloudKit
 @testable import SnipSnapCloud
+import SnipSnapPersistence
 import XCTest
 
 final class CloudKitRecordTransportTests: XCTestCase {
@@ -21,6 +22,18 @@ final class CloudKitRecordTransportTests: XCTestCase {
 
         XCTAssertNotEqual(first.canonicalKey, second.canonicalKey)
         XCTAssertEqual(first.canonicalKey, first.canonicalKey)
+        let binding = ICloudSyncNamespaceBinding(
+            scope: first.cloudScope,
+            accountLineage: first.accountLineage,
+            generation: first.generation,
+            zones: Set(first.zones.map {
+                ICloudSyncZoneBinding(name: $0.name, ownerName: $0.ownerName)
+            })
+        )
+        XCTAssertEqual(
+            SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: binding)?.rawValue,
+            first.canonicalKey
+        )
     }
 
     func testRejectsEngineStateFromAnotherNamespaceBeforeNetworkWork() async {

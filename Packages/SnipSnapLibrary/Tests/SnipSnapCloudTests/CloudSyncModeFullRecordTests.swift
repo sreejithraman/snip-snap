@@ -430,6 +430,31 @@ extension ICloudSyncModeCoordinatorTests {
         let recovery = try await raw.cloudFullRecoveryEvents(namespaceKey: namespace.canonicalKey)
         let link = try XCTUnwrap(recovery.first { $0.kind == .modeRecoveredSnip })
         XCTAssertTrue(String(decoding: link.resultData, as: UTF8.self).contains(base.id.uuidString))
+        let pending = try await raw.recoverySnapshot(
+            in: SnipRecoveryScope(namespace.canonicalKey)
+        )
+        let review = try XCTUnwrap(pending.pendingSnips.first)
+        XCTAssertEqual(review.currentSnipID, base.id)
+        XCTAssertEqual(review.recovered.content, "local value")
+        XCTAssertEqual(review.conflictingFields, [.text])
+
+        _ = try await raw.resolveRecovery(
+            review.id,
+            in: SnipRecoveryScope(namespace.canonicalKey),
+            choice: .keepBoth
+        )
+        let resolved = await raw.snapshot(sortedBy: .manual)
+        XCTAssertEqual(resolved.snips.count, 2)
+        let resolvedReview = try await raw.recoverySnapshot(
+            in: SnipRecoveryScope(namespace.canonicalKey)
+        )
+        XCTAssertTrue(resolvedReview.pendingSnips.isEmpty)
+        XCTAssertEqual(resolvedReview.promotedSnips.first?.currentSnipID, base.id)
+        XCTAssertEqual(resolvedReview.promotedSnips.first?.conflictingFields, [.text])
+        let resolvedStorage = try await raw.cloudFullStorageSnapshot(
+            namespaceKey: namespace.canonicalKey
+        )
+        XCTAssertTrue(resolvedStorage.conflicts.isEmpty)
     }
 
     func testFullReenableRemoteDeleteRecoversEditedSnipAndAttachmentInInbox() async throws {

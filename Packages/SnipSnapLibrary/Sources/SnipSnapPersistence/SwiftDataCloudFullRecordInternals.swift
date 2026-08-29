@@ -35,6 +35,14 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
         current.format == value.format.rawValue,
         current.payload == value.payload
       else { throw CloudFullStorageError.invalidConflictReplay }
+      if let recovery = value.recovery {
+        try insertRecoveryReviewIfNeeded(
+          recovery,
+          namespaceKey: namespaceKey,
+          conflictKey: value.key,
+          context: context
+        )
+      }
       return
     }
     context.insert(
@@ -46,6 +54,14 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
         payload: value.payload
       )
     )
+    if let recovery = value.recovery {
+      try insertRecoveryReviewIfNeeded(
+        recovery,
+        namespaceKey: namespaceKey,
+        conflictKey: value.key,
+        context: context
+      )
+    }
   }
 
   static func quarantines(

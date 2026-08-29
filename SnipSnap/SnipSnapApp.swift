@@ -78,6 +78,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
 
     override init() {
         let isReleaseApp = Bundle.main.bundleIdentifier == "world.sree.snipsnap"
+        let libraryStoreURL = JSONSnipLibrary.defaultStoreURL()
         let library: JSONSnipLibrary
         let initialError: String?
         do {
@@ -92,7 +93,16 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             library = JSONSnipLibrary.unavailable()
             initialError = "Snip Snap could not read or safely back up its snips file. Snip Snap cannot save new snips."
         }
-        let model = AppModel(library: library, initialError: initialError)
+        let assembly = SnipLibraryAssembly(
+            library: library,
+            syncModeRootURL: libraryStoreURL.deletingLastPathComponent()
+                .appendingPathComponent("SyncMode", isDirectory: true)
+        )
+        let model = AppModel(
+            library: assembly.library,
+            initialError: initialError,
+            recoveryScope: assembly.recoveryScope
+        )
         let shortcutSettings = ShortcutSettings()
         let fileDropController = PanelFileDropController()
         let snipDragSourceController = SnipDragSourceController()

@@ -2,23 +2,23 @@ import CryptoKit
 import Foundation
 import SnipSnapCore
 
-package struct ICloudSyncZoneBinding: Codable, Equatable, Hashable, Sendable {
-  package let name: String
-  package let ownerName: String
+public struct ICloudSyncZoneBinding: Codable, Equatable, Hashable, Sendable {
+  public let name: String
+  public let ownerName: String
 
-  package init(name: String, ownerName: String) {
+  public init(name: String, ownerName: String) {
     self.name = name
     self.ownerName = ownerName
   }
 }
 
-package struct ICloudSyncNamespaceBinding: Codable, Equatable, Sendable {
-  package let scope: String
-  package let accountLineage: String
-  package let generation: UUID
-  package let zones: Set<ICloudSyncZoneBinding>
+public struct ICloudSyncNamespaceBinding: Codable, Equatable, Sendable {
+  public let scope: String
+  public let accountLineage: String
+  public let generation: UUID
+  public let zones: Set<ICloudSyncZoneBinding>
 
-  package init(
+  public init(
     scope: String,
     accountLineage: String,
     generation: UUID,
@@ -28,6 +28,38 @@ package struct ICloudSyncNamespaceBinding: Codable, Equatable, Sendable {
     self.accountLineage = accountLineage
     self.generation = generation
     self.zones = zones
+  }
+}
+
+public enum SyncModeActivationManifestReader {
+  /// Reads the Cloud namespace selected by an existing activation manifest.
+  /// Missing, local-only, or invalid state fails closed without changing the file system.
+  public static func activeCloudNamespace(
+    atSyncModeRootURL rootURL: URL
+  ) -> ICloudSyncNamespaceBinding? {
+    guard rootURL.isFileURL else { return nil }
+    let manifestURL = rootURL.appendingPathComponent("activation.json", isDirectory: false)
+    do {
+      let values = try manifestURL.resourceValues(
+        forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+      )
+      guard values.isRegularFile == true, values.isSymbolicLink != true else { return nil }
+      let manifest = try JSONDecoder().decode(
+        SwiftDataSyncModePersistence.Manifest.self,
+        from: Data(contentsOf: manifestURL)
+      )
+      try SwiftDataSyncModePersistence.validate(manifest)
+      _ = try SwiftDataSyncModePersistence.validatedStoreRoots(
+        manifest.stores,
+        rootURL: rootURL
+      )
+      if let transitionNamespace = manifest.transition?.namespace {
+        return transitionNamespace
+      }
+      return manifest.stores.first(where: { $0.id == manifest.activeStoreID })?.namespace
+    } catch {
+      return nil
+    }
   }
 }
 

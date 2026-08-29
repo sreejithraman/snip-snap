@@ -305,16 +305,18 @@ extension CloudFullSyncPersistence {
         )
         merged = result.merged
         conflict = try result.conflict.map {
-          CloudConflictInput(
-            key: CloudConflictKey.make(
-              namespaceKey: namespaceKey,
-              recordID: snapshot.id,
-              ancestorSystemFields: base.systemFields,
-              serverSystemFields: snapshot.shadow.systemFields
-            ),
+          let key = CloudConflictKey.make(
+            namespaceKey: namespaceKey,
+            recordID: snapshot.id,
+            ancestorSystemFields: base.systemFields,
+            serverSystemFields: snapshot.shadow.systemFields
+          )
+          return CloudConflictInput(
+            key: key,
             reference: input.reference,
             format: .snipMergeV1,
-            payload: try JSONEncoder().encode($0)
+            payload: try JSONEncoder().encode($0),
+            recovery: .snip(recoveredSnip($0, key: key, attachments: current.attachments))
           )
         }
       } else if current == nil, let base {
@@ -350,22 +352,23 @@ extension CloudFullSyncPersistence {
       } else if let current {
         let localFields = snipFields(current, accepted: nil)
         if localFields != serverFields {
-          conflict = CloudConflictInput(
-            key: CloudConflictKey.make(
+          let key = CloudConflictKey.make(
               namespaceKey: namespaceKey,
               recordID: snapshot.id,
               ancestorSystemFields: Data(),
               serverSystemFields: snapshot.shadow.systemFields
-            ),
+            )
+          let payload = CloudSnipConflictPayload(
+            fields: [.text, .source, .isDone, .placement],
+            local: localFields,
+            server: serverFields
+          )
+          conflict = CloudConflictInput(
+            key: key,
             reference: input.reference,
             format: .snipMergeV1,
-            payload: try JSONEncoder().encode(
-              CloudSnipConflictPayload(
-                fields: [.text, .source, .isDone, .placement],
-                local: localFields,
-                server: serverFields
-              )
-            )
+            payload: try JSONEncoder().encode(payload),
+            recovery: .snip(recoveredSnip(payload, key: key, attachments: current.attachments))
           )
         }
       }
@@ -397,16 +400,18 @@ extension CloudFullSyncPersistence {
       )
       merged = result.merged
       conflict = try result.conflict.map {
-        CloudConflictInput(
-          key: CloudConflictKey.make(
-            namespaceKey: namespaceKey,
-            recordID: snapshot.id,
-            ancestorSystemFields: base.systemFields,
-            serverSystemFields: snapshot.shadow.systemFields
-          ),
+        let key = CloudConflictKey.make(
+          namespaceKey: namespaceKey,
+          recordID: snapshot.id,
+          ancestorSystemFields: base.systemFields,
+          serverSystemFields: snapshot.shadow.systemFields
+        )
+        return CloudConflictInput(
+          key: key,
           reference: input.reference,
           format: .listMergeV1,
-          payload: try JSONEncoder().encode($0)
+          payload: try JSONEncoder().encode($0),
+          recovery: .list(recoveredList($0, key: key))
         )
       }
     } else if current == nil, let base {
@@ -700,6 +705,58 @@ extension CloudFullSyncPersistence {
       resolvedName: value.desiredName,
       systemImage: value.systemImage,
       sortKey: value.orderKey
+    )
+  }
+
+  static func recoveredSnip(
+    _ payload: CloudSnipConflictPayload,
+    key: String,
+    attachments: [SnipAttachment]
+  ) -> RecoveredSnip {
+    let recoveryID = CloudConflictKey.recoveryID(for: key)
+    let value = payload.local
+    let snip = Snip(
+      id: recoveryID,
+      requestID: recoveryID,
+      createdAt: value.createdAt,
+      updatedAt: value.updatedAt,
+      content: value.text,
+      origin: SnipOrigin(rawValue: value.originRaw) ?? .quickEntry,
+      source: value.source,
+      listID: value.placement.listID,
+      isDone: value.isDone,
+      manualSortKey: value.placement.orderKey,
+      attachments: attachments
+    )
+    return RecoveredSnip(
+      id: recoveryID,
+      currentSnipID: value.id,
+      recovered: snip,
+      conflictingFields: Set(payload.fields.map { field in
+        switch field {
+        case .text: .text
+        case .source: .source
+        case .isDone: .done
+        case .placement: .placement
+        }
+      })
+    )
+  }
+
+  static func recoveredList(
+    _ payload: CloudListConflictPayload,
+    key: String
+  ) -> RecoveredListEdit {
+    RecoveredListEdit(
+      id: CloudConflictKey.recoveryID(for: key),
+      currentListID: payload.local.id,
+      recovered: localList(payload.local),
+      conflictingFields: Set(payload.fields.map { field in
+        switch field {
+        case .desiredName: .name
+        case .systemImage: .icon
+        }
+      })
     )
   }
 

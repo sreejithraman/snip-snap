@@ -328,6 +328,32 @@ extension SwiftDataSnipLibrary {
     try context.save()
   }
 
+  package func storeCloudConflict(
+    scope: SnipRecoveryScope,
+    key: String,
+    reference: CloudEntityReference,
+    payload: Data,
+    recovery: SnipRecoveryRecord
+  ) throws {
+    guard let container else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    try Self.insertConflictIfNeeded(
+      CloudConflictInput(
+        key: key,
+        reference: reference,
+        format: reference.kind == .snip ? .snipMergeV1 : .listMergeV1,
+        payload: payload,
+        recovery: recovery
+      ),
+      namespaceKey: scope.rawValue,
+      context: context
+    )
+    try afterMutationBeforeSave()
+    try context.save()
+  }
+
   package func setCloudEnrollment(
     namespaceKey: String,
     references: Set<CloudEntityReference>,

@@ -5,6 +5,9 @@ enum AppSheet: Identifiable, Hashable {
     case editSnip(id: UUID)
     case newList
     case editList(id: UUID)
+    case recoveryCenter
+    case recoverSnip(id: UUID)
+    case recoverList(id: UUID)
 
     var id: String {
         switch self {
@@ -16,6 +19,12 @@ enum AppSheet: Identifiable, Hashable {
             "new-list"
         case .editList(let id):
             "edit-list-\(id)"
+        case .recoveryCenter:
+            "recovery-center"
+        case .recoverSnip(let id):
+            "recover-snip-\(id)"
+        case .recoverList(let id):
+            "recover-list-\(id)"
         }
     }
 }

@@ -11,6 +11,7 @@ export SNIP_SNAP_DEV_SLOT=2
 export SNIP_SNAP_DEV_STATE_DIR="$test_dir/dev-state"
 export SNIP_SNAP_DEV_WORKTREE="$test_dir/worktree"
 export SNIP_SNAP_SHOWROOM_STATE_DIR="$test_dir/showroom-state"
+unset SNIP_SNAP_DERIVED_DATA
 /bin/mkdir -p "$SNIP_SNAP_DEV_WORKTREE"
 /bin/mkdir -p "$SNIP_SNAP_SHOWROOM_STATE_DIR"
 

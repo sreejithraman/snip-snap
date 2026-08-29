@@ -13,6 +13,9 @@ public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {
     case modeTransitionInProgress
     case transferUnsupported
     case transferConflict(SnipLibraryTransferConflict)
+    case recoveryNotFound
+    case recoveryChanged
+    case invalidRecoveryChoice
 
     public var errorDescription: String? {
         switch self {
@@ -40,6 +43,12 @@ public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {
             "This snip store cannot change storage modes."
         case .transferConflict:
             "Snip Snap found records it could not copy safely."
+        case .recoveryNotFound:
+            "That recovered edit is no longer available."
+        case .recoveryChanged:
+            "That recovered edit changed. Refresh the review and try again."
+        case .invalidRecoveryChoice:
+            "That choice does not apply to this recovered edit."
         }
     }
 }
@@ -219,6 +228,15 @@ public protocol SnipLibrary: Sendable {
         _ source: SnipLibraryTransferSnapshot,
         transitionID: UUID
     ) async throws -> SnipLibraryTransferResult
+
+    func recoverySnapshot(in scope: SnipRecoveryScope) async throws -> SnipRecoverySnapshot
+
+    @discardableResult
+    func resolveRecovery(
+        _ id: UUID,
+        in scope: SnipRecoveryScope,
+        choice: SnipRecoveryChoice
+    ) async throws -> SnipLibrarySnapshot
 }
 
 public extension SnipLibrary {
@@ -235,5 +253,20 @@ public extension SnipLibrary {
         transitionID: UUID
     ) async throws -> SnipLibraryTransferResult {
         throw SnipLibraryError.transferUnsupported
+    }
+
+    func recoverySnapshot(in scope: SnipRecoveryScope) async throws -> SnipRecoverySnapshot {
+        _ = scope
+        return .empty
+    }
+
+    @discardableResult
+    func resolveRecovery(
+        _ id: UUID,
+        in scope: SnipRecoveryScope,
+        choice: SnipRecoveryChoice
+    ) async throws -> SnipLibrarySnapshot {
+        _ = (id, scope, choice)
+        throw SnipLibraryError.recoveryNotFound
     }
 }

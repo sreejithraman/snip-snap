@@ -18,6 +18,15 @@ fi
 
 xcodebuild \
     -project "$repo_dir/SnipSnap.xcodeproj" \
+    -scheme SnipSnapiOS \
+    -configuration Release \
+    -destination 'generic/platform=iOS Simulator' \
+    -derivedDataPath "$derived_data" \
+    CODE_SIGNING_ALLOWED=NO \
+    build
+
+xcodebuild \
+    -project "$repo_dir/SnipSnap.xcodeproj" \
     -scheme SnipSnap \
     -configuration Debug \
     -destination 'platform=macOS' \
@@ -29,4 +38,4 @@ xcodebuild \
     'INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Compile Check' \
     build
 
-print "Compile check passed. Do not launch this build. Use scripts/run.sh to build and open the Dev app."
+print "Compile checks passed. Do not launch this build. Use scripts/run.sh to build and open the Dev app."

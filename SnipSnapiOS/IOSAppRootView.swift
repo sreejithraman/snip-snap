@@ -10,6 +10,7 @@ struct IOSAppRootView: View {
 
     init(
         library: any SnipLibrary,
+        recoveryScope: SnipRecoveryScope? = nil,
         shareImports: ShareImportStore? = nil,
         initialSnapshot: SnipLibrarySnapshot? = nil,
         startupError: String? = nil,
@@ -19,6 +20,7 @@ struct IOSAppRootView: View {
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         _appGraph = State(initialValue: IOSAppGraph(
             library: library,
+            recoveryScope: recoveryScope,
             shareImports: shareImports,
             initialSnapshot: initialSnapshot ?? SnipLibrarySnapshot(snips: [], lists: [.inbox]),
             startupError: startupError,
@@ -46,6 +48,12 @@ struct IOSAppRootView: View {
                 ListEditorView(model: model, mode: .create)
             case .editList(let id):
                 ListEditorView(model: model, mode: .edit(id: id))
+            case .recoveryCenter:
+                RecoveryCenterView(model: model, sheet: $sheet)
+            case .recoverSnip(let id):
+                RecoveredSnipReviewView(model: model, recoveryID: id)
+            case .recoverList(let id):
+                RecoveredListReviewView(model: model, recoveryID: id)
             }
         }
         .alert(

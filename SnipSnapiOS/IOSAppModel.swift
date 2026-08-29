@@ -7,16 +7,19 @@ import SnipSnapPersistence
 @Observable
 final class IOSAppModel {
     private let library: any SnipLibrary
+    private let recoveryScope: SnipRecoveryScope?
 
     private(set) var snips: [Snip]
     private(set) var lists: [SnipList]
     private(set) var attachmentURLs: [UUID: URL]
+    private(set) var recoverySnapshot: SnipRecoverySnapshot = .empty
     var selectedListID: UUID
     var selectedSnipID: UUID?
     var errorMessage: String?
 
     init(
         library: any SnipLibrary,
+        recoveryScope: SnipRecoveryScope? = nil,
         initialSnapshot: SnipLibrarySnapshot = SnipLibrarySnapshot(
             snips: [],
             lists: [.inbox]
@@ -24,6 +27,7 @@ final class IOSAppModel {
         startupError: String? = nil
     ) {
         self.library = library
+        self.recoveryScope = recoveryScope
         snips = initialSnapshot.snips
         lists = initialSnapshot.lists
         attachmentURLs = initialSnapshot.attachmentURLs
@@ -44,8 +48,40 @@ final class IOSAppModel {
         snips.filter { $0.listID == selectedListID }
     }
 
+    var needsAttentionCount: Int { recoverySnapshot.needsAttentionCount }
+    var pendingRecoveredSnips: [RecoveredSnip] { recoverySnapshot.pendingSnips }
+    var pendingRecoveredLists: [RecoveredListEdit] { recoverySnapshot.pendingLists }
+
+    func currentSnip(for recovery: RecoveredSnip) -> Snip? {
+        snips.first { $0.id == recovery.currentSnipID }
+    }
+
+    func currentList(for recovery: RecoveredListEdit) -> SnipList? {
+        lists.first { $0.id == recovery.currentListID }
+    }
+
+    func isRecoveredSnip(_ snipID: UUID) -> Bool {
+        recoverySnapshot.pendingSnips.contains { $0.id == snipID }
+            || recoverySnapshot.promotedSnips.contains { $0.id == snipID }
+    }
+
     func load() async {
         apply(await library.snapshot(sortedBy: .chronological))
+        await loadRecoveries()
+    }
+
+    @discardableResult
+    func resolveRecovery(_ id: UUID, choice: SnipRecoveryChoice) async -> Bool {
+        guard let recoveryScope else { return false }
+        do {
+            apply(try await library.resolveRecovery(id, in: recoveryScope, choice: choice))
+            await loadRecoveries()
+            return true
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            await load()
+            return false
+        }
     }
 
     @discardableResult
@@ -153,11 +189,24 @@ final class IOSAppModel {
         do {
             let update = try await library.perform(command, sortedBy: .chronological)
             apply(update.snapshot)
+            await loadRecoveries()
             afterSuccess(update.outcome)
             return true
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             return false
+        }
+    }
+
+    private func loadRecoveries() async {
+        guard let recoveryScope else {
+            recoverySnapshot = .empty
+            return
+        }
+        do {
+            recoverySnapshot = try await library.recoverySnapshot(in: recoveryScope)
+        } catch {
+            recoverySnapshot = .empty
         }
     }
 
@@ -182,6 +231,7 @@ final class IOSAppGraph {
 
     init(
         library: any SnipLibrary,
+        recoveryScope: SnipRecoveryScope? = nil,
         shareImports: ShareImportStore?,
         initialSnapshot: SnipLibrarySnapshot,
         startupError: String?,
@@ -189,6 +239,7 @@ final class IOSAppGraph {
     ) {
         let model = IOSAppModel(
             library: library,
+            recoveryScope: recoveryScope,
             initialSnapshot: initialSnapshot,
             startupError: startupError
         )

@@ -3,6 +3,7 @@ set -euo pipefail
 
 script_dir="${0:A:h}"
 unset SNIP_SNAP_DEV_SLOT
+unset SNIP_SNAP_DERIVED_DATA
 test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
 

@@ -8,7 +8,7 @@ trap 'rm -rf "$test_dir"' EXIT
 
 mkdir -p "$test_dir/bin"
 print -r -- '#!/bin/zsh
-print -r -- "$@" > "$SNIP_SNAP_BUILD_ARGS_FILE"' > "$test_dir/bin/xcodebuild"
+print -r -- "$@" >> "$SNIP_SNAP_BUILD_ARGS_FILE"' > "$test_dir/bin/xcodebuild"
 chmod +x "$test_dir/bin/xcodebuild"
 
 output="$(
@@ -19,6 +19,9 @@ output="$(
 )"
 
 grep -F -- "CODE_SIGNING_ALLOWED=NO" "$test_dir/build-args" >/dev/null
+grep -F -- "SnipSnapiOS" "$test_dir/build-args" >/dev/null
+grep -F -- "Release" "$test_dir/build-args" >/dev/null
+grep -F -- "generic/platform=iOS Simulator" "$test_dir/build-args" >/dev/null
 grep -F -- 'PRODUCT_BUNDLE_IDENTIFIER=$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).compilecheck' \
     "$test_dir/build-args" >/dev/null
 grep -F -- "PRODUCT_NAME=SnipSnapCompileCheck" "$test_dir/build-args" >/dev/null

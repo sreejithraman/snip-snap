@@ -167,6 +167,13 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertEqual(payload.local.text, "second seed")
     XCTAssertEqual(payload.server.text, "first seed")
     XCTAssertEqual(payload.fields, [.text, .source, .isDone, .placement])
+    let recovery = try await secondLibrary.recoverySnapshot(
+      in: SnipRecoveryScope(namespace.canonicalKey)
+    )
+    let recovered = try XCTUnwrap(recovery.pendingSnips.first)
+    XCTAssertEqual(recovered.currentSnipID, sharedID)
+    XCTAssertEqual(recovered.recovered.content, "second seed")
+    XCTAssertEqual(recovered.conflictingFields, [.text, .source, .done, .placement])
     let count = await server.acceptedOperationCount(for: CloudRecordID.snip(sharedID, in: zone))
     XCTAssertEqual(count, 1)
   }
@@ -218,6 +225,91 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertTrue(pending.operations.isEmpty)
     let count = await server.acceptedOperationCount(for: .snip(shared.id, in: zone))
     XCTAssertEqual(count, 1)
+  }
+
+  func testActiveFetchPreservesRecoveredListEditWithoutMovingSnips() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudFullRecoveredListTests-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let namespace = makeNamespace()
+    let zone = try XCTUnwrap(namespace.zones.first)
+    let server = FakeCloudServer()
+    let firstLibrary = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("first.store"))
+    let secondLibrary = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("second.store"))
+    let created = try await firstLibrary.perform(
+      .createList(name: "Base", systemImage: "folder"),
+      sortedBy: .manual
+    )
+    guard case .listCreated(let list) = created.outcome else {
+      return XCTFail("Expected a list")
+    }
+    let added = try await firstLibrary.perform(
+      .add(
+        content: "stays put",
+        origin: .quickEntry,
+        source: nil,
+        listID: list.id,
+        attachmentURLs: [],
+        requestID: UUID(),
+        now: Date(timeIntervalSince1970: 1)
+      ),
+      sortedBy: .manual
+    )
+    guard case .add(.added(let snipID)) = added.outcome else {
+      return XCTFail("Expected a Snip")
+    }
+    let seeded = await firstLibrary.snapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(seeded.snips.first(where: { $0.id == snipID }))
+    let enrollment: Set<CloudEntityReference> = [
+      CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
+      CloudEntityReference(kind: .list, domainID: list.id),
+      CloudEntityReference(kind: .snip, domainID: snip.id),
+    ]
+    let firstStore = CloudFullSyncPersistence(
+      library: firstLibrary,
+      namespace: namespace,
+      dataZone: zone
+    )
+    let secondStore = CloudFullSyncPersistence(
+      library: secondLibrary,
+      namespace: namespace,
+      dataZone: zone
+    )
+    try await firstStore.approveEnrollment(references: enrollment)
+    let first = CloudFullSyncCoordinator(
+      store: firstStore,
+      transport: FakeCloudRecordTransport(server: server, namespace: namespace)
+    )
+    let second = CloudFullSyncCoordinator(
+      store: secondStore,
+      transport: FakeCloudRecordTransport(server: server, namespace: namespace)
+    )
+    try await first.sync()
+    try await second.fetchRemote()
+
+    _ = try await firstLibrary.perform(
+      .updateList(id: list.id, name: "Server", systemImage: "cloud"),
+      sortedBy: .manual
+    )
+    _ = try await secondLibrary.perform(
+      .updateList(id: list.id, name: "Recovered", systemImage: "star"),
+      sortedBy: .manual
+    )
+    try await first.sendPending()
+    try await second.fetchRemote()
+
+    let recovery = try await secondLibrary.recoverySnapshot(
+      in: SnipRecoveryScope(namespace.canonicalKey)
+    )
+    let recovered = try XCTUnwrap(recovery.pendingLists.first)
+    XCTAssertEqual(recovered.currentListID, list.id)
+    XCTAssertEqual(recovered.recovered.desiredName, "Recovered")
+    XCTAssertEqual(recovered.recovered.systemImage, "star")
+    XCTAssertEqual(recovered.conflictingFields, [.name, .icon])
+    let current = await secondLibrary.snapshot(sortedBy: .manual)
+    XCTAssertEqual(current.lists.first(where: { $0.id == list.id })?.desiredName, "Server")
+    XCTAssertEqual(current.lists.first(where: { $0.id == list.id })?.systemImage, "cloud")
+    XCTAssertEqual(current.snips.first(where: { $0.id == snip.id })?.listID, list.id)
   }
 
   func testThreeDurableClientsResolveEqualListNamesAcrossBatchPartitions() async throws {
@@ -436,6 +528,12 @@ extension CloudFullSyncPersistenceTests {
     let textConflict = try XCTUnwrap(thirdStored.conflicts.last)
     let payload = try JSONDecoder().decode(CloudSnipConflictPayload.self, from: textConflict.payload)
     XCTAssertEqual(payload.fields, [.text])
+    let recovery = try await thirdLibrary.recoverySnapshot(
+      in: SnipRecoveryScope(namespace.canonicalKey)
+    )
+    XCTAssertEqual(recovery.pendingSnips.map(\.currentSnipID), [base.id])
+    XCTAssertEqual(recovery.pendingSnips.map(\.recovered.content), ["third text"])
+    XCTAssertEqual(recovery.pendingSnips.map(\.conflictingFields), [[.text]])
     let thirdAfterConflict = await thirdLibrary.snapshot(sortedBy: .manual)
     XCTAssertEqual(thirdAfterConflict.snips.first?.content, "second text")
     let blocked = try await thirdStore.pendingChanges()
@@ -443,4 +541,3 @@ extension CloudFullSyncPersistenceTests {
   }
 
 }
-

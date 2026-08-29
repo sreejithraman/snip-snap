@@ -59,6 +59,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var latestAddedSnipID: UUID?
     @Published private(set) var sortMode: SnipSortMode
     @Published private(set) var appearance: AppAppearance
+    @Published private(set) var recoverySnapshot: SnipRecoverySnapshot = .empty
     @Published private var undoHistory: [HistoryOperation] = []
     @Published private var redoHistory: [HistoryOperation] = []
 
@@ -82,6 +83,7 @@ final class AppModel: ObservableObject {
     }
 
     private let library: any SnipLibrary
+    private let recoveryScope: SnipRecoveryScope?
     private var attachmentURLs: [UUID: URL] = [:]
     private let defaults: UserDefaults
     private let commandLock = AppModelCommandLock()
@@ -127,7 +129,8 @@ final class AppModel: ObservableObject {
         library: any SnipLibrary,
         defaults: UserDefaults = .standard,
         clipboardHistory: ClipboardHistory? = nil,
-        initialError: String? = nil
+        initialError: String? = nil,
+        recoveryScope: SnipRecoveryScope? = nil
     ) {
         Self.migrateRenamedDefaults(in: defaults)
         self.defaults = defaults
@@ -145,6 +148,7 @@ final class AppModel: ObservableObject {
             rawValue: defaults.string(forKey: Self.appearanceDefaultsKey) ?? ""
         ) ?? .system
         self.library = library
+        self.recoveryScope = recoveryScope
         presentedError = initialError
         Task { await reload() }
     }
@@ -170,6 +174,60 @@ final class AppModel: ObservableObject {
     private func reloadUnlocked() async {
         let snapshot = await library.snapshot(sortedBy: sortMode)
         apply(snapshot)
+        await refreshRecoveryUnlocked()
+    }
+
+    var needsAttentionCount: Int { recoverySnapshot.needsAttentionCount }
+    var pendingRecoveredSnips: [RecoveredSnip] { recoverySnapshot.pendingSnips }
+    var pendingRecoveredLists: [RecoveredListEdit] { recoverySnapshot.pendingLists }
+
+    func currentSnip(for recovery: RecoveredSnip) -> Snip? {
+        snips.first { $0.id == recovery.currentSnipID }
+    }
+
+    func currentList(for recovery: RecoveredListEdit) -> SnipList? {
+        lists.first { $0.id == recovery.currentListID }
+    }
+
+    func isRecoveredSnip(_ snipID: UUID) -> Bool {
+        recoverySnapshot.pendingSnips.contains { $0.id == snipID }
+            || recoverySnapshot.promotedSnips.contains { $0.id == snipID }
+    }
+
+    func refreshRecovery() async {
+        await withCommandLock {
+            let snapshot = await library.snapshot(sortedBy: sortMode)
+            apply(snapshot)
+            await refreshRecoveryUnlocked()
+        }
+    }
+
+    @discardableResult
+    func resolveRecovery(_ id: UUID, choice: SnipRecoveryChoice) async -> Bool {
+        guard let recoveryScope else { return false }
+        return await withCommandLock {
+            do {
+                apply(try await library.resolveRecovery(id, in: recoveryScope, choice: choice))
+                await refreshRecoveryUnlocked()
+                return true
+            } catch {
+                presentedError = error.localizedDescription
+                await reloadUnlocked()
+                return false
+            }
+        }
+    }
+
+    private func refreshRecoveryUnlocked() async {
+        guard let recoveryScope else {
+            recoverySnapshot = .empty
+            return
+        }
+        do {
+            recoverySnapshot = try await library.recoverySnapshot(in: recoveryScope)
+        } catch {
+            recoverySnapshot = .empty
+        }
     }
 
     private func apply(_ snapshot: SnipLibrarySnapshot) {

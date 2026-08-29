@@ -271,16 +271,18 @@ extension CloudFullSyncPersistence {
       adjustedLists[index] = Self.localList(result.merged)
       replacingLists.insert(local.id)
       if let payload = result.conflict {
+        let key = CloudConflictKey.make(
+          namespaceKey: namespaceKey,
+          recordID: Self.recordID(server.identity),
+          ancestorSystemFields: base.systemFields,
+          serverSystemFields: server.systemFields
+        )
         conflicts.append(CloudConflictInput(
-          key: CloudConflictKey.make(
-            namespaceKey: namespaceKey,
-            recordID: Self.recordID(server.identity),
-            ancestorSystemFields: base.systemFields,
-            serverSystemFields: server.systemFields
-          ),
+          key: key,
           reference: reference,
           format: .listMergeV1,
-          payload: try encoder.encode(payload)
+          payload: try encoder.encode(payload),
+          recovery: .list(Self.recoveredList(payload, key: key))
         ))
       }
     }
@@ -333,27 +335,43 @@ extension CloudFullSyncPersistence {
       adjustedSnips[index] = Self.snip(result.merged, attachments: local.attachments)
       replacingSnips.insert(local.id)
       if let payload = result.conflict {
-        conflicts.append(CloudConflictInput(
-          key: CloudConflictKey.make(
-            namespaceKey: namespaceKey,
-            recordID: Self.recordID(server.identity),
-            ancestorSystemFields: base.systemFields,
-            serverSystemFields: server.systemFields
-          ),
-          reference: reference,
-          format: .snipMergeV1,
-          payload: try encoder.encode(payload)
-        ))
+        let key = CloudConflictKey.make(
+          namespaceKey: namespaceKey,
+          recordID: Self.recordID(server.identity),
+          ancestorSystemFields: base.systemFields,
+          serverSystemFields: server.systemFields
+        )
         let recoveredID = SnipLibraryTransferPlanner.derivedUUID(
           transitionID: transitionID,
           sourceID: local.id
         )
-        adjustedSnips.append(Self.recovered(
+        let recovered = Self.recovered(
           local,
           id: recoveredID,
           listID: adjustedLists.contains(where: { $0.id == local.listID })
             ? local.listID : SnipList.inbox.id
+        )
+        let review = RecoveredSnip(
+          id: recoveredID,
+          currentSnipID: local.id,
+          recovered: recovered,
+          conflictingFields: Set(payload.fields.map { field in
+            switch field {
+            case .text: .text
+            case .source: .source
+            case .isDone: .done
+            case .placement: .placement
+            }
+          })
+        )
+        conflicts.append(CloudConflictInput(
+          key: key,
+          reference: reference,
+          format: .snipMergeV1,
+          payload: try encoder.encode(payload),
+          recovery: .snip(review)
         ))
+        adjustedSnips.append(recovered)
         recoveredSourceIDs.insert(local.id)
         recoveryInputs.append(try Self.modeRecovery(
           transitionID: transitionID,

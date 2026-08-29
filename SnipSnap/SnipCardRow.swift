@@ -3,6 +3,7 @@ import SnipSnapCore
 
 struct SnipCardRow: View {
     let snip: Snip
+    let isRecovered: Bool
     let isSelected: Bool
     let isEditing: Bool
     @Binding var editAttachments: [URL]
@@ -52,6 +53,18 @@ struct SnipCardRow: View {
             }
         }
         .panelContentCardSurface(isSelected: isSelected, isDone: snip.isDone)
+        .overlay(alignment: .topTrailing) {
+            if isRecovered && !isEditing {
+                Text("Recovered")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(.thinMaterial, in: Capsule())
+                    .padding(8)
+                    .accessibilityLabel("Recovered Snip")
+            }
+        }
         .contentShape(Rectangle())
         .onTapGesture(count: 2, perform: onOpen)
         .onTapGesture(count: 1, perform: onSelect)

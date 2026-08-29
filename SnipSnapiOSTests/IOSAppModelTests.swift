@@ -1,4 +1,5 @@
 import SnipSnapCore
+import SnipSnapPersistence
 import SwiftUI
 import UIKit
 import XCTest
@@ -199,6 +200,97 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(model.lists.first, .inbox)
     }
 
+    func testRecoveryReviewLoadsScopedAttentionRefreshesCurrentAndResolves() async throws {
+        let namespace = ICloudSyncNamespaceBinding(
+            scope: "private",
+            accountLineage: "account-a",
+            generation: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
+            zones: [ICloudSyncZoneBinding(name: "SnipSnap", ownerName: "owner-a")]
+        )
+        let current = Snip(content: "Current", origin: .quickEntry)
+        let recoveredValue = Snip(id: UUID(), content: "Recovered", origin: .quickEntry)
+        let recovered = RecoveredSnip(
+            id: recoveredValue.id,
+            currentSnipID: current.id,
+            recovered: recoveredValue,
+            conflictingFields: [.text]
+        )
+        let library = ModelTestLibrary(
+            snips: [current],
+            recovery: SnipRecoverySnapshot(pendingSnips: [recovered])
+        )
+        let assembly = SnipLibraryAssembly(
+            library: library,
+            activeCloudNamespace: namespace
+        )
+        XCTAssertNotNil(assembly.recoveryScope)
+        let model = IOSAppModel(
+            library: assembly.library,
+            recoveryScope: assembly.recoveryScope
+        )
+
+        await model.load()
+        XCTAssertEqual(model.needsAttentionCount, 1)
+        XCTAssertEqual(model.pendingRecoveredSnips, [recovered])
+        await library.replaceText("Changed while open", for: current.id)
+        await model.load()
+        XCTAssertEqual(model.currentSnip(for: recovered)?.content, "Changed while open")
+
+        let resolved = await model.resolveRecovery(recovered.id, choice: .keepCurrent)
+        XCTAssertTrue(resolved)
+        let choices = await library.resolutionChoices()
+        XCTAssertEqual(choices, [.keepCurrent])
+        XCTAssertEqual(model.needsAttentionCount, 0)
+    }
+
+    func testShippedAssemblyReadsExactCloudScopeAndFailsClosed() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("IOSAssemblyScopeTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let namespace = ICloudSyncNamespaceBinding(
+            scope: "private",
+            accountLineage: "account-a",
+            generation: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
+            zones: [ICloudSyncZoneBinding(name: "SnipSnap", ownerName: "owner-a")]
+        )
+        let cloudRoot = root.appendingPathComponent("Cloud", isDirectory: true)
+        try writeActivationManifest(namespace: namespace, to: cloudRoot)
+        let library = ModelTestLibrary()
+
+        let cloudAssembly = SnipLibraryAssembly(
+            library: library,
+            syncModeRootURL: cloudRoot
+        )
+
+        XCTAssertEqual(
+            SyncModeActivationManifestReader.activeCloudNamespace(
+                atSyncModeRootURL: cloudRoot
+            ),
+            namespace
+        )
+        XCTAssertEqual(
+            cloudAssembly.recoveryScope,
+            SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: namespace)
+        )
+
+        let localOnlyRoot = root.appendingPathComponent("LocalOnly", isDirectory: true)
+        let localOnlyAssembly = SnipLibraryAssembly(
+            library: library,
+            syncModeRootURL: localOnlyRoot
+        )
+        XCTAssertNil(localOnlyAssembly.recoveryScope)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: localOnlyRoot.path))
+
+        let malformedRoot = root.appendingPathComponent("Malformed", isDirectory: true)
+        try FileManager.default.createDirectory(at: malformedRoot, withIntermediateDirectories: true)
+        try Data("not-json".utf8).write(
+            to: malformedRoot.appendingPathComponent("activation.json")
+        )
+        XCTAssertNil(
+            SnipLibraryAssembly(library: library, syncModeRootURL: malformedRoot).recoveryScope
+        )
+    }
+
     func testAttachmentInputsUseTheTargetedLibraryCommands() async throws {
         let library = ModelTestLibrary()
         let model = IOSAppModel(library: library)
@@ -314,6 +406,32 @@ final class IOSAppModelTests: XCTestCase {
     }
 }
 
+private func writeActivationManifest(
+    namespace: ICloudSyncNamespaceBinding,
+    to rootURL: URL
+) throws {
+    let storeID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let namespaceData = try JSONEncoder().encode(namespace)
+    let namespaceValue = try JSONSerialization.jsonObject(with: namespaceData)
+    let manifest: [String: Any] = [
+        "version": 2,
+        "activeStoreID": storeID.uuidString,
+        "stores": [[
+            "id": storeID.uuidString,
+            "kind": "iCloudSync",
+            "namespace": namespaceValue,
+            "relativeRoot": "stores/iCloudSync-\(storeID.uuidString.lowercased())",
+            "syncProtocol": "fullRecordV1",
+            "revision": 0,
+            "lifecycle": "ready"
+        ]]
+    ]
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys]).write(
+        to: rootURL.appendingPathComponent("activation.json")
+    )
+}
+
 @MainActor
 private final class RootReinitHarnessState: ObservableObject {
     @Published var generation = 0
@@ -342,9 +460,12 @@ private actor ModelTestLibrary: SnipLibrary {
     private(set) var lastAddedAttachmentURLs: [URL] = []
     private(set) var lastAttachmentEdit: (snipID: UUID, content: String, edits: [SnipAttachmentEdit])?
     private var attachmentPruneCalls = 0
+    private var recovery: SnipRecoverySnapshot
+    private var resolvedChoices: [SnipRecoveryChoice] = []
 
-    init(snips: [Snip] = []) {
+    init(snips: [Snip] = [], recovery: SnipRecoverySnapshot = .empty) {
         self.snips = snips
+        self.recovery = recovery
     }
 
     func addedAttachmentURLs() -> [URL] {
@@ -353,6 +474,34 @@ private actor ModelTestLibrary: SnipLibrary {
 
     func pruneCalls() -> Int {
         attachmentPruneCalls
+    }
+
+    func replaceText(_ text: String, for id: UUID) {
+        guard let index = snips.firstIndex(where: { $0.id == id }) else { return }
+        snips[index].content = text
+    }
+
+    func resolutionChoices() -> [SnipRecoveryChoice] {
+        resolvedChoices
+    }
+
+    func recoverySnapshot(in scope: SnipRecoveryScope) -> SnipRecoverySnapshot {
+        _ = scope
+        return recovery
+    }
+
+    func resolveRecovery(
+        _ id: UUID,
+        in scope: SnipRecoveryScope,
+        choice: SnipRecoveryChoice
+    ) throws -> SnipLibrarySnapshot {
+        _ = scope
+        guard recovery.pendingSnips.contains(where: { $0.id == id })
+            || recovery.pendingLists.contains(where: { $0.id == id })
+        else { throw SnipLibraryError.recoveryNotFound }
+        resolvedChoices.append(choice)
+        recovery = .empty
+        return makeSnapshot(sortMode: .chronological)
     }
 
     func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {

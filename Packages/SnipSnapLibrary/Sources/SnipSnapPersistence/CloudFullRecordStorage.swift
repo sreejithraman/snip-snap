@@ -121,17 +121,20 @@ package struct CloudConflictInput: Codable, Equatable, Sendable {
   package let reference: CloudEntityReference
   package let format: CloudConflictFormat
   package let payload: Data
+  package let recovery: SnipRecoveryRecord?
 
   package init(
     key: String,
     reference: CloudEntityReference,
     format: CloudConflictFormat,
-    payload: Data
+    payload: Data,
+    recovery: SnipRecoveryRecord? = nil
   ) {
     self.key = key
     self.reference = reference
     self.format = format
     self.payload = payload
+    self.recovery = recovery
   }
 }
 

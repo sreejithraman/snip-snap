@@ -110,6 +110,12 @@ extension CloudFullSyncPersistenceTests {
       namespace: namespace,
       dataZone: zone
     )
+    let list = SnipList(
+      id: UUID(),
+      name: "Base",
+      systemImage: "folder",
+      position: 1
+    )
     let base = Snip(
       id: UUID(),
       requestID: UUID(),
@@ -117,6 +123,7 @@ extension CloudFullSyncPersistenceTests {
       updatedAt: Date(timeIntervalSince1970: 1),
       content: "base",
       origin: .quickEntry,
+      listID: list.id,
       isDone: false
     )
     let inbox = try CloudKitRecordMapper.snapshot(
@@ -127,9 +134,14 @@ extension CloudFullSyncPersistenceTests {
     let baseSnapshot = try CloudKitRecordMapper.snapshot(
       CloudKitRecordMapper.record(for: CloudFullRecordCodec.snipDraft(base, in: zone))
     )
+    let baseListSnapshot = try CloudKitRecordMapper.snapshot(
+      CloudKitRecordMapper.record(
+        for: CloudFullRecordCodec.listDraft(list, updatedAt: Date(timeIntervalSince1970: 1), in: zone)
+      )
+    )
     let first = CloudFetchedBatch(
       id: UUID(),
-      items: [.record(inbox), .record(baseSnapshot)],
+      items: [.record(inbox), .record(baseListSnapshot), .record(baseSnapshot)],
       engineState: nil
     )
     try await persistence.stage(.fetched(first))
@@ -153,7 +165,28 @@ extension CloudFullSyncPersistenceTests {
         for: CloudFullRecordCodec.snipDraft(server, accepted: acceptedBase)
       )
     )
-    let second = CloudFetchedBatch(id: UUID(), items: [.record(serverSnapshot)], engineState: nil)
+    let acceptedList = try CloudFullRecordCodec.list(from: baseListSnapshot)
+    let serverList = SnipList(
+      id: list.id,
+      name: "Server",
+      systemImage: "cloud",
+      position: list.position,
+      sortKey: list.sortKey
+    )
+    let serverListSnapshot = try CloudKitRecordMapper.snapshot(
+      CloudKitRecordMapper.record(
+        for: CloudFullRecordCodec.listDraft(
+          serverList,
+          updatedAt: Date(timeIntervalSince1970: 2),
+          accepted: acceptedList
+        )
+      )
+    )
+    let second = CloudFetchedBatch(
+      id: UUID(),
+      items: [.record(serverListSnapshot), .record(serverSnapshot)],
+      engineState: nil
+    )
     try await persistence.stage(.fetched(second))
     try await persistence.applyStaged(second.id)
     let freshBefore = try await library.cloudFullStorageSnapshot(
@@ -174,7 +207,16 @@ extension CloudFullSyncPersistenceTests {
     let source = SnipLibraryTransferSnapshot(
       revision: 4,
       snips: [local],
-      lists: [.inbox],
+      lists: [
+        .inbox,
+        SnipList(
+          id: list.id,
+          name: "Recovered",
+          systemImage: "star",
+          position: list.position,
+          sortKey: list.sortKey
+        ),
+      ],
       attachmentData: [:]
     ).replacingOpaqueSyncStatePayload(dormantPayload)
     let transitionID = UUID()
@@ -191,8 +233,20 @@ extension CloudFullSyncPersistenceTests {
     let value = try XCTUnwrap(merged.snips.first(where: { $0.id == base.id }))
     XCTAssertEqual(value.content, "local text")
     XCTAssertTrue(value.isDone)
-    XCTAssertTrue(plan.conflicts.isEmpty)
+    XCTAssertEqual(value.listID, list.id)
+    XCTAssertEqual(plan.conflicts.count, 1)
     XCTAssertTrue(plan.recoveryInputs.isEmpty)
+    let recovery = try await library.recoverySnapshot(
+      in: SnipRecoveryScope(namespace.canonicalKey)
+    )
+    let recoveredList = try XCTUnwrap(recovery.pendingLists.first)
+    XCTAssertEqual(recoveredList.currentListID, list.id)
+    XCTAssertEqual(recoveredList.recovered.desiredName, "Recovered")
+    XCTAssertEqual(recoveredList.recovered.systemImage, "star")
+    XCTAssertEqual(recoveredList.conflictingFields, [.name, .icon])
+    let currentList = try XCTUnwrap(merged.lists.first(where: { $0.id == list.id }))
+    XCTAssertEqual(currentList.desiredName, "Server")
+    XCTAssertEqual(currentList.systemImage, "cloud")
     let freshAfter = try await library.cloudFullStorageSnapshot(
       namespaceKey: namespace.canonicalKey
     )
@@ -275,4 +329,3 @@ extension CloudFullSyncPersistenceTests {
   }
 
 }
-

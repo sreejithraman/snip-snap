@@ -4,14 +4,54 @@ import XCTest
 final class SnipSnapiOSUITests: XCTestCase {
     private func launchApp(
         storeName: String = "ui-\(UUID().uuidString)",
-        withAttachments: Bool = false
+        withAttachments: Bool = false,
+        withRecovery: Bool = false
     ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["SNIP_SNAP_UI_TESTING"] = "1"
         app.launchEnvironment["SNIP_SNAP_UI_TEST_STORE"] = storeName
         if withAttachments { app.launchEnvironment["SNIP_SNAP_UI_TEST_ATTACHMENTS"] = "1" }
+        if withRecovery { app.launchEnvironment["SNIP_SNAP_UI_TEST_RECOVERY"] = "1" }
         app.launch()
         return app
+    }
+
+    func testReviewsRecoveredSnipAndListEdits() {
+        continueAfterFailure = false
+        let app = launchApp(withRecovery: true)
+        let attention = app.buttons["needs-attention"]
+        if !attention.waitForExistence(timeout: 1) {
+            let showSidebar = app.buttons["Show Sidebar"]
+            if showSidebar.exists {
+                showSidebar.tap()
+            } else if app.buttons["BackButton"].exists {
+                app.buttons["BackButton"].tap()
+            } else {
+                app.navigationBars.buttons.firstMatch.tap()
+            }
+        }
+        XCTAssertTrue(attention.waitForExistence(timeout: 5))
+        attention.tap()
+
+        let recoveredSnip = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS %@", "Recovered text from this device")
+        ).firstMatch
+        XCTAssertTrue(recoveredSnip.waitForExistence(timeout: 3))
+        recoveredSnip.tap()
+        XCTAssertTrue(app.navigationBars["Recovered Snip"].waitForExistence(timeout: 3))
+        app.buttons["Use Recovered"].tap()
+
+        XCTAssertTrue(app.navigationBars["Needs Attention"].waitForExistence(timeout: 3))
+        let recoveredList = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS %@", "Recovered Notes")
+        ).firstMatch
+        XCTAssertTrue(recoveredList.waitForExistence(timeout: 3))
+        recoveredList.tap()
+        XCTAssertTrue(app.navigationBars["Recovered List Edit"].waitForExistence(timeout: 3))
+        app.buttons["Use Recovered"].tap()
+        XCTAssertTrue(app.navigationBars["Needs Attention"].waitForExistence(timeout: 3))
+        app.buttons["Done"].tap()
+        XCTAssertFalse(attention.waitForExistence(timeout: 2))
     }
 
     func testCreatesAndEditsTextSnip() {
