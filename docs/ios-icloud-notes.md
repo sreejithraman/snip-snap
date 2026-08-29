@@ -153,16 +153,16 @@ Sources: [Choosing a CloudKit approach](https://developer.apple.com/documentatio
 ## Share extension constraints
 
 - The app and Share extension run in separate containers. An App Group gives both processes one shared container.
-- The main app owns persistence migrations. The extension must use the same schema version and must not start a migration.
+- The main app alone opens the SwiftData store and owns persistence migrations. The extension must never open that store because SwiftData may run an automatic migration even without a custom migration plan.
 - The extension must copy each temporary item-provider file into durable App Group storage before the provider callback returns.
-- Treat a successful local save as success. Do not keep the extension open while waiting for iCloud.
-- Keep an atomic pending-import inbox in the App Group for the case where the extension runs before the main app finishes a store migration.
+- Treat a durable write to an atomic App Group pending-import inbox as success. Do not keep the extension open while waiting for the main app or iCloud.
+- Let the main app import pending items exactly once when it next runs or returns to the foreground.
 - Show a compact preview, a quick text edit, and a destination list before saving.
 - Default the first shared snip to Inbox, then remember the last chosen share destination on that device.
 - Fall back to Inbox when the remembered list no longer exists.
-- Keep full editing in the app and offer Open in Snip Snap after a local save.
+- Keep quick text editing in the extension. A Share extension cannot open its containing app through `NSExtensionContext.open` on iOS, so do not offer an unsupported open-app action.
 
-Sources: [Shared data](https://developer.apple.com/documentation/technologyoverviews/shared-data), [App Groups](https://developer.apple.com/documentation/xcode/configuring-app-groups), [extension life cycle](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/ExtensionOverview.html), and [`NSItemProvider.loadFileRepresentation`](https://developer.apple.com/documentation/foundation/nsitemprovider/loadfilerepresentation(fortypeidentifier:completionhandler:)).
+Sources: [Shared data](https://developer.apple.com/documentation/technologyoverviews/shared-data), [App Groups](https://developer.apple.com/documentation/xcode/configuring-app-groups), [extension life cycle](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/ExtensionOverview.html), [`NSItemProvider.loadFileRepresentation`](https://developer.apple.com/documentation/foundation/nsitemprovider/loadfilerepresentation(fortypeidentifier:completionhandler:)), [`NSExtensionContext.open`](https://developer.apple.com/documentation/foundation/nsextensioncontext/open(_:completionhandler:)), and [`ModelContainer`](https://developer.apple.com/documentation/swiftdata/modelcontainer).
 
 ## Attachment constraints
 
