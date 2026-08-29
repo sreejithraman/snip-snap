@@ -38,7 +38,7 @@ struct SnipSnapApp: App {
                 coordinator: appDelegate.coordinator
             )
         }
-        .defaultSize(width: 400, height: 310)
+        .defaultSize(width: 400, height: 230)
         .windowResizability(.contentSize)
         .commands {
             SnipCommands(coordinator: appDelegate.coordinator)

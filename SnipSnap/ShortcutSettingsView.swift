@@ -5,21 +5,13 @@ import SwiftUI
 struct ShortcutSettingsView: View {
     @EnvironmentObject private var shortcutSettings: ShortcutSettings
     let coordinator: AppCoordinator
-    @ObservedObject private var accessibilityPermissions: AccessibilityPermissionController
 
     @State private var errorMessage: String?
-
-    init(coordinator: AppCoordinator) {
-        self.coordinator = coordinator
-        _accessibilityPermissions = ObservedObject(
-            wrappedValue: coordinator.accessibilityPermissions
-        )
-    }
 
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                Section("Keyboard Shortcuts") {
+                Section {
                     ForEach(GlobalHotKeyAction.allCases) { action in
                         ShortcutSettingRow(
                             title: action.title,
@@ -48,10 +40,6 @@ struct ShortcutSettingsView: View {
                         )
                     }
                 }
-
-                Section("Permissions") {
-                    AccessibilitySettingsRow(controller: accessibilityPermissions)
-                }
             }
             .formStyle(.grouped)
 
@@ -63,11 +51,8 @@ struct ShortcutSettingsView: View {
                     .padding([.horizontal, .bottom])
             }
         }
-        .frame(width: 400, height: 310)
+        .frame(width: 400, height: 230)
         .background(ShortcutSettingsWindowConfigurator())
-        .onAppear {
-            accessibilityPermissions.refresh()
-        }
     }
 
     private func save(_ trigger: ShortcutTrigger, for action: GlobalHotKeyAction) {
@@ -114,40 +99,8 @@ private struct ShortcutSettingsWindowConfigurator: NSViewRepresentable {
         }
 
         func configureWindow() {
-            window?.title = "Snip Snap Settings"
+            window?.title = "Keyboard Shortcuts"
             window?.level = .modalPanel
-        }
-    }
-}
-
-private struct AccessibilitySettingsRow: View {
-    @ObservedObject var controller: AccessibilityPermissionController
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
-            LabeledContent("Accessibility") {
-                HStack(spacing: SnipSnapSpacing.relatedContent) {
-                    Label(
-                        controller.isGranted ? "On" : "Off",
-                        systemImage: controller.isGranted
-                            ? "checkmark.circle.fill"
-                            : "exclamationmark.circle.fill"
-                    )
-                    .foregroundStyle(
-                        controller.isGranted
-                            ? Color(nsColor: .systemGreen)
-                            : Color.secondary
-                    )
-
-                    Button("Open Settings…") {
-                        controller.openSettings()
-                    }
-                }
-            }
-
-            Text("Needed for global Shift shortcuts and selected-content capture.")
-                .font(.caption)
-                .foregroundStyle(SnipSnapColors.textSecondary)
         }
     }
 }

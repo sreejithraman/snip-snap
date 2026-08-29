@@ -35,6 +35,12 @@ struct AccessibilitySetupCardPresentation {
     let showsRepairInstructions: Bool
 }
 
+struct AccessibilityMenuPresentation {
+    let statusTitle: String
+    let systemImage: String
+    let actionTitle: String
+}
+
 @MainActor
 final class AccessibilityPermissionController: ObservableObject {
     static let didHandleSetupDefaultsKey = "didHandleAccessibilitySetup"
@@ -49,6 +55,22 @@ final class AccessibilityPermissionController: ObservableObject {
 
     var setupCardState: AccessibilitySetupCardState {
         hasRequestedAccess ? .needsRepair : .initial
+    }
+
+    var menuPresentation: AccessibilityMenuPresentation {
+        if isGranted {
+            return AccessibilityMenuPresentation(
+                statusTitle: "Accessibility: On",
+                systemImage: "checkmark.circle.fill",
+                actionTitle: "Open Accessibility Settings…"
+            )
+        }
+
+        return AccessibilityMenuPresentation(
+            statusTitle: "Accessibility: Off",
+            systemImage: "exclamationmark.circle",
+            actionTitle: setupCardState.presentation.primaryActionTitle
+        )
     }
 
     private let defaults: UserDefaults
@@ -134,6 +156,14 @@ final class AccessibilityPermissionController: ObservableObject {
             requestAccess()
         case .needsRepair:
             openSettings()
+        }
+    }
+
+    func performMenuAction() {
+        if isGranted {
+            openSettings()
+        } else {
+            performPrimaryAction()
         }
     }
 

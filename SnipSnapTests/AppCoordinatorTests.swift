@@ -74,6 +74,14 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         XCTAssertEqual(manager.registeredConfigurations, [.snipSnapDefaults])
         XCTAssertTrue(coordinator.accessibilityPermissions.isSetupCardVisible)
         XCTAssertFalse(coordinator.accessibilityPermissions.hasRequestedAccess)
+        XCTAssertEqual(
+            coordinator.accessibilityPermissions.menuPresentation.statusTitle,
+            "Accessibility: Off"
+        )
+        XCTAssertEqual(
+            coordinator.accessibilityPermissions.menuPresentation.actionTitle,
+            "Allow Access"
+        )
         XCTAssertTrue(panel.isVisible)
         XCTAssertNil(model.presentedError)
 
@@ -86,8 +94,12 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             defaults.bool(forKey: AccessibilityPermissionController.didHandleSetupDefaultsKey),
             true
         )
+        XCTAssertEqual(
+            coordinator.accessibilityPermissions.menuPresentation.actionTitle,
+            "Open System Settings"
+        )
 
-        coordinator.accessibilityPermissions.performPrimaryAction()
+        coordinator.accessibilityPermissions.performMenuAction()
 
         XCTAssertEqual(requestCount, 1)
         XCTAssertEqual(openSettingsCount, 1)
@@ -138,18 +150,32 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         let repository = try SnipRepository(fileURL: storeURL())
         let model = AppModel(repository: repository)
         var requestCount = 0
+        var openSettingsCount = 0
         let coordinator = AppCoordinator(
             model: model,
             shortcutSettings: ShortcutSettings(),
             makeHotKeyManager: { _ in StubGlobalHotKeyManager() },
             isAccessibilityTrusted: { true },
-            requestAccessibilityTrust: { requestCount += 1 }
+            requestAccessibilityTrust: { requestCount += 1 },
+            openAccessibilitySettings: { openSettingsCount += 1 }
         )
 
         coordinator.start()
 
         XCTAssertFalse(coordinator.accessibilityPermissions.isSetupCardVisible)
         XCTAssertEqual(requestCount, 0)
+        XCTAssertEqual(
+            coordinator.accessibilityPermissions.menuPresentation.statusTitle,
+            "Accessibility: On"
+        )
+        XCTAssertEqual(
+            coordinator.accessibilityPermissions.menuPresentation.actionTitle,
+            "Open Accessibility Settings…"
+        )
+
+        coordinator.accessibilityPermissions.performMenuAction()
+
+        XCTAssertEqual(openSettingsCount, 1)
     }
 
     @MainActor

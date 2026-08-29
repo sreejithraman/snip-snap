@@ -261,6 +261,7 @@ struct ContentView: View {
 
             PanelMoreButton(
                 model: model,
+                accessibilityPermissions: accessibilityPermissions,
                 focusedTarget: $focusedTarget,
                 moveSelectionToNewList: {
                     movesSelectionToNewList = true
