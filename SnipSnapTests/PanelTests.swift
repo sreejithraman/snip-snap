@@ -671,7 +671,9 @@ final class PanelTests: StoreBackedTestCase {
         let hostingView = NSHostingView(rootView: input)
         window.contentView = hostingView
         window.makeKeyAndOrderFront(nil)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        defer { window.orderOut(nil) }
+        hostingView.layoutSubtreeIfNeeded()
+        hostingView.displayIfNeeded()
 
         let textField = try XCTUnwrap(findTextField(in: hostingView))
         let cell = try XCTUnwrap(textField.cell)
