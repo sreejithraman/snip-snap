@@ -481,6 +481,10 @@ final class IOSAppModel {
         if preview.recoveredSnipCount > 0 {
             parts.append("\(preview.recoveredSnipCount) recovered edits")
         }
+        if preview.addedListCount > 0 {
+            let noun = preview.addedListCount == 1 ? "list" : "lists"
+            parts.append("\(preview.addedListCount) new \(noun)")
+        }
         if preview.addedAttachmentCount > 0 {
             parts.append("\(preview.addedAttachmentCount) attachments")
         }

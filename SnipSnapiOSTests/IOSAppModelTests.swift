@@ -258,6 +258,33 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertTrue(model.snips.isEmpty)
     }
 
+    func testIOSBackupImportPreviewNamesAnAddedEmptyList() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("IOSListImportTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backupURL = root.appendingPathComponent("Backup.json")
+        let targetURL = root.appendingPathComponent("Target.json")
+        let backup = try JSONSnipLibrary(fileURL: backupURL)
+        _ = try await backup.perform(
+            .createList(name: "Empty", systemImage: "tray"),
+            sortedBy: .manual
+        )
+        let target = try JSONSnipLibrary(fileURL: targetURL)
+        let model = IOSAppModel(
+            library: target,
+            userActions: SnipLibraryDeviceActions(
+                library: target,
+                journalURL: root.appendingPathComponent("DeviceActions.json")
+            )
+        )
+        await model.load()
+
+        await model.previewBackupImport(from: backupURL)
+
+        XCTAssertEqual(model.pendingImportPreview?.addedListCount, 1)
+        XCTAssertEqual(model.importPreviewSummary, "0 snips, 1 new list")
+    }
+
     func testListFlowKeepsInboxAsFallback() async throws {
         let library = ModelTestLibrary()
         let model = makeModel(library: library)

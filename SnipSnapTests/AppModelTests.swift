@@ -1005,6 +1005,30 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertTrue(model.snips.isEmpty)
     }
 
+    @MainActor
+    func testMacBackupImportPreviewNamesAnAddedEmptyList() async throws {
+        let targetURL = try storeURL()
+        let backupURL = targetURL.deletingLastPathComponent()
+            .appendingPathComponent("empty-list-backup.json")
+        let backup = try JSONSnipLibrary(fileURL: backupURL)
+        _ = try await backup.perform(
+            .createList(name: "Empty", systemImage: "tray"),
+            sortedBy: .manual
+        )
+        let target = try JSONSnipLibrary(fileURL: targetURL)
+        let model = AppModel(
+            library: target,
+            defaults: defaults(),
+            userActions: userActions(for: target)
+        )
+        await model.reload()
+
+        await model.previewBackupImport(from: backupURL)
+
+        XCTAssertEqual(model.pendingImportPreview?.addedListCount, 1)
+        XCTAssertEqual(model.importPreviewSummary, "0 snips, 1 new list")
+    }
+
     private func userActions(for library: any SnipLibrary) -> SnipLibraryDeviceActions {
         SnipLibraryDeviceActions(
             library: library,
