@@ -165,6 +165,258 @@ final class SnipLibraryBehaviorTests: XCTestCase {
     }
   }
 
+  func testDurableAdaptersKeepDoneStateManualOrderAndListMovesAfterReopen() async throws {
+    try await forEachAdapter { adapter, directory, library in
+      let work = try await createList(named: "Work", in: library)
+      let first = try await add("First", requestID: UUID(), at: 100, to: SnipList.inboxID, in: library)
+      let second = try await add("Second", requestID: UUID(), at: 200, to: SnipList.inboxID, in: library)
+      let third = try await add("Third", requestID: UUID(), at: 300, to: SnipList.inboxID, in: library)
+
+      _ = try await library.perform(
+        .setDone(ids: [second.id], done: true),
+        sortedBy: .manual
+      )
+      _ = try await library.perform(
+        .place(ids: [third.id, first.id], in: work.id, before: nil, basedOn: .manual),
+        sortedBy: .manual
+      )
+
+      let reopened = try adapter.open(in: directory)
+      let snapshot = await reopened.snapshot(sortedBy: .manual)
+      XCTAssertEqual(
+        snapshot.snips.filter { $0.listID == work.id }.map(\.id),
+        [third.id, first.id],
+        adapter.rawValue
+      )
+      XCTAssertEqual(snapshot.snips.first(where: { $0.id == second.id })?.isDone, true)
+      XCTAssertEqual(snapshot.snips.first(where: { $0.id == second.id })?.listID, SnipList.inboxID)
+    }
+  }
+
+  func testGuardedInverseRejectsChangedRecordsAndKeepsUnrelatedWrites() async throws {
+    try await forEachAdapter { adapter, _, library in
+      let first = try await add("First", requestID: UUID(), at: 100, to: SnipList.inboxID, in: library)
+      let unrelated = try await add("Unrelated", requestID: UUID(), at: 200, to: SnipList.inboxID, in: library)
+      let doneUpdate = try await library.perform(
+        .setDone(ids: [first.id], done: true),
+        sortedBy: .manual
+      )
+      let expectedDone = try XCTUnwrap(doneUpdate.snapshot.snips.first(where: { $0.id == first.id }))
+
+      _ = try await library.perform(
+        .update(
+          id: first.id,
+          content: "Changed later",
+          attachmentURLs: nil,
+          expectedUpdatedAt: expectedDone.updatedAt,
+          now: Date(timeIntervalSince1970: 300)
+        ),
+        sortedBy: .manual
+      )
+
+      await assertThrows(.snipChanged) {
+        _ = try await library.perform(
+          .guarded(
+            expectation: SnipLibraryExpectation(expectedSnips: [expectedDone]),
+            command: .setDone(ids: [first.id], done: first.isDone)
+          ),
+          sortedBy: .manual
+        )
+      }
+
+      let snapshot = await library.snapshot(sortedBy: .manual)
+      XCTAssertEqual(snapshot.snips.first(where: { $0.id == first.id })?.content, "Changed later")
+      XCTAssertEqual(snapshot.snips.first(where: { $0.id == unrelated.id })?.content, "Unrelated")
+      XCTAssertEqual(snapshot.snips.count, 2, adapter.rawValue)
+    }
+  }
+
+  func testGuardedListDeletionRejectsNewListMembers() async throws {
+    try await forEachAdapter { adapter, _, library in
+      let work = try await createList(named: "Work", in: library)
+      let added = try await add(
+        "Added elsewhere",
+        requestID: UUID(),
+        at: 100,
+        to: work.id,
+        in: library
+      )
+
+      await assertThrows(.snipChanged) {
+        _ = try await library.perform(
+          .guarded(
+            expectation: SnipLibraryExpectation(
+              expectedListMemberships: [work.id: []]
+            ),
+            command: .deleteList(id: work.id)
+          ),
+          sortedBy: .manual
+        )
+      }
+
+      let snapshot = await library.snapshot(sortedBy: .manual)
+      XCTAssertTrue(snapshot.lists.contains(where: { $0.id == work.id }), adapter.rawValue)
+      XCTAssertEqual(snapshot.snips.first(where: { $0.id == added.id })?.listID, work.id)
+    }
+  }
+
+  func testGuardedRestoreRejectsADeletedDestinationList() async throws {
+    try await forEachAdapter { adapter, _, library in
+      let work = try await createList(named: "Work", in: library)
+      let removed = try await add("Removed", requestID: UUID(), at: 100, to: work.id, in: library)
+      _ = try await library.perform(.delete(ids: [removed.id]), sortedBy: .manual)
+      _ = try await library.perform(.deleteList(id: work.id), sortedBy: .manual)
+
+      await assertThrows(.snipChanged) {
+        _ = try await library.perform(
+          .guarded(
+            expectation: SnipLibraryExpectation(requiredListIDs: [work.id]),
+            command: .restore(snips: [removed])
+          ),
+          sortedBy: .manual
+        )
+      }
+
+      let snapshot = await library.snapshot(sortedBy: .manual)
+      XCTAssertFalse(snapshot.snips.contains(where: { $0.id == removed.id }), adapter.rawValue)
+    }
+  }
+
+  func testRestoreRejectsSnipsWhoseListDoesNotExist() async throws {
+    try await forEachAdapter { adapter, _, library in
+      let orphan = Snip(
+        content: "Orphan",
+        origin: .quickEntry,
+        listID: UUID()
+      )
+
+      await assertThrows(.invalidList) {
+        _ = try await library.perform(.restore(snips: [orphan]), sortedBy: .manual)
+      }
+
+      let snapshot = await library.snapshot(sortedBy: .manual)
+      XCTAssertTrue(snapshot.snips.isEmpty, adapter.rawValue)
+    }
+  }
+
+  func testRestoreRetriesIgnoreListIDsOnRecordsThatAlreadyExist() async throws {
+    try await forEachAdapter { adapter, _, library in
+      let existing = try await add(
+        "Existing",
+        requestID: UUID(),
+        at: 100,
+        to: SnipList.inboxID,
+        in: library
+      )
+      let ignoredRetry = Snip(
+        id: existing.id,
+        requestID: existing.requestID,
+        createdAt: existing.createdAt,
+        content: "Ignored retry",
+        origin: existing.origin,
+        listID: UUID()
+      )
+
+      _ = try await library.perform(.restore(snips: [ignoredRetry]), sortedBy: .manual)
+
+      let snapshot = await library.snapshot(sortedBy: .manual)
+      XCTAssertEqual(snapshot.snips, [existing], adapter.rawValue)
+    }
+  }
+
+  func testRestoreReplacingIgnoresListIDsOnFilteredExistingRecords() async throws {
+    try await forEachAdapter { adapter, _, library in
+      let replaced = try await add(
+        "Replace me",
+        requestID: UUID(),
+        at: 100,
+        to: SnipList.inboxID,
+        in: library
+      )
+      let existing = try await add(
+        "Keep me",
+        requestID: UUID(),
+        at: 200,
+        to: SnipList.inboxID,
+        in: library
+      )
+      let ignored = Snip(
+        id: existing.id,
+        requestID: UUID(),
+        createdAt: existing.createdAt,
+        content: "Filtered",
+        origin: .quickEntry,
+        listID: UUID()
+      )
+      let replacement = Snip(
+        content: "Replacement",
+        origin: .quickEntry,
+        listID: SnipList.inboxID
+      )
+
+      _ = try await library.perform(
+        .restoreReplacing(
+          snips: [ignored, replacement],
+          id: replaced.id,
+          expectedUpdatedAt: replaced.updatedAt
+        ),
+        sortedBy: .manual
+      )
+
+      let snapshot = await library.snapshot(sortedBy: .manual)
+      XCTAssertTrue(
+        snapshot.snips.contains(where: {
+          $0.id == existing.id && $0.content == existing.content && $0.listID == existing.listID
+        }),
+        adapter.rawValue
+      )
+      XCTAssertTrue(
+        snapshot.snips.contains(where: {
+          $0.id == replacement.id && $0.content == replacement.content
+            && $0.listID == replacement.listID
+        }),
+        adapter.rawValue
+      )
+      XCTAssertFalse(snapshot.snips.contains(where: { $0.id == replaced.id }), adapter.rawValue)
+    }
+  }
+
+  func testBatchRejectsAttachmentPruningBeforeAnySideEffect() async throws {
+    try await forEachAdapter { adapter, directory, library in
+      let sourceURL = directory.appendingPathComponent("keep-me.txt")
+      try Data("Keep".utf8).write(to: sourceURL)
+      let added = try await library.perform(
+        .add(
+          content: "Has file",
+          origin: .quickEntry,
+          source: nil,
+          listID: SnipList.inboxID,
+          attachmentURLs: [sourceURL],
+          requestID: UUID(),
+          now: Date(timeIntervalSince1970: 100)
+        ),
+        sortedBy: .manual
+      )
+      let snip = try XCTUnwrap(added.snapshot.snips.first)
+      let attachment = try XCTUnwrap(snip.attachments.first)
+      let storedURL = try XCTUnwrap(added.snapshot.attachmentURLs[attachment.id])
+
+      await assertThrows(.invalidCommand) {
+        _ = try await library.perform(
+          .batch([
+            .delete(ids: [snip.id]),
+            .pruneAttachments(retaining: []),
+          ]),
+          sortedBy: .manual
+        )
+      }
+
+      let snapshot = await library.snapshot(sortedBy: .manual)
+      XCTAssertTrue(snapshot.snips.contains(where: { $0.id == snip.id }), adapter.rawValue)
+      XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path), adapter.rawValue)
+    }
+  }
+
   func testDurableAdaptersMatchAttachmentRecordsAndReopen() async throws {
     try await forEachAdapter { adapter, directory, library in
       let sourceURL = directory.appendingPathComponent("note.txt")
@@ -325,6 +577,11 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       _ = try await library.perform(.delete(ids: [snip.id]), sortedBy: .chronological)
       XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path), adapter.rawValue)
       _ = try await library.perform(
+        .pruneAttachments(retaining: [attachment.id]),
+        sortedBy: .chronological
+      )
+      XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path), adapter.rawValue)
+      _ = try await library.perform(
         .pruneAttachments(retaining: []),
         sortedBy: .chronological
       )
@@ -378,6 +635,11 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       XCTAssertEqual(revised.content, "Two files, revised", adapter.rawValue)
       XCTAssertNotEqual(revised.attachments[0].id, first.id, adapter.rawValue)
       XCTAssertEqual(revised.attachments[1].id, second.id, adapter.rawValue)
+      XCTAssertTrue(FileManager.default.fileExists(atPath: firstStoredURL.path), adapter.rawValue)
+      _ = try await library.perform(
+        .pruneAttachments(retaining: []),
+        sortedBy: .chronological
+      )
       XCTAssertFalse(FileManager.default.fileExists(atPath: firstStoredURL.path), adapter.rawValue)
       XCTAssertTrue(FileManager.default.fileExists(atPath: secondStoredURL.path), adapter.rawValue)
 
@@ -429,25 +691,44 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       XCTAssertEqual(second.attachments.first?.id, attachment.id, adapter.rawValue)
 
       _ = try await library.perform(
-        .editAttachments(
-          snipID: first.id,
-          content: first.content,
-          edits: [],
-          expectedUpdatedAt: first.updatedAt,
-          now: Date(timeIntervalSince1970: 300)
+        .guarded(
+          expectation: SnipLibraryExpectation(expectedSnips: [first]),
+          command: .batch([
+            .editAttachments(
+              snipID: first.id,
+              content: first.content,
+              edits: [],
+              expectedUpdatedAt: first.updatedAt,
+              now: Date(timeIntervalSince1970: 300)
+            )
+          ])
         ),
+        sortedBy: .chronological
+      )
+      XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path), adapter.rawValue)
+      _ = try await library.perform(
+        .pruneAttachments(retaining: []),
         sortedBy: .chronological
       )
       XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path), adapter.rawValue)
 
       _ = try await library.perform(
-        .editAttachments(
-          snipID: second.id,
-          content: second.content,
-          edits: [],
-          expectedUpdatedAt: second.updatedAt,
-          now: Date(timeIntervalSince1970: 400)
+        .guarded(
+          expectation: SnipLibraryExpectation(expectedSnips: [second]),
+          command: .batch([
+            .editAttachments(
+              snipID: second.id,
+              content: second.content,
+              edits: [],
+              expectedUpdatedAt: second.updatedAt,
+              now: Date(timeIntervalSince1970: 400)
+            )
+          ])
         ),
+        sortedBy: .chronological
+      )
+      _ = try await library.perform(
+        .pruneAttachments(retaining: []),
         sortedBy: .chronological
       )
       XCTAssertFalse(FileManager.default.fileExists(atPath: storedURL.path), adapter.rawValue)

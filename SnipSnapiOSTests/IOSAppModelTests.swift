@@ -445,6 +445,200 @@ final class IOSAppModelTests: XCTestCase {
         await coordinator.importPendingAndReload()
         let foregroundCallCount = await probe.callCount()
         XCTAssertEqual(foregroundCallCount, 2)
+    func testCopySharePayloadsCoverTextFileMixedMultiAndUnavailableCases() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapCopyPayload-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let firstURL = directory.appendingPathComponent("first.txt")
+        let secondURL = directory.appendingPathComponent("second.txt")
+        try Data("First".utf8).write(to: firstURL)
+        try Data("Second".utf8).write(to: secondURL)
+        let firstID = UUID()
+        let secondID = UUID()
+        let missingID = UUID()
+        let firstAttachment = try testAttachment(id: firstID, fileName: "first.txt")
+        let secondAttachment = try testAttachment(id: secondID, fileName: "second.txt")
+        let missingAttachment = try testAttachment(id: missingID, fileName: "missing.txt")
+        let old = Snip(
+            createdAt: Date(timeIntervalSince1970: 1),
+            content: "Old text",
+            origin: .quickEntry
+        )
+        let fileOnly = Snip(
+            createdAt: Date(timeIntervalSince1970: 2),
+            content: "",
+            origin: .quickEntry,
+            attachments: [firstAttachment]
+        )
+        let mixed = Snip(
+            createdAt: Date(timeIntervalSince1970: 3),
+            content: "Mixed text",
+            origin: .quickEntry,
+            attachments: [secondAttachment]
+        )
+        let missing = Snip(
+            createdAt: Date(timeIntervalSince1970: 4),
+            content: "Keep this text",
+            origin: .quickEntry,
+            attachments: [missingAttachment]
+        )
+        let urls = [firstID: firstURL, secondID: secondURL]
+        let builder = IOSCopySharePayloadBuilder()
+
+        let textPayload = builder.payload(for: [old]) { urls[$0] }
+        XCTAssertEqual(textPayload.copyItems, [.text("Old text")])
+
+        let filePayload = builder.payload(for: [fileOnly]) { urls[$0] }
+        XCTAssertEqual(filePayload.copyItems, [.text(""), .file(firstURL)])
+        XCTAssertEqual(filePayload.attachmentItems, [.file(firstURL)])
+
+        let mixedPayload = builder.payload(for: [mixed]) { urls[$0] }
+        XCTAssertEqual(mixedPayload.copyItems, [.text("Mixed text"), .file(secondURL)])
+
+        let multiPayload = builder.payload(for: [mixed, fileOnly, old]) { urls[$0] }
+        XCTAssertEqual(multiPayload.text, SnipFormatter.formatForClipboard(snips: [mixed, fileOnly, old]))
+        XCTAssertEqual(multiPayload.attachments, [firstURL, secondURL])
+
+        let unavailablePayload = builder.payload(for: [missing]) { urls[$0] }
+        XCTAssertEqual(unavailablePayload.unavailableFileNames, ["missing.txt"])
+        XCTAssertEqual(unavailablePayload.copyItems, [.text("Keep this text")])
+    }
+
+    func testCopyShareCoordinatorWritesWholePlansAndStopsForUnavailableFiles() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapCopyCoordinator-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fileURL = directory.appendingPathComponent("file.txt")
+        try Data("File".utf8).write(to: fileURL)
+        let availableID = UUID()
+        let missingID = UUID()
+        let available = try testAttachment(id: availableID, fileName: "file.txt")
+        let unavailable = try testAttachment(id: missingID, fileName: "missing.txt")
+        let mixed = Snip(content: "Text", origin: .quickEntry, attachments: [available])
+        let missing = Snip(content: "Safe text", origin: .quickEntry, attachments: [unavailable])
+        let snapshot = SnipLibrarySnapshot(
+            snips: [mixed, missing],
+            lists: [.inbox],
+            attachmentURLs: [availableID: fileURL]
+        )
+        let model = IOSAppModel(library: ModelTestLibrary(), initialSnapshot: snapshot)
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+
+        coordinator.copy(snips: [mixed], model: model)
+        XCTAssertEqual(pasteboard.writes, [[.text("Text"), .file(fileURL)]])
+        coordinator.copyText(snips: [mixed], model: model)
+        XCTAssertEqual(pasteboard.writes.last, [.text("Text")])
+        coordinator.copyAttachments(snips: [mixed], model: model)
+        XCTAssertEqual(pasteboard.writes.last, [.file(fileURL)])
+        coordinator.share(snips: [mixed], model: model)
+        XCTAssertEqual(coordinator.shareRequest?.items, [.text("Text"), .file(fileURL)])
+
+        let writeCount = pasteboard.writes.count
+        coordinator.copy(snips: [missing], model: model)
+        XCTAssertEqual(pasteboard.writes.count, writeCount)
+        XCTAssertEqual(coordinator.unavailableFilesNotice?.payload.unavailableFileNames, ["missing.txt"])
+        coordinator.copyTextFromNotice()
+        XCTAssertEqual(pasteboard.writes.last, [.text("Safe text")])
+        XCTAssertNil(coordinator.unavailableFilesNotice)
+    }
+
+    func testPasteboardProviderLoadsStagedBytesAfterLibrarySourceIsPruned() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapPasteboardLease-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let sourceURL = directory.appendingPathComponent("source.txt")
+        let expected = Data("Deferred bytes".utf8)
+        try expected.write(to: sourceURL)
+        let pasteboardName = UIPasteboard.Name("SnipSnapTests.\(UUID().uuidString)")
+        let pasteboard = try XCTUnwrap(UIPasteboard(name: pasteboardName, create: true))
+        defer { UIPasteboard.remove(withName: pasteboardName) }
+        let stagingRoot = directory.appendingPathComponent("staging", isDirectory: true)
+        let writer = IOSSystemPasteboard(
+            pasteboard: pasteboard,
+            stagingRoot: stagingRoot
+        )
+
+        XCTAssertTrue(writer.write([.text("Text"), .file(sourceURL)]))
+        try FileManager.default.removeItem(at: sourceURL)
+        let provider = try XCTUnwrap(pasteboard.itemProviders.last)
+        let typeIdentifier = try XCTUnwrap(provider.registeredTypeIdentifiers.first)
+        let loadedData = await withCheckedContinuation { continuation in
+            provider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { url, _ in
+                continuation.resume(returning: url.flatMap { try? Data(contentsOf: $0) })
+            }
+        }
+
+        XCTAssertEqual(loadedData, expected)
+        let leaseDirectory = try XCTUnwrap(writer.activeLeaseDirectory)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: leaseDirectory.path))
+        pasteboard.string = "External replacement"
+        await Task.yield()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: leaseDirectory.path))
+        XCTAssertNil(writer.activeLeaseDirectory)
+    }
+
+    func testPasteboardLeaseSurvivesRelaunchOnlyWhileItsChangeCountMatches() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapPasteboardReload-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let sourceURL = directory.appendingPathComponent("source.txt")
+        try Data("Lease".utf8).write(to: sourceURL)
+        let pasteboardName = UIPasteboard.Name("SnipSnapTests.\(UUID().uuidString)")
+        let pasteboard = try XCTUnwrap(UIPasteboard(name: pasteboardName, create: true))
+        defer { UIPasteboard.remove(withName: pasteboardName) }
+        let stagingRoot = directory.appendingPathComponent("staging", isDirectory: true)
+        var firstWriter: IOSSystemPasteboard? = IOSSystemPasteboard(
+            pasteboard: pasteboard,
+            stagingRoot: stagingRoot
+        )
+        XCTAssertTrue(firstWriter?.write([.file(sourceURL)]) == true)
+        let leaseDirectory = try XCTUnwrap(firstWriter?.activeLeaseDirectory)
+        firstWriter = nil
+
+        var reloadedWriter: IOSSystemPasteboard? = IOSSystemPasteboard(
+            pasteboard: pasteboard,
+            stagingRoot: stagingRoot
+        )
+        XCTAssertEqual(reloadedWriter?.activeLeaseDirectory, leaseDirectory)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: leaseDirectory.path))
+        reloadedWriter = nil
+
+        pasteboard.string = "Changed while Snip Snap was not running"
+        let finalWriter = IOSSystemPasteboard(
+            pasteboard: pasteboard,
+            stagingRoot: stagingRoot
+        )
+        await Task.yield()
+        XCTAssertNil(finalWriter.activeLeaseDirectory)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: leaseDirectory.path))
+    }
+
+    func testRemovingNamedPasteboardReleasesItsFileLease() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapPasteboardRemove-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let sourceURL = directory.appendingPathComponent("source.txt")
+        try Data("Remove".utf8).write(to: sourceURL)
+        let pasteboardName = UIPasteboard.Name("SnipSnapTests.\(UUID().uuidString)")
+        let pasteboard = try XCTUnwrap(UIPasteboard(name: pasteboardName, create: true))
+        let writer = IOSSystemPasteboard(
+            pasteboard: pasteboard,
+            stagingRoot: directory.appendingPathComponent("staging", isDirectory: true)
+        )
+        XCTAssertTrue(writer.write([.file(sourceURL)]))
+        let leaseDirectory = try XCTUnwrap(writer.activeLeaseDirectory)
+
+        UIPasteboard.remove(withName: pasteboardName)
+        await Task.yield()
+
+        XCTAssertNil(writer.activeLeaseDirectory)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: leaseDirectory.path))
     }
 
     func testAttachmentDraftCleanupWaitsForChildPresentations() {
@@ -549,7 +743,208 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertTrue(model.snips.isEmpty)
         XCTAssertNil(model.selectedSnipID)
         let pruneCalls = await library.pruneCalls()
-        XCTAssertEqual(pruneCalls, 1)
+        XCTAssertEqual(pruneCalls, 6)
+    }
+
+    func testReloadPrunesWithNoUndoAttachmentLeases() async {
+        let library = ModelTestLibrary()
+        let firstModel = IOSAppModel(library: library)
+        _ = await firstModel.createSnip(content: "Saved", in: SnipList.inboxID)
+
+        let reloadedModel = IOSAppModel(library: library)
+        await reloadedModel.load()
+
+        let retentionCalls = await library.retentionCalls()
+        XCTAssertEqual(retentionCalls.last, Set<UUID>())
+    }
+
+    func testUndoHistoryEvictsItsOldestAttachmentLease() throws {
+        var history = IOSUndoHistory()
+        var attachmentIDs: [UUID] = []
+        let empty = SnipLibrarySnapshot(snips: [], lists: [.inbox])
+
+        for index in 0...100 {
+            let attachmentID = UUID()
+            attachmentIDs.append(attachmentID)
+            let attachment = try testAttachment(id: attachmentID, fileName: "file-\(index).txt")
+            let snip = Snip(
+                content: "File \(index)",
+                origin: .quickEntry,
+                attachments: [attachment]
+            )
+            let before = SnipLibrarySnapshot(snips: [snip], lists: [.inbox])
+            history.record(
+                name: "Delete",
+                before: before,
+                after: empty,
+                touchedListIDs: [],
+                inverse: .restore(snips: [snip]),
+                selection: .init(listID: SnipList.inboxID, snipID: snip.id, snipIDs: [])
+            )
+        }
+
+        XCTAssertEqual(history.retainedAttachmentIDs.count, 100)
+        XCTAssertFalse(history.retainedAttachmentIDs.contains(attachmentIDs[0]))
+        XCTAssertTrue(history.retainedAttachmentIDs.contains(attachmentIDs[100]))
+    }
+
+    func testDeletedSnipUndoRestoresReadableAttachment() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapUndoAttachment-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let sourceURL = directory.appendingPathComponent("source.txt")
+        try Data("Restore me".utf8).write(to: sourceURL)
+        let library = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("snips.json"))
+        let model = IOSAppModel(library: library)
+        await model.load()
+
+        let created = await model.createSnip(
+            content: "",
+            in: SnipList.inboxID,
+            attachmentURLs: [sourceURL]
+        )
+        XCTAssertTrue(created)
+        let snip = try XCTUnwrap(model.selectedSnip)
+        let attachmentID = try XCTUnwrap(snip.attachments.first?.id)
+        let storedURL = try XCTUnwrap(model.attachmentURL(for: attachmentID))
+        let deleted = await model.deleteSnip(id: snip.id)
+        XCTAssertTrue(deleted)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
+
+        let undone = await model.undo()
+        XCTAssertTrue(undone)
+        let restoredURL = try XCTUnwrap(model.attachmentURL(for: attachmentID))
+        XCTAssertEqual(try Data(contentsOf: restoredURL), Data("Restore me".utf8))
+    }
+
+    func testRejectedUndoReleasesDeletedSnipAttachment() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapRejectedUndo-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let sourceURL = directory.appendingPathComponent("source.txt")
+        try Data("Release me".utf8).write(to: sourceURL)
+        let library = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("snips.json"))
+        let model = IOSAppModel(library: library)
+        await model.load()
+
+        let madeList = await model.createList(name: "Work")
+        XCTAssertTrue(madeList)
+        let listID = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" })?.id)
+        let created = await model.createSnip(
+            content: "",
+            in: listID,
+            attachmentURLs: [sourceURL]
+        )
+        XCTAssertTrue(created)
+        let snip = try XCTUnwrap(model.selectedSnip)
+        let storedURL = try XCTUnwrap(model.attachmentURL(for: snip.attachments[0].id))
+        let deleted = await model.deleteSnip(id: snip.id)
+        XCTAssertTrue(deleted)
+        _ = try await library.perform(.deleteList(id: listID), sortedBy: .manual)
+
+        let undone = await model.undo()
+        XCTAssertFalse(undone)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: storedURL.path))
+    }
+
+    func testReplacingAttachmentRetainsOldBytesUntilUndoAndThenPrunesReplacement() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapReplaceUndo-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let firstSource = directory.appendingPathComponent("first-source.txt")
+        let secondSource = directory.appendingPathComponent("second-source.txt")
+        try Data("A".utf8).write(to: firstSource)
+        try Data("B".utf8).write(to: secondSource)
+        let library = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("snips.json"))
+        let model = IOSAppModel(library: library)
+        await model.load()
+        let created = await model.createSnip(
+            content: "Attachment",
+            in: SnipList.inboxID,
+            attachmentURLs: [firstSource]
+        )
+        XCTAssertTrue(created)
+        let before = try XCTUnwrap(model.selectedSnip)
+        let oldID = try XCTUnwrap(before.attachments.first?.id)
+        let oldURL = try XCTUnwrap(model.attachmentURL(for: oldID))
+
+        let edited = await model.editSnip(
+            before,
+            content: before.content,
+            attachmentEdits: [.replacement(attachmentID: oldID, sourceURL: secondSource)]
+        )
+        XCTAssertTrue(edited)
+        let replacementID = try XCTUnwrap(model.selectedSnip?.attachments.first?.id)
+        let replacementURL = try XCTUnwrap(model.attachmentURL(for: replacementID))
+        XCTAssertEqual(try Data(contentsOf: oldURL), Data("A".utf8))
+        XCTAssertEqual(try Data(contentsOf: replacementURL), Data("B".utf8))
+
+        let undone = await model.undo()
+        XCTAssertTrue(undone)
+        XCTAssertEqual(model.selectedSnip?.attachments.first?.id, oldID)
+        XCTAssertEqual(try Data(contentsOf: oldURL), Data("A".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: replacementURL.path))
+    }
+
+    func testUndoCapacityEvictionPrunesDeletedAttachmentBytes() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapUndoEviction-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("source.txt")
+        try Data("Evict".utf8).write(to: source)
+        let library = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("snips.json"))
+        let model = IOSAppModel(library: library)
+        await model.load()
+        let created = await model.createSnip(
+            content: "Attachment",
+            in: SnipList.inboxID,
+            attachmentURLs: [source]
+        )
+        XCTAssertTrue(created)
+        let snip = try XCTUnwrap(model.selectedSnip)
+        let storedURL = try XCTUnwrap(model.attachmentURL(for: snip.attachments[0].id))
+        let deleted = await model.deleteSnip(id: snip.id)
+        XCTAssertTrue(deleted)
+
+        for index in 0..<99 {
+            let createdList = await model.createList(name: "List \(index)")
+            XCTAssertTrue(createdList)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
+        let finalList = await model.createList(name: "List 99")
+        XCTAssertTrue(finalList)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: storedURL.path))
+    }
+
+    func testFreshModelLoadPrunesAttachmentHeldOnlyByOldMemoryUndo() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapUndoReload-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("source.txt")
+        try Data("Reload".utf8).write(to: source)
+        let library = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("snips.json"))
+        let firstModel = IOSAppModel(library: library)
+        await firstModel.load()
+        let created = await firstModel.createSnip(
+            content: "Attachment",
+            in: SnipList.inboxID,
+            attachmentURLs: [source]
+        )
+        XCTAssertTrue(created)
+        let snip = try XCTUnwrap(firstModel.selectedSnip)
+        let storedURL = try XCTUnwrap(firstModel.attachmentURL(for: snip.attachments[0].id))
+        let deleted = await firstModel.deleteSnip(id: snip.id)
+        XCTAssertTrue(deleted)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
+
+        let reloadedModel = IOSAppModel(library: library)
+        await reloadedModel.load()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: storedURL.path))
     }
 
     func testListFlowKeepsInboxAsFallback() async throws {
@@ -763,6 +1158,237 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: testRoot.path))
     }
 
+    func testSearchFiltersBulkDoneAndUndoStayAboveTheLibrarySeam() async throws {
+        let library = ModelTestLibrary()
+        let model = IOSAppModel(library: library)
+        await model.load()
+
+        let createdAlpha = await model.createSnip(content: "Alpha note", in: SnipList.inboxID)
+        XCTAssertTrue(createdAlpha)
+        let alphaID = try XCTUnwrap(model.selectedSnipID)
+        let createdBeta = await model.createSnip(content: "Beta task", in: SnipList.inboxID)
+        XCTAssertTrue(createdBeta)
+        let betaID = try XCTUnwrap(model.selectedSnipID)
+
+        model.searchText = "alpha"
+        XCTAssertEqual(model.visibleSnips.map(\.id), [alphaID])
+        model.searchText = ""
+        model.selectedSnipIDs = [alphaID, betaID]
+        let markedDone = await model.setSelectionDone(true)
+        XCTAssertTrue(markedDone)
+        model.completionFilter = .done
+        XCTAssertEqual(Set(model.visibleSnips.map(\.id)), [alphaID, betaID])
+
+        _ = try await library.perform(
+            .add(
+                content: "Unrelated write",
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inboxID,
+                attachmentURLs: [],
+                requestID: UUID(),
+                now: Date(timeIntervalSince1970: 500)
+            ),
+            sortedBy: .manual
+        )
+        let undone = await model.undo()
+        XCTAssertTrue(undone)
+        XCTAssertTrue(model.snips.filter { $0.id == alphaID || $0.id == betaID }.allSatisfy { !$0.isDone })
+        XCTAssertTrue(model.snips.contains(where: { $0.content == "Unrelated write" }))
+    }
+
+    func testManualReorderAndBulkListMoveUseNormalRepositoryCommands() async throws {
+        let library = ModelTestLibrary()
+        let model = IOSAppModel(library: library)
+        await model.load()
+        let createdList = await model.createList(name: "Work")
+        XCTAssertTrue(createdList)
+        let workID = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" })?.id)
+        model.selectedListID = SnipList.inboxID
+        let createdOne = await model.createSnip(content: "One", in: SnipList.inboxID)
+        XCTAssertTrue(createdOne)
+        let oneID = try XCTUnwrap(model.selectedSnipID)
+        let createdTwo = await model.createSnip(content: "Two", in: SnipList.inboxID)
+        XCTAssertTrue(createdTwo)
+        let twoID = try XCTUnwrap(model.selectedSnipID)
+
+        model.sortMode = .manual
+        let reordered = await model.placeVisibleSnips([oneID, twoID])
+        XCTAssertTrue(reordered)
+        XCTAssertEqual(model.visibleSnips.map(\.id), [oneID, twoID])
+        model.selectedSnipIDs = [oneID, twoID]
+        let moved = await model.moveSelection(to: workID)
+        XCTAssertTrue(moved)
+        XCTAssertEqual(model.snips.filter { $0.listID == workID }.map(\.id), [oneID, twoID])
+
+        let undone = await model.undo()
+        XCTAssertTrue(undone)
+        XCTAssertEqual(model.visibleSnips.map(\.id), [oneID, twoID])
+    }
+
+    func testUndoDropsAnEntryWhenItsAffectedSnipChanged() async throws {
+        let library = ModelTestLibrary()
+        let model = IOSAppModel(library: library)
+        await model.load()
+        let created = await model.createSnip(content: "Original", in: SnipList.inboxID)
+        XCTAssertTrue(created)
+        let id = try XCTUnwrap(model.selectedSnipID)
+        model.selectedSnipIDs = [id]
+        let markedDone = await model.setSelectionDone(true)
+        XCTAssertTrue(markedDone)
+        let doneSnip = try XCTUnwrap(model.snips.first(where: { $0.id == id }))
+
+        _ = try await library.perform(
+            .update(
+                id: id,
+                content: "Changed elsewhere",
+                attachmentURLs: nil,
+                expectedUpdatedAt: doneSnip.updatedAt,
+                now: Date(timeIntervalSince1970: 600)
+            ),
+            sortedBy: .manual
+        )
+
+        let undone = await model.undo()
+        XCTAssertFalse(undone)
+        XCTAssertEqual(model.undoTitle, "Undo New Snip")
+        XCTAssertNotNil(model.errorMessage)
+        let snapshot = await library.snapshot(sortedBy: .manual)
+        XCTAssertEqual(snapshot.snips.first?.content, "Changed elsewhere")
+    }
+
+    func testSingleRowDoneAndUndoPreserveTheExistingSelection() async throws {
+        let library = ModelTestLibrary()
+        let model = IOSAppModel(library: library)
+        await model.load()
+        let madeFirst = await model.createSnip(content: "First", in: SnipList.inboxID)
+        XCTAssertTrue(madeFirst)
+        let firstID = try XCTUnwrap(model.selectedSnipID)
+        let madeSecond = await model.createSnip(content: "Second", in: SnipList.inboxID)
+        XCTAssertTrue(madeSecond)
+        let secondID = try XCTUnwrap(model.selectedSnipID)
+        model.selectedSnipIDs = [secondID]
+
+        let marked = await model.toggleDone(id: firstID)
+        XCTAssertTrue(marked)
+        XCTAssertEqual(model.selectedSnipIDs, [secondID])
+
+        let undone = await model.undo()
+        XCTAssertTrue(undone)
+        XCTAssertEqual(model.selectedSnipIDs, [secondID])
+        XCTAssertEqual(model.snips.first(where: { $0.id == firstID })?.isDone, false)
+    }
+
+    func testOverlappingMutationsRunOneAtATimeAndBuildIndependentUndoEntries() async {
+        let library = ModelTestLibrary(commandDelay: .milliseconds(80))
+        let model = IOSAppModel(library: library)
+
+        async let first = model.createSnip(content: "First", in: SnipList.inboxID)
+        async let second = model.createSnip(content: "Second", in: SnipList.inboxID)
+        let results = await (first, second)
+
+        XCTAssertTrue(results.0)
+        XCTAssertTrue(results.1)
+        let maximumConcurrentCommands = await library.maximumConcurrentCommands()
+        XCTAssertEqual(maximumConcurrentCommands, 1)
+        XCTAssertEqual(model.snips.count, 2)
+
+        let firstUndo = await model.undo()
+        XCTAssertTrue(firstUndo)
+        XCTAssertEqual(model.snips.count, 1)
+        let secondUndo = await model.undo()
+        XCTAssertTrue(secondUndo)
+        XCTAssertTrue(model.snips.isEmpty)
+    }
+
+    func testUndoNewListRefusesToMoveASnipAddedElsewhere() async throws {
+        let library = ModelTestLibrary()
+        let model = IOSAppModel(library: library)
+        let createdList = await model.createList(name: "Work")
+        XCTAssertTrue(createdList)
+        let workID = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" })?.id)
+
+        _ = try await library.perform(
+            .add(
+                content: "Added elsewhere",
+                origin: .quickEntry,
+                source: nil,
+                listID: workID,
+                attachmentURLs: [],
+                requestID: UUID(),
+                now: Date()
+            ),
+            sortedBy: .manual
+        )
+
+        let undone = await model.undo()
+        XCTAssertFalse(undone)
+        let snapshot = await library.snapshot(sortedBy: .manual)
+        XCTAssertTrue(snapshot.lists.contains(where: { $0.id == workID }))
+        XCTAssertEqual(snapshot.snips.first?.listID, workID)
+    }
+
+    func testUndoDeletedSnipRefusesToRestoreIntoAListDeletedElsewhere() async throws {
+        let library = ModelTestLibrary()
+        let model = IOSAppModel(library: library)
+        let createdList = await model.createList(name: "Work")
+        XCTAssertTrue(createdList)
+        let workID = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" })?.id)
+        let createdSnip = await model.createSnip(content: "Removed", in: workID)
+        XCTAssertTrue(createdSnip)
+        let snipID = try XCTUnwrap(model.selectedSnipID)
+        let deletedSnip = await model.deleteSnip(id: snipID)
+        XCTAssertTrue(deletedSnip)
+
+        _ = try await library.perform(.deleteList(id: workID), sortedBy: .manual)
+
+        let undone = await model.undo()
+        XCTAssertFalse(undone)
+        let snapshot = await library.snapshot(sortedBy: .manual)
+        XCTAssertFalse(snapshot.snips.contains(where: { $0.id == snipID }))
+        XCTAssertFalse(snapshot.lists.contains(where: { $0.id == workID }))
+    }
+
+    func testUndoRenameDropsStaleEntryWhenTheOldNameWasTakenElsewhere() async throws {
+        let library = ModelTestLibrary()
+        let model = IOSAppModel(library: library)
+        let createdList = await model.createList(name: "Work")
+        XCTAssertTrue(createdList)
+        let work = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" }))
+        let renamedList = await model.renameList(work, name: "Focus")
+        XCTAssertTrue(renamedList)
+        _ = try await library.perform(
+            .createList(name: "Work", systemImage: "list.bullet"),
+            sortedBy: .manual
+        )
+
+        let undone = await model.undo()
+
+        XCTAssertFalse(undone)
+        XCTAssertEqual(model.undoTitle, "Undo New List")
+        XCTAssertNotNil(model.errorMessage)
+    }
+
+    func testUndoDeletedListDropsStaleEntryWhenItsNameWasTakenElsewhere() async throws {
+        let library = ModelTestLibrary()
+        let model = IOSAppModel(library: library)
+        let createdList = await model.createList(name: "Work")
+        XCTAssertTrue(createdList)
+        let work = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" }))
+        let deletedList = await model.deleteList(id: work.id)
+        XCTAssertTrue(deletedList)
+        _ = try await library.perform(
+            .createList(name: "Work", systemImage: "list.bullet"),
+            sortedBy: .manual
+        )
+
+        let undone = await model.undo()
+
+        XCTAssertFalse(undone)
+        XCTAssertEqual(model.undoTitle, "Undo New List")
+        XCTAssertNotNil(model.errorMessage)
+    }
+
     func testTargetCannotCompileAppKit() {
         #if canImport(AppKit)
         XCTFail("The universal iOS target must not compile AppKit.")
@@ -916,6 +1542,29 @@ private struct RootReinitHarness: View {
     }
 }
 
+@MainActor
+private final class RecordingPasteboard: IOSPasteboardWriting {
+    private(set) var writes: [[IOSCopyItem]] = []
+
+    func write(_ items: [IOSCopyItem]) -> Bool {
+        writes.append(items)
+        return true
+    }
+}
+
+private func testAttachment(id: UUID, fileName: String) throws -> SnipAttachment {
+    let json = """
+    {
+      "id": "\(id.uuidString)",
+      "fileName": "\(fileName)",
+      "relativePath": "\(id.uuidString)/\(fileName)",
+      "contentType": "public.text",
+      "byteCount": 1
+    }
+    """
+    return try JSONDecoder().decode(SnipAttachment.self, from: Data(json.utf8))
+}
+
 private actor ModelTestLibrary: SnipLibrary {
     private var snips: [Snip]
     private var lists: [SnipList] = [.inbox]
@@ -925,15 +1574,21 @@ private actor ModelTestLibrary: SnipLibrary {
     private var attachmentPruneCalls = 0
     private var recovery: SnipRecoverySnapshot
     private var resolvedChoices: [SnipRecoveryChoice] = []
+    private var attachmentRetentionCalls: [Set<UUID>] = []
+    private let commandDelay: Duration?
+    private var activeCommandCount = 0
+    private var maximumActiveCommandCount = 0
 
     init(
         snips: [Snip] = [],
         recovery: SnipRecoverySnapshot = .empty,
-        attachmentURLs: [UUID: URL] = [:]
+        attachmentURLs: [UUID: URL] = [:],
+        commandDelay: Duration? = nil
     ) {
         self.snips = snips
         self.recovery = recovery
         self.attachmentURLs = attachmentURLs
+        self.commandDelay = commandDelay
     }
 
     func addedAttachmentURLs() -> [URL] {
@@ -972,6 +1627,10 @@ private actor ModelTestLibrary: SnipLibrary {
         return makeSnapshot(sortMode: .chronological)
     }
 
+    func retentionCalls() -> [Set<UUID>] {
+        attachmentRetentionCalls
+    }
+
     func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
         makeSnapshot(sortMode: sortMode)
     }
@@ -979,7 +1638,20 @@ private actor ModelTestLibrary: SnipLibrary {
     func perform(
         _ command: SnipLibraryCommand,
         sortedBy sortMode: SnipSortMode
-    ) throws -> SnipLibraryUpdate {
+    ) async throws -> SnipLibraryUpdate {
+        activeCommandCount += 1
+        maximumActiveCommandCount = max(maximumActiveCommandCount, activeCommandCount)
+        defer { activeCommandCount -= 1 }
+        if let commandDelay { try? await Task.sleep(for: commandDelay) }
+        let outcome = try apply(command)
+        return SnipLibraryUpdate(snapshot: makeSnapshot(sortMode: sortMode), outcome: outcome)
+    }
+
+    func maximumConcurrentCommands() -> Int {
+        maximumActiveCommandCount
+    }
+
+    private func apply(_ command: SnipLibraryCommand) throws -> SnipLibraryOutcome {
         let outcome: SnipLibraryOutcome
         switch command {
         case .add(
@@ -993,7 +1665,8 @@ private actor ModelTestLibrary: SnipLibrary {
                 content: content,
                 origin: origin,
                 source: source,
-                listID: listID
+                listID: listID,
+                manualPosition: nextTopPosition(in: listID)
             )
             snips.append(snip)
             outcome = .add(.added(snip.id))
@@ -1015,15 +1688,45 @@ private actor ModelTestLibrary: SnipLibrary {
         case .delete(let ids):
             snips.removeAll { ids.contains($0.id) }
             outcome = .none
-        case .pruneAttachments:
+        case .pruneAttachments(let retainedIDs):
             attachmentPruneCalls += 1
+            attachmentRetentionCalls.append(retainedIDs)
+            outcome = .none
+        case .restore(let restored):
+            let existing = Set(snips.map(\.id))
+            snips.append(contentsOf: restored.filter { !existing.contains($0.id) })
+            outcome = .none
+        case .setDone(let ids, let done):
+            for index in snips.indices where ids.contains(snips[index].id) {
+                snips[index].isDone = done
+                snips[index].updatedAt = Date()
+            }
+            outcome = .none
+        case .place(let ids, let listID, let destinationID, let sortMode):
+            let moving = Set(ids)
+            var destination = Snip.sorted(
+                snips.filter { $0.listID == listID && !moving.contains($0.id) },
+                by: sortMode
+            ).map(\.id)
+            let insertion = destinationID.flatMap(destination.firstIndex) ?? destination.endIndex
+            destination.insert(contentsOf: ids, at: insertion)
+            let sourceLists = Set(snips.filter { moving.contains($0.id) }.map(\.listID))
+            for index in snips.indices where moving.contains(snips[index].id) {
+                snips[index].listID = listID
+            }
+            reindex(listID: listID, orderedIDs: destination)
+            for sourceList in sourceLists where sourceList != listID { reindex(listID: sourceList) }
             outcome = .none
         case .moveChronologically(let ids, let listID):
             for index in snips.indices where ids.contains(snips[index].id) {
                 snips[index].listID = listID
+                snips[index].manualPosition = nextTopPosition(in: listID, excluding: Set(ids))
             }
             outcome = .none
         case .createList(let name, let systemImage):
+            guard !lists.contains(where: {
+                $0.name.caseInsensitiveCompare(name) == .orderedSame
+            }) else { throw SnipLibraryError.duplicateList }
             let list = SnipList(
                 id: UUID(),
                 name: name,
@@ -1032,10 +1735,24 @@ private actor ModelTestLibrary: SnipLibrary {
             )
             lists.append(list)
             outcome = .listCreated(list)
+        case .restoreList(let list):
+            guard !lists.contains(where: { $0.id == list.id }),
+                !lists.contains(where: {
+                    $0.name.caseInsensitiveCompare(list.name) == .orderedSame
+                })
+            else { throw SnipLibraryError.invalidList }
+            for index in lists.indices where lists[index].position >= list.position {
+                lists[index].position += 1
+            }
+            lists.append(list)
+            outcome = .none
         case .updateList(let id, let name, let systemImage):
             guard let index = lists.firstIndex(where: { $0.id == id }) else {
                 throw SnipLibraryError.invalidList
             }
+            guard !lists.contains(where: {
+                $0.id != id && $0.name.caseInsensitiveCompare(name) == .orderedSame
+            }) else { throw SnipLibraryError.duplicateList }
             lists[index].name = name
             lists[index].systemImage = systemImage
             outcome = .none
@@ -1044,21 +1761,59 @@ private actor ModelTestLibrary: SnipLibrary {
             for index in snips.indices where snips[index].listID == id {
                 snips[index].listID = SnipList.inboxID
             }
+            for index in lists.indices { lists[index].position = index }
             outcome = .none
+        case .batch(let commands):
+            var last: SnipLibraryOutcome = .none
+            for command in commands {
+                let next = try apply(command)
+                if next != .none { last = next }
+            }
+            outcome = last
+        case .guarded(let expectation, let command):
+            let snipsByID = Dictionary(uniqueKeysWithValues: snips.map { ($0.id, $0) })
+            let listsByID = Dictionary(uniqueKeysWithValues: lists.map { ($0.id, $0) })
+            guard expectation.expectedSnips.allSatisfy({ snipsByID[$0.id] == $0 }),
+                expectation.absentSnipIDs.allSatisfy({ snipsByID[$0] == nil }),
+                expectation.expectedLists.allSatisfy({ listsByID[$0.id] == $0 }),
+                expectation.absentListIDs.allSatisfy({ listsByID[$0] == nil }),
+                expectation.requiredListIDs.allSatisfy({ listsByID[$0] != nil }),
+                expectation.expectedListMemberships.allSatisfy({ listID, expectedIDs in
+                    listsByID[listID] != nil
+                        && Set(snips.lazy.filter { $0.listID == listID }.map(\.id)) == expectedIDs
+                })
+            else { throw SnipLibraryError.snipChanged }
+            outcome = try apply(command)
         default:
             outcome = .none
         }
-        return SnipLibraryUpdate(snapshot: makeSnapshot(sortMode: sortMode), outcome: outcome)
+        return outcome
     }
 
     private func makeSnapshot(sortMode: SnipSortMode) -> SnipLibrarySnapshot {
         SnipLibrarySnapshot(
-            snips: lists.flatMap { list in
+            snips: lists.sorted { $0.position < $1.position }.flatMap { list in
                 Snip.sorted(snips.filter { $0.listID == list.id }, by: sortMode)
             },
-            lists: lists,
+            lists: lists.sorted { $0.position < $1.position },
             attachmentURLs: attachmentURLs
         )
+    }
+
+    private func nextTopPosition(in listID: UUID, excluding: Set<UUID> = []) -> Int64 {
+        (snips.filter { $0.listID == listID && !excluding.contains($0.id) }
+            .map(\.manualPosition).min() ?? 1) - 1
+    }
+
+    private func reindex(listID: UUID, orderedIDs: [UUID]? = nil) {
+        let ids = orderedIDs ?? Snip.sorted(
+            snips.filter { $0.listID == listID },
+            by: .manual
+        ).map(\.id)
+        for (position, id) in ids.enumerated() {
+            guard let index = snips.firstIndex(where: { $0.id == id }) else { continue }
+            snips[index].manualPosition = Int64(position)
+        }
     }
 }
 

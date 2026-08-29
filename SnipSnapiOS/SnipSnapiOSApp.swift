@@ -10,6 +10,7 @@ struct SnipSnapiOSApp: App {
     private let shareImports: ShareImportStore?
     private let startupError: String?
     private let uiTestAttachmentURLs: [URL]
+    private let seedsCopyShareFixtures: Bool
     private let recoveryScope: SnipRecoveryScope?
     private let syncedContentSettings: SyncedContentSettingsModel
     private let cloudSyncSession: SnipSnapCloudSyncSession?
@@ -22,6 +23,7 @@ struct SnipSnapiOSApp: App {
         shareImports = startup.shareImports
         startupError = startup.error
         uiTestAttachmentURLs = startup.uiTestAttachmentURLs
+        seedsCopyShareFixtures = startup.seedsCopyShareFixtures
         recoveryScope = startup.recoveryScope
         let cloudServices: SnipSnapCloudAppServices
 #if DEBUG
@@ -99,6 +101,7 @@ struct SnipSnapiOSApp: App {
                 shareImports: shareImports,
                 startupError: startupError,
                 uiTestAttachmentURLs: uiTestAttachmentURLs,
+                seedsCopyShareFixtures: seedsCopyShareFixtures,
                 syncedContentSettings: syncedContentSettings,
                 cloudSyncSession: cloudSyncSession,
                 accountNoticeModel: accountNoticeModel,
@@ -113,6 +116,7 @@ struct SnipSnapiOSApp: App {
         shareImports: ShareImportStore?,
         error: String?,
         uiTestAttachmentURLs: [URL],
+        seedsCopyShareFixtures: Bool,
         recoveryScope: SnipRecoveryScope?,
         syncModeStore: SnipSyncModeStore?,
         syncModeRootURL: URL
@@ -126,6 +130,7 @@ struct SnipSnapiOSApp: App {
                 nil,
                 nil,
                 [],
+                false,
                 SnipRecoveryScope("ui-test|account-a|generation-a"),
                 nil,
                 FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -158,7 +163,9 @@ struct SnipSnapiOSApp: App {
         }
 
         do {
+            let seedsCopyShareFixtures = environment["SNIP_SNAP_UI_TEST_COPY_SHARE"] == "1"
             let fixtureURLs = environment["SNIP_SNAP_UI_TEST_ATTACHMENTS"] == "1"
+                    || seedsCopyShareFixtures
                 ? makeUITestAttachmentFiles(nextTo: storeURL) : []
             let sourceLibrary = try SwiftDataSnipLibrary(storeURL: storeURL)
             let assembly = SnipLibraryAssembly(
@@ -172,6 +179,7 @@ struct SnipSnapiOSApp: App {
                 shareImports,
                 nil,
                 fixtureURLs,
+                seedsCopyShareFixtures,
                 assembly.recoveryScope,
                 assembly.syncModeStore,
                 syncModeRootURL
@@ -188,6 +196,7 @@ struct SnipSnapiOSApp: App {
                 shareImports,
                 "Snip Snap could not open its local library. Your saved data was not changed.",
                 [],
+                false,
                 assembly.recoveryScope,
                 assembly.syncModeStore,
                 syncModeRootURL

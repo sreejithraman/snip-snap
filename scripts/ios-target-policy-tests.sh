@@ -27,10 +27,13 @@ fi
 for required_file in \
     SnipSnapiOSApp.swift \
     IOSAppModel.swift \
+    IOSUndoHistory.swift \
     IOSAppRootView.swift \
     LibraryViews.swift \
+    WorkflowControls.swift \
     EditorViews.swift \
     AttachmentViews.swift \
+    IOSCopyShare.swift \
     SnipSnapiOS.entitlements; do
     grep -F -- "$required_file" "$project_file" >/dev/null
 done
