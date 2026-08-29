@@ -13,6 +13,7 @@ struct ListSidebarView: View {
                 guard let id else { return }
                 model.selectedListID = id
                 model.selectedSnipID = nil
+                model.selectedSnipIDs = []
             }
         )
     }
@@ -61,8 +62,10 @@ struct ListSidebarView: View {
 struct SnipCollectionView: View {
     let model: IOSAppModel
     @Binding var sheet: AppSheet?
+    @State private var editMode: EditMode = .inactive
+    @State private var isSelecting = false
 
-    private var selection: Binding<UUID?> {
+    private var singleSelection: Binding<UUID?> {
         Binding(
             get: { model.selectedSnipID },
             set: { model.selectedSnipID = $0 }
@@ -73,13 +76,13 @@ struct SnipCollectionView: View {
         Group {
             if model.visibleSnips.isEmpty {
                 ContentUnavailableView(
-                    "No Snips",
-                    systemImage: "text.page",
-                    description: Text("Save text here when you want to keep it close.")
+                    emptyTitle,
+                    systemImage: emptySystemImage,
+                    description: Text(emptyDescription)
                 )
                 .accessibilityIdentifier("empty-snips")
             } else {
-                List(selection: selection) {
+                List(selection: isSelecting ? nil : singleSelection) {
                     ForEach(model.pendingRecoveredSnips.filter { recovery in
                         recovery.recovered.listID == model.selectedListID
                             && !model.snips.contains { $0.id == recovery.id }
@@ -93,15 +96,51 @@ struct SnipCollectionView: View {
                         .accessibilityIdentifier("recovered-snip-\(recovery.id)")
                     }
                     ForEach(model.visibleSnips) { snip in
-                        NavigationLink(value: snip.id) {
-                            SnipRow(
-                                snip: snip,
-                                model: model,
-                                isRecovered: model.isRecoveredSnip(snip.id)
-                            )
+                        Group {
+                            if isSelecting {
+                                Button {
+                                    toggleSelection(snip.id)
+                                } label: {
+                                    HStack(alignment: .top, spacing: 12) {
+                                        Image(systemName: model.selectedSnipIDs.contains(snip.id)
+                                            ? "checkmark.circle.fill" : "circle")
+                                            .foregroundStyle(
+                                                model.selectedSnipIDs.contains(snip.id)
+                                                    ? Color.accentColor : Color.secondary
+                                            )
+                                            .accessibilityHidden(true)
+                                        SnipRow(
+                                            snip: snip,
+                                            model: model,
+                                            isRecovered: model.isRecoveredSnip(snip.id),
+                                            showsStatusIcon: false
+                                        )
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityAddTraits(
+                                    model.selectedSnipIDs.contains(snip.id) ? .isSelected : []
+                                )
+                            } else {
+                                NavigationLink(value: snip.id) {
+                                    SnipRow(
+                                        snip: snip,
+                                        model: model,
+                                        isRecovered: model.isRecoveredSnip(snip.id)
+                                    )
+                                }
+                            }
                         }
                         .tag(snip.id)
                         .accessibilityIdentifier("snip-\(snip.id)")
+                        .swipeActions(edge: .leading) {
+                            Button(snip.isDone ? "Mark Not Done" : "Mark Done") {
+                                Task { await model.toggleDone(id: snip.id) }
+                            }
+                            .tint(snip.isDone ? .secondary : .green)
+                            .accessibilityIdentifier(snip.isDone ? "mark-not-done" : "mark-done")
+                        }
                         .swipeActions(edge: .trailing) {
                             Button("Delete", role: .destructive) {
                                 Task { await model.deleteSnip(id: snip.id) }
@@ -109,6 +148,9 @@ struct SnipCollectionView: View {
                             .accessibilityIdentifier("delete-snip")
                         }
                         .contextMenu {
+                            Button(snip.isDone ? "Mark Not Done" : "Mark Done") {
+                                Task { await model.toggleDone(id: snip.id) }
+                            }
                             Button("Edit") { sheet = .editSnip(id: snip.id) }
                             MoveSnipMenu(model: model, snip: snip)
                             Button("Delete", role: .destructive) {
@@ -116,18 +158,100 @@ struct SnipCollectionView: View {
                             }
                         }
                     }
+                    .onMove(perform: move)
+                    .moveDisabled(!model.canReorderVisibleSnips)
                 }
             }
         }
         .navigationTitle(model.selectedList.name)
+        .searchable(
+            text: Binding(
+                get: { model.searchText },
+                set: { model.searchText = $0 }
+            ),
+            placement: .navigationBarDrawer(displayMode: .always),
+            prompt: "Search Snips"
+        )
+        .environment(\.editMode, $editMode)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button("New Snip", systemImage: "square.and.pencil") {
-                    sheet = .newSnip(listID: model.selectedListID)
+            ToolbarItem(placement: .topBarLeading) {
+                Button(model.undoTitle, systemImage: "arrow.uturn.backward") {
+                    Task { _ = await model.undo() }
                 }
-                .accessibilityIdentifier("new-snip")
+                .disabled(!model.canUndo)
+                .keyboardShortcut("z", modifiers: .command)
+                .accessibilityIdentifier("undo-change")
+            }
+            ToolbarItemGroup(placement: .primaryAction) {
+                if isSelecting {
+                    SelectionActionsMenu(model: model, endSelection: endSelection)
+                        .disabled(model.selectedSnipIDs.isEmpty)
+                } else {
+                    WorkflowOptionsMenu(model: model)
+                }
+                Button(isSelecting ? "Done" : "Edit") {
+                    setSelecting(!isSelecting)
+                }
+                    .disabled(model.visibleSnips.isEmpty)
+                    .accessibilityIdentifier("select-snips")
+                if !isSelecting {
+                    Button("New Snip", systemImage: "square.and.pencil") {
+                        sheet = .newSnip(listID: model.selectedListID)
+                    }
+                    .accessibilityIdentifier("new-snip")
+                }
             }
         }
+        .onChange(of: model.selectedListID) {
+            guard isSelecting else { return }
+            setSelecting(false)
+        }
+    }
+
+    private var emptyTitle: String {
+        if !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "No Results"
+        }
+        return model.completionFilter.emptyStateTitle
+    }
+
+    private var emptySystemImage: String {
+        model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "text.page" : "magnifyingglass"
+    }
+
+    private var emptyDescription: String {
+        if !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Try a different search."
+        }
+        return model.completionFilter == .all
+            ? "Save text here when you want to keep it close."
+            : "Change the filter to see other snips."
+    }
+
+    private func move(from source: IndexSet, to destination: Int) {
+        var orderedIDs = model.visibleSnips.map(\.id)
+        orderedIDs.move(fromOffsets: source, toOffset: destination)
+        Task { _ = await model.placeVisibleSnips(orderedIDs) }
+    }
+
+    private func endSelection() {
+        setSelecting(false)
+    }
+
+    private func toggleSelection(_ id: UUID) {
+        if model.selectedSnipIDs.contains(id) {
+            model.selectedSnipIDs.remove(id)
+        } else {
+            model.selectedSnipIDs.insert(id)
+        }
+    }
+
+    private func setSelecting(_ selecting: Bool) {
+        isSelecting = selecting
+        editMode = selecting ? .active : .inactive
+        model.selectedSnipIDs = []
+        if selecting { model.selectedSnipID = nil }
     }
 }
 
@@ -135,47 +259,59 @@ private struct SnipRow: View {
     let snip: Snip
     let model: IOSAppModel
     let isRecovered: Bool
+    var showsStatusIcon = true
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(snip.content)
-                .font(.body)
-                .foregroundStyle(.primary)
-                .lineLimit(3)
-            Text(snip.updatedAt, format: .relative(presentation: .named))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if isRecovered {
-                Label("Recovered", systemImage: "arrow.uturn.backward.circle.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
+        HStack(alignment: .top, spacing: 12) {
+            if showsStatusIcon {
+                Image(systemName: snip.isDone ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(snip.isDone ? .secondary : .tertiary)
+                    .accessibilityHidden(true)
             }
-            let attachmentItems = snip.attachments.compactMap { attachment -> AttachmentPreviewItem? in
-                guard let url = model.attachmentURL(for: attachment.id) else { return nil }
-                return AttachmentPreviewItem(
-                    id: attachment.id,
-                    fileName: attachment.fileName,
-                    byteCount: attachment.byteCount,
-                    url: url
-                )
-            }
-            if !attachmentItems.isEmpty {
-                HStack(spacing: 8) {
-                    ForEach(attachmentItems.prefix(3)) { attachment in
-                        AttachmentThumbnail(url: attachment.url)
-                            .frame(width: 48, height: 48)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                            .accessibilityLabel(attachment.fileName)
-                    }
-                    if attachmentItems.count > 3 {
-                        Text("+\(attachmentItems.count - 3)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(snip.content)
+                    .font(.body)
+                    .foregroundStyle(snip.isDone ? .secondary : .primary)
+                    .strikethrough(snip.isDone)
+                    .lineLimit(3)
+                Text(snip.updatedAt, format: .relative(presentation: .named))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if isRecovered {
+                    Label("Recovered", systemImage: "arrow.uturn.backward.circle.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                }
+                let attachmentItems = snip.attachments.compactMap {
+                    attachment -> AttachmentPreviewItem? in
+                    guard let url = model.attachmentURL(for: attachment.id) else { return nil }
+                    return AttachmentPreviewItem(
+                        id: attachment.id,
+                        fileName: attachment.fileName,
+                        byteCount: attachment.byteCount,
+                        url: url
+                    )
+                }
+                if !attachmentItems.isEmpty {
+                    HStack(spacing: 8) {
+                        ForEach(attachmentItems.prefix(3)) { attachment in
+                            AttachmentThumbnail(url: attachment.url)
+                                .frame(width: 48, height: 48)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .accessibilityLabel(attachment.fileName)
+                        }
+                        if attachmentItems.count > 3 {
+                            Text("+\(attachmentItems.count - 3)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
         }
         .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(snip.isDone ? "Done" : "Not Done")
     }
 }
 
@@ -524,7 +660,10 @@ struct SnipDetailView: View {
                     Divider()
 
                     LabeledContent("Saved", value: snip.createdAt.formatted(date: .abbreviated, time: .shortened))
-                    LabeledContent("List", value: model.selectedList.name)
+                    LabeledContent(
+                        "List",
+                        value: model.lists.first(where: { $0.id == snip.listID })?.name ?? "Inbox"
+                    )
                 }
                 .padding(24)
             }
