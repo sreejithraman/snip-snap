@@ -5,6 +5,7 @@ import SnipSnapPersistence
 private protocol ICloudModeTextPersistence: CloudTextSyncPersistence {
     func approveModeMerge(snipIDs: Set<UUID>) async throws
     func enrollmentEvidence() async throws -> CloudTextEnrollmentEvidence
+    func statusEvidence() async throws -> CloudTextEnrollmentEvidence
     func clearRetryableEvents(_ keys: Set<String>) async throws
     func currentModeSeedSettlement(
         candidates: [SyncModeSeedSettlementCandidate],
@@ -19,71 +20,182 @@ private protocol ICloudModeTextPersistence: CloudTextSyncPersistence {
 
 extension SwiftDataCloudTextPersistence: ICloudModeTextPersistence {}
 
-private actor ModeManagedCloudTextPersistence: ICloudModeTextPersistence {
+private protocol ICloudModeSyncAdapter: Sendable {
+    func sync() async throws
+    func fetchRemote() async throws
+    func sendPending(
+        beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void
+    ) async throws
+    func approveModeMerge(snipIDs: Set<UUID>) async throws
+    func enrollmentEvidence() async throws -> CloudTextEnrollmentEvidence
+    func statusEvidence() async throws -> CloudTextEnrollmentEvidence
+    func acceptedSnipTextValues() async throws -> [UUID: String]
+    func dormantAcceptedBaseTransferPayload() async throws -> Data?
+    func isReenableReady() async throws -> Bool
+    func makeReenableApplyPlan(
+        source: SnipLibraryTransferSnapshot,
+        transitionID: UUID,
+        targetRevision: UInt64
+    ) async throws -> CloudFullReenableApplyPlan?
+    func clearRetryableEvents(_ keys: Set<String>) async throws
+    func currentModeSeedSettlement(
+        candidates: [SyncModeSeedSettlementCandidate],
+        namespace: ICloudSyncNamespaceBinding
+    ) async throws -> SyncModeSeedSettlementProof
+    func modeSendAttempt(
+        for outbound: CloudOutboundBatch,
+        namespace: ICloudSyncNamespaceBinding
+    ) async throws -> SyncModeSendAttempt
+    func prepareModeRetry(snipIDs: Set<UUID>) async throws
+}
+
+private actor LegacyTextModeSyncAdapter: ICloudModeSyncAdapter {
     private let raw: SwiftDataCloudTextPersistence
-    private let lease: SyncModeActiveMutationLease
+    private let syncDriver: CloudTextSyncCoordinator
 
-    init(raw: SwiftDataCloudTextPersistence, lease: SyncModeActiveMutationLease) {
+    init(raw: SwiftDataCloudTextPersistence, transport: any CloudRecordTransport) {
         self.raw = raw
-        self.lease = lease
+        syncDriver = CloudTextSyncCoordinator(store: raw, transport: transport)
     }
 
-    func loadEngineState() async throws -> CloudEngineStateEnvelope? {
-        try await raw.loadEngineState()
+    func sync() async throws {
+        try await syncDriver.sync()
     }
 
-    func stagedBatches() async throws -> [CloudSyncBatch] {
-        try await raw.stagedBatches()
+    func fetchRemote() async throws {
+        try await syncDriver.fetchRemote()
     }
 
-    func stage(_ batch: CloudSyncBatch) async throws {
-        try await lease.run { [raw] in try await raw.stage(batch) }
-    }
-
-    func applyStaged(_ id: UUID) async throws {
-        try await lease.run { [raw] in try await raw.applyStaged(id) }
-    }
-
-    func pendingChanges() async throws -> CloudOutboundBatch {
-        try await lease.run { [raw] in try await raw.pendingChanges() }
-    }
-
-    func clear() async throws {
-        try await lease.run { [raw] in try await raw.clear() }
+    func sendPending(
+        beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void
+    ) async throws {
+        try await syncDriver.sendPending(beforeSend: beforeSend)
     }
 
     func approveModeMerge(snipIDs: Set<UUID>) async throws {
-        try await lease.run { [raw] in try await raw.approveModeMerge(snipIDs: snipIDs) }
+        try await raw.approveModeMerge(snipIDs: snipIDs)
     }
 
     func enrollmentEvidence() async throws -> CloudTextEnrollmentEvidence {
-        try await lease.run { [raw] in try await raw.enrollmentEvidence() }
+        try await raw.enrollmentEvidence()
     }
 
+    func statusEvidence() async throws -> CloudTextEnrollmentEvidence {
+        try await raw.statusEvidence()
+    }
+
+    func acceptedSnipTextValues() async throws -> [UUID: String] {
+        try await raw.acceptedSnipTextValues()
+    }
+
+    func dormantAcceptedBaseTransferPayload() async throws -> Data? { nil }
+
+    func isReenableReady() async throws -> Bool { true }
+
+    func makeReenableApplyPlan(
+        source: SnipLibraryTransferSnapshot,
+        transitionID: UUID,
+        targetRevision: UInt64
+    ) async throws -> CloudFullReenableApplyPlan? { nil }
+
     func clearRetryableEvents(_ keys: Set<String>) async throws {
-        try await lease.run { [raw] in try await raw.clearRetryableEvents(keys) }
+        try await raw.clearRetryableEvents(keys)
     }
 
     func currentModeSeedSettlement(
         candidates: [SyncModeSeedSettlementCandidate],
         namespace: ICloudSyncNamespaceBinding
     ) async throws -> SyncModeSeedSettlementProof {
-        try await lease.run { [raw] in
-            try await raw.currentModeSeedSettlement(candidates: candidates, namespace: namespace)
-        }
+        try await raw.currentModeSeedSettlement(candidates: candidates, namespace: namespace)
     }
 
     func prepareModeRetry(snipIDs: Set<UUID>) async throws {
-        try await lease.run { [raw] in try await raw.prepareModeRetry(snipIDs: snipIDs) }
+        try await raw.prepareModeRetry(snipIDs: snipIDs)
     }
 
     func modeSendAttempt(
         for outbound: CloudOutboundBatch,
         namespace: ICloudSyncNamespaceBinding
     ) async throws -> SyncModeSendAttempt {
-        try await lease.run { [raw] in
-            try await raw.modeSendAttempt(for: outbound, namespace: namespace)
-        }
+        try await raw.modeSendAttempt(for: outbound, namespace: namespace)
+    }
+}
+
+private actor FullRecordModeSyncAdapter: ICloudModeSyncAdapter {
+    private let raw: CloudFullSyncPersistence
+    private let syncDriver: CloudFullSyncCoordinator
+
+    init(raw: CloudFullSyncPersistence, transport: any CloudRecordTransport) {
+        self.raw = raw
+        syncDriver = CloudFullSyncCoordinator(store: raw, transport: transport)
+    }
+
+    func sync() async throws { try await syncDriver.sync() }
+
+    func fetchRemote() async throws { try await syncDriver.fetchRemote() }
+
+    func sendPending(
+        beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void
+    ) async throws {
+        try await syncDriver.sendPending(beforeSend: beforeSend)
+    }
+
+    func approveModeMerge(snipIDs: Set<UUID>) async throws {
+        try await raw.approveModeMerge(snipIDs: snipIDs)
+    }
+
+    func enrollmentEvidence() async throws -> CloudTextEnrollmentEvidence {
+        try await raw.enrollmentEvidence()
+    }
+
+    func statusEvidence() async throws -> CloudTextEnrollmentEvidence {
+        try await raw.statusEvidence()
+    }
+
+    func acceptedSnipTextValues() async throws -> [UUID: String] {
+        try await raw.acceptedSnipTextValues()
+    }
+
+    func dormantAcceptedBaseTransferPayload() async throws -> Data? {
+        try await raw.dormantAcceptedBaseTransferPayload()
+    }
+
+    func isReenableReady() async throws -> Bool {
+        try await raw.isReenableReady()
+    }
+
+    func makeReenableApplyPlan(
+        source: SnipLibraryTransferSnapshot,
+        transitionID: UUID,
+        targetRevision: UInt64
+    ) async throws -> CloudFullReenableApplyPlan? {
+        try await raw.makeReenableApplyPlan(
+            source: source,
+            transitionID: transitionID,
+            targetRevision: targetRevision
+        )
+    }
+
+    func clearRetryableEvents(_ keys: Set<String>) async throws {
+        try await raw.clearRetryableEvents(keys)
+    }
+
+    func currentModeSeedSettlement(
+        candidates: [SyncModeSeedSettlementCandidate],
+        namespace: ICloudSyncNamespaceBinding
+    ) async throws -> SyncModeSeedSettlementProof {
+        try await raw.currentModeSeedSettlement(candidates: candidates, namespace: namespace)
+    }
+
+    func modeSendAttempt(
+        for outbound: CloudOutboundBatch,
+        namespace: ICloudSyncNamespaceBinding
+    ) async throws -> SyncModeSendAttempt {
+        try await raw.modeSendAttempt(for: outbound, namespace: namespace)
+    }
+
+    func prepareModeRetry(snipIDs: Set<UUID>) async throws {
+        try await raw.prepareModeRetry(snipIDs: snipIDs)
     }
 }
 
@@ -157,10 +269,9 @@ package actor ICloudSyncModeCoordinator {
         let storage = try await persistence.snapshot()
         try await persistence.requireActiveNamespace(namespace.binding)
         let lease = try await persistence.activeCloudMutationLease(storeID: storage.activeStore.id)
-        let raw = try await rawBridge(storeID: storage.activeStore.id)
+        let adapter = try await adapter(storeID: storage.activeStore.id)
         try await lease.run {
-            let sync = CloudTextSyncCoordinator(store: raw, transport: self.makeTransport())
-            try await sync.sync()
+            try await adapter.sync()
         }
         end()
         operationEnded = true
@@ -181,8 +292,9 @@ package actor ICloudSyncModeCoordinator {
             to: .iCloudSync,
             namespace: namespace.binding
         )
-        let bridge = try await bridge(storeID: transition.candidateStoreID)
-        let sync = CloudTextSyncCoordinator(store: bridge, transport: makeTransport())
+        let bridge = try await adapter(storeID: transition.candidateStoreID)
+        try await persistence.reconcileFullReenableIntent()
+        transition = try await currentTransition()
 
         if transition.phase == .candidateReady {
             do {
@@ -193,7 +305,7 @@ package actor ICloudSyncModeCoordinator {
                 )
                 try await bridge.prepareModeRetry(snipIDs: Set(candidates.map(\.snipID)))
                 try await persistence.prepareRetryFetch(settlement: settlement)
-                try await sync.fetchRemote()
+                try await bridge.fetchRemote()
             } catch {
                 if isRetryableConnectivity(error) { return try await statusUnchecked() }
                 try await persistence.recordAttention(.terminalFetchFailure)
@@ -215,9 +327,33 @@ package actor ICloudSyncModeCoordinator {
 
         do {
             if transition.phase == .remoteFetched {
+                guard try await bridge.isReenableReady() else {
+                    try await persistence.retryRemoteFetch()
+                    return try await statusUnchecked()
+                }
                 let token = try await persistence.freezeSource()
                 let source = try await persistence.finalSnapshot(using: token)
-                _ = try await persistence.mergeFinalSnapshot(source, using: token)
+                let targetRevision = try await persistence.candidateRevision(
+                    transitionID: transition.id
+                )
+                if let plan = try await bridge.makeReenableApplyPlan(
+                    source: source,
+                    transitionID: transition.id,
+                    targetRevision: targetRevision
+                ) {
+                    _ = try await persistence.mergeFullReenableSnapshot(
+                        source,
+                        using: token,
+                        plan: plan
+                    )
+                } else {
+                    let accepted = try await bridge.acceptedSnipTextValues()
+                    _ = try await persistence.mergeFinalSnapshot(
+                        source,
+                        using: token,
+                        acceptedTargetTextBySnipID: accepted
+                    )
+                }
                 transition = try await currentTransition()
             }
 
@@ -234,7 +370,7 @@ package actor ICloudSyncModeCoordinator {
             }
 
             if transition.phase == .firstSendStarted {
-                try await sendUntilSettled(sync: sync, bridge: bridge)
+                try await sendUntilSettled(adapter: bridge)
                 try await persistence.recordFirstSendComplete()
                 transition = try await currentTransition()
             }
@@ -244,6 +380,10 @@ package actor ICloudSyncModeCoordinator {
                 transition = try await currentTransition()
             }
         } catch {
+            if let stored = try? await persistence.snapshot(),
+               stored.transition?.mergeIntent?.fullReenablePlanID != nil {
+                throw error
+            }
             let retryable = isRetryableConnectivity(error)
             await restoreSourceAfterPreSwapFailure(error, retryable: retryable)
             if retryable { return try await statusUnchecked() }
@@ -279,14 +419,10 @@ package actor ICloudSyncModeCoordinator {
 
         if initial.transition == nil, choice == .refreshThenCopy {
             let lease = try await persistence.activeCloudMutationLease(storeID: initial.activeStore.id)
-            let activeBridge = try await rawBridge(storeID: initial.activeStore.id)
+            let activeBridge = try await adapter(storeID: initial.activeStore.id)
             do {
                 let evidence = try await lease.run {
-                    let sync = CloudTextSyncCoordinator(
-                        store: activeBridge,
-                        transport: self.makeTransport()
-                    )
-                    try await sync.fetchRemote()
+                    try await activeBridge.fetchRemote()
                     let evidence = try await activeBridge.enrollmentEvidence()
                     if evidence.hasRetryableRecordFailures || !evidence.retryableEventKeys.isEmpty {
                         try await activeBridge.clearRetryableEvents(evidence.retryableEventKeys)
@@ -314,7 +450,11 @@ package actor ICloudSyncModeCoordinator {
         do {
             if transition.phase == .remoteFetched {
                 let token = try await persistence.freezeSource()
-                let source = try await persistence.finalSnapshot(using: token)
+                var source = try await persistence.finalSnapshot(using: token)
+                let sourceAdapter = try await adapter(storeID: transition.sourceStoreID)
+                if let payload = try await sourceAdapter.dormantAcceptedBaseTransferPayload() {
+                    source = source.replacingOpaqueSyncStatePayload(payload)
+                }
                 _ = try await persistence.mergeFinalSnapshot(source, using: token)
                 transition = try await currentTransition()
             }
@@ -343,15 +483,23 @@ package actor ICloudSyncModeCoordinator {
         return try await statusUnchecked()
     }
 
-    private func bridge(storeID: UUID) async throws -> any ICloudModeTextPersistence {
+    private func adapter(storeID: UUID) async throws -> any ICloudModeSyncAdapter {
         let storage = try await persistence.snapshot()
         let isActive = storage.activeStore.id == storeID
         let isCandidate = storage.transition?.candidateStoreID == storeID
         guard isActive || isCandidate else { throw SyncModePersistenceError.missingStore }
-        let raw = try await rawBridge(storeID: storeID)
-        guard isActive, storage.activeStore.kind == .iCloudSync else { return raw }
-        let lease = try await persistence.activeCloudMutationLease(storeID: storeID)
-        return ModeManagedCloudTextPersistence(raw: raw, lease: lease)
+        guard let syncProtocol = isActive
+            ? storage.activeStore.syncProtocol
+            : storage.transition?.syncProtocol
+        else { throw SyncModePersistenceError.missingStore }
+        switch syncProtocol {
+        case .legacyTextV1:
+            let raw = try await rawBridge(storeID: storeID)
+            return LegacyTextModeSyncAdapter(raw: raw, transport: makeTransport())
+        case .fullRecordV1:
+            let raw = try await fullBridge(storeID: storeID)
+            return FullRecordModeSyncAdapter(raw: raw, transport: makeTransport())
+        }
     }
 
     private func rawBridge(storeID: UUID) async throws -> SwiftDataCloudTextPersistence {
@@ -364,6 +512,16 @@ package actor ICloudSyncModeCoordinator {
         )
     }
 
+
+    private func fullBridge(storeID: UUID) async throws -> CloudFullSyncPersistence {
+        let library = try await persistence.libraryForTransition(storeID: storeID)
+        return CloudFullSyncPersistence(
+            library: library,
+            namespace: namespace,
+            dataZone: textZone
+        )
+    }
+
     private func currentTransition() async throws -> SyncModeTransition {
         guard let transition = try await persistence.snapshot().transition else {
             throw SyncModePersistenceError.transitionInProgress
@@ -372,23 +530,22 @@ package actor ICloudSyncModeCoordinator {
     }
 
     private func sendUntilSettled(
-        sync: CloudTextSyncCoordinator,
-        bridge: any ICloudModeTextPersistence
+        adapter: any ICloudModeSyncAdapter
     ) async throws {
         for _ in 0..<8 {
-            try await sync.sendPending { [persistence, namespace] outbound in
-                let attempt = try await bridge.modeSendAttempt(
+            try await adapter.sendPending { [persistence, namespace] outbound in
+                let attempt = try await adapter.modeSendAttempt(
                     for: outbound,
                     namespace: namespace.binding
                 )
                 try await persistence.recordSendAttempt(attempt)
             }
-            let evidence = try await bridge.enrollmentEvidence()
+            let evidence = try await adapter.enrollmentEvidence()
             if evidence.hasRetryableRecordFailures || !evidence.retryableEventKeys.isEmpty {
-                try await bridge.clearRetryableEvents(evidence.retryableEventKeys)
+                try await adapter.clearRetryableEvents(evidence.retryableEventKeys)
                 throw CloudSyncRetryableError.itemFailure
             }
-            if evidence.needsAttention || evidence.phase == .blocked {
+            if evidence.phase == .blocked {
                 throw CloudNamespaceEnrollmentError.invalidSeedSelection
             }
             if evidence.phase == .active, !evidence.hasPendingChanges { return }
@@ -420,15 +577,15 @@ package actor ICloudSyncModeCoordinator {
             .transitionFailure
         }
         if [.firstSendStarted, .firstSendComplete].contains(transition.phase) {
-            let raw = try? await rawBridge(storeID: transition.candidateStoreID)
+            let modeAdapter = try? await adapter(storeID: transition.candidateStoreID)
             let candidates = settlementCandidates(transition)
             let settlement: SyncModeSeedSettlementProof?
-            if let raw {
-                settlement = try? await raw.currentModeSeedSettlement(
+            if let modeAdapter {
+                settlement = try? await modeAdapter.currentModeSeedSettlement(
                     candidates: settlementCandidates(transition),
                     namespace: namespace.binding
                 )
-                try? await raw.prepareModeRetry(snipIDs: Set(candidates.map(\.snipID)))
+                try? await modeAdapter.prepareModeRetry(snipIDs: Set(candidates.map(\.snipID)))
             } else {
                 settlement = nil
             }
@@ -451,9 +608,11 @@ package actor ICloudSyncModeCoordinator {
     ) -> [SyncModeSeedSettlementCandidate] {
         let provenanceIDs = Set(transition.seedProvenance.map(\.candidateSnipID))
         return transition.sendAttempt?.operations.compactMap { operation in
-            guard provenanceIDs.contains(operation.snipID) else { return nil }
+            guard operation.reference.kind == .snip,
+                  provenanceIDs.contains(operation.reference.domainID)
+            else { return nil }
             return SyncModeSeedSettlementCandidate(
-                snipID: operation.snipID,
+                snipID: operation.reference.domainID,
                 acceptedRecordIdentity: operation.recordIdentity
             )
         } ?? []
@@ -482,7 +641,7 @@ package actor ICloudSyncModeCoordinator {
             || storage.hasActiveMutationReservation {
             return ICloudSyncModeStatus(state: .syncing, activeStoreID: storage.activeStore.id)
         }
-        let evidence = try await bridge(storeID: storage.activeStore.id).enrollmentEvidence()
+        let evidence = try await adapter(storeID: storage.activeStore.id).statusEvidence()
         let state: ICloudSyncModeState = !evidence.needsAttention && evidence.phase == .active
             ? .on
             : .needsAttention

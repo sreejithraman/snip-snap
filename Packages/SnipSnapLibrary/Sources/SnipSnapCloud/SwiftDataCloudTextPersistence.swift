@@ -63,7 +63,12 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
         let snapshot = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
         return try snapshot.stagedBatches
             .sorted { $0.id.uuidString < $1.id.uuidString }
-            .map { try JSONDecoder().decode(CloudSyncBatch.self, from: $0.payload) }
+            .map {
+                guard let payload = CloudWirePayloadEnvelope.legacyPayload(from: $0.payload) else {
+                    throw CloudTransportError.invalidRecord
+                }
+                return try JSONDecoder().decode(CloudSyncBatch.self, from: payload)
+            }
     }
 
     package func stage(_ batch: CloudSyncBatch) async throws {
@@ -73,7 +78,10 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
         try await library.stageCloudTextBatch(
             namespaceKey: namespaceKey,
             batchID: batch.id,
-            payload: encoder.encode(batch)
+            payload: try CloudWirePayloadEnvelope(
+                format: .legacyTextV1,
+                payload: encoder.encode(batch)
+            ).encoded()
         )
     }
 
@@ -81,7 +89,10 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
         try await applyHook()
         let snapshot = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
         guard let stored = snapshot.stagedBatches.first(where: { $0.id == id }) else { return }
-        let batch = try JSONDecoder().decode(CloudSyncBatch.self, from: stored.payload)
+        guard let payload = CloudWirePayloadEnvelope.legacyPayload(from: stored.payload) else {
+            throw CloudTransportError.invalidRecord
+        }
+        let batch = try JSONDecoder().decode(CloudSyncBatch.self, from: payload)
         switch batch {
         case .fetched(let fetched):
             try await applyFetched(fetched)
@@ -273,6 +284,26 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
     package func enrollmentEvidence() async throws -> CloudTextEnrollmentEvidence {
         let snapshot = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
         let pending = try await pendingChanges()
+        return Self.enrollmentEvidence(
+            snapshot: snapshot,
+            hasPendingChanges: !pending.operations.isEmpty || !pending.zonesToSave.isEmpty
+        )
+    }
+
+    /// Reports status without running pending-change normalization or writing the store.
+    package func statusEvidence() async throws -> CloudTextEnrollmentEvidence {
+        let snapshot = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
+        return Self.enrollmentEvidence(snapshot: snapshot, hasPendingChanges: false)
+    }
+
+    package func acceptedSnipTextValues() async throws -> [UUID: String] {
+        try await library.acceptedCloudTextValues()
+    }
+
+    private nonisolated static func enrollmentEvidence(
+        snapshot: CloudTextStorageSnapshot,
+        hasPendingChanges: Bool
+    ) -> CloudTextEnrollmentEvidence {
         let recordRecoveryInputs = snapshot.records.compactMap { record in
             record.recoveryData.flatMap(Self.recoveryInput)
         }
@@ -289,7 +320,7 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
         }
         return CloudTextEnrollmentEvidence(
             phase: snapshot.namespaceState.phase,
-            hasPendingChanges: !pending.operations.isEmpty || !pending.zonesToSave.isEmpty,
+            hasPendingChanges: hasPendingChanges,
             hasRetryableRecordFailures: recordRecoveryInputs.contains(where: Self.isRetryable),
             retryableEventKeys: retryableEventKeys,
             needsAttention: snapshot.namespaceState.phase == .blocked
@@ -965,7 +996,9 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
         phase: CloudNamespaceBootstrapPhase
     ) -> Bool {
         guard let data else { return false }
-        guard let input = try? JSONDecoder().decode(RecoveryInput.self, from: data) else {
+        guard let payload = CloudWirePayloadEnvelope.legacyPayload(from: data),
+            let input = try? JSONDecoder().decode(RecoveryInput.self, from: payload)
+        else {
             return true
         }
         if case .sent(.failed(_, .retryable)) = input { return false }
@@ -1024,11 +1057,15 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
     private nonisolated static func encode(_ input: RecoveryInput) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        return try encoder.encode(input)
+        return try CloudWirePayloadEnvelope(
+            format: .legacyTextV1,
+            payload: encoder.encode(input)
+        ).encoded()
     }
 
     private nonisolated static func recoveryInput(_ data: Data) -> RecoveryInput? {
-        try? JSONDecoder().decode(RecoveryInput.self, from: data)
+        guard let payload = CloudWirePayloadEnvelope.legacyPayload(from: data) else { return nil }
+        return try? JSONDecoder().decode(RecoveryInput.self, from: payload)
     }
 
     private nonisolated static func recoveryInput(_ data: Data?) -> RecoveryInput? {

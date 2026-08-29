@@ -6,8 +6,9 @@ package struct SnipLibraryState {
   package var seenRequestIDs: Set<UUID>
 
   package init(snips: [Snip], lists: [SnipList], seenRequestIDs: Set<UUID>) {
-    self.snips = snips
-    self.lists = lists
+    let backfilled = SnipLegacyOrderBackfill.applying(snips: snips, lists: lists)
+    self.snips = backfilled.snips
+    self.lists = SnipListNameAllocator.resolving(backfilled.lists)
     self.seenRequestIDs = seenRequestIDs
   }
 
@@ -17,7 +18,10 @@ package struct SnipLibraryState {
   }
 
   package func allLists() -> [SnipList] {
-    lists.sorted { $0.position < $1.position }
+    lists.sorted {
+      if $0.sortKey != $1.sortKey { return $0.sortKey < $1.sortKey }
+      return $0.id.uuidString < $1.id.uuidString
+    }
   }
 
   package mutating func perform(
@@ -42,7 +46,7 @@ package struct SnipLibraryState {
         origin: origin,
         source: source,
         listID: listID,
-        manualPosition: nextTopPosition(in: listID),
+        manualSortKey: nextTopSortKey(in: listID),
         attachments: attachments
       )
       snips.append(snip)
@@ -52,15 +56,21 @@ package struct SnipLibraryState {
     case .createList(let name, let systemImage):
       let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !cleanName.isEmpty else { throw SnipLibraryError.invalidList }
-      guard !lists.contains(where: { $0.name.caseInsensitiveCompare(cleanName) == .orderedSame })
+      let normalized = SnipListNameAllocator.normalized(cleanName)
+      guard !lists.contains(where: {
+        SnipListNameAllocator.normalized($0.desiredName) == normalized
+      })
       else { throw SnipLibraryError.duplicateList }
+      let sortKey = nextListSortKey()
       let list = SnipList(
         id: UUID(),
         name: cleanName,
         systemImage: systemImage.isEmpty ? "circle.grid.2x2.fill" : systemImage,
-        position: (lists.map(\.position).max() ?? 0) + 1
+        position: 0,
+        sortKey: sortKey
       )
       lists.append(list)
+      resolveListNames()
       return .listCreated(list)
 
     case .updateList(let id, let name, let systemImage):
@@ -69,13 +79,14 @@ package struct SnipLibraryState {
       else { throw SnipLibraryError.invalidList }
       let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !cleanName.isEmpty else { throw SnipLibraryError.invalidList }
-      guard
-        !lists.contains(where: {
-          $0.id != id && $0.name.caseInsensitiveCompare(cleanName) == .orderedSame
-        })
+      let normalized = SnipListNameAllocator.normalized(cleanName)
+      guard !lists.contains(where: {
+        $0.id != id && SnipListNameAllocator.normalized($0.desiredName) == normalized
+      })
       else { throw SnipLibraryError.duplicateList }
       lists[index].name = cleanName
       lists[index].systemImage = systemImage
+      resolveListNames()
       return .none
 
     case .deleteList(let id):
@@ -83,16 +94,20 @@ package struct SnipLibraryState {
         throw SnipLibraryError.invalidList
       }
       let movingIDs = Snip.sorted(snips.filter { $0.listID == id }, by: .manual).map(\.id)
-      let firstPosition =
-        nextTopPosition(in: SnipList.inboxID)
-        - Int64(max(0, movingIDs.count - 1))
       lists.removeAll { $0.id == id }
+      let keys = insertionKeys(
+        count: movingIDs.count,
+        lower: nil,
+        upper: firstSortKey(in: SnipList.inboxID),
+        targetIDs: movingIDs,
+        fallbackOrder: movingIDs + orderedIDs(in: SnipList.inboxID)
+      )
       for (offset, snipID) in movingIDs.enumerated() {
         guard let index = snips.firstIndex(where: { $0.id == snipID }) else { continue }
         snips[index].listID = SnipList.inboxID
-        snips[index].manualPosition = firstPosition + Int64(offset)
+        snips[index].manualSortKey = keys[offset]
       }
-      for index in lists.indices { lists[index].position = index }
+      resolveListNames()
       return .none
 
     case .update(let id, let content, let attachmentURLs, let expectedUpdatedAt, let now):
@@ -191,10 +206,10 @@ package struct SnipLibraryState {
       guard selected.count >= 2 else { throw SnipLibraryError.requiresMultipleSnips }
       let listIDs = Set(selected.map(\.listID))
       let listID = listIDs.count == 1 ? selected[0].listID : SnipList.inboxID
-      let position =
+      let sortKey =
         listIDs.count == 1
-        ? selected.map(\.manualPosition).min() ?? 0
-        : nextTopPosition(in: listID)
+        ? selected.map(\.manualSortKey).min() ?? nextTopSortKey(in: listID)
+        : nextTopSortKey(in: listID)
       var seenAttachments: Set<UUID> = []
       let attachments = selected.flatMap(\.attachments)
         .filter { seenAttachments.insert($0.id).inserted }
@@ -203,7 +218,7 @@ package struct SnipLibraryState {
         content: SnipFormatter.format(snips: selected),
         origin: .quickEntry,
         listID: listID,
-        manualPosition: position,
+        manualSortKey: sortKey,
         attachments: attachments
       )
       snips.removeAll { ids.contains($0.id) }
@@ -234,11 +249,18 @@ package struct SnipLibraryState {
       try validateList(id: listID)
       let ordered = ids.filter { id in snips.contains { $0.id == id && $0.listID != listID } }
       guard !ordered.isEmpty else { return .none }
-      let top = nextTopPosition(in: listID, excluding: Set(ordered)) - Int64(ordered.count - 1)
+      let existing = orderedIDs(in: listID, excluding: Set(ordered))
+      let keys = insertionKeys(
+        count: ordered.count,
+        lower: nil,
+        upper: existing.first.flatMap(sortKey(for:)),
+        targetIDs: ordered,
+        fallbackOrder: ordered + existing
+      )
       for (offset, id) in ordered.enumerated() {
         guard let index = snips.firstIndex(where: { $0.id == id }) else { continue }
         snips[index].listID = listID
-        snips[index].manualPosition = top + Int64(offset)
+        snips[index].manualSortKey = keys[offset]
       }
       return .none
 
@@ -248,7 +270,6 @@ package struct SnipLibraryState {
       let movingSet = Set(ids)
       let orderedMoving = ids.filter { id in snips.contains { $0.id == id } }
       guard !orderedMoving.isEmpty else { return .none }
-      let sourceLists = Set(snips.filter { movingSet.contains($0.id) }.map(\.listID))
       var destination = Snip.sorted(
         snips.filter { $0.listID == listID && !movingSet.contains($0.id) },
         by: sortMode
@@ -259,8 +280,24 @@ package struct SnipLibraryState {
         guard let snipIndex = snips.firstIndex(where: { $0.id == id }) else { continue }
         snips[snipIndex].listID = listID
       }
-      reindex(listID: listID, orderedIDs: destination)
-      for sourceList in sourceLists where sourceList != listID { reindex(listID: sourceList) }
+      if sortMode != .manual {
+        rebalanceSnipsForOrder(destination)
+        return .none
+      }
+      let lower = index > 0 ? sortKey(for: destination[index - 1]) : nil
+      let upperIndex = index + orderedMoving.count
+      let upper = upperIndex < destination.count ? sortKey(for: destination[upperIndex]) : nil
+      let keys = insertionKeys(
+        count: orderedMoving.count,
+        lower: lower,
+        upper: upper,
+        targetIDs: orderedMoving,
+        fallbackOrder: destination
+      )
+      for (offset, id) in orderedMoving.enumerated() {
+        guard let snipIndex = snips.firstIndex(where: { $0.id == id }) else { continue }
+        snips[snipIndex].manualSortKey = keys[offset]
+      }
       return .none
 
     case .replaceAll(let replacement):
@@ -294,25 +331,71 @@ package struct SnipLibraryState {
     }
   }
 
-  private func nextTopPosition(in listID: UUID, excluding excluded: Set<UUID> = []) -> Int64 {
-    let minimum =
-      snips
-      .filter { $0.listID == listID && !excluded.contains($0.id) }
-      .map(\.manualPosition)
-      .min() ?? 1
-    return minimum - 1
+  private mutating func nextTopSortKey(in listID: UUID) -> SnipOrderKey {
+    if let key = SnipOrderKey.between(nil, firstSortKey(in: listID)) { return key }
+    rebalanceSnipsForOrder(orderedIDs(in: listID))
+    return SnipOrderKey.between(nil, firstSortKey(in: listID))!
   }
 
-  private mutating func reindex(listID: UUID, orderedIDs: [UUID]? = nil) {
-    let ids =
-      orderedIDs
-      ?? Snip.sorted(
-        snips.filter { $0.listID == listID },
-        by: .manual
-      ).map(\.id)
+  private mutating func nextListSortKey() -> SnipOrderKey {
+    let last = allLists().last?.sortKey
+    if let key = SnipOrderKey.between(last, nil) { return key }
+    let ordered = allLists().map(\.id)
+    let keys = try! SnipOrderKey.rebalanced(count: ordered.count)
+    for (index, id) in ordered.enumerated() {
+      lists[lists.firstIndex { $0.id == id }!].sortKey = keys[index]
+    }
+    return SnipOrderKey.between(allLists().last?.sortKey, nil)!
+  }
+
+  private func firstSortKey(in listID: UUID) -> SnipOrderKey? {
+    Snip.sorted(snips.filter { $0.listID == listID }, by: .manual).first?.manualSortKey
+  }
+
+  private func sortKey(for id: UUID) -> SnipOrderKey? {
+    snips.first { $0.id == id }?.manualSortKey
+  }
+
+  private func orderedIDs(in listID: UUID, excluding: Set<UUID> = []) -> [UUID] {
+    Snip.sorted(
+      snips.filter { $0.listID == listID && !excluding.contains($0.id) },
+      by: .manual
+    ).map(\.id)
+  }
+
+  private mutating func insertionKeys(
+    count: Int,
+    lower: SnipOrderKey?,
+    upper: SnipOrderKey?,
+    targetIDs: [UUID],
+    fallbackOrder: [UUID]
+  ) -> [SnipOrderKey] {
+    if let lower, let upper, lower >= upper {
+      rebalanceSnipsForOrder(fallbackOrder)
+      return targetIDs.compactMap(sortKey(for:))
+    }
+    var result: [SnipOrderKey] = []
+    var prior = lower
+    for _ in 0..<count {
+      guard let key = SnipOrderKey.between(prior, upper) else {
+        rebalanceSnipsForOrder(fallbackOrder)
+        return targetIDs.compactMap(sortKey(for:))
+      }
+      result.append(key)
+      prior = key
+    }
+    return result
+  }
+
+  private mutating func rebalanceSnipsForOrder(_ ids: [UUID]) {
+    let keys = try! SnipOrderKey.rebalanced(count: ids.count)
     for (position, id) in ids.enumerated() {
       guard let index = snips.firstIndex(where: { $0.id == id }) else { continue }
-      snips[index].manualPosition = Int64(position)
+      snips[index].manualSortKey = keys[position]
     }
+  }
+
+  private mutating func resolveListNames() {
+    lists = SnipListNameAllocator.resolving(lists)
   }
 }

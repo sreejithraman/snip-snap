@@ -8,6 +8,8 @@ package struct SnipLibraryTransferPlan: Sendable {
   package let snips: [Snip]
   package let lists: [SnipList]
   package let attachmentData: [UUID: Data]
+  package let opaqueSyncStateDigest: Data
+  package let opaqueSyncStatePayload: Data
   package let result: SnipLibraryTransferResult
 
   package var digest: Data {
@@ -20,7 +22,10 @@ package struct SnipLibraryTransferPlan: Sendable {
           revision: targetRevision,
           snips: snips,
           lists: lists,
-          attachmentData: attachmentData
+          attachmentData: attachmentData,
+          legacyManualPositions: [:],
+          opaqueSyncStateDigest: opaqueSyncStateDigest,
+          opaqueSyncStatePayload: opaqueSyncStatePayload
         )
       ),
       to: &bytes
@@ -42,6 +47,7 @@ package enum SnipLibraryTransferPlanner {
     target: SnipLibraryTransferSnapshot,
     transitionID: UUID,
     replacingTargetSnipIDs: Set<UUID> = [],
+    replacingTargetListIDs: Set<UUID> = [],
     acceptedTargetSnipIDs: Set<UUID> = [],
     acceptedTargetTextBySnipID: [UUID: String] = [:],
     priorSeedProvenance: [SyncModeSeedProvenance] = [],
@@ -50,6 +56,9 @@ package enum SnipLibraryTransferPlanner {
   ) throws -> SnipLibraryTransferPlan {
     let targetRevision = target.revision
     let targetDigest = digest(snapshot: target)
+    let targetBundle = try CloudDormantAcceptedBaseBundle.decode(target.opaqueSyncStatePayload)
+    let sourceBundle = try CloudDormantAcceptedBaseBundle.decode(source.opaqueSyncStatePayload)
+    let mergedSyncPayload = try targetBundle.merging(sourceBundle).encoded()
     let retry = try retryPlan(
       source: source,
       target: target,
@@ -65,15 +74,18 @@ package enum SnipLibraryTransferPlanner {
       revision: target.revision,
       snips: retainedTargetSnips,
       lists: target.lists,
-      attachmentData: target.attachmentData.filter { retainedAttachmentIDs.contains($0.key) }
+      attachmentData: target.attachmentData.filter { retainedAttachmentIDs.contains($0.key) },
+      legacyManualPositions: target.legacyManualPositions.filter { entry in
+        retainedTargetSnips.contains(where: { $0.id == entry.key })
+      },
+      opaqueSyncStateDigest: target.opaqueSyncStateDigest,
+      opaqueSyncStatePayload: target.opaqueSyncStatePayload
     )
-    let retainedTargetLists = target.lists.filter { !priorSeededListIDs.contains($0.id) }
+    let retainedTargetLists = target.lists.filter {
+      !priorSeededListIDs.contains($0.id) && !replacingTargetListIDs.contains($0.id)
+    }
     var lists = retainedTargetLists
     var listByID = Dictionary(uniqueKeysWithValues: retainedTargetLists.map { ($0.id, $0) })
-    var names = Dictionary(
-      retainedTargetLists.map { ($0.name.lowercased(), $0.id) },
-      uniquingKeysWith: { first, _ in first }
-    )
     for list in source.lists {
       if let existing = listByID[list.id] {
         guard existing == list else {
@@ -81,13 +93,10 @@ package enum SnipLibraryTransferPlanner {
         }
         continue
       }
-      if let otherID = names[list.name.lowercased()], otherID != list.id {
-        throw SnipLibraryError.transferConflict(.listName(list.name))
-      }
       lists.append(list)
       listByID[list.id] = list
-      names[list.name.lowercased()] = list.id
     }
+    lists = SnipListNameAllocator.resolving(lists)
 
     let targetAttachments = attachmentMap(target.snips)
     let sourceAttachments = attachmentMap(source.snips)
@@ -134,7 +143,7 @@ package enum SnipLibraryTransferPlanner {
             source: sourceSnip.source,
             listID: listByID[sourceSnip.listID] == nil ? SnipList.inboxID : sourceSnip.listID,
             isDone: sourceSnip.isDone,
-            manualPosition: sourceSnip.manualPosition,
+            manualSortKey: sourceSnip.manualSortKey,
             attachments: sourceSnip.attachments
           )
         )
@@ -151,6 +160,8 @@ package enum SnipLibraryTransferPlanner {
       snips: snips,
       lists: lists,
       attachmentData: target.attachmentData.merging(source.attachmentData) { target, _ in target },
+      opaqueSyncStateDigest: Data(SHA256.hash(data: mergedSyncPayload)),
+      opaqueSyncStatePayload: mergedSyncPayload,
       result: SnipLibraryTransferResult(
         approvedSnipIDs: approved,
         recoveredSourceSnipIDs: recovered
@@ -160,9 +171,11 @@ package enum SnipLibraryTransferPlanner {
 
   package static func digest(
     snip: Snip?,
-    attachmentData: [UUID: Data]
+    attachmentData: [UUID: Data],
+    version: Int = 2,
+    legacyManualPosition: Int64? = nil
   ) -> Data {
-    var bytes = Data("snipsnap-mode-seed-v1".utf8)
+    var bytes = Data(version == 1 ? "snipsnap-mode-seed-v1".utf8 : "snipsnap-mode-seed-v2".utf8)
     guard let snip else {
       bytes.append(0)
       return Data(SHA256.hash(data: bytes))
@@ -184,7 +197,11 @@ package enum SnipLibraryTransferPlanner {
     }
     append(snip.listID.uuidString.lowercased(), to: &bytes)
     bytes.append(snip.isDone ? 1 : 0)
-    append(UInt64(bitPattern: snip.manualPosition), to: &bytes)
+    if version == 1 {
+      append(UInt64(bitPattern: legacyManualPosition ?? snip.manualPosition), to: &bytes)
+    } else {
+      append(snip.manualSortKey.data, to: &bytes)
+    }
     append(UInt64(snip.attachments.count), to: &bytes)
     for attachment in snip.attachments {
       append(attachment.id.uuidString.lowercased(), to: &bytes)
@@ -202,19 +219,21 @@ package enum SnipLibraryTransferPlanner {
   }
 
   package static func digest(snapshot: SnipLibraryTransferSnapshot) -> Data {
-    var bytes = Data("snipsnap-transfer-snapshot-v1".utf8)
+    var bytes = Data("snipsnap-transfer-snapshot-v2".utf8)
     append(snapshot.revision, to: &bytes)
     append(UInt64(snapshot.lists.count), to: &bytes)
     for list in snapshot.lists {
       append(list.id.uuidString.lowercased(), to: &bytes)
-      append(list.name, to: &bytes)
+      append(list.desiredName, to: &bytes)
+      append(list.resolvedName, to: &bytes)
       append(list.systemImage, to: &bytes)
-      append(UInt64(bitPattern: Int64(list.position)), to: &bytes)
+      append(list.sortKey.data, to: &bytes)
     }
     append(UInt64(snapshot.snips.count), to: &bytes)
     for snip in snapshot.snips {
       append(digest(snip: snip, attachmentData: snapshot.attachmentData), to: &bytes)
     }
+    append(snapshot.opaqueSyncStateDigest, to: &bytes)
     return Data(SHA256.hash(data: bytes))
   }
 
@@ -283,7 +302,12 @@ package enum SnipLibraryTransferPlanner {
       let local = sourceByID[provenance.sourceSnipID].map {
         translated($0, id: provenance.candidateSnipID, requestID: provenance.candidateRequestID)
       }
-      let localDigest = digest(snip: local, attachmentData: source.attachmentData)
+      let localDigest = digest(
+        snip: local,
+        attachmentData: source.attachmentData,
+        version: provenance.digestVersion,
+        legacyManualPosition: source.legacyManualPositions[provenance.sourceSnipID]
+      )
       let localRemoteDigest = remoteDigest(snip: local)
       let remoteWasAccepted = priorServerAcceptedSnipIDs.contains(provenance.candidateSnipID)
       let remoteIsAccepted = acceptedTargetSnipIDs.contains(provenance.candidateSnipID)
@@ -364,7 +388,7 @@ package enum SnipLibraryTransferPlanner {
       source: snip.source,
       listID: snip.listID,
       isDone: snip.isDone,
-      manualPosition: snip.manualPosition,
+      manualSortKey: snip.manualSortKey,
       attachments: snip.attachments
     )
   }
@@ -384,11 +408,11 @@ package enum SnipLibraryTransferPlanner {
     append(value, to: &data)
   }
 
-  fileprivate static func append(_ value: String, to data: inout Data) {
+  package static func append(_ value: String, to data: inout Data) {
     append(Data(value.utf8), to: &data)
   }
 
-  fileprivate static func append(_ value: Data, to data: inout Data) {
+  package static func append(_ value: Data, to data: inout Data) {
     append(UInt64(value.count), to: &data)
     data.append(value)
   }

@@ -360,6 +360,36 @@ extension SwiftDataSnipLibrary {
     for state in try Self.cloudNamespaceStates(namespaceKey: namespaceKey, context: context) {
       context.delete(state)
     }
+    for record in try context.fetch(FetchDescriptor<StoredCloudEntityRecord>())
+      where record.namespaceKey == namespaceKey
+    {
+      context.delete(record)
+    }
+    for record in try context.fetch(FetchDescriptor<StoredCloudFullConflict>())
+      where record.namespaceKey == namespaceKey
+    {
+      context.delete(record)
+    }
+    for record in try context.fetch(FetchDescriptor<StoredCloudFullEnrollment>())
+      where record.namespaceKey == namespaceKey
+    {
+      context.delete(record)
+    }
+    for record in try context.fetch(FetchDescriptor<StoredCloudDormantBaseRecord>())
+      where record.namespaceKey == namespaceKey
+    {
+      context.delete(record)
+    }
+    for record in try context.fetch(FetchDescriptor<StoredCloudMappingQuarantine>())
+      where record.namespaceKey == namespaceKey
+    {
+      context.delete(record)
+    }
+    for record in try context.fetch(FetchDescriptor<StoredCloudFullBatchReceipt>())
+      where record.namespaceKey == namespaceKey
+    {
+      context.delete(record)
+    }
     try afterMutationBeforeSave()
     try context.save()
   }

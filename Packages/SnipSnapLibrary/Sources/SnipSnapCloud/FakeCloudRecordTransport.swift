@@ -97,6 +97,9 @@ package actor FakeCloudServer {
         _ batch: CloudOutboundBatch,
         failures: [CloudRecordID: CloudOperationFailure]
     ) throws -> CloudSentBatch {
+        guard Set(batch.operations.map(\.id)).count == batch.operations.count else {
+            throw CloudTransportError.invalidRecord
+        }
         let items = try batch.operations.map { operation in
             if let failure = failures[operation.id] {
                 return CloudSendItemResult.failed(operation.id, failure)
@@ -169,6 +172,10 @@ package actor FakeCloudServer {
         )
     }
 
+    package func fullSnapshot(for id: CloudRecordID) -> CloudRecordSnapshot? {
+        records[id]
+    }
+
     package func asset(for id: CloudRecordID, field: String) -> URL? {
         assets[id]?[field]
     }
@@ -204,6 +211,9 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
     private var nextAssetFailure: FakeCloudError?
     private var fetchItemFailures: [CloudRecordID: CloudOperationFailure] = [:]
     private var sendItemFailures: [CloudRecordID: CloudOperationFailure] = [:]
+    private var nextOmittedSentResult: CloudRecordID?
+    private var nextDuplicatedSentResult: CloudRecordID?
+    private var shouldReverseNextSentResults = false
     private var eventLog: [FakeCloudTransportEvent] = []
     private var shouldPauseNextFetch = false
     private var pausedFetch = false
@@ -281,6 +291,18 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
         sendItemFailures[id] = failure
     }
 
+    package func omitNextSentResult(_ id: CloudRecordID) {
+        nextOmittedSentResult = id
+    }
+
+    package func duplicateNextSentResult(_ id: CloudRecordID) {
+        nextDuplicatedSentResult = id
+    }
+
+    package func reverseNextSentResults() {
+        shouldReverseNextSentResults = true
+    }
+
     package func fetch(scope: CloudFetchScope) async throws -> CloudFetchedBatch {
         eventLog.append(.fetched)
         if shouldPauseNextFetch {
@@ -322,7 +344,9 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
     private var pendingCursors: [CloudZoneID: Int]?
 
     package func send(_ batch: CloudOutboundBatch) async throws -> CloudSentBatch {
-        eventLog.append(.sent(batch.operations.map(\.id).sorted { $0.name < $1.name }))
+        guard Set(batch.operations.map(\.id)).count == batch.operations.count else {
+            throw CloudTransportError.invalidRecord
+        }
         if shouldPauseNextSend {
             shouldPauseNextSend = false
             pausedSend = true
@@ -332,6 +356,7 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
         }
         if case .sent(let result)? = pending { return result }
         if pending != nil { throw FakeCloudError.wrongBatchConfirmation }
+        eventLog.append(.sent(batch.operations.map(\.id).sorted { $0.name < $1.name }))
         if let failure = nextSendFailure {
             nextSendFailure = nil
             throw failure
@@ -339,9 +364,23 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
         let failures = sendItemFailures
         sendItemFailures = [:]
         let serverResult = try await server.send(batch, failures: failures)
+        var items = serverResult.items
+        if let id = nextOmittedSentResult {
+            items.removeAll { $0.id == id }
+            nextOmittedSentResult = nil
+        }
+        if let id = nextDuplicatedSentResult,
+           let item = items.first(where: { $0.id == id }) {
+            items.append(item)
+            nextDuplicatedSentResult = nil
+        }
+        if shouldReverseNextSentResults {
+            items.reverse()
+            shouldReverseNextSentResults = false
+        }
         let result = CloudSentBatch(
             id: serverResult.id,
-            items: serverResult.items,
+            items: items,
             databaseEvents: serverResult.databaseEvents,
             zoneEvents: serverResult.zoneEvents,
             engineState: envelope(for: committedCursors)

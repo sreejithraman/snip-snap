@@ -1,4 +1,5 @@
 import Darwin
+import CryptoKit
 import Foundation
 import SnipSnapCore
 import SwiftData
@@ -126,6 +127,55 @@ package final class StoredRequestRecord {
   }
 }
 
+package enum StoredLibraryMetadataKind: String, Codable {
+  case snip, list
+}
+
+package enum LibraryMetadataBackfillPoint: CaseIterable {
+  case beforeSave, afterSave
+}
+
+package enum CloudFullRecordBackfillPoint: CaseIterable {
+  case beforeSave, afterSave
+}
+
+@Model
+final class StoredLibraryMetadataRecord {
+  @Attribute(.unique) var id: String
+  var kind: String
+  var domainID: UUID
+  var orderKeyData: Data
+  var desiredName: String?
+  var legacyPosition: Int64?
+  var legacyOrderKeyData: Data?
+
+  init(
+    kind: StoredLibraryMetadataKind,
+    domainID: UUID,
+    orderKey: SnipOrderKey,
+    desiredName: String? = nil,
+    legacyPosition: Int64? = nil,
+    legacyOrderKey: SnipOrderKey? = nil
+  ) {
+    id = Self.identifier(kind: kind, domainID: domainID)
+    self.kind = kind.rawValue
+    self.domainID = domainID
+    orderKeyData = orderKey.data
+    self.desiredName = desiredName
+    self.legacyPosition = legacyPosition
+    legacyOrderKeyData = legacyOrderKey?.data
+  }
+
+  static func identifier(kind: StoredLibraryMetadataKind, domainID: UUID) -> String {
+    "\(kind.rawValue)|\(domainID.uuidString.lowercased())"
+  }
+
+  func update(orderKey: SnipOrderKey, desiredName: String? = nil) {
+    orderKeyData = orderKey.data
+    self.desiredName = desiredName
+  }
+}
+
 package enum SnipSnapSchemaV1: VersionedSchema {
   package static let versionIdentifier = Schema.Version(1, 0, 0)
   package static var models: [any PersistentModel.Type] {
@@ -157,12 +207,30 @@ package enum SnipSnapSchemaV2: VersionedSchema {
   }
 }
 
+package enum SnipSnapSchemaV3: VersionedSchema {
+  package static let versionIdentifier = Schema.Version(3, 0, 0)
+  package static var models: [any PersistentModel.Type] {
+    SnipSnapSchemaV2.models + [
+      StoredLibraryMetadataRecord.self,
+      StoredCloudEntityRecord.self,
+      StoredCloudFullConflict.self,
+      StoredCloudFullEnrollment.self,
+      StoredCloudDormantBaseRecord.self,
+      StoredCloudMappingQuarantine.self,
+      StoredCloudFullBatchReceipt.self,
+    ]
+  }
+}
+
 package enum SnipSnapSchemaMigrationPlan: SchemaMigrationPlan {
   package static var schemas: [any VersionedSchema.Type] {
-    [SnipSnapSchemaV1.self, SnipSnapSchemaV2.self]
+    [SnipSnapSchemaV1.self, SnipSnapSchemaV2.self, SnipSnapSchemaV3.self]
   }
   package static var stages: [MigrationStage] {
-    [.lightweight(fromVersion: SnipSnapSchemaV1.self, toVersion: SnipSnapSchemaV2.self)]
+    [
+      .lightweight(fromVersion: SnipSnapSchemaV1.self, toVersion: SnipSnapSchemaV2.self),
+      .lightweight(fromVersion: SnipSnapSchemaV2.self, toVersion: SnipSnapSchemaV3.self),
+    ]
   }
 }
 
@@ -192,10 +260,11 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     let attachments: [StoredAttachmentRecord]
     let references: [StoredSnipAttachmentReference]
     let requests: [StoredRequestRecord]
+    let metadata: [StoredLibraryMetadataRecord]
 
     var isEmpty: Bool {
       snips.isEmpty && lists.isEmpty && attachments.isEmpty && references.isEmpty
-        && requests.isEmpty
+        && requests.isEmpty && metadata.isEmpty
     }
   }
 
@@ -219,14 +288,16 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
 
   package init(
     storeURL: URL,
-    afterMutationBeforeSave: @escaping @Sendable () throws -> Void
+    afterMutationBeforeSave: @escaping @Sendable () throws -> Void = {},
+    metadataBackfillHook: @escaping @Sendable (LibraryMetadataBackfillPoint) throws -> Void = { _ in },
+    cloudFullRecordBackfillHook: @escaping @Sendable (CloudFullRecordBackfillPoint) throws -> Void = { _ in }
   ) throws {
     let directory = storeURL.deletingLastPathComponent()
     try DurableFile.createDirectory(directory)
     let lockURL = storeURL.appendingPathExtension("lock")
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
-    let schema = Schema(versionedSchema: SnipSnapSchemaV2.self)
+    let schema = Schema(versionedSchema: SnipSnapSchemaV3.self)
     let configuration = ModelConfiguration(
       "SnipSnapLocal",
       schema: schema,
@@ -260,6 +331,17 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       context.insert(StoredListRecord(.inbox))
       try context.save()
       loaded = try Self.load(context: Self.makeContext(container: container), seenRequestIDs: [])
+    }
+    if try Self.backfillLibraryMetadata(loaded, context: context) {
+      try metadataBackfillHook(.beforeSave)
+      try context.save()
+      try metadataBackfillHook(.afterSave)
+      loaded = try Self.load(context: Self.makeContext(container: container), seenRequestIDs: [])
+    }
+    if try Self.backfillCloudFullRecords(context: context) {
+      try cloudFullRecordBackfillHook(.beforeSave)
+      try context.save()
+      try cloudFullRecordBackfillHook(.afterSave)
     }
     try Self.validate(loaded.state)
     seenRequestIDs = loaded.state.seenRequestIDs
@@ -426,156 +508,6 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     }
   }
 
-  public func transferSnapshot(revision: UInt64) async throws -> SnipLibraryTransferSnapshot {
-    let current = try await checkedSnapshot(sortedBy: .manual)
-    var attachmentData: [UUID: Data] = [:]
-    for (id, url) in current.attachmentURLs {
-      do {
-        attachmentData[id] = try Data(contentsOf: url)
-      } catch {
-        throw SnipLibraryError.attachmentCopyFailed
-      }
-    }
-    return SnipLibraryTransferSnapshot(
-      revision: revision,
-      snips: current.snips,
-      lists: current.lists,
-      attachmentData: attachmentData
-    )
-  }
-
-  public func mergeTransferSnapshot(
-    _ source: SnipLibraryTransferSnapshot,
-    transitionID: UUID
-  ) async throws -> SnipLibraryTransferResult {
-    try await mergeTransferSnapshot(
-      source,
-      transitionID: transitionID,
-      replacingTargetSnipIDs: [],
-      priorSeedProvenance: [],
-      priorServerAcceptedSnipIDs: [],
-      priorSeededListIDs: []
-    )
-  }
-
-  package func mergeTransferSnapshot(
-    _ source: SnipLibraryTransferSnapshot,
-    transitionID: UUID,
-    replacingTargetSnipIDs: Set<UUID>,
-    priorSeedProvenance: [SyncModeSeedProvenance],
-    priorServerAcceptedSnipIDs: Set<UUID>,
-    priorSeededListIDs: Set<UUID>
-  ) async throws -> SnipLibraryTransferResult {
-    let plan = try await prepareTransferPlan(
-      source,
-      transitionID: transitionID,
-      replacingTargetSnipIDs: replacingTargetSnipIDs,
-      priorSeedProvenance: priorSeedProvenance,
-      priorServerAcceptedSnipIDs: priorServerAcceptedSnipIDs,
-      priorSeededListIDs: priorSeededListIDs
-    )
-    return try await applyTransferPlan(plan)
-  }
-
-  package func prepareTransferPlan(
-    _ source: SnipLibraryTransferSnapshot,
-    transitionID: UUID,
-    replacingTargetSnipIDs: Set<UUID>,
-    priorSeedProvenance: [SyncModeSeedProvenance],
-    priorServerAcceptedSnipIDs: Set<UUID>,
-    priorSeededListIDs: Set<UUID>,
-    targetRevision: UInt64 = 0
-  ) async throws -> SnipLibraryTransferPlan {
-    guard isAvailable else { throw SnipLibraryError.storeUnavailable }
-    let target = try await transferSnapshot(revision: targetRevision)
-    let acceptedTargetTextBySnipID = try acceptedCloudTextValues()
-    let acceptedTargetSnipIDs = Set(acceptedTargetTextBySnipID.keys)
-    return try SnipLibraryTransferPlanner.plan(
-      source: source,
-      target: target,
-      transitionID: transitionID,
-      replacingTargetSnipIDs: replacingTargetSnipIDs,
-      acceptedTargetSnipIDs: acceptedTargetSnipIDs,
-      acceptedTargetTextBySnipID: acceptedTargetTextBySnipID,
-      priorSeedProvenance: priorSeedProvenance,
-      priorServerAcceptedSnipIDs: priorServerAcceptedSnipIDs,
-      priorSeededListIDs: priorSeededListIDs
-    )
-  }
-
-  package func applyTransferPlan(
-    _ plan: SnipLibraryTransferPlan,
-    currentRevision: UInt64 = 0
-  ) async throws -> SnipLibraryTransferResult {
-    guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
-    let lock = try SnipStoreFileLock(url: lockURL)
-    defer { withExtendedLifetime(lock) {} }
-    let context = Self.makeContext(container: container)
-    let loaded = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
-    let currentSnips = loaded.state.allSnips(sortMode: .manual)
-    var currentAttachmentData: [UUID: Data] = [:]
-    for attachment in currentSnips.flatMap(\.attachments) {
-      let url = attachmentRootURL.appendingPathComponent(attachment.relativePath)
-      do {
-        currentAttachmentData[attachment.id] = try Data(contentsOf: url)
-      } catch {
-        throw SnipLibraryError.attachmentCopyFailed
-      }
-    }
-    let current = SnipLibraryTransferSnapshot(
-      revision: currentRevision,
-      snips: currentSnips,
-      lists: loaded.state.allLists(),
-      attachmentData: currentAttachmentData
-    )
-    guard currentRevision == plan.targetRevision,
-      SnipLibraryTransferPlanner.digest(snapshot: current) == plan.targetDigest
-    else { throw SnipLibraryError.invalidStore }
-    var createdDirectories: [URL] = []
-    var transferredSnips = plan.snips
-
-    do {
-      for snipIndex in transferredSnips.indices {
-        for attachmentIndex in transferredSnips[snipIndex].attachments.indices {
-          var attachment = transferredSnips[snipIndex].attachments[attachmentIndex]
-          guard let bytes = plan.attachmentData[attachment.id] else {
-            throw SnipLibraryError.attachmentCopyFailed
-          }
-          let safeName = URL(fileURLWithPath: attachment.fileName).lastPathComponent
-          guard !safeName.isEmpty else { throw SnipLibraryError.attachmentCopyFailed }
-          let relativePath = "\(attachment.id.uuidString)/\(safeName)"
-          let destination = attachmentRootURL.appendingPathComponent(relativePath)
-          let directory = destination.deletingLastPathComponent()
-          if !FileManager.default.fileExists(atPath: destination.path) {
-            try DurableFile.createDirectory(directory)
-            createdDirectories.append(directory)
-            try DurableFile.write(bytes, to: destination)
-          } else if try Data(contentsOf: destination) != bytes {
-            throw SnipLibraryError.transferConflict(.attachmentIdentity(attachment.id))
-          }
-          attachment.relativePath = relativePath
-          transferredSnips[snipIndex].attachments[attachmentIndex] = attachment
-        }
-      }
-      let state = SnipLibraryState(
-        snips: transferredSnips,
-        lists: plan.lists,
-        seenRequestIDs: loaded.state.seenRequestIDs.union(transferredSnips.map(\.requestID))
-      )
-      try Self.validate(state)
-      try Self.applyChanges(from: loaded, to: state, context: context)
-      try afterMutationBeforeSave()
-      try context.save()
-      seenRequestIDs = state.seenRequestIDs
-      lastKnownState = state
-      rememberAttachments(in: state)
-      return plan.result
-    } catch {
-      context.rollback()
-      removeAttachmentDirectories(createdDirectories)
-      throw error
-    }
-  }
 
   static func makeContext(container: ModelContainer) -> ModelContext {
     let context = ModelContext(container)
@@ -667,7 +599,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     )
   }
 
-  private func removeAttachmentDirectories(_ directories: [URL]) {
+  func removeAttachmentDirectories(_ directories: [URL]) {
     for directory in directories { try? FileManager.default.removeItem(at: directory) }
   }
 
@@ -700,6 +632,8 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     let storedAttachments = try context.fetch(FetchDescriptor<StoredAttachmentRecord>())
     let storedReferences = try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>())
     let storedRequests = try context.fetch(FetchDescriptor<StoredRequestRecord>())
+    let storedMetadata = try context.fetch(FetchDescriptor<StoredLibraryMetadataRecord>())
+    let metadataByID = Dictionary(uniqueKeysWithValues: storedMetadata.map { ($0.id, $0) })
     let attachmentsByID = Dictionary(uniqueKeysWithValues: storedAttachments.map { ($0.id, $0) })
     let referencesBySnip = Dictionary(grouping: storedReferences, by: \.snipID)
     let snips = try storedSnips.map { record -> Snip in
@@ -721,6 +655,9 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
         listID: record.listID,
         isDone: record.isDone,
         manualPosition: record.manualPosition,
+        manualSortKey: try metadataByID[
+          StoredLibraryMetadataRecord.identifier(kind: .snip, domainID: record.id)
+        ].map { try SnipOrderKey(data: $0.orderKeyData) },
         attachments: try (referencesBySnip[record.id] ?? []).sorted { $0.position < $1.position }
           .map { reference in
             guard let attachment = attachmentsByID[reference.attachmentID] else {
@@ -736,8 +673,18 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
           }
       )
     }
-    let lists = storedLists.map {
-      SnipList(id: $0.id, name: $0.name, systemImage: $0.systemImage, position: $0.position)
+    let lists = try storedLists.map { record in
+      let metadata = metadataByID[
+        StoredLibraryMetadataRecord.identifier(kind: .list, domainID: record.id)
+      ]
+      return SnipList(
+        id: record.id,
+        desiredName: metadata?.desiredName ?? record.name,
+        resolvedName: record.name,
+        systemImage: record.systemImage,
+        sortKey: try metadata.map { try SnipOrderKey(data: $0.orderKeyData) }
+          ?? .legacy(Int64(record.position))
+      )
     }
     return LoadedStore(
       state: SnipLibraryState(
@@ -751,20 +698,64 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       lists: storedLists,
       attachments: storedAttachments,
       references: storedReferences,
-      requests: storedRequests
+      requests: storedRequests,
+      metadata: storedMetadata
     )
   }
 
-  private static func validate(_ state: SnipLibraryState) throws {
+  private static func backfillLibraryMetadata(
+    _ loaded: LoadedStore,
+    context: ModelContext
+  ) throws -> Bool {
+    var known = Set(loaded.metadata.map(\.id))
+    var changed = false
+    let listByID = Dictionary(uniqueKeysWithValues: loaded.state.lists.map { ($0.id, $0) })
+    for record in loaded.lists {
+      let id = StoredLibraryMetadataRecord.identifier(kind: .list, domainID: record.id)
+      if known.insert(id).inserted {
+        guard let list = listByID[record.id] else { throw SnipLibraryError.invalidStore }
+        context.insert(
+          StoredLibraryMetadataRecord(
+            kind: .list,
+            domainID: record.id,
+            orderKey: list.sortKey,
+            desiredName: list.desiredName
+          )
+        )
+        changed = true
+      }
+    }
+    let snipByID = Dictionary(uniqueKeysWithValues: loaded.state.snips.map { ($0.id, $0) })
+    for record in loaded.snips {
+      let id = StoredLibraryMetadataRecord.identifier(kind: .snip, domainID: record.id)
+      if known.insert(id).inserted {
+        guard let snip = snipByID[record.id] else { throw SnipLibraryError.invalidStore }
+        context.insert(
+          StoredLibraryMetadataRecord(
+            kind: .snip,
+            domainID: record.id,
+            orderKey: snip.manualSortKey,
+            legacyPosition: record.manualPosition,
+            legacyOrderKey: snip.manualSortKey
+          )
+        )
+        changed = true
+      }
+    }
+    return changed
+  }
+
+  package static func validate(_ state: SnipLibraryState) throws {
     guard !state.lists.isEmpty,
       Set(state.lists.map(\.id)).count == state.lists.count,
-      Set(state.lists.map { $0.name.lowercased() }).count == state.lists.count,
+      Set(state.lists.map { SnipListNameAllocator.normalized($0.name) }).count
+        == state.lists.count,
       state.lists.contains(where: { $0.id == SnipList.inboxID }),
       Set(state.snips.map(\.listID)).isSubset(of: Set(state.lists.map(\.id)))
     else { throw SnipLibraryError.invalidStore }
   }
 
-  private static func applyChanges(
+  static func applyChanges(
     from loaded: LoadedStore,
     to state: SnipLibraryState,
     context: ModelContext
@@ -799,6 +790,47 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
         record.update(from: list)
       } else {
         context.insert(StoredListRecord(list))
+      }
+    }
+
+    let metadataRecords = Dictionary(uniqueKeysWithValues: loaded.metadata.map { ($0.id, $0) })
+    let liveMetadataIDs = Set(
+      state.snips.map {
+        StoredLibraryMetadataRecord.identifier(kind: .snip, domainID: $0.id)
+      } + state.lists.map {
+        StoredLibraryMetadataRecord.identifier(kind: .list, domainID: $0.id)
+      }
+    )
+    for record in loaded.metadata where !liveMetadataIDs.contains(record.id) {
+      context.delete(record)
+    }
+    for snip in state.snips {
+      let id = StoredLibraryMetadataRecord.identifier(kind: .snip, domainID: snip.id)
+      if let record = metadataRecords[id] {
+        record.update(orderKey: snip.manualSortKey)
+      } else {
+        context.insert(
+          StoredLibraryMetadataRecord(
+            kind: .snip,
+            domainID: snip.id,
+            orderKey: snip.manualSortKey
+          )
+        )
+      }
+    }
+    for list in state.lists {
+      let id = StoredLibraryMetadataRecord.identifier(kind: .list, domainID: list.id)
+      if let record = metadataRecords[id] {
+        record.update(orderKey: list.sortKey, desiredName: list.desiredName)
+      } else {
+        context.insert(
+          StoredLibraryMetadataRecord(
+            kind: .list,
+            domainID: list.id,
+            orderKey: list.sortKey,
+            desiredName: list.desiredName
+          )
+        )
       }
     }
 

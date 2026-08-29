@@ -113,7 +113,14 @@ package struct CloudRecordDraft: Codable, Equatable, Sendable {
     package let routingFields: [String: CloudFieldValue]
     package let encryptedFields: [String: CloudFieldValue]
     package let assetFields: [String: CloudAssetUpload]
+    package let removedRoutingFields: Set<String>
+    package let removedEncryptedFields: Set<String>
     package let base: CloudRecordShadow?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, recordType, schemaVersion, routingFields, encryptedFields, assetFields
+        case removedRoutingFields, removedEncryptedFields, base
+    }
 
     package init(
         id: CloudRecordID,
@@ -122,6 +129,8 @@ package struct CloudRecordDraft: Codable, Equatable, Sendable {
         routingFields: [String: CloudFieldValue],
         encryptedFields: [String: CloudFieldValue],
         assetFields: [String: CloudAssetUpload] = [:],
+        removedRoutingFields: Set<String> = [],
+        removedEncryptedFields: Set<String> = [],
         base: CloudRecordShadow? = nil
     ) {
         self.id = id
@@ -130,7 +139,39 @@ package struct CloudRecordDraft: Codable, Equatable, Sendable {
         self.routingFields = routingFields
         self.encryptedFields = encryptedFields
         self.assetFields = assetFields
+        self.removedRoutingFields = removedRoutingFields
+        self.removedEncryptedFields = removedEncryptedFields
         self.base = base
+    }
+
+    package init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(CloudRecordID.self, forKey: .id)
+        recordType = try container.decode(String.self, forKey: .recordType)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        routingFields = try container.decode([String: CloudFieldValue].self, forKey: .routingFields)
+        encryptedFields = try container.decode(
+            [String: CloudFieldValue].self, forKey: .encryptedFields)
+        assetFields = try container.decodeIfPresent(
+            [String: CloudAssetUpload].self, forKey: .assetFields) ?? [:]
+        removedRoutingFields = try container.decodeIfPresent(
+            Set<String>.self, forKey: .removedRoutingFields) ?? []
+        removedEncryptedFields = try container.decodeIfPresent(
+            Set<String>.self, forKey: .removedEncryptedFields) ?? []
+        base = try container.decodeIfPresent(CloudRecordShadow.self, forKey: .base)
+    }
+
+    package func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(recordType, forKey: .recordType)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(routingFields, forKey: .routingFields)
+        try container.encode(encryptedFields, forKey: .encryptedFields)
+        try container.encode(assetFields, forKey: .assetFields)
+        try container.encode(removedRoutingFields, forKey: .removedRoutingFields)
+        try container.encode(removedEncryptedFields, forKey: .removedEncryptedFields)
+        try container.encodeIfPresent(base, forKey: .base)
     }
 
     package static func text(
@@ -154,6 +195,12 @@ package struct CloudRecordDraft: Codable, Equatable, Sendable {
 }
 
 package struct CloudRecordSnapshot: Codable, Equatable, Sendable {
+    package enum Completeness: String, Codable, Equatable, Sendable {
+        case full
+        case projected
+        case legacyUnknown
+    }
+
     package let id: CloudRecordID
     package let recordType: String
     package let schemaVersion: Int
@@ -161,6 +208,46 @@ package struct CloudRecordSnapshot: Codable, Equatable, Sendable {
     package let encryptedFields: [String: CloudFieldValue]
     package let assetFields: Set<String>
     package let shadow: CloudRecordShadow
+    package let completeness: Completeness
+
+    private enum CodingKeys: String, CodingKey {
+        case id, recordType, schemaVersion, routingFields, encryptedFields, assetFields, shadow
+        case completeness
+    }
+
+    package init(
+        id: CloudRecordID,
+        recordType: String,
+        schemaVersion: Int,
+        routingFields: [String: CloudFieldValue],
+        encryptedFields: [String: CloudFieldValue],
+        assetFields: Set<String>,
+        shadow: CloudRecordShadow,
+        completeness: Completeness
+    ) {
+        self.id = id
+        self.recordType = recordType
+        self.schemaVersion = schemaVersion
+        self.routingFields = routingFields
+        self.encryptedFields = encryptedFields
+        self.assetFields = assetFields
+        self.shadow = shadow
+        self.completeness = completeness
+    }
+
+    package init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(CloudRecordID.self, forKey: .id)
+        recordType = try container.decode(String.self, forKey: .recordType)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        routingFields = try container.decode([String: CloudFieldValue].self, forKey: .routingFields)
+        encryptedFields = try container.decode(
+            [String: CloudFieldValue].self, forKey: .encryptedFields)
+        assetFields = try container.decode(Set<String>.self, forKey: .assetFields)
+        shadow = try container.decode(CloudRecordShadow.self, forKey: .shadow)
+        completeness = try container.decodeIfPresent(Completeness.self, forKey: .completeness)
+            ?? .legacyUnknown
+    }
 }
 
 package enum CloudRecordError: Error, Equatable, Sendable {
@@ -168,6 +255,8 @@ package enum CloudRecordError: Error, Equatable, Sendable {
     case mismatchedShadow
     case unsupportedValue
     case missingField(String)
+    case invalidField(String)
+    case projectedSnapshot
     case wrongRecordType
     case invalidAssetDestination
     case missingAsset

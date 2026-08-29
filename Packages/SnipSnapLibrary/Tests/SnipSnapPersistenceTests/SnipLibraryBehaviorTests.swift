@@ -95,6 +95,34 @@ final class SnipLibraryBehaviorTests: XCTestCase {
     }
   }
 
+  func testDurableAdaptersPersistSyncOrderKeysAndUseNormalizedDesiredListNames() async throws {
+    try await forEachAdapter { adapter, directory, library in
+      let list = try await createList(named: "Résumé", in: library)
+      await assertThrows(.duplicateList) {
+        _ = try await library.perform(
+          .createList(name: "  resume  ", systemImage: "doc"),
+          sortedBy: .manual
+        )
+      }
+      let first = try await add("First", requestID: UUID(), at: 10, to: list.id, in: library)
+      let second = try await add("Second", requestID: UUID(), at: 20, to: list.id, in: library)
+      _ = try await library.perform(
+        .place(ids: [first.id], in: list.id, before: second.id, basedOn: .manual),
+        sortedBy: .manual
+      )
+      let beforeReopen = await library.snapshot(sortedBy: .manual)
+      let keys = beforeReopen.snips.map(\.manualSortKey)
+      XCTAssertEqual(Set(keys).count, 2, adapter.rawValue)
+      XCTAssertTrue(keys.contains { $0.data.count != 10 }, adapter.rawValue)
+
+      let reopened = try adapter.open(in: directory)
+      let afterReopen = await reopened.snapshot(sortedBy: .manual)
+      XCTAssertEqual(afterReopen.snips.map(\.id), beforeReopen.snips.map(\.id), adapter.rawValue)
+      XCTAssertEqual(afterReopen.snips.map(\.manualSortKey), keys, adapter.rawValue)
+      XCTAssertEqual(afterReopen.lists.first { $0.id == list.id }?.desiredName, "Résumé")
+    }
+  }
+
   func testDurableAdaptersMatchEditMergeListDeletionAndManualOrdering() async throws {
     try await forEachAdapter { adapter, directory, library in
       let work = try await createList(named: "Work", in: library)
@@ -823,8 +851,14 @@ final class SnipLibraryBehaviorTests: XCTestCase {
 
     let migrated = try SwiftDataSnipLibrary(storeURL: storeURL)
     let snapshot = await migrated.snapshot(sortedBy: .manual)
-    XCTAssertEqual(snapshot.lists, [.inbox, work])
-    XCTAssertEqual(snapshot.snips, [snip])
+    let expected = SnipLibraryTransferSnapshot(
+      revision: 0,
+      snips: [snip],
+      lists: [.inbox, work],
+      attachmentData: [:]
+    )
+    XCTAssertEqual(snapshot.lists, expected.lists)
+    XCTAssertEqual(snapshot.snips, expected.snips)
     let reopenedAttachmentURL = try XCTUnwrap(snapshot.attachmentURLs[attachment.id])
     XCTAssertEqual(try Data(contentsOf: reopenedAttachmentURL), Data("V1 attachment".utf8))
     let duplicate = try await migrated.perform(
@@ -840,6 +874,36 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       sortedBy: .manual
     )
     XCTAssertEqual(duplicate.outcome, .add(.duplicate))
+  }
+
+  func testV2OrderBackfillRetriesBeforeAndAfterItsDurableSave() async throws {
+    for crashPoint in LibraryMetadataBackfillPoint.allCases {
+      let directory = temporaryDirectory()
+      defer { try? FileManager.default.removeItem(at: directory) }
+      let storeURL = directory.appendingPathComponent("snips.store")
+      let list = SnipList(id: UUID(), name: "Work", systemImage: "briefcase", position: 9)
+      let first = Snip(content: "First", origin: .quickEntry, listID: list.id, manualPosition: 7)
+      let second = Snip(content: "Second", origin: .quickEntry, listID: list.id, manualPosition: 7)
+      try makeV2LibraryStore(at: storeURL, lists: [.inbox, list], snips: [second, first])
+
+      XCTAssertThrowsError(
+        try SwiftDataSnipLibrary(
+          storeURL: storeURL,
+          metadataBackfillHook: { point in
+            if point == crashPoint { throw BackfillCrash.injected }
+          }
+        )
+      )
+
+      let reopened = try SwiftDataSnipLibrary(storeURL: storeURL)
+      let snapshot = await reopened.snapshot(sortedBy: .manual)
+      XCTAssertEqual(Set(snapshot.snips.map(\.manualSortKey)).count, 2)
+      XCTAssertEqual(
+        snapshot.snips.map(\.id),
+        [first.id, second.id].sorted { $0.uuidString < $1.uuidString }
+      )
+      XCTAssertEqual(snapshot.lists.first { $0.id == list.id }?.desiredName, "Work")
+    }
   }
 
   func testTransferPreservesListOrderFullSnipFieldsAndAttachmentBytesAcrossAdapters() async throws {
@@ -969,6 +1033,30 @@ final class SnipLibraryBehaviorTests: XCTestCase {
     try context.save()
   }
 
+  private func makeV2LibraryStore(
+    at storeURL: URL,
+    lists: [SnipList],
+    snips: [Snip]
+  ) throws {
+    let schema = Schema(versionedSchema: SnipSnapSchemaV2.self)
+    let configuration = ModelConfiguration(
+      "SnipSnapLocal",
+      schema: schema,
+      url: storeURL,
+      cloudKitDatabase: .none
+    )
+    let container = try ModelContainer(
+      for: schema,
+      migrationPlan: SnipSnapSchemaMigrationPlan.self,
+      configurations: [configuration]
+    )
+    let context = ModelContext(container)
+    context.autosaveEnabled = false
+    for list in lists { context.insert(StoredListRecord(list)) }
+    for snip in snips { context.insert(StoredSnipRecord(snip)) }
+    try context.save()
+  }
+
   private func createList(named name: String, in library: any SnipLibrary) async throws -> SnipList
   {
     let update = try await library.perform(
@@ -1022,5 +1110,9 @@ final class SnipLibraryBehaviorTests: XCTestCase {
 
   private enum TestFailure: Error {
     case unexpectedOutcome
+  }
+
+  private enum BackfillCrash: Error {
+    case injected
   }
 }

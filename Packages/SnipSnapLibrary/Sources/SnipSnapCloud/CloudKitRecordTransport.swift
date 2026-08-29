@@ -90,6 +90,9 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CKSyncEngineDelegat
     }
 
     package func send(_ batch: CloudOutboundBatch) async throws -> CloudSentBatch {
+        guard Set(batch.operations.map(\.id)).count == batch.operations.count else {
+            throw CloudTransportError.invalidRecord
+        }
         if case .sent(let result)? = pending { return result }
         if pending != nil { throw CloudTransportError.wrongBatchConfirmation }
         guard let engine else { throw CloudTransportError.notStarted }

@@ -140,6 +140,9 @@ public struct SnipLibraryTransferSnapshot: Equatable, Sendable {
     public let snips: [Snip]
     public let lists: [SnipList]
     public let attachmentData: [UUID: Data]
+    package let legacyManualPositions: [UUID: Int64]
+    package let opaqueSyncStateDigest: Data
+    package let opaqueSyncStatePayload: Data
 
     public init(
         revision: UInt64,
@@ -147,14 +150,49 @@ public struct SnipLibraryTransferSnapshot: Equatable, Sendable {
         lists: [SnipList],
         attachmentData: [UUID: Data]
     ) {
+        let state = SnipLibraryState(snips: snips, lists: lists, seenRequestIDs: [])
         self.revision = revision
-        self.snips = snips
-        self.lists = lists
+        self.snips = state.snips
+        self.lists = state.lists
         self.attachmentData = attachmentData
+        legacyManualPositions = [:]
+        opaqueSyncStateDigest = Data()
+        opaqueSyncStatePayload = Data()
+    }
+
+    package init(
+        revision: UInt64,
+        snips: [Snip],
+        lists: [SnipList],
+        attachmentData: [UUID: Data],
+        legacyManualPositions: [UUID: Int64],
+        opaqueSyncStateDigest: Data = Data(),
+        opaqueSyncStatePayload: Data = Data()
+    ) {
+        let state = SnipLibraryState(snips: snips, lists: lists, seenRequestIDs: [])
+        self.revision = revision
+        self.snips = state.snips
+        self.lists = state.lists
+        self.attachmentData = attachmentData
+        self.legacyManualPositions = legacyManualPositions
+        self.opaqueSyncStateDigest = opaqueSyncStateDigest
+        self.opaqueSyncStatePayload = opaqueSyncStatePayload
+    }
+
+    package func replacingOpaqueSyncStatePayload(_ payload: Data) -> Self {
+        Self(
+            revision: revision,
+            snips: snips,
+            lists: lists,
+            attachmentData: attachmentData,
+            legacyManualPositions: legacyManualPositions,
+            opaqueSyncStateDigest: opaqueSyncStateDigest,
+            opaqueSyncStatePayload: payload
+        )
     }
 }
 
-public struct SnipLibraryTransferResult: Equatable, Sendable {
+public struct SnipLibraryTransferResult: Codable, Equatable, Sendable {
     public let approvedSnipIDs: Set<UUID>
     public let recoveredSourceSnipIDs: Set<UUID>
 
