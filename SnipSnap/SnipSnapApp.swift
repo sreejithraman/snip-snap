@@ -38,7 +38,7 @@ struct SnipSnapApp: App {
                 coordinator: appDelegate.coordinator
             )
         }
-        .defaultSize(width: 400, height: 230)
+        .defaultSize(width: 400, height: 310)
         .windowResizability(.contentSize)
         .commands {
             SnipCommands(coordinator: appDelegate.coordinator)
@@ -163,7 +163,7 @@ private struct ShortcutCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .appSettings) {
             SettingsLink {
-                Text("Keyboard Shortcuts…")
+                Text("Snip Snap Settings…")
             }
             .keyboardShortcut("/", modifiers: .command)
         }

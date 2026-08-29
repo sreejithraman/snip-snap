@@ -17,8 +17,7 @@ final class AppCoordinator {
     private let model: AppModel
     let shortcutSettings: ShortcutSettings
     private let makeHotKeyManager: (@escaping (GlobalHotKeyAction) -> Void) -> any GlobalHotKeyManaging
-    private let isAccessibilityTrusted: () -> Bool
-    private let requestAccessibilityTrust: () -> Void
+    let accessibilityPermissions: AccessibilityPermissionController
     private let selectionReader = AccessibilitySelectionReader()
     private let hud = CaptureHUDController()
     let panelFocusRequests = PassthroughSubject<PanelFocusRequest, Never>()
@@ -41,22 +40,39 @@ final class AppCoordinator {
             _ = AXIsProcessTrustedWithOptions(
                 ["AXTrustedCheckOptionPrompt": true] as CFDictionary
             )
-        }
+        },
+        openAccessibilitySettings: @escaping () -> Void = {
+            let pane = URL(
+                string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility"
+            )
+            if let pane, NSWorkspace.shared.open(pane) { return }
+            _ = NSWorkspace.shared.open(
+                URL(fileURLWithPath: "/System/Applications/System Settings.app")
+            )
+        },
+        accessibilitySetupDefaults: UserDefaults = .standard,
+        accessibilityNotificationCenter: NotificationCenter = .default
     ) {
         self.model = model
         self.shortcutSettings = shortcutSettings
         self.makeHotKeyManager = makeHotKeyManager
-        self.isAccessibilityTrusted = isAccessibilityTrusted
-        self.requestAccessibilityTrust = requestAccessibilityTrust
+        accessibilityPermissions = AccessibilityPermissionController(
+            defaults: accessibilitySetupDefaults,
+            notificationCenter: accessibilityNotificationCenter,
+            isTrusted: isAccessibilityTrusted,
+            requestTrust: requestAccessibilityTrust,
+            openSettings: openAccessibilitySettings
+        )
+        accessibilityPermissions.onBecameGranted = { [weak self] in
+            self?.restartShortcutsAfterAccessibilityGrant()
+        }
     }
 
     func start() {
         observeExternalApplicationActivations()
+        accessibilityPermissions.start()
         guard hotKeys == nil else { return }
         refreshAppShortcutMenu()
-        if !isAccessibilityTrusted() {
-            presentAccessibilityAccessExplanation()
-        }
         let manager = newHotKeyManager()
         do {
             try manager.register(configuration: shortcutSettings.configuration)
@@ -64,12 +80,9 @@ final class AppCoordinator {
         } catch {
             model.presentedError = "Snip Snap could not register its keyboard shortcuts."
         }
-    }
-
-    func requestAccessibilityAccess() {
-        model.isAccessibilityAccessExplanationPresented = false
-        guard !isAccessibilityTrusted() else { return }
-        requestAccessibilityTrust()
+        if accessibilityPermissions.isSetupCardVisible, let panelWindow {
+            showPanel(panelWindow, focusing: nil)
+        }
     }
 
     func setShortcut(_ trigger: ShortcutTrigger, for action: GlobalHotKeyAction) throws {
@@ -230,8 +243,8 @@ final class AppCoordinator {
     }
 
     func captureSelection() {
-        guard isAccessibilityTrusted() else {
-            presentAccessibilityAccessExplanation()
+        guard accessibilityPermissions.refresh() else {
+            presentAccessibilityRepair()
             return
         }
         guard let sourceApplication = frontmostExternalApplication() else {
@@ -292,7 +305,7 @@ final class AppCoordinator {
                     }
                 case .failure(let error):
                     if error == .accessibilityPermissionRequired {
-                        self.presentAccessibilityAccessExplanation()
+                        self.presentAccessibilityRepair()
                         return
                     }
                     self.hud.show(
@@ -304,10 +317,19 @@ final class AppCoordinator {
         }
     }
 
-    private func presentAccessibilityAccessExplanation() {
-        model.isAccessibilityAccessExplanationPresented = true
+    private func presentAccessibilityRepair() {
+        accessibilityPermissions.presentRepair()
         guard let panelWindow else { return }
         showPanel(panelWindow, focusing: nil)
+    }
+
+    private func restartShortcutsAfterAccessibilityGrant() {
+        guard hotKeys != nil else { return }
+        do {
+            try installShortcuts(shortcutSettings.configuration)
+        } catch {
+            model.presentedError = "Snip Snap could not restart its keyboard shortcuts."
+        }
     }
 
     nonisolated static func writeTemporaryAttachments(

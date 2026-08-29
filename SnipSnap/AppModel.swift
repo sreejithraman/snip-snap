@@ -54,7 +54,6 @@ final class AppModel: ObservableObject {
     @Published var selection: Set<UUID> = []
     @Published var editingID: UUID?
     @Published var presentedError: String?
-    @Published var isAccessibilityAccessExplanationPresented = false
     @Published private(set) var latestAddedSnipID: UUID?
     @Published private(set) var sortMode: SnipSortMode
     @Published private(set) var appearance: AppAppearance
