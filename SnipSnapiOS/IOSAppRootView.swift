@@ -49,6 +49,7 @@ struct IOSAppRootView: View {
             }
             settings.setEnableCompletionAction(reloadActiveLibrary)
             settings.setDeleteCompletionAction(reloadActiveLibrary)
+            settings.setEncryptedDataResetCompletionAction(reloadActiveLibrary)
         }
         cloudLifecycleHooks = SnipSnapCloudLifecycleHooks {
             await synchronizeCloudSession(
@@ -162,13 +163,16 @@ private func synchronizeCloudSession(
         case .contentUpdated:
             await model.load()
         case .libraryReplaced, .oldSyncedContentRemovalPending,
-                .oldSyncedContentRemovalCompleted:
+                .oldSyncedContentRemovalCompleted, .encryptedDataResetRequiresChoice,
+                .syncKeptOff:
             let active = try await session.activeLibrary()
             await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
             if case .oldSyncedContentRemovalPending = result {
                 settings.recordRemovalPending(true)
             } else if case .oldSyncedContentRemovalCompleted = result {
                 settings.recordRemovalPending(false)
+            } else if case .encryptedDataResetRequiresChoice = result {
+                settings.recordEncryptedDataReset()
             }
         }
     } catch {

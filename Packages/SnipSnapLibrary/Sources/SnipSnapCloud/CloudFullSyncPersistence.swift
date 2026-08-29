@@ -119,6 +119,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   let namespaceKey: String
   let now: @Sendable () -> Date
   let afterCommitHook: ApplyHook
+  private var observedEncryptedDataReset = false
 
   package init(
     library: SwiftDataSnipLibrary,
@@ -155,6 +156,12 @@ extension CloudFullSyncPersistence {
 
   package func applyStaged(_ id: UUID) async throws {
     guard let batch = try await stagedBatches().first(where: { $0.batchID == id }) else { return }
+    if let rawData = batch.rawBatchData,
+      let raw = try? JSONDecoder().decode(RawStagedBatch.self, from: rawData),
+      Self.containsEncryptedDataReset(raw.batch)
+    {
+      observedEncryptedDataReset = true
+    }
     do {
       _ = try await library.commitCloudFullBatch(batch)
       try await afterCommitHook()
@@ -184,6 +191,9 @@ extension CloudFullSyncPersistence {
     outbound: CloudOutboundBatch?
   ) async throws {
     do {
+      if Self.containsEncryptedDataReset(batch) {
+        observedEncryptedDataReset = true
+      }
       let rawData = try Self.rawBatchData(batch, outbound: outbound)
       let commit = try await makeCommit(batch, outbound: outbound, rawBatchData: rawData)
       try await library.stageCloudFullBatch(commit)
@@ -198,6 +208,21 @@ extension CloudFullSyncPersistence {
         )
       }
       throw CloudTransportError.invalidRecord
+    }
+  }
+
+  package func takeEncryptedDataResetSignal() -> Bool {
+    defer { observedEncryptedDataReset = false }
+    return observedEncryptedDataReset
+  }
+
+  private static func containsEncryptedDataReset(_ batch: CloudSyncBatch) -> Bool {
+    let events: [CloudDatabaseEvent] = switch batch {
+    case .fetched(let fetched): fetched.databaseEvents
+    case .sent(let sent): sent.databaseEvents
+    }
+    return events.contains { event in
+      if case .zoneDeleted(_, reason: .encryptedDataReset) = event { true } else { false }
     }
   }
 

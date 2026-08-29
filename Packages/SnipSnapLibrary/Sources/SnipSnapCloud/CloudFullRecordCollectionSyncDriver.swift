@@ -20,19 +20,25 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
     self.makeTransport = makeTransport
   }
 
-  package func fetch(_ context: CloudCollectionSyncContext) async throws {
-    let coordinator = try await recordCoordinator(context)
+  package func fetch(
+    _ context: CloudCollectionSyncContext
+  ) async throws -> CloudCollectionFetchResult {
+    let (coordinator, store) = try await recordCoordinator(context)
     try await coordinator.fetchRemote()
+    return await store.takeEncryptedDataResetSignal() ? .encryptedDataReset : .fetched
   }
 
-  package func send(_ context: CloudCollectionSyncContext) async throws {
-    let coordinator = try await recordCoordinator(context)
+  package func send(
+    _ context: CloudCollectionSyncContext
+  ) async throws -> CloudCollectionSendResult {
+    let (coordinator, store) = try await recordCoordinator(context)
     try await coordinator.sendPending()
+    return await store.takeEncryptedDataResetSignal() ? .encryptedDataReset : .sent
   }
 
   private func recordCoordinator(
     _ context: CloudCollectionSyncContext
-  ) async throws -> CloudFullSyncCoordinator {
+  ) async throws -> (CloudFullSyncCoordinator, CloudFullSyncPersistence) {
     let storage = try await persistence.snapshot()
     guard storage.activeStore.namespace == binding(context.namespace),
       storage.activeStore.kind == .iCloudSync
@@ -44,7 +50,10 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
       dataZone: context.metadataZone,
       payloadZone: context.payloadZone
     )
-    return CloudFullSyncCoordinator(store: store, transport: makeTransport(context))
+    return (
+      CloudFullSyncCoordinator(store: store, transport: makeTransport(context)),
+      store
+    )
   }
 
   private func binding(_ namespace: CloudSyncNamespace) -> ICloudSyncNamespaceBinding {
@@ -70,9 +79,16 @@ package enum CloudCollectionAssembly {
   package static func settingsModel(
     for coordinator: CloudCollectionCoordinator
   ) -> SyncedContentSettingsModel {
-    SyncedContentSettingsModel(mode: .iCloudSync, deleteAction: {
-      return deleteOutcome(for: try await coordinator.deleteSyncedContent())
-    })
+    SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      enableAction: { _ = try await coordinator.enableSync() },
+      deleteAction: {
+        deleteOutcome(for: try await coordinator.deleteSyncedContent())
+      },
+      encryptedDataResetAction: { choice in
+        resolutionOutcome(for: try await coordinator.resolveEncryptedDataReset(choice))
+      }
+    )
   }
 
   /// The signed main-app lane uses this one path; local-only apps never construct it.
@@ -156,6 +172,8 @@ public enum SnipSnapCloudSyncResult: Equatable, Sendable {
   case libraryReplaced
   case oldSyncedContentRemovalPending
   case oldSyncedContentRemovalCompleted
+  case encryptedDataResetRequiresChoice
+  case syncKeptOff
 }
 
 package actor SnipSnapCloudModeLifecycle {
@@ -211,6 +229,16 @@ package actor SnipSnapCloudModeLifecycle {
       rootURL: rootURL,
       persistence: modePersistence
     )
+    let reset = try await collectionLocal.state().encryptedDataReset
+    if reset?.choice == .keepSyncOff {
+      let coordinator = try makeCollectionCoordinator(modePersistence)
+      _ = try await coordinator.enableSync()
+      collectionCoordinator = coordinator
+      return
+    }
+    if reset != nil {
+      throw CloudCollectionError.encryptedDataResetRequiresChoice
+    }
     let bootstrap = CloudCollectionBootstrapper(
       ownerName: ownerName,
       localStore: collectionLocal,
@@ -255,6 +283,15 @@ package actor SnipSnapCloudModeLifecycle {
     return deleteOutcome(for: try await coordinator.deleteSyncedContent())
   }
 
+  package func resolveEncryptedDataReset(
+    _ choice: EncryptedDataResetChoice
+  ) async throws -> SnipSnapCloudSyncResult {
+    guard let coordinator = try await activeCollectionCoordinator() else {
+      throw CloudCollectionError.noActiveCollection
+    }
+    return syncResult(for: try await coordinator.resolveEncryptedDataReset(choice))
+  }
+
   package func activeLibrary() async throws -> SnipSnapCloudActiveLibrary {
     guard let persistence else {
       return SnipSnapCloudActiveLibrary(library: sourceLibrary, recoveryScope: nil)
@@ -288,9 +325,15 @@ package actor SnipSnapCloudModeLifecycle {
 
   private func activeCollectionCoordinator() async throws -> CloudCollectionCoordinator? {
     if let collectionCoordinator { return collectionCoordinator }
-    guard let persistence,
-      (try await persistence.snapshot()).activeStore.namespace != nil
-    else { return nil }
+    guard let persistence else { return nil }
+    let snapshot = try await persistence.snapshot()
+    if snapshot.activeStore.namespace == nil {
+      let local = try SwiftDataCloudCollectionLocalStore(
+        rootURL: rootURL,
+        persistence: persistence
+      )
+      guard try await local.state().encryptedDataReset != nil else { return nil }
+    }
     let coordinator = try makeCollectionCoordinator(persistence)
     collectionCoordinator = coordinator
     return coordinator
@@ -327,11 +370,15 @@ public actor SnipSnapCloudSyncSession {
   package typealias DeleteAction = @Sendable () async throws -> SyncedContentDeleteOutcome
   package typealias SynchronizeAction = @Sendable () async throws -> SnipSnapCloudSyncResult
   package typealias LibraryAction = @Sendable () async throws -> SnipSnapCloudActiveLibrary
+  package typealias EncryptedDataResetAction = @Sendable (
+    EncryptedDataResetChoice
+  ) async throws -> SnipSnapCloudSyncResult
 
   private let synchronizeAction: SynchronizeAction
   private let enableAction: Action
   private let deleteAction: DeleteAction
   private let libraryAction: LibraryAction
+  private let encryptedDataResetAction: EncryptedDataResetAction
 
   package init(
     coordinator: CloudCollectionCoordinator,
@@ -342,6 +389,9 @@ public actor SnipSnapCloudSyncSession {
     }
     enableAction = { _ = try await coordinator.enableSync() }
     deleteAction = { deleteOutcome(for: try await coordinator.deleteSyncedContent()) }
+    encryptedDataResetAction = { choice in
+      syncResult(for: try await coordinator.resolveEncryptedDataReset(choice))
+    }
     libraryAction = {
       let snapshot = try await persistence.snapshot()
       return SnipSnapCloudActiveLibrary(
@@ -357,12 +407,16 @@ public actor SnipSnapCloudSyncSession {
     synchronize: @escaping SynchronizeAction,
     enable: @escaping Action,
     delete: @escaping DeleteAction,
-    activeLibrary: @escaping LibraryAction
+    activeLibrary: @escaping LibraryAction,
+    resolveEncryptedDataReset: @escaping EncryptedDataResetAction = { _ in
+      throw CloudCollectionError.noActiveCollection
+    }
   ) {
     synchronizeAction = synchronize
     enableAction = enable
     deleteAction = delete
     libraryAction = activeLibrary
+    encryptedDataResetAction = resolveEncryptedDataReset
   }
 
   public func synchronize() async throws -> SnipSnapCloudSyncResult {
@@ -375,6 +429,11 @@ public actor SnipSnapCloudSyncSession {
   }
   public func activeLibrary() async throws -> SnipSnapCloudActiveLibrary {
     try await libraryAction()
+  }
+  public func resolveEncryptedDataReset(
+    _ choice: EncryptedDataResetChoice
+  ) async throws -> SnipSnapCloudSyncResult {
+    try await encryptedDataResetAction(choice)
   }
 }
 
@@ -440,21 +499,32 @@ public enum SnipSnapCloudAppAssembly {
       synchronize: { try await lifecycle.synchronize() },
       enable: { try await lifecycle.enableICloudSync() },
       delete: { try await lifecycle.deleteSyncedContent() },
-      activeLibrary: { try await lifecycle.activeLibrary() }
+      activeLibrary: { try await lifecycle.activeLibrary() },
+      resolveEncryptedDataReset: { choice in
+        try await lifecycle.resolveEncryptedDataReset(choice)
+      }
     )
     if namespace == nil {
       return SnipSnapCloudAppServices(
         syncedContentSettings: SyncedContentSettingsModel(
           mode: .localOnly,
-          enableAction: { try await session.enableICloudSync() }
+          enableAction: { try await session.enableICloudSync() },
+          encryptedDataResetAction: { choice in
+            resolutionOutcome(for: try await session.resolveEncryptedDataReset(choice))
+          }
         ),
         syncSession: session
       )
     }
     return SnipSnapCloudAppServices(
-      syncedContentSettings: SyncedContentSettingsModel(mode: .iCloudSync, deleteAction: {
-        return try await session.deleteSyncedContent()
-      }),
+      syncedContentSettings: SyncedContentSettingsModel(
+        mode: .iCloudSync,
+        enableAction: { try await session.enableICloudSync() },
+        deleteAction: { try await session.deleteSyncedContent() },
+        encryptedDataResetAction: { choice in
+          resolutionOutcome(for: try await session.resolveEncryptedDataReset(choice))
+        }
+      ),
       syncSession: session
     )
   }
@@ -473,18 +543,29 @@ public enum SnipSnapCloudAppAssembly {
     }
     let reset = SimulatedCloudCollectionReset(
       rootURL: rootURL,
-      persistence: syncModeStore.persistence
+      persistence: syncModeStore.persistence,
+      simulateEncryptedDataReset: ProcessInfo.processInfo.environment[
+        "SNIP_SNAP_UI_TEST_ENCRYPTED_RESET"
+      ] == "1"
     )
     let session = SnipSnapCloudSyncSession(
       synchronize: { try await reset.synchronize() },
       enable: { try await reset.enableSync() },
       delete: { try await reset.deleteSyncedContent() },
-      activeLibrary: { try await reset.activeLibrary() }
+      activeLibrary: { try await reset.activeLibrary() },
+      resolveEncryptedDataReset: { choice in
+        try await reset.resolveEncryptedDataReset(choice)
+      }
     )
     return SnipSnapCloudAppServices(
-      syncedContentSettings: SyncedContentSettingsModel(mode: .iCloudSync, deleteAction: {
-        return try await session.deleteSyncedContent()
-      }),
+      syncedContentSettings: SyncedContentSettingsModel(
+        mode: .iCloudSync,
+        enableAction: { try await session.enableICloudSync() },
+        deleteAction: { try await session.deleteSyncedContent() },
+        encryptedDataResetAction: { choice in
+          resolutionOutcome(for: try await session.resolveEncryptedDataReset(choice))
+        }
+      ),
       syncSession: session
     )
   }
@@ -515,7 +596,10 @@ public enum SnipSnapCloudAppAssembly {
       synchronize: { try await lifecycle.synchronize() },
       enable: { try await lifecycle.enableICloudSync() },
       delete: { try await lifecycle.deleteSyncedContent() },
-      activeLibrary: { try await lifecycle.activeLibrary() }
+      activeLibrary: { try await lifecycle.activeLibrary() },
+      resolveEncryptedDataReset: { choice in
+        try await lifecycle.resolveEncryptedDataReset(choice)
+      }
     )
     return SnipSnapCloudAppServices(
       syncedContentSettings: SyncedContentSettingsModel(
@@ -534,10 +618,16 @@ private actor SimulatedCloudCollectionReset {
   private let transport: FakeCloudControlTransport
   private let local: SwiftDataCloudCollectionLocalStore?
   private let coordinator: CloudCollectionCoordinator?
+  private let simulateEncryptedDataReset: Bool
   private var prepared = false
 
-  init(rootURL: URL, persistence: SwiftDataSyncModePersistence) {
+  init(
+    rootURL: URL,
+    persistence: SwiftDataSyncModePersistence,
+    simulateEncryptedDataReset: Bool = false
+  ) {
     self.persistence = persistence
+    self.simulateEncryptedDataReset = simulateEncryptedDataReset
     old = CloudCollectionDescriptor.fresh(ownerName: "ui-test-owner")
     server = FakeCloudServer()
     let transport = FakeCloudControlTransport(server: server)
@@ -575,6 +665,13 @@ private actor SimulatedCloudCollectionReset {
     return deleteOutcome(for: try await coordinator.deleteSyncedContent())
   }
 
+  func resolveEncryptedDataReset(
+    _ choice: EncryptedDataResetChoice
+  ) async throws -> SnipSnapCloudSyncResult {
+    let coordinator = try await prepare()
+    return syncResult(for: try await coordinator.resolveEncryptedDataReset(choice))
+  }
+
   func activeLibrary() async throws -> SnipSnapCloudActiveLibrary {
     let snapshot = try await persistence.snapshot()
     return SnipSnapCloudActiveLibrary(
@@ -592,6 +689,9 @@ private actor SimulatedCloudCollectionReset {
       old.namespace(cloudScope: "private", accountLineage: "ui-test-account")
     )
     await transport.seedControl(old)
+    if simulateEncryptedDataReset {
+      await transport.removeControl()
+    }
     prepared = true
     return coordinator
   }
@@ -609,7 +709,23 @@ private func syncResult(for status: CloudCollectionStatus) -> SnipSnapCloudSyncR
     .oldSyncedContentRemovalCompleted
   case .enabled, .adoptedRemoteCollection, .purged:
     .libraryReplaced
+  case .encryptedDataResetRequiresChoice:
+    .encryptedDataResetRequiresChoice
+  case .syncKeptOff:
+    .syncKeptOff
   }
+}
+
+private func resolutionOutcome(
+  for result: SnipSnapCloudSyncResult
+) -> EncryptedDataResetResolutionOutcome {
+  result == .encryptedDataResetRequiresChoice ? .requiresChoice : .resolved
+}
+
+private func resolutionOutcome(
+  for status: CloudCollectionStatus
+) -> EncryptedDataResetResolutionOutcome {
+  status == .encryptedDataResetRequiresChoice ? .requiresChoice : .resolved
 }
 
 private func deleteOutcome(for status: CloudCollectionStatus) -> SyncedContentDeleteOutcome {
@@ -618,6 +734,10 @@ private func deleteOutcome(for status: CloudCollectionStatus) -> SyncedContentDe
 }
 
 private struct NoopCloudCollectionSyncDriver: CloudCollectionSyncDriver {
-  func fetch(_ context: CloudCollectionSyncContext) async throws {}
-  func send(_ context: CloudCollectionSyncContext) async throws {}
+  func fetch(_ context: CloudCollectionSyncContext) async throws -> CloudCollectionFetchResult {
+    .fetched
+  }
+  func send(_ context: CloudCollectionSyncContext) async throws -> CloudCollectionSendResult {
+    .sent
+  }
 }

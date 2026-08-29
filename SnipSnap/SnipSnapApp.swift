@@ -248,6 +248,13 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                     let active = try await session.activeLibrary()
                     await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
                     cloudServices.syncedContentSettings.recordRemovalPending(false)
+                case .encryptedDataResetRequiresChoice:
+                    let active = try await session.activeLibrary()
+                    await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+                    cloudServices.syncedContentSettings.recordEncryptedDataReset()
+                case .syncKeptOff:
+                    let active = try await session.activeLibrary()
+                    await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
                 }
             } catch {
                 model.presentedError = error.localizedDescription
@@ -284,6 +291,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             }
             syncedContentSettings.setEnableCompletionAction(reloadActiveLibrary)
             syncedContentSettings.setDeleteCompletionAction(reloadActiveLibrary)
+            syncedContentSettings.setEncryptedDataResetCompletionAction(reloadActiveLibrary)
         }
         super.init()
     }

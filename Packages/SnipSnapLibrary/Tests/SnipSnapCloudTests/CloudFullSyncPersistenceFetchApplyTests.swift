@@ -7,6 +7,79 @@ import XCTest
 @testable import SnipSnapPersistence
 
 extension CloudFullSyncPersistenceTests {
+  func testEncryptedDataResetEventStopsPendingWorkAndSignalsCollectionCoordinator() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudEncryptedResetEvent-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let namespace = makeNamespace()
+    let zone = try XCTUnwrap(namespace.zones.first)
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    _ = try await library.perform(
+      .add(
+        content: "must not leave after reset",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [],
+        requestID: UUID(),
+        now: .distantPast
+      ),
+      sortedBy: .manual
+    )
+    let persistence = CloudFullSyncPersistence(
+      library: library,
+      namespace: namespace,
+      dataZone: zone
+    )
+    let batch = CloudFetchedBatch(
+      id: UUID(),
+      items: [],
+      databaseEvents: [.zoneDeleted(zone, reason: .encryptedDataReset)],
+      engineState: nil
+    )
+
+    try await persistence.stage(.fetched(batch))
+    try await persistence.applyStaged(batch.id)
+
+    let pending = try await persistence.pendingChanges()
+    let firstSignal = await persistence.takeEncryptedDataResetSignal()
+    let secondSignal = await persistence.takeEncryptedDataResetSignal()
+    XCTAssertTrue(pending.operations.isEmpty)
+    XCTAssertTrue(firstSignal)
+    XCTAssertFalse(secondSignal)
+  }
+
+  func testEncryptedDataResetReportedWhileSendingSignalsCollectionCoordinator() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudEncryptedResetSendEvent-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let namespace = makeNamespace()
+    let zone = try XCTUnwrap(namespace.zones.first)
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let persistence = CloudFullSyncPersistence(
+      library: library,
+      namespace: namespace,
+      dataZone: zone
+    )
+    let batch = CloudSentBatch(
+      id: UUID(),
+      items: [],
+      databaseEvents: [.zoneDeleted(zone, reason: .encryptedDataReset)],
+      engineState: nil
+    )
+
+    try await persistence.stage(
+      .sent(batch),
+      outbound: CloudOutboundBatch(operations: [])
+    )
+    try await persistence.applyStaged(batch.id)
+
+    let firstSignal = await persistence.takeEncryptedDataResetSignal()
+    let secondSignal = await persistence.takeEncryptedDataResetSignal()
+    XCTAssertTrue(firstSignal)
+    XCTAssertFalse(secondSignal)
+  }
+
   func testDuplicateRemoteDeleteAfterApplyFailureCreatesOneRecoveredSnip() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudDeleteReplay-\(UUID().uuidString)")

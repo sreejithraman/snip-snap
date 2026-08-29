@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SnipSnapCore
 import XCTest
@@ -420,6 +421,84 @@ final class CloudAttachmentStorageTests: XCTestCase {
     )
     let cleaned = try await library.cloudAttachmentStorageSnapshot(namespaceKey: "namespace")
     XCTAssertEqual(Set(cleaned.cleanups.map(\.identity)), Set([oldPayload, replacementPayload]))
+  }
+
+  func testEncryptedResetKeepsDownloadedBytesAndClearsOldCloudState() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let added = try await library.perform(
+      .add(
+        content: "remote attachment",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [],
+        requestID: UUID(),
+        now: .distantPast
+      ),
+      sortedBy: .manual
+    )
+    guard case .add(.added(let snipID)) = added.outcome else {
+      return XCTFail("Expected a saved snip")
+    }
+    let namespace = "reset-namespace"
+    let attachmentID = UUID()
+    let payload = CloudTextStorageIdentity(
+      zoneName: "payload", ownerName: "owner", recordName: UUID().uuidString.lowercased()
+    )
+    let bytes = Data("downloaded before reset".utf8)
+    let metadata = CloudAttachmentMetadataValue(
+      attachmentID: attachmentID,
+      snipID: snipID,
+      position: 0,
+      fileName: "kept.txt",
+      contentType: "text/plain",
+      byteCount: Int64(bytes.count),
+      sha256: Data(SHA256.hash(data: bytes)),
+      payloadIdentity: payload
+    )
+    try await library.commitCloudAttachmentTransitions(
+      namespaceKey: namespace,
+      transitions: [.remoteMetadataAccepted(
+        metadata: metadata,
+        metadataIdentity: CloudTextStorageIdentity(
+          zoneName: "data", ownerName: "owner", recordName: "a-\(attachmentID)"
+        ),
+        shadowData: Data("shadow".utf8),
+        systemFields: Data("fields".utf8)
+      )]
+    )
+    let stagingRoot = try await library.cloudAttachmentStagingRoot(namespaceKey: namespace)
+    let staged = stagingRoot.appendingPathComponent("download/payload")
+    try FileManager.default.createDirectory(
+      at: staged.deletingLastPathComponent(), withIntermediateDirectories: true
+    )
+    try bytes.write(to: staged)
+    let cached = try await library.installCloudAttachmentCacheFile(
+      namespaceKey: namespace,
+      attachmentID: attachmentID,
+      expectedPayloadIdentity: payload,
+      stagedURL: staged,
+      expectedByteCount: Int64(bytes.count),
+      expectedSHA256: Data(SHA256.hash(data: bytes)),
+      maximumBytes: 1_024,
+      now: .distantPast
+    )
+    XCTAssertTrue(cached.path.contains("CloudDownloads"))
+
+    try await library.quarantineCloudNamespaceState(namespaceKey: namespace)
+
+    let snapshot = await library.snapshot(sortedBy: .manual)
+    let keptURL = try XCTUnwrap(snapshot.attachmentURLs[attachmentID])
+    let cloudState = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespace)
+    XCTAssertFalse(keptURL.path.contains("CloudDownloads"))
+    XCTAssertEqual(try Data(contentsOf: keptURL), bytes)
+    XCTAssertTrue(cloudState.publications.isEmpty)
+    XCTAssertTrue(cloudState.cleanups.isEmpty)
+    XCTAssertTrue(cloudState.cacheEntries.isEmpty)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: cached.path))
   }
 
   private func temporaryDirectory() -> URL {

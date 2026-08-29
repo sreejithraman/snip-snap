@@ -81,6 +81,83 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     XCTAssertEqual(model.mode, .iCloudSync)
     XCTAssertEqual(model.state, .ready)
   }
+
+  @MainActor
+  func testEncryptedResetShowsChoicesAndReplacesLibraryBeforeReportingReady() async {
+    let calls = DeleteEventRecorder()
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      encryptedDataResetAction: { choice in
+        XCTAssertEqual(choice, .restoreFromThisDevice)
+        await calls.record("resolve")
+        return .resolved
+      }
+    )
+    model.setEncryptedDataResetCompletionAction {
+      XCTAssertEqual(model.state, .resolvingEncryptedDataReset)
+      await calls.record("replace-library")
+    }
+
+    model.recordEncryptedDataReset()
+    XCTAssertEqual(model.state, .encryptedDataReset)
+    XCTAssertFalse(model.canDelete)
+    XCTAssertTrue(model.detail.contains("read-only recovery copy"))
+
+    await model.resolveEncryptedDataReset(.restoreFromThisDevice)
+
+    let events = await calls.values()
+    XCTAssertEqual(events, ["resolve", "replace-library"])
+    XCTAssertEqual(model.mode, .iCloudSync)
+    XCTAssertEqual(model.state, .ready)
+  }
+
+  @MainActor
+  func testKeepingSyncOffLeavesTheAppLocalOnlyAfterLibraryReplacement() async {
+    let calls = DeleteEventRecorder()
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      enableAction: { await calls.record("enable") },
+      encryptedDataResetAction: { choice in
+        XCTAssertEqual(choice, .keepSyncOff)
+        return .resolved
+      }
+    )
+    model.setEncryptedDataResetCompletionAction {}
+    model.recordEncryptedDataReset()
+
+    await model.resolveEncryptedDataReset(.keepSyncOff)
+
+    XCTAssertEqual(model.mode, .localOnly)
+    XCTAssertEqual(model.state, .ready)
+    XCTAssertEqual(model.statusTitle, "Local Only")
+    XCTAssertTrue(model.canEnable)
+
+    await model.enableICloudSync()
+
+    let events = await calls.values()
+    XCTAssertEqual(events, ["enable"])
+    XCTAssertEqual(model.mode, .iCloudSync)
+  }
+
+  @MainActor
+  func testAResetDuringResolutionKeepsTheRecoveryChoicesVisible() async {
+    let calls = DeleteEventRecorder()
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      encryptedDataResetAction: { _ in .requiresChoice }
+    )
+    model.setEncryptedDataResetCompletionAction {
+      await calls.record("replace-library")
+    }
+    model.recordEncryptedDataReset()
+
+    await model.resolveEncryptedDataReset(.restoreFromThisDevice)
+
+    let events = await calls.values()
+    XCTAssertEqual(events, ["replace-library"])
+    XCTAssertEqual(model.mode, .iCloudSync)
+    XCTAssertEqual(model.state, .encryptedDataReset)
+  }
 }
 
 private actor DeleteCallCounter {

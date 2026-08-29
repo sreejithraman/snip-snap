@@ -25,6 +25,29 @@ struct SyncedContentSettingsView: View {
                     Section {
                         ProgressView("Deleting synced content…")
                     }
+                } else if case .resolvingEncryptedDataReset = model.state {
+                    Section {
+                        ProgressView("Starting a new synced collection…")
+                    }
+                } else if case .encryptedDataReset = model.state {
+                    Section("Choose What to Do") {
+                        Button("Restore from This Device") {
+                            Task {
+                                await model.resolveEncryptedDataReset(.restoreFromThisDevice)
+                            }
+                        }
+                        .accessibilityIdentifier("encrypted-reset-restore")
+
+                        Button("Start Empty") {
+                            Task { await model.resolveEncryptedDataReset(.startEmpty) }
+                        }
+                        .accessibilityIdentifier("encrypted-reset-start-empty")
+
+                        Button("Keep Sync Off") {
+                            Task { await model.resolveEncryptedDataReset(.keepSyncOff) }
+                        }
+                        .accessibilityIdentifier("encrypted-reset-keep-off")
+                    }
                 } else if model.canEnable {
                     Section {
                         Button("Enable iCloud Sync…") {

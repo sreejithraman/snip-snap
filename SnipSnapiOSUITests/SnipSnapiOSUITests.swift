@@ -8,6 +8,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         withRecovery: Bool = false,
         withSyncedContent: Bool = false,
         withSyncEnable: Bool = false,
+        withEncryptedReset: Bool = false,
         accountNotice: Bool = false
     ) -> XCUIApplication {
         let app = XCUIApplication()
@@ -19,6 +20,9 @@ final class SnipSnapiOSUITests: XCTestCase {
             app.launchEnvironment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] = "1"
         }
         if withSyncEnable { app.launchEnvironment["SNIP_SNAP_UI_TEST_SYNC_ENABLE"] = "1" }
+        if withEncryptedReset {
+            app.launchEnvironment["SNIP_SNAP_UI_TEST_ENCRYPTED_RESET"] = "1"
+        }
         if accountNotice {
             app.launchEnvironment["SNIP_SNAP_UI_TEST_ACCOUNT_NOTICE"] = "signedOut"
         }
@@ -100,6 +104,29 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertFalse(app.buttons["delete-synced-content"].exists)
         app.buttons["Done"].tap()
         XCTAssertFalse(priorSnip.waitForExistence(timeout: 3))
+    }
+
+    func testEncryptedDataResetOffersAllThreeSafeChoices() {
+        continueAfterFailure = false
+        let app = launchApp(withSyncedContent: true, withEncryptedReset: true)
+        let settings = app.buttons["settings"]
+        for _ in 0..<3 where !settings.waitForExistence(timeout: 1) {
+            if app.buttons["Show Sidebar"].exists {
+                app.buttons["Show Sidebar"].tap()
+            } else if app.navigationBars.buttons.firstMatch.exists {
+                app.navigationBars.buttons.firstMatch.tap()
+            }
+        }
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        settings.tap()
+
+        XCTAssertTrue(app.staticTexts["iCloud Encrypted Data Was Reset"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["encrypted-reset-restore"].exists)
+        XCTAssertTrue(app.buttons["encrypted-reset-start-empty"].exists)
+        XCTAssertTrue(app.buttons["encrypted-reset-keep-off"].exists)
+
+        app.buttons["encrypted-reset-start-empty"].tap()
+        XCTAssertTrue(app.staticTexts["iCloud Sync On"].waitForExistence(timeout: 5))
     }
 
     func testReviewsRecoveredSnipAndListEdits() {

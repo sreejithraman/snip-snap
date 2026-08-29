@@ -272,7 +272,11 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CKSyncEngineDelegat
         case .didFetchRecordZoneChanges(let result):
             let zone = CloudKitRecordMapper.id(for: result.zoneID)
             if let error = result.error {
-                zoneEvents.append(.failed(zone, Self.failure(error)))
+                if Self.isEncryptedDataReset(error) {
+                    databaseEvents.append(.zoneDeleted(zone, reason: .encryptedDataReset))
+                } else {
+                    zoneEvents.append(.failed(zone, Self.failure(error)))
+                }
             } else {
                 zoneEvents.append(.fetched(zone))
             }
@@ -284,15 +288,18 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CKSyncEngineDelegat
             )
             databaseEvents.append(
                 contentsOf: changes.failedZoneSaves.map {
-                    .failed(
-                        CloudKitRecordMapper.id(for: $0.zone.zoneID),
-                        Self.failure($0.error)
-                    )
+                    let zone = CloudKitRecordMapper.id(for: $0.zone.zoneID)
+                    return Self.isEncryptedDataReset($0.error)
+                        ? .zoneDeleted(zone, reason: .encryptedDataReset)
+                        : .failed(zone, Self.failure($0.error))
                 }
             )
             databaseEvents.append(
                 contentsOf: changes.failedZoneDeletes.map {
-                    .failed(CloudKitRecordMapper.id(for: $0.key), Self.failure($0.value))
+                    let zone = CloudKitRecordMapper.id(for: $0.key)
+                    return Self.isEncryptedDataReset($0.value)
+                        ? .zoneDeleted(zone, reason: .encryptedDataReset)
+                        : .failed(zone, Self.failure($0.value))
                 }
             )
             databaseEvents.append(
@@ -316,10 +323,16 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CKSyncEngineDelegat
             }
             for failure in changes.failedRecordSaves {
                 let id = CloudKitRecordMapper.id(for: failure.record.recordID)
+                if Self.isEncryptedDataReset(failure.error) {
+                    databaseEvents.append(.zoneDeleted(id.zone, reason: .encryptedDataReset))
+                }
                 sendResults[id] = sendResult(for: id, error: failure.error)
             }
             for (recordID, error) in changes.failedRecordDeletes {
                 let id = CloudKitRecordMapper.id(for: recordID)
+                if Self.isEncryptedDataReset(error) {
+                    databaseEvents.append(.zoneDeleted(id.zone, reason: .encryptedDataReset))
+                }
                 sendResults[id] = sendResult(for: id, error: error)
             }
         default:
@@ -395,6 +408,11 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CKSyncEngineDelegat
         case .zoneNotFound: .zoneMissing
         default: .rejected
         }
+    }
+
+    package nonisolated static func isEncryptedDataReset(_ error: Error) -> Bool {
+        guard let error = error as? CKError, error.code == .zoneNotFound else { return false }
+        return error.userInfo[CKErrorUserDidResetEncryptedDataKey] as? Bool == true
     }
 
     private nonisolated static func deletionReason(

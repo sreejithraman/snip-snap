@@ -4,6 +4,91 @@ import SnipSnapCore
 import SwiftData
 
 extension SwiftDataSnipLibrary {
+  /// Moves any downloaded bytes into the durable local attachment tree, then removes all
+  /// namespace-bound attachment queues, shadows, uploads, staging files, and cache rows.
+  package func quarantineCloudNamespaceState(namespaceKey: String) throws {
+    guard let container else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    let loaded = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
+    var createdDirectories: [URL] = []
+    do {
+      for attachment in loaded.attachments where attachment.relativePath.hasPrefix("CloudDownloads/") {
+        let source = try Self.validatedChild(
+          relativePath: attachment.relativePath,
+          root: attachmentRootURL
+        )
+        guard FileManager.default.fileExists(atPath: source.path) else { continue }
+        let safeName = URL(fileURLWithPath: attachment.fileName).lastPathComponent
+        guard !safeName.isEmpty else { throw SnipLibraryError.attachmentCopyFailed }
+        let relativePath = "\(attachment.id.uuidString)/\(safeName)"
+        let destination = try Self.validatedChild(
+          relativePath: relativePath,
+          root: attachmentRootURL
+        )
+        let directory = destination.deletingLastPathComponent()
+        if !FileManager.default.fileExists(atPath: destination.path) {
+          try DurableFile.createDirectory(directory)
+          createdDirectories.append(directory)
+          try FileManager.default.copyItem(at: source, to: destination)
+          try DurableFile.syncFile(destination)
+          try DurableFile.syncDirectory(directory)
+        } else if try Data(contentsOf: destination) != Data(contentsOf: source) {
+          throw SnipLibraryError.attachmentCopyFailed
+        }
+        attachment.relativePath = relativePath
+      }
+      for row in try Self.cloudAttachmentPublications(
+        namespaceKey: namespaceKey,
+        context: context
+      ) { context.delete(row) }
+      for row in try Self.cloudAttachmentCleanups(namespaceKey: namespaceKey, context: context) {
+        context.delete(row)
+      }
+      for row in try Self.cloudAttachmentCacheEntries(
+        namespaceKey: namespaceKey,
+        context: context
+      ) { context.delete(row) }
+      for row in try context.fetch(FetchDescriptor<StoredCloudTextRecord>())
+        where row.namespaceKey == namespaceKey { context.delete(row) }
+      for row in try context.fetch(FetchDescriptor<StoredCloudEngineState>())
+        where row.namespaceKey == namespaceKey { context.delete(row) }
+      for row in try context.fetch(FetchDescriptor<StoredCloudStagedBatch>())
+        where row.namespaceKey == namespaceKey { context.delete(row) }
+      for row in try context.fetch(FetchDescriptor<StoredCloudRecoveryEvent>())
+        where row.namespaceKey == namespaceKey { context.delete(row) }
+      for row in try context.fetch(FetchDescriptor<StoredCloudNamespaceState>())
+        where row.namespaceKey == namespaceKey { context.delete(row) }
+      for row in try context.fetch(FetchDescriptor<StoredCloudEntityRecord>())
+        where row.namespaceKey == namespaceKey { context.delete(row) }
+      for row in try context.fetch(FetchDescriptor<StoredCloudFullConflict>())
+        where row.namespaceKey == namespaceKey { context.delete(row) }
+      for row in try context.fetch(FetchDescriptor<StoredCloudFullEnrollment>())
+        where row.namespaceKey == namespaceKey { context.delete(row) }
+      for row in try context.fetch(FetchDescriptor<StoredCloudDormantBaseRecord>())
+        where row.namespaceKey == namespaceKey { context.delete(row) }
+      for row in try context.fetch(FetchDescriptor<StoredCloudMappingQuarantine>())
+        where row.namespaceKey == namespaceKey { context.delete(row) }
+      for row in try context.fetch(FetchDescriptor<StoredCloudFullBatchReceipt>())
+        where row.namespaceKey == namespaceKey { context.delete(row) }
+      for row in try context.fetch(FetchDescriptor<StoredCloudPendingDelete>())
+        where row.namespaceKey == namespaceKey { context.delete(row) }
+      try afterMutationBeforeSave()
+      try context.save()
+    } catch {
+      context.rollback()
+      removeAttachmentDirectories(createdDirectories)
+      throw error
+    }
+    for root in [
+      try cloudAttachmentCacheRoot(namespaceKey: namespaceKey),
+      try cloudAttachmentUploadRoot(namespaceKey: namespaceKey),
+    ] where FileManager.default.fileExists(atPath: root.path) {
+      try FileManager.default.removeItem(at: root)
+    }
+  }
+
   package func reconcileCloudAttachments(
     namespaceKey: String,
     metadataZoneName: String,

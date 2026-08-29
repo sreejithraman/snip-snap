@@ -1,9 +1,25 @@
 import CloudKit
+import Foundation
 @testable import SnipSnapCloud
 import SnipSnapPersistence
 import XCTest
 
 final class CloudKitRecordTransportTests: XCTestCase {
+    func testEncryptedDataResetFlagIsDistinctFromAnOrdinaryMissingZone() {
+        let reset = CKError(_nsError: NSError(
+            domain: CKErrorDomain,
+            code: CKError.Code.zoneNotFound.rawValue,
+            userInfo: [CKErrorUserDidResetEncryptedDataKey: true]
+        ))
+        let missing = CKError(_nsError: NSError(
+            domain: CKErrorDomain,
+            code: CKError.Code.zoneNotFound.rawValue
+        ))
+
+        XCTAssertTrue(CloudKitRecordTransport.isEncryptedDataReset(reset))
+        XCTAssertFalse(CloudKitRecordTransport.isEncryptedDataReset(missing))
+    }
+
     func testNamespaceKeyUsesCanonicalTypedEncoding() {
         let generation = UUID(uuidString: "12121212-1212-1212-1212-121212121212")!
         let zone = CloudZoneID(name: "zone,one", ownerName: "owner/two")

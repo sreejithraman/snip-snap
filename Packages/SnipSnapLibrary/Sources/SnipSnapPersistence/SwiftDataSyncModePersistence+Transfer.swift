@@ -94,6 +94,55 @@ private struct CloudFullReenableStagedPlan: Codable {
 
 
 extension SwiftDataSyncModePersistence {
+  package func restoreRecoveryStore(
+    _ recoveryStoreID: UUID,
+    intoActiveStoreWith resetID: UUID
+  ) async throws {
+    guard manifest.transition == nil,
+      let recovery = store(id: recoveryStoreID),
+      recovery.lifecycle == .recovery,
+      let active = store(id: manifest.activeStoreID),
+      active.id != recovery.id,
+      active.kind == .iCloudSync
+    else { throw SyncModePersistenceError.transitionInProgress }
+    let source = try await libraryForTransition(storeID: recovery.id)
+      .transferSnapshot(revision: recovery.revision)
+    var recoverableSnips = source.snips
+    for index in recoverableSnips.indices {
+      recoverableSnips[index].attachments.removeAll {
+        source.attachmentData[$0.id] == nil
+      }
+    }
+    let userData = SnipLibraryTransferSnapshot(
+      revision: source.revision,
+      snips: recoverableSnips,
+      lists: source.lists,
+      attachmentData: source.attachmentData
+    )
+    let target = try libraryForTransition(storeID: active.id)
+    _ = try await target.mergeTransferSnapshot(
+      userData,
+      transitionID: resetID
+    )
+    guard let namespace = active.namespace else {
+      throw SyncModePersistenceError.transitionInProgress
+    }
+    let snapshot = try await target.checkedSnapshot(sortedBy: .manual)
+    var references = Set(snapshot.lists.map {
+      CloudEntityReference(kind: .list, domainID: $0.id)
+    })
+    references.formUnion(snapshot.snips.map {
+      CloudEntityReference(kind: .snip, domainID: $0.id)
+    })
+    try await target.setCloudEnrollment(
+      namespaceKey: Self.namespaceKey(namespace),
+      references: references,
+      localDependencies: Dictionary(uniqueKeysWithValues: snapshot.snips.map {
+        ($0.id, $0.listID)
+      })
+    )
+  }
+
   package func freezeSource() throws -> SyncModeFreezeToken {
     guard manifest.writeReservation == nil, !writeAdmissionInProgress else {
       throw SyncModePersistenceError.transitionInProgress

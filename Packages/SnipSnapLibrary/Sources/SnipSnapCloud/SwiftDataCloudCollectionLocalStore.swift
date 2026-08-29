@@ -1,4 +1,5 @@
 import Foundation
+import SnipSnapCore
 import SnipSnapPersistence
 
 /// Keeps reset bookkeeping beside the sync-mode manifest and preserves replaced stores.
@@ -8,12 +9,14 @@ package actor SwiftDataCloudCollectionLocalStore: CloudCollectionLocalStore {
     var hasSyncedBefore: Bool
     var cleanupZones: Set<CloudZoneID>
     var deletionState: CloudCollectionDeletionState?
+    var encryptedDataReset: CloudEncryptedDataReset?
 
     static let empty = StoredState(
       version: 1,
       hasSyncedBefore: false,
       cleanupZones: [],
-      deletionState: CloudCollectionDeletionState.none
+      deletionState: CloudCollectionDeletionState.none,
+      encryptedDataReset: nil
     )
   }
 
@@ -51,13 +54,15 @@ package actor SwiftDataCloudCollectionLocalStore: CloudCollectionLocalStore {
   }
 
   package func state() async throws -> CloudCollectionLocalState {
+    try await finishResetQuarantineIfNeeded()
     let snapshot = try await persistence.snapshot()
     let namespace = snapshot.activeStore.namespace.map(Self.namespace)
     return CloudCollectionLocalState(
       hasSyncedBefore: stored.hasSyncedBefore || namespace != nil,
       activeNamespace: namespace,
       cleanupZones: stored.cleanupZones,
-      deletionState: stored.deletionState ?? .none
+      deletionState: stored.deletionState ?? .none,
+      encryptedDataReset: stored.encryptedDataReset
     )
   }
 
@@ -99,6 +104,118 @@ package actor SwiftDataCloudCollectionLocalStore: CloudCollectionLocalStore {
     var next = stored
     next.deletionState = .completed
     try save(next)
+  }
+
+  package func beginEncryptedDataReset(from namespace: CloudSyncNamespace) async throws {
+    if let current = stored.encryptedDataReset {
+      guard current.priorNamespace == namespace else {
+        throw CloudCollectionLocalStoreError.invalidState
+      }
+      try await finishResetQuarantineIfNeeded()
+      return
+    }
+    let snapshot = try await persistence.snapshot()
+    guard snapshot.activeStore.namespace.map(Self.namespace) == namespace else {
+      throw CloudCollectionLocalStoreError.invalidState
+    }
+    var next = stored
+    next.hasSyncedBefore = true
+    next.encryptedDataReset = CloudEncryptedDataReset(
+      priorNamespace: namespace,
+      recoveryStoreID: snapshot.activeStore.id
+    )
+    try save(next)
+    try await finishResetQuarantineIfNeeded()
+  }
+
+  package func restartEncryptedDataReset(from namespace: CloudSyncNamespace) async throws {
+    guard stored.encryptedDataReset != nil else {
+      try await beginEncryptedDataReset(from: namespace)
+      return
+    }
+    let snapshot = try await persistence.snapshot()
+    guard snapshot.activeStore.namespace.map(Self.namespace) == namespace else {
+      throw CloudCollectionLocalStoreError.invalidState
+    }
+    var next = stored
+    next.hasSyncedBefore = true
+    next.encryptedDataReset = CloudEncryptedDataReset(
+      priorNamespace: namespace,
+      recoveryStoreID: snapshot.activeStore.id
+    )
+    try save(next)
+    try await finishResetQuarantineIfNeeded()
+  }
+
+  package func prepareEncryptedDataResetEnable() async throws {
+    guard let reset = stored.encryptedDataReset, reset.choice == .keepSyncOff else {
+      throw CloudCollectionLocalStoreError.invalidState
+    }
+    let snapshot = try await persistence.snapshot()
+    guard snapshot.activeStore.namespace == nil else {
+      throw CloudCollectionLocalStoreError.invalidState
+    }
+    var next = stored
+    next.encryptedDataReset = CloudEncryptedDataReset(
+      priorNamespace: reset.priorNamespace,
+      recoveryStoreID: snapshot.activeStore.id
+    )
+    try save(next)
+    try await finishResetQuarantineIfNeeded()
+  }
+
+  package func chooseEncryptedDataReset(
+    _ choice: EncryptedDataResetChoice,
+    proposal: CloudCollectionDescriptor?
+  ) throws {
+    guard var reset = stored.encryptedDataReset,
+      reset.choice == nil || reset.choice == choice,
+      reset.proposal == nil || reset.proposal == proposal
+    else { throw CloudCollectionLocalStoreError.invalidState }
+    reset.choice = choice
+    reset.proposal = proposal
+    var next = stored
+    next.encryptedDataReset = reset
+    try save(next)
+  }
+
+  package func activateResetCollection(
+    _ namespace: CloudSyncNamespace,
+    recoveryStoreID: UUID?,
+    seedRecovery: Bool,
+    resetID: UUID
+  ) async throws {
+    guard let reset = stored.encryptedDataReset, reset.id == resetID,
+      reset.recoveryStoreID == recoveryStoreID
+    else { throw CloudCollectionLocalStoreError.invalidState }
+    try await persistence.activateEmptyCollection(namespace: namespace.binding)
+    if seedRecovery, let recoveryStoreID {
+      try await persistence.restoreRecoveryStore(
+        recoveryStoreID,
+        intoActiveStoreWith: resetID
+      )
+    }
+    var next = stored
+    next.hasSyncedBefore = true
+    try save(next)
+  }
+
+  package func finishEncryptedDataReset() throws {
+    var next = stored
+    next.encryptedDataReset = nil
+    try save(next)
+  }
+
+  private func finishResetQuarantineIfNeeded() async throws {
+    guard let reset = stored.encryptedDataReset else { return }
+    let snapshot = try await persistence.snapshot()
+    if snapshot.activeStore.id == reset.recoveryStoreID {
+      let library = try await persistence.libraryForTransition(storeID: snapshot.activeStore.id)
+      try await library.quarantineCloudNamespaceState(
+        namespaceKey: reset.priorNamespace.canonicalKey
+      )
+      try await persistence.activateEmptyCollection(namespace: nil)
+    }
   }
 
   private func save(_ value: StoredState) throws {
