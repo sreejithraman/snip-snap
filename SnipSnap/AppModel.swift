@@ -82,8 +82,8 @@ final class AppModel: ObservableObject {
         return Set(snips.filter { ids.contains($0.id) }.map(\.listID)).count == 1
     }
 
-    private let library: any SnipLibrary
-    private let recoveryScope: SnipRecoveryScope?
+    private var library: any SnipLibrary
+    private var recoveryScope: SnipRecoveryScope?
     private var attachmentURLs: [UUID: URL] = [:]
     private let defaults: UserDefaults
     private let commandLock = AppModelCommandLock()
@@ -169,6 +169,21 @@ final class AppModel: ObservableObject {
 
     func reload() async {
         await withCommandLock { await reloadUnlocked() }
+    }
+
+    func replaceLibrary(
+        _ library: any SnipLibrary,
+        recoveryScope: SnipRecoveryScope?
+    ) async {
+        await withCommandLock {
+            self.library = library
+            self.recoveryScope = recoveryScope
+            undoHistory = []
+            redoHistory = []
+            selection = []
+            editingID = nil
+            await reloadUnlocked()
+        }
     }
 
     private func reloadUnlocked() async {

@@ -156,6 +156,7 @@ package actor CloudCollectionCoordinator {
   private let syncDriver: any CloudCollectionSyncDriver
   private let makeDescriptor: DescriptorFactory
   private let afterStep: StepHook
+  private let reservedZones: Set<CloudZoneID>
   private var operationInProgress = false
 
   package init(
@@ -166,6 +167,7 @@ package actor CloudCollectionCoordinator {
     transport: any CloudCollectionControlTransport,
     syncDriver: any CloudCollectionSyncDriver,
     makeDescriptor: @escaping DescriptorFactory,
+    reservedZones: Set<CloudZoneID> = [],
     afterStep: @escaping StepHook = { _ in }
   ) {
     self.cloudScope = cloudScope
@@ -175,6 +177,7 @@ package actor CloudCollectionCoordinator {
     self.transport = transport
     self.syncDriver = syncDriver
     self.makeDescriptor = makeDescriptor
+    self.reservedZones = reservedZones
     self.afterStep = afterStep
   }
 
@@ -184,6 +187,7 @@ package actor CloudCollectionCoordinator {
     guard let current = try await transport.fetchControl() else {
       throw CloudCollectionError.noActiveCollection
     }
+    try validate(current.descriptor)
     let fresh = makeDescriptor()
     try validate(fresh)
     try await localStore.stageCleanup(fresh.zones)
@@ -192,6 +196,7 @@ package actor CloudCollectionCoordinator {
     let saved = try await transport.saveControl(fresh, replacing: current.version)
     switch saved {
     case .accepted(let accepted):
+      try validate(accepted.descriptor)
       try afterStep(.controlPublished)
       let namespace = accepted.descriptor.namespace(
         cloudScope: cloudScope,
@@ -201,13 +206,16 @@ package actor CloudCollectionCoordinator {
       try await localStore.stageCleanup(oldZones)
       try await localStore.adopt(namespace)
       try afterStep(.localCollectionAdopted)
-      try await localStore.finishCleanup(accepted.descriptor.zones)
-      try await syncDriver.fetch(context(accepted.descriptor))
-      try await transport.deleteZones(oldZones)
+      await finishCleanupWhenPossible(accepted.descriptor.zones)
+      await fetchWhenPossible(accepted.descriptor)
+      guard await deleteZonesWhenPossible(oldZones) else {
+        return .deletedSyncedContent(namespace)
+      }
       try afterStep(.oldZonesDeleted)
-      try await localStore.finishCleanup(oldZones)
+      await finishCleanupWhenPossible(oldZones)
       return .deletedSyncedContent(namespace)
     case .conflict(let winning):
+      try validate(winning.descriptor)
       let oldZones = current.descriptor.zones.subtracting(winning.descriptor.zones)
       try await localStore.stageCleanup(oldZones)
       let namespace = winning.descriptor.namespace(
@@ -215,8 +223,8 @@ package actor CloudCollectionCoordinator {
         accountLineage: accountLineage
       )
       try await localStore.adopt(namespace)
-      try await syncDriver.fetch(context(winning.descriptor))
-      try? await cleanPendingZones(protecting: winning.descriptor.zones)
+      await fetchWhenPossible(winning.descriptor)
+      await cleanPendingZonesWhenPossible(protecting: winning.descriptor.zones)
       return .adoptedRemoteCollection(namespace)
     }
   }
@@ -300,6 +308,7 @@ package actor CloudCollectionCoordinator {
     let result = try await transport.saveControl(fresh, replacing: nil)
     switch result {
     case .accepted(let accepted):
+      try validate(accepted.descriptor)
       let namespace = accepted.descriptor.namespace(
         cloudScope: cloudScope,
         accountLineage: accountLineage
@@ -307,24 +316,48 @@ package actor CloudCollectionCoordinator {
       try await localStore.adopt(namespace)
       try await localStore.finishCleanup(accepted.descriptor.zones)
       try await syncDriver.fetch(context(accepted.descriptor))
+      try await cleanPendingZones(protecting: accepted.descriptor.zones)
       return .enabled(namespace)
     case .conflict(let winning):
+      try validate(winning.descriptor)
       let namespace = winning.descriptor.namespace(
         cloudScope: cloudScope,
         accountLineage: accountLineage
       )
       try await localStore.adopt(namespace)
       try await syncDriver.fetch(context(winning.descriptor))
-      try? await cleanPendingZones(protecting: winning.descriptor.zones)
+      try await cleanPendingZones(protecting: winning.descriptor.zones)
       return .enabled(namespace)
     }
   }
 
   private func cleanPendingZones(protecting active: Set<CloudZoneID>) async throws {
-    let pending = try await localStore.state().cleanupZones.subtracting(active)
+    let pending = try await localStore.state().cleanupZones
+      .subtracting(active.union(reservedZones))
     guard !pending.isEmpty else { return }
     try await transport.deleteZones(pending)
     try await localStore.finishCleanup(pending)
+  }
+
+  private func fetchWhenPossible(_ descriptor: CloudCollectionDescriptor) async {
+    try? await syncDriver.fetch(context(descriptor))
+  }
+
+  private func deleteZonesWhenPossible(_ zones: Set<CloudZoneID>) async -> Bool {
+    do {
+      try await transport.deleteZones(zones)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  private func finishCleanupWhenPossible(_ zones: Set<CloudZoneID>) async {
+    try? await localStore.finishCleanup(zones)
+  }
+
+  private func cleanPendingZonesWhenPossible(protecting active: Set<CloudZoneID>) async {
+    try? await cleanPendingZones(protecting: active)
   }
 
   private func beginOperation() throws {
@@ -349,6 +382,7 @@ package actor CloudCollectionCoordinator {
 
   private func validate(_ descriptor: CloudCollectionDescriptor) throws {
     guard descriptor.metadataZone != descriptor.payloadZone,
+      descriptor.zones.isDisjoint(with: reservedZones),
       !descriptor.metadataZone.name.isEmpty,
       !descriptor.payloadZone.name.isEmpty,
       descriptor.metadataZone.ownerName == ownerName,

@@ -1,4 +1,5 @@
 import SnipSnapCore
+import SnipSnapCloud
 import SnipSnapPersistence
 import SwiftUI
 
@@ -8,6 +9,7 @@ struct IOSAppRootView: View {
     @State private var sheet: AppSheet?
     private let uiTestAttachmentURLs: [URL]
     private let syncedContentSettings: SyncedContentSettingsModel
+    private let cloudSyncSession: SnipSnapCloudSyncSession?
 
     init(
         library: any SnipLibrary,
@@ -17,19 +19,32 @@ struct IOSAppRootView: View {
         startupError: String? = nil,
         uiTestAttachmentURLs: [URL] = [],
         syncedContentSettings: SyncedContentSettingsModel? = nil,
+        cloudSyncSession: SnipSnapCloudSyncSession? = nil,
         shareImportOperation: (@Sendable () async -> Int)? = nil
     ) {
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
-        self.syncedContentSettings = syncedContentSettings
+        let settings = syncedContentSettings
             ?? SyncedContentSettingsModel(mode: .localOnly)
-        _appGraph = State(initialValue: IOSAppGraph(
+        self.syncedContentSettings = settings
+        self.cloudSyncSession = cloudSyncSession
+        let graph = IOSAppGraph(
             library: library,
             recoveryScope: recoveryScope,
             shareImports: shareImports,
             initialSnapshot: initialSnapshot ?? SnipLibrarySnapshot(snips: [], lists: [.inbox]),
             startupError: startupError,
             shareImportOperation: shareImportOperation
-        ))
+        )
+        if let cloudSyncSession {
+            settings.setDeleteCompletionAction {
+                let active = try await cloudSyncSession.activeLibrary()
+                await graph.model.replaceLibrary(
+                    active.library,
+                    recoveryScope: active.recoveryScope
+                )
+            }
+        }
+        _appGraph = State(initialValue: graph)
     }
 
     private var model: IOSAppModel { appGraph.model }
@@ -74,6 +89,7 @@ struct IOSAppRootView: View {
             Text(model.errorMessage ?? "Please try again.")
         }
         .task {
+            await synchronizeAndReloadLibrary()
             if let shareImporter = appGraph.shareImporter {
                 await shareImporter.importPendingAndReload()
             } else {
@@ -90,6 +106,32 @@ struct IOSAppRootView: View {
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active, let shareImporter = appGraph.shareImporter else { return }
             Task { await shareImporter.importPendingAndReload() }
+        }
+    }
+
+    private func synchronizeAndReloadLibrary() async {
+        guard let cloudSyncSession else { return }
+        do {
+            switch try await cloudSyncSession.synchronize() {
+            case .noChange:
+                break
+            case .contentUpdated:
+                await model.load()
+            case .libraryReplaced:
+                await reloadActiveLibrary()
+            }
+        } catch {
+            model.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func reloadActiveLibrary() async {
+        guard let cloudSyncSession else { return }
+        do {
+            let active = try await cloudSyncSession.activeLibrary()
+            await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+        } catch {
+            model.errorMessage = error.localizedDescription
         }
     }
 }

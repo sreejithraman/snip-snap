@@ -6,8 +6,8 @@ import SnipSnapPersistence
 @MainActor
 @Observable
 final class IOSAppModel {
-    private let library: any SnipLibrary
-    private let recoveryScope: SnipRecoveryScope?
+    private var library: any SnipLibrary
+    private var recoveryScope: SnipRecoveryScope?
 
     private(set) var snips: [Snip]
     private(set) var lists: [SnipList]
@@ -68,6 +68,16 @@ final class IOSAppModel {
     func load() async {
         apply(await library.snapshot(sortedBy: .chronological))
         await loadRecoveries()
+    }
+
+    func replaceLibrary(
+        _ library: any SnipLibrary,
+        recoveryScope: SnipRecoveryScope?
+    ) async {
+        self.library = library
+        self.recoveryScope = recoveryScope
+        selectedSnipID = nil
+        await load()
     }
 
     @discardableResult

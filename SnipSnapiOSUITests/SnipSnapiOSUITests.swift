@@ -23,13 +23,25 @@ final class SnipSnapiOSUITests: XCTestCase {
     func testDeleteSyncedContentExplainsAndConfirmsReset() {
         continueAfterFailure = false
         let app = launchApp(withSyncedContent: true)
+        app.buttons["new-snip"].tap()
+        let editor = app.textViews["snip-text"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        editor.tap()
+        editor.typeText("Visible before cloud reset")
+        app.buttons["save-snip"].tap()
+        let priorSnip = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "Visible before cloud reset")
+        ).firstMatch
+        XCTAssertTrue(priorSnip.waitForExistence(timeout: 3))
         let settings = app.buttons["settings"]
-        if !settings.waitForExistence(timeout: 1) {
+        for _ in 0..<3 where !settings.waitForExistence(timeout: 1) {
             let showSidebar = app.buttons["Show Sidebar"]
             if showSidebar.exists {
                 showSidebar.tap()
             } else if app.buttons["BackButton"].exists {
                 app.buttons["BackButton"].tap()
+            } else if app.navigationBars.buttons.firstMatch.exists {
+                app.navigationBars.buttons.firstMatch.tap()
             }
         }
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
@@ -46,6 +58,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         ).firstMatch
         XCTAssertTrue(controlRecordNote.exists)
         XCTAssertFalse(app.buttons["delete-synced-content"].exists)
+        app.buttons["Done"].tap()
+        XCTAssertFalse(priorSnip.waitForExistence(timeout: 3))
     }
 
     func testReviewsRecoveredSnipAndListEdits() {

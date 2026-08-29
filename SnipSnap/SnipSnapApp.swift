@@ -78,6 +78,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     let model: AppModel
     let shortcutSettings: ShortcutSettings
     let syncedContentSettings: SyncedContentSettingsModel
+    let cloudSyncSession: SnipSnapCloudSyncSession?
     let coordinator: AppCoordinator
     let fileDropController: PanelFileDropController
     let snipDragSourceController: SnipDragSourceController
@@ -117,15 +118,15 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             recoveryScope: assembly.recoveryScope
         )
         let shortcutSettings = ShortcutSettings()
-        let syncedContentSettings: SyncedContentSettingsModel
+        let cloudServices: SnipSnapCloudAppServices
 #if DEBUG
         if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1" {
-            syncedContentSettings = SnipSnapCloudAppAssembly.simulatedSyncedContentSettings(
+            cloudServices = SnipSnapCloudAppAssembly.simulatedServices(
                 rootURL: syncModeRootURL,
                 syncModeStore: assembly.syncModeStore
             )
         } else {
-            syncedContentSettings = SnipSnapCloudAppAssembly.syncedContentSettings(
+            cloudServices = SnipSnapCloudAppAssembly.services(
                 rootURL: syncModeRootURL,
                 syncModeStore: assembly.syncModeStore,
                 containerIdentifier: Bundle.main.object(
@@ -134,7 +135,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             )
         }
 #else
-        syncedContentSettings = SnipSnapCloudAppAssembly.syncedContentSettings(
+        cloudServices = SnipSnapCloudAppAssembly.services(
             rootURL: syncModeRootURL,
             syncModeStore: assembly.syncModeStore,
             containerIdentifier: Bundle.main.object(
@@ -146,7 +147,8 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let snipDragSourceController = SnipDragSourceController()
         self.model = model
         self.shortcutSettings = shortcutSettings
-        self.syncedContentSettings = syncedContentSettings
+        syncedContentSettings = cloudServices.syncedContentSettings
+        cloudSyncSession = cloudServices.syncSession
         self.fileDropController = fileDropController
         self.snipDragSourceController = snipDragSourceController
         updateChecksEnabled = isReleaseApp &&
@@ -157,6 +159,15 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             userDriverDelegate: nil
         )
         coordinator = AppCoordinator(model: model, shortcutSettings: shortcutSettings)
+        if let cloudSyncSession {
+            syncedContentSettings.setDeleteCompletionAction {
+                let active = try await cloudSyncSession.activeLibrary()
+                await model.replaceLibrary(
+                    active.library,
+                    recoveryScope: active.recoveryScope
+                )
+            }
+        }
         super.init()
     }
 
@@ -184,6 +195,26 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         )
         coordinator.attachPanelWindow(panel)
         coordinator.start()
+        if let cloudSyncSession {
+            Task { @MainActor [model] in
+                do {
+                    switch try await cloudSyncSession.synchronize() {
+                    case .noChange:
+                        break
+                    case .contentUpdated:
+                        await model.reload()
+                    case .libraryReplaced:
+                        let active = try await cloudSyncSession.activeLibrary()
+                        await model.replaceLibrary(
+                            active.library,
+                            recoveryScope: active.recoveryScope
+                        )
+                    }
+                } catch {
+                    model.presentedError = error.localizedDescription
+                }
+            }
+        }
         if !panel.restoredSavedFrame {
             panel.center()
         }

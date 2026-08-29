@@ -284,6 +284,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
   let lockURL: URL
   let attachmentRootURL: URL
   let readOnlyRecoveryMarkerURL: URL
+  let recoveryQuarantineCompleteMarkerURL: URL
   let container: ModelContainer?
   let isAvailable: Bool
   let afterMutationBeforeSave: @Sendable () throws -> Void
@@ -327,6 +328,9 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     self.lockURL = lockURL
     attachmentRootURL = Self.attachmentRootURL(forStoreURL: storeURL)
     readOnlyRecoveryMarkerURL = Self.readOnlyRecoveryMarkerURL(forStoreURL: storeURL)
+    recoveryQuarantineCompleteMarkerURL = Self.recoveryQuarantineCompleteMarkerURL(
+      forStoreURL: storeURL
+    )
     self.container = container
     isAvailable = true
     self.afterMutationBeforeSave = afterMutationBeforeSave
@@ -371,6 +375,9 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     lockURL = storeURL.appendingPathExtension("lock")
     attachmentRootURL = Self.attachmentRootURL(forStoreURL: storeURL)
     readOnlyRecoveryMarkerURL = Self.readOnlyRecoveryMarkerURL(forStoreURL: storeURL)
+    recoveryQuarantineCompleteMarkerURL = Self.recoveryQuarantineCompleteMarkerURL(
+      forStoreURL: storeURL
+    )
     container = nil
     isAvailable = false
     afterMutationBeforeSave = {}
@@ -425,6 +432,11 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       .appendingPathComponent(".snipsnap-read-only-recovery", isDirectory: false)
   }
 
+  package static func recoveryQuarantineCompleteMarkerURL(forStoreURL storeURL: URL) -> URL {
+    storeURL.deletingLastPathComponent()
+      .appendingPathComponent(".snipsnap-recovery-quarantine-complete", isDirectory: false)
+  }
+
   package func markReadOnlyRecovery() throws {
     try DurableFile.write(Data("1".utf8), to: readOnlyRecoveryMarkerURL)
   }
@@ -432,6 +444,20 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
   package func removeReadOnlyRecoveryMarker() throws {
     guard FileManager.default.fileExists(atPath: readOnlyRecoveryMarkerURL.path) else { return }
     try FileManager.default.removeItem(at: readOnlyRecoveryMarkerURL)
+  }
+
+  package func isRecoveryQuarantineComplete() -> Bool {
+    FileManager.default.fileExists(atPath: recoveryQuarantineCompleteMarkerURL.path)
+  }
+
+  package func markRecoveryQuarantineComplete() throws {
+    try DurableFile.write(Data("1".utf8), to: recoveryQuarantineCompleteMarkerURL)
+  }
+
+  package func removeRecoveryQuarantineCompleteMarker() throws {
+    guard FileManager.default.fileExists(atPath: recoveryQuarantineCompleteMarkerURL.path)
+    else { return }
+    try FileManager.default.removeItem(at: recoveryQuarantineCompleteMarkerURL)
   }
 
   private static func publishShareDestinations(_ lists: [SnipList], storeURL: URL) throws {

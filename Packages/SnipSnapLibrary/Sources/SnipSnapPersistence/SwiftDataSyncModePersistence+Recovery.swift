@@ -25,6 +25,12 @@ extension SwiftDataSyncModePersistence {
       if FileManager.default.fileExists(atPath: marker.path) {
         try FileManager.default.removeItem(at: marker)
       }
+      let quarantineMarker = SwiftDataSnipLibrary.recoveryQuarantineCompleteMarkerURL(
+        forStoreURL: root.appendingPathComponent("snips.store", isDirectory: false)
+      )
+      if FileManager.default.fileExists(atPath: quarantineMarker.path) {
+        try FileManager.default.removeItem(at: quarantineMarker)
+      }
     }
     let removable = value.stores.filter {
       $0.id != value.activeStoreID && ($0.lifecycle == .creating || $0.lifecycle == .deleting)

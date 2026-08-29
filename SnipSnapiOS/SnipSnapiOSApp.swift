@@ -11,6 +11,7 @@ struct SnipSnapiOSApp: App {
     private let uiTestAttachmentURLs: [URL]
     private let recoveryScope: SnipRecoveryScope?
     private let syncedContentSettings: SyncedContentSettingsModel
+    private let cloudSyncSession: SnipSnapCloudSyncSession?
 
     init() {
         let startup = Self.makeLibrary()
@@ -19,14 +20,15 @@ struct SnipSnapiOSApp: App {
         startupError = startup.error
         uiTestAttachmentURLs = startup.uiTestAttachmentURLs
         recoveryScope = startup.recoveryScope
+        let cloudServices: SnipSnapCloudAppServices
 #if DEBUG
         if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1" {
-            syncedContentSettings = SnipSnapCloudAppAssembly.simulatedSyncedContentSettings(
+            cloudServices = SnipSnapCloudAppAssembly.simulatedServices(
                 rootURL: startup.syncModeRootURL,
                 syncModeStore: startup.syncModeStore
             )
         } else {
-            syncedContentSettings = SnipSnapCloudAppAssembly.syncedContentSettings(
+            cloudServices = SnipSnapCloudAppAssembly.services(
                 rootURL: startup.syncModeRootURL,
                 syncModeStore: startup.syncModeStore,
                 containerIdentifier: Bundle.main.object(
@@ -35,7 +37,7 @@ struct SnipSnapiOSApp: App {
             )
         }
 #else
-        syncedContentSettings = SnipSnapCloudAppAssembly.syncedContentSettings(
+        cloudServices = SnipSnapCloudAppAssembly.services(
             rootURL: startup.syncModeRootURL,
             syncModeStore: startup.syncModeStore,
             containerIdentifier: Bundle.main.object(
@@ -43,6 +45,8 @@ struct SnipSnapiOSApp: App {
             ) as? String
         )
 #endif
+        syncedContentSettings = cloudServices.syncedContentSettings
+        cloudSyncSession = cloudServices.syncSession
     }
 
     var body: some Scene {
@@ -53,7 +57,8 @@ struct SnipSnapiOSApp: App {
                 shareImports: shareImports,
                 startupError: startupError,
                 uiTestAttachmentURLs: uiTestAttachmentURLs,
-                syncedContentSettings: syncedContentSettings
+                syncedContentSettings: syncedContentSettings,
+                cloudSyncSession: cloudSyncSession
             )
         }
     }

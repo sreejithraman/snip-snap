@@ -17,10 +17,12 @@ public enum SyncedContentSettingsState: Equatable, Sendable {
 @Observable
 public final class SyncedContentSettingsModel {
   public typealias DeleteAction = @Sendable () async throws -> Void
+  public typealias DeleteCompletionAction = @MainActor @Sendable () async throws -> Void
 
   public let mode: SyncedContentMode
   public private(set) var state: SyncedContentSettingsState
   private let deleteAction: DeleteAction?
+  private var deleteCompletionAction: DeleteCompletionAction?
 
   public init(
     mode: SyncedContentMode,
@@ -29,6 +31,10 @@ public final class SyncedContentSettingsModel {
     self.mode = mode
     self.deleteAction = deleteAction
     state = .ready
+  }
+
+  public func setDeleteCompletionAction(_ action: @escaping DeleteCompletionAction) {
+    deleteCompletionAction = action
   }
 
   public var canDelete: Bool {
@@ -69,6 +75,7 @@ public final class SyncedContentSettingsModel {
     state = .deleting
     do {
       try await deleteAction()
+      try await deleteCompletionAction?()
       state = .deleted
     } catch {
       state = .failed(error.localizedDescription)

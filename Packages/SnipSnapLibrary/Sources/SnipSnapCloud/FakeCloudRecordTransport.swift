@@ -270,6 +270,7 @@ package actor FakeCloudControlTransport: CloudCollectionControlTransport {
     private var controlSavePaused = false
     private var controlSavePauseWaiters: [CheckedContinuation<Void, Never>] = []
     private var controlSaveRelease: CheckedContinuation<Void, Never>?
+    private var shouldFailNextZoneDelete = false
 
     package init(server: FakeCloudServer) {
         self.server = server
@@ -314,7 +315,11 @@ package actor FakeCloudControlTransport: CloudCollectionControlTransport {
         return result
     }
 
-    package func deleteZones(_ zones: Set<CloudZoneID>) async {
+    package func deleteZones(_ zones: Set<CloudZoneID>) async throws {
+        if shouldFailNextZoneDelete {
+            shouldFailNextZoneDelete = false
+            throw CloudTransportError.sendFailed
+        }
         eventLog.append(.deletedZones(zones))
         await server.deleteZones(zones)
     }
@@ -323,6 +328,10 @@ package actor FakeCloudControlTransport: CloudCollectionControlTransport {
 
     package func pauseNextControlSave() {
         shouldPauseNextControlSave = true
+    }
+
+    package func failNextZoneDelete() {
+        shouldFailNextZoneDelete = true
     }
 
     package func waitUntilControlSavePauses() async {

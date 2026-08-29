@@ -512,6 +512,7 @@ package actor SwiftDataSyncModePersistence {
   package typealias ManifestWriter = @Sendable (Data, URL) throws -> Void
   package typealias WriteHook = @Sendable (SyncModeWritePoint) async throws -> Void
   package typealias ReadHook = @Sendable () throws -> Void
+  package typealias RecoveryQuarantineHook = @Sendable () throws -> Void
 
   struct Manifest: Codable, Equatable {
     let version: Int
@@ -528,9 +529,11 @@ package actor SwiftDataSyncModePersistence {
   let manifestWriter: ManifestWriter
   let writeHook: WriteHook
   let readHook: ReadHook
+  let recoveryQuarantineHook: RecoveryQuarantineHook
   let defaultSyncProtocol: SyncModeSyncProtocol
   var manifest: Manifest
   var writeAdmissionInProgress = false
+  var completedRecoveryQuarantineStoreIDs: Set<UUID> = []
 
   package init(
     rootURL: URL,
@@ -538,7 +541,8 @@ package actor SwiftDataSyncModePersistence {
     crashHook: @escaping @Sendable (SyncModeCrashPoint) throws -> Void = { _ in },
     manifestWriter: @escaping ManifestWriter = { try DurableFile.write($0, to: $1) },
     writeHook: @escaping WriteHook = { _ in },
-    readHook: @escaping ReadHook = {}
+    readHook: @escaping ReadHook = {},
+    recoveryQuarantineHook: @escaping RecoveryQuarantineHook = {}
   ) throws {
     self.rootURL = rootURL
     manifestURL = rootURL.appendingPathComponent("activation.json", isDirectory: false)
@@ -546,6 +550,7 @@ package actor SwiftDataSyncModePersistence {
     self.manifestWriter = manifestWriter
     self.writeHook = writeHook
     self.readHook = readHook
+    self.recoveryQuarantineHook = recoveryQuarantineHook
     self.defaultSyncProtocol = defaultSyncProtocol
     try DurableFile.createDirectory(rootURL)
     if FileManager.default.fileExists(atPath: manifestURL.path) {
@@ -591,7 +596,8 @@ package actor SwiftDataSyncModePersistence {
     }
   }
 
-  package func snapshot() throws -> SyncModeStorageSnapshot {
+  package func snapshot() async throws -> SyncModeStorageSnapshot {
+    await finishRecoveryQuarantines()
     guard let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID }) else {
       throw SyncModePersistenceError.missingStore
     }
@@ -810,7 +816,6 @@ package actor SwiftDataSyncModePersistence {
     declared.stores.append(candidate)
     declared.attentionReason = nil
     try commit(declared)
-    var activationCommitted = false
     do {
       let candidateRoot = storeURL(candidate)
       _ = try SwiftDataSnipLibrary(
@@ -826,19 +831,15 @@ package actor SwiftDataSyncModePersistence {
       activated.stores[try storeIndex(id: current.id)].lifecycle = .recovery
       activated.activeStoreID = candidate.id
       try commit(activated)
-      activationCommitted = true
-      if let currentNamespace = current.namespace {
-        try await currentLibrary.clearCloudTextSyncState(
-          namespaceKey: Self.namespaceKey(currentNamespace)
-        )
+      do {
+        try await quarantineRecoveryStore(current)
+      } catch {
+        try? recordAttention(.storageFailure)
       }
     } catch {
-      if activationCommitted {
-        try? recordAttention(.storageFailure)
-        throw error
-      }
       if let currentLibrary = try? libraryForTransition(storeID: current.id) {
         try? await currentLibrary.removeReadOnlyRecoveryMarker()
+        try? await currentLibrary.removeRecoveryQuarantineCompleteMarker()
       }
       var restored = manifest
       restored.stores.removeAll { $0.id == candidate.id }
@@ -846,6 +847,34 @@ package actor SwiftDataSyncModePersistence {
       try? commit(restored)
       throw error
     }
+  }
+
+  func finishRecoveryQuarantines() async {
+    for store in manifest.stores where store.lifecycle == .recovery {
+      do {
+        try await quarantineRecoveryStore(store)
+      } catch {
+        try? recordAttention(.storageFailure)
+      }
+    }
+  }
+
+  private func quarantineRecoveryStore(_ store: SyncModeStore) async throws {
+    guard !completedRecoveryQuarantineStoreIDs.contains(store.id) else { return }
+    let library = try libraryForTransition(storeID: store.id)
+    if await library.isRecoveryQuarantineComplete() {
+      completedRecoveryQuarantineStoreIDs.insert(store.id)
+      return
+    }
+    try recoveryQuarantineHook()
+    try await library.markReadOnlyRecovery()
+    if let namespace = store.namespace {
+      try await library.clearCloudTextSyncState(
+        namespaceKey: Self.namespaceKey(namespace)
+      )
+    }
+    try await library.markRecoveryQuarantineComplete()
+    completedRecoveryQuarantineStoreIDs.insert(store.id)
   }
 
   private func currentTransition() throws -> SyncModeTransition {

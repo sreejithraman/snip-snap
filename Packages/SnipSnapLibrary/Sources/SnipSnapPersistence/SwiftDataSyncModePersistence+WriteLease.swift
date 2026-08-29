@@ -52,6 +52,7 @@ extension SwiftDataSyncModePersistence {
   }
 
   fileprivate func managedSnapshot(sortedBy: SnipSortMode) async throws -> SnipLibrarySnapshot {
+    await finishRecoveryQuarantines()
     try readHook()
     return try await libraryForTransition(storeID: manifest.activeStoreID)
       .checkedSnapshot(sortedBy: sortedBy)
@@ -61,6 +62,7 @@ extension SwiftDataSyncModePersistence {
     _ command: SnipLibraryCommand,
     sortedBy: SnipSortMode
   ) async throws -> SnipLibraryUpdate {
+    await finishRecoveryQuarantines()
     guard !writeAdmissionInProgress, manifest.writeReservation == nil else {
       throw SnipLibraryError.modeTransitionInProgress
     }

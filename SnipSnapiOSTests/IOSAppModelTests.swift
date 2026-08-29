@@ -7,6 +7,34 @@ import XCTest
 
 @MainActor
 final class IOSAppModelTests: XCTestCase {
+    func testReplacingLibraryReloadsVisibleContentAndRecoveryScope() async {
+        let old = Snip(content: "Old collection", origin: .quickEntry)
+        let recoveredValue = Snip(content: "Recovered copy", origin: .quickEntry)
+        let recovered = RecoveredSnip(
+            id: recoveredValue.id,
+            currentSnipID: recoveredValue.id,
+            recovered: recoveredValue,
+            conflictingFields: [],
+            state: .promoted
+        )
+        let oldLibrary = ModelTestLibrary(snips: [old])
+        let freshLibrary = ModelTestLibrary(
+            recovery: SnipRecoverySnapshot(promotedSnips: [recovered])
+        )
+        let model = IOSAppModel(library: oldLibrary)
+        await model.load()
+        model.selectedSnipID = old.id
+
+        await model.replaceLibrary(
+            freshLibrary,
+            recoveryScope: SnipRecoveryScope("fresh-scope")
+        )
+
+        XCTAssertTrue(model.snips.isEmpty)
+        XCTAssertNil(model.selectedSnipID)
+        XCTAssertEqual(model.recoverySnapshot.promotedSnips, [recovered])
+    }
+
     func testRootReinitializationKeepsForegroundImportOnRetainedGraph() async throws {
         let library = ModelTestLibrary()
         let firstProbe = ImportCallProbe()

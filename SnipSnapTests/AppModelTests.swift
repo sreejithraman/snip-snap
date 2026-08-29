@@ -124,6 +124,37 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testReplacingLibraryClearsVisibleOldContentAndLoadsRecoveryScope() async {
+        let old = Snip(content: "Old collection", origin: .quickEntry)
+        let recoveredValue = Snip(content: "Recovered copy", origin: .quickEntry)
+        let recovered = RecoveredSnip(
+            id: recoveredValue.id,
+            currentSnipID: recoveredValue.id,
+            recovered: recoveredValue,
+            conflictingFields: [],
+            state: .promoted
+        )
+        let oldLibrary = InMemorySnipLibrary(snips: [old])
+        let freshLibrary = InMemorySnipLibrary(
+            snips: [],
+            recovery: SnipRecoverySnapshot(promotedSnips: [recovered])
+        )
+        let model = AppModel(library: oldLibrary, defaults: defaults())
+        let loadedOldLibrary = await waitUntil { model.snips.map(\.id) == [old.id] }
+        XCTAssertTrue(loadedOldLibrary)
+        model.selection = [old.id]
+
+        await model.replaceLibrary(
+            freshLibrary,
+            recoveryScope: SnipRecoveryScope("fresh-scope")
+        )
+
+        XCTAssertTrue(model.snips.isEmpty)
+        XCTAssertTrue(model.selection.isEmpty)
+        XCTAssertEqual(model.recoverySnapshot.promotedSnips, [recovered])
+    }
+
+    @MainActor
     private func waitUntil(
         timeout: Duration = .seconds(1),
         condition: @escaping @MainActor () -> Bool
