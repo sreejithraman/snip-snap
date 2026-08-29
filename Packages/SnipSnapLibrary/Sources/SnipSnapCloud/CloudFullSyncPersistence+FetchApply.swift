@@ -19,6 +19,11 @@ extension CloudFullSyncPersistence {
     var seen: [CloudRecordID: CloudFetchItemResult] = [:]
     var outboundBindings: [CloudFullOutboundBinding] = []
     var recoveryInputs: [CloudFullRecoveryInput] = []
+    var recoveryReviews: [CloudRecoveryReviewInput] = []
+    var settledDeleteIdentities: [CloudTextStorageIdentity] = []
+    let pendingDeletes = Dictionary(uniqueKeysWithValues:
+      stored.pendingDeletes.map { ($0.reference, $0) }
+    )
     let results: [CloudFetchItemResult]
     let nextEngine: CloudEngineStateEnvelope?
     switch batch {
@@ -69,8 +74,7 @@ extension CloudFullSyncPersistence {
         case .conflict(_, let value):
           return .record(value)
         case .unknownItem(let id):
-          if case .delete = operation { return .deleted(id) }
-          return .failed(id, .invalidRecord)
+          return .deleted(id)
         case .failed(let id, let failure):
           return .failed(id, failure)
         }
@@ -94,17 +98,37 @@ extension CloudFullSyncPersistence {
           snapshot,
           namespaceKey: namespaceKey,
           local: local,
-          accepted: byReference
+          accepted: byReference,
+          pendingDeleteReferences: Set(pendingDeletes.keys)
         ) {
           items.append(item)
         }
       case .deleted(let id):
         guard let accepted = byIdentity[Self.storageIdentity(id)] else { continue }
-        items.append(try Self.deleteItem(
+        let plan = try Self.deleteItem(
           accepted,
           namespaceKey: namespaceKey,
-          local: local
-        ))
+          local: local,
+          hasPendingDelete: pendingDeletes[accepted.reference] != nil
+        )
+        items.append(plan.item)
+        if pendingDeletes[accepted.reference]?.identity == accepted.identity {
+          settledDeleteIdentities.append(accepted.identity)
+        }
+        if let review = plan.review { recoveryReviews.append(review) }
+        if !plan.movedSnipIDs.isEmpty {
+          let encoder = JSONEncoder()
+          encoder.outputFormatting = [.sortedKeys]
+          recoveryInputs.append(CloudFullRecoveryInput(
+            namespaceKey: namespaceKey,
+            batchID: batch.id,
+            kind: .deletedListPlacement,
+            outboundData: try encoder.encode(accepted.reference.domainID),
+            resultData: try encoder.encode(plan.movedSnipIDs.sorted {
+              $0.uuidString < $1.uuidString
+            })
+          ))
+        }
       case .failed:
         continue
       }
@@ -152,6 +176,8 @@ extension CloudFullSyncPersistence {
       rawBatchData: rawBatchData,
       outboundBindings: outboundBindings,
       recoveryInputs: recoveryInputs,
+      recoveryReviews: recoveryReviews,
+      settledDeleteIdentities: settledDeleteIdentities,
       items: items
     )
   }
@@ -283,7 +309,8 @@ extension CloudFullSyncPersistence {
     _ snapshot: CloudRecordSnapshot,
     namespaceKey: String,
     local: SnipLibrarySnapshot,
-    accepted: [CloudEntityReference: CloudAcceptedEntity]
+    accepted: [CloudEntityReference: CloudAcceptedEntity],
+    pendingDeleteReferences: Set<CloudEntityReference>
   ) throws -> CloudFullBatchItem? {
     if snapshot.recordType == "Snip" {
       let server = try CloudFullRecordCodec.snip(from: snapshot)
@@ -293,6 +320,17 @@ extension CloudFullSyncPersistence {
       }
       let base = accepted[input.reference]
       let current = local.snips.first { $0.id == server.domainID }
+      if pendingDeleteReferences.contains(input.reference) {
+        return CloudFullBatchItem(
+          accepted: input,
+          expectedLocalRevision: base?.localRevision,
+          expectedSystemFields: base?.systemFields,
+          localPrecondition: current.map { .exactSnip(CloudLocalSnipMutation($0)) } ?? .none,
+          localMutation: .none,
+          conflict: nil,
+          quarantine: nil
+        )
+      }
       let serverFields = try snipFields(server)
       var merged = serverFields
       var conflict: CloudConflictInput?
@@ -389,6 +427,17 @@ extension CloudFullSyncPersistence {
     if server.binding != .canonical { return quarantineItem(input, snapshot: snapshot) }
     let base = accepted[input.reference]
     let current = local.lists.first { $0.id == server.domainID }
+    if pendingDeleteReferences.contains(input.reference) {
+      return CloudFullBatchItem(
+        accepted: input,
+        expectedLocalRevision: base?.localRevision,
+        expectedSystemFields: base?.systemFields,
+        localPrecondition: current.map { .exactList(CloudLocalListMutation($0)) } ?? .none,
+        localMutation: .none,
+        conflict: nil,
+        quarantine: nil
+      )
+    }
     let serverFields = try listFields(server)
     var merged = serverFields
     var conflict: CloudConflictInput?
@@ -457,58 +506,102 @@ extension CloudFullSyncPersistence {
     )
   }
 
+  private struct DeletedRecordPlan {
+    let item: CloudFullBatchItem
+    let review: CloudRecoveryReviewInput?
+    let movedSnipIDs: [UUID]
+  }
+
   private static func deleteItem(
     _ accepted: CloudAcceptedEntity,
     namespaceKey: String,
-    local: SnipLibrarySnapshot
-  ) throws -> CloudFullBatchItem {
+    local: SnipLibrarySnapshot,
+    hasPendingDelete: Bool
+  ) throws -> DeletedRecordPlan {
     let input = acceptedInput(accepted)
     switch accepted.reference.kind {
     case .snip:
       let current = local.snips.first { $0.id == accepted.reference.domainID }
-      let keepsAttachmentRecovery = current.map { !$0.attachments.isEmpty } ?? false
-      let conflict = try current.flatMap { snip -> CloudConflictInput? in
-        guard keepsAttachmentRecovery else { return nil }
-        return CloudConflictInput(
-          key: CloudConflictKey.make(
-            namespaceKey: namespaceKey,
-            recordID: recordID(accepted.identity),
-            ancestorSystemFields: accepted.systemFields,
-            serverSystemFields: Data()
-          ),
-          reference: accepted.reference,
-          format: .snipMergeV1,
-          payload: try JSONEncoder().encode(
-            CloudSnipRemoteDeleteConflictPayload(
-              local: snipFields(snip, accepted: try snipRecord(accepted)),
-              attachmentIDs: snip.attachments.map(\.id)
-            )
-          )
+      let acceptedRecord = try snipRecord(accepted)
+      let shouldRecover = try current.map { snip in
+        if hasPendingDelete { return false }
+        return !sameSnipFields(
+          try snipFields(acceptedRecord),
+          snipFields(snip, accepted: acceptedRecord)
+        )
+          || !snip.attachments.isEmpty
+      } ?? false
+      let key = CloudConflictKey.make(
+        namespaceKey: namespaceKey,
+        recordID: recordID(accepted.identity),
+        ancestorSystemFields: accepted.systemFields,
+        serverSystemFields: Data()
+      )
+      let recovered = current.flatMap { snip -> Snip? in
+        guard shouldRecover else { return nil }
+        let id = CloudConflictKey.recoveryID(for: key)
+        return Snip(
+          id: id,
+          requestID: CloudConflictKey.recoveryID(for: "\(key)|request"),
+          createdAt: snip.createdAt,
+          updatedAt: snip.updatedAt,
+          content: snip.content,
+          origin: snip.origin,
+          source: snip.source,
+          listID: SnipList.inbox.id,
+          isDone: snip.isDone,
+          manualSortKey: snip.manualSortKey,
+          attachments: snip.attachments
         )
       }
-      return CloudFullBatchItem(
+      return DeletedRecordPlan(item: CloudFullBatchItem(
         accepted: input,
         acceptedAction: .remove,
         expectedLocalRevision: accepted.localRevision,
         expectedSystemFields: accepted.systemFields,
         localPrecondition: current.map { .exactSnip(CloudLocalSnipMutation($0)) } ?? .none,
-        localMutation: current == nil || keepsAttachmentRecovery
-          ? .none : .removeSnip(accepted.reference.domainID),
-        conflict: conflict,
+        localMutation: {
+          guard let current else { return .none }
+          guard let recovered else { return .removeSnip(accepted.reference.domainID) }
+          return .recoverDeletedSnip(
+            original: CloudLocalSnipMutation(current),
+            recovered: CloudLocalSnipMutation(recovered),
+            attachmentIDs: current.attachments.map(\.id)
+          )
+        }(),
+        conflict: nil,
         quarantine: nil
-      )
+      ), review: recovered.map { recovered in
+        CloudRecoveryReviewInput(
+          conflictKey: key,
+          recovery: .snip(RecoveredSnip(
+            id: recovered.id,
+            currentSnipID: accepted.reference.domainID,
+            recovered: recovered,
+            conflictingFields: [.text, .source, .done, .placement],
+            state: .promoted
+          ))
+        )
+      }, movedSnipIDs: [])
     case .list:
       let current = local.lists.first { $0.id == accepted.reference.domainID }
-      return CloudFullBatchItem(
+      let moved = current.map { list in
+        local.snips.filter { $0.listID == list.id }.map(CloudLocalSnipMutation.init)
+      } ?? []
+      return DeletedRecordPlan(item: CloudFullBatchItem(
         accepted: input,
         acceptedAction: .remove,
         expectedLocalRevision: accepted.localRevision,
         expectedSystemFields: accepted.systemFields,
         localPrecondition: current.map { .exactList(CloudLocalListMutation($0)) } ?? .none,
-        localMutation: current == nil ? .none : .removeList(accepted.reference.domainID),
+        localMutation: current.map { list in
+          moved.isEmpty
+            ? .removeList(list.id)
+            : .removeListAndMoveSnips(list: CloudLocalListMutation(list), snips: moved)
+        } ?? .none,
         conflict: nil,
         quarantine: nil
-      )
+      ), review: nil, movedSnipIDs: moved.map(\.snipID))
     }
   }
 

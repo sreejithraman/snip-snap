@@ -199,6 +199,19 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
       reference.kind == .snip && reference.domainID == id
     case .removeList(let id):
       reference.kind == .list && reference.domainID == id && id != SnipList.inbox.id
+    case .recoverDeletedSnip(let original, let recovered, let attachmentIDs):
+      reference.kind == .snip
+        && reference.domainID == original.snipID
+        && recovered.snipID != original.snipID
+        && recovered.requestID != original.requestID
+        && recovered.listID == SnipList.inbox.id
+        && Set(attachmentIDs).count == attachmentIDs.count
+    case .removeListAndMoveSnips(let list, let snips):
+      reference.kind == .list
+        && reference.domainID == list.listID
+        && list.listID != SnipList.inbox.id
+        && snips.allSatisfy { $0.listID == list.listID }
+        && Set(snips.map(\.snipID)).count == snips.count
     }
     guard mutationMatchesReference else { throw CloudFullStorageError.invalidLocalMutation }
     let snips = try context.fetch(FetchDescriptor<StoredSnipRecord>())
@@ -242,6 +255,34 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
       guard id == expected.listID,
         let record = lists.first(where: { $0.id == id }),
         try matches(record, expected: expected, metadata: metadata)
+      else { throw CloudFullStorageError.staleLocalEntity }
+    case (
+      .recoverDeletedSnip(let original, let recovered, let attachmentIDs),
+      .exactSnip(let expected)
+    ):
+      let originalID = original.snipID
+      let references = try context.fetch(FetchDescriptor(
+        predicate: #Predicate<StoredSnipAttachmentReference> { $0.snipID == originalID }
+      ))
+      guard original == expected,
+        let record = snips.first(where: { $0.id == original.snipID }),
+        !snips.contains(where: { $0.id == recovered.snipID }),
+        try matches(record, expected: original, metadata: metadata),
+        Set(references.map(\.attachmentID)) == Set(attachmentIDs)
+      else { throw CloudFullStorageError.staleLocalEntity }
+    case (.removeListAndMoveSnips(let expected, let movedSnips), .exactList(let precondition)):
+      let listSnips = snips.filter { $0.listID == expected.listID }
+      let listSnipsByID = Dictionary(uniqueKeysWithValues: listSnips.map { ($0.id, $0) })
+      guard expected == precondition,
+        let record = lists.first(where: { $0.id == expected.listID }),
+        try matches(record, expected: expected, metadata: metadata),
+        Set(listSnipsByID.keys) == Set(movedSnips.map(\.snipID)),
+        try movedSnips.allSatisfy({ expectedSnip in
+          guard let snip = listSnipsByID[expectedSnip.snipID] else {
+            return false
+          }
+          return try matches(snip, expected: expectedSnip, metadata: metadata)
+        })
       else { throw CloudFullStorageError.staleLocalEntity }
     default:
       throw CloudFullStorageError.invalidLocalMutation
@@ -364,6 +405,62 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
         context.delete(record)
       }
       try removeMetadata(kind: .list, domainID: id, context: context)
+    case .recoverDeletedSnip(let original, let recovered, _):
+      let originalID = original.snipID
+      for record in try context.fetch(FetchDescriptor(
+        predicate: #Predicate<StoredSnipRecord> { $0.id == originalID }
+      )) {
+        context.delete(record)
+      }
+      context.insert(StoredSnipRecord(Snip(
+        id: recovered.snipID,
+        requestID: recovered.requestID,
+        createdAt: recovered.createdAt,
+        updatedAt: recovered.updatedAt,
+        content: recovered.content,
+        origin: recovered.origin,
+        source: recovered.source,
+        listID: recovered.listID,
+        isDone: recovered.isDone,
+        manualSortKey: recovered.orderKey
+      )))
+      for reference in try context.fetch(FetchDescriptor(
+        predicate: #Predicate<StoredSnipAttachmentReference> { $0.snipID == originalID }
+      )) {
+        reference.snipID = recovered.snipID
+        reference.id = StoredSnipAttachmentReference.identifier(
+          snipID: recovered.snipID,
+          attachmentID: reference.attachmentID
+        )
+      }
+      let recoveredRequestID = recovered.requestID
+      let request = try context.fetch(FetchDescriptor(
+        predicate: #Predicate<StoredRequestRecord> { $0.id == recoveredRequestID }
+      ))
+      if request.isEmpty {
+        context.insert(StoredRequestRecord(id: recovered.requestID))
+      }
+      try removeMetadata(kind: .snip, domainID: original.snipID, context: context)
+      try upsertMetadata(
+        kind: .snip,
+        domainID: recovered.snipID,
+        orderKey: recovered.orderKey,
+        desiredName: nil,
+        context: context
+      )
+    case .removeListAndMoveSnips(let list, _):
+      let listID = list.listID
+      for record in try context.fetch(FetchDescriptor(
+        predicate: #Predicate<StoredSnipRecord> { $0.listID == listID }
+      )) {
+        record.listID = SnipList.inbox.id
+      }
+      for record in try context.fetch(FetchDescriptor(
+        predicate: #Predicate<StoredListRecord> { $0.id == listID }
+      )) {
+        context.delete(record)
+      }
+      try removeMetadata(kind: .list, domainID: list.listID, context: context)
     }
   }
 

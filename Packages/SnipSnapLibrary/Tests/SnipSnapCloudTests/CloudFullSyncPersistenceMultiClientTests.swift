@@ -6,6 +6,245 @@ import XCTest
 @testable import SnipSnapCloud
 
 extension CloudFullSyncPersistenceTests {
+  func testMoveIntoDeletedListConvergesToInboxForFetchFirstAndSendFirst() async throws {
+    for fetchFirst in [true, false] {
+      let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("CloudDeletedListMove-\(UUID().uuidString)")
+      defer { try? FileManager.default.removeItem(at: root) }
+      let namespace = makeNamespace()
+      let zone = try XCTUnwrap(namespace.zones.first)
+      let server = FakeCloudServer()
+      let deletingLibrary = try SwiftDataSnipLibrary(
+        storeURL: root.appendingPathComponent("deleting.store")
+      )
+      let editingLibrary = try SwiftDataSnipLibrary(
+        storeURL: root.appendingPathComponent("editing.store")
+      )
+      let created = try await deletingLibrary.perform(
+        .createList(name: "Soon Deleted", systemImage: "trash"),
+        sortedBy: .manual
+      )
+      guard case .listCreated(let list) = created.outcome else {
+        return XCTFail("Expected a List")
+      }
+      let survivingCreated = try await deletingLibrary.perform(
+        .createList(name: "Still Here", systemImage: "archivebox"),
+        sortedBy: .manual
+      )
+      guard case .listCreated(let survivingList) = survivingCreated.outcome else {
+        return XCTFail("Expected a surviving List")
+      }
+      let added = try await deletingLibrary.perform(
+        .add(
+          content: "keep me",
+          origin: .quickEntry,
+          source: nil,
+          listID: SnipList.inbox.id,
+          attachmentURLs: [],
+          requestID: UUID(),
+          now: Date(timeIntervalSince1970: 1)
+        ),
+        sortedBy: .manual
+      )
+      guard case .add(.added(let snipID)) = added.outcome else {
+        return XCTFail("Expected a Snip")
+      }
+      let deletingStore = CloudFullSyncPersistence(
+        library: deletingLibrary,
+        namespace: namespace,
+        dataZone: zone
+      )
+      try await deletingStore.approveEnrollment(references: [
+        CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
+        CloudEntityReference(kind: .list, domainID: list.id),
+        CloudEntityReference(kind: .list, domainID: survivingList.id),
+        CloudEntityReference(kind: .snip, domainID: snipID),
+      ])
+      let deletingClient = CloudFullSyncCoordinator(
+        store: deletingStore,
+        transport: FakeCloudRecordTransport(server: server, namespace: namespace)
+      )
+      let editingStore = CloudFullSyncPersistence(
+        library: editingLibrary,
+        namespace: namespace,
+        dataZone: zone
+      )
+      let editingClient = CloudFullSyncCoordinator(
+        store: editingStore,
+        transport: FakeCloudRecordTransport(server: server, namespace: namespace)
+      )
+      try await deletingClient.sync()
+      try await editingClient.fetchRemote()
+      _ = try await editingLibrary.perform(
+        .place(ids: [snipID], in: list.id, before: nil, basedOn: .manual),
+        sortedBy: .manual
+      )
+      _ = try await deletingLibrary.perform(.deleteList(id: list.id), sortedBy: .manual)
+      try await deletingClient.sendPending()
+
+      if fetchFirst {
+        try await editingClient.fetchRemote()
+      } else {
+        try await editingClient.sendPending()
+        try await editingClient.fetchRemote()
+      }
+
+      let local = await editingLibrary.snapshot(sortedBy: .manual)
+      XCTAssertFalse(local.lists.contains { $0.id == list.id })
+      XCTAssertEqual(local.snips.first(where: { $0.id == snipID })?.listID, SnipList.inbox.id)
+      let recovery = try await editingLibrary.cloudFullRecoveryEvents(
+        namespaceKey: namespace.canonicalKey
+      )
+      let evidence = try await editingStore.enrollmentEvidence()
+      XCTAssertEqual(recovery.filter { $0.kind == .deletedListPlacement }.count, 1)
+      XCTAssertTrue(evidence.needsAttention)
+
+      let expectedListID: UUID
+      if fetchFirst {
+        expectedListID = SnipList.inbox.id
+      } else {
+        _ = try await editingLibrary.perform(
+          .place(ids: [snipID], in: survivingList.id, before: nil, basedOn: .manual),
+          sortedBy: .manual
+        )
+        expectedListID = survivingList.id
+      }
+
+      let reopenedLibrary = try SwiftDataSnipLibrary(
+        storeURL: root.appendingPathComponent("editing.store")
+      )
+      let reopenedStore = CloudFullSyncPersistence(
+        library: reopenedLibrary,
+        namespace: namespace,
+        dataZone: zone
+      )
+      let reopened = CloudFullSyncCoordinator(
+        store: reopenedStore,
+        transport: FakeCloudRecordTransport(server: server, namespace: namespace)
+      )
+      try await reopened.sendPending()
+      try await deletingClient.fetchRemote()
+
+      let converged = await deletingLibrary.snapshot(sortedBy: .manual)
+      XCTAssertFalse(converged.lists.contains { $0.id == list.id })
+      XCTAssertEqual(
+        converged.snips.first(where: { $0.id == snipID })?.listID,
+        expectedListID
+      )
+      let serverList = await server.fullSnapshot(for: .list(list.id, in: zone))
+      let serverSnipValue = await server.fullSnapshot(for: .snip(snipID, in: zone))
+      let serverSnip = try XCTUnwrap(serverSnipValue)
+      let typedSnip = try CloudFullRecordCodec.snip(from: serverSnip)
+      guard case .value(let placement) = typedSnip.placement else {
+        return XCTFail("Expected synced placement")
+      }
+      XCTAssertNil(serverList)
+      XCTAssertEqual(placement.listID, expectedListID)
+    }
+  }
+
+  func testOfflineEditOfDeletedSnipRecoversForFetchFirstAndSendFirst() async throws {
+    for fetchFirst in [true, false] {
+      let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("CloudDeleteRecovery-\(UUID().uuidString)")
+      defer { try? FileManager.default.removeItem(at: root) }
+      let namespace = makeNamespace()
+      let zone = try XCTUnwrap(namespace.zones.first)
+      let server = FakeCloudServer()
+      let deletingLibrary = try SwiftDataSnipLibrary(
+        storeURL: root.appendingPathComponent("deleting.store")
+      )
+      let editingLibrary = try SwiftDataSnipLibrary(
+        storeURL: root.appendingPathComponent("editing.store")
+      )
+      let added = try await deletingLibrary.perform(
+        .add(
+          content: "base",
+          origin: .quickEntry,
+          source: nil,
+          listID: SnipList.inbox.id,
+          attachmentURLs: [],
+          requestID: UUID(),
+          now: Date(timeIntervalSince1970: 1)
+        ),
+        sortedBy: .manual
+      )
+      guard case .add(.added(let originalID)) = added.outcome else {
+        return XCTFail("Expected a Snip")
+      }
+      let deletingStore = CloudFullSyncPersistence(
+        library: deletingLibrary,
+        namespace: namespace,
+        dataZone: zone
+      )
+      try await deletingStore.approveEnrollment(references: [
+        CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
+        CloudEntityReference(kind: .snip, domainID: originalID),
+      ])
+      let deletingClient = CloudFullSyncCoordinator(
+        store: deletingStore,
+        transport: FakeCloudRecordTransport(server: server, namespace: namespace)
+      )
+      let editingStore = CloudFullSyncPersistence(
+        library: editingLibrary,
+        namespace: namespace,
+        dataZone: zone
+      )
+      let editingClient = CloudFullSyncCoordinator(
+        store: editingStore,
+        transport: FakeCloudRecordTransport(server: server, namespace: namespace)
+      )
+      try await deletingClient.sync()
+      try await editingClient.fetchRemote()
+      let receivedSnapshot = await editingLibrary.snapshot(sortedBy: .manual)
+      let received = try XCTUnwrap(receivedSnapshot.snips.first)
+      _ = try await editingLibrary.perform(
+        .update(
+          id: originalID,
+          content: fetchFirst ? "fetch-first edit" : "send-first edit",
+          attachmentURLs: nil,
+          expectedUpdatedAt: received.updatedAt,
+          now: Date(timeIntervalSince1970: 2)
+        ),
+        sortedBy: .manual
+      )
+      _ = try await deletingLibrary.perform(.delete(ids: [originalID]), sortedBy: .manual)
+      try await deletingClient.sendPending()
+
+      if fetchFirst {
+        try await editingClient.fetchRemote()
+      } else {
+        try await editingClient.sendPending()
+      }
+
+      let recoveredSnapshot = await editingLibrary.snapshot(sortedBy: .manual)
+      XCTAssertFalse(recoveredSnapshot.snips.contains { $0.id == originalID })
+      let recovered = try XCTUnwrap(recoveredSnapshot.snips.first)
+      XCTAssertNotEqual(recovered.id, originalID)
+      XCTAssertEqual(
+        recovered.content,
+        fetchFirst ? "fetch-first edit" : "send-first edit"
+      )
+      XCTAssertEqual(recovered.listID, SnipList.inbox.id)
+      let review = try await editingLibrary.recoverySnapshot(
+        in: SnipRecoveryScope(namespace.canonicalKey)
+      )
+      XCTAssertEqual(review.promotedSnips.map(\.id), [recovered.id])
+      XCTAssertEqual(review.promotedSnips.map(\.currentSnipID), [originalID])
+
+      try await editingClient.sendPending()
+      try await deletingClient.fetchRemote()
+      let converged = await deletingLibrary.snapshot(sortedBy: .manual)
+      XCTAssertFalse(converged.snips.contains { $0.id == originalID })
+      XCTAssertEqual(converged.snips.first?.id, recovered.id)
+      XCTAssertEqual(converged.snips.first?.content, recovered.content)
+      let deletedServerValue = await server.fullSnapshot(for: .snip(originalID, in: zone))
+      let recoveredServerValue = await server.fullSnapshot(for: .snip(recovered.id, in: zone))
+      XCTAssertNil(deletedServerValue)
+      XCTAssertNotNil(recoveredServerValue)
+    }
+  }
+
   func testTwoDurableClientsExchangeFullSnipAndListRecords() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudFullSyncPersistenceTests-\(UUID().uuidString)")

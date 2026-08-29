@@ -90,18 +90,6 @@ package struct CloudSnipDeleteConflictPayload: Codable, Equatable, Sendable {
   }
 }
 
-package struct CloudSnipRemoteDeleteConflictPayload: Codable, Equatable, Sendable {
-  package let storageVersion: Int
-  package let local: CloudSnipMergeFields
-  package let attachmentIDs: [UUID]
-
-  package init(local: CloudSnipMergeFields, attachmentIDs: [UUID]) {
-    storageVersion = 1
-    self.local = local
-    self.attachmentIDs = attachmentIDs.sorted { $0.uuidString < $1.uuidString }
-  }
-}
-
 package struct CloudListDeleteConflictPayload: Codable, Equatable, Sendable {
   package let storageVersion: Int
   package let localWasDeleted: Bool

@@ -438,10 +438,23 @@ package struct CloudFullReenableApplyPlan: Codable, Equatable, Sendable {
 package struct CloudFullStorageSnapshot: Equatable, Sendable {
   package let readyEntities: [CloudAcceptedEntity]
   package let deferredEntities: [CloudAcceptedEntity]
+  package let pendingDeletes: [CloudPendingDelete]
   package let conflicts: [CloudStoredConflict]
   package let enrolledEntities: Set<CloudEntityReference>
   package let quarantines: [CloudStoredQuarantine]
   package let namespaceState: CloudFullNamespaceState
+}
+
+package struct CloudPendingDelete: Codable, Equatable, Hashable, Sendable {
+  package let storageVersion: Int
+  package let reference: CloudEntityReference
+  package let identity: CloudTextStorageIdentity
+
+  package init(reference: CloudEntityReference, identity: CloudTextStorageIdentity) {
+    storageVersion = 1
+    self.reference = reference
+    self.identity = identity
+  }
 }
 
 package struct CloudFullNamespaceState: Codable, Equatable, Sendable {
@@ -570,6 +583,15 @@ package enum CloudFullLocalMutation: Codable, Equatable, Sendable {
   case upsertList(SnipList)
   case removeSnip(UUID)
   case removeList(UUID)
+  case recoverDeletedSnip(
+    original: CloudLocalSnipMutation,
+    recovered: CloudLocalSnipMutation,
+    attachmentIDs: [UUID]
+  )
+  case removeListAndMoveSnips(
+    list: CloudLocalListMutation,
+    snips: [CloudLocalSnipMutation]
+  )
 }
 
 package enum CloudAcceptedAction: String, Codable, Equatable, Sendable {
@@ -656,6 +678,17 @@ package enum CloudFullRecoveryKind: String, Codable, Equatable, Sendable {
   case modeRecoveredSnip
   case modeRecoveredList
   case modeDeletedListPlacement
+  case deletedListPlacement
+}
+
+package struct CloudRecoveryReviewInput: Codable, Equatable, Sendable {
+  package let conflictKey: String
+  package let recovery: SnipRecoveryRecord
+
+  package init(conflictKey: String, recovery: SnipRecoveryRecord) {
+    self.conflictKey = conflictKey
+    self.recovery = recovery
+  }
 }
 
 package struct CloudFullRecoveryInput: Codable, Equatable, Sendable {
@@ -694,12 +727,14 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
   package let rawBatchData: Data?
   package let outboundBindings: [CloudFullOutboundBinding]
   package let recoveryInputs: [CloudFullRecoveryInput]
+  package let recoveryReviews: [CloudRecoveryReviewInput]
+  package let settledDeleteIdentities: [CloudTextStorageIdentity]
   package let items: [CloudFullBatchItem]
 
   private enum CodingKeys: String, CodingKey {
     case storageVersion, namespaceKey, batchID, expectedEngineState, nextEngineState
     case nextEnrollment, expectedNamespaceRevision, nextNamespaceState, rawBatchData
-    case outboundBindings, recoveryInputs, items
+    case outboundBindings, recoveryInputs, recoveryReviews, settledDeleteIdentities, items
   }
 
   package init(
@@ -713,6 +748,8 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
     rawBatchData: Data? = nil,
     outboundBindings: [CloudFullOutboundBinding] = [],
     recoveryInputs: [CloudFullRecoveryInput] = [],
+    recoveryReviews: [CloudRecoveryReviewInput] = [],
+    settledDeleteIdentities: [CloudTextStorageIdentity] = [],
     items: [CloudFullBatchItem]
   ) {
     storageVersion = 1
@@ -726,6 +763,8 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
     self.rawBatchData = rawBatchData
     self.outboundBindings = outboundBindings
     self.recoveryInputs = recoveryInputs
+    self.recoveryReviews = recoveryReviews
+    self.settledDeleteIdentities = settledDeleteIdentities
     self.items = items
   }
 
@@ -757,6 +796,14 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
       [CloudFullRecoveryInput].self,
       forKey: .recoveryInputs
     ) ?? []
+    recoveryReviews = try container.decodeIfPresent(
+      [CloudRecoveryReviewInput].self,
+      forKey: .recoveryReviews
+    ) ?? []
+    settledDeleteIdentities = try container.decodeIfPresent(
+      [CloudTextStorageIdentity].self,
+      forKey: .settledDeleteIdentities
+    ) ?? []
     items = try container.decode([CloudFullBatchItem].self, forKey: .items)
   }
 
@@ -779,6 +826,8 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
     try container.encodeIfPresent(rawBatchData, forKey: .rawBatchData)
     try container.encode(outboundBindings, forKey: .outboundBindings)
     try container.encode(recoveryInputs, forKey: .recoveryInputs)
+    try container.encode(recoveryReviews, forKey: .recoveryReviews)
+    try container.encode(settledDeleteIdentities, forKey: .settledDeleteIdentities)
     try container.encode(items, forKey: .items)
   }
 }

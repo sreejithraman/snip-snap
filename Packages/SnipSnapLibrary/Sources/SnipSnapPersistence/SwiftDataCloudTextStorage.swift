@@ -390,6 +390,9 @@ extension SwiftDataSnipLibrary {
     {
       context.delete(record)
     }
+    for record in try Self.cloudPendingDeletes(namespaceKey: namespaceKey, context: context) {
+      context.delete(record)
+    }
     try afterMutationBeforeSave()
     try context.save()
   }

@@ -48,11 +48,14 @@ package actor CloudFullSyncCoordinator {
     syncing = true
     defer { syncing = false }
     try await recover()
+    var needsBootstrapFetch = false
     if !started {
-      try await transport.start(state: store.loadEngineState())
+      let state = try await store.loadEngineState()
+      try await transport.start(state: state)
       started = true
+      needsBootstrapFetch = state == nil
     }
-    if fetch {
+    if fetch || (send && needsBootstrapFetch) {
       try await commit(.fetched(transport.fetch(scope: .all)), outbound: nil)
     }
     if send {

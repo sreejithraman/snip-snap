@@ -21,9 +21,56 @@ extension CloudFullSyncPersistence {
         CloudEntityReference(kind: .snip, domainID: $0.id)
       })
     }
-    eligible.subtract(Set(stored.deferredEntities.map(\.reference)))
+    let deletedListPlacements = try await library.cloudFullRecoveryEvents(
+      namespaceKey: namespaceKey
+    ).filter { $0.kind == .deletedListPlacement }
+      .reduce(into: [UUID: Set<UUID>]()) { result, recovery in
+        let decoder = JSONDecoder()
+        let deletedListID = try decoder.decode(UUID.self, from: recovery.outboundData)
+        for snipID in try decoder.decode([UUID].self, from: recovery.resultData) {
+          result[snipID, default: []].insert(deletedListID)
+        }
+      }
+    eligible.subtract(Set(stored.deferredEntities.compactMap { entity in
+      guard entity.reference.kind == .snip,
+        let deferredListID = entity.dependencyListID,
+        deletedListPlacements[entity.reference.domainID]?.contains(deferredListID) == true,
+        let currentListID = snips[entity.reference.domainID]?.listID,
+        currentListID != deferredListID,
+        currentListID == SnipList.inbox.id || stored.enrolledEntities.contains(
+          CloudEntityReference(kind: .list, domainID: currentListID)
+        )
+      else { return entity.reference }
+      return nil
+    }))
+    let newlyDeleted = eligible.compactMap { reference -> CloudPendingDelete? in
+      guard let base = accepted[reference] else { return nil }
+      let isMissing = switch reference.kind {
+      case .snip: snips[reference.domainID] == nil
+      case .list: lists[reference.domainID] == nil
+      }
+      return isMissing
+        ? CloudPendingDelete(reference: reference, identity: base.identity)
+        : nil
+    }
+    try await library.stageCloudPendingDeletes(namespaceKey: namespaceKey, values: newlyDeleted)
+    var pendingDeletes = Dictionary(uniqueKeysWithValues:
+      stored.pendingDeletes.map { ($0.reference, $0) }
+    )
+    for value in newlyDeleted {
+      if let current = pendingDeletes[value.reference], current != value {
+        throw CloudTransportError.invalidRecord
+      }
+      pendingDeletes[value.reference] = value
+    }
+    eligible.formUnion(pendingDeletes.keys)
     var operations: [CloudOutboundOperation] = []
     for reference in eligible.sorted(by: Self.referenceOrder) {
+      if pendingDeletes[reference] != nil {
+        guard let base = accepted[reference] else { throw CloudTransportError.invalidRecord }
+        operations.append(.delete(Self.recordID(base.identity), base: try Self.shadow(base)))
+        continue
+      }
       if conflicted.contains(reference) { continue }
       let base = accepted[reference]
       switch reference.kind {

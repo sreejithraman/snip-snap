@@ -175,14 +175,69 @@ extension SwiftDataSnipLibrary {
     let enrollment = try context.fetch(FetchDescriptor<StoredCloudFullEnrollment>())
       .first { $0.namespaceKey == namespaceKey }
     let fullEnrollment = try Self.fullEnrollmentState(from: enrollment?.referencesData)
+    let pendingDeletes = try Self.cloudPendingDeletes(
+      namespaceKey: namespaceKey,
+      context: context
+    )
+      .map { record -> CloudPendingDelete in
+        guard let value = record.value else { throw SnipLibraryError.invalidStore }
+        return value
+      }
+      .sorted {
+        ($0.reference.kind.rawValue, $0.reference.domainID.uuidString)
+          < ($1.reference.kind.rawValue, $1.reference.domainID.uuidString)
+      }
     return CloudFullStorageSnapshot(
       readyEntities: entities.filter { !$0.isDeferred },
       deferredEntities: entities.filter(\.isDeferred),
+      pendingDeletes: pendingDeletes,
       conflicts: conflicts,
       enrolledEntities: fullEnrollment.references,
       quarantines: try Self.quarantines(namespaceKey: namespaceKey, context: context),
       namespaceState: fullEnrollment.namespaceState
     )
+  }
+
+  package func stageCloudPendingDeletes(
+    namespaceKey: String,
+    values: [CloudPendingDelete]
+  ) throws {
+    guard values.allSatisfy({ $0.storageVersion == 1 }) else {
+      throw CloudFullStorageError.invalidBatchReplay
+    }
+    guard let container else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    let current = try Self.cloudPendingDeletes(namespaceKey: namespaceKey, context: context)
+    var byDomain = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })
+    var domainByIdentity = Dictionary(uniqueKeysWithValues: current.map { ($0.identityID, $0.id) })
+    for value in values {
+      let domainKey = StoredCloudPendingDelete.domainKey(
+        namespaceKey: namespaceKey,
+        reference: value.reference
+      )
+      let identityKey = StoredCloudPendingDelete.identityKey(
+        namespaceKey: namespaceKey,
+        identity: value.identity
+      )
+      if let existing = byDomain[domainKey] {
+        guard existing.identityID == identityKey else {
+          throw CloudFullStorageError.invalidBatchReplay
+        }
+        continue
+      }
+      guard domainByIdentity[identityKey] == nil else {
+        throw CloudFullStorageError.invalidBatchReplay
+      }
+      let record = StoredCloudPendingDelete(namespaceKey: namespaceKey, value: value)
+      context.insert(record)
+      byDomain[domainKey] = record
+      domainByIdentity[identityKey] = domainKey
+    }
+    guard !values.isEmpty else { return }
+    try afterMutationBeforeSave()
+    try context.save()
   }
 
   package func clearCloudFullRecoveryEvents(
@@ -200,6 +255,16 @@ extension SwiftDataSnipLibrary {
     }
     try afterMutationBeforeSave()
     try context.save()
+  }
+
+  static func cloudPendingDeletes(
+    namespaceKey: String,
+    context: ModelContext
+  ) throws -> [StoredCloudPendingDelete] {
+    let key = namespaceKey
+    return try context.fetch(
+      FetchDescriptor(predicate: #Predicate<StoredCloudPendingDelete> { $0.namespaceKey == key })
+    )
   }
 
   package func acceptCloudEntity(

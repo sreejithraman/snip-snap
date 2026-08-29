@@ -222,14 +222,22 @@ package enum SnipSnapSchemaV3: VersionedSchema {
   }
 }
 
+package enum SnipSnapSchemaV4: VersionedSchema {
+  package static let versionIdentifier = Schema.Version(4, 0, 0)
+  package static var models: [any PersistentModel.Type] {
+    SnipSnapSchemaV3.models + [StoredCloudPendingDelete.self]
+  }
+}
+
 package enum SnipSnapSchemaMigrationPlan: SchemaMigrationPlan {
   package static var schemas: [any VersionedSchema.Type] {
-    [SnipSnapSchemaV1.self, SnipSnapSchemaV2.self, SnipSnapSchemaV3.self]
+    [SnipSnapSchemaV1.self, SnipSnapSchemaV2.self, SnipSnapSchemaV3.self, SnipSnapSchemaV4.self]
   }
   package static var stages: [MigrationStage] {
     [
       .lightweight(fromVersion: SnipSnapSchemaV1.self, toVersion: SnipSnapSchemaV2.self),
       .lightweight(fromVersion: SnipSnapSchemaV2.self, toVersion: SnipSnapSchemaV3.self),
+      .lightweight(fromVersion: SnipSnapSchemaV3.self, toVersion: SnipSnapSchemaV4.self),
     ]
   }
 }
@@ -297,7 +305,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     let lockURL = storeURL.appendingPathExtension("lock")
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
-    let schema = Schema(versionedSchema: SnipSnapSchemaV3.self)
+    let schema = Schema(versionedSchema: SnipSnapSchemaV4.self)
     let configuration = ModelConfiguration(
       "SnipSnapLocal",
       schema: schema,

@@ -6,6 +6,39 @@ import XCTest
 @testable import SnipSnapPersistence
 
 extension CloudFullRecordPersistenceTests {
+  func testV3StoreMigratesToPendingDeleteSchemaWithoutChangingAcceptedRecords() async throws {
+    let location = temporaryStore()
+    defer { try? FileManager.default.removeItem(at: location.root) }
+    try FileManager.default.createDirectory(at: location.root, withIntermediateDirectories: true)
+    let namespace = "private|account-a|generation-v4"
+    let accepted = entity(.snip, UUID(), identity("v3-record"))
+
+    do {
+      let schema = Schema(versionedSchema: SnipSnapSchemaV3.self)
+      let configuration = ModelConfiguration(
+        "Legacy",
+        schema: schema,
+        url: location.store,
+        cloudKitDatabase: .none
+      )
+      let container = try ModelContainer(for: schema, configurations: [configuration])
+      let context = ModelContext(container)
+      context.insert(
+        StoredCloudEntityRecord(namespaceKey: namespace, value: accepted, isDeferred: false)
+      )
+      try context.save()
+    }
+
+    let store = try SwiftDataSnipLibrary(storeURL: location.store)
+    let snapshot = try await store.cloudFullStorageSnapshot(namespaceKey: namespace)
+    let migrated = try XCTUnwrap(snapshot.readyEntities.first)
+    XCTAssertEqual(snapshot.readyEntities.count, 1)
+    XCTAssertEqual(migrated.reference, accepted.reference)
+    XCTAssertEqual(migrated.identity, accepted.identity)
+    XCTAssertEqual(migrated.acceptedData, accepted.acceptedData)
+    XCTAssertTrue(snapshot.pendingDeletes.isEmpty)
+  }
+
   func testV2TextRecordMaterializesDeterministicV1FieldsWithoutTouchingAttachments() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
@@ -342,4 +375,3 @@ extension CloudFullRecordPersistenceTests {
   }
 
 }
-

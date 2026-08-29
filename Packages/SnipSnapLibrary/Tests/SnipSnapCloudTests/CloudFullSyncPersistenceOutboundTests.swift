@@ -7,6 +7,76 @@ import XCTest
 @testable import SnipSnapPersistence
 
 extension CloudFullSyncPersistenceTests {
+  func testDeleteLedgerRetriesAfterItemFailureAndSettlesOnlyAfterAcceptance() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudDeleteLedgerRetry-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let namespace = makeNamespace()
+    let zone = try XCTUnwrap(namespace.zones.first)
+    let server = FakeCloudServer()
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let added = try await library.perform(
+      .add(
+        content: "delete me",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [],
+        requestID: UUID(),
+        now: Date(timeIntervalSince1970: 1)
+      ),
+      sortedBy: .manual
+    )
+    guard case .add(.added(let snipID)) = added.outcome else {
+      return XCTFail("Expected a Snip")
+    }
+    let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+    let store = CloudFullSyncPersistence(library: library, namespace: namespace, dataZone: zone)
+    try await store.approveEnrollment(references: [
+      CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
+      CloudEntityReference(kind: .snip, domainID: snipID),
+    ])
+    let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
+    try await coordinator.sync()
+    _ = try await library.perform(.delete(ids: [snipID]), sortedBy: .manual)
+    let recordID = CloudRecordID.snip(snipID, in: zone)
+    await transport.failNextSentItem(recordID, failure: .retryable)
+
+    try await coordinator.sendPending()
+
+    let afterFailure = try await library.cloudFullStorageSnapshot(
+      namespaceKey: namespace.canonicalKey
+    )
+    let pendingAfterFailure = try await store.pendingChanges()
+    let serverAfterFailure = await server.fullSnapshot(for: recordID)
+    XCTAssertEqual(afterFailure.pendingDeletes.map(\.reference.domainID), [snipID])
+    XCTAssertEqual(pendingAfterFailure.operations.map(\.id), [recordID])
+    XCTAssertNotNil(serverAfterFailure)
+
+    let reopenedLibrary = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let reopenedStore = CloudFullSyncPersistence(
+      library: reopenedLibrary,
+      namespace: namespace,
+      dataZone: zone
+    )
+    let reopened = CloudFullSyncCoordinator(
+      store: reopenedStore,
+      transport: FakeCloudRecordTransport(server: server, namespace: namespace)
+    )
+    try await reopened.sendPending()
+
+    let settled = try await reopenedLibrary.cloudFullStorageSnapshot(
+      namespaceKey: namespace.canonicalKey
+    )
+    let pendingAfterAcceptance = try await reopenedStore.pendingChanges()
+    let serverAfterAcceptance = await server.fullSnapshot(for: recordID)
+    let acceptedDeletionCount = await server.acceptedDeletionCount()
+    XCTAssertTrue(settled.pendingDeletes.isEmpty)
+    XCTAssertTrue(pendingAfterAcceptance.operations.isEmpty)
+    XCTAssertNil(serverAfterAcceptance)
+    XCTAssertEqual(acceptedDeletionCount, 1)
+  }
+
   func testDomainReadFailureStopsBeforeAnyCloudSend() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudFullReadFailureTests-\(UUID().uuidString)")
@@ -30,7 +100,7 @@ extension CloudFullSyncPersistenceTests {
     guard case .add(.added(let snipID)) = added.outcome else {
       return XCTFail("Expected a saved snip")
     }
-    let schema = Schema(versionedSchema: SnipSnapSchemaV3.self)
+    let schema = Schema(versionedSchema: SnipSnapSchemaV4.self)
     let configuration = ModelConfiguration(
       "SnipSnapLocal",
       schema: schema,
@@ -227,14 +297,18 @@ extension CloudFullSyncPersistenceTests {
     let events = await transport.events()
     XCTAssertEqual(recoveries.count, 1)
     XCTAssertTrue(staged.isEmpty)
-    XCTAssertNil(wire.engineState)
-    XCTAssertFalse(events.contains { event in
-      if case .confirmed = event { return true }
-      return false
-    })
+    XCTAssertNotNil(wire.engineState)
+    XCTAssertEqual(
+      events.filter { event in
+        if case .confirmed = event { return true }
+        return false
+      }.count,
+      1,
+      "only the required bootstrap fetch may be confirmed"
+    )
   }
 
-  func testUnknownSaveKeepsLocalEditPendingButUnknownDeleteCompletes() async throws {
+  func testUnknownSaveRecoversLocalEditUnderNewIdentityAndUnknownDeleteCompletes() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudFullUnknownItemTests-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -286,16 +360,29 @@ extension CloudFullSyncPersistenceTests {
     )
     try await coordinator.sendPending()
     let afterUnknownSave = await library.snapshot(sortedBy: .manual)
-    XCTAssertEqual(afterUnknownSave.snips.first(where: { $0.id == snip.id })?.content, "local edit")
+    XCTAssertFalse(afterUnknownSave.snips.contains(where: { $0.id == snip.id }))
+    let recovered = try XCTUnwrap(afterUnknownSave.snips.first)
+    XCTAssertNotEqual(recovered.id, snip.id)
+    XCTAssertEqual(recovered.content, "local edit")
+    XCTAssertEqual(recovered.listID, SnipList.inbox.id)
     let pendingAfterSave = try await persistence.pendingChanges()
     XCTAssertEqual(pendingAfterSave.operations.count, 1)
+    XCTAssertEqual(pendingAfterSave.operations.first?.id, .snip(recovered.id, in: zone))
+    XCTAssertFalse(pendingAfterSave.operations.contains(where: { $0.id == snipDraft.id }))
     let unknownSaveEvidence = try await persistence.enrollmentEvidence()
-    XCTAssertTrue(unknownSaveEvidence.needsAttention)
+    XCTAssertFalse(unknownSaveEvidence.needsAttention)
     XCTAssertTrue(unknownSaveEvidence.retryableEventKeys.isEmpty)
     var stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.canonicalKey)
-    XCTAssertTrue(stored.readyEntities.contains(where: { $0.reference.domainID == snip.id }))
+    XCTAssertFalse(stored.readyEntities.contains(where: { $0.reference.domainID == snip.id }))
 
-    _ = try await library.perform(.delete(ids: [snip.id]), sortedBy: .manual)
+    let reopenedLibrary = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let review = try await reopenedLibrary.recoverySnapshot(
+      in: SnipRecoveryScope(namespace.canonicalKey)
+    )
+    XCTAssertEqual(review.promotedSnips.map(\.id), [recovered.id])
+    XCTAssertEqual(review.promotedSnips.first?.currentSnipID, snip.id)
+
+    _ = try await library.perform(.delete(ids: [recovered.id]), sortedBy: .manual)
     try await coordinator.sendPending()
     let pendingAfterDelete = try await persistence.pendingChanges()
     XCTAssertTrue(pendingAfterDelete.operations.isEmpty)

@@ -78,6 +78,22 @@ extension SwiftDataSnipLibrary {
         throw CloudFullStorageError.invalidBatchReplay
       }
     }
+    let settledDeleteKeys = Set(batch.settledDeleteIdentities.map {
+      StoredCloudPendingDelete.identityKey(namespaceKey: batch.namespaceKey, identity: $0)
+    })
+    guard settledDeleteKeys.count == batch.settledDeleteIdentities.count else {
+      throw CloudFullStorageError.invalidBatchReplay
+    }
+    let removedIdentityKeys = Set(batch.items.compactMap { item in
+      item.acceptedAction == .remove
+        ? StoredCloudPendingDelete.identityKey(
+          namespaceKey: batch.namespaceKey,
+          identity: item.accepted.identity
+        ) : nil
+    })
+    guard settledDeleteKeys.isSubset(of: removedIdentityKeys) else {
+      throw CloudFullStorageError.invalidBatchReplay
+    }
     var acceptedItems: [CloudFullBatchItem] = []
     var quarantineItems: [CloudQuarantineInput] = []
     for item in batch.items {
@@ -172,6 +188,21 @@ extension SwiftDataSnipLibrary {
           recovery.storageVersion == 1
         else { throw CloudFullStorageError.invalidBatchReplay }
         try Self.insertFullRecoveryIfNeeded(recovery, context: context)
+      }
+      for review in batch.recoveryReviews {
+        try Self.insertRecoveryReviewIfNeeded(
+          review.recovery,
+          namespaceKey: batch.namespaceKey,
+          conflictKey: review.conflictKey,
+          context: context
+        )
+      }
+      for record in try Self.cloudPendingDeletes(
+        namespaceKey: batch.namespaceKey,
+        context: context
+      ) where settledDeleteKeys.contains(record.identityID)
+      {
+        context.delete(record)
       }
       for quarantine in quarantineItems {
         try Self.insertQuarantineIfNeeded(

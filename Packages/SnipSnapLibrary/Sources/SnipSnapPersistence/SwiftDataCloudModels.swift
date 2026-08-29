@@ -355,3 +355,46 @@ final class StoredCloudFullBatchReceipt {
     "\(namespaceKey)|full-batch|\(batchID.uuidString.lowercased())"
   }
 }
+
+@Model
+final class StoredCloudPendingDelete {
+  @Attribute(.unique) var id: String
+  @Attribute(.unique) var identityID: String
+  var namespaceKey: String
+  var kind: String
+  var domainID: UUID
+  var zoneName: String
+  var ownerName: String
+  var recordName: String
+
+  init(namespaceKey: String, value: CloudPendingDelete) {
+    id = Self.domainKey(namespaceKey: namespaceKey, reference: value.reference)
+    identityID = Self.identityKey(namespaceKey: namespaceKey, identity: value.identity)
+    self.namespaceKey = namespaceKey
+    kind = value.reference.kind.rawValue
+    domainID = value.reference.domainID
+    zoneName = value.identity.zoneName
+    ownerName = value.identity.ownerName
+    recordName = value.identity.recordName
+  }
+
+  var value: CloudPendingDelete? {
+    guard let kind = CloudEntityKind(rawValue: kind) else { return nil }
+    return CloudPendingDelete(
+      reference: CloudEntityReference(kind: kind, domainID: domainID),
+      identity: CloudTextStorageIdentity(
+        zoneName: zoneName,
+        ownerName: ownerName,
+        recordName: recordName
+      )
+    )
+  }
+
+  static func domainKey(namespaceKey: String, reference: CloudEntityReference) -> String {
+    "\(namespaceKey)|pending-delete|\(reference.kind.rawValue)|\(reference.domainID.uuidString.lowercased())"
+  }
+
+  static func identityKey(namespaceKey: String, identity: CloudTextStorageIdentity) -> String {
+    "\(namespaceKey)|pending-delete-record|\(identity.key)"
+  }
+}

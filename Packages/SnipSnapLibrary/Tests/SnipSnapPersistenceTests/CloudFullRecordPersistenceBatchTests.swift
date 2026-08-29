@@ -730,6 +730,10 @@ extension CloudFullRecordPersistenceTests {
       namespaceKey: namespace,
       value: entity(.snip, snipID, identity("s-clear-duplicate"))
     )
+    try await store.stageCloudPendingDeletes(
+      namespaceKey: namespace,
+      values: [CloudPendingDelete(reference: accepted.reference, identity: accepted.identity)]
+    )
     try await store.clearCloudTextSyncState(namespaceKey: namespace)
 
     let cleared = try await store.cloudFullStorageSnapshot(namespaceKey: namespace)
@@ -738,6 +742,7 @@ extension CloudFullRecordPersistenceTests {
     XCTAssertTrue(cleared.conflicts.isEmpty)
     XCTAssertTrue(cleared.quarantines.isEmpty)
     XCTAssertTrue(cleared.enrolledEntities.isEmpty)
+    XCTAssertTrue(cleared.pendingDeletes.isEmpty)
     let dormant = try await store.dormantCloudBase(
       namespaceKey: namespace,
       reference: accepted.reference
@@ -753,4 +758,3 @@ extension CloudFullRecordPersistenceTests {
   }
 
 }
-
