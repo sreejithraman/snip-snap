@@ -64,7 +64,9 @@ struct PanelMoreButton: View {
 
         Divider()
 
-        accessibilityMenu
+        Button(accessibilityPermissions.menuActionTitle) {
+            accessibilityPermissions.performMenuAction()
+        }
 
         Button("Keyboard Shortcuts…") {
             openSettings()
@@ -92,17 +94,6 @@ struct PanelMoreButton: View {
             get: { model.appearance },
             set: { model.setAppearance($0) }
         )
-    }
-
-    private var accessibilityMenu: some View {
-        let presentation = accessibilityPermissions.menuPresentation
-        return Menu {
-            Button(presentation.actionTitle) {
-                accessibilityPermissions.performMenuAction()
-            }
-        } label: {
-            Label(presentation.statusTitle, systemImage: presentation.systemImage)
-        }
     }
 
     private var completionFilterTitle: String {

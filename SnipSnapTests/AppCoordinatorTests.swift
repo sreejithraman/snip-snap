@@ -75,12 +75,8 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         XCTAssertTrue(coordinator.accessibilityPermissions.isSetupCardVisible)
         XCTAssertFalse(coordinator.accessibilityPermissions.hasRequestedAccess)
         XCTAssertEqual(
-            coordinator.accessibilityPermissions.menuPresentation.statusTitle,
-            "Accessibility: Off"
-        )
-        XCTAssertEqual(
-            coordinator.accessibilityPermissions.menuPresentation.actionTitle,
-            "Allow Access"
+            coordinator.accessibilityPermissions.menuActionTitle,
+            "Allow Accessibility Access…"
         )
         XCTAssertTrue(panel.isVisible)
         XCTAssertNil(model.presentedError)
@@ -95,8 +91,8 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             true
         )
         XCTAssertEqual(
-            coordinator.accessibilityPermissions.menuPresentation.actionTitle,
-            "Open System Settings"
+            coordinator.accessibilityPermissions.menuActionTitle,
+            "Open Accessibility Settings…"
         )
 
         coordinator.accessibilityPermissions.performMenuAction()
@@ -165,12 +161,8 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         XCTAssertFalse(coordinator.accessibilityPermissions.isSetupCardVisible)
         XCTAssertEqual(requestCount, 0)
         XCTAssertEqual(
-            coordinator.accessibilityPermissions.menuPresentation.statusTitle,
-            "Accessibility: On"
-        )
-        XCTAssertEqual(
-            coordinator.accessibilityPermissions.menuPresentation.actionTitle,
-            "Open Accessibility Settings…"
+            coordinator.accessibilityPermissions.menuActionTitle,
+            "Accessibility Settings…"
         )
 
         coordinator.accessibilityPermissions.performMenuAction()
