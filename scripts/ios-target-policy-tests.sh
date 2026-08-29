@@ -15,7 +15,6 @@ share_entitlements="$share_source_dir/SnipSnapShareExtension.entitlements"
 for required_file in \
     SnipSnapiOSApp.swift \
     IOSAppModel.swift \
-    IOSUndoHistory.swift \
     IOSAppRootView.swift \
     LibraryViews.swift \
     WorkflowControls.swift \

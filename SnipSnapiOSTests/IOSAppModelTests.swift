@@ -50,7 +50,7 @@ final class IOSAppModelTests: XCTestCase {
             listID: SnipList.inboxID
         )
         let library = ModelTestLibrary(snips: [snip])
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         let probe = PendingImportProbe()
         let coordinator = IOSShareImportCoordinator(
             model: model,
@@ -152,7 +152,7 @@ final class IOSAppModelTests: XCTestCase {
 
     func testTextSnipFlowCreatesEditsMovesAndDeletes() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         await model.load()
 
         let createdList = await model.createList(name: "Work")
@@ -176,7 +176,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertTrue(model.snips.isEmpty)
         XCTAssertNil(model.selectedSnipID)
         let pruneCalls = await library.pruneCalls()
-        XCTAssertEqual(pruneCalls, 0)
+        XCTAssertGreaterThan(pruneCalls, 0)
     }
 
     func testUndoRedoHistorySurvivesIOSModelReopen() async throws {
@@ -260,7 +260,7 @@ final class IOSAppModelTests: XCTestCase {
 
     func testListFlowKeepsInboxAsFallback() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         await model.load()
 
         let createdList = await model.createList(name: "Notes")
@@ -372,7 +372,7 @@ final class IOSAppModelTests: XCTestCase {
 
     func testAttachmentInputsUseTheTargetedLibraryCommands() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         await model.load()
         let sourceURL = URL(fileURLWithPath: "/tmp/first-file.txt")
         let replacementURL = URL(fileURLWithPath: "/tmp/replacement-file.txt")
@@ -471,7 +471,7 @@ final class IOSAppModelTests: XCTestCase {
 
     func testSearchFiltersBulkDoneAndUndoStayAboveTheLibrarySeam() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         await model.load()
 
         let createdAlpha = await model.createSnip(content: "Alpha note", in: SnipList.inboxID)
@@ -510,7 +510,7 @@ final class IOSAppModelTests: XCTestCase {
 
     func testManualReorderAndBulkListMoveUseNormalRepositoryCommands() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         await model.load()
         let createdList = await model.createList(name: "Work")
         XCTAssertTrue(createdList)
@@ -537,9 +537,9 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(model.visibleSnips.map(\.id), [oneID, twoID])
     }
 
-    func testUndoDropsAnEntryWhenItsAffectedSnipChanged() async throws {
+    func testUndoDonePreservesAnUnrelatedRemoteTextChange() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         await model.load()
         let created = await model.createSnip(content: "Original", in: SnipList.inboxID)
         XCTAssertTrue(created)
@@ -561,16 +561,16 @@ final class IOSAppModelTests: XCTestCase {
         )
 
         let undone = await model.undo()
-        XCTAssertFalse(undone)
-        XCTAssertEqual(model.undoTitle, "Undo New Snip")
-        XCTAssertNotNil(model.errorMessage)
+        XCTAssertTrue(undone)
+        XCTAssertEqual(model.undoTitle, "Undo")
         let snapshot = await library.snapshot(sortedBy: .manual)
         XCTAssertEqual(snapshot.snips.first?.content, "Changed elsewhere")
+        XCTAssertEqual(snapshot.snips.first?.isDone, false)
     }
 
     func testSingleRowDoneAndUndoPreserveTheExistingSelection() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         await model.load()
         let madeFirst = await model.createSnip(content: "First", in: SnipList.inboxID)
         XCTAssertTrue(madeFirst)
@@ -592,7 +592,7 @@ final class IOSAppModelTests: XCTestCase {
 
     func testOverlappingMutationsRunOneAtATimeAndBuildIndependentUndoEntries() async {
         let library = ModelTestLibrary(commandDelay: .milliseconds(80))
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
 
         async let first = model.createSnip(content: "First", in: SnipList.inboxID)
         async let second = model.createSnip(content: "Second", in: SnipList.inboxID)
@@ -614,7 +614,7 @@ final class IOSAppModelTests: XCTestCase {
 
     func testUndoNewListRefusesToMoveASnipAddedElsewhere() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         let createdList = await model.createList(name: "Work")
         XCTAssertTrue(createdList)
         let workID = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" })?.id)
@@ -641,7 +641,7 @@ final class IOSAppModelTests: XCTestCase {
 
     func testUndoDeletedSnipRefusesToRestoreIntoAListDeletedElsewhere() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         let createdList = await model.createList(name: "Work")
         XCTAssertTrue(createdList)
         let workID = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" })?.id)
@@ -660,9 +660,9 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertFalse(snapshot.lists.contains(where: { $0.id == workID }))
     }
 
-    func testUndoRenameDropsStaleEntryWhenTheOldNameWasTakenElsewhere() async throws {
+    func testUndoRenameKeepsAListAddedElsewhereWithTheSameDesiredName() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         let createdList = await model.createList(name: "Work")
         XCTAssertTrue(createdList)
         let work = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" }))
@@ -675,14 +675,14 @@ final class IOSAppModelTests: XCTestCase {
 
         let undone = await model.undo()
 
-        XCTAssertFalse(undone)
-        XCTAssertEqual(model.undoTitle, "Undo New List")
-        XCTAssertNotNil(model.errorMessage)
+        XCTAssertTrue(undone)
+        XCTAssertEqual(model.undoTitle, "Undo Create List")
+        XCTAssertEqual(model.lists.filter { $0.desiredName == "Work" }.count, 2)
     }
 
-    func testUndoDeletedListDropsStaleEntryWhenItsNameWasTakenElsewhere() async throws {
+    func testUndoDeletedListKeepsAListAddedElsewhereWithTheSameDesiredName() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         let createdList = await model.createList(name: "Work")
         XCTAssertTrue(createdList)
         let work = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" }))
@@ -695,9 +695,9 @@ final class IOSAppModelTests: XCTestCase {
 
         let undone = await model.undo()
 
-        XCTAssertFalse(undone)
-        XCTAssertEqual(model.undoTitle, "Undo New List")
-        XCTAssertNotNil(model.errorMessage)
+        XCTAssertTrue(undone)
+        XCTAssertEqual(model.undoTitle, "Undo Create List")
+        XCTAssertEqual(model.lists.filter { $0.desiredName == "Work" }.count, 2)
     }
 
     func testTargetCannotCompileAppKit() {
@@ -713,6 +713,15 @@ final class IOSAppModelTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(10))
         }
         return await probe.callCount() >= expected
+    }
+
+    private func makeModel(library: any SnipLibrary) -> IOSAppModel {
+        let actions = SnipLibraryDeviceActions(
+            library: library,
+            journalURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("IOSAppModelTests-\(UUID().uuidString).json")
+        )
+        return IOSAppModel(library: library, userActions: actions)
     }
 }
 
@@ -882,6 +891,13 @@ private actor ModelTestLibrary: SnipLibrary {
         case .pruneAttachments:
             attachmentPruneCalls += 1
             outcome = .none
+        case .applyDevicePatch(let patch, _):
+            guard let updated = patch.applying(to: makeSnapshot(sortMode: .manual)) else {
+                throw SnipLibraryError.deviceActionChanged
+            }
+            snips = updated.snips
+            lists = updated.lists
+            outcome = .none
         case .restore(let restored):
             let existing = Set(snips.map(\.id))
             snips.append(contentsOf: restored.filter { !existing.contains($0.id) })
@@ -987,12 +1003,21 @@ private actor ModelTestLibrary: SnipLibrary {
     }
 
     private func makeSnapshot(sortMode: SnipSortMode) -> SnipLibrarySnapshot {
-        SnipLibrarySnapshot(
-            snips: lists.sorted { $0.position < $1.position }.flatMap { list in
-                Snip.sorted(snips.filter { $0.listID == list.id }, by: sortMode)
-            },
-            lists: lists.sorted { $0.position < $1.position }
+        let orderedSnips = lists.sorted { $0.position < $1.position }.flatMap { list in
+            Snip.sorted(snips.filter { $0.listID == list.id }, by: sortMode)
+        }
+        let orderedLists = lists.sorted { $0.position < $1.position }
+        return SnipLibrarySnapshot(
+            snips: canonicalRoundTrip(orderedSnips),
+            lists: canonicalRoundTrip(orderedLists)
         )
+    }
+
+    private func canonicalRoundTrip<Value: Codable>(_ value: Value) -> Value {
+        guard let data = try? JSONEncoder().encode(value),
+            let decoded = try? JSONDecoder().decode(Value.self, from: data)
+        else { return value }
+        return decoded
     }
 
     private func nextTopPosition(in listID: UUID, excluding: Set<UUID> = []) -> Int64 {

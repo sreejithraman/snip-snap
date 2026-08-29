@@ -235,7 +235,7 @@ final class IOSAppModel {
         in listID: UUID,
         attachmentURLs: [URL] = []
     ) async -> Bool {
-        return await performUndoable(
+        return await performUserAction(
             .add(
                 content: content,
                 origin: .quickEntry,
@@ -245,11 +245,7 @@ final class IOSAppModel {
                 requestID: UUID(),
                 now: Date()
             ),
-            name: "Add Snip",
-            inverse: { _, update in
-                guard case .add(.added(let id)) = update.outcome else { return nil }
-                return .delete(ids: [id])
-            }
+            name: "Add Snip"
         ) { outcome in
             if case .add(.added(let id)) = outcome {
                 selectedListID = listID
@@ -283,28 +279,16 @@ final class IOSAppModel {
                     now: Date()
                 )
         }
-        return await performUndoable(
+        return await performUserAction(
             command,
-            name: "Edit Snip",
-            inverse: { before, update in
-                guard let old = before.snips.first(where: { $0.id == snip.id }),
-                    let current = update.snapshot.snips.first(where: { $0.id == snip.id })
-                else { return nil }
-                return .update(before: old, expectedUpdatedAt: current.updatedAt)
-            }
+            name: "Edit Snip"
         )
     }
 
     private func moveSnipUnlocked(id: UUID, to listID: UUID) async -> Bool {
-        let sourceListIDs = Set(snips.filter { $0.id == id }.map(\.listID))
-        let touched = sourceListIDs.union([listID])
-        return await performUndoable(
+        return await performUserAction(
             .moveChronologically(ids: [id], to: listID),
-            name: "Move",
-            touchedListIDs: touched,
-            inverse: { before, _ in
-                .placements(IOSUndoHistory.placements(in: before, listIDs: touched))
-            }
+            name: "Move"
         ) { _ in
             selectedListID = listID
             selectedSnipID = id
@@ -315,8 +299,6 @@ final class IOSAppModel {
         let selected = selectedVisibleSnipIDs
         let ids = visibleSnips.map(\.id).filter(selected.contains)
         guard !ids.isEmpty else { return false }
-        let sourceListIDs = Set(snips.filter { selected.contains($0.id) }.map(\.listID))
-        let touched = sourceListIDs.union([listID])
         let command: SnipLibraryCommand
         if sortMode == .manual {
             let moving = Set(ids)
@@ -328,13 +310,9 @@ final class IOSAppModel {
         } else {
             command = .moveChronologically(ids: ids, to: listID)
         }
-        return await performUndoable(
+        return await performUserAction(
             command,
-            name: "Move",
-            touchedListIDs: touched,
-            inverse: { before, _ in
-                .placements(IOSUndoHistory.placements(in: before, listIDs: touched))
-            }
+            name: "Move"
         ) { _ in
             selectedSnipIDs = []
             selectedSnipID = nil
@@ -347,13 +325,9 @@ final class IOSAppModel {
             orderedIDs.count == visibleSnips.count
         else { return false }
         let listID = selectedListID
-        return await performUndoable(
+        return await performUserAction(
             .place(ids: orderedIDs, in: listID, before: nil, basedOn: .manual),
-            name: "Reorder",
-            touchedListIDs: [listID],
-            inverse: { before, _ in
-                .placements(IOSUndoHistory.placements(in: before, listIDs: [listID]))
-            }
+            name: "Reorder"
         )
     }
 
@@ -378,36 +352,24 @@ final class IOSAppModel {
     private func setSelectionDoneUnlocked(_ done: Bool) async -> Bool {
         let ids = selectedVisibleSnipIDs
         guard !ids.isEmpty else { return false }
-        return await performUndoable(
+        return await performUserAction(
             .setDone(ids: ids, done: done),
-            name: done ? "Mark Done" : "Mark Not Done",
-            inverse: { before, _ in
-                .setDone(states: Dictionary(uniqueKeysWithValues: before.snips
-                    .filter { ids.contains($0.id) }.map { ($0.id, $0.isDone) }))
-            }
+            name: done ? "Mark Done" : "Mark Not Done"
         )
     }
 
     private func toggleDoneUnlocked(id: UUID) async -> Bool {
         guard let snip = snips.first(where: { $0.id == id }) else { return false }
-        return await performUndoable(
+        return await performUserAction(
             .setDone(ids: [id], done: !snip.isDone),
-            name: snip.isDone ? "Mark Not Done" : "Mark Done",
-            inverse: { before, _ in
-                guard let prior = before.snips.first(where: { $0.id == id }) else { return nil }
-                return .setDone(states: [id: prior.isDone])
-            }
+            name: snip.isDone ? "Mark Not Done" : "Mark Done"
         )
     }
 
     private func createListUnlocked(name: String) async -> Bool {
-        await performUndoable(
+        await performUserAction(
             .createList(name: name, systemImage: "list.bullet"),
-            name: "Create List",
-            inverse: { _, update in
-                guard case .listCreated(let list) = update.outcome else { return nil }
-                return .deleteList(id: list.id)
-            }
+            name: "Create List"
         ) { outcome in
             if case .listCreated(let list) = outcome {
                 selectedListID = list.id
@@ -418,29 +380,17 @@ final class IOSAppModel {
     }
 
     private func renameListUnlocked(_ list: SnipList, name: String) async -> Bool {
-        await performUndoable(
+        await performUserAction(
             .updateList(id: list.id, name: name, systemImage: list.systemImage),
-            name: "Rename List",
-            inverse: { before, _ in
-                before.lists.first(where: { $0.id == list.id })
-                    .map(IOSUndoHistory.InverseEdit.updateList)
-            }
+            name: "Rename List"
         )
     }
 
     private func deleteListUnlocked(id: UUID) async -> Bool {
-        guard let deleted = lists.first(where: { $0.id == id }) else { return false }
-        let touched: Set<UUID> = [SnipList.inboxID, id]
-        return await performUndoable(
+        guard lists.contains(where: { $0.id == id }) else { return false }
+        return await performUserAction(
             .deleteList(id: id),
-            name: "Delete List",
-            touchedListIDs: touched,
-            inverse: { before, _ in
-                .restoreList(
-                    deleted,
-                    placements: IOSUndoHistory.placements(in: before, listIDs: touched)
-                )
-            }
+            name: "Delete List"
         ) { _ in
             selectedListID = SnipList.inboxID
             selectedSnipID = nil
@@ -488,27 +438,20 @@ final class IOSAppModel {
 
     private func deleteSnips(ids: Set<UUID>) async -> Bool {
         guard !ids.isEmpty else { return false }
-        return await performUndoable(
+        return await performUserAction(
             .delete(ids: ids),
-            name: "Delete",
-            inverse: { before, _ in
-                .restore(snips: before.snips.filter { ids.contains($0.id) })
-            }
+            name: "Delete"
         ) { _ in
             if let selectedSnipID, ids.contains(selectedSnipID) { self.selectedSnipID = nil }
             selectedSnipIDs.subtract(ids)
         }
     }
 
-    private func performUndoable(
+    private func performUserAction(
         _ command: SnipLibraryCommand,
         name: String,
-        touchedListIDs: Set<UUID> = [],
-        inverse: (SnipLibrarySnapshot, SnipLibraryUpdate) -> IOSUndoHistory.InverseEdit?,
         afterSuccess: (SnipLibraryOutcome) -> Void = { _ in }
     ) async -> Bool {
-        _ = touchedListIDs
-        _ = inverse
         do {
             let update = try await userActions.perform(
                 name: name,

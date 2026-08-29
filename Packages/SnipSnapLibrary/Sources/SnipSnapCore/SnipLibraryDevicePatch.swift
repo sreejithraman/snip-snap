@@ -64,7 +64,9 @@ package extension SnipLibraryDevicePatch {
   private static func uuidOrder(_ lhs: UUID, _ rhs: UUID) -> Bool {
     lhs.uuidString < rhs.uuidString
   }
+}
 
+public extension SnipLibraryDevicePatch {
   func canApply(to snapshot: SnipLibrarySnapshot) -> Bool {
     applying(to: snapshot) != nil
   }
