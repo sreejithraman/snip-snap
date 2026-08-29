@@ -10,6 +10,9 @@ public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {
     case duplicateList
     case invalidList
     case attachmentCopyFailed
+    case modeTransitionInProgress
+    case transferUnsupported
+    case transferConflict(SnipLibraryTransferConflict)
 
     public var errorDescription: String? {
         switch self {
@@ -31,6 +34,12 @@ public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {
             "That list is not available."
         case .attachmentCopyFailed:
             "Snip Snap could not copy one of the files."
+        case .modeTransitionInProgress:
+            "This device is changing its storage choice. Try again when setup finishes."
+        case .transferUnsupported:
+            "This snip store cannot change storage modes."
+        case .transferConflict:
+            "Snip Snap found records it could not copy safely."
         }
     }
 }
@@ -119,11 +128,74 @@ public struct SnipLibraryUpdate: Equatable, Sendable {
     }
 }
 
+public enum SnipLibraryTransferConflict: Equatable, Sendable {
+    case snipIdentity(UUID)
+    case listIdentity(UUID)
+    case listName(String)
+    case attachmentIdentity(UUID)
+}
+
+public struct SnipLibraryTransferSnapshot: Equatable, Sendable {
+    public let revision: UInt64
+    public let snips: [Snip]
+    public let lists: [SnipList]
+    public let attachmentData: [UUID: Data]
+
+    public init(
+        revision: UInt64,
+        snips: [Snip],
+        lists: [SnipList],
+        attachmentData: [UUID: Data]
+    ) {
+        self.revision = revision
+        self.snips = snips
+        self.lists = lists
+        self.attachmentData = attachmentData
+    }
+}
+
+public struct SnipLibraryTransferResult: Equatable, Sendable {
+    public let approvedSnipIDs: Set<UUID>
+    public let recoveredSourceSnipIDs: Set<UUID>
+
+    public init(approvedSnipIDs: Set<UUID>, recoveredSourceSnipIDs: Set<UUID>) {
+        self.approvedSnipIDs = approvedSnipIDs
+        self.recoveredSourceSnipIDs = recoveredSourceSnipIDs
+    }
+}
+
 public protocol SnipLibrary: Sendable {
     func snapshot(sortedBy sortMode: SnipSortMode) async -> SnipLibrarySnapshot
+
+    /// Returns a snapshot or reports that the store could not be read.
+    func checkedSnapshot(sortedBy sortMode: SnipSortMode) async throws -> SnipLibrarySnapshot
 
     func perform(
         _ command: SnipLibraryCommand,
         sortedBy sortMode: SnipSortMode
     ) async throws -> SnipLibraryUpdate
+
+    func transferSnapshot(revision: UInt64) async throws -> SnipLibraryTransferSnapshot
+
+    func mergeTransferSnapshot(
+        _ source: SnipLibraryTransferSnapshot,
+        transitionID: UUID
+    ) async throws -> SnipLibraryTransferResult
+}
+
+public extension SnipLibrary {
+    func checkedSnapshot(sortedBy sortMode: SnipSortMode) async throws -> SnipLibrarySnapshot {
+        await snapshot(sortedBy: sortMode)
+    }
+
+    func transferSnapshot(revision: UInt64) async throws -> SnipLibraryTransferSnapshot {
+        throw SnipLibraryError.transferUnsupported
+    }
+
+    func mergeTransferSnapshot(
+        _ source: SnipLibraryTransferSnapshot,
+        transitionID: UUID
+    ) async throws -> SnipLibraryTransferResult {
+        throw SnipLibraryError.transferUnsupported
+    }
 }

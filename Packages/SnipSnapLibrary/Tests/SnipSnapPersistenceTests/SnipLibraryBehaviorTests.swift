@@ -842,6 +842,97 @@ final class SnipLibraryBehaviorTests: XCTestCase {
     XCTAssertEqual(duplicate.outcome, .add(.duplicate))
   }
 
+  func testTransferPreservesListOrderFullSnipFieldsAndAttachmentBytesAcrossAdapters() async throws {
+    try await forEachAdapter { _, _, library in
+      let work = SnipList(id: UUID(), name: "Work", systemImage: "briefcase.fill", position: 3)
+      let later = SnipList(id: UUID(), name: "Later", systemImage: "clock.fill", position: 9)
+      let attachmentID = UUID()
+      let bytes = Data([0, 1, 2, 3, 255])
+      let attachment = SnipAttachment(
+        id: attachmentID,
+        fileName: "proof.bin",
+        relativePath: "\(attachmentID.uuidString)/proof.bin",
+        contentType: "application/octet-stream",
+        byteCount: Int64(bytes.count)
+      )
+      let snip = Snip(
+        id: UUID(),
+        requestID: UUID(),
+        createdAt: Date(timeIntervalSince1970: 10),
+        updatedAt: Date(timeIntervalSince1970: 20),
+        content: "all fields",
+        origin: .share,
+        source: SnipSource(applicationName: "Source", windowTitle: "Window", url: "https://example.test"),
+        listID: work.id,
+        isDone: true,
+        manualPosition: 42,
+        attachments: [attachment]
+      )
+      let source = SnipLibraryTransferSnapshot(
+        revision: 7,
+        snips: [snip],
+        lists: [.inbox, work, later],
+        attachmentData: [attachmentID: bytes]
+      )
+
+      let result = try await library.mergeTransferSnapshot(source, transitionID: UUID())
+      let copied = try await library.transferSnapshot(revision: 8)
+
+      XCTAssertEqual(result.approvedSnipIDs, [snip.id])
+      XCTAssertEqual(copied.lists, source.lists)
+      XCTAssertEqual(copied.snips, source.snips)
+      XCTAssertEqual(copied.attachmentData, source.attachmentData)
+    }
+  }
+
+  func testTransferRejectsAttachmentStableIDConflictAcrossAdapters() async throws {
+    try await forEachAdapter { _, _, library in
+      let attachmentID = UUID()
+      let firstAttachment = SnipAttachment(
+        id: attachmentID,
+        fileName: "first.bin",
+        relativePath: "\(attachmentID.uuidString)/first.bin",
+        contentType: "application/octet-stream",
+        byteCount: 1
+      )
+      let first = Snip(
+        id: UUID(),
+        content: "first",
+        origin: .share,
+        attachments: [firstAttachment]
+      )
+      _ = try await library.mergeTransferSnapshot(
+        SnipLibraryTransferSnapshot(
+          revision: 1,
+          snips: [first],
+          lists: [.inbox],
+          attachmentData: [attachmentID: Data([1])]
+        ),
+        transitionID: UUID()
+      )
+      var conflictingAttachment = firstAttachment
+      conflictingAttachment.fileName = "other.bin"
+      let conflict = Snip(
+        id: UUID(),
+        content: "conflict",
+        origin: .share,
+        attachments: [conflictingAttachment]
+      )
+
+      await assertThrows(.transferConflict(.attachmentIdentity(attachmentID))) {
+        _ = try await library.mergeTransferSnapshot(
+          SnipLibraryTransferSnapshot(
+            revision: 2,
+            snips: [conflict],
+            lists: [.inbox],
+            attachmentData: [attachmentID: Data([2])]
+          ),
+          transitionID: UUID()
+        )
+      }
+    }
+  }
+
   private func forEachAdapter(
     _ body: (Adapter, URL, any SnipLibrary) async throws -> Void
   ) async throws {

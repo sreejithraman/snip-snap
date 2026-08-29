@@ -7,28 +7,45 @@ package enum CloudNamespaceEnrollmentError: Error, Equatable, Sendable {
     case invalidSeedSelection
 }
 
+package struct CloudTextEnrollmentEvidence: Equatable, Sendable {
+    package let phase: CloudNamespaceBootstrapPhase
+    package let hasPendingChanges: Bool
+    package let hasRetryableRecordFailures: Bool
+    package let retryableEventKeys: Set<String>
+    package let needsAttention: Bool
+}
+
+package enum CloudSyncRetryableError: Error, Equatable, Sendable {
+    case itemFailure
+}
+
 package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
+    package typealias ApplyHook = @Sendable () async throws -> Void
     private enum RecoveryInput: Codable {
         case fetched(CloudFetchItemResult)
         case sent(CloudSendItemResult)
         case database(CloudDatabaseEvent)
         case zone(CloudZoneEvent)
+        case modeRetryDeletion
     }
 
     private let library: SwiftDataSnipLibrary
     private let namespace: CloudSyncNamespace
     private let textZone: CloudZoneID
     private let namespaceKey: String
+    private let applyHook: ApplyHook
 
     package init(
         library: SwiftDataSnipLibrary,
         namespace: CloudSyncNamespace,
-        textZone: CloudZoneID
+        textZone: CloudZoneID,
+        applyHook: @escaping ApplyHook = {}
     ) {
         precondition(namespace.zones.contains(textZone))
         self.library = library
         self.namespace = namespace
         self.textZone = textZone
+        self.applyHook = applyHook
         namespaceKey = namespace.canonicalKey
     }
 
@@ -61,6 +78,7 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
     }
 
     package func applyStaged(_ id: UUID) async throws {
+        try await applyHook()
         let snapshot = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
         guard let stored = snapshot.stagedBatches.first(where: { $0.id == id }) else { return }
         let batch = try JSONDecoder().decode(CloudSyncBatch.self, from: stored.payload)
@@ -101,7 +119,7 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
                 snapshot = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
             }
         }
-        let eligibleSnipIDs: Set<UUID>
+        var eligibleSnipIDs: Set<UUID>
         switch snapshot.namespaceState.phase {
         case .seeding:
             eligibleSnipIDs = snapshot.namespaceState.approvedSnipIDs
@@ -111,6 +129,10 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
         case .notEnrolled, .remoteChecked, .remoteCheckedMissingZone, .blocked:
             return CloudOutboundBatch(operations: [])
         }
+        eligibleSnipIDs.formUnion(snapshot.records.compactMap { record in
+            Self.isModeRetryDeletion(Self.recoveryInput(record.recoveryData))
+                ? record.snipID : nil
+        })
         let liveSnipIDs = Set(snapshot.snips.map(\.id))
         if try await library.discardUnacceptedCloudTextRecords(
             namespaceKey: namespaceKey,
@@ -191,6 +213,196 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
                 zoneCreationPending: snapshot.namespaceState.phase == .remoteCheckedMissingZone
             )
         )
+    }
+
+    /// Records the exact local additions approved by a mode change after remote data is durable.
+    package func approveModeMerge(snipIDs: Set<UUID>) async throws {
+        let snapshot = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
+        if snapshot.namespaceState.phase == .remoteChecked
+            || snapshot.namespaceState.phase == .remoteCheckedMissingZone
+        {
+            try await approveSeeding(snipIDs: snipIDs)
+            return
+        }
+        if snapshot.namespaceState.phase == .seeding {
+            let localIDs = Set(snapshot.snips.map(\.id))
+            guard snipIDs.isSubset(of: localIDs) else {
+                throw CloudNamespaceEnrollmentError.invalidSeedSelection
+            }
+            try await library.prepareCloudTextModeRetry(
+                namespaceKey: namespaceKey,
+                supersededSnipIDs: snapshot.namespaceState.approvedSnipIDs,
+                liveSnipIDs: localIDs,
+                deletionRecoveryData: try Self.encode(.modeRetryDeletion)
+            )
+            guard snapshot.namespaceState.approvedSnipIDs != snipIDs else { return }
+            try await library.transitionCloudTextNamespace(
+                namespaceKey: namespaceKey,
+                expectedPhase: .seeding,
+                value: CloudNamespaceStateStorage(
+                    phase: snipIDs.isEmpty ? .active : .seeding,
+                    approvedSnipIDs: snipIDs,
+                    excludedSnipIDs: snapshot.namespaceState.excludedSnipIDs
+                        .subtracting(snipIDs)
+                )
+            )
+            return
+        }
+        guard snapshot.namespaceState.phase == .active else {
+            throw CloudNamespaceEnrollmentError.remoteFetchRequired
+        }
+        let localIDs = Set(snapshot.snips.map(\.id))
+        let linkedIDs = Set(snapshot.records.map(\.snipID))
+        let unlinkedIDs = localIDs.subtracting(linkedIDs)
+        guard snipIDs.isSubset(of: localIDs) else {
+            throw CloudNamespaceEnrollmentError.invalidSeedSelection
+        }
+        let approvedIDs = snipIDs.intersection(unlinkedIDs)
+        try await library.transitionCloudTextNamespace(
+            namespaceKey: namespaceKey,
+            expectedPhase: .active,
+            value: CloudNamespaceStateStorage(
+                phase: approvedIDs.isEmpty ? .active : .seeding,
+                approvedSnipIDs: approvedIDs,
+                excludedSnipIDs: snapshot.namespaceState.excludedSnipIDs
+                    .union(unlinkedIDs.subtracting(approvedIDs))
+            )
+        )
+    }
+
+    package func enrollmentEvidence() async throws -> CloudTextEnrollmentEvidence {
+        let snapshot = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
+        let pending = try await pendingChanges()
+        let recordRecoveryInputs = snapshot.records.compactMap { record in
+            record.recoveryData.flatMap(Self.recoveryInput)
+        }
+        let retryableEventKeys = Set(snapshot.recoveryEvents.compactMap { event in
+            Self.isRetryable(Self.recoveryInput(event.payload)) ? event.key : nil
+        })
+        let hasTerminalRecordFailure = snapshot.records.contains { record in
+            guard let data = record.recoveryData else { return false }
+            let input = Self.recoveryInput(data)
+            return !Self.isRetryable(input) && !Self.isModeRetryDeletion(input)
+        }
+        let hasTerminalEvent = snapshot.recoveryEvents.contains { event in
+            !Self.isRetryable(Self.recoveryInput(event.payload))
+        }
+        return CloudTextEnrollmentEvidence(
+            phase: snapshot.namespaceState.phase,
+            hasPendingChanges: !pending.operations.isEmpty || !pending.zonesToSave.isEmpty,
+            hasRetryableRecordFailures: recordRecoveryInputs.contains(where: Self.isRetryable),
+            retryableEventKeys: retryableEventKeys,
+            needsAttention: snapshot.namespaceState.phase == .blocked
+                || hasTerminalRecordFailure
+                || hasTerminalEvent
+        )
+    }
+
+    package func currentModeSeedSettlement(
+        candidates: [SyncModeSeedSettlementCandidate],
+        namespace expectedNamespace: ICloudSyncNamespaceBinding
+    ) async throws -> SyncModeSeedSettlementProof {
+        let actualNamespace = ICloudSyncNamespaceBinding(
+            scope: namespace.cloudScope,
+            accountLineage: namespace.accountLineage,
+            generation: namespace.generation,
+            zones: Set(namespace.zones.map {
+                ICloudSyncZoneBinding(name: $0.name, ownerName: $0.ownerName)
+            })
+        )
+        guard actualNamespace == expectedNamespace else {
+            throw SyncModePersistenceError.namespaceMismatch
+        }
+        let snapshot = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
+        let liveByID = Dictionary(uniqueKeysWithValues: snapshot.snips.map { ($0.id, $0) })
+        let recordsBySnipID = Dictionary(grouping: snapshot.records, by: \.snipID)
+        var values: [UUID: SyncModeSeedSettlementValue] = [:]
+        for candidate in candidates {
+            let records = recordsBySnipID[candidate.snipID, default: []]
+            if let live = liveByID[candidate.snipID] {
+                guard records.count == 1, let record = records.first,
+                    record.acceptedText == live.content,
+                    record.shadowData != nil, record.systemFields != nil,
+                    record.recoveryData == nil,
+                    candidate.acceptedRecordIdentity == nil
+                        || candidate.acceptedRecordIdentity == record.identity,
+                    !Self.hasRetryableState(for: record.identity, in: snapshot)
+                else { continue }
+                values[candidate.snipID] = .saved(
+                    recordIdentity: record.identity,
+                    acceptedText: live.content
+                )
+            } else if let identity = candidate.acceptedRecordIdentity,
+                records.isEmpty,
+                !snapshot.records.contains(where: { $0.identity == identity }),
+                !snapshot.namespaceState.approvedSnipIDs.contains(candidate.snipID),
+                !Self.hasRetryableState(for: identity, in: snapshot)
+            {
+                values[candidate.snipID] = .deleted(recordIdentity: identity)
+            }
+        }
+        return SyncModeSeedSettlementProof(namespace: actualNamespace, values: values)
+    }
+
+    package func modeSendAttempt(
+        for outbound: CloudOutboundBatch,
+        namespace expectedNamespace: ICloudSyncNamespaceBinding
+    ) async throws -> SyncModeSendAttempt {
+        let actualNamespace = ICloudSyncNamespaceBinding(
+            scope: namespace.cloudScope,
+            accountLineage: namespace.accountLineage,
+            generation: namespace.generation,
+            zones: Set(namespace.zones.map {
+                ICloudSyncZoneBinding(name: $0.name, ownerName: $0.ownerName)
+            })
+        )
+        guard actualNamespace == expectedNamespace else {
+            throw SyncModePersistenceError.namespaceMismatch
+        }
+        let snapshot = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
+        let recordsByIdentity = Dictionary(grouping: snapshot.records, by: \.identity)
+        var operations: [SyncModeSendOperation] = []
+        for outboundOperation in outbound.operations {
+            let identity = Self.storageIdentity(outboundOperation.id)
+            guard actualNamespace.zones.contains(
+                ICloudSyncZoneBinding(name: identity.zoneName, ownerName: identity.ownerName)
+            ), let records = recordsByIdentity[identity], records.count == 1,
+                let record = records.first
+            else { throw SyncModePersistenceError.namespaceMismatch }
+            let kind: SyncModeSendOperationKind
+            switch outboundOperation {
+            case .save:
+                kind = .save
+            case .delete:
+                kind = .delete
+            }
+            operations.append(
+                SyncModeSendOperation(
+                    snipID: record.snipID,
+                    recordIdentity: identity,
+                    kind: kind
+                )
+            )
+        }
+        guard Set(operations.map(\.recordIdentity)).count == operations.count else {
+            throw SyncModePersistenceError.invalidManifest
+        }
+        return SyncModeSendAttempt(namespace: actualNamespace, operations: operations)
+    }
+
+    package func prepareModeRetry(snipIDs: Set<UUID>) async throws {
+        guard !snipIDs.isEmpty else { return }
+        let snapshot = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
+        try await library.prepareCloudTextModeRetry(
+            namespaceKey: namespaceKey,
+            supersededSnipIDs: snipIDs,
+            liveSnipIDs: Set(snapshot.snips.map(\.id)),
+            deletionRecoveryData: try Self.encode(.modeRetryDeletion)
+        )
+    }
+
+    package func clearRetryableEvents(_ keys: Set<String>) async throws {
+        try await library.removeCloudTextRecoveryEvents(namespaceKey: namespaceKey, keys: keys)
     }
 
     package func clear() async throws {
@@ -419,12 +631,26 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
                 throw CloudTransportError.invalidRecord
             }
             if existingRecord != nil, existingSnip == nil {
-                mutations.append(
-                    CloudTextFetchedMutation(
-                        record: .acceptAndRecover(value, recoveryData: recoveryData),
-                        local: .requireMissing(id: value.snipID)
+                if let existingRecord,
+                    Self.isModeRetryDeletion(Self.recoveryInput(existingRecord.recoveryData))
+                {
+                    mutations.append(
+                        CloudTextFetchedMutation(
+                            record: .acceptAndRecover(
+                                value,
+                                recoveryData: try Self.encode(.modeRetryDeletion)
+                            ),
+                            local: .requireMissing(id: value.snipID)
+                        )
                     )
-                )
+                } else {
+                    mutations.append(
+                        CloudTextFetchedMutation(
+                            record: .acceptAndRecover(value, recoveryData: recoveryData),
+                            local: .requireMissing(id: value.snipID)
+                        )
+                    )
+                }
             } else if let existingSnip {
                 let isDirty = existingRecord?.acceptedText != existingSnip.content
                 if isDirty, existingSnip.content != value.text {
@@ -743,6 +969,7 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
             return true
         }
         if case .sent(.failed(_, .retryable)) = input { return false }
+        if case .modeRetryDeletion = input { return false }
         if phase == .seeding, case .sent(.failed(_, .zoneMissing)) = input { return false }
         return true
     }
@@ -798,6 +1025,49 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         return try encoder.encode(input)
+    }
+
+    private nonisolated static func recoveryInput(_ data: Data) -> RecoveryInput? {
+        try? JSONDecoder().decode(RecoveryInput.self, from: data)
+    }
+
+    private nonisolated static func recoveryInput(_ data: Data?) -> RecoveryInput? {
+        data.flatMap(recoveryInput)
+    }
+
+    private nonisolated static func isRetryable(_ input: RecoveryInput?) -> Bool {
+        switch input {
+        case .fetched(.failed(_, .retryable)), .sent(.failed(_, .retryable)),
+             .database(.failed(_, .retryable)), .zone(.failed(_, .retryable)):
+            true
+        default:
+            false
+        }
+    }
+
+    private nonisolated static func isModeRetryDeletion(_ input: RecoveryInput?) -> Bool {
+        if case .modeRetryDeletion = input { return true }
+        return false
+    }
+
+    private nonisolated static func hasRetryableState(
+        for identity: CloudTextStorageIdentity,
+        in snapshot: CloudTextStorageSnapshot
+    ) -> Bool {
+        let recordID = recordID(identity)
+        for event in snapshot.recoveryEvents {
+            switch recoveryInput(event.payload) {
+            case .sent(.failed(let id, .retryable)):
+                if id == recordID { return true }
+            case .fetched(.failed(let id, .retryable)):
+                if id == nil || id == recordID { return true }
+            case .database(.failed(_, .retryable)), .zone(.failed(_, .retryable)):
+                return true
+            default:
+                continue
+            }
+        }
+        return false
     }
 
     private nonisolated static func recoveryEvent(

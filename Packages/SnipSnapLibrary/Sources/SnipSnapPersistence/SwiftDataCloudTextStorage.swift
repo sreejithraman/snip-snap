@@ -3,6 +3,35 @@ import SnipSnapCore
 import SwiftData
 
 extension SwiftDataSnipLibrary {
+  package func acceptedCloudTextSnipIDs() throws -> Set<UUID> {
+    guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    let records = try context.fetch(FetchDescriptor<StoredCloudTextRecord>())
+    return Set(
+      records.compactMap { record in
+        record.acceptedText != nil || record.shadowData != nil || record.systemFields != nil
+          ? record.snipID
+          : nil
+      }
+    )
+  }
+
+  package func acceptedCloudTextValues() throws -> [UUID: String] {
+    guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    var values: [UUID: String] = [:]
+    for record in try context.fetch(FetchDescriptor<StoredCloudTextRecord>()) {
+      guard let text = record.acceptedText else { continue }
+      guard values[record.snipID] == nil else { throw SnipLibraryError.invalidStore }
+      values[record.snipID] = text
+    }
+    return values
+  }
+
   package func cloudTextSyncSnapshot(
     namespaceKey: String
   ) throws -> CloudTextStorageSnapshot {
@@ -330,6 +359,50 @@ extension SwiftDataSnipLibrary {
     }
     for state in try Self.cloudNamespaceStates(namespaceKey: namespaceKey, context: context) {
       context.delete(state)
+    }
+    try afterMutationBeforeSave()
+    try context.save()
+  }
+
+  package func removeCloudTextRecoveryEvents(
+    namespaceKey: String,
+    keys: Set<String>
+  ) throws {
+    guard !keys.isEmpty else { return }
+    guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    for event in try Self.cloudRecoveryEvents(namespaceKey: namespaceKey, context: context)
+      where keys.contains(event.eventKey)
+    {
+      context.delete(event)
+    }
+    try afterMutationBeforeSave()
+    try context.save()
+  }
+
+  package func prepareCloudTextModeRetry(
+    namespaceKey: String,
+    supersededSnipIDs: Set<UUID>,
+    liveSnipIDs: Set<UUID>,
+    deletionRecoveryData: Data
+  ) throws {
+    guard !supersededSnipIDs.isEmpty else { return }
+    guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    for record in try Self.cloudTextRecords(namespaceKey: namespaceKey, context: context)
+      where supersededSnipIDs.contains(record.snipID)
+    {
+      if liveSnipIDs.contains(record.snipID) {
+        record.recoveryData = nil
+      } else if record.acceptedText != nil || record.shadowData != nil || record.systemFields != nil {
+        record.recoveryData = deletionRecoveryData
+      } else {
+        context.delete(record)
+      }
     }
     try afterMutationBeforeSave()
     try context.save()

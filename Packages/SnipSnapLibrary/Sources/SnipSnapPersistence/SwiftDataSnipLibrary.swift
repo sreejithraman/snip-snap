@@ -336,21 +336,22 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
   }
 
   public func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
-    guard let container, isAvailable else {
-      return SnipLibrarySnapshot(snips: [], lists: [.inbox])
-    }
-    if let lock = try? SnipStoreFileLock(url: lockURL) {
-      defer { withExtendedLifetime(lock) {} }
-      if let loaded = try? Self.load(
-        context: Self.makeContext(container: container),
-        seenRequestIDs: seenRequestIDs
-      ) {
-        lastKnownState = loaded.state
-        seenRequestIDs = loaded.state.seenRequestIDs
-        rememberAttachments(in: loaded.state)
-      }
-    }
+    _ = try? checkedSnapshot(sortedBy: sortMode)
     return makeSnapshot(state: lastKnownState, sortedBy: sortMode)
+  }
+
+  public func checkedSnapshot(sortedBy sortMode: SnipSortMode) throws -> SnipLibrarySnapshot {
+    guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let loaded = try Self.load(
+      context: Self.makeContext(container: container),
+      seenRequestIDs: seenRequestIDs
+    )
+    lastKnownState = loaded.state
+    seenRequestIDs = loaded.state.seenRequestIDs
+    rememberAttachments(in: loaded.state)
+    return makeSnapshot(state: loaded.state, sortedBy: sortMode)
   }
 
   public func perform(
@@ -418,6 +419,157 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
         snapshot: makeSnapshot(state: state, sortedBy: sortMode),
         outcome: outcome
       )
+    } catch {
+      context.rollback()
+      removeAttachmentDirectories(createdDirectories)
+      throw error
+    }
+  }
+
+  public func transferSnapshot(revision: UInt64) async throws -> SnipLibraryTransferSnapshot {
+    let current = try await checkedSnapshot(sortedBy: .manual)
+    var attachmentData: [UUID: Data] = [:]
+    for (id, url) in current.attachmentURLs {
+      do {
+        attachmentData[id] = try Data(contentsOf: url)
+      } catch {
+        throw SnipLibraryError.attachmentCopyFailed
+      }
+    }
+    return SnipLibraryTransferSnapshot(
+      revision: revision,
+      snips: current.snips,
+      lists: current.lists,
+      attachmentData: attachmentData
+    )
+  }
+
+  public func mergeTransferSnapshot(
+    _ source: SnipLibraryTransferSnapshot,
+    transitionID: UUID
+  ) async throws -> SnipLibraryTransferResult {
+    try await mergeTransferSnapshot(
+      source,
+      transitionID: transitionID,
+      replacingTargetSnipIDs: [],
+      priorSeedProvenance: [],
+      priorServerAcceptedSnipIDs: [],
+      priorSeededListIDs: []
+    )
+  }
+
+  package func mergeTransferSnapshot(
+    _ source: SnipLibraryTransferSnapshot,
+    transitionID: UUID,
+    replacingTargetSnipIDs: Set<UUID>,
+    priorSeedProvenance: [SyncModeSeedProvenance],
+    priorServerAcceptedSnipIDs: Set<UUID>,
+    priorSeededListIDs: Set<UUID>
+  ) async throws -> SnipLibraryTransferResult {
+    let plan = try await prepareTransferPlan(
+      source,
+      transitionID: transitionID,
+      replacingTargetSnipIDs: replacingTargetSnipIDs,
+      priorSeedProvenance: priorSeedProvenance,
+      priorServerAcceptedSnipIDs: priorServerAcceptedSnipIDs,
+      priorSeededListIDs: priorSeededListIDs
+    )
+    return try await applyTransferPlan(plan)
+  }
+
+  package func prepareTransferPlan(
+    _ source: SnipLibraryTransferSnapshot,
+    transitionID: UUID,
+    replacingTargetSnipIDs: Set<UUID>,
+    priorSeedProvenance: [SyncModeSeedProvenance],
+    priorServerAcceptedSnipIDs: Set<UUID>,
+    priorSeededListIDs: Set<UUID>,
+    targetRevision: UInt64 = 0
+  ) async throws -> SnipLibraryTransferPlan {
+    guard isAvailable else { throw SnipLibraryError.storeUnavailable }
+    let target = try await transferSnapshot(revision: targetRevision)
+    let acceptedTargetTextBySnipID = try acceptedCloudTextValues()
+    let acceptedTargetSnipIDs = Set(acceptedTargetTextBySnipID.keys)
+    return try SnipLibraryTransferPlanner.plan(
+      source: source,
+      target: target,
+      transitionID: transitionID,
+      replacingTargetSnipIDs: replacingTargetSnipIDs,
+      acceptedTargetSnipIDs: acceptedTargetSnipIDs,
+      acceptedTargetTextBySnipID: acceptedTargetTextBySnipID,
+      priorSeedProvenance: priorSeedProvenance,
+      priorServerAcceptedSnipIDs: priorServerAcceptedSnipIDs,
+      priorSeededListIDs: priorSeededListIDs
+    )
+  }
+
+  package func applyTransferPlan(
+    _ plan: SnipLibraryTransferPlan,
+    currentRevision: UInt64 = 0
+  ) async throws -> SnipLibraryTransferResult {
+    guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    let loaded = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
+    let currentSnips = loaded.state.allSnips(sortMode: .manual)
+    var currentAttachmentData: [UUID: Data] = [:]
+    for attachment in currentSnips.flatMap(\.attachments) {
+      let url = attachmentRootURL.appendingPathComponent(attachment.relativePath)
+      do {
+        currentAttachmentData[attachment.id] = try Data(contentsOf: url)
+      } catch {
+        throw SnipLibraryError.attachmentCopyFailed
+      }
+    }
+    let current = SnipLibraryTransferSnapshot(
+      revision: currentRevision,
+      snips: currentSnips,
+      lists: loaded.state.allLists(),
+      attachmentData: currentAttachmentData
+    )
+    guard currentRevision == plan.targetRevision,
+      SnipLibraryTransferPlanner.digest(snapshot: current) == plan.targetDigest
+    else { throw SnipLibraryError.invalidStore }
+    var createdDirectories: [URL] = []
+    var transferredSnips = plan.snips
+
+    do {
+      for snipIndex in transferredSnips.indices {
+        for attachmentIndex in transferredSnips[snipIndex].attachments.indices {
+          var attachment = transferredSnips[snipIndex].attachments[attachmentIndex]
+          guard let bytes = plan.attachmentData[attachment.id] else {
+            throw SnipLibraryError.attachmentCopyFailed
+          }
+          let safeName = URL(fileURLWithPath: attachment.fileName).lastPathComponent
+          guard !safeName.isEmpty else { throw SnipLibraryError.attachmentCopyFailed }
+          let relativePath = "\(attachment.id.uuidString)/\(safeName)"
+          let destination = attachmentRootURL.appendingPathComponent(relativePath)
+          let directory = destination.deletingLastPathComponent()
+          if !FileManager.default.fileExists(atPath: destination.path) {
+            try DurableFile.createDirectory(directory)
+            createdDirectories.append(directory)
+            try DurableFile.write(bytes, to: destination)
+          } else if try Data(contentsOf: destination) != bytes {
+            throw SnipLibraryError.transferConflict(.attachmentIdentity(attachment.id))
+          }
+          attachment.relativePath = relativePath
+          transferredSnips[snipIndex].attachments[attachmentIndex] = attachment
+        }
+      }
+      let state = SnipLibraryState(
+        snips: transferredSnips,
+        lists: plan.lists,
+        seenRequestIDs: loaded.state.seenRequestIDs.union(transferredSnips.map(\.requestID))
+      )
+      try Self.validate(state)
+      try Self.applyChanges(from: loaded, to: state, context: context)
+      try afterMutationBeforeSave()
+      try context.save()
+      seenRequestIDs = state.seenRequestIDs
+      lastKnownState = state
+      rememberAttachments(in: state)
+      return plan.result
     } catch {
       context.rollback()
       removeAttachmentDirectories(createdDirectories)

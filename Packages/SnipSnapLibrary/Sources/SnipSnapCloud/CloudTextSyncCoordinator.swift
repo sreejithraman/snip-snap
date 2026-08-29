@@ -28,17 +28,50 @@ package actor CloudTextSyncCoordinator {
         isSyncing = true
         defer { isSyncing = false }
 
+        try await prepare()
+        try await fetchAndCommit()
+        try await sendAndCommit()
+    }
+
+    package func fetchRemote() async throws {
+        guard !isSyncing else { throw CloudTransportError.syncAlreadyRunning }
+        isSyncing = true
+        defer { isSyncing = false }
+
+        try await prepare()
+        try await fetchAndCommit()
+    }
+
+    package func sendPending(
+        beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void = { _ in }
+    ) async throws {
+        guard !isSyncing else { throw CloudTransportError.syncAlreadyRunning }
+        isSyncing = true
+        defer { isSyncing = false }
+
+        try await prepare()
+        try await sendAndCommit(beforeSend: beforeSend)
+    }
+
+    private func prepare() async throws {
         try await recoverStagedBatches()
         if !started {
             try await transport.start(state: store.loadEngineState())
             started = true
         }
+    }
 
+    private func fetchAndCommit() async throws {
         let fetched = try await transport.fetch(scope: .all)
         try await commit(.fetched(fetched))
+    }
 
+    private func sendAndCommit(
+        beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void = { _ in }
+    ) async throws {
         let outbound = try await store.pendingChanges()
         guard !outbound.operations.isEmpty || !outbound.zonesToSave.isEmpty else { return }
+        try await beforeSend(outbound)
         let sent = try await transport.send(outbound)
         try await commit(.sent(sent))
     }

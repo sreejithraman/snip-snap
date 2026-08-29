@@ -7,6 +7,13 @@ package enum FakeCloudError: Error, Equatable, Sendable {
     case wrongBatchConfirmation
 }
 
+package enum FakeCloudTransportEvent: Equatable, Sendable {
+    case started
+    case fetched
+    case sent([CloudRecordID])
+    case confirmed(UUID)
+}
+
 package actor FakeCloudServer {
     private enum Event {
         case saved(sequence: Int, CloudRecordSnapshot)
@@ -34,6 +41,7 @@ package actor FakeCloudServer {
     private var events: [Event] = []
     private var nextSequence = 1
     private var acceptedCounts: [CloudRecordID: Int] = [:]
+    private var acceptedDeleteCount = 0
     private var assets: [CloudRecordID: [String: URL]] = [:]
     private let assetRoot: URL
 
@@ -81,6 +89,7 @@ package actor FakeCloudServer {
         events.append(.deleted(sequence: nextSequence, id))
         nextSequence += 1
         acceptedCounts[id, default: 0] += 1
+        acceptedDeleteCount += 1
         return .deleted(id)
     }
 
@@ -168,6 +177,15 @@ package actor FakeCloudServer {
         acceptedCounts[id, default: 0]
     }
 
+    package func acceptedDeletionCount() -> Int { acceptedDeleteCount }
+
+    package func storedTextValues() -> [String] {
+        records.values.compactMap { snapshot in
+            guard case .string(let text)? = snapshot.encryptedFields["text"] else { return nil }
+            return text
+        }.sorted()
+    }
+
     package func emitZoneDeletion(_ zone: CloudZoneID, reason: CloudZoneDeletionReason) {
         let event = CloudDatabaseEvent.zoneDeleted(zone, reason: reason)
         events.append(.database(sequence: nextSequence, event, zone))
@@ -181,10 +199,20 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
     private var committedCursors: [CloudZoneID: Int] = [:]
     private var pending: CloudSyncBatch?
     private var nextFetchFailure: FakeCloudError?
+    private var nextTerminalFetchFailure: CloudTransportError?
     private var nextSendFailure: FakeCloudError?
     private var nextAssetFailure: FakeCloudError?
     private var fetchItemFailures: [CloudRecordID: CloudOperationFailure] = [:]
     private var sendItemFailures: [CloudRecordID: CloudOperationFailure] = [:]
+    private var eventLog: [FakeCloudTransportEvent] = []
+    private var shouldPauseNextFetch = false
+    private var pausedFetch = false
+    private var fetchPauseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var fetchRelease: CheckedContinuation<Void, Never>?
+    private var shouldPauseNextSend = false
+    private var pausedSend = false
+    private var sendPauseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var sendRelease: CheckedContinuation<Void, Never>?
 
     package init(server: FakeCloudServer, namespace: CloudSyncNamespace? = nil) {
         self.server = server
@@ -192,6 +220,7 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
     }
 
     package func start(state: CloudEngineStateEnvelope?) throws {
+        eventLog.append(.started)
         guard let state else { return }
         if let namespace, state.namespace != namespace {
             throw CloudTransportError.stateNamespaceMismatch
@@ -207,8 +236,36 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
     }
 
     package func failNextFetch() { nextFetchFailure = .injectedFetchFailure }
+    package func failNextFetchTerminally(_ error: CloudTransportError = .invalidEngineState) {
+        nextTerminalFetchFailure = error
+    }
     package func failNextSend() { nextSendFailure = .injectedSendFailure }
     package func failNextAssetFetch() { nextAssetFailure = .injectedAssetFailure }
+
+    package func pauseNextFetch() { shouldPauseNextFetch = true }
+    package func pauseNextSend() { shouldPauseNextSend = true }
+
+    package func waitUntilFetchPauses() async {
+        if pausedFetch { return }
+        await withCheckedContinuation { fetchPauseWaiters.append($0) }
+    }
+
+    package func resumeFetch() {
+        fetchRelease?.resume()
+        fetchRelease = nil
+        pausedFetch = false
+    }
+
+    package func waitUntilSendPauses() async {
+        if pausedSend { return }
+        await withCheckedContinuation { sendPauseWaiters.append($0) }
+    }
+
+    package func resumeSend() {
+        sendRelease?.resume()
+        sendRelease = nil
+        pausedSend = false
+    }
 
     package func failNextFetchedItem(
         _ id: CloudRecordID,
@@ -225,8 +282,20 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
     }
 
     package func fetch(scope: CloudFetchScope) async throws -> CloudFetchedBatch {
+        eventLog.append(.fetched)
+        if shouldPauseNextFetch {
+            shouldPauseNextFetch = false
+            pausedFetch = true
+            fetchPauseWaiters.forEach { $0.resume() }
+            fetchPauseWaiters = []
+            await withCheckedContinuation { fetchRelease = $0 }
+        }
         if case .fetched(let batch)? = pending { return batch }
         if pending != nil { throw FakeCloudError.wrongBatchConfirmation }
+        if let failure = nextTerminalFetchFailure {
+            nextTerminalFetchFailure = nil
+            throw failure
+        }
         if let failure = nextFetchFailure {
             nextFetchFailure = nil
             throw failure
@@ -253,6 +322,14 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
     private var pendingCursors: [CloudZoneID: Int]?
 
     package func send(_ batch: CloudOutboundBatch) async throws -> CloudSentBatch {
+        eventLog.append(.sent(batch.operations.map(\.id).sorted { $0.name < $1.name }))
+        if shouldPauseNextSend {
+            shouldPauseNextSend = false
+            pausedSend = true
+            sendPauseWaiters.forEach { $0.resume() }
+            sendPauseWaiters = []
+            await withCheckedContinuation { sendRelease = $0 }
+        }
         if case .sent(let result)? = pending { return result }
         if pending != nil { throw FakeCloudError.wrongBatchConfirmation }
         if let failure = nextSendFailure {
@@ -274,6 +351,7 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
     }
 
     package func confirmApplied(_ batchID: UUID) throws {
+        eventLog.append(.confirmed(batchID))
         guard let pending else { return }
         guard pending.id == batchID else { throw FakeCloudError.wrongBatchConfirmation }
         if case .fetched = pending, let pendingCursors {
@@ -316,4 +394,6 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
         else { return nil }
         return CloudEngineStateEnvelope(namespace: namespace, serialization: serialization)
     }
+
+    package func events() -> [FakeCloudTransportEvent] { eventLog }
 }
