@@ -5,7 +5,7 @@ import SwiftData
 import UniformTypeIdentifiers
 
 @Model
-private final class StoredSnipRecord {
+final class StoredSnipRecord {
   @Attribute(.unique) var id: UUID
   var requestID: UUID
   var createdAt: Date
@@ -50,7 +50,7 @@ private final class StoredSnipRecord {
 }
 
 @Model
-private final class StoredListRecord {
+final class StoredListRecord {
   @Attribute(.unique) var id: UUID
   var name: String
   var systemImage: String
@@ -71,7 +71,7 @@ private final class StoredListRecord {
 }
 
 @Model
-private final class StoredAttachmentRecord {
+final class StoredAttachmentRecord {
   @Attribute(.unique) var id: UUID
   var fileName: String
   var relativePath: String
@@ -95,7 +95,7 @@ private final class StoredAttachmentRecord {
 }
 
 @Model
-private final class StoredSnipAttachmentReference {
+final class StoredSnipAttachmentReference {
   @Attribute(.unique) var id: String
   var snipID: UUID
   var attachmentID: UUID
@@ -139,12 +139,34 @@ package enum SnipSnapSchemaV1: VersionedSchema {
   }
 }
 
-package enum SnipSnapSchemaMigrationPlan: SchemaMigrationPlan {
-  package static var schemas: [any VersionedSchema.Type] { [SnipSnapSchemaV1.self] }
-  package static var stages: [MigrationStage] { [] }
+package enum SnipSnapSchemaV2: VersionedSchema {
+  package static let versionIdentifier = Schema.Version(2, 0, 0)
+  package static var models: [any PersistentModel.Type] {
+    [
+      StoredSnipRecord.self,
+      StoredListRecord.self,
+      StoredAttachmentRecord.self,
+      StoredSnipAttachmentReference.self,
+      StoredRequestRecord.self,
+      StoredCloudTextRecord.self,
+      StoredCloudEngineState.self,
+      StoredCloudStagedBatch.self,
+      StoredCloudRecoveryEvent.self,
+      StoredCloudNamespaceState.self,
+    ]
+  }
 }
 
-private final class SnipStoreFileLock {
+package enum SnipSnapSchemaMigrationPlan: SchemaMigrationPlan {
+  package static var schemas: [any VersionedSchema.Type] {
+    [SnipSnapSchemaV1.self, SnipSnapSchemaV2.self]
+  }
+  package static var stages: [MigrationStage] {
+    [.lightweight(fromVersion: SnipSnapSchemaV1.self, toVersion: SnipSnapSchemaV2.self)]
+  }
+}
+
+final class SnipStoreFileLock {
   private let descriptor: Int32
 
   init(url: URL) throws {
@@ -163,7 +185,7 @@ private final class SnipStoreFileLock {
 
 /// A durable local snip library backed by record-based SwiftData storage.
 public actor SwiftDataSnipLibrary: SnipLibrary {
-  private struct LoadedStore {
+  struct LoadedStore {
     let state: SnipLibraryState
     let snips: [StoredSnipRecord]
     let lists: [StoredListRecord]
@@ -182,14 +204,14 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     var createdDirectories: [URL]
   }
 
-  private let lockURL: URL
-  private let attachmentRootURL: URL
-  private let container: ModelContainer?
-  private let isAvailable: Bool
-  private let afterMutationBeforeSave: @Sendable () throws -> Void
-  private var seenRequestIDs: Set<UUID>
-  private var knownAttachmentPaths: [UUID: String]
-  private var lastKnownState: SnipLibraryState
+  let lockURL: URL
+  let attachmentRootURL: URL
+  let container: ModelContainer?
+  let isAvailable: Bool
+  let afterMutationBeforeSave: @Sendable () throws -> Void
+  var seenRequestIDs: Set<UUID>
+  var knownAttachmentPaths: [UUID: String]
+  var lastKnownState: SnipLibraryState
 
   public init(storeURL: URL = SwiftDataSnipLibrary.defaultStoreURL()) throws {
     try self.init(storeURL: storeURL, afterMutationBeforeSave: {})
@@ -204,7 +226,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     let lockURL = storeURL.appendingPathExtension("lock")
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
-    let schema = Schema(versionedSchema: SnipSnapSchemaV1.self)
+    let schema = Schema(versionedSchema: SnipSnapSchemaV2.self)
     let configuration = ModelConfiguration(
       "SnipSnapLocal",
       schema: schema,
@@ -403,7 +425,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     }
   }
 
-  private static func makeContext(container: ModelContainer) -> ModelContext {
+  static func makeContext(container: ModelContainer) -> ModelContext {
     let context = ModelContext(container)
     context.autosaveEnabled = false
     return context
@@ -486,7 +508,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     }
   }
 
-  private func rememberAttachments(in state: SnipLibraryState) {
+  func rememberAttachments(in state: SnipLibraryState) {
     knownAttachmentPaths.merge(
       state.snips.flatMap(\.attachments).map { ($0.id, $0.relativePath) },
       uniquingKeysWith: { _, latest in latest }
@@ -497,7 +519,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     for directory in directories { try? FileManager.default.removeItem(at: directory) }
   }
 
-  private static func removeUnreferencedAttachmentDirectories(
+  static func removeUnreferencedAttachmentDirectories(
     at rootURL: URL,
     keeping relativePaths: Set<String>
   ) {
@@ -517,7 +539,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     }
   }
 
-  private static func load(
+  static func load(
     context: ModelContext,
     seenRequestIDs: Set<UUID>
   ) throws -> LoadedStore {

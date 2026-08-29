@@ -11,6 +11,7 @@ let package = Package(
     products: [
         .library(name: "SnipSnapCore", targets: ["SnipSnapCore"]),
         .library(name: "SnipSnapPersistence", targets: ["SnipSnapPersistence"]),
+        .library(name: "SnipSnapCloud", targets: ["SnipSnapCloud"]),
     ],
     targets: [
         .target(name: "SnipSnapCore"),
@@ -18,9 +19,17 @@ let package = Package(
             name: "SnipSnapPersistence",
             dependencies: ["SnipSnapCore"]
         ),
+        .target(
+            name: "SnipSnapCloud",
+            dependencies: ["SnipSnapCore", "SnipSnapPersistence"]
+        ),
         .testTarget(
             name: "SnipSnapPersistenceTests",
             dependencies: ["SnipSnapCore", "SnipSnapPersistence"]
+        ),
+        .testTarget(
+            name: "SnipSnapCloudTests",
+            dependencies: ["SnipSnapCore", "SnipSnapPersistence", "SnipSnapCloud"]
         ),
     ]
 )

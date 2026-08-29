@@ -753,6 +753,95 @@ final class SnipLibraryBehaviorTests: XCTestCase {
     }
   }
 
+  func testSwiftDataV1ToV2MigrationPreservesLibraryAndRequestHistory() async throws {
+    let directory = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let storeURL = directory.appendingPathComponent("snips.store")
+    let work = SnipList(
+      id: UUID(uuidString: "31313131-3131-3131-3131-313131313131")!,
+      name: "Work",
+      systemImage: "briefcase",
+      position: 1
+    )
+    let attachment = SnipAttachment(
+      id: UUID(uuidString: "32323232-3232-3232-3232-323232323232")!,
+      fileName: "note.txt",
+      relativePath: "32323232-3232-3232-3232-323232323232/note.txt",
+      contentType: "public.plain-text",
+      byteCount: 14
+    )
+    let requestID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+    let deletedRequestID = UUID(uuidString: "34343434-3434-3434-3434-343434343434")!
+    let snip = Snip(
+      id: UUID(uuidString: "35353535-3535-3535-3535-353535353535")!,
+      requestID: requestID,
+      createdAt: Date(timeIntervalSince1970: 100),
+      content: "V1 text",
+      origin: .quickEntry,
+      listID: work.id,
+      manualPosition: 7,
+      attachments: [attachment]
+    )
+    let storedAttachmentURL = SwiftDataSnipLibrary.attachmentRootURL(forStoreURL: storeURL)
+      .appendingPathComponent(attachment.relativePath)
+    try FileManager.default.createDirectory(
+      at: storedAttachmentURL.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try Data("V1 attachment".utf8).write(to: storedAttachmentURL)
+
+    do {
+      let schema = Schema(versionedSchema: SnipSnapSchemaV1.self)
+      let configuration = ModelConfiguration(
+        "SnipSnapLocal",
+        schema: schema,
+        url: storeURL,
+        cloudKitDatabase: .none
+      )
+      let container = try ModelContainer(
+        for: schema,
+        migrationPlan: SnipSnapSchemaMigrationPlan.self,
+        configurations: [configuration]
+      )
+      let context = ModelContext(container)
+      context.autosaveEnabled = false
+      context.insert(StoredListRecord(.inbox))
+      context.insert(StoredListRecord(work))
+      context.insert(StoredSnipRecord(snip))
+      context.insert(StoredAttachmentRecord(attachment))
+      context.insert(
+        StoredSnipAttachmentReference(
+          snipID: snip.id,
+          attachmentID: attachment.id,
+          position: 0
+        )
+      )
+      context.insert(StoredRequestRecord(id: requestID))
+      context.insert(StoredRequestRecord(id: deletedRequestID))
+      try context.save()
+    }
+
+    let migrated = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let snapshot = await migrated.snapshot(sortedBy: .manual)
+    XCTAssertEqual(snapshot.lists, [.inbox, work])
+    XCTAssertEqual(snapshot.snips, [snip])
+    let reopenedAttachmentURL = try XCTUnwrap(snapshot.attachmentURLs[attachment.id])
+    XCTAssertEqual(try Data(contentsOf: reopenedAttachmentURL), Data("V1 attachment".utf8))
+    let duplicate = try await migrated.perform(
+      .add(
+        content: "must stay blocked",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inboxID,
+        attachmentURLs: [],
+        requestID: deletedRequestID,
+        now: Date(timeIntervalSince1970: 200)
+      ),
+      sortedBy: .manual
+    )
+    XCTAssertEqual(duplicate.outcome, .add(.duplicate))
+  }
+
   private func forEachAdapter(
     _ body: (Adapter, URL, any SnipLibrary) async throws -> Void
   ) async throws {

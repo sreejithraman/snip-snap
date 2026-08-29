@@ -1,0 +1,319 @@
+import Foundation
+
+package enum FakeCloudError: Error, Equatable, Sendable {
+    case injectedFetchFailure
+    case injectedSendFailure
+    case injectedAssetFailure
+    case wrongBatchConfirmation
+}
+
+package actor FakeCloudServer {
+    private enum Event {
+        case saved(sequence: Int, CloudRecordSnapshot)
+        case deleted(sequence: Int, CloudRecordID)
+        case database(sequence: Int, CloudDatabaseEvent, CloudZoneID)
+
+        var sequence: Int {
+            switch self {
+            case .saved(let sequence, _), .deleted(let sequence, _),
+                 .database(let sequence, _, _):
+                sequence
+            }
+        }
+
+        var zone: CloudZoneID {
+            switch self {
+            case .saved(_, let snapshot): snapshot.id.zone
+            case .deleted(_, let id): id.zone
+            case .database(_, _, let zone): zone
+            }
+        }
+    }
+
+    private var records: [CloudRecordID: CloudRecordSnapshot] = [:]
+    private var events: [Event] = []
+    private var nextSequence = 1
+    private var acceptedCounts: [CloudRecordID: Int] = [:]
+    private var assets: [CloudRecordID: [String: URL]] = [:]
+    private let assetRoot: URL
+
+    package init() {
+        assetRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FakeCloudServer-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: assetRoot, withIntermediateDirectories: true)
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: assetRoot)
+    }
+
+    private func save(_ draft: CloudRecordDraft) throws -> CloudSendItemResult {
+        if let current = records[draft.id] {
+            guard draft.base == current.shadow else {
+                return .conflict(draft.id, server: current)
+            }
+        } else if draft.base != nil {
+            return .unknownItem(draft.id)
+        }
+
+        let snapshot = try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(for: draft))
+        var storedAssets: [String: URL] = [:]
+        for (field, upload) in draft.assetFields {
+            let destination = assetRoot.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.copyItem(at: upload.fileURL, to: destination)
+            storedAssets[field] = destination
+        }
+        if !storedAssets.isEmpty { assets[draft.id] = storedAssets }
+        records[draft.id] = snapshot
+        events.append(.saved(sequence: nextSequence, snapshot))
+        nextSequence += 1
+        acceptedCounts[draft.id, default: 0] += 1
+        return .saved(snapshot)
+    }
+
+    private func delete(_ id: CloudRecordID, base: CloudRecordShadow?) -> CloudSendItemResult {
+        guard let current = records[id] else { return .unknownItem(id) }
+        guard base == current.shadow else {
+            return .conflict(id, server: current)
+        }
+        records[id] = nil
+        assets[id] = nil
+        events.append(.deleted(sequence: nextSequence, id))
+        nextSequence += 1
+        acceptedCounts[id, default: 0] += 1
+        return .deleted(id)
+    }
+
+    package func send(
+        _ batch: CloudOutboundBatch,
+        failures: [CloudRecordID: CloudOperationFailure]
+    ) throws -> CloudSentBatch {
+        let items = try batch.operations.map { operation in
+            if let failure = failures[operation.id] {
+                return CloudSendItemResult.failed(operation.id, failure)
+            }
+            switch operation {
+            case .save(let draft): return try save(draft)
+            case .delete(let id, let base): return delete(id, base: base)
+            }
+        }
+        return CloudSentBatch(
+            id: UUID(),
+            items: items,
+            databaseEvents: batch.zonesToSave.map(CloudDatabaseEvent.zoneSaved),
+            engineState: nil
+        )
+    }
+
+    package func changes(
+        after cursors: [CloudZoneID: Int],
+        scope: CloudFetchScope,
+        failures: [CloudRecordID: CloudOperationFailure]
+    ) -> (batch: CloudFetchedBatch, cursors: [CloudZoneID: Int]) {
+        let matching = events.filter { event in
+            scope.contains(event.zone) && event.sequence > (cursors[event.zone] ?? 0)
+        }
+        var advanced = cursors
+        for event in matching {
+            advanced[event.zone] = max(advanced[event.zone] ?? 0, event.sequence)
+        }
+        var latestByID: [CloudRecordID: Event] = [:]
+        var databaseEvents: [CloudDatabaseEvent] = []
+        for event in matching {
+            switch event {
+            case .saved(_, let snapshot): latestByID[snapshot.id] = event
+            case .deleted(_, let id): latestByID[id] = event
+            case .database(_, let value, _): databaseEvents.append(value)
+            }
+        }
+        let latest = latestByID.values.sorted { $0.sequence < $1.sequence }
+        var items = latest.compactMap { event -> CloudFetchItemResult? in
+            switch event {
+            case .saved(_, let snapshot): .record(snapshot)
+            case .deleted(_, let id): .deleted(id)
+            case .database: nil
+            }
+        }
+        for (id, failure) in failures.sorted(by: { $0.key.name < $1.key.name }) {
+            items.append(.failed(id, failure))
+        }
+        return (
+            CloudFetchedBatch(
+                id: UUID(),
+                items: items,
+                databaseEvents: databaseEvents,
+                engineState: nil
+            ),
+            advanced
+        )
+    }
+
+    package func snapshot(
+        for id: CloudRecordID,
+        fields: Set<String>
+    ) throws -> CloudRecordSnapshot? {
+        guard let snapshot = records[id] else { return nil }
+        let record = try snapshot.shadow.record()
+        return try CloudKitRecordMapper.snapshot(
+            record,
+            desiredFields: fields
+        )
+    }
+
+    package func asset(for id: CloudRecordID, field: String) -> URL? {
+        assets[id]?[field]
+    }
+
+    package func acceptedOperationCount(for id: CloudRecordID) -> Int {
+        acceptedCounts[id, default: 0]
+    }
+
+    package func emitZoneDeletion(_ zone: CloudZoneID, reason: CloudZoneDeletionReason) {
+        let event = CloudDatabaseEvent.zoneDeleted(zone, reason: reason)
+        events.append(.database(sequence: nextSequence, event, zone))
+        nextSequence += 1
+    }
+}
+
+package actor FakeCloudRecordTransport: CloudRecordTransport {
+    private let server: FakeCloudServer
+    private let namespace: CloudSyncNamespace?
+    private var committedCursors: [CloudZoneID: Int] = [:]
+    private var pending: CloudSyncBatch?
+    private var nextFetchFailure: FakeCloudError?
+    private var nextSendFailure: FakeCloudError?
+    private var nextAssetFailure: FakeCloudError?
+    private var fetchItemFailures: [CloudRecordID: CloudOperationFailure] = [:]
+    private var sendItemFailures: [CloudRecordID: CloudOperationFailure] = [:]
+
+    package init(server: FakeCloudServer, namespace: CloudSyncNamespace? = nil) {
+        self.server = server
+        self.namespace = namespace
+    }
+
+    package func start(state: CloudEngineStateEnvelope?) throws {
+        guard let state else { return }
+        if let namespace, state.namespace != namespace {
+            throw CloudTransportError.stateNamespaceMismatch
+        }
+        do {
+            committedCursors = try JSONDecoder().decode(
+                [CloudZoneID: Int].self,
+                from: state.serialization
+            )
+        } catch {
+            throw CloudTransportError.invalidEngineState
+        }
+    }
+
+    package func failNextFetch() { nextFetchFailure = .injectedFetchFailure }
+    package func failNextSend() { nextSendFailure = .injectedSendFailure }
+    package func failNextAssetFetch() { nextAssetFailure = .injectedAssetFailure }
+
+    package func failNextFetchedItem(
+        _ id: CloudRecordID,
+        failure: CloudOperationFailure
+    ) {
+        fetchItemFailures[id] = failure
+    }
+
+    package func failNextSentItem(
+        _ id: CloudRecordID,
+        failure: CloudOperationFailure
+    ) {
+        sendItemFailures[id] = failure
+    }
+
+    package func fetch(scope: CloudFetchScope) async throws -> CloudFetchedBatch {
+        if case .fetched(let batch)? = pending { return batch }
+        if pending != nil { throw FakeCloudError.wrongBatchConfirmation }
+        if let failure = nextFetchFailure {
+            nextFetchFailure = nil
+            throw failure
+        }
+        let failures = fetchItemFailures
+        fetchItemFailures = [:]
+        let result = await server.changes(
+            after: committedCursors,
+            scope: scope,
+            failures: failures
+        )
+        let batch = CloudFetchedBatch(
+            id: result.batch.id,
+            items: result.batch.items,
+            databaseEvents: result.batch.databaseEvents,
+            zoneEvents: result.batch.zoneEvents,
+            engineState: envelope(for: result.cursors)
+        )
+        pending = .fetched(batch)
+        pendingCursors = result.cursors
+        return batch
+    }
+
+    private var pendingCursors: [CloudZoneID: Int]?
+
+    package func send(_ batch: CloudOutboundBatch) async throws -> CloudSentBatch {
+        if case .sent(let result)? = pending { return result }
+        if pending != nil { throw FakeCloudError.wrongBatchConfirmation }
+        if let failure = nextSendFailure {
+            nextSendFailure = nil
+            throw failure
+        }
+        let failures = sendItemFailures
+        sendItemFailures = [:]
+        let serverResult = try await server.send(batch, failures: failures)
+        let result = CloudSentBatch(
+            id: serverResult.id,
+            items: serverResult.items,
+            databaseEvents: serverResult.databaseEvents,
+            zoneEvents: serverResult.zoneEvents,
+            engineState: envelope(for: committedCursors)
+        )
+        pending = .sent(result)
+        return result
+    }
+
+    package func confirmApplied(_ batchID: UUID) throws {
+        guard let pending else { return }
+        guard pending.id == batchID else { throw FakeCloudError.wrongBatchConfirmation }
+        if case .fetched = pending, let pendingCursors {
+            committedCursors = pendingCursors
+        }
+        self.pending = nil
+        pendingCursors = nil
+    }
+
+    package func fetchRecord(
+        _ id: CloudRecordID,
+        fields: Set<String>
+    ) async throws -> CloudRecordSnapshot? {
+        try await server.snapshot(for: id, fields: fields)
+    }
+
+    package func fetchAsset(
+        _ id: CloudRecordID,
+        field: String,
+        destination: CloudAssetDestination
+    ) async throws -> CloudAssetReceipt? {
+        if let failure = nextAssetFailure {
+            nextAssetFailure = nil
+            throw failure
+        }
+        guard let source = await server.asset(for: id, field: field) else { return nil }
+        return try CloudAssetFileCopy.copy(
+            recordID: id,
+            field: field,
+            source: source,
+            destination: destination
+        )
+    }
+
+    private func envelope(
+        for cursors: [CloudZoneID: Int]
+    ) -> CloudEngineStateEnvelope? {
+        guard let namespace,
+              let serialization = try? JSONEncoder().encode(cursors)
+        else { return nil }
+        return CloudEngineStateEnvelope(namespace: namespace, serialization: serialization)
+    }
+}
