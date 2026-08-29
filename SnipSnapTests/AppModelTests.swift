@@ -155,6 +155,27 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testExplicitSyncEnableReplacesTheVisibleLibraryBeforeReportingOn() async {
+        let oldLibrary = InMemorySnipLibrary(
+            snips: [Snip(content: "Local before enable", origin: .quickEntry)]
+        )
+        let cloudLibrary = InMemorySnipLibrary(
+            snips: [Snip(content: "Merged after enable", origin: .quickEntry)]
+        )
+        let model = AppModel(library: oldLibrary)
+        await model.reload()
+        let settings = SyncedContentSettingsModel(mode: .localOnly, enableAction: {})
+        settings.setEnableCompletionAction {
+            await model.replaceLibrary(cloudLibrary, recoveryScope: nil)
+        }
+
+        await settings.enableICloudSync()
+
+        XCTAssertEqual(settings.mode, .iCloudSync)
+        XCTAssertEqual(model.snips.map(\.content), ["Merged after enable"])
+    }
+
+    @MainActor
     private func waitUntil(
         timeout: Duration = .seconds(1),
         condition: @escaping @MainActor () -> Bool

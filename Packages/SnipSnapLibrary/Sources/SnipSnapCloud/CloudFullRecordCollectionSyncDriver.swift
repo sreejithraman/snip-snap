@@ -59,6 +59,7 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
 }
 
 package enum CloudCollectionAssembly {
+  package static let productionOperationGate = CloudCollectionOperationGate()
   package static let productionControlID = CloudRecordID(
     zone: CloudZoneID(name: "SnipSnapControl", ownerName: CKCurrentUserDefaultName),
     name: "active-collection"
@@ -68,9 +69,9 @@ package enum CloudCollectionAssembly {
   package static func settingsModel(
     for coordinator: CloudCollectionCoordinator
   ) -> SyncedContentSettingsModel {
-    SyncedContentSettingsModel(mode: .iCloudSync) {
-      _ = try await coordinator.deleteSyncedContent()
-    }
+    SyncedContentSettingsModel(mode: .iCloudSync, deleteAction: {
+      return deleteOutcome(for: try await coordinator.deleteSyncedContent())
+    })
   }
 
   /// The signed main-app lane uses this one path; local-only apps never construct it.
@@ -111,7 +112,8 @@ package enum CloudCollectionAssembly {
       makeDescriptor: makeDescriptor ?? {
         CloudCollectionDescriptor.fresh(ownerName: ownerName)
       },
-      reservedZones: [controlID.zone]
+      reservedZones: [controlID.zone],
+      operationGate: productionOperationGate
     )
   }
 }
@@ -126,21 +128,207 @@ public struct SnipSnapCloudActiveLibrary: Sendable {
   }
 }
 
+@MainActor
+public final class SnipSnapCloudLifecycleHooks {
+  public typealias SyncAction = @MainActor @Sendable () async -> Void
+  private let syncAction: SyncAction
+  private var isSyncing = false
+
+  public init(syncWhenPossible: @escaping SyncAction) {
+    syncAction = syncWhenPossible
+  }
+
+  public func launch() async { await run() }
+  public func foreground() async { await run() }
+
+  private func run() async {
+    guard !isSyncing else { return }
+    isSyncing = true
+    defer { isSyncing = false }
+    await syncAction()
+  }
+}
+
 public enum SnipSnapCloudSyncResult: Equatable, Sendable {
   case noChange
   case contentUpdated
   case libraryReplaced
+  case oldSyncedContentRemovalPending
+  case oldSyncedContentRemovalCompleted
+}
+
+package actor SnipSnapCloudModeLifecycle {
+  package typealias RecordTransportFactory = @Sendable (
+    CloudCollectionSyncContext
+  ) -> any CloudRecordTransport
+
+  private static let importID = UUID(
+    uuidString: "7b4f8730-42bd-4b56-9117-cc7db03ec46e"
+  )!
+  private let rootURL: URL
+  private let sourceLibrary: any SnipLibrary
+  private let cloudScope: String
+  private let accountLineage: String
+  private let ownerName: String
+  private let controlTransport: any CloudCollectionControlTransport
+  private let makeRecordTransport: RecordTransportFactory
+  private let makeDescriptor: CloudCollectionCoordinator.DescriptorFactory
+  private let reservedZones: Set<CloudZoneID>
+  private let operationGate: CloudCollectionOperationGate
+  private var persistence: SwiftDataSyncModePersistence?
+  private var collectionCoordinator: CloudCollectionCoordinator?
+
+  package init(
+    rootURL: URL,
+    sourceLibrary: any SnipLibrary,
+    syncModeStore: SnipSyncModeStore?,
+    cloudScope: String,
+    accountLineage: String,
+    ownerName: String,
+    controlTransport: any CloudCollectionControlTransport,
+    makeRecordTransport: @escaping RecordTransportFactory,
+    makeDescriptor: @escaping CloudCollectionCoordinator.DescriptorFactory,
+    reservedZones: Set<CloudZoneID> = [],
+    operationGate: CloudCollectionOperationGate = CloudCollectionOperationGate()
+  ) {
+    self.rootURL = rootURL
+    self.sourceLibrary = sourceLibrary
+    persistence = syncModeStore?.persistence
+    self.cloudScope = cloudScope
+    self.accountLineage = accountLineage
+    self.ownerName = ownerName
+    self.controlTransport = controlTransport
+    self.makeRecordTransport = makeRecordTransport
+    self.makeDescriptor = makeDescriptor
+    self.reservedZones = reservedZones
+    self.operationGate = operationGate
+  }
+
+  package func enableICloudSync() async throws {
+    let modePersistence = try await modePersistenceAndImportedSource()
+    let collectionLocal = try SwiftDataCloudCollectionLocalStore(
+      rootURL: rootURL,
+      persistence: modePersistence
+    )
+    let bootstrap = CloudCollectionBootstrapper(
+      ownerName: ownerName,
+      localStore: collectionLocal,
+      transport: controlTransport,
+      makeDescriptor: makeDescriptor,
+      reservedZones: reservedZones
+    )
+    let descriptor = try await bootstrap.activeOrCreate()
+    let namespace = descriptor.namespace(
+      cloudScope: cloudScope,
+      accountLineage: accountLineage
+    )
+    let mode = ICloudSyncModeCoordinator(
+      persistence: modePersistence,
+      namespace: namespace,
+      textZone: descriptor.metadataZone,
+      makeTransport: { [makeRecordTransport] in
+        makeRecordTransport(
+          CloudCollectionSyncContext(
+            namespace: namespace,
+            metadataZone: descriptor.metadataZone,
+            payloadZone: descriptor.payloadZone
+          )
+        )
+      }
+    )
+    let status = try await mode.enableOrRetry()
+    guard status.state == .on else { throw CloudSyncRetryableError.itemFailure }
+    collectionCoordinator = try makeCollectionCoordinator(modePersistence)
+  }
+
+  package func synchronize() async throws -> SnipSnapCloudSyncResult {
+    guard let coordinator = try await activeCollectionCoordinator() else { return .noChange }
+    return syncResult(for: try await coordinator.synchronize())
+  }
+
+  package func deleteSyncedContent() async throws -> SyncedContentDeleteOutcome {
+    guard let coordinator = try await activeCollectionCoordinator() else {
+      throw CloudCollectionError.noActiveCollection
+    }
+    return deleteOutcome(for: try await coordinator.deleteSyncedContent())
+  }
+
+  package func activeLibrary() async throws -> SnipSnapCloudActiveLibrary {
+    guard let persistence else {
+      return SnipSnapCloudActiveLibrary(library: sourceLibrary, recoveryScope: nil)
+    }
+    let snapshot = try await persistence.snapshot()
+    return SnipSnapCloudActiveLibrary(
+      library: try await persistence.activeLibrary(),
+      recoveryScope: SnipRecoveryScopeFactory.scope(
+        forActiveCloudNamespace: snapshot.activeStore.namespace
+      )
+    )
+  }
+
+  private func modePersistenceAndImportedSource() async throws -> SwiftDataSyncModePersistence {
+    let value: SwiftDataSyncModePersistence
+    if let persistence {
+      value = persistence
+    } else {
+      value = try SwiftDataSyncModePersistence(rootURL: rootURL)
+      persistence = value
+    }
+    let marker = rootURL.appendingPathComponent("local-source-imported", isDirectory: false)
+    guard !FileManager.default.fileExists(atPath: marker.path) else { return value }
+    let snapshot = try await sourceLibrary.transferSnapshot(revision: 0)
+    let active = try await value.snapshot().activeStore
+    let target = try await value.libraryForTransition(storeID: active.id)
+    _ = try await target.mergeTransferSnapshot(snapshot, transitionID: Self.importID)
+    try DurableFile.write(Data("1".utf8), to: marker)
+    return value
+  }
+
+  private func activeCollectionCoordinator() async throws -> CloudCollectionCoordinator? {
+    if let collectionCoordinator { return collectionCoordinator }
+    guard let persistence,
+      (try await persistence.snapshot()).activeStore.namespace != nil
+    else { return nil }
+    let coordinator = try makeCollectionCoordinator(persistence)
+    collectionCoordinator = coordinator
+    return coordinator
+  }
+
+  private func makeCollectionCoordinator(
+    _ persistence: SwiftDataSyncModePersistence
+  ) throws -> CloudCollectionCoordinator {
+    let local = try SwiftDataCloudCollectionLocalStore(
+      rootURL: rootURL,
+      persistence: persistence
+    )
+    let driver = CloudFullRecordCollectionSyncDriver(
+      persistence: persistence,
+      makeTransport: makeRecordTransport
+    )
+    return CloudCollectionCoordinator(
+      cloudScope: cloudScope,
+      accountLineage: accountLineage,
+      ownerName: ownerName,
+      localStore: local,
+      transport: controlTransport,
+      syncDriver: driver,
+      makeDescriptor: makeDescriptor,
+      reservedZones: reservedZones,
+      operationGate: operationGate
+    )
+  }
 }
 
 /// One app-owned lane for normal sync, enabling sync, and deleting synced content.
 public actor SnipSnapCloudSyncSession {
   package typealias Action = @Sendable () async throws -> Void
+  package typealias DeleteAction = @Sendable () async throws -> SyncedContentDeleteOutcome
   package typealias SynchronizeAction = @Sendable () async throws -> SnipSnapCloudSyncResult
   package typealias LibraryAction = @Sendable () async throws -> SnipSnapCloudActiveLibrary
 
   private let synchronizeAction: SynchronizeAction
   private let enableAction: Action
-  private let deleteAction: Action
+  private let deleteAction: DeleteAction
   private let libraryAction: LibraryAction
 
   package init(
@@ -151,7 +339,7 @@ public actor SnipSnapCloudSyncSession {
       syncResult(for: try await coordinator.synchronize())
     }
     enableAction = { _ = try await coordinator.enableSync() }
-    deleteAction = { _ = try await coordinator.deleteSyncedContent() }
+    deleteAction = { deleteOutcome(for: try await coordinator.deleteSyncedContent()) }
     libraryAction = {
       let snapshot = try await persistence.snapshot()
       return SnipSnapCloudActiveLibrary(
@@ -166,7 +354,7 @@ public actor SnipSnapCloudSyncSession {
   package init(
     synchronize: @escaping SynchronizeAction,
     enable: @escaping Action,
-    delete: @escaping Action,
+    delete: @escaping DeleteAction,
     activeLibrary: @escaping LibraryAction
   ) {
     synchronizeAction = synchronize
@@ -178,8 +366,11 @@ public actor SnipSnapCloudSyncSession {
   public func synchronize() async throws -> SnipSnapCloudSyncResult {
     try await synchronizeAction()
   }
-  public func enableSync() async throws { try await enableAction() }
-  public func deleteSyncedContent() async throws { try await deleteAction() }
+  public func enableICloudSync() async throws { try await enableAction() }
+  package func enableCollectionIfNeeded() async throws { try await enableAction() }
+  public func deleteSyncedContent() async throws -> SyncedContentDeleteOutcome {
+    try await deleteAction()
+  }
   public func activeLibrary() async throws -> SnipSnapCloudActiveLibrary {
     try await libraryAction()
   }
@@ -204,47 +395,66 @@ public enum SnipSnapCloudAppAssembly {
   @MainActor
   public static func services(
     rootURL: URL,
+    sourceLibrary: (any SnipLibrary)? = nil,
     syncModeStore: SnipSyncModeStore?,
     containerIdentifier: String?
   ) -> SnipSnapCloudAppServices {
     let identifier = containerIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    guard !identifier.isEmpty,
-      let syncModeStore,
-      let namespace = SyncModeActivationManifestReader.activeCloudNamespace(
-        atSyncModeRootURL: rootURL
-      )
-    else {
+    guard !identifier.isEmpty, let sourceLibrary else {
       return SnipSnapCloudAppServices(
         syncedContentSettings: SyncedContentSettingsModel(mode: .localOnly),
         syncSession: nil
       )
     }
-    do {
-      let coordinator = try CloudCollectionAssembly.cloudKitCoordinator(
-        rootURL: rootURL,
-        persistence: syncModeStore.persistence,
-        database: CKContainer(identifier: identifier).privateCloudDatabase,
-        cloudScope: namespace.scope,
-        accountLineage: namespace.accountLineage,
-        ownerName: CKCurrentUserDefaultName,
+    let namespace = SyncModeActivationManifestReader.activeCloudNamespace(
+      atSyncModeRootURL: rootURL
+    )
+    let database = CKContainer(identifier: identifier).privateCloudDatabase
+    let lifecycle = SnipSnapCloudModeLifecycle(
+      rootURL: rootURL,
+      sourceLibrary: sourceLibrary,
+      syncModeStore: syncModeStore,
+      cloudScope: namespace?.scope ?? "private",
+      accountLineage: namespace?.accountLineage ?? identifier,
+      ownerName: CKCurrentUserDefaultName,
+      controlTransport: CloudKitCollectionControlTransport(
+        database: database,
         controlID: CloudCollectionAssembly.productionControlID
-      )
-      let session = SnipSnapCloudSyncSession(
-        coordinator: coordinator,
-        persistence: syncModeStore.persistence
-      )
+      ),
+      makeRecordTransport: { context in
+        CloudKitRecordTransport(
+          database: database,
+          namespace: context.namespace,
+          automaticallyFetchedZones: [context.metadataZone]
+        )
+      },
+      makeDescriptor: {
+        CloudCollectionDescriptor.fresh(ownerName: CKCurrentUserDefaultName)
+      },
+      reservedZones: [CloudCollectionAssembly.productionControlID.zone],
+      operationGate: CloudCollectionAssembly.productionOperationGate
+    )
+    let session = SnipSnapCloudSyncSession(
+      synchronize: { try await lifecycle.synchronize() },
+      enable: { try await lifecycle.enableICloudSync() },
+      delete: { try await lifecycle.deleteSyncedContent() },
+      activeLibrary: { try await lifecycle.activeLibrary() }
+    )
+    if namespace == nil {
       return SnipSnapCloudAppServices(
-        syncedContentSettings: SyncedContentSettingsModel(mode: .iCloudSync) {
-          try await session.deleteSyncedContent()
-        },
+        syncedContentSettings: SyncedContentSettingsModel(
+          mode: .localOnly,
+          enableAction: { try await session.enableICloudSync() }
+        ),
         syncSession: session
       )
-    } catch {
-      return SnipSnapCloudAppServices(
-        syncedContentSettings: SyncedContentSettingsModel(mode: .localOnly),
-        syncSession: nil
-      )
     }
+    return SnipSnapCloudAppServices(
+      syncedContentSettings: SyncedContentSettingsModel(mode: .iCloudSync, deleteAction: {
+        return try await session.deleteSyncedContent()
+      }),
+      syncSession: session
+    )
   }
 
   /// Runs the same UI action through a fake control server in UI tests.
@@ -270,9 +480,46 @@ public enum SnipSnapCloudAppAssembly {
       activeLibrary: { try await reset.activeLibrary() }
     )
     return SnipSnapCloudAppServices(
-      syncedContentSettings: SyncedContentSettingsModel(mode: .iCloudSync) {
-        try await session.deleteSyncedContent()
+      syncedContentSettings: SyncedContentSettingsModel(mode: .iCloudSync, deleteAction: {
+        return try await session.deleteSyncedContent()
+      }),
+      syncSession: session
+    )
+  }
+
+  /// Starts local-only and runs explicit enable against the fake cloud in UI tests.
+  @MainActor
+  public static func simulatedLocalOnlyServices(
+    rootURL: URL,
+    sourceLibrary: any SnipLibrary
+  ) -> SnipSnapCloudAppServices {
+    let server = FakeCloudServer()
+    let lifecycle = SnipSnapCloudModeLifecycle(
+      rootURL: rootURL,
+      sourceLibrary: sourceLibrary,
+      syncModeStore: nil,
+      cloudScope: "private",
+      accountLineage: "ui-test-account",
+      ownerName: "ui-test-owner",
+      controlTransport: FakeCloudControlTransport(server: server),
+      makeRecordTransport: { context in
+        FakeCloudRecordTransport(server: server, namespace: context.namespace)
       },
+      makeDescriptor: {
+        CloudCollectionDescriptor.fresh(ownerName: "ui-test-owner")
+      }
+    )
+    let session = SnipSnapCloudSyncSession(
+      synchronize: { try await lifecycle.synchronize() },
+      enable: { try await lifecycle.enableICloudSync() },
+      delete: { try await lifecycle.deleteSyncedContent() },
+      activeLibrary: { try await lifecycle.activeLibrary() }
+    )
+    return SnipSnapCloudAppServices(
+      syncedContentSettings: SyncedContentSettingsModel(
+        mode: .localOnly,
+        enableAction: { try await session.enableICloudSync() }
+      ),
       syncSession: session
     )
   }
@@ -321,9 +568,9 @@ private actor SimulatedCloudCollectionReset {
     _ = try await coordinator.enableSync()
   }
 
-  func deleteSyncedContent() async throws {
+  func deleteSyncedContent() async throws -> SyncedContentDeleteOutcome {
     let coordinator = try await prepare()
-    _ = try await coordinator.deleteSyncedContent()
+    return deleteOutcome(for: try await coordinator.deleteSyncedContent())
   }
 
   func activeLibrary() async throws -> SnipSnapCloudActiveLibrary {
@@ -354,9 +601,18 @@ private func syncResult(for status: CloudCollectionStatus) -> SnipSnapCloudSyncR
     .contentUpdated
   case .requiresEnable:
     .noChange
-  case .enabled, .adoptedRemoteCollection, .deletedSyncedContent, .purged:
+  case .oldSyncedContentRemovalPending:
+    .oldSyncedContentRemovalPending
+  case .deletedSyncedContent:
+    .oldSyncedContentRemovalCompleted
+  case .enabled, .adoptedRemoteCollection, .purged:
     .libraryReplaced
   }
+}
+
+private func deleteOutcome(for status: CloudCollectionStatus) -> SyncedContentDeleteOutcome {
+  if case .oldSyncedContentRemovalPending = status { return .removalPending }
+  return .completed
 }
 
 private struct NoopCloudCollectionSyncDriver: CloudCollectionSyncDriver {

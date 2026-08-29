@@ -17,9 +17,20 @@ struct SyncedContentSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                if case .deleting = model.state {
+                if case .enabling = model.state {
+                    Section {
+                        ProgressView("Setting up iCloud Sync…")
+                    }
+                } else if case .deleting = model.state {
                     Section {
                         ProgressView("Deleting synced content…")
+                    }
+                } else if model.canEnable {
+                    Section {
+                        Button("Enable iCloud Sync…") {
+                            Task { await model.enableICloudSync() }
+                        }
+                        .accessibilityIdentifier("enable-icloud-sync")
                     }
                 } else if model.canDelete {
                     Section {

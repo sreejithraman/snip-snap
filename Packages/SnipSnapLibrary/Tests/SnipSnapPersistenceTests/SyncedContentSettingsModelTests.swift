@@ -7,7 +7,10 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     let calls = DeleteCallCounter()
     let model = SyncedContentSettingsModel(
       mode: .iCloudSync,
-      deleteAction: { await calls.record() }
+      deleteAction: {
+        await calls.record()
+        return .completed
+      }
     )
 
     await model.deleteSyncedContent()
@@ -25,7 +28,10 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     let calls = DeleteEventRecorder()
     let model = SyncedContentSettingsModel(
       mode: .iCloudSync,
-      deleteAction: { await calls.record("delete") }
+      deleteAction: {
+        await calls.record("delete")
+        return .completed
+      }
     )
     model.setDeleteCompletionAction {
       await calls.record("replace-library")
@@ -36,6 +42,44 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     let events = await calls.values()
     XCTAssertEqual(events, ["delete", "replace-library"])
     XCTAssertEqual(model.state, .deleted)
+  }
+
+  @MainActor
+  func testPendingRemovalUsesApprovedCopyAndHidesDelete() async {
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      deleteAction: { .removalPending }
+    )
+
+    await model.deleteSyncedContent()
+
+    XCTAssertEqual(model.state, .removalPending)
+    XCTAssertEqual(model.statusTitle, "Old Synced Content Removal Pending")
+    XCTAssertEqual(
+      model.detail,
+      "Snip Snap started a fresh empty synced collection, but it could not remove all old iCloud data yet. It will retry the next time it syncs. Your local recovery copy remains."
+    )
+    XCTAssertFalse(model.canDelete)
+  }
+
+  @MainActor
+  func testExplicitEnableSwitchesModeOnlyAfterLibraryReplacement() async {
+    let calls = DeleteEventRecorder()
+    let model = SyncedContentSettingsModel(
+      mode: .localOnly,
+      enableAction: { await calls.record("enable") }
+    )
+    model.setEnableCompletionAction {
+      XCTAssertEqual(model.mode, .localOnly)
+      await calls.record("replace-library")
+    }
+
+    await model.enableICloudSync()
+
+    let events = await calls.values()
+    XCTAssertEqual(events, ["enable", "replace-library"])
+    XCTAssertEqual(model.mode, .iCloudSync)
+    XCTAssertEqual(model.state, .ready)
   }
 }
 

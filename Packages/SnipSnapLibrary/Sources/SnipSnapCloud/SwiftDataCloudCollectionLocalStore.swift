@@ -7,11 +7,13 @@ package actor SwiftDataCloudCollectionLocalStore: CloudCollectionLocalStore {
     let version: Int
     var hasSyncedBefore: Bool
     var cleanupZones: Set<CloudZoneID>
+    var deletionState: CloudCollectionDeletionState?
 
     static let empty = StoredState(
       version: 1,
       hasSyncedBefore: false,
-      cleanupZones: []
+      cleanupZones: [],
+      deletionState: CloudCollectionDeletionState.none
     )
   }
 
@@ -54,7 +56,8 @@ package actor SwiftDataCloudCollectionLocalStore: CloudCollectionLocalStore {
     return CloudCollectionLocalState(
       hasSyncedBefore: stored.hasSyncedBefore || namespace != nil,
       activeNamespace: namespace,
-      cleanupZones: stored.cleanupZones
+      cleanupZones: stored.cleanupZones,
+      deletionState: stored.deletionState ?? .none
     )
   }
 
@@ -84,6 +87,18 @@ package actor SwiftDataCloudCollectionLocalStore: CloudCollectionLocalStore {
     next.hasSyncedBefore = true
     try save(next)
     try await persistence.activateEmptyCollection(namespace: nil)
+  }
+
+  package func markDeletionPending() throws {
+    var next = stored
+    next.deletionState = .pending
+    try save(next)
+  }
+
+  package func markDeletionCompleted() throws {
+    var next = stored
+    next.deletionState = .completed
+    try save(next)
   }
 
   private func save(_ value: StoredState) throws {

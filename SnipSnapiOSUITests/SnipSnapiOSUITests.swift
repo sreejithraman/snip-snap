@@ -6,7 +6,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         storeName: String = "ui-\(UUID().uuidString)",
         withAttachments: Bool = false,
         withRecovery: Bool = false,
-        withSyncedContent: Bool = false
+        withSyncedContent: Bool = false,
+        withSyncEnable: Bool = false
     ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["SNIP_SNAP_UI_TESTING"] = "1"
@@ -16,8 +17,43 @@ final class SnipSnapiOSUITests: XCTestCase {
         if withSyncedContent {
             app.launchEnvironment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] = "1"
         }
+        if withSyncEnable { app.launchEnvironment["SNIP_SNAP_UI_TEST_SYNC_ENABLE"] = "1" }
         app.launch()
         return app
+    }
+
+    func testExplicitEnableKeepsLocalContentAndTurnsSyncOn() {
+        continueAfterFailure = false
+        let app = launchApp(withSyncEnable: true)
+        app.buttons["new-snip"].tap()
+        let editor = app.textViews["snip-text"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        editor.tap()
+        editor.typeText("Keep while enabling sync")
+        app.buttons["save-snip"].tap()
+        let localSnip = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "Keep while enabling sync")
+        ).firstMatch
+        XCTAssertTrue(localSnip.waitForExistence(timeout: 3))
+        let settings = app.buttons["settings"]
+        for _ in 0..<3 where !settings.waitForExistence(timeout: 1) {
+            if app.buttons["Show Sidebar"].exists {
+                app.buttons["Show Sidebar"].tap()
+            } else if app.navigationBars.buttons.firstMatch.exists {
+                app.navigationBars.buttons.firstMatch.tap()
+            }
+        }
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        settings.tap()
+
+        XCTAssertTrue(app.staticTexts["Local Only"].waitForExistence(timeout: 3))
+        app.buttons["enable-icloud-sync"].tap()
+        XCTAssertTrue(app.staticTexts["iCloud Sync On"].waitForExistence(timeout: 8))
+        app.buttons["Done"].tap()
+        if app.buttons["list-Inbox"].waitForExistence(timeout: 2) {
+            app.buttons["list-Inbox"].tap()
+        }
+        XCTAssertTrue(localSnip.waitForExistence(timeout: 3))
     }
 
     func testDeleteSyncedContentExplainsAndConfirmsReset() {

@@ -22,7 +22,12 @@ struct SnipSnapiOSApp: App {
         recoveryScope = startup.recoveryScope
         let cloudServices: SnipSnapCloudAppServices
 #if DEBUG
-        if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1" {
+        if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_ENABLE"] == "1" {
+            cloudServices = SnipSnapCloudAppAssembly.simulatedLocalOnlyServices(
+                rootURL: startup.syncModeRootURL,
+                sourceLibrary: startup.sourceLibrary
+            )
+        } else if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1" {
             cloudServices = SnipSnapCloudAppAssembly.simulatedServices(
                 rootURL: startup.syncModeRootURL,
                 syncModeStore: startup.syncModeStore
@@ -30,6 +35,7 @@ struct SnipSnapiOSApp: App {
         } else {
             cloudServices = SnipSnapCloudAppAssembly.services(
                 rootURL: startup.syncModeRootURL,
+                sourceLibrary: startup.sourceLibrary,
                 syncModeStore: startup.syncModeStore,
                 containerIdentifier: Bundle.main.object(
                     forInfoDictionaryKey: "SnipSnapCloudKitContainerIdentifier"
@@ -39,6 +45,7 @@ struct SnipSnapiOSApp: App {
 #else
         cloudServices = SnipSnapCloudAppAssembly.services(
             rootURL: startup.syncModeRootURL,
+            sourceLibrary: startup.sourceLibrary,
             syncModeStore: startup.syncModeStore,
             containerIdentifier: Bundle.main.object(
                 forInfoDictionaryKey: "SnipSnapCloudKitContainerIdentifier"
@@ -65,6 +72,7 @@ struct SnipSnapiOSApp: App {
 
     private static func makeLibrary() -> (
         library: any SnipLibrary,
+        sourceLibrary: any SnipLibrary,
         shareImports: ShareImportStore?,
         error: String?,
         uiTestAttachmentURLs: [URL],
@@ -76,6 +84,7 @@ struct SnipSnapiOSApp: App {
 #if DEBUG
         if environment["SNIP_SNAP_UI_TEST_RECOVERY"] == "1" {
             return (
+                RecoveryUITestSnipLibrary(),
                 RecoveryUITestSnipLibrary(),
                 nil,
                 nil,
@@ -114,13 +123,15 @@ struct SnipSnapiOSApp: App {
         do {
             let fixtureURLs = environment["SNIP_SNAP_UI_TEST_ATTACHMENTS"] == "1"
                 ? makeUITestAttachmentFiles(nextTo: storeURL) : []
+            let sourceLibrary = try SwiftDataSnipLibrary(storeURL: storeURL)
             let assembly = SnipLibraryAssembly(
-                library: try SwiftDataSnipLibrary(storeURL: storeURL),
+                library: sourceLibrary,
                 syncModeRootURL: syncModeRootURL,
                 initializeSyncModeStore: environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1"
             )
             return (
                 assembly.library,
+                sourceLibrary,
                 shareImports,
                 nil,
                 fixtureURLs,
@@ -129,12 +140,14 @@ struct SnipSnapiOSApp: App {
                 syncModeRootURL
             )
         } catch {
+            let sourceLibrary = SwiftDataSnipLibrary.unavailable(storeURL: storeURL)
             let assembly = SnipLibraryAssembly(
-                library: SwiftDataSnipLibrary.unavailable(storeURL: storeURL),
+                library: sourceLibrary,
                 syncModeRootURL: syncModeRootURL
             )
             return (
                 assembly.library,
+                sourceLibrary,
                 shareImports,
                 "Snip Snap could not open its local library. Your saved data was not changed.",
                 [],

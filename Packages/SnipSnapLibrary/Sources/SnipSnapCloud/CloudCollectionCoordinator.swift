@@ -69,16 +69,25 @@ package struct CloudCollectionLocalState: Equatable, Sendable {
   package let hasSyncedBefore: Bool
   package let activeNamespace: CloudSyncNamespace?
   package let cleanupZones: Set<CloudZoneID>
+  package let deletionState: CloudCollectionDeletionState
 
   package init(
     hasSyncedBefore: Bool,
     activeNamespace: CloudSyncNamespace?,
-    cleanupZones: Set<CloudZoneID>
+    cleanupZones: Set<CloudZoneID>,
+    deletionState: CloudCollectionDeletionState = .none
   ) {
     self.hasSyncedBefore = hasSyncedBefore
     self.activeNamespace = activeNamespace
     self.cleanupZones = cleanupZones
+    self.deletionState = deletionState
   }
+}
+
+package enum CloudCollectionDeletionState: String, Codable, Equatable, Sendable {
+  case none
+  case pending
+  case completed
 }
 
 package struct CloudCollectionSyncContext: Equatable, Sendable {
@@ -103,6 +112,8 @@ package protocol CloudCollectionLocalStore: Sendable {
   func finishCleanup(_ zones: Set<CloudZoneID>) async throws
   func adopt(_ namespace: CloudSyncNamespace) async throws
   func markPurged() async throws
+  func markDeletionPending() async throws
+  func markDeletionCompleted() async throws
 }
 
 package protocol CloudCollectionSyncDriver: Sendable {
@@ -115,6 +126,7 @@ package enum CloudCollectionStatus: Equatable, Sendable {
   case enabled(CloudSyncNamespace)
   case adoptedRemoteCollection(CloudSyncNamespace)
   case deletedSyncedContent(CloudSyncNamespace)
+  case oldSyncedContentRemovalPending(CloudSyncNamespace)
   case purged
   case requiresEnable
 }
@@ -143,6 +155,86 @@ package enum CloudCollectionStep: Equatable, Sendable {
   case oldZonesDeleted
 }
 
+/// Creates or adopts the collection control record without changing the local mode pointer.
+package actor CloudCollectionBootstrapper {
+  private let ownerName: String
+  private let localStore: any CloudCollectionLocalStore
+  private let transport: any CloudCollectionControlTransport
+  private let makeDescriptor: CloudCollectionCoordinator.DescriptorFactory
+  private let reservedZones: Set<CloudZoneID>
+
+  package init(
+    ownerName: String,
+    localStore: any CloudCollectionLocalStore,
+    transport: any CloudCollectionControlTransport,
+    makeDescriptor: @escaping CloudCollectionCoordinator.DescriptorFactory,
+    reservedZones: Set<CloudZoneID> = []
+  ) {
+    self.ownerName = ownerName
+    self.localStore = localStore
+    self.transport = transport
+    self.makeDescriptor = makeDescriptor
+    self.reservedZones = reservedZones
+  }
+
+  package func activeOrCreate() async throws -> CloudCollectionDescriptor {
+    if let current = try await transport.fetchControl() {
+      try validate(current.descriptor)
+      return current.descriptor
+    }
+    let fresh = makeDescriptor()
+    try validate(fresh)
+    try await transport.createZones(fresh.zones)
+    switch try await transport.saveControl(fresh, replacing: nil) {
+    case .accepted(let accepted):
+      try validate(accepted.descriptor)
+      return accepted.descriptor
+    case .conflict(let winner):
+      try validate(winner.descriptor)
+      let unused = fresh.zones.subtracting(winner.descriptor.zones)
+      if !unused.isEmpty {
+        try await localStore.stageCleanup(unused)
+        do {
+          try await transport.deleteZones(unused)
+          try await localStore.finishCleanup(unused)
+        } catch {
+          // The next generation-gated sync retries the durable cleanup work.
+        }
+      }
+      return winner.descriptor
+    }
+  }
+
+  private func validate(_ descriptor: CloudCollectionDescriptor) throws {
+    guard descriptor.metadataZone != descriptor.payloadZone,
+      descriptor.zones.isDisjoint(with: reservedZones),
+      !descriptor.metadataZone.name.isEmpty,
+      !descriptor.payloadZone.name.isEmpty,
+      descriptor.metadataZone.ownerName == ownerName,
+      descriptor.payloadZone.ownerName == ownerName
+    else { throw CloudCollectionError.invalidDescriptor }
+  }
+}
+
+/// Excludes normal sends and resets across coordinators owned by one app process.
+package final class CloudCollectionOperationGate: @unchecked Sendable {
+  private let lock = NSLock()
+  private var inProgress = false
+
+  package init() {}
+
+  fileprivate func begin() throws {
+    try lock.withLock {
+      guard !inProgress else { throw CloudCollectionError.operationInProgress }
+      inProgress = true
+    }
+  }
+
+  fileprivate func finish() {
+    lock.withLock { inProgress = false }
+  }
+}
+
 /// Owns the generation check and the reset order for one private CloudKit collection.
 package actor CloudCollectionCoordinator {
   package typealias DescriptorFactory = @Sendable () -> CloudCollectionDescriptor
@@ -157,7 +249,7 @@ package actor CloudCollectionCoordinator {
   private let makeDescriptor: DescriptorFactory
   private let afterStep: StepHook
   private let reservedZones: Set<CloudZoneID>
-  private var operationInProgress = false
+  private let operationGate: CloudCollectionOperationGate
 
   package init(
     cloudScope: String,
@@ -168,6 +260,7 @@ package actor CloudCollectionCoordinator {
     syncDriver: any CloudCollectionSyncDriver,
     makeDescriptor: @escaping DescriptorFactory,
     reservedZones: Set<CloudZoneID> = [],
+    operationGate: CloudCollectionOperationGate = CloudCollectionOperationGate(),
     afterStep: @escaping StepHook = { _ in }
   ) {
     self.cloudScope = cloudScope
@@ -178,6 +271,7 @@ package actor CloudCollectionCoordinator {
     self.syncDriver = syncDriver
     self.makeDescriptor = makeDescriptor
     self.reservedZones = reservedZones
+    self.operationGate = operationGate
     self.afterStep = afterStep
   }
 
@@ -197,6 +291,7 @@ package actor CloudCollectionCoordinator {
     switch saved {
     case .accepted(let accepted):
       try validate(accepted.descriptor)
+      try await localStore.markDeletionPending()
       try afterStep(.controlPublished)
       let namespace = accepted.descriptor.namespace(
         cloudScope: cloudScope,
@@ -209,10 +304,11 @@ package actor CloudCollectionCoordinator {
       await finishCleanupWhenPossible(accepted.descriptor.zones)
       await fetchWhenPossible(accepted.descriptor)
       guard await deleteZonesWhenPossible(oldZones) else {
-        return .deletedSyncedContent(namespace)
+        return .oldSyncedContentRemovalPending(namespace)
       }
       try afterStep(.oldZonesDeleted)
       await finishCleanupWhenPossible(oldZones)
+      try await localStore.markDeletionCompleted()
       return .deletedSyncedContent(namespace)
     case .conflict(let winning):
       try validate(winning.descriptor)
@@ -223,9 +319,16 @@ package actor CloudCollectionCoordinator {
         accountLineage: accountLineage
       )
       try await localStore.adopt(namespace)
+      try await localStore.markDeletionPending()
       await fetchWhenPossible(winning.descriptor)
       await cleanPendingZonesWhenPossible(protecting: winning.descriptor.zones)
-      return .adoptedRemoteCollection(namespace)
+      let pending = try await localStore.state().cleanupZones
+        .subtracting(winning.descriptor.zones.union(reservedZones))
+      if pending.isEmpty {
+        try await localStore.markDeletionCompleted()
+        return .deletedSyncedContent(namespace)
+      }
+      return .oldSyncedContentRemovalPending(namespace)
     }
   }
 
@@ -242,20 +345,39 @@ package actor CloudCollectionCoordinator {
       return .requiresEnable
     }
     try validate(control.descriptor)
-    try await localStore.finishCleanup(control.descriptor.zones)
-    try await cleanPendingZones(protecting: control.descriptor.zones)
     let remoteNamespace = control.descriptor.namespace(
       cloudScope: cloudScope,
       accountLineage: accountLineage
     )
+    try await localStore.finishCleanup(control.descriptor.zones)
+    do {
+      try await cleanPendingZones(protecting: control.descriptor.zones)
+    } catch {
+      if local.deletionState == .pending {
+        return .oldSyncedContentRemovalPending(remoteNamespace)
+      }
+      throw error
+    }
+    let cleanedLocal = try await localStore.state()
     guard local.activeNamespace == remoteNamespace else {
       if let prior = local.activeNamespace {
         try await localStore.stageCleanup(prior.zones.subtracting(control.descriptor.zones))
       }
       try await localStore.adopt(remoteNamespace)
       try await syncDriver.fetch(context(control.descriptor))
-      try await cleanPendingZones(protecting: control.descriptor.zones)
-      return .adoptedRemoteCollection(remoteNamespace)
+      do {
+        try await cleanPendingZones(protecting: control.descriptor.zones)
+      } catch {
+        if (try await localStore.state()).deletionState == .pending {
+          return .oldSyncedContentRemovalPending(remoteNamespace)
+        }
+        throw error
+      }
+      return try await deletionStatusIfNeeded(
+        cleanedLocal.deletionState,
+        remoteNamespace,
+        fallback: .adoptedRemoteCollection(remoteNamespace)
+      )
     }
 
     try await syncDriver.fetch(context(control.descriptor))
@@ -275,11 +397,28 @@ package actor CloudCollectionCoordinator {
       )
       try await localStore.adopt(checkedNamespace)
       try await syncDriver.fetch(context(checked.descriptor))
-      try await cleanPendingZones(protecting: checked.descriptor.zones)
-      return .adoptedRemoteCollection(checkedNamespace)
+      do {
+        try await cleanPendingZones(protecting: checked.descriptor.zones)
+      } catch {
+        if (try await localStore.state()).deletionState == .pending {
+          return .oldSyncedContentRemovalPending(checkedNamespace)
+        }
+        throw error
+      }
+      let state = try await localStore.state()
+      return try await deletionStatusIfNeeded(
+        state.deletionState,
+        checkedNamespace,
+        fallback: .adoptedRemoteCollection(checkedNamespace)
+      )
     }
     try await syncDriver.send(context(checked.descriptor))
-    return .on(remoteNamespace)
+    let state = try await localStore.state()
+    return try await deletionStatusIfNeeded(
+      state.deletionState,
+      remoteNamespace,
+      fallback: .on(remoteNamespace)
+    )
   }
 
   /// Explicit user intent is required before a missing control record may be recreated.
@@ -361,12 +500,32 @@ package actor CloudCollectionCoordinator {
   }
 
   private func beginOperation() throws {
-    guard !operationInProgress else { throw CloudCollectionError.operationInProgress }
-    operationInProgress = true
+    try operationGate.begin()
   }
 
   private func finishOperation() {
-    operationInProgress = false
+    operationGate.finish()
+  }
+
+  private func deletionStatusIfNeeded(
+    _ state: CloudCollectionDeletionState,
+    _ namespace: CloudSyncNamespace,
+    fallback: CloudCollectionStatus
+  ) async throws -> CloudCollectionStatus {
+    switch state {
+    case .none:
+      return fallback
+    case .pending:
+      let pending = try await localStore.state().cleanupZones
+        .subtracting(namespace.zones.union(reservedZones))
+      guard pending.isEmpty else {
+        return .oldSyncedContentRemovalPending(namespace)
+      }
+      try await localStore.markDeletionCompleted()
+      return .deletedSyncedContent(namespace)
+    case .completed:
+      return .deletedSyncedContent(namespace)
+    }
   }
 
   private func context(_ descriptor: CloudCollectionDescriptor) -> CloudCollectionSyncContext {

@@ -35,6 +35,26 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(model.recoverySnapshot.promotedSnips, [recovered])
     }
 
+    func testExplicitSyncEnableReplacesTheVisibleLibraryBeforeReportingOn() async {
+        let oldLibrary = ModelTestLibrary(
+            snips: [Snip(content: "Local before enable", origin: .quickEntry)]
+        )
+        let cloudLibrary = ModelTestLibrary(
+            snips: [Snip(content: "Merged after enable", origin: .quickEntry)]
+        )
+        let model = IOSAppModel(library: oldLibrary)
+        await model.load()
+        let settings = SyncedContentSettingsModel(mode: .localOnly, enableAction: {})
+        settings.setEnableCompletionAction {
+            await model.replaceLibrary(cloudLibrary, recoveryScope: nil)
+        }
+
+        await settings.enableICloudSync()
+
+        XCTAssertEqual(settings.mode, .iCloudSync)
+        XCTAssertEqual(model.snips.map(\.content), ["Merged after enable"])
+    }
+
     func testRootReinitializationKeepsForegroundImportOnRetainedGraph() async throws {
         let library = ModelTestLibrary()
         let firstProbe = ImportCallProbe()

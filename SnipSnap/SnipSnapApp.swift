@@ -79,6 +79,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     let shortcutSettings: ShortcutSettings
     let syncedContentSettings: SyncedContentSettingsModel
     let cloudSyncSession: SnipSnapCloudSyncSession?
+    let cloudLifecycleHooks: SnipSnapCloudLifecycleHooks
     let coordinator: AppCoordinator
     let fileDropController: PanelFileDropController
     let snipDragSourceController: SnipDragSourceController
@@ -120,7 +121,12 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let shortcutSettings = ShortcutSettings()
         let cloudServices: SnipSnapCloudAppServices
 #if DEBUG
-        if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1" {
+        if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_ENABLE"] == "1" {
+            cloudServices = SnipSnapCloudAppAssembly.simulatedLocalOnlyServices(
+                rootURL: syncModeRootURL,
+                sourceLibrary: library
+            )
+        } else if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1" {
             cloudServices = SnipSnapCloudAppAssembly.simulatedServices(
                 rootURL: syncModeRootURL,
                 syncModeStore: assembly.syncModeStore
@@ -128,6 +134,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         } else {
             cloudServices = SnipSnapCloudAppAssembly.services(
                 rootURL: syncModeRootURL,
+                sourceLibrary: library,
                 syncModeStore: assembly.syncModeStore,
                 containerIdentifier: Bundle.main.object(
                     forInfoDictionaryKey: "SnipSnapCloudKitContainerIdentifier"
@@ -137,6 +144,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
 #else
         cloudServices = SnipSnapCloudAppAssembly.services(
             rootURL: syncModeRootURL,
+            sourceLibrary: library,
             syncModeStore: assembly.syncModeStore,
             containerIdentifier: Bundle.main.object(
                 forInfoDictionaryKey: "SnipSnapCloudKitContainerIdentifier"
@@ -159,14 +167,40 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             userDriverDelegate: nil
         )
         coordinator = AppCoordinator(model: model, shortcutSettings: shortcutSettings)
+        cloudLifecycleHooks = SnipSnapCloudLifecycleHooks {
+            guard let session = cloudServices.syncSession else { return }
+            do {
+                switch try await session.synchronize() {
+                case .noChange:
+                    break
+                case .contentUpdated:
+                    await model.reload()
+                case .libraryReplaced:
+                    let active = try await session.activeLibrary()
+                    await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+                case .oldSyncedContentRemovalPending:
+                    let active = try await session.activeLibrary()
+                    await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+                    cloudServices.syncedContentSettings.recordRemovalPending(true)
+                case .oldSyncedContentRemovalCompleted:
+                    let active = try await session.activeLibrary()
+                    await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+                    cloudServices.syncedContentSettings.recordRemovalPending(false)
+                }
+            } catch {
+                model.presentedError = error.localizedDescription
+            }
+        }
         if let cloudSyncSession {
-            syncedContentSettings.setDeleteCompletionAction {
+            let reloadActiveLibrary: SyncedContentSettingsModel.DeleteCompletionAction = {
                 let active = try await cloudSyncSession.activeLibrary()
                 await model.replaceLibrary(
                     active.library,
                     recoveryScope: active.recoveryScope
                 )
             }
+            syncedContentSettings.setEnableCompletionAction(reloadActiveLibrary)
+            syncedContentSettings.setDeleteCompletionAction(reloadActiveLibrary)
         }
         super.init()
     }
@@ -195,26 +229,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         )
         coordinator.attachPanelWindow(panel)
         coordinator.start()
-        if let cloudSyncSession {
-            Task { @MainActor [model] in
-                do {
-                    switch try await cloudSyncSession.synchronize() {
-                    case .noChange:
-                        break
-                    case .contentUpdated:
-                        await model.reload()
-                    case .libraryReplaced:
-                        let active = try await cloudSyncSession.activeLibrary()
-                        await model.replaceLibrary(
-                            active.library,
-                            recoveryScope: active.recoveryScope
-                        )
-                    }
-                } catch {
-                    model.presentedError = error.localizedDescription
-                }
-            }
-        }
+        Task { await cloudLifecycleHooks.launch() }
         if !panel.restoredSavedFrame {
             panel.center()
         }
@@ -224,6 +239,11 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             panel.makeKeyAndOrderFront(nil)
         }
 #endif
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        guard mainPanel != nil else { return }
+        Task { await cloudLifecycleHooks.foreground() }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

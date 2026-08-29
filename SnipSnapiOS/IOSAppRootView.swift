@@ -9,7 +9,7 @@ struct IOSAppRootView: View {
     @State private var sheet: AppSheet?
     private let uiTestAttachmentURLs: [URL]
     private let syncedContentSettings: SyncedContentSettingsModel
-    private let cloudSyncSession: SnipSnapCloudSyncSession?
+    private let cloudLifecycleHooks: SnipSnapCloudLifecycleHooks
 
     init(
         library: any SnipLibrary,
@@ -26,7 +26,6 @@ struct IOSAppRootView: View {
         let settings = syncedContentSettings
             ?? SyncedContentSettingsModel(mode: .localOnly)
         self.syncedContentSettings = settings
-        self.cloudSyncSession = cloudSyncSession
         let graph = IOSAppGraph(
             library: library,
             recoveryScope: recoveryScope,
@@ -36,13 +35,22 @@ struct IOSAppRootView: View {
             shareImportOperation: shareImportOperation
         )
         if let cloudSyncSession {
-            settings.setDeleteCompletionAction {
+            let reloadActiveLibrary: SyncedContentSettingsModel.DeleteCompletionAction = {
                 let active = try await cloudSyncSession.activeLibrary()
                 await graph.model.replaceLibrary(
                     active.library,
                     recoveryScope: active.recoveryScope
                 )
             }
+            settings.setEnableCompletionAction(reloadActiveLibrary)
+            settings.setDeleteCompletionAction(reloadActiveLibrary)
+        }
+        cloudLifecycleHooks = SnipSnapCloudLifecycleHooks {
+            await synchronizeCloudSession(
+                cloudSyncSession,
+                model: graph.model,
+                settings: settings
+            )
         }
         _appGraph = State(initialValue: graph)
     }
@@ -89,7 +97,7 @@ struct IOSAppRootView: View {
             Text(model.errorMessage ?? "Please try again.")
         }
         .task {
-            await synchronizeAndReloadLibrary()
+            await cloudLifecycleHooks.launch()
             if let shareImporter = appGraph.shareImporter {
                 await shareImporter.importPendingAndReload()
             } else {
@@ -104,35 +112,42 @@ struct IOSAppRootView: View {
             }
         }
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .active, let shareImporter = appGraph.shareImporter else { return }
-            Task { await shareImporter.importPendingAndReload() }
-        }
-    }
-
-    private func synchronizeAndReloadLibrary() async {
-        guard let cloudSyncSession else { return }
-        do {
-            switch try await cloudSyncSession.synchronize() {
-            case .noChange:
-                break
-            case .contentUpdated:
-                await model.load()
-            case .libraryReplaced:
-                await reloadActiveLibrary()
+            guard phase == .active else { return }
+            Task {
+                await cloudLifecycleHooks.foreground()
+                await appGraph.shareImporter?.importPendingAndReload()
             }
-        } catch {
-            model.errorMessage = error.localizedDescription
         }
     }
 
-    private func reloadActiveLibrary() async {
-        guard let cloudSyncSession else { return }
-        do {
-            let active = try await cloudSyncSession.activeLibrary()
+}
+
+@MainActor
+private func synchronizeCloudSession(
+    _ session: SnipSnapCloudSyncSession?,
+    model: IOSAppModel,
+    settings: SyncedContentSettingsModel
+) async {
+    guard let session else { return }
+    do {
+        let result = try await session.synchronize()
+        switch result {
+        case .noChange:
+            break
+        case .contentUpdated:
+            await model.load()
+        case .libraryReplaced, .oldSyncedContentRemovalPending,
+                .oldSyncedContentRemovalCompleted:
+            let active = try await session.activeLibrary()
             await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
-        } catch {
-            model.errorMessage = error.localizedDescription
+            if case .oldSyncedContentRemovalPending = result {
+                settings.recordRemovalPending(true)
+            } else if case .oldSyncedContentRemovalCompleted = result {
+                settings.recordRemovalPending(false)
+            }
         }
+    } catch {
+        model.errorMessage = error.localizedDescription
     }
 }
 
