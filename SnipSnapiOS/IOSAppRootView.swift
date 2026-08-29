@@ -1,15 +1,18 @@
 import SnipSnapCore
 import SnipSnapPersistence
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct IOSAppRootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var appGraph: IOSAppGraph
     @State private var sheet: AppSheet?
+    @State private var isImportingBackup = false
     private let uiTestAttachmentURLs: [URL]
 
     init(
         library: any SnipLibrary,
+        deviceActions: SnipLibraryDeviceActions? = nil,
         recoveryScope: SnipRecoveryScope? = nil,
         shareImports: ShareImportStore? = nil,
         initialSnapshot: SnipLibrarySnapshot? = nil,
@@ -20,6 +23,7 @@ struct IOSAppRootView: View {
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         _appGraph = State(initialValue: IOSAppGraph(
             library: library,
+            deviceActions: deviceActions,
             recoveryScope: recoveryScope,
             shareImports: shareImports,
             initialSnapshot: initialSnapshot ?? SnipLibrarySnapshot(snips: [], lists: [.inbox]),
@@ -32,7 +36,11 @@ struct IOSAppRootView: View {
 
     var body: some View {
         NavigationSplitView {
-            ListSidebarView(model: model, sheet: $sheet)
+            ListSidebarView(
+                model: model,
+                sheet: $sheet,
+                importBackup: { isImportingBackup = true }
+            )
         } content: {
             SnipCollectionView(model: model, sheet: $sheet)
         } detail: {
@@ -66,6 +74,34 @@ struct IOSAppRootView: View {
             Button("OK") { model.errorMessage = nil }
         } message: {
             Text(model.errorMessage ?? "Please try again.")
+        }
+        .fileImporter(
+            isPresented: $isImportingBackup,
+            allowedContentTypes: [.json],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                Task { await model.previewBackupImport(from: url) }
+            case .failure(let error):
+                if (error as NSError).code != NSUserCancelledError {
+                    model.errorMessage = error.localizedDescription
+                }
+            }
+        }
+        .confirmationDialog(
+            "Import this backup?",
+            isPresented: Binding(
+                get: { model.pendingImportPreview != nil },
+                set: { if !$0 { model.cancelBackupImport() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Import Backup") { Task { await model.confirmBackupImport() } }
+            Button("Cancel", role: .cancel) { model.cancelBackupImport() }
+        } message: {
+            Text("Review: \(model.importPreviewSummary). Snip Snap will merge these records with your saved snips.")
         }
         .task {
             if let shareImporter = appGraph.shareImporter {

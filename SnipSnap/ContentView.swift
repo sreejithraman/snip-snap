@@ -173,6 +173,21 @@ struct ContentView: View {
         .sheet(isPresented: $showingRecoveryReview) {
             MacRecoveryReviewSheet(model: model)
         }
+        .confirmationDialog(
+            "Import this backup?",
+            isPresented: Binding(
+                get: { model.pendingImportPreview != nil },
+                set: { if !$0 { model.cancelBackupImport() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Import Backup") {
+                Task { await model.confirmBackupImport() }
+            }
+            Button("Cancel", role: .cancel) { model.cancelBackupImport() }
+        } message: {
+            Text("Review: \(model.importPreviewSummary). Snip Snap will merge these records with your saved snips.")
+        }
         .alert(
             "Allow Accessibility Access?",
             isPresented: $model.isAccessibilityAccessExplanationPresented

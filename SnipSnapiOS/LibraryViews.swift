@@ -5,6 +5,7 @@ import SwiftUI
 struct ListSidebarView: View {
     let model: IOSAppModel
     @Binding var sheet: AppSheet?
+    var importBackup: () -> Void = {}
 
     private var selection: Binding<UUID?> {
         Binding(
@@ -49,6 +50,23 @@ struct ListSidebarView: View {
         }
         .navigationTitle("Lists")
         .toolbar {
+            ToolbarItem(placement: .secondaryAction) {
+                Menu("Library Actions", systemImage: "ellipsis.circle") {
+                    Button(model.undoTitle, systemImage: "arrow.uturn.backward") {
+                        Task { await model.undo() }
+                    }
+                    .disabled(!model.canUndo)
+                    Button(model.redoTitle, systemImage: "arrow.uturn.forward") {
+                        Task { await model.redo() }
+                    }
+                    .disabled(!model.canRedo)
+                    Divider()
+                    Button("Import Backup…", systemImage: "square.and.arrow.down") {
+                        importBackup()
+                    }
+                }
+                .accessibilityIdentifier("library-actions")
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button("New List", systemImage: "folder.badge.plus") {
                     sheet = .newList

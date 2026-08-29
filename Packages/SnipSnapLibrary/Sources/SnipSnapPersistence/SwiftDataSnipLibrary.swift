@@ -446,6 +446,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     let context = Self.makeContext(container: container)
     let loaded = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
     try Self.validate(loaded.state)
+    let before = makeSnapshot(state: loaded.state, sortedBy: sortMode)
     knownAttachmentPaths.merge(
       loaded.attachments.map { ($0.id, $0.relativePath) },
       uniquingKeysWith: { _, latest in latest }
@@ -497,9 +498,11 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
         )
         knownAttachmentPaths = knownAttachmentPaths.filter { liveIDs.contains($0.key) }
       }
+      let snapshot = makeSnapshot(state: state, sortedBy: sortMode)
       return SnipLibraryUpdate(
-        snapshot: makeSnapshot(state: state, sortedBy: sortMode),
-        outcome: outcome
+        snapshot: snapshot,
+        outcome: outcome,
+        devicePatch: .between(before, snapshot)
       )
     } catch {
       context.rollback()

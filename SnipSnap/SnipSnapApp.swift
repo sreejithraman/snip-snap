@@ -101,7 +101,11 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let model = AppModel(
             library: assembly.library,
             initialError: initialError,
-            recoveryScope: assembly.recoveryScope
+            recoveryScope: assembly.recoveryScope,
+            deviceActions: SnipLibraryDeviceActions(
+                library: assembly.library,
+                journalURL: SnipLibraryDeviceActions.defaultJournalURL(nextTo: libraryStoreURL)
+            )
         )
         let shortcutSettings = ShortcutSettings()
         let fileDropController = PanelFileDropController()
@@ -235,6 +239,9 @@ private struct SnipCommands: Commands {
             }
         }
         CommandMenu("Snips") {
+            Button("Import Backup…") { model?.beginBackupImport() }
+                .disabled(model == nil)
+            Divider()
             Button(SnipCommand.copy.title) { perform(.copy) }
                 .keyboardShortcut("c", modifiers: .command)
                 .disabled(!isAvailable(.copy))

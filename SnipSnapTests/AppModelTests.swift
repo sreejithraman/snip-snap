@@ -906,6 +906,41 @@ final class AppModelTests: StoreBackedTestCase {
         store.finishSave(snapshot, saved: false)
         XCTAssertFalse(FileManager.default.fileExists(atPath: temporary.path))
     }
+
+    @MainActor
+    func testMacBackupImportWaitsForConfirmationAndCanUndo() async throws {
+        let targetURL = try storeURL()
+        let backupURL = targetURL.deletingLastPathComponent()
+            .appendingPathComponent("backup.json")
+        let backup = try JSONSnipLibrary(fileURL: backupURL)
+        let added = try await backup.add(content: "From backup", origin: .quickEntry)
+        let importedID = try XCTUnwrap(added?.id)
+        let target = try JSONSnipLibrary(fileURL: targetURL)
+        let actions = SnipLibraryDeviceActions(
+            library: target,
+            journalURL: targetURL.deletingLastPathComponent()
+                .appendingPathComponent("DeviceActions.json")
+        )
+        let model = AppModel(
+            library: target,
+            defaults: defaults(),
+            deviceActions: actions
+        )
+        await model.reload()
+
+        await model.previewBackupImport(from: backupURL)
+
+        XCTAssertEqual(model.pendingImportPreview?.addedSnipCount, 1)
+        XCTAssertTrue(model.snips.isEmpty)
+        XCTAssertFalse(model.canUndo)
+
+        await model.confirmBackupImport()
+
+        XCTAssertEqual(model.snips.map(\.id), [importedID])
+        XCTAssertEqual(model.undoTitle, "Undo Import Backup")
+        await model.undoNow()
+        XCTAssertTrue(model.snips.isEmpty)
+    }
 }
 
 private func writeActivationManifest(

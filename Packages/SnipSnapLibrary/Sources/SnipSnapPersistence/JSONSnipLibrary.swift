@@ -209,6 +209,7 @@ public actor JSONSnipLibrary: SnipLibrary {
         sortedBy sortMode: SnipSortMode
     ) throws -> SnipLibraryUpdate {
         try ensureAvailable()
+        let before = makeSnapshot(sortedBy: sortMode)
         var state = SnipLibraryState(
             snips: snips,
             lists: lists,
@@ -268,9 +269,11 @@ public actor JSONSnipLibrary: SnipLibrary {
             }
         }
 
+        let snapshot = makeSnapshot(sortedBy: sortMode)
         return SnipLibraryUpdate(
-            snapshot: makeSnapshot(sortedBy: sortMode),
-            outcome: outcome
+            snapshot: snapshot,
+            outcome: outcome,
+            devicePatch: .between(before, snapshot)
         )
     }
 

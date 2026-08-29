@@ -98,6 +98,54 @@ extension SwiftDataSyncModePersistence {
     }
   }
 
+  fileprivate func managedPreviewImport(
+    _ source: SnipLibraryTransferSnapshot,
+    transitionID: UUID
+  ) async throws -> SnipImportPreview {
+    guard !writeAdmissionInProgress, manifest.writeReservation == nil,
+      manifest.transition == nil
+    else { throw SnipLibraryError.modeTransitionInProgress }
+    return try await libraryForTransition(storeID: manifest.activeStoreID)
+      .previewImport(source, transitionID: transitionID)
+  }
+
+  fileprivate func managedApplyImport(
+    _ preview: SnipImportPreview
+  ) async throws -> SnipImportResult {
+    guard !writeAdmissionInProgress, manifest.writeReservation == nil,
+      manifest.transition == nil
+    else { throw SnipLibraryError.modeTransitionInProgress }
+    writeAdmissionInProgress = true
+    defer { writeAdmissionInProgress = false }
+    let activeID = manifest.activeStoreID
+    let reservedRevision = manifest.stores[try storeIndex(id: activeID)].revision + 1
+    var reserved = manifest
+    reserved.stores[try storeIndex(id: activeID)].revision = reservedRevision
+    reserved.writeReservation = SyncModeWriteReservation(
+      id: UUID(),
+      storeID: activeID,
+      reservedRevision: reservedRevision
+    )
+    try commit(reserved)
+    try await writeHook(.afterRevisionReserved)
+    do {
+      let result = try await libraryForTransition(storeID: activeID).applyImport(preview)
+      try await writeHook(.beforeReservationCleared)
+      var completed = manifest
+      completed.writeReservation = nil
+      try commit(completed)
+      return result
+    } catch {
+      guard error is SnipLibraryError || error is SyncModePersistenceError else {
+        throw error
+      }
+      var cleared = manifest
+      cleared.writeReservation = nil
+      try? commit(cleared)
+      throw error
+    }
+  }
+
   fileprivate func recordStoreReadFailure() {
     try? recordAttention(.storeReadFailed)
   }
@@ -156,5 +204,18 @@ private actor ModeManagedSnipLibrary: SnipLibrary {
     transitionID: UUID
   ) async throws -> SnipLibraryTransferResult {
     throw SnipLibraryError.transferUnsupported
+  }
+
+  func previewImport(
+    _ source: SnipLibraryTransferSnapshot,
+    transitionID: UUID
+  ) async throws -> SnipImportPreview {
+    try await persistence.managedPreviewImport(source, transitionID: transitionID)
+  }
+
+  func applyImport(_ preview: SnipImportPreview) async throws -> SnipImportResult {
+    let result = try await persistence.managedApplyImport(preview)
+    lastKnown = result.snapshot
+    return result
   }
 }

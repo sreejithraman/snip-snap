@@ -5,6 +5,7 @@ import SwiftUI
 @main
 struct SnipSnapiOSApp: App {
     private let library: any SnipLibrary
+    private let deviceActions: SnipLibraryDeviceActions
     private let shareImports: ShareImportStore?
     private let startupError: String?
     private let uiTestAttachmentURLs: [URL]
@@ -13,6 +14,7 @@ struct SnipSnapiOSApp: App {
     init() {
         let startup = Self.makeLibrary()
         library = startup.library
+        deviceActions = startup.deviceActions
         shareImports = startup.shareImports
         startupError = startup.error
         uiTestAttachmentURLs = startup.uiTestAttachmentURLs
@@ -23,6 +25,7 @@ struct SnipSnapiOSApp: App {
         WindowGroup {
             IOSAppRootView(
                 library: library,
+                deviceActions: deviceActions,
                 recoveryScope: recoveryScope,
                 shareImports: shareImports,
                 startupError: startupError,
@@ -33,6 +36,7 @@ struct SnipSnapiOSApp: App {
 
     private static func makeLibrary() -> (
         library: any SnipLibrary,
+        deviceActions: SnipLibraryDeviceActions,
         shareImports: ShareImportStore?,
         error: String?,
         uiTestAttachmentURLs: [URL],
@@ -41,8 +45,14 @@ struct SnipSnapiOSApp: App {
         let environment = ProcessInfo.processInfo.environment
 #if DEBUG
         if environment["SNIP_SNAP_UI_TEST_RECOVERY"] == "1" {
+            let library = RecoveryUITestSnipLibrary()
             return (
-                RecoveryUITestSnipLibrary(),
+                library,
+                SnipLibraryDeviceActions(
+                    library: library,
+                    journalURL: FileManager.default.temporaryDirectory
+                        .appendingPathComponent("SnipSnap-RecoveryUITest-Actions.json")
+                ),
                 nil,
                 nil,
                 [],
@@ -82,6 +92,10 @@ struct SnipSnapiOSApp: App {
             )
             return (
                 assembly.library,
+                SnipLibraryDeviceActions(
+                    library: assembly.library,
+                    journalURL: SnipLibraryDeviceActions.defaultJournalURL(nextTo: storeURL)
+                ),
                 shareImports,
                 nil,
                 fixtureURLs,
@@ -94,6 +108,10 @@ struct SnipSnapiOSApp: App {
             )
             return (
                 assembly.library,
+                SnipLibraryDeviceActions(
+                    library: assembly.library,
+                    journalURL: SnipLibraryDeviceActions.defaultJournalURL(nextTo: storeURL)
+                ),
                 shareImports,
                 "Snip Snap could not open its local library. Your saved data was not changed.",
                 [],

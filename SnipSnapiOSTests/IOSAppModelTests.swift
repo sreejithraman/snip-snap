@@ -176,7 +176,86 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertTrue(model.snips.isEmpty)
         XCTAssertNil(model.selectedSnipID)
         let pruneCalls = await library.pruneCalls()
-        XCTAssertGreaterThan(pruneCalls, 0)
+        XCTAssertEqual(pruneCalls, 0)
+    }
+
+    func testUndoRedoHistorySurvivesIOSModelReopen() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("IOSDeviceActionTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storeURL = root.appendingPathComponent("Snips.json")
+        let journalURL = root.appendingPathComponent("DeviceActions.json")
+        let library = try JSONSnipLibrary(fileURL: storeURL)
+        let actions = SnipLibraryDeviceActions(library: library, journalURL: journalURL)
+        let model = IOSAppModel(library: library, deviceActions: actions)
+        await model.load()
+
+        let created = await model.createSnip(content: "Keep me", in: SnipList.inboxID)
+        XCTAssertTrue(created)
+        let snipID = try XCTUnwrap(model.snips.first?.id)
+        XCTAssertEqual(model.undoTitle, "Undo Add Snip")
+        await model.undo()
+        XCTAssertTrue(model.snips.isEmpty)
+        XCTAssertTrue(model.canRedo)
+
+        let reopenedLibrary = try JSONSnipLibrary(fileURL: storeURL)
+        let reopenedActions = SnipLibraryDeviceActions(
+            library: reopenedLibrary,
+            journalURL: journalURL
+        )
+        let reopenedModel = IOSAppModel(
+            library: reopenedLibrary,
+            deviceActions: reopenedActions
+        )
+        await reopenedModel.load()
+
+        XCTAssertEqual(reopenedModel.redoTitle, "Redo Add Snip")
+        await reopenedModel.redo()
+        XCTAssertEqual(reopenedModel.snips.map(\.id), [snipID])
+    }
+
+    func testIOSBackupImportWaitsForConfirmationAndCanUndo() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("IOSImportTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backupURL = root.appendingPathComponent("Backup.json")
+        let targetURL = root.appendingPathComponent("Target.json")
+        let backup = try JSONSnipLibrary(fileURL: backupURL)
+        let update = try await backup.perform(
+            .add(
+                content: "From backup",
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inboxID,
+                attachmentURLs: [],
+                requestID: UUID(),
+                now: Date()
+            ),
+            sortedBy: .chronological
+        )
+        guard case .add(.added(let importedID)) = update.outcome else {
+            return XCTFail("The backup must contain the added snip.")
+        }
+        let target = try JSONSnipLibrary(fileURL: targetURL)
+        let actions = SnipLibraryDeviceActions(
+            library: target,
+            journalURL: root.appendingPathComponent("DeviceActions.json")
+        )
+        let model = IOSAppModel(library: target, deviceActions: actions)
+        await model.load()
+
+        await model.previewBackupImport(from: backupURL)
+
+        XCTAssertEqual(model.pendingImportPreview?.addedSnipCount, 1)
+        XCTAssertTrue(model.snips.isEmpty)
+        XCTAssertFalse(model.canUndo)
+
+        await model.confirmBackupImport()
+
+        XCTAssertEqual(model.snips.map(\.id), [importedID])
+        XCTAssertEqual(model.undoTitle, "Undo Import Backup")
+        await model.undo()
+        XCTAssertTrue(model.snips.isEmpty)
     }
 
     func testListFlowKeepsInboxAsFallback() async throws {
