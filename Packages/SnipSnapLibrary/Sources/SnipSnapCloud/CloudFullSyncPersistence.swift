@@ -13,20 +13,33 @@ package protocol CloudFullSyncStore: Sendable {
 package actor CloudFullSyncCoordinator {
   private let store: any CloudFullSyncStore
   private let transport: any CloudRecordTransport
+  private let fetchScope: CloudFetchScope
   private var started = false
   private var syncing = false
 
-  package init(store: any CloudFullSyncStore, transport: any CloudRecordTransport) {
+  package init(
+    store: any CloudFullSyncStore,
+    transport: any CloudRecordTransport,
+    fetchScope: CloudFetchScope = .all
+  ) {
     self.store = store
     self.transport = transport
+    self.fetchScope = fetchScope
   }
 
   package func sync() async throws {
     try await run(fetch: true, send: true, beforeSend: { _ in })
   }
 
-  package func fetchRemote() async throws {
-    try await run(fetch: true, send: false, beforeSend: { _ in })
+  package func fetchRemote(
+    beforeApply: @escaping @Sendable () async throws -> Void = {}
+  ) async throws {
+    try await run(
+      fetch: true,
+      send: false,
+      beforeFetchApply: beforeApply,
+      beforeSend: { _ in }
+    )
   }
 
   package func sendPending() async throws {
@@ -42,6 +55,7 @@ package actor CloudFullSyncCoordinator {
   private func run(
     fetch: Bool,
     send: Bool,
+    beforeFetchApply: @escaping @Sendable () async throws -> Void = {},
     beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void
   ) async throws {
     guard !syncing else { throw CloudTransportError.syncAlreadyRunning }
@@ -56,7 +70,9 @@ package actor CloudFullSyncCoordinator {
       needsBootstrapFetch = state == nil
     }
     if fetch || (send && needsBootstrapFetch) {
-      try await commit(.fetched(transport.fetch(scope: .all)), outbound: nil)
+      let fetched = try await transport.fetch(scope: fetch ? fetchScope : .all)
+      try await beforeFetchApply()
+      try await commit(.fetched(fetched), outbound: nil)
     }
     if send {
       let outbound = try await store.pendingChanges()
@@ -99,6 +115,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   let library: SwiftDataSnipLibrary
   let namespace: CloudSyncNamespace
   let dataZone: CloudZoneID
+  let payloadZone: CloudZoneID?
   let namespaceKey: String
   let now: @Sendable () -> Date
   let afterCommitHook: ApplyHook
@@ -107,13 +124,16 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     library: SwiftDataSnipLibrary,
     namespace: CloudSyncNamespace,
     dataZone: CloudZoneID,
+    payloadZone: CloudZoneID? = nil,
     now: @escaping @Sendable () -> Date = Date.init,
     afterCommitHook: @escaping ApplyHook = {}
   ) {
     precondition(namespace.zones.contains(dataZone))
+    precondition(payloadZone.map(namespace.zones.contains) ?? true)
     self.library = library
     self.namespace = namespace
     self.dataZone = dataZone
+    self.payloadZone = payloadZone
     self.now = now
     self.afterCommitHook = afterCommitHook
     namespaceKey = namespace.canonicalKey

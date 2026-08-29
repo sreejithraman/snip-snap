@@ -39,18 +39,21 @@ extension SwiftDataSyncModePersistence {
 
     var operations = transition.sendAttempt?.operations ?? []
     for operation in attempt.operations {
-      if let existing = operations.first(where: { $0.reference == operation.reference }) {
+      if let existing = operations.first(where: {
+        $0.recordIdentity == operation.recordIdentity
+      }) {
         guard existing == operation else { throw SyncModePersistenceError.invalidManifest }
       } else {
         operations.append(operation)
       }
     }
     operations.sort {
-      if $0.reference.kind != $1.reference.kind {
-        return $0.reference.kind.rawValue < $1.reference.kind.rawValue
+      if $0.reference?.kind != $1.reference?.kind {
+        return ($0.reference?.kind.rawValue ?? "") < ($1.reference?.kind.rawValue ?? "")
       }
-      if $0.reference.domainID != $1.reference.domainID {
-        return $0.reference.domainID.uuidString < $1.reference.domainID.uuidString
+      if $0.reference?.domainID != $1.reference?.domainID {
+        return ($0.reference?.domainID.uuidString ?? "")
+          < ($1.reference?.domainID.uuidString ?? "")
       }
       return $0.recordIdentity.key < $1.recordIdentity.key
     }
@@ -58,7 +61,7 @@ extension SwiftDataSyncModePersistence {
     let saved = SyncModeSendAttempt(namespace: attempt.namespace, operations: operations)
     next.transition?.sendAttempt = saved
     next.transition?.pendingSettlementSnipIDs = Set(operations.compactMap {
-      $0.reference.kind == .snip ? $0.reference.domainID : nil
+      $0.reference?.kind == .snip ? $0.reference?.domainID : nil
     })
     try crashHook(.beforeSendAttemptManifest)
     try commit(next)
@@ -132,7 +135,8 @@ extension SwiftDataSyncModePersistence {
     encoder.outputFormatting = [.sortedKeys]
     var bases: [CloudDormantBase] = []
     for operation in attempt.operations where operation.kind == .save {
-      guard let entity = accepted[operation.reference],
+      guard let reference = operation.reference,
+        let entity = accepted[reference],
         entity.identity == operation.recordIdentity
       else { continue }
       let payload = try encoder.encode(CloudAcceptedEntityInput(

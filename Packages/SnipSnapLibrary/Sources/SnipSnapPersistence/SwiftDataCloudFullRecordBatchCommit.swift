@@ -19,23 +19,28 @@ extension SwiftDataSnipLibrary {
       namespaceKey: batch.namespaceKey,
       batchID: batch.batchID
     )
-    if let receipt = try context.fetch(FetchDescriptor<StoredCloudFullBatchReceipt>())
-      .first(where: { $0.id == receiptID })
+    if let receipt = try context.fetch(FetchDescriptor(
+      predicate: #Predicate<StoredCloudFullBatchReceipt> { $0.id == receiptID }
+    )).first
     {
       guard receipt.digest == digest else { throw CloudFullStorageError.invalidBatchReplay }
       return .replayed
     }
     let stagedID = "\(batch.namespaceKey)|\(batch.batchID.uuidString.lowercased())"
-    guard let staged = try context.fetch(FetchDescriptor<StoredCloudStagedBatch>())
-      .first(where: { $0.id == stagedID }), staged.payload == data
+    guard let staged = try context.fetch(FetchDescriptor(
+      predicate: #Predicate<StoredCloudStagedBatch> { $0.id == stagedID }
+    )).first, staged.payload == data
     else { throw CloudFullStorageError.invalidBatchReplay }
-    let engine = try context.fetch(FetchDescriptor<StoredCloudEngineState>())
-      .first(where: { $0.namespaceKey == batch.namespaceKey })
+    let namespaceKey = batch.namespaceKey
+    let engine = try context.fetch(FetchDescriptor(
+      predicate: #Predicate<StoredCloudEngineState> { $0.namespaceKey == namespaceKey }
+    )).first
     guard engine?.envelopeData == batch.expectedEngineState else {
       throw CloudFullStorageError.engineStateMismatch
     }
-    let enrollmentRow = try context.fetch(FetchDescriptor<StoredCloudFullEnrollment>())
-      .first(where: { $0.namespaceKey == batch.namespaceKey })
+    let enrollmentRow = try context.fetch(FetchDescriptor(
+      predicate: #Predicate<StoredCloudFullEnrollment> { $0.namespaceKey == namespaceKey }
+    )).first
     let currentEnrollment = try Self.fullEnrollmentState(from: enrollmentRow?.referencesData)
     if let expected = batch.expectedNamespaceRevision {
       guard currentEnrollment.namespaceState.revision == expected,
@@ -43,14 +48,37 @@ extension SwiftDataSnipLibrary {
       else { throw CloudFullStorageError.namespaceStateMismatch }
     }
 
-    let existing = try context.fetch(FetchDescriptor<StoredCloudEntityRecord>())
-      .filter { $0.namespaceKey == batch.namespaceKey }
+    let existing = try context.fetch(FetchDescriptor(
+      predicate: #Predicate<StoredCloudEntityRecord> { $0.namespaceKey == namespaceKey }
+    ))
     var byDomain = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
     var identityByDomain = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0.identityID) })
     var domainByIdentity = Dictionary(uniqueKeysWithValues: existing.map { ($0.identityID, $0.id) })
     var batchDomains: Set<String> = []
     var batchIdentities: Set<String> = []
     var outboundIdentities: Set<String> = []
+    let acceptedAttachmentIDs = Set(batch.attachmentTransitions.compactMap {
+      transition -> UUID? in
+      guard case .payloadAccepted(let attachmentID, _, _, _) = transition else { return nil }
+      return attachmentID
+    })
+    let uploadRoot = try cloudAttachmentUploadRoot(namespaceKey: batch.namespaceKey)
+    let acceptedUploadFiles = try context.fetch(FetchDescriptor(
+      predicate: #Predicate<StoredCloudAttachmentPublication> { $0.namespaceKey == namespaceKey }
+    ))
+      .filter {
+        acceptedAttachmentIDs.contains($0.attachmentID)
+      }
+      .compactMap { row in
+        try row.uploadRelativePath.map {
+          try Self.validatedChild(relativePath: $0, root: uploadRoot)
+        }
+      }
+    let invalidatedCacheFiles = try invalidatedCloudAttachmentCacheFiles(
+      namespaceKey: batch.namespaceKey,
+      transitions: batch.attachmentTransitions,
+      context: context
+    )
     for binding in batch.outboundBindings {
       let identityKey = StoredCloudEntityRecord.identityKey(
         namespaceKey: batch.namespaceKey,
@@ -302,6 +330,12 @@ extension SwiftDataSnipLibrary {
         record.isDeferred = false
         record.deferredMutationData = nil
       }
+      try applyCloudAttachmentTransitions(
+        namespaceKey: batch.namespaceKey,
+        transitions: batch.attachmentTransitions,
+        context: context
+      )
+      try materializeCloudAttachments(namespaceKey: batch.namespaceKey, context: context)
       try Self.resolveStoredListNames(context: context)
       let final = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
       do {
@@ -315,8 +349,10 @@ extension SwiftDataSnipLibrary {
         let snipReferences = enrollment.filter { $0.kind == .snip }
         let localByID = Dictionary(uniqueKeysWithValues: final.state.snips.map { ($0.id, $0) })
         let acceptedByID = Dictionary(uniqueKeysWithValues:
-          try context.fetch(FetchDescriptor<StoredCloudEntityRecord>())
-            .filter { $0.namespaceKey == batch.namespaceKey && $0.kind == CloudEntityKind.snip.rawValue }
+          try context.fetch(FetchDescriptor(
+            predicate: #Predicate<StoredCloudEntityRecord> { $0.namespaceKey == namespaceKey }
+          ))
+            .filter { $0.kind == CloudEntityKind.snip.rawValue }
             .map { ($0.domainID, $0) }
         )
         guard snipReferences.allSatisfy({ reference in
@@ -354,8 +390,9 @@ extension SwiftDataSnipLibrary {
           digest: digest
         )
       )
-      let receipts = try context.fetch(FetchDescriptor<StoredCloudFullBatchReceipt>())
-        .filter { $0.namespaceKey == batch.namespaceKey }
+      let receipts = try context.fetch(FetchDescriptor(
+        predicate: #Predicate<StoredCloudFullBatchReceipt> { $0.namespaceKey == namespaceKey }
+      ))
         .sorted {
           if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
           return $0.id > $1.id
@@ -366,6 +403,14 @@ extension SwiftDataSnipLibrary {
     } catch {
       context.rollback()
       throw error
+    }
+    for file in acceptedUploadFiles {
+      try? FileManager.default.removeItem(at: file)
+      try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
+    }
+    for file in invalidatedCacheFiles {
+      try? FileManager.default.removeItem(at: file)
+      try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
     }
     let loaded = try Self.load(
       context: Self.makeContext(container: container),

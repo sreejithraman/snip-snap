@@ -729,12 +729,14 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
   package let recoveryInputs: [CloudFullRecoveryInput]
   package let recoveryReviews: [CloudRecoveryReviewInput]
   package let settledDeleteIdentities: [CloudTextStorageIdentity]
+  package let attachmentTransitions: [CloudAttachmentTransition]
   package let items: [CloudFullBatchItem]
 
   private enum CodingKeys: String, CodingKey {
     case storageVersion, namespaceKey, batchID, expectedEngineState, nextEngineState
     case nextEnrollment, expectedNamespaceRevision, nextNamespaceState, rawBatchData
-    case outboundBindings, recoveryInputs, recoveryReviews, settledDeleteIdentities, items
+    case outboundBindings, recoveryInputs, recoveryReviews, settledDeleteIdentities
+    case attachmentTransitions, items
   }
 
   package init(
@@ -750,6 +752,7 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
     recoveryInputs: [CloudFullRecoveryInput] = [],
     recoveryReviews: [CloudRecoveryReviewInput] = [],
     settledDeleteIdentities: [CloudTextStorageIdentity] = [],
+    attachmentTransitions: [CloudAttachmentTransition] = [],
     items: [CloudFullBatchItem]
   ) {
     storageVersion = 1
@@ -765,6 +768,7 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
     self.recoveryInputs = recoveryInputs
     self.recoveryReviews = recoveryReviews
     self.settledDeleteIdentities = settledDeleteIdentities
+    self.attachmentTransitions = attachmentTransitions
     self.items = items
   }
 
@@ -804,6 +808,10 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
       [CloudTextStorageIdentity].self,
       forKey: .settledDeleteIdentities
     ) ?? []
+    attachmentTransitions = try container.decodeIfPresent(
+      [CloudAttachmentTransition].self,
+      forKey: .attachmentTransitions
+    ) ?? []
     items = try container.decode([CloudFullBatchItem].self, forKey: .items)
   }
 
@@ -828,6 +836,7 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
     try container.encode(recoveryInputs, forKey: .recoveryInputs)
     try container.encode(recoveryReviews, forKey: .recoveryReviews)
     try container.encode(settledDeleteIdentities, forKey: .settledDeleteIdentities)
+    try container.encode(attachmentTransitions, forKey: .attachmentTransitions)
     try container.encode(items, forKey: .items)
   }
 }

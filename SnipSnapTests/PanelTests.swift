@@ -33,6 +33,11 @@ private final class PanelResizeCancelResponder: NSResponder {
     }
 }
 
+private actor PanelAppleAccountCacheHandler: AppleAccountCacheHandling {
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { .signedOut }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
+}
+
 @MainActor
 private final class PanelTextValue {
     var text: String
@@ -43,6 +48,59 @@ private final class PanelTextValue {
 }
 
 final class PanelTests: StoreBackedTestCase {
+    @MainActor
+    func testMainPanelRendersNeedsAttentionWithBothSafeChoices() async throws {
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: "Snip SnapPanelAccountNoticeTests-\(UUID().uuidString)")
+        )
+        let model = AppModel(
+            library: try JSONSnipLibrary(fileURL: try storeURL()),
+            defaults: defaults
+        )
+        let settings = ShortcutSettings(defaults: defaults)
+        let noticeModel = AppleAccountNoticeModel(
+            notice: .signedOut,
+            handler: PanelAppleAccountCacheHandler()
+        )
+        let rootView = ContentView(
+            coordinator: AppCoordinator(model: model, shortcutSettings: settings),
+            fileDropController: PanelFileDropController(),
+            snipDragSourceController: SnipDragSourceController(),
+            accountNoticeModel: noticeModel
+        )
+        .environmentObject(model)
+        .environmentObject(settings)
+        let hostingView = NSHostingView(rootView: rootView)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 620, height: 720)
+        let window = NSWindow(
+            contentRect: hostingView.frame,
+            styleMask: [],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.orderFrontRegardless()
+        hostingView.layoutSubtreeIfNeeded()
+        hostingView.displayIfNeeded()
+        await Task.yield()
+        hostingView.layoutSubtreeIfNeeded()
+
+        let bitmap = try XCTUnwrap(
+            hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds)
+        )
+        hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+        let image = NSImage(size: hostingView.bounds.size)
+        image.addRepresentation(bitmap)
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "Mac main panel signed-out notice"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
+        XCTAssertTrue(noticeModel.showsResolutionActions)
+        XCTAssertEqual(noticeModel.title, "Signed Out of iCloud")
+        processLifetimePanelSearchWindows.append(window)
+    }
+
     @MainActor
     func testGlobalSearchUsesOneScrollViewForSavedAndClipboardResults() async throws {
         let clipboardEntry = ClipboardEntry(

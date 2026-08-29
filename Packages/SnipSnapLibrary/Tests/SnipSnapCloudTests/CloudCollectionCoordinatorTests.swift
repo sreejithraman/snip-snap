@@ -70,16 +70,19 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudModeLifecycle-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let source = try JSONSnipLibrary(
       fileURL: root.appendingPathComponent("legacy.json", isDirectory: false)
     )
+    let attachmentURL = root.appendingPathComponent("seed-attachment.txt")
+    try Data("attachment bytes".utf8).write(to: attachmentURL)
     _ = try await source.perform(
       .add(
         content: "keep this local snip",
         origin: .quickEntry,
         source: nil,
         listID: SnipList.inbox.id,
-        attachmentURLs: [],
+        attachmentURLs: [attachmentURL],
         requestID: UUID(),
         now: Date(timeIntervalSince1970: 1)
       ),
@@ -124,11 +127,15 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let library = try await session.activeLibrary()
     let snapshot = try await library.library.checkedSnapshot(sortedBy: .manual)
     let storedControl = await server.controlDescriptor()
+    let metadataRecordTypes = await server.storedRecordTypes(in: active.metadataZone)
+    let payloadRecordTypes = await server.storedRecordTypes(in: active.payloadZone)
 
     XCTAssertEqual(model.mode, .iCloudSync)
     XCTAssertEqual(model.state, .ready)
     XCTAssertEqual(snapshot.snips.map(\.content), ["keep this local snip"])
     XCTAssertEqual(storedControl, active)
+    XCTAssertTrue(metadataRecordTypes.contains("AttachmentMetadata"))
+    XCTAssertTrue(payloadRecordTypes.contains("AttachmentPayload"))
     XCTAssertEqual(foreground, .contentUpdated)
   }
 

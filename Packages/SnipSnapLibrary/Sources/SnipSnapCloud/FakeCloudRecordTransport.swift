@@ -204,6 +204,13 @@ package actor FakeCloudServer {
         }.sorted()
     }
 
+    package func storedRecordTypes(in zone: CloudZoneID) -> [String] {
+        records.values
+            .filter { $0.id.zone == zone }
+            .map(\.recordType)
+            .sorted()
+    }
+
     package func emitZoneDeletion(_ zone: CloudZoneID, reason: CloudZoneDeletionReason) {
         let event = CloudDatabaseEvent.zoneDeleted(zone, reason: reason)
         events.append(.database(sequence: nextSequence, event, zone))
@@ -361,6 +368,7 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
     private var nextDuplicatedSentResult: CloudRecordID?
     private var shouldReverseNextSentResults = false
     private var eventLog: [FakeCloudTransportEvent] = []
+    private var fetchScopeLog: [CloudFetchScope] = []
     private var shouldPauseNextFetch = false
     private var pausedFetch = false
     private var fetchPauseWaiters: [CheckedContinuation<Void, Never>] = []
@@ -451,6 +459,7 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
 
     package func fetch(scope: CloudFetchScope) async throws -> CloudFetchedBatch {
         eventLog.append(.fetched)
+        fetchScopeLog.append(scope)
         if shouldPauseNextFetch {
             shouldPauseNextFetch = false
             pausedFetch = true
@@ -581,4 +590,5 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
     }
 
     package func events() -> [FakeCloudTransportEvent] { eventLog }
+    package func fetchScopes() -> [CloudFetchScope] { fetchScopeLog }
 }

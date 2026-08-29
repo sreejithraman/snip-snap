@@ -60,6 +60,20 @@ struct ListSidebarView: View {
                 }
                 .accessibilityIdentifier("new-list")
             }
+            if model.hasCloudSync {
+                ToolbarItem(placement: .secondaryAction) {
+                    Button("Sync Now", systemImage: "arrow.triangle.2.circlepath") {
+                        Task { await model.syncWhenPossible() }
+                    }
+                    .accessibilityIdentifier("sync-icloud-now")
+                }
+                ToolbarItem(placement: .secondaryAction) {
+                    Button("Clear Downloaded Files", systemImage: "icloud.and.arrow.down") {
+                        Task { await model.clearDownloadedFiles() }
+                    }
+                    .accessibilityIdentifier("clear-icloud-downloads")
+                }
+            }
         }
     }
 }
@@ -156,25 +170,14 @@ private struct SnipRow: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.orange)
             }
-            let attachmentItems = snip.attachments.compactMap { attachment -> AttachmentPreviewItem? in
-                guard let url = model.attachmentURL(for: attachment.id) else { return nil }
-                return AttachmentPreviewItem(
-                    id: attachment.id,
-                    fileName: attachment.fileName,
-                    byteCount: attachment.byteCount,
-                    url: url
-                )
-            }
-            if !attachmentItems.isEmpty {
+            if !snip.attachments.isEmpty {
                 HStack(spacing: 8) {
-                    ForEach(attachmentItems.prefix(3)) { attachment in
-                        AttachmentThumbnail(url: attachment.url)
+                    ForEach(Array(snip.attachments.prefix(3))) { attachment in
+                        AttachmentStatusThumbnail(attachment: attachment, model: model)
                             .frame(width: 48, height: 48)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                            .accessibilityLabel(attachment.fileName)
                     }
-                    if attachmentItems.count > 3 {
-                        Text("+\(attachmentItems.count - 3)")
+                    if snip.attachments.count > 3 {
+                        Text("+\(snip.attachments.count - 3)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -510,7 +513,7 @@ struct SnipDetailView: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
-                    if !attachmentItems.isEmpty {
+                    if !snip.attachments.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("Attachments")
                                 .font(.headline)
@@ -518,9 +521,14 @@ struct SnipDetailView: View {
                                 columns: [GridItem(.adaptive(minimum: 144), spacing: 12)],
                                 spacing: 12
                             ) {
-                                ForEach(attachmentItems) { attachment in
-                                    AttachmentPreviewTile(item: attachment) {
-                                        previewURL = attachment.url
+                                ForEach(snip.attachments) { attachment in
+                                    SyncedAttachmentTile(attachment: attachment, model: model) {
+                                        Task {
+                                            previewURL = await model.prepareAttachment(
+                                                attachment.id,
+                                                for: .preview
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -555,6 +563,97 @@ struct SnipDetailView: View {
                 systemImage: "text.page",
                 description: Text("Select a saved snip to read or edit it.")
             )
+        }
+    }
+}
+
+private struct AttachmentStatusThumbnail: View {
+    let attachment: SnipAttachment
+    let model: IOSAppModel
+
+    var body: some View {
+        Group {
+            if let url = model.attachmentURL(for: attachment.id) {
+                AttachmentThumbnail(url: url)
+            } else {
+                ZStack {
+                    Rectangle().fill(.quaternary)
+                    switch model.attachmentTransferState(for: attachment.id) {
+                    case .syncing:
+                        ProgressView()
+                    case .failed:
+                        Image(systemName: "exclamationmark.icloud")
+                            .foregroundStyle(.red)
+                    case .waiting:
+                        Image(systemName: "icloud")
+                            .foregroundStyle(.secondary)
+                    case .available:
+                        Image(systemName: "icloud.and.arrow.down")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityLabel("\(attachment.fileName), \(stateLabel)")
+    }
+
+    private var stateLabel: String {
+        switch model.attachmentTransferState(for: attachment.id) {
+        case .waiting: "waiting for iCloud"
+        case .syncing: "syncing"
+        case .failed: "failed"
+        case .available: "available"
+        }
+    }
+}
+
+private struct SyncedAttachmentTile: View {
+    let attachment: SnipAttachment
+    let model: IOSAppModel
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                AttachmentStatusThumbnail(attachment: attachment, model: model)
+                    .frame(maxWidth: .infinity)
+                    .aspectRatio(1, contentMode: .fit)
+                Text(attachment.fileName)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                Text(statusLabel)
+                    .font(.caption)
+                    .foregroundStyle(state == .failed ? .red : .secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(.plain)
+        .disabled(state == .syncing && model.attachmentURL(for: attachment.id) == nil)
+        .accessibilityIdentifier("attachment-preview-\(attachment.fileName)")
+    }
+
+    private var state: SyncedAttachmentTransferState {
+        model.attachmentTransferState(for: attachment.id)
+    }
+
+    private var statusLabel: String {
+        if model.attachmentURL(for: attachment.id) != nil {
+            return switch state {
+            case .waiting: "Available Offline — Waiting for iCloud"
+            case .syncing: "Available Offline — Syncing"
+            case .failed: "Available Offline — Sync Failed"
+            case .available: "Available Offline"
+            }
+        }
+        return switch state {
+        case .waiting: "Waiting for iCloud"
+        case .syncing: "Downloading…"
+        case .failed: "Download Failed — Tap to Retry"
+        case .available: "Ready to Download"
         }
     }
 }

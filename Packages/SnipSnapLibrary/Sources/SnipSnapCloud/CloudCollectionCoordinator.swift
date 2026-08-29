@@ -38,6 +38,16 @@ package struct CloudCollectionDescriptor: Codable, Equatable, Sendable {
       zones: zones
     )
   }
+
+  package func validate(ownerName: String, reservedZones: Set<CloudZoneID> = []) throws {
+    guard metadataZone != payloadZone,
+      zones.isDisjoint(with: reservedZones),
+      !metadataZone.name.isEmpty,
+      !payloadZone.name.isEmpty,
+      metadataZone.ownerName == ownerName,
+      payloadZone.ownerName == ownerName
+    else { throw CloudCollectionError.invalidDescriptor }
+  }
 }
 
 package struct CloudCollectionControlRecord: Codable, Equatable, Sendable {
@@ -206,13 +216,7 @@ package actor CloudCollectionBootstrapper {
   }
 
   private func validate(_ descriptor: CloudCollectionDescriptor) throws {
-    guard descriptor.metadataZone != descriptor.payloadZone,
-      descriptor.zones.isDisjoint(with: reservedZones),
-      !descriptor.metadataZone.name.isEmpty,
-      !descriptor.payloadZone.name.isEmpty,
-      descriptor.metadataZone.ownerName == ownerName,
-      descriptor.payloadZone.ownerName == ownerName
-    else { throw CloudCollectionError.invalidDescriptor }
+    try descriptor.validate(ownerName: ownerName, reservedZones: reservedZones)
   }
 }
 

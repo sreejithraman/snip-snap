@@ -2,11 +2,13 @@ import SnipSnapCore
 import SnipSnapCloud
 import SnipSnapPersistence
 import SwiftUI
+import UIKit
 
 struct IOSAppRootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var appGraph: IOSAppGraph
     @State private var sheet: AppSheet?
+    @State private var accountNoticeModel: AppleAccountNoticeModel?
     private let uiTestAttachmentURLs: [URL]
     private let syncedContentSettings: SyncedContentSettingsModel
     private let cloudLifecycleHooks: SnipSnapCloudLifecycleHooks
@@ -20,7 +22,9 @@ struct IOSAppRootView: View {
         uiTestAttachmentURLs: [URL] = [],
         syncedContentSettings: SyncedContentSettingsModel? = nil,
         cloudSyncSession: SnipSnapCloudSyncSession? = nil,
-        shareImportOperation: (@Sendable () async -> Int)? = nil
+        shareImportOperation: (@Sendable () async -> Int)? = nil,
+        accountNoticeModel: AppleAccountNoticeModel? = nil,
+        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil
     ) {
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         let settings = syncedContentSettings
@@ -32,7 +36,8 @@ struct IOSAppRootView: View {
             shareImports: shareImports,
             initialSnapshot: initialSnapshot ?? SnipLibrarySnapshot(snips: [], lists: [.inbox]),
             startupError: startupError,
-            shareImportOperation: shareImportOperation
+            shareImportOperation: shareImportOperation,
+            cloudSyncHandler: cloudSyncHandler
         )
         if let cloudSyncSession {
             let reloadActiveLibrary: SyncedContentSettingsModel.DeleteCompletionAction = {
@@ -53,6 +58,7 @@ struct IOSAppRootView: View {
             )
         }
         _appGraph = State(initialValue: graph)
+        _accountNoticeModel = State(initialValue: accountNoticeModel)
     }
 
     private var model: IOSAppModel { appGraph.model }
@@ -64,6 +70,11 @@ struct IOSAppRootView: View {
             SnipCollectionView(model: model, sheet: $sheet)
         } detail: {
             SnipDetailView(model: model, sheet: $sheet)
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let accountNoticeModel, accountNoticeModel.notice != nil {
+                AppleAccountNoticeBanner(model: accountNoticeModel)
+            }
         }
         .sheet(item: $sheet) { destination in
             switch destination {
@@ -110,12 +121,26 @@ struct IOSAppRootView: View {
                     attachmentURLs: uiTestAttachmentURLs
                 )
             }
+            await accountNoticeModel?.refresh()
         }
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .active else { return }
-            Task {
-                await cloudLifecycleHooks.foreground()
-                await appGraph.shareImporter?.importPendingAndReload()
+            switch phase {
+            case .active:
+                Task {
+                    await cloudLifecycleHooks.foreground()
+                    if let shareImporter = appGraph.shareImporter {
+                        await shareImporter.importPendingAndReload()
+                    }
+                    await accountNoticeModel?.refresh()
+                }
+            case .background:
+                let lease = IOSBackgroundSyncLease()
+                Task {
+                    await cloudLifecycleHooks.foreground()
+                    lease.finish()
+                }
+            default:
+                break
             }
         }
     }
@@ -148,6 +173,74 @@ private func synchronizeCloudSession(
         }
     } catch {
         model.errorMessage = error.localizedDescription
+    }
+}
+
+@MainActor
+private final class IOSBackgroundSyncLease {
+    private var identifier = UIBackgroundTaskIdentifier.invalid
+
+    init() {
+        identifier = UIApplication.shared.beginBackgroundTask { [weak self] in
+            self?.finish()
+        }
+    }
+
+    func finish() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
+    }
+}
+
+private struct AppleAccountNoticeBanner: View {
+    let model: AppleAccountNoticeModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: iconName)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(model.title)
+                        .font(.headline)
+                        .accessibilityIdentifier("apple-account-notice")
+                    Text(model.message)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if model.showsResolutionActions {
+                HStack(spacing: 12) {
+                    Button("Keep Local Copy") {
+                        Task { await model.resolve(.keepLocalCopy) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("keep-account-cache")
+                    Button("Remove", role: .destructive) {
+                        Task { await model.resolve(.remove) }
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("remove-account-cache")
+                }
+                .disabled(model.isResolving)
+            }
+            if let errorMessage = model.errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private var iconName: String {
+        model.notice == .paused ? "icloud.slash" : "person.crop.circle.badge.exclamationmark"
     }
 }
 

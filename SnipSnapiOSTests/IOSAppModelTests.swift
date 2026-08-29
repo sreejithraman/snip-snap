@@ -55,6 +55,331 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(model.snips.map(\.content), ["Merged after enable"])
     }
 
+    func testAccountNoticeInvokesHandlerAndHidesAfterKeepLocalCopy() async {
+        let handler = IOSAppleAccountCacheHandlerProbe()
+        let model = AppleAccountNoticeModel(notice: .signedOut, handler: handler)
+        XCTAssertEqual(model.notice, .signedOut)
+
+        await model.resolve(.keepLocalCopy)
+
+        XCTAssertNil(model.notice)
+        let choices = await handler.choices()
+        XCTAssertEqual(choices, [.keepLocalCopy])
+    }
+
+    func testLocalOnlyAssemblyCannotShowAnAccountNoticeWithoutAHandler() {
+        let model = AppleAccountNoticeModel(notice: .accountChanged, handler: nil)
+        XCTAssertNil(model.notice)
+    }
+
+    func testPausedNoticeRendersWithoutCacheChoices() {
+        let model = AppleAccountNoticeModel(
+            notice: .paused,
+            handler: IOSAppleAccountCacheHandlerProbe()
+        )
+
+        XCTAssertEqual(model.title, "iCloud Sync Paused")
+        XCTAssertTrue(model.message.contains("still on this device"))
+        XCTAssertFalse(model.showsResolutionActions)
+    }
+
+    func testAccountNoticeRefreshReadsTheProductionHandlerSeam() async {
+        let handler = IOSAppleAccountCacheHandlerProbe(notices: [.accountChanged, nil])
+        let model = AppleAccountNoticeModel(handler: handler)
+
+        await model.refresh()
+        XCTAssertEqual(model.notice, .accountChanged)
+
+        await model.resolve(.remove)
+        XCTAssertNil(model.notice)
+        let choices = await handler.choices()
+        let refreshCount = await handler.refreshCount()
+        XCTAssertEqual(choices, [.remove])
+        XCTAssertEqual(refreshCount, 2)
+    }
+
+    func testRemoteAttachmentShowsWaitingSyncingAndAvailableStates() async throws {
+        let attachmentID = UUID()
+        let handler = IOSCloudSyncHandlerProbe(states: [attachmentID: .waiting])
+        let model = IOSAppModel(
+            library: ModelTestLibrary(),
+            cloudSyncHandler: handler
+        )
+        await model.load()
+        XCTAssertEqual(model.attachmentTransferState(for: attachmentID), .waiting)
+
+        let preparing = Task { await model.prepareAttachment(attachmentID, for: .preview) }
+        await handler.waitUntilPrepareStarts()
+        XCTAssertEqual(model.attachmentTransferState(for: attachmentID), .syncing)
+        let downloaded = URL(fileURLWithPath: "/tmp/downloaded-remote.txt")
+        await handler.finishPrepare(with: .success(downloaded))
+        let preparedURL = await preparing.value
+        XCTAssertEqual(preparedURL, downloaded)
+        XCTAssertEqual(model.attachmentURL(for: attachmentID), downloaded)
+        XCTAssertEqual(model.attachmentTransferState(for: attachmentID), .available)
+    }
+
+    func testRemoteAttachmentFailureStaysVisibleForRetry() async {
+        let id = UUID()
+        let handler = IOSCloudSyncHandlerProbe(states: [id: .available])
+        let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
+        await model.load()
+        let preparing = Task { await model.prepareAttachment(id, for: .open) }
+        await handler.waitUntilPrepareStarts()
+        await handler.finishPrepare(with: .failure(SnipLibraryError.attachmentCopyFailed))
+        let preparedURL = await preparing.value
+        XCTAssertNil(preparedURL)
+        XCTAssertEqual(model.attachmentTransferState(for: id), .failed)
+        XCTAssertNotNil(model.errorMessage)
+    }
+
+    func testSyncedLocalAttachmentStillUsesVerifiedTransferPath() async throws {
+        let id = UUID()
+        let local = URL(fileURLWithPath: "/tmp/unverified-local.txt")
+        let verified = URL(fileURLWithPath: "/tmp/verified-local.txt")
+        let handler = IOSCloudSyncHandlerProbe(states: [id: .available])
+        let model = IOSAppModel(
+            library: ModelTestLibrary(attachmentURLs: [id: local]),
+            cloudSyncHandler: handler
+        )
+        await model.load()
+        XCTAssertNil(model.attachmentURL(for: id))
+
+        let preparing = Task { await model.prepareAttachment(id, for: .preview) }
+        await handler.waitUntilPrepareStarts()
+        await handler.finishPrepare(with: .success(verified))
+
+        let preparedURL = await preparing.value
+        XCTAssertEqual(preparedURL, verified)
+        XCTAssertEqual(model.attachmentURL(for: id), verified)
+    }
+
+    func testLocalAttachmentStaysUsableWhenCloudHandlerHasNoSyncedState() async {
+        let id = UUID()
+        let local = URL(fileURLWithPath: "/tmp/local-only.txt")
+        let handler = IOSCloudSyncHandlerProbe(states: [:], isActive: false)
+        let model = IOSAppModel(
+            library: ModelTestLibrary(attachmentURLs: [id: local]),
+            cloudSyncHandler: handler
+        )
+
+        await model.load()
+
+        XCTAssertEqual(model.attachmentURL(for: id), local)
+        XCTAssertFalse(model.hasCloudSync)
+        let prepared = await model.prepareAttachment(id, for: .preview)
+        XCTAssertEqual(prepared, local)
+        let prepareCount = await handler.prepareCount()
+        XCTAssertEqual(prepareCount, 0)
+    }
+
+    func testLocalAttachmentStaysUsableWithoutACloudHandler() async {
+        let id = UUID()
+        let local = URL(fileURLWithPath: "/tmp/no-cloud-handler.txt")
+        let model = IOSAppModel(
+            library: ModelTestLibrary(attachmentURLs: [id: local])
+        )
+
+        await model.load()
+
+        XCTAssertEqual(model.attachmentURL(for: id), local)
+        XCTAssertEqual(model.attachmentTransferState(for: id), .available)
+        XCTAssertFalse(model.hasCloudSync)
+    }
+
+    func testNewOfflineAttachmentStaysUsableUntilSyncPublishesIt() async {
+        let id = UUID()
+        let local = URL(fileURLWithPath: "/tmp/new-offline.txt")
+        let handler = IOSCloudSyncHandlerProbe(states: [:])
+        let model = IOSAppModel(
+            library: ModelTestLibrary(attachmentURLs: [id: local]),
+            cloudSyncHandler: handler
+        )
+
+        await model.load()
+
+        XCTAssertEqual(model.attachmentTransferState(for: id), .available)
+        let prepared = await model.prepareAttachment(id, for: .open)
+        XCTAssertEqual(prepared, local)
+        let prepareCount = await handler.prepareCount()
+        XCTAssertEqual(prepareCount, 0)
+    }
+
+    func testUnknownCloudAttachmentStateNeverExposesAnUnverifiedLocalURL() async {
+        let id = UUID()
+        let local = URL(fileURLWithPath: "/tmp/unknown-cloud-state.txt")
+        let verified = URL(fileURLWithPath: "/tmp/verified-after-state-failure.txt")
+        let handler = IOSCloudSyncHandlerProbe(states: [:], stateReadFails: true)
+        let model = IOSAppModel(
+            library: ModelTestLibrary(attachmentURLs: [id: local]),
+            cloudSyncHandler: handler
+        )
+
+        await model.load()
+
+        XCTAssertNil(model.attachmentURL(for: id))
+        XCTAssertEqual(model.attachmentTransferState(for: id), .waiting)
+        let preparing = Task { await model.prepareAttachment(id, for: .preview) }
+        await handler.waitUntilPrepareStarts()
+        await handler.finishPrepare(with: .success(verified))
+        let prepared = await preparing.value
+        XCTAssertEqual(prepared, verified)
+        XCTAssertEqual(model.attachmentURL(for: id), verified)
+    }
+
+    func testUnknownCloudModeNeverExposesAnUnverifiedLocalURL() async {
+        let id = UUID()
+        let local = URL(fileURLWithPath: "/tmp/unknown-cloud-mode.txt")
+        let verified = URL(fileURLWithPath: "/tmp/verified-after-mode-failure.txt")
+        let handler = IOSCloudSyncHandlerProbe(states: [:], activeReadFails: true)
+        let model = IOSAppModel(
+            library: ModelTestLibrary(attachmentURLs: [id: local]),
+            cloudSyncHandler: handler
+        )
+
+        await model.load()
+
+        XCTAssertNil(model.attachmentURL(for: id))
+        XCTAssertEqual(model.attachmentTransferState(for: id), .waiting)
+        let preparing = Task { await model.prepareAttachment(id, for: .preview) }
+        await handler.waitUntilPrepareStarts()
+        await handler.finishPrepare(with: .success(verified))
+        let prepared = await preparing.value
+        XCTAssertEqual(prepared, verified)
+        XCTAssertEqual(model.attachmentURL(for: id), verified)
+    }
+
+    func testModeReadFailureAfterInactiveStateStillUsesVerifiedPrepare() async {
+        let id = UUID()
+        let local = URL(fileURLWithPath: "/tmp/inactive-then-unknown.txt")
+        let verified = URL(fileURLWithPath: "/tmp/verified-after-mode-transition.txt")
+        let handler = IOSCloudSyncHandlerProbe(
+            states: [:],
+            isActive: false,
+            activeReadFailsAfterFirst: true
+        )
+        let model = IOSAppModel(
+            library: ModelTestLibrary(attachmentURLs: [id: local]),
+            cloudSyncHandler: handler
+        )
+
+        await model.load()
+        XCTAssertEqual(model.attachmentURL(for: id), local)
+
+        await model.load()
+        XCTAssertNil(model.attachmentURL(for: id))
+        let preparing = Task { await model.prepareAttachment(id, for: .preview) }
+        await handler.waitUntilPrepareStarts()
+        await handler.finishPrepare(with: .success(verified))
+        let prepared = await preparing.value
+        XCTAssertEqual(prepared, verified)
+        XCTAssertEqual(model.attachmentURL(for: id), verified)
+    }
+
+    func testExistingEditorDraftUsesVerifiedPrepareEvenWithALocalURL() async {
+        let id = UUID()
+        let local = URL(fileURLWithPath: "/tmp/unverified-editor-local.txt")
+        let verified = URL(fileURLWithPath: "/tmp/verified-editor-local.txt")
+        let draft = AttachmentDraft(
+            id: id,
+            fileName: "local.txt",
+            byteCount: 5,
+            url: local,
+            source: .existing(attachmentID: id)
+        )
+        var preparedIDs: [UUID] = []
+
+        let result = await draft.previewURL { attachmentID in
+            preparedIDs.append(attachmentID)
+            return verified
+        }
+
+        XCTAssertEqual(result, verified)
+        XCTAssertEqual(preparedIDs, [id])
+    }
+
+    func testFinishedCloudPreviewCannotOverwriteAStagedReplacement() {
+        let id = UUID()
+        let requested = AttachmentDraft(
+            id: id,
+            fileName: "old.txt",
+            byteCount: 3,
+            url: nil,
+            source: .existing(attachmentID: id)
+        )
+        let replacement = AttachmentDraft(
+            id: id,
+            fileName: "replacement.txt",
+            byteCount: 11,
+            url: URL(fileURLWithPath: "/tmp/replacement.txt"),
+            source: .replacement(attachmentID: id)
+        )
+
+        let changed = replacement.applyingPreparedURL(
+            URL(fileURLWithPath: "/tmp/old-cloud-download.txt"),
+            requestedDraft: requested
+        )
+
+        XCTAssertNil(changed)
+        XCTAssertEqual(replacement.url?.lastPathComponent, "replacement.txt")
+    }
+
+    func testFinishedReplacementPreviewCannotOverwriteANewerReplacement() {
+        let id = UUID()
+        let requested = AttachmentDraft(
+            id: id,
+            fileName: "first.txt",
+            byteCount: 5,
+            url: URL(fileURLWithPath: "/tmp/first.txt"),
+            source: .replacement(attachmentID: id)
+        )
+        let current = AttachmentDraft(
+            id: id,
+            fileName: "second.txt",
+            byteCount: 6,
+            url: URL(fileURLWithPath: "/tmp/second.txt"),
+            source: .replacement(attachmentID: id)
+        )
+
+        XCTAssertNil(current.applyingPreparedURL(
+            URL(fileURLWithPath: "/tmp/first-preview.txt"),
+            requestedDraft: requested
+        ))
+    }
+
+    func testFinishedAddedPreviewCannotOverwriteANewerAddedDraft() {
+        let id = UUID()
+        let requested = AttachmentDraft(
+            id: id,
+            fileName: "first.txt",
+            byteCount: 5,
+            url: URL(fileURLWithPath: "/tmp/first.txt"),
+            source: .added
+        )
+        let current = AttachmentDraft(
+            id: id,
+            fileName: "second.txt",
+            byteCount: 6,
+            url: URL(fileURLWithPath: "/tmp/second.txt"),
+            source: .added
+        )
+
+        XCTAssertNil(current.applyingPreparedURL(
+            URL(fileURLWithPath: "/tmp/first-preview.txt"),
+            requestedDraft: requested
+        ))
+    }
+
+    func testManualSyncUsesTheProductionHandlerSeam() async {
+        let handler = IOSCloudSyncHandlerProbe(states: [:])
+        let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
+
+        await model.syncWhenPossible()
+
+        let syncCount = await handler.syncCount()
+        XCTAssertEqual(syncCount, 1)
+    }
+
     func testRootReinitializationKeepsForegroundImportOnRetainedGraph() async throws {
         let library = ModelTestLibrary()
         let firstProbe = ImportCallProbe()
@@ -480,6 +805,95 @@ private func writeActivationManifest(
     )
 }
 
+private actor IOSAppleAccountCacheHandlerProbe: AppleAccountCacheHandling {
+    private var received: [AppleAccountCacheChoice] = []
+    private var notices: [AppleAccountNotice?]
+    private var noticeReads = 0
+
+    init(notices: [AppleAccountNotice?] = []) {
+        self.notices = notices
+    }
+
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? {
+        defer { noticeReads += 1 }
+        return notices.indices.contains(noticeReads) ? notices[noticeReads] : nil
+    }
+
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {
+        received.append(choice)
+    }
+
+    func choices() -> [AppleAccountCacheChoice] { received }
+    func refreshCount() -> Int { noticeReads }
+}
+
+private actor IOSCloudSyncHandlerProbe: OptionalCloudSyncHandling {
+    private let states: [UUID: SyncedAttachmentTransferState]
+    private let active: Bool
+    private let activeReadFails: Bool
+    private let activeReadFailsAfterFirst: Bool
+    private let stateReadFails: Bool
+    private var activeReadCount = 0
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var prepareContinuation: CheckedContinuation<URL, any Error>?
+    private var prepareStarted = false
+    private var syncCalls = 0
+    private var prepareCalls = 0
+
+    init(
+        states: [UUID: SyncedAttachmentTransferState],
+        isActive: Bool = true,
+        activeReadFails: Bool = false,
+        activeReadFailsAfterFirst: Bool = false,
+        stateReadFails: Bool = false
+    ) {
+        self.states = states
+        active = isActive
+        self.activeReadFails = activeReadFails
+        self.activeReadFailsAfterFirst = activeReadFailsAfterFirst
+        self.stateReadFails = stateReadFails
+    }
+
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
+    func syncWhenPossible() async { syncCalls += 1 }
+    func isCloudSyncActive() async throws -> Bool {
+        defer { activeReadCount += 1 }
+        if activeReadFails || (activeReadFailsAfterFirst && activeReadCount > 0) {
+            throw SnipLibraryError.storeUnavailable
+        }
+        return active
+    }
+    func syncCount() -> Int { syncCalls }
+    func prepareCount() -> Int { prepareCalls }
+    func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] {
+        if stateReadFails { throw SnipLibraryError.storeUnavailable }
+        return states
+    }
+    func clearDownloadedFiles() async throws {}
+
+    func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {
+        prepareCalls += 1
+        prepareStarted = true
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        return try await withCheckedThrowingContinuation { prepareContinuation = $0 }
+    }
+
+    func waitUntilPrepareStarts() async {
+        if prepareStarted { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func finishPrepare(with result: Result<URL, any Error>) {
+        switch result {
+        case .success(let url): prepareContinuation?.resume(returning: url)
+        case .failure(let error): prepareContinuation?.resume(throwing: error)
+        }
+        prepareContinuation = nil
+    }
+}
+
 @MainActor
 private final class RootReinitHarnessState: ObservableObject {
     @Published var generation = 0
@@ -505,15 +919,21 @@ private struct RootReinitHarness: View {
 private actor ModelTestLibrary: SnipLibrary {
     private var snips: [Snip]
     private var lists: [SnipList] = [.inbox]
+    private let attachmentURLs: [UUID: URL]
     private(set) var lastAddedAttachmentURLs: [URL] = []
     private(set) var lastAttachmentEdit: (snipID: UUID, content: String, edits: [SnipAttachmentEdit])?
     private var attachmentPruneCalls = 0
     private var recovery: SnipRecoverySnapshot
     private var resolvedChoices: [SnipRecoveryChoice] = []
 
-    init(snips: [Snip] = [], recovery: SnipRecoverySnapshot = .empty) {
+    init(
+        snips: [Snip] = [],
+        recovery: SnipRecoverySnapshot = .empty,
+        attachmentURLs: [UUID: URL] = [:]
+    ) {
         self.snips = snips
         self.recovery = recovery
+        self.attachmentURLs = attachmentURLs
     }
 
     func addedAttachmentURLs() -> [URL] {
@@ -636,7 +1056,8 @@ private actor ModelTestLibrary: SnipLibrary {
             snips: lists.flatMap { list in
                 Snip.sorted(snips.filter { $0.listID == list.id }, by: sortMode)
             },
-            lists: lists
+            lists: lists,
+            attachmentURLs: attachmentURLs
         )
     }
 }

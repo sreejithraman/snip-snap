@@ -12,6 +12,18 @@ ios_entitlements="$ios_source_dir/SnipSnapiOS.entitlements"
 ios_info="$ios_source_dir/Info.plist"
 share_entitlements="$share_source_dir/SnipSnapShareExtension.entitlements"
 
+if ! awk '
+    /Begin PBXBuildFile section/ { in_build_files = 1; next }
+    /End PBXBuildFile section/ { in_build_files = 0 }
+    in_build_files && / = \{isa = PBXBuildFile;/ {
+        id = $1
+        if (seen[id]++) { exit 1 }
+    }
+' "$project_file"; then
+    print -u2 "The Xcode project has duplicate PBXBuildFile IDs."
+    exit 1
+fi
+
 for required_file in \
     SnipSnapiOSApp.swift \
     IOSAppModel.swift \

@@ -180,6 +180,14 @@ Sources: [Shared data](https://developer.apple.com/documentation/technologyoverv
 - Copy downloaded bytes out of CloudKit staging, verify their size and hash, and keep them in a bounded local cache.
 - Delete metadata first, then delete its payload. Keep a cleanup job until it removes an abandoned or deleted payload.
 - Replace an attachment by publishing a new immutable payload before removing the old payload.
+- A local attachment save succeeds without a network connection. When iCloud Sync is on, the
+  main app keeps a durable upload copy and retries it on launch, foreground, and later sync runs.
+  The app does not promise an upload while it is terminated. A Share extension reports success
+  after the local save; it does not wait for CloudKit.
+- Namespace changes make old upload and download rows dormant. New account or generation work
+  cannot read or send them. Keep offline-only bytes under the old namespace until a recovery flow
+  copies them or the user chooses to remove them. Cleanup means removing active references and
+  proven, unreferenced copies; it does not mean deleting the last local copy.
 - Provide Clear Downloaded Files and do not add offline pinning in the first release.
 
 Sources: [`CKAsset`](https://developer.apple.com/documentation/cloudkit/ckasset), [fetching selected record fields](https://developer.apple.com/documentation/cloudkit/ckfetchrecordsoperation/desiredkeys-34l1l), [private CloudKit storage](https://developer.apple.com/documentation/cloudkit/ckcontainer/privateclouddatabase), and [CloudKit limit errors](https://developer.apple.com/documentation/cloudkit/ckerror/limitexceeded).

@@ -4,8 +4,21 @@ import SnipSnapPersistence
 
 extension CloudFullSyncPersistence {
   package func pendingChanges() async throws -> CloudOutboundBatch {
-    let local = try await library.checkedSnapshot(sortedBy: .manual)
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
+    guard stored.namespaceState.phase != .blocked else {
+      return CloudOutboundBatch(operations: [], zonesToSave: [])
+    }
+    if let payloadZone {
+      try await library.reconcileCloudAttachments(
+        namespaceKey: namespaceKey,
+        metadataZoneName: dataZone.name,
+        metadataOwnerName: dataZone.ownerName,
+        payloadZoneName: payloadZone.name,
+        payloadOwnerName: payloadZone.ownerName
+      )
+    }
+    let local = try await library.checkedSnapshot(sortedBy: .manual)
+    let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
     let accepted = Dictionary(uniqueKeysWithValues:
       (stored.readyEntities + stored.deferredEntities).map { ($0.reference, $0) }
     )
@@ -65,6 +78,7 @@ extension CloudFullSyncPersistence {
     }
     eligible.formUnion(pendingDeletes.keys)
     var operations: [CloudOutboundOperation] = []
+    var hasEligiblePayloadSave = false
     for reference in eligible.sorted(by: Self.referenceOrder) {
       if pendingDeletes[reference] != nil {
         guard let base = accepted[reference] else { throw CloudTransportError.invalidRecord }
@@ -112,10 +126,135 @@ extension CloudFullSyncPersistence {
         }
       }
     }
+    if let payloadZone {
+      let attachmentPlan = Self.attachmentOperations(
+        attachments,
+        dataZone: dataZone,
+        payloadZone: payloadZone
+      )
+      if !attachmentPlan.invalidPublicationIDs.isEmpty
+        || !attachmentPlan.invalidCleanupIdentities.isEmpty
+      {
+        try await library.quarantineCloudAttachmentOperations(
+          namespaceKey: namespaceKey,
+          publicationIDs: attachmentPlan.invalidPublicationIDs,
+          cleanupIdentities: attachmentPlan.invalidCleanupIdentities
+        )
+      }
+      operations.append(contentsOf: attachmentPlan.operations)
+      hasEligiblePayloadSave = attachmentPlan.operations.contains { operation in
+        guard case .save(let draft) = operation else { return false }
+        return draft.recordType == CloudAttachmentRecordCodec.payloadRecordType
+      }
+    }
+    var zonesToSave: Set<CloudZoneID> = stored.namespaceState.zoneCreationPending
+      ? [dataZone] : []
+    if let payloadZone, hasEligiblePayloadSave {
+      zonesToSave.insert(payloadZone)
+    }
     return CloudOutboundBatch(
       operations: operations.sorted { Self.operationOrder($0) < Self.operationOrder($1) },
-      zonesToSave: stored.namespaceState.zoneCreationPending ? [dataZone] : []
+      zonesToSave: zonesToSave
     )
+  }
+
+  private struct AttachmentOperationPlan {
+    var operations: [CloudOutboundOperation] = []
+    var invalidPublicationIDs: Set<UUID> = []
+    var invalidCleanupIdentities: Set<CloudTextStorageIdentity> = []
+  }
+
+  private static func attachmentOperations(
+    _ snapshot: CloudAttachmentStorageSnapshot,
+    dataZone: CloudZoneID,
+    payloadZone: CloudZoneID
+  ) -> AttachmentOperationPlan {
+    let publications = snapshot.publications.sorted {
+      $0.metadata.attachmentID.uuidString < $1.metadata.attachmentID.uuidString
+    }
+    let publicationByID = Dictionary(
+      publications.map { ($0.metadata.attachmentID, $0) },
+      uniquingKeysWith: { first, _ in first }
+    )
+    var plan = AttachmentOperationPlan()
+    for publication in publications where publication.isLocallyPresent
+      && !publication.payloadAccepted
+      && !isTerminalAttachmentFailure(publication.lastFailure)
+    {
+      do {
+        guard publication.metadata.payloadIdentity.zoneName == payloadZone.name,
+          publication.metadata.payloadIdentity.ownerName == payloadZone.ownerName
+        else { throw CloudAttachmentStorageError.invalidMetadata }
+        plan.operations.append(.save(try CloudAttachmentRecordCodec.payloadDraft(publication)))
+      } catch {
+        plan.invalidPublicationIDs.insert(publication.metadata.attachmentID)
+      }
+    }
+    for publication in publications where publication.isLocallyPresent
+      && publication.payloadAccepted
+      && !publication.metadataAccepted
+      && !isTerminalAttachmentFailure(publication.lastFailure)
+    {
+      do {
+        guard publication.metadataIdentity.zoneName == dataZone.name,
+          publication.metadataIdentity.ownerName == dataZone.ownerName,
+          publication.metadata.payloadIdentity.zoneName == payloadZone.name,
+          publication.metadata.payloadIdentity.ownerName == payloadZone.ownerName
+        else { throw CloudAttachmentStorageError.invalidMetadata }
+        plan.operations.append(.save(try CloudAttachmentRecordCodec.metadataDraft(publication)))
+      } catch {
+        plan.invalidPublicationIDs.insert(publication.metadata.attachmentID)
+      }
+    }
+    for publication in publications where !publication.isLocallyPresent
+      && publication.metadataAccepted
+      && !isTerminalAttachmentFailure(publication.lastFailure)
+    {
+      do {
+        let base = try publication.metadataShadowData.map(CloudRecordShadow.init(data:))
+        plan.operations.append(.delete(
+          CloudAttachmentRecordCodec.recordID(publication.metadataIdentity),
+          base: base
+        ))
+      } catch {
+        plan.invalidPublicationIDs.insert(publication.metadata.attachmentID)
+      }
+    }
+    for cleanup in snapshot.cleanups where !isTerminalAttachmentFailure(cleanup.lastFailure) {
+      if let blockedByAttachmentID = cleanup.blockedByAttachmentID,
+        let replacement = publicationByID[blockedByAttachmentID],
+        !replacement.metadataAccepted
+      {
+        continue
+      }
+      do {
+        guard cleanup.identity.zoneName == payloadZone.name,
+          cleanup.identity.ownerName == payloadZone.ownerName
+        else { throw CloudAttachmentStorageError.invalidMetadata }
+        let base = try cleanup.shadowData.map(CloudRecordShadow.init(data:))
+        plan.operations.append(
+          .delete(CloudAttachmentRecordCodec.recordID(cleanup.identity), base: base)
+        )
+      } catch {
+        plan.invalidCleanupIdentities.insert(cleanup.identity)
+      }
+    }
+    return plan
+  }
+
+  static func plannedAttachmentOperationIDs(
+    _ snapshot: CloudAttachmentStorageSnapshot,
+    dataZone: CloudZoneID,
+    payloadZone: CloudZoneID
+  ) -> Set<CloudRecordID> {
+    Set(attachmentOperations(snapshot, dataZone: dataZone, payloadZone: payloadZone)
+      .operations.map(\.id))
+  }
+
+  private static func isTerminalAttachmentFailure(
+    _ failure: CloudAttachmentFailure?
+  ) -> Bool {
+    failure == .rejected || failure == .invalidRecord || failure == .zoneMissing
   }
   static func uniqueOperations(
     _ operations: [CloudOutboundOperation]

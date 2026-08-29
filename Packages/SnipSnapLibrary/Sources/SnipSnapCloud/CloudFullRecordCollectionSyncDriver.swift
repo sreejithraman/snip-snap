@@ -41,7 +41,8 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
     let store = CloudFullSyncPersistence(
       library: library,
       namespace: context.namespace,
-      dataZone: context.metadataZone
+      dataZone: context.metadataZone,
+      payloadZone: context.payloadZone
     )
     return CloudFullSyncCoordinator(store: store, transport: makeTransport(context))
   }
@@ -226,6 +227,7 @@ package actor SnipSnapCloudModeLifecycle {
       persistence: modePersistence,
       namespace: namespace,
       textZone: descriptor.metadataZone,
+      payloadZone: descriptor.payloadZone,
       makeTransport: { [makeRecordTransport] in
         makeRecordTransport(
           CloudCollectionSyncContext(

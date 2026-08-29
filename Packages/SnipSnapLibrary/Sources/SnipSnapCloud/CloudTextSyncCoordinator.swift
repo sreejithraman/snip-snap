@@ -33,13 +33,15 @@ package actor CloudTextSyncCoordinator {
         try await sendAndCommit()
     }
 
-    package func fetchRemote() async throws {
+    package func fetchRemote(
+        beforeApply: @escaping @Sendable () async throws -> Void = {}
+    ) async throws {
         guard !isSyncing else { throw CloudTransportError.syncAlreadyRunning }
         isSyncing = true
         defer { isSyncing = false }
 
         try await prepare()
-        try await fetchAndCommit()
+        try await fetchAndCommit(beforeApply: beforeApply)
     }
 
     package func sendPending(
@@ -61,8 +63,11 @@ package actor CloudTextSyncCoordinator {
         }
     }
 
-    private func fetchAndCommit() async throws {
+    private func fetchAndCommit(
+        beforeApply: @escaping @Sendable () async throws -> Void = {}
+    ) async throws {
         let fetched = try await transport.fetch(scope: .all)
+        try await beforeApply()
         try await commit(.fetched(fetched))
     }
 

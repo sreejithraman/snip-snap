@@ -7,7 +7,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         withAttachments: Bool = false,
         withRecovery: Bool = false,
         withSyncedContent: Bool = false,
-        withSyncEnable: Bool = false
+        withSyncEnable: Bool = false,
+        accountNotice: Bool = false
     ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["SNIP_SNAP_UI_TESTING"] = "1"
@@ -18,6 +19,9 @@ final class SnipSnapiOSUITests: XCTestCase {
             app.launchEnvironment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] = "1"
         }
         if withSyncEnable { app.launchEnvironment["SNIP_SNAP_UI_TEST_SYNC_ENABLE"] = "1" }
+        if accountNotice {
+            app.launchEnvironment["SNIP_SNAP_UI_TEST_ACCOUNT_NOTICE"] = "signedOut"
+        }
         app.launch()
         return app
     }
@@ -134,6 +138,20 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Needs Attention"].waitForExistence(timeout: 3))
         app.buttons["Done"].tap()
         XCTAssertFalse(attention.waitForExistence(timeout: 2))
+    }
+
+    func testSignedOutNoticeOffersBothSafeChoicesWithoutAnAlert() {
+        continueAfterFailure = false
+        let app = launchApp(accountNotice: true)
+
+        let notice = app.staticTexts["apple-account-notice"]
+        XCTAssertTrue(notice.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["keep-account-cache"].exists)
+        XCTAssertTrue(app.buttons["remove-account-cache"].exists)
+        XCTAssertFalse(app.alerts.firstMatch.exists)
+
+        app.buttons["keep-account-cache"].tap()
+        XCTAssertFalse(notice.waitForExistence(timeout: 1))
     }
 
     func testCreatesAndEditsTextSnip() {
