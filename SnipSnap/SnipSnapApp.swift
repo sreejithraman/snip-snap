@@ -40,7 +40,8 @@ struct SnipSnapApp: App {
                 model: appDelegate.model,
                 shortcutSettings: appDelegate.shortcutSettings,
                 coordinator: appDelegate.coordinator,
-                accountNoticeModel: appDelegate.accountNoticeModel
+                accountNoticeModel: appDelegate.accountNoticeModel,
+                cloudSyncHandler: appDelegate.cloudSyncHandler
             )
         }
         .defaultSize(width: 400, height: 230)
@@ -60,6 +61,9 @@ private struct AppSettingsContent: View {
     let shortcutSettings: ShortcutSettings
     let coordinator: AppCoordinator
     @State var accountNoticeModel: AppleAccountNoticeModel?
+    let cloudSyncHandler: (any OptionalCloudSyncHandling)?
+    @State private var isClearingDownloads = false
+    @State private var clearDownloadsError: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -71,6 +75,42 @@ private struct AppSettingsContent: View {
                 Divider()
             }
             ShortcutSettingsView(coordinator: coordinator)
+            if let cloudSyncHandler {
+                Divider()
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("iCloud Attachments")
+                            .font(.headline)
+                        Text("Downloaded files can be fetched again when you open them.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(isClearingDownloads ? "Clearing…" : "Clear Downloaded Files") {
+                        isClearingDownloads = true
+                        clearDownloadsError = nil
+                        Task {
+                            do {
+                                try await cloudSyncHandler.clearDownloadedFiles()
+                                clearDownloadsError = nil
+                            } catch {
+                                clearDownloadsError = "Snip Snap could not clear the downloaded files."
+                            }
+                            isClearingDownloads = false
+                        }
+                    }
+                    .disabled(isClearingDownloads)
+                    .accessibilityIdentifier("clear-icloud-downloads")
+                }
+                .padding(16)
+                if let clearDownloadsError {
+                    Text(clearDownloadsError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 12)
+                }
+            }
         }
             .environmentObject(shortcutSettings)
             .preferredColorScheme(model.appearance.colorScheme)
@@ -87,6 +127,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     let updaterController: SPUStandardUpdaterController
     let updateChecksEnabled: Bool
     let accountNoticeModel: AppleAccountNoticeModel?
+    let cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private var mainPanel: SnipSnapPanel?
     private var isFlushingBeforeTermination = false
 
@@ -116,12 +157,14 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         self.snipDragSourceController = snipDragSourceController
         updateChecksEnabled = isReleaseApp &&
             ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
+        let productionCloudSyncHandler = Self.makeAccountCacheHandler()
+        cloudSyncHandler = productionCloudSyncHandler
         if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_ACCOUNT_NOTICE"] == "signedOut" {
             accountNoticeModel = AppleAccountNoticeModel(
                 notice: .signedOut,
                 handler: UITestAppleAccountCacheHandler()
             )
-        } else if let handler = Self.makeAccountCacheHandler() {
+        } else if let handler = productionCloudSyncHandler {
             accountNoticeModel = AppleAccountNoticeModel(handler: handler)
         } else {
             accountNoticeModel = nil
@@ -160,6 +203,10 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         )
         coordinator.attachPanelWindow(panel)
         coordinator.start()
+        Task { [cloudSyncHandler, accountNoticeModel] in
+            await cloudSyncHandler?.syncWhenPossible()
+            await accountNoticeModel?.refresh()
+        }
         if !panel.restoredSavedFrame {
             panel.center()
         }
@@ -172,8 +219,10 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        guard let accountNoticeModel else { return }
-        Task { await accountNoticeModel.refresh() }
+        Task { [cloudSyncHandler, accountNoticeModel] in
+            await cloudSyncHandler?.syncWhenPossible()
+            await accountNoticeModel?.refresh()
+        }
     }
 
     private static func makeAccountCacheHandler() -> AppleAccountCacheCoordinatorHandler? {

@@ -11,6 +11,7 @@ struct SnipSnapiOSApp: App {
     private let startupError: String?
     private let uiTestAttachmentURLs: [URL]
     private let accountNoticeModel: AppleAccountNoticeModel?
+    private let cloudSyncHandler: (any OptionalCloudSyncHandling)?
 
     init() {
         let startup = Self.makeLibrary()
@@ -18,12 +19,14 @@ struct SnipSnapiOSApp: App {
         shareImports = startup.shareImports
         startupError = startup.error
         uiTestAttachmentURLs = startup.uiTestAttachmentURLs
+        let productionCloudSyncHandler = Self.makeAccountCacheHandler()
+        cloudSyncHandler = productionCloudSyncHandler
         if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_ACCOUNT_NOTICE"] == "signedOut" {
             accountNoticeModel = AppleAccountNoticeModel(
                 notice: .signedOut,
                 handler: UITestAppleAccountCacheHandler()
             )
-        } else if let handler = Self.makeAccountCacheHandler() {
+        } else if let handler = productionCloudSyncHandler {
             accountNoticeModel = AppleAccountNoticeModel(handler: handler)
         } else {
             accountNoticeModel = nil
@@ -49,7 +52,8 @@ struct SnipSnapiOSApp: App {
                 shareImports: shareImports,
                 startupError: startupError,
                 uiTestAttachmentURLs: uiTestAttachmentURLs,
-                accountNoticeModel: accountNoticeModel
+                accountNoticeModel: accountNoticeModel,
+                cloudSyncHandler: cloudSyncHandler
             )
         }
     }

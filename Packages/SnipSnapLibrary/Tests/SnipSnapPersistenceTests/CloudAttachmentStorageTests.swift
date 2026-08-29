@@ -93,6 +93,59 @@ final class CloudAttachmentStorageTests: XCTestCase {
     XCTAssertNotEqual(a.publications.first?.metadata.payloadIdentity, b.publications.first?.metadata.payloadIdentity)
   }
 
+  func testRemoteReplacementMovesThePublicationToTheNewPayloadIdentity() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let attachmentID = UUID()
+    let metadataIdentity = CloudTextStorageIdentity(
+      zoneName: "data",
+      ownerName: "owner",
+      recordName: "a-\(attachmentID.uuidString.lowercased())"
+    )
+    let firstPayload = CloudTextStorageIdentity(
+      zoneName: "payload", ownerName: "owner", recordName: UUID().uuidString.lowercased()
+    )
+    let secondPayload = CloudTextStorageIdentity(
+      zoneName: "payload", ownerName: "owner", recordName: UUID().uuidString.lowercased()
+    )
+    func metadata(_ payload: CloudTextStorageIdentity, hashByte: UInt8) -> CloudAttachmentMetadataValue {
+      CloudAttachmentMetadataValue(
+        attachmentID: attachmentID,
+        snipID: UUID(),
+        position: 0,
+        fileName: "remote.txt",
+        contentType: "text/plain",
+        byteCount: 4,
+        sha256: Data(repeating: hashByte, count: 32),
+        payloadIdentity: payload
+      )
+    }
+    try await library.commitCloudAttachmentTransitions(
+      namespaceKey: "namespace",
+      transitions: [.remoteMetadataAccepted(
+        metadata: metadata(firstPayload, hashByte: 1),
+        metadataIdentity: metadataIdentity,
+        shadowData: Data("shadow-1".utf8),
+        systemFields: Data("fields-1".utf8)
+      )]
+    )
+    try await library.commitCloudAttachmentTransitions(
+      namespaceKey: "namespace",
+      transitions: [.remoteMetadataAccepted(
+        metadata: metadata(secondPayload, hashByte: 2),
+        metadataIdentity: metadataIdentity,
+        shadowData: Data("shadow-2".utf8),
+        systemFields: Data("fields-2".utf8)
+      )]
+    )
+
+    let stored = try await library.cloudAttachmentStorageSnapshot(namespaceKey: "namespace")
+    XCTAssertEqual(stored.publications.first?.metadata.payloadIdentity, secondPayload)
+    XCTAssertEqual(stored.publications.first?.metadata.sha256, Data(repeating: 2, count: 32))
+  }
+
   private func temporaryDirectory() -> URL {
     FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudAttachmentStorageTests-\(UUID().uuidString)", isDirectory: true)

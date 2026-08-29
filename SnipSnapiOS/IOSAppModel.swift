@@ -7,10 +7,12 @@ import SnipSnapPersistence
 @Observable
 final class IOSAppModel {
     private let library: any SnipLibrary
+    private let cloudSyncHandler: (any OptionalCloudSyncHandling)?
 
     private(set) var snips: [Snip]
     private(set) var lists: [SnipList]
     private(set) var attachmentURLs: [UUID: URL]
+    private(set) var attachmentTransferStates: [UUID: SyncedAttachmentTransferState] = [:]
     var selectedListID: UUID
     var selectedSnipID: UUID?
     var errorMessage: String?
@@ -21,9 +23,11 @@ final class IOSAppModel {
             snips: [],
             lists: [.inbox]
         ),
-        startupError: String? = nil
+        startupError: String? = nil,
+        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil
     ) {
         self.library = library
+        self.cloudSyncHandler = cloudSyncHandler
         snips = initialSnapshot.snips
         lists = initialSnapshot.lists
         attachmentURLs = initialSnapshot.attachmentURLs
@@ -46,6 +50,7 @@ final class IOSAppModel {
 
     func load() async {
         apply(await library.snapshot(sortedBy: .chronological))
+        await refreshAttachmentTransferStates()
     }
 
     @discardableResult
@@ -105,6 +110,45 @@ final class IOSAppModel {
         attachmentURLs[attachmentID]
     }
 
+    var hasCloudSync: Bool { cloudSyncHandler != nil }
+
+    func attachmentTransferState(for attachmentID: UUID) -> SyncedAttachmentTransferState {
+        if let state = attachmentTransferStates[attachmentID] { return state }
+        return attachmentURLs[attachmentID] == nil ? .waiting : .available
+    }
+
+    func prepareAttachment(_ attachmentID: UUID, for use: SyncedAttachmentUse) async -> URL? {
+        if let local = attachmentURLs[attachmentID] { return local }
+        guard let cloudSyncHandler else { return nil }
+        attachmentTransferStates[attachmentID] = .syncing
+        do {
+            let url = try await cloudSyncHandler.prepareSyncedAttachment(attachmentID, for: use)
+            attachmentURLs[attachmentID] = url
+            attachmentTransferStates[attachmentID] = .available
+            return url
+        } catch {
+            attachmentTransferStates[attachmentID] = .failed
+            errorMessage = "Snip Snap could not download that attachment. Please try again."
+            return nil
+        }
+    }
+
+    func clearDownloadedFiles() async {
+        guard let cloudSyncHandler else { return }
+        do {
+            try await cloudSyncHandler.clearDownloadedFiles()
+            apply(await library.snapshot(sortedBy: .chronological))
+            await refreshAttachmentTransferStates()
+        } catch {
+            errorMessage = "Snip Snap could not clear the downloaded files."
+        }
+    }
+
+    func syncWhenPossible() async {
+        await cloudSyncHandler?.syncWhenPossible()
+        await load()
+    }
+
     @discardableResult
     func deleteSnip(id: UUID) async -> Bool {
         let deleted = await perform(.delete(ids: [id])) { _ in
@@ -153,6 +197,7 @@ final class IOSAppModel {
         do {
             let update = try await library.perform(command, sortedBy: .chronological)
             apply(update.snapshot)
+            await refreshAttachmentTransferStates()
             afterSuccess(update.outcome)
             return true
         } catch {
@@ -173,6 +218,20 @@ final class IOSAppModel {
             self.selectedSnipID = nil
         }
     }
+
+    private func refreshAttachmentTransferStates() async {
+        guard let cloudSyncHandler else {
+            attachmentTransferStates = Dictionary(uniqueKeysWithValues:
+                attachmentURLs.keys.map { ($0, .available) }
+            )
+            return
+        }
+        do {
+            attachmentTransferStates = try await cloudSyncHandler.syncedAttachmentStates()
+        } catch {
+            // Keep the last known states while iCloud is unavailable.
+        }
+    }
 }
 
 @MainActor
@@ -185,12 +244,14 @@ final class IOSAppGraph {
         shareImports: ShareImportStore?,
         initialSnapshot: SnipLibrarySnapshot,
         startupError: String?,
-        shareImportOperation: (@Sendable () async -> Int)? = nil
+        shareImportOperation: (@Sendable () async -> Int)? = nil,
+        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil
     ) {
         let model = IOSAppModel(
             library: library,
             initialSnapshot: initialSnapshot,
-            startupError: startupError
+            startupError: startupError,
+            cloudSyncHandler: cloudSyncHandler
         )
         self.model = model
         if let shareImportOperation {

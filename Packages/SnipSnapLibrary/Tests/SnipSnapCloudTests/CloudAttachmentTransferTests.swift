@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SnipSnapCore
 import SnipSnapPersistence
@@ -79,9 +80,10 @@ final class CloudAttachmentTransferTests: XCTestCase {
       dataZone: dataZone,
       payloadZone: payloadZone
     )
+    let receiverTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
     let receiver = CloudFullSyncCoordinator(
       store: receiverStore,
-      transport: FakeCloudRecordTransport(server: server, namespace: namespace),
+      transport: receiverTransport,
       fetchScope: .zones([dataZone])
     )
     try await receiver.fetchRemote()
@@ -89,7 +91,22 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let received = try await receiverLibrary.checkedSnapshot(sortedBy: .manual)
     let receivedSnip = try XCTUnwrap(received.snips.first(where: { $0.id == snipID }))
     XCTAssertEqual(receivedSnip.attachments.map(\.fileName), ["local-first.txt"])
-    XCTAssertNil(received.attachmentURLs[try XCTUnwrap(receivedSnip.attachments.first).id])
+    let receivedAttachmentID = try XCTUnwrap(receivedSnip.attachments.first).id
+    XCTAssertNil(received.attachmentURLs[receivedAttachmentID])
+    let downloads = CloudAttachmentTransferCoordinator(
+      library: receiverLibrary,
+      namespace: namespace,
+      payloadZone: payloadZone,
+      transport: receiverTransport,
+      maximumCacheBytes: 1024
+    )
+    let downloaded = try await downloads.download(attachmentID: receivedAttachmentID)
+    XCTAssertEqual(try Data(contentsOf: downloaded), bytes)
+
+    try await receiver.fetchRemote()
+
+    let afterLaterSync = try await receiverLibrary.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(afterLaterSync.attachmentURLs[receivedAttachmentID], downloaded)
   }
 
   func testFailedUploadLeavesLocalSaveAndDurablePayloadWorkForLaterRun() async throws {
@@ -387,6 +404,76 @@ final class CloudAttachmentTransferTests: XCTestCase {
     XCTAssertEqual(finalServer.encryptedFields["futureClientField"], .string("keep me"))
   }
 
+  func testTerminalPayloadFailureDoesNotStarveAnotherAttachmentMetadata() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let first = root.appendingPathComponent("first.txt")
+    let second = root.appendingPathComponent("second.txt")
+    try Data("first".utf8).write(to: first)
+    try Data("second".utf8).write(to: second)
+    let namespace = namespaceValue()
+    let dataZone = CloudZoneID(name: "data", ownerName: "owner")
+    let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let added = try await library.perform(
+      .add(
+        content: "fair send",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [first, second],
+        requestID: UUID(),
+        now: .distantPast
+      ),
+      sortedBy: .manual
+    )
+    guard case .add(.added(let snipID)) = added.outcome else {
+      return XCTFail("Expected a saved snip")
+    }
+    let server = FakeCloudServer()
+    let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+    let store = CloudFullSyncPersistence(
+      library: library,
+      namespace: namespace,
+      dataZone: dataZone,
+      payloadZone: payloadZone
+    )
+    try await store.approveEnrollment(references: [
+      CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
+      CloudEntityReference(kind: .snip, domainID: snipID),
+    ])
+    _ = try await store.pendingChanges()
+    let initial = try await snapshot(library, namespace)
+    let ordered = initial.publications.sorted {
+      $0.metadata.fileName < $1.metadata.fileName
+    }
+    let failed = try XCTUnwrap(ordered.first)
+    let successful = try XCTUnwrap(ordered.last)
+    await transport.failNextSentItem(
+      CloudAttachmentRecordCodec.recordID(failed.metadata.payloadIdentity),
+      failure: .rejected
+    )
+    let sync = CloudFullSyncCoordinator(
+      store: store,
+      transport: transport,
+      fetchScope: .zones([dataZone])
+    )
+
+    try await sync.sendPending()
+    try await sync.sendPending()
+
+    let after = try await snapshot(library, namespace)
+    XCTAssertEqual(
+      after.publications.first(where: { $0.metadata.attachmentID == failed.metadata.attachmentID })?
+        .transferState,
+      .failed(.rejected)
+    )
+    XCTAssertTrue(try XCTUnwrap(after.publications.first(where: {
+      $0.metadata.attachmentID == successful.metadata.attachmentID
+    })).metadataAccepted)
+  }
+
   func testNewNamespaceCannotSendOldQueuedWorkAndOldOfflineBytesSurvive() async throws {
     let root = temporaryDirectory()
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -443,6 +530,172 @@ final class CloudAttachmentTransferTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: oldUpload), bytes)
     let stillDormant = try await snapshot(library, oldNamespace)
     XCTAssertEqual(stillDormant.publications.first?.sourceURL, oldUpload)
+  }
+
+  func testDestructiveFetchBlocksQueuedAttachmentBeforeAnySameRunSend() async throws {
+    for reason in [CloudZoneDeletionReason.purged, .encryptedDataReset] {
+      let root = temporaryDirectory()
+      try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+      defer { try? FileManager.default.removeItem(at: root) }
+      let namespace = namespaceValue()
+      let dataZone = CloudZoneID(name: "data", ownerName: "owner")
+      let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
+      let source = root.appendingPathComponent("offline.txt")
+      try Data("keep local".utf8).write(to: source)
+      let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+      let added = try await library.perform(
+        .add(
+          content: "not uploaded after reset",
+          origin: .quickEntry,
+          source: nil,
+          listID: SnipList.inbox.id,
+          attachmentURLs: [source],
+          requestID: UUID(),
+          now: .distantPast
+        ),
+        sortedBy: .manual
+      )
+      guard case .add(.added(let snipID)) = added.outcome else {
+        return XCTFail("Expected a saved snip")
+      }
+      let server = FakeCloudServer()
+      await server.emitZoneDeletion(dataZone, reason: reason)
+      let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+      let store = CloudFullSyncPersistence(
+        library: library,
+        namespace: namespace,
+        dataZone: dataZone,
+        payloadZone: payloadZone
+      )
+      try await store.approveEnrollment(references: [
+        CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
+        CloudEntityReference(kind: .snip, domainID: snipID),
+      ])
+      let sync = CloudFullSyncCoordinator(
+        store: store,
+        transport: transport,
+        fetchScope: .zones([dataZone])
+      )
+
+      try await sync.sync()
+
+      let sent = await transport.events().compactMap { event -> [CloudRecordID]? in
+        guard case .sent(let ids) = event else { return nil }
+        return ids
+      }.flatMap { $0 }
+      XCTAssertTrue(sent.isEmpty)
+      XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(added.snapshot.attachmentURLs.values.first)), Data("keep local".utf8))
+      let pending = try await store.pendingChanges()
+      XCTAssertTrue(pending.operations.isEmpty)
+    }
+  }
+
+  func testDeleteConflictsRetryFromServerShadowsThroughPayloadCleanup() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let namespace = namespaceValue()
+    let dataZone = CloudZoneID(name: "data", ownerName: "owner")
+    let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
+    let source = root.appendingPathComponent("delete.txt")
+    try Data("delete me".utf8).write(to: source)
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let added = try await library.perform(
+      .add(
+        content: "delete conflict",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [source],
+        requestID: UUID(),
+        now: .distantPast
+      ),
+      sortedBy: .manual
+    )
+    guard case .add(.added(let snipID)) = added.outcome else {
+      return XCTFail("Expected a saved snip")
+    }
+    let server = FakeCloudServer()
+    let store = CloudFullSyncPersistence(
+      library: library,
+      namespace: namespace,
+      dataZone: dataZone,
+      payloadZone: payloadZone
+    )
+    try await store.approveEnrollment(references: [
+      CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
+      CloudEntityReference(kind: .snip, domainID: snipID),
+    ])
+    let sync = CloudFullSyncCoordinator(
+      store: store,
+      transport: FakeCloudRecordTransport(server: server, namespace: namespace),
+      fetchScope: .zones([dataZone])
+    )
+    try await sync.sync()
+    try await sync.sync()
+    let settled = try await snapshot(library, namespace)
+    let publication = try XCTUnwrap(settled.publications.first)
+    let metadataID = CloudAttachmentRecordCodec.recordID(publication.metadataIdentity)
+    let payloadID = CloudAttachmentRecordCodec.recordID(publication.metadata.payloadIdentity)
+
+    let fetchedServerMetadata = await server.fullSnapshot(for: metadataID)
+    let serverMetadata = try XCTUnwrap(fetchedServerMetadata)
+    var externalMetadataFields = serverMetadata.encryptedFields
+    externalMetadataFields["futureDeleteField"] = .string("preserve")
+    _ = try await server.send(
+      CloudOutboundBatch(operations: [.save(CloudRecordDraft(
+        id: metadataID,
+        recordType: serverMetadata.recordType,
+        schemaVersion: serverMetadata.schemaVersion,
+        routingFields: serverMetadata.routingFields,
+        encryptedFields: externalMetadataFields,
+        base: serverMetadata.shadow
+      ))]),
+      failures: [:]
+    )
+    let currentSnapshot = try await library.checkedSnapshot(sortedBy: .manual)
+    let current = try XCTUnwrap(currentSnapshot.snips.first)
+    _ = try await library.perform(
+      .editAttachments(
+        snipID: snipID,
+        content: current.content,
+        edits: [],
+        expectedUpdatedAt: current.updatedAt,
+        now: Date(timeIntervalSince1970: 2)
+      ),
+      sortedBy: .manual
+    )
+
+    try await sync.sendPending()
+    let metadataAfterConflict = await server.fullSnapshot(for: metadataID)
+    XCTAssertNotNil(metadataAfterConflict)
+    try await sync.sendPending()
+    let metadataAfterRetry = await server.fullSnapshot(for: metadataID)
+    XCTAssertNil(metadataAfterRetry)
+
+    let fetchedServerPayload = await server.fullSnapshot(for: payloadID)
+    let serverPayload = try XCTUnwrap(fetchedServerPayload)
+    var externalPayloadFields = serverPayload.encryptedFields
+    externalPayloadFields["futureDeleteField"] = .string("preserve")
+    _ = try await server.send(
+      CloudOutboundBatch(operations: [.save(CloudRecordDraft(
+        id: payloadID,
+        recordType: serverPayload.recordType,
+        schemaVersion: serverPayload.schemaVersion,
+        routingFields: serverPayload.routingFields,
+        encryptedFields: externalPayloadFields,
+        base: serverPayload.shadow
+      ))]),
+      failures: [:]
+    )
+    try await sync.sendPending()
+    let payloadAfterConflict = await server.fullSnapshot(for: payloadID)
+    XCTAssertNotNil(payloadAfterConflict)
+    try await sync.sendPending()
+    let payloadAfterRetry = await server.fullSnapshot(for: payloadID)
+    XCTAssertNil(payloadAfterRetry)
+    let final = try await snapshot(library, namespace)
+    XCTAssertTrue(final.cleanups.isEmpty)
   }
 
   func testNormalFullSyncFetchExcludesPayloadZone() async throws {
@@ -645,8 +898,62 @@ final class CloudAttachmentTransferTests: XCTestCase {
       maximumCacheBytes: 1024,
       now: { Date(timeIntervalSince1970: 10) }
     )
+    enum InjectedLocalStorageFailure: Error { case full }
+    let failingLibrary = try SwiftDataSnipLibrary(
+      storeURL: root.appendingPathComponent("receiver.store"),
+      afterMutationBeforeSave: { throw InjectedLocalStorageFailure.full }
+    )
+    let failingDownloads = CloudAttachmentTransferCoordinator(
+      library: failingLibrary,
+      namespace: namespace,
+      payloadZone: payloadZone,
+      transport: transport,
+      maximumCacheBytes: 1024
+    )
+    do {
+      _ = try await failingDownloads.download(attachmentID: initial.metadata.attachmentID)
+      XCTFail("A local storage failure must not publish an untracked cache file.")
+    } catch is InjectedLocalStorageFailure {}
+    let afterLocalFailure = try await snapshot(receiverLibrary, namespace)
+    XCTAssertTrue(afterLocalFailure.cacheEntries.isEmpty)
+    XCTAssertTrue(afterLocalFailure.publications.first?.metadataAccepted == true)
+    await transport.failNextAssetFetch()
+    do {
+      _ = try await downloads.download(attachmentID: initial.metadata.attachmentID)
+      XCTFail("An interrupted direct fetch should fail without hiding the remote metadata.")
+    } catch {
+      XCTAssertEqual(error as? FakeCloudError, .injectedAssetFailure)
+    }
+    let afterInterruption = try await snapshot(receiverLibrary, namespace)
+    XCTAssertEqual(afterInterruption.publications.count, 1)
+    XCTAssertTrue(afterInterruption.cacheEntries.isEmpty)
     let downloaded = try await downloads.download(attachmentID: initial.metadata.attachmentID)
     XCTAssertEqual(try Data(contentsOf: downloaded), bytes)
+    let filesRoot = downloaded.deletingLastPathComponent().deletingLastPathComponent()
+    let orphan = filesRoot.appendingPathComponent("orphan/file", isDirectory: false)
+    try FileManager.default.createDirectory(
+      at: orphan.deletingLastPathComponent(), withIntermediateDirectories: true
+    )
+    try Data("orphan".utf8).write(to: orphan)
+    let stagingRoot = try await receiverLibrary.cloudAttachmentStagingRoot(
+      namespaceKey: namespace.canonicalKey
+    )
+    let interrupted = stagingRoot.appendingPathComponent("interrupted/payload")
+    try FileManager.default.createDirectory(
+      at: interrupted.deletingLastPathComponent(), withIntermediateDirectories: true
+    )
+    try Data("partial".utf8).write(to: interrupted)
+    let reopenedDownloads = CloudAttachmentTransferCoordinator(
+      library: receiverLibrary,
+      namespace: namespace,
+      payloadZone: payloadZone,
+      transport: transport,
+      maximumCacheBytes: 1024,
+      now: { Date(timeIntervalSince1970: 11) }
+    )
+    _ = try await reopenedDownloads.downloadedURL(attachmentID: initial.metadata.attachmentID)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: interrupted.path))
     for use in [
       CloudAttachmentUse.preview,
       .open,
@@ -661,7 +968,69 @@ final class CloudAttachmentTransferTests: XCTestCase {
     }
     let cached = try await downloads.downloadedURL(attachmentID: initial.metadata.attachmentID)
     XCTAssertEqual(cached, downloaded)
+    let outsideCache = root.appendingPathComponent("outside-cache.txt")
+    try bytes.write(to: outsideCache)
+    try FileManager.default.removeItem(at: downloaded)
+    try FileManager.default.createSymbolicLink(at: downloaded, withDestinationURL: outsideCache)
+    let rejectedSymlink = try await downloads.downloadedURL(
+      attachmentID: initial.metadata.attachmentID
+    )
+    XCTAssertNil(rejectedSymlink)
+    XCTAssertEqual(try Data(contentsOf: outsideCache), bytes)
+    let redownloaded = try await downloads.download(attachmentID: initial.metadata.attachmentID)
+    let replacementBytes = Data("replacement from another client".utf8)
+    let replacementSource = root.appendingPathComponent("remote-replacement.txt")
+    try replacementBytes.write(to: replacementSource)
+    let replacementPayloadIdentity = CloudTextStorageIdentity(
+      zoneName: payloadZone.name,
+      ownerName: payloadZone.ownerName,
+      recordName: UUID().uuidString.lowercased()
+    )
+    let replacementMetadata = CloudAttachmentMetadataValue(
+      attachmentID: initial.metadata.attachmentID,
+      snipID: initial.metadata.snipID,
+      position: initial.metadata.position,
+      fileName: "remote-replacement.txt",
+      contentType: "text/plain",
+      byteCount: Int64(replacementBytes.count),
+      sha256: Data(SHA256.hash(data: replacementBytes)),
+      payloadIdentity: replacementPayloadIdentity
+    )
+    let replacementPublication = CloudAttachmentPublication(
+      metadata: replacementMetadata,
+      metadataIdentity: initial.metadataIdentity,
+      sourceURL: replacementSource,
+      payloadAccepted: false,
+      payloadShadowData: nil,
+      metadataAccepted: true,
+      metadataShadowData: metadataSnapshot.shadow.data,
+      revision: 0
+    )
+    let otherClient = FakeCloudRecordTransport(server: server, namespace: namespace)
+    let replacementPayloadResult = try await otherClient.send(CloudOutboundBatch(
+      operations: [.save(try CloudAttachmentRecordCodec.payloadDraft(replacementPublication))]
+    ))
+    try await otherClient.confirmApplied(replacementPayloadResult.id)
+    let replacementMetadataResult = try await otherClient.send(CloudOutboundBatch(
+      operations: [.save(CloudAttachmentRecordCodec.metadataDraft(replacementPublication))]
+    ))
+    try await otherClient.confirmApplied(replacementMetadataResult.id)
+    try await receiver.fetchRemote()
+    XCTAssertFalse(FileManager.default.fileExists(atPath: redownloaded.path))
+    let invalidatedDownload = try await downloads.downloadedURL(
+      attachmentID: initial.metadata.attachmentID
+    )
+    XCTAssertNil(invalidatedDownload)
+    let replacementDownload = try await downloads.download(
+      attachmentID: initial.metadata.attachmentID
+    )
+    XCTAssertEqual(try Data(contentsOf: replacementDownload), replacementBytes)
+    try FileManager.default.createDirectory(
+      at: orphan.deletingLastPathComponent(), withIntermediateDirectories: true
+    )
+    try Data("orphan again".utf8).write(to: orphan)
     try await downloads.clearDownloads()
+    XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
     let cleared = try await downloads.downloadedURL(attachmentID: initial.metadata.attachmentID)
     XCTAssertNil(cleared)
     let afterClear = try await snapshot(receiverLibrary, namespace)

@@ -10,6 +10,28 @@ public protocol AppleAccountCacheHandling: Sendable {
     func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws
 }
 
+public enum SyncedAttachmentUse: Equatable, Sendable {
+    case preview
+    case open
+    case copy
+    case export
+}
+
+public enum SyncedAttachmentTransferState: Equatable, Sendable {
+    case waiting
+    case syncing
+    case failed
+    case available
+}
+
+/// One main-app owner for optional sync and verified, on-demand attachment files.
+public protocol OptionalCloudSyncHandling: AppleAccountCacheHandling {
+    func syncWhenPossible() async
+    func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState]
+    func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL
+    func clearDownloadedFiles() async throws
+}
+
 public enum AppleAccountNotice: Equatable, Sendable {
     case paused
     case signedOut

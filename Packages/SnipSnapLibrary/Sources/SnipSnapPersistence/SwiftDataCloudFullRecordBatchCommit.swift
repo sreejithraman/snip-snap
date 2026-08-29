@@ -66,6 +66,11 @@ extension SwiftDataSnipLibrary {
           try Self.validatedChild(relativePath: $0, root: uploadRoot)
         }
       }
+    let invalidatedCacheFiles = try invalidatedCloudAttachmentCacheFiles(
+      namespaceKey: batch.namespaceKey,
+      transitions: batch.attachmentTransitions,
+      context: context
+    )
     for binding in batch.outboundBindings {
       let identityKey = StoredCloudEntityRecord.identityKey(
         namespaceKey: batch.namespaceKey,
@@ -358,6 +363,10 @@ extension SwiftDataSnipLibrary {
       throw error
     }
     for file in acceptedUploadFiles {
+      try? FileManager.default.removeItem(at: file)
+      try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
+    }
+    for file in invalidatedCacheFiles {
       try? FileManager.default.removeItem(at: file)
       try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
     }

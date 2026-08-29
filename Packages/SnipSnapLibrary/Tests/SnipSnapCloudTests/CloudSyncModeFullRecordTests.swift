@@ -4,6 +4,36 @@ import SnipSnapPersistence
 import XCTest
 
 extension ICloudSyncModeCoordinatorTests {
+    func testLocalOnlyAttachmentSaveNeverCreatesCloudUploadWork() async throws {
+        let root = temporaryDirectory()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("local-only.txt")
+        try Data("local only".utf8).write(to: source)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let library = try await persistence.activeLibrary()
+
+        let saved = try await library.perform(
+            .add(
+                content: "local attachment",
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inbox.id,
+                attachmentURLs: [source],
+                requestID: UUID(),
+                now: .distantPast
+            ),
+            sortedBy: .manual
+        )
+
+        XCTAssertEqual(saved.snapshot.snips.first?.attachments.count, 1)
+        let allPaths = FileManager.default.enumerator(atPath: root.path)?.allObjects
+            .compactMap { $0 as? String } ?? []
+        XCTAssertFalse(allPaths.contains(where: { $0.contains("CloudAttachmentUploads") }))
+        let storage = try await persistence.snapshot()
+        XCTAssertEqual(storage.activeStore.kind, .localOnly)
+    }
+
     func testAttachmentSetupListsAllUnsupportedFilesBeforeStartingTransition() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -224,6 +254,61 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertTrue(full.enrolledEntities.contains(
             CloudEntityReference(kind: .snip, domainID: snipID)
         ))
+    }
+
+    func testOneActiveSyncOpportunityAdvancesPayloadThenMetadata() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dataZone = CloudZoneID(name: "data", ownerName: "owner")
+        let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
+        let namespace = CloudSyncNamespace(
+            cloudScope: "private",
+            accountLineage: "account",
+            generation: UUID(),
+            zones: [dataZone, payloadZone]
+        )
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let server = FakeCloudServer()
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: dataZone,
+            payloadZone: payloadZone,
+            makeTransport: {
+                FakeCloudRecordTransport(server: server, namespace: namespace)
+            }
+        )
+        let enabled = try await coordinator.enableOrRetry()
+        XCTAssertEqual(enabled.state, .on)
+        let source = root.appendingPathComponent("foreground.txt")
+        try Data("saved offline first".utf8).write(to: source)
+        let activeStorage = try await persistence.snapshot()
+        let library = try await persistence.libraryForTransition(
+            storeID: activeStorage.activeStore.id
+        )
+        _ = try await library.perform(
+            .add(
+                content: "foreground retry",
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inbox.id,
+                attachmentURLs: [source],
+                requestID: UUID(),
+                now: .distantPast
+            ),
+            sortedBy: .manual
+        )
+
+        let result = try await coordinator.syncActive()
+
+        XCTAssertEqual(result.state, .on)
+        let stored = try await library.cloudAttachmentStorageSnapshot(
+            namespaceKey: namespace.canonicalKey
+        )
+        let publication = try XCTUnwrap(stored.publications.first)
+        XCTAssertTrue(publication.payloadAccepted)
+        XCTAssertTrue(publication.metadataAccepted)
+        XCTAssertNil(publication.sourceURL)
     }
 
     func testFullEnableRefetchesDeferredSnipAfterItsListArrives() async throws {

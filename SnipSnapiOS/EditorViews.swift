@@ -48,7 +48,7 @@ struct SnipEditorView: View {
                     attachments: attachments,
                     isStaging: isStaging,
                     isDisabled: isSaving || isStaging,
-                    preview: { if let url = $0.url { previewURL = url } },
+                    preview: { previewAttachment($0) },
                     replace: {
                         replacementID = $0.id
                         isImporting = true
@@ -171,6 +171,28 @@ struct SnipEditorView: View {
         if succeeded {
             cleanStagingDirectory()
             dismiss()
+        }
+    }
+
+    private func previewAttachment(_ attachment: AttachmentDraft) {
+        if let url = attachment.url {
+            previewURL = url
+            return
+        }
+        guard let originalID = attachment.source.originalAttachmentID else { return }
+        Task {
+            guard let url = await model.prepareAttachment(originalID, for: .preview),
+                  let index = attachments.firstIndex(where: { $0.id == attachment.id })
+            else { return }
+            let current = attachments[index]
+            attachments[index] = AttachmentDraft(
+                id: current.id,
+                fileName: current.fileName,
+                byteCount: current.byteCount,
+                url: url,
+                source: current.source
+            )
+            previewURL = url
         }
     }
 

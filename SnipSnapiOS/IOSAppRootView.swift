@@ -16,7 +16,8 @@ struct IOSAppRootView: View {
         startupError: String? = nil,
         uiTestAttachmentURLs: [URL] = [],
         shareImportOperation: (@Sendable () async -> Int)? = nil,
-        accountNoticeModel: AppleAccountNoticeModel? = nil
+        accountNoticeModel: AppleAccountNoticeModel? = nil,
+        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil
     ) {
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         _appGraph = State(initialValue: IOSAppGraph(
@@ -24,7 +25,8 @@ struct IOSAppRootView: View {
             shareImports: shareImports,
             initialSnapshot: initialSnapshot ?? SnipLibrarySnapshot(snips: [], lists: [.inbox]),
             startupError: startupError,
-            shareImportOperation: shareImportOperation
+            shareImportOperation: shareImportOperation,
+            cloudSyncHandler: cloudSyncHandler
         ))
         _accountNoticeModel = State(initialValue: accountNoticeModel)
     }
@@ -81,6 +83,7 @@ struct IOSAppRootView: View {
                 )
             }
             await accountNoticeModel?.refresh()
+            await model.syncWhenPossible()
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
@@ -89,6 +92,7 @@ struct IOSAppRootView: View {
                     await shareImporter.importPendingAndReload()
                 }
                 await accountNoticeModel?.refresh()
+                await model.syncWhenPossible()
             }
         }
     }

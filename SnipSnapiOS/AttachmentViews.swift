@@ -121,12 +121,17 @@ private struct AttachmentEditorTile: View {
                 .disabled(isDisabled)
                 .accessibilityIdentifier("attachment-row-\(attachment.fileName)")
             } else {
-                ContentUnavailableView(
-                    attachment.fileName,
-                    systemImage: "doc.questionmark",
-                    description: Text("File unavailable")
-                )
-                .aspectRatio(1, contentMode: .fit)
+                Button(action: preview) {
+                    ContentUnavailableView(
+                        attachment.fileName,
+                        systemImage: "icloud.and.arrow.down",
+                        description: Text("Download to Preview")
+                    )
+                    .aspectRatio(1, contentMode: .fit)
+                }
+                .buttonStyle(.plain)
+                .disabled(isDisabled)
+                .accessibilityIdentifier("download-attachment-\(attachment.fileName)")
             }
 
             HStack(spacing: 8) {

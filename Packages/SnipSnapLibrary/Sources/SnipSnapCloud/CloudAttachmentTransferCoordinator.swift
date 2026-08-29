@@ -47,6 +47,7 @@ package actor CloudAttachmentTransferCoordinator {
   private let transport: any CloudRecordTransport
   private let maximumCacheBytes: Int64
   private let now: @Sendable () -> Date
+  private var didSweepCache = false
 
   package init(
     library: SwiftDataSnipLibrary,
@@ -67,7 +68,14 @@ package actor CloudAttachmentTransferCoordinator {
   }
 
   package func downloadedURL(attachmentID: UUID) async throws -> URL? {
-    try await library.touchCloudAttachmentCache(
+    if !didSweepCache {
+      try await library.sweepCloudAttachmentCache(
+        namespaceKey: namespaceKey,
+        maximumBytes: maximumCacheBytes
+      )
+      didSweepCache = true
+    }
+    return try await library.touchCloudAttachmentCache(
       namespaceKey: namespaceKey,
       attachmentID: attachmentID,
       now: now()

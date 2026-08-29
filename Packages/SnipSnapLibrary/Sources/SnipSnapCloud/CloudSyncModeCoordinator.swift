@@ -356,8 +356,21 @@ package actor ICloudSyncModeCoordinator {
                 try await adapter.fetchRemote {
                     try await self.requireMatchingAccount()
                 }
-                try await adapter.sendPending { _ in
-                    try await self.requireMatchingAccount()
+                var clearedEarlierRetry = false
+                for _ in 0..<8 {
+                    let evidence = try await adapter.enrollmentEvidence()
+                    if evidence.hasRetryableRecordFailures || !evidence.retryableEventKeys.isEmpty {
+                        guard !clearedEarlierRetry else { break }
+                        try await adapter.clearRetryableEvents(evidence.retryableEventKeys)
+                        clearedEarlierRetry = true
+                        continue
+                    }
+                    guard evidence.hasPendingChanges, !evidence.needsAttention,
+                          evidence.phase != .blocked
+                    else { break }
+                    try await adapter.sendPending { _ in
+                        try await self.requireMatchingAccount()
+                    }
                 }
             }
         } catch is ICloudAccountGateError {

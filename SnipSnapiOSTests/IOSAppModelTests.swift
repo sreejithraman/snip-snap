@@ -49,6 +49,54 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(refreshCount, 2)
     }
 
+    func testRemoteAttachmentShowsWaitingSyncingAndAvailableStates() async throws {
+        let attachmentID = UUID()
+        let attachment = SnipAttachment(
+            id: attachmentID,
+            fileName: "remote.txt",
+            relativePath: "CloudDownloads/remote.txt",
+            contentType: "text/plain",
+            byteCount: 6
+        )
+        let snip = Snip(
+            requestID: UUID(),
+            content: "Remote file",
+            origin: .quickEntry,
+            listID: SnipList.inboxID,
+            attachments: [attachment]
+        )
+        let handler = IOSCloudSyncHandlerProbe(states: [attachmentID: .waiting])
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: [snip]),
+            cloudSyncHandler: handler
+        )
+        await model.load()
+        XCTAssertEqual(model.attachmentTransferState(for: attachmentID), .waiting)
+
+        let preparing = Task { await model.prepareAttachment(attachmentID, for: .preview) }
+        await handler.waitUntilPrepareStarts()
+        XCTAssertEqual(model.attachmentTransferState(for: attachmentID), .syncing)
+        let downloaded = URL(fileURLWithPath: "/tmp/downloaded-remote.txt")
+        await handler.finishPrepare(with: .success(downloaded))
+        let preparedURL = await preparing.value
+        XCTAssertEqual(preparedURL, downloaded)
+        XCTAssertEqual(model.attachmentURL(for: attachmentID), downloaded)
+        XCTAssertEqual(model.attachmentTransferState(for: attachmentID), .available)
+    }
+
+    func testRemoteAttachmentFailureStaysVisibleForRetry() async {
+        let id = UUID()
+        let handler = IOSCloudSyncHandlerProbe(states: [id: .available])
+        let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
+        let preparing = Task { await model.prepareAttachment(id, for: .open) }
+        await handler.waitUntilPrepareStarts()
+        await handler.finishPrepare(with: .failure(SnipLibraryError.attachmentCopyFailed))
+        let preparedURL = await preparing.value
+        XCTAssertNil(preparedURL)
+        XCTAssertEqual(model.attachmentTransferState(for: id), .failed)
+        XCTAssertNotNil(model.errorMessage)
+    }
+
     func testRootReinitializationKeepsForegroundImportOnRetainedGraph() async throws {
         let library = ModelTestLibrary()
         let firstProbe = ImportCallProbe()
@@ -377,6 +425,43 @@ private actor IOSAppleAccountCacheHandlerProbe: AppleAccountCacheHandling {
 
     func choices() -> [AppleAccountCacheChoice] { received }
     func refreshCount() -> Int { noticeReads }
+}
+
+private actor IOSCloudSyncHandlerProbe: OptionalCloudSyncHandling {
+    private let states: [UUID: SyncedAttachmentTransferState]
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var prepareContinuation: CheckedContinuation<URL, any Error>?
+    private var prepareStarted = false
+
+    init(states: [UUID: SyncedAttachmentTransferState]) {
+        self.states = states
+    }
+
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
+    func syncWhenPossible() async {}
+    func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { states }
+    func clearDownloadedFiles() async throws {}
+
+    func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {
+        prepareStarted = true
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        return try await withCheckedThrowingContinuation { prepareContinuation = $0 }
+    }
+
+    func waitUntilPrepareStarts() async {
+        if prepareStarted { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func finishPrepare(with result: Result<URL, any Error>) {
+        switch result {
+        case .success(let url): prepareContinuation?.resume(returning: url)
+        case .failure(let error): prepareContinuation?.resume(throwing: error)
+        }
+        prepareContinuation = nil
+    }
 }
 
 @MainActor

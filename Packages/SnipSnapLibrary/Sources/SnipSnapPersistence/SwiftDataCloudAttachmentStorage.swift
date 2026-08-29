@@ -193,7 +193,10 @@ extension SwiftDataSnipLibrary {
     for url in uploadFilesToRemove { try? FileManager.default.removeItem(at: url) }
     } catch {
       context.rollback()
-      for url in createdUploadFiles { try? FileManager.default.removeItem(at: url) }
+      for url in createdUploadFiles {
+        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+      }
       throw error
     }
   }
@@ -478,6 +481,11 @@ extension SwiftDataSnipLibrary {
           try Self.validatedChild(relativePath: $0, root: uploadRoot)
         }
       }
+    let invalidatedCacheFiles = try invalidatedCloudAttachmentCacheFiles(
+      namespaceKey: namespaceKey,
+      transitions: transitions,
+      context: context
+    )
     try applyCloudAttachmentTransitions(
       namespaceKey: namespaceKey,
       transitions: transitions,
@@ -487,6 +495,10 @@ extension SwiftDataSnipLibrary {
     try afterMutationBeforeSave()
     try context.save()
     for file in acceptedUploadFiles {
+      try? FileManager.default.removeItem(at: file)
+      try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
+    }
+    for file in invalidatedCacheFiles {
       try? FileManager.default.removeItem(at: file)
       try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
     }
@@ -514,8 +526,12 @@ extension SwiftDataSnipLibrary {
     let cacheRoot = try cloudAttachmentCacheRoot(namespaceKey: namespaceKey)
     let stagingRoot = try cloudAttachmentStagingRoot(namespaceKey: namespaceKey)
     try Self.requireChild(stagedURL, of: stagingRoot)
-    let values = try stagedURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-    guard values.isRegularFile == true, Int64(values.fileSize ?? -1) == expectedByteCount else {
+    let values = try stagedURL.resourceValues(
+      forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
+    )
+    guard values.isRegularFile == true, values.isSymbolicLink != true,
+      Int64(values.fileSize ?? -1) == expectedByteCount
+    else {
       throw CloudAttachmentStorageError.sizeMismatch
     }
     guard try Self.sha256(of: stagedURL) == expectedSHA256 else {
@@ -600,15 +616,90 @@ extension SwiftDataSnipLibrary {
     defer { withExtendedLifetime(lock) {} }
     let root = try cloudAttachmentCacheRoot(namespaceKey: namespaceKey)
     let context = Self.makeContext(container: container)
-    for entry in try context.fetch(FetchDescriptor<StoredCloudAttachmentCacheEntry>())
-      where entry.namespaceKey == namespaceKey
-    {
-      let url = try Self.validatedChild(relativePath: entry.relativePath, root: root)
-      try? FileManager.default.removeItem(at: url)
-      context.delete(entry)
+    for directoryName in ["Files", "Staging"] {
+      let directory = root.appendingPathComponent(directoryName, isDirectory: true)
+      if FileManager.default.fileExists(atPath: directory.path) {
+        try FileManager.default.removeItem(at: directory)
+      }
+    }
+    for entry in try context.fetch(FetchDescriptor<StoredCloudAttachmentCacheEntry>()) {
+      if entry.namespaceKey == namespaceKey { context.delete(entry) }
     }
     try afterMutationBeforeSave()
     try context.save()
+  }
+
+  /// Repairs crashes between a cache file move, the matching database save, and old-file cleanup.
+  package func sweepCloudAttachmentCache(
+    namespaceKey: String,
+    maximumBytes: Int64
+  ) throws {
+    guard maximumBytes >= 0, let container else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let root = try cloudAttachmentCacheRoot(namespaceKey: namespaceKey)
+    let context = Self.makeContext(container: container)
+    let publications = Dictionary(uniqueKeysWithValues:
+      try context.fetch(FetchDescriptor<StoredCloudAttachmentPublication>())
+        .filter { $0.namespaceKey == namespaceKey }
+        .map { ($0.attachmentID, $0) }
+    )
+    let entries = try context.fetch(FetchDescriptor<StoredCloudAttachmentCacheEntry>())
+      .filter { $0.namespaceKey == namespaceKey }
+      .sorted {
+        if $0.lastAccessedAt != $1.lastAccessedAt { return $0.lastAccessedAt < $1.lastAccessedAt }
+        return $0.id < $1.id
+      }
+    var kept: [(StoredCloudAttachmentCacheEntry, URL)] = []
+    var filesToRemove: [URL] = []
+    var removedEntryIDs: Set<String> = []
+    for entry in entries {
+      guard let url = try? Self.validatedChild(relativePath: entry.relativePath, root: root) else {
+        context.delete(entry)
+        removedEntryIDs.insert(entry.id)
+        continue
+      }
+      guard let publication = publications[entry.attachmentID],
+        publication.metadataAccepted,
+        publication.payloadIdentity == entry.payloadIdentity,
+        let values = try? url.resourceValues(
+          forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+        ),
+        values.isRegularFile == true,
+        values.isSymbolicLink != true,
+        Int64(values.fileSize ?? -1) == publication.byteCount,
+        (try? Self.sha256(of: url)) == publication.sha256
+      else {
+        context.delete(entry)
+        removedEntryIDs.insert(entry.id)
+        filesToRemove.append(url)
+        continue
+      }
+      kept.append((entry, url))
+    }
+    var total = kept.reduce(Int64(0)) { $0 + $1.0.byteCount }
+    for (entry, url) in kept where total > maximumBytes {
+      total -= entry.byteCount
+      context.delete(entry)
+      removedEntryIDs.insert(entry.id)
+      filesToRemove.append(url)
+    }
+    let remainingPaths = Set(kept.compactMap { entry, url in
+      removedEntryIDs.contains(entry.id) ? nil : url.standardizedFileURL.path
+    })
+    if !removedEntryIDs.isEmpty {
+      try afterMutationBeforeSave()
+      try context.save()
+    }
+    for url in filesToRemove { try? FileManager.default.removeItem(at: url) }
+    try Self.removeOrphanCloudAttachmentFiles(
+      under: root.appendingPathComponent("Files", isDirectory: true),
+      keeping: remainingPaths
+    )
+    let staging = root.appendingPathComponent("Staging", isDirectory: true)
+    if FileManager.default.fileExists(atPath: staging.path) {
+      try FileManager.default.removeItem(at: staging)
+    }
   }
 
   package func touchCloudAttachmentCache(
@@ -633,11 +724,16 @@ extension SwiftDataSnipLibrary {
       return nil
     }
     let root = try cloudAttachmentCacheRoot(namespaceKey: namespaceKey)
-    let url = try Self.validatedChild(relativePath: row.relativePath, root: root)
-    guard FileManager.default.fileExists(atPath: url.path),
-      (try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]))?.isRegularFile == true,
-      Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? -1)
-        == publication.byteCount,
+    guard let url = try? Self.validatedChild(relativePath: row.relativePath, root: root) else {
+      context.delete(row)
+      try context.save()
+      return nil
+    }
+    let values = try? url.resourceValues(
+      forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
+    )
+    guard FileManager.default.fileExists(atPath: url.path), values?.isRegularFile == true,
+      values?.isSymbolicLink != true, Int64(values?.fileSize ?? -1) == publication.byteCount,
       (try? Self.sha256(of: url)) == publication.sha256
     else {
       try? FileManager.default.removeItem(at: url)
@@ -706,6 +802,39 @@ extension SwiftDataSnipLibrary {
       .map { String(format: "%02x", $0) }.joined()
   }
 
+  private static func removeOrphanCloudAttachmentFiles(
+    under root: URL,
+    keeping paths: Set<String>
+  ) throws {
+    guard FileManager.default.fileExists(atPath: root.path) else { return }
+    guard let enumerator = FileManager.default.enumerator(
+      at: root,
+      includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
+      options: [.skipsHiddenFiles]
+    ) else { return }
+    var emptyDirectories: [URL] = []
+    for case let url as URL in enumerator {
+      let values = try url.resourceValues(
+        forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
+      )
+      if values.isSymbolicLink == true {
+        enumerator.skipDescendants()
+        try FileManager.default.removeItem(at: url)
+      } else if values.isDirectory == true {
+        emptyDirectories.append(url)
+      } else if values.isRegularFile == true,
+        !paths.contains(url.standardizedFileURL.path)
+      {
+        try FileManager.default.removeItem(at: url)
+      }
+    }
+    for directory in emptyDirectories.reversed() {
+      if (try FileManager.default.contentsOfDirectory(atPath: directory.path)).isEmpty {
+        try FileManager.default.removeItem(at: directory)
+      }
+    }
+  }
+
   package func materializeCloudAttachments(
     namespaceKey: String,
     context: ModelContext
@@ -722,12 +851,25 @@ extension SwiftDataSnipLibrary {
     var references = Dictionary(uniqueKeysWithValues:
       try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>()).map { ($0.id, $0) }
     )
+    let cacheEntries = Dictionary(uniqueKeysWithValues:
+      try context.fetch(FetchDescriptor<StoredCloudAttachmentCacheEntry>())
+        .filter { $0.namespaceKey == namespaceKey }
+        .map { ($0.attachmentID, $0) }
+    )
+    let namespaceDigest = Self.cloudAttachmentNamespaceDigest(namespaceKey)
     for publication in publications {
-      let relativePath = Self.cloudAttachmentCacheRelativePath(
-        namespaceKey: namespaceKey,
-        attachmentID: publication.attachmentID,
-        fileName: publication.fileName
-      )
+      let relativePath: String
+      if let cache = cacheEntries[publication.attachmentID],
+        cache.payloadIdentity == publication.payloadIdentity
+      {
+        relativePath = "CloudDownloads/\(namespaceDigest)/\(cache.relativePath)"
+      } else {
+        relativePath = Self.cloudAttachmentCacheRelativePath(
+          namespaceKey: namespaceKey,
+          attachmentID: publication.attachmentID,
+          fileName: publication.fileName
+        )
+      }
       let attachment = SnipAttachment(
         id: publication.attachmentID,
         fileName: publication.fileName,
@@ -791,6 +933,44 @@ extension SwiftDataSnipLibrary {
     {
       context.delete(row)
     }
+  }
+
+  func invalidatedCloudAttachmentCacheFiles(
+    namespaceKey: String,
+    transitions: [CloudAttachmentTransition],
+    context: ModelContext
+  ) throws -> [URL] {
+    let publications = try context.fetch(FetchDescriptor<StoredCloudAttachmentPublication>())
+      .filter { $0.namespaceKey == namespaceKey }
+    var attachmentIDs: Set<UUID> = []
+    for transition in transitions {
+      switch transition {
+      case .remoteMetadataAccepted(let metadata, _, _, _):
+        if let current = publications.first(where: {
+          $0.attachmentID == metadata.attachmentID
+        }), current.payloadIdentity != metadata.payloadIdentity
+          || current.byteCount != metadata.byteCount || current.sha256 != metadata.sha256
+        {
+          attachmentIDs.insert(metadata.attachmentID)
+        }
+      case .metadataDeleteAccepted(let attachmentID, _):
+        attachmentIDs.insert(attachmentID)
+      case .remoteMetadataDeleted(let metadataIdentity):
+        if let current = publications.first(where: {
+          $0.metadataIdentity == metadataIdentity
+        }) {
+          attachmentIDs.insert(current.attachmentID)
+        }
+      default:
+        break
+      }
+    }
+    let root = try cloudAttachmentCacheRoot(namespaceKey: namespaceKey)
+    return try context.fetch(FetchDescriptor<StoredCloudAttachmentCacheEntry>())
+      .filter {
+        $0.namespaceKey == namespaceKey && attachmentIDs.contains($0.attachmentID)
+      }
+      .compactMap { try? Self.validatedChild(relativePath: $0.relativePath, root: root) }
   }
 
   private static func cloudAttachmentCacheRelativePath(
