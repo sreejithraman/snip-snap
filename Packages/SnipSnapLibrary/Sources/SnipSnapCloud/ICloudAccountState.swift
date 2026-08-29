@@ -101,6 +101,14 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         }
     }
 
+    public func isCloudSyncActive() async throws -> Bool {
+        guard let productionConfiguration else { return coordinator != nil }
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: productionConfiguration.syncRootURL
+        )
+        return try await persistence.snapshot().activeStore.kind == .iCloudSync
+    }
+
     public func syncedAttachmentStates() async throws
         -> [UUID: SyncedAttachmentTransferState]
     {

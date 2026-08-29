@@ -1,6 +1,7 @@
 import SnipSnapCore
 import SnipSnapPersistence
 import SwiftUI
+import UIKit
 
 struct IOSAppRootView: View {
     @Environment(\.scenePhase) private var scenePhase
@@ -86,15 +87,42 @@ struct IOSAppRootView: View {
             await model.syncWhenPossible()
         }
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .active else { return }
-            Task {
-                if let shareImporter = appGraph.shareImporter {
-                    await shareImporter.importPendingAndReload()
+            switch phase {
+            case .active:
+                Task {
+                    if let shareImporter = appGraph.shareImporter {
+                        await shareImporter.importPendingAndReload()
+                    }
+                    await accountNoticeModel?.refresh()
+                    await model.syncWhenPossible()
                 }
-                await accountNoticeModel?.refresh()
-                await model.syncWhenPossible()
+            case .background:
+                let lease = IOSBackgroundSyncLease()
+                Task {
+                    await model.syncWhenPossible()
+                    lease.finish()
+                }
+            default:
+                break
             }
         }
+    }
+}
+
+@MainActor
+private final class IOSBackgroundSyncLease {
+    private var identifier = UIBackgroundTaskIdentifier.invalid
+
+    init() {
+        identifier = UIApplication.shared.beginBackgroundTask { [weak self] in
+            self?.finish()
+        }
+    }
+
+    func finish() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
     }
 }
 

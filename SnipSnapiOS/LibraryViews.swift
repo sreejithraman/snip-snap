@@ -45,6 +45,12 @@ struct ListSidebarView: View {
             }
             if model.hasCloudSync {
                 ToolbarItem(placement: .secondaryAction) {
+                    Button("Sync Now", systemImage: "arrow.triangle.2.circlepath") {
+                        Task { await model.syncWhenPossible() }
+                    }
+                    .accessibilityIdentifier("sync-icloud-now")
+                }
+                ToolbarItem(placement: .secondaryAction) {
                     Button("Clear Downloaded Files", systemImage: "icloud.and.arrow.down") {
                         Task { await model.clearDownloadedFiles() }
                     }

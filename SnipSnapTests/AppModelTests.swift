@@ -139,9 +139,10 @@ final class AppModelTests: StoreBackedTestCase {
         let saved = Snip(content: "Already here", origin: .quickEntry)
         let library = InMemorySnipLibrary(snips: [saved])
         let model = AppModel(library: library, defaults: defaults())
+        while await library.snapshotCallCount == 0 {
+            await Task.yield()
+        }
         await model.reload()
-        await Task.yield()
-        await Task.yield()
 
         XCTAssertEqual(model.snips.map(\.id), [saved.id])
         let snapshotCallsBeforeAdd = await library.snapshotCallCount

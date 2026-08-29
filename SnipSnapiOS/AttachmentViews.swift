@@ -5,8 +5,8 @@ import SnipSnapCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct AttachmentDraft: Identifiable {
-    enum Source {
+struct AttachmentDraft: Equatable, Identifiable {
+    enum Source: Equatable {
         case existing(attachmentID: UUID)
         case added
         case replacement(attachmentID: UUID)
@@ -51,6 +51,32 @@ struct AttachmentDraft: Identifiable {
         case .replacement(let attachmentID):
             url.map { .replacement(attachmentID: attachmentID, sourceURL: $0) }
         }
+    }
+
+    @MainActor
+    func previewURL(
+        prepareExisting: (UUID) async -> URL?
+    ) async -> URL? {
+        switch source {
+        case .existing(let attachmentID):
+            await prepareExisting(attachmentID)
+        case .added, .replacement:
+            url
+        }
+    }
+
+    func applyingPreparedURL(
+        _ preparedURL: URL,
+        requestedDraft: AttachmentDraft
+    ) -> AttachmentDraft? {
+        guard self == requestedDraft else { return nil }
+        return AttachmentDraft(
+            id: id,
+            fileName: fileName,
+            byteCount: byteCount,
+            url: preparedURL,
+            source: source
+        )
     }
 }
 

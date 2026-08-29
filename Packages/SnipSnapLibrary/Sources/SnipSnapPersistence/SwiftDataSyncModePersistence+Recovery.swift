@@ -160,14 +160,12 @@ extension SwiftDataSyncModePersistence {
         else { throw SyncModePersistenceError.invalidManifest }
       }
       if let attempt = transition.sendAttempt {
-        let operationReferences = Set(attempt.operations.map(\.reference))
         let operationIDs = Set(attempt.operations.compactMap {
-          $0.reference.kind == .snip ? $0.reference.domainID : nil
+          $0.reference?.kind == .snip ? $0.reference?.domainID : nil
         })
         let operationIdentities = Set(attempt.operations.map(\.recordIdentity))
         guard attempt.namespace == transition.namespace,
           transition.pendingSettlementSnipIDs == operationIDs,
-          operationReferences.count == attempt.operations.count,
           operationIdentities.count == attempt.operations.count,
           attempt.operations.allSatisfy({ operation in
             attempt.namespace.zones.contains(

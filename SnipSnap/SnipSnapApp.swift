@@ -63,6 +63,7 @@ private struct AppSettingsContent: View {
     @State var accountNoticeModel: AppleAccountNoticeModel?
     let cloudSyncHandler: (any OptionalCloudSyncHandling)?
     @State private var isClearingDownloads = false
+    @State private var isSyncing = false
     @State private var clearDownloadsError: String?
 
     var body: some View {
@@ -86,6 +87,15 @@ private struct AppSettingsContent: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
+                    Button(isSyncing ? "Syncing…" : "Sync Now") {
+                        isSyncing = true
+                        Task {
+                            await cloudSyncHandler.syncWhenPossible()
+                            isSyncing = false
+                        }
+                    }
+                    .disabled(isSyncing)
+                    .accessibilityIdentifier("sync-icloud-now")
                     Button(isClearingDownloads ? "Clearing…" : "Clear Downloaded Files") {
                         isClearingDownloads = true
                         clearDownloadsError = nil
@@ -128,6 +138,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     let updateChecksEnabled: Bool
     let accountNoticeModel: AppleAccountNoticeModel?
     let cloudSyncHandler: (any OptionalCloudSyncHandling)?
+    private var cloudSyncActivity: NSBackgroundActivityScheduler?
     private var mainPanel: SnipSnapPanel?
     private var isFlushingBeforeTermination = false
 
@@ -207,6 +218,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             await cloudSyncHandler?.syncWhenPossible()
             await accountNoticeModel?.refresh()
         }
+        scheduleBackgroundSync()
         if !panel.restoredSavedFrame {
             panel.center()
         }
@@ -245,6 +257,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isFlushingBeforeTermination else { return .terminateLater }
         isFlushingBeforeTermination = true
+        cloudSyncActivity?.invalidate()
         coordinator.savePanelWindowFrame(using: AppWindowDefaults.frameAutosaveName)
         Task { @MainActor [model] in
             model.flushComposerDrafts()
@@ -252,6 +265,25 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
+    }
+
+    private func scheduleBackgroundSync() {
+        guard let cloudSyncHandler else { return }
+        let activity = NSBackgroundActivityScheduler(
+            identifier: (Bundle.main.bundleIdentifier ?? "org.example.snipsnap")
+                + ".optional-cloud-sync"
+        )
+        activity.repeats = true
+        activity.interval = 15 * 60
+        activity.tolerance = 5 * 60
+        activity.qualityOfService = .utility
+        activity.schedule { completion in
+            Task {
+                await cloudSyncHandler.syncWhenPossible()
+                completion(.finished)
+            }
+        }
+        cloudSyncActivity = activity
     }
 }
 

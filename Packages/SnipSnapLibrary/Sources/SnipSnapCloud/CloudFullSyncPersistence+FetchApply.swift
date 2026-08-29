@@ -18,6 +18,19 @@ extension CloudFullSyncPersistence {
     let allAccepted = stored.readyEntities + stored.deferredEntities
     let byReference = Dictionary(uniqueKeysWithValues: allAccepted.map { ($0.reference, $0) })
     let byIdentity = Dictionary(uniqueKeysWithValues: allAccepted.map { ($0.identity, $0) })
+    let attachmentByMetadataIdentity = Dictionary(
+      attachmentStorage.publications.map { ($0.metadataIdentity, $0) },
+      uniquingKeysWith: { first, _ in first }
+    )
+    let attachmentByPayloadIdentity = Dictionary(
+      attachmentStorage.publications.map { ($0.metadata.payloadIdentity, $0) },
+      uniquingKeysWith: { first, _ in first }
+    )
+    let cleanupByIdentity = Dictionary(
+      attachmentStorage.cleanups.map { ($0.identity, $0) },
+      uniquingKeysWith: { first, _ in first }
+    )
+    var attachmentOperationIDs: Set<CloudRecordID> = []
     var items: [CloudFullBatchItem] = []
     var seen: [CloudRecordID: CloudFetchItemResult] = [:]
     var outboundBindings: [CloudFullOutboundBinding] = []
@@ -50,6 +63,15 @@ extension CloudFullSyncPersistence {
       guard let outbound else { throw CloudTransportError.invalidRecord }
       let operations = try Self.uniqueOperations(outbound.operations)
       outboundOperations = operations
+      if let payloadZone {
+        attachmentOperationIDs = Set(operations.keys).intersection(
+          Self.plannedAttachmentOperationIDs(
+            attachmentStorage,
+            dataZone: dataZone,
+            payloadZone: payloadZone
+          )
+        )
+      }
       var sentResults: [CloudRecordID: CloudSendItemResult] = [:]
       for result in sent.items {
         guard operations[result.id] != nil,
@@ -69,12 +91,20 @@ extension CloudFullSyncPersistence {
         }
         switch result {
         case .saved(let value):
-          guard case .save = operation else { throw CloudTransportError.invalidRecord }
+          guard case .save(let draft) = operation else {
+            throw CloudTransportError.invalidRecord
+          }
+          guard value.recordType == draft.recordType else {
+            return .failed(value.id, .invalidRecord)
+          }
           return .record(value)
         case .deleted(let id):
           guard case .delete = operation else { throw CloudTransportError.invalidRecord }
           return .deleted(id)
-        case .conflict(_, let value):
+        case .conflict(let id, let value):
+          if case .save(let draft) = operation, value.recordType != draft.recordType {
+            return .failed(id, .invalidRecord)
+          }
           return .record(value)
         case .unknownItem(let id):
           if case .delete = operation { return .deleted(id) }
@@ -85,7 +115,11 @@ extension CloudFullSyncPersistence {
       }
       .sorted { ($0.id?.name ?? "") < ($1.id?.name ?? "") }
       nextEngine = sent.engineState
-      if let kind = Self.sendRecoveryKind(sent, normalized: results) {
+      if let kind = Self.sendRecoveryKind(
+        sent,
+        normalized: results,
+        attachmentOperationIDs: attachmentOperationIDs
+      ) {
         recoveryInputs = [CloudFullRecoveryInput(
           namespaceKey: namespaceKey,
           batchID: sent.id,
@@ -98,7 +132,9 @@ extension CloudFullSyncPersistence {
     for result in results {
       switch result {
       case .record(let snapshot):
-        if snapshot.recordType == CloudAttachmentRecordCodec.metadataRecordType {
+        if snapshot.recordType == CloudAttachmentRecordCodec.metadataRecordType,
+          outboundOperations[snapshot.id] == nil || attachmentOperationIDs.contains(snapshot.id)
+        {
           guard let payloadZone else { throw CloudAttachmentStorageError.invalidMetadata }
           let metadata = try CloudAttachmentRecordCodec.metadata(
             from: snapshot,
@@ -107,9 +143,7 @@ extension CloudFullSyncPersistence {
           )
           let identity = Self.storageIdentity(snapshot.id)
           if outboundOperations[snapshot.id] != nil,
-            let local = attachmentStorage.publications.first(where: {
-              $0.metadataIdentity == identity
-            })
+            let local = attachmentByMetadataIdentity[identity]
           {
             if case .conflict? = sentItemResults[snapshot.id] {
               if case .delete? = outboundOperations[snapshot.id] {
@@ -117,7 +151,8 @@ extension CloudFullSyncPersistence {
                   attachmentID: local.metadata.attachmentID,
                   expectedRevision: local.revision,
                   shadowData: snapshot.shadow.data,
-                  systemFields: snapshot.shadow.systemFields
+                  systemFields: snapshot.shadow.systemFields,
+                  payloadIdentity: metadata.payloadIdentity
                 ))
               } else {
                 attachmentTransitions.append(.metadataConflict(
@@ -146,9 +181,9 @@ extension CloudFullSyncPersistence {
           continue
         }
         if snapshot.recordType == CloudAttachmentRecordCodec.payloadRecordType,
-          let local = attachmentStorage.publications.first(where: {
-            CloudAttachmentRecordCodec.recordID($0.metadata.payloadIdentity) == snapshot.id
-          })
+          (outboundOperations[snapshot.id] == nil
+            || attachmentOperationIDs.contains(snapshot.id)),
+          let local = attachmentByPayloadIdentity[Self.storageIdentity(snapshot.id)]
         {
           guard let payloadZone, snapshot.id.zone == payloadZone else {
             throw CloudAttachmentStorageError.invalidMetadata
@@ -174,10 +209,9 @@ extension CloudFullSyncPersistence {
           continue
         }
         if snapshot.recordType == CloudAttachmentRecordCodec.payloadRecordType,
+          attachmentOperationIDs.contains(snapshot.id),
           case .conflict? = sentItemResults[snapshot.id],
-          let cleanup = attachmentStorage.cleanups.first(where: {
-            CloudAttachmentRecordCodec.recordID($0.identity) == snapshot.id
-          })
+          let cleanup = cleanupByIdentity[Self.storageIdentity(snapshot.id)]
         {
           attachmentTransitions.append(.cleanupConflict(
             identity: cleanup.identity,
@@ -196,20 +230,21 @@ extension CloudFullSyncPersistence {
         }
       case .deleted(let id):
         let identity = Self.storageIdentity(id)
-        if let local = attachmentStorage.publications.first(where: {
-          $0.metadataIdentity == identity
-        }) {
-          if outboundOperations[id] != nil {
+        if let local = attachmentByMetadataIdentity[identity] {
+          if attachmentOperationIDs.contains(id) {
             attachmentTransitions.append(.metadataDeleteAccepted(
               attachmentID: local.metadata.attachmentID,
               expectedRevision: local.revision
             ))
-          } else {
+            continue
+          } else if outboundOperations[id] == nil {
             attachmentTransitions.append(.remoteMetadataDeleted(metadataIdentity: identity))
+            continue
           }
-          continue
         }
-        if let cleanup = attachmentStorage.cleanups.first(where: { $0.identity == identity }) {
+        if let cleanup = cleanupByIdentity[identity],
+          attachmentOperationIDs.contains(id) || outboundOperations[id] == nil
+        {
           attachmentTransitions.append(.cleanupAccepted(
             identity: identity,
             expectedRevision: cleanup.revision
@@ -224,17 +259,34 @@ extension CloudFullSyncPersistence {
         ))
       case .failed(let id, let failure):
         if let id,
-          let local = attachmentStorage.publications.first(where: {
-            $0.metadataIdentity == Self.storageIdentity(id)
-              || $0.metadata.payloadIdentity == Self.storageIdentity(id)
-          })
+          attachmentOperationIDs.contains(id),
+          let cleanup = cleanupByIdentity[Self.storageIdentity(id)]
+        {
+          attachmentTransitions.append(.cleanupFailed(
+            identity: cleanup.identity,
+            expectedRevision: cleanup.revision,
+            failure: Self.attachmentFailure(failure)
+          ))
+          continue
+        }
+        if let id,
+          attachmentOperationIDs.contains(id),
+          let local = attachmentByMetadataIdentity[Self.storageIdentity(id)]
+            ?? attachmentByPayloadIdentity[Self.storageIdentity(id)]
         {
           if case .unknownItem? = sentItemResults[id],
             local.metadataIdentity == Self.storageIdentity(id)
           {
+            let replacementAttachmentID = UUID()
             attachmentTransitions.append(.metadataUnknown(
               attachmentID: local.metadata.attachmentID,
-              expectedRevision: local.revision
+              expectedRevision: local.revision,
+              replacementAttachmentID: replacementAttachmentID,
+              replacementMetadataIdentity: CloudTextStorageIdentity(
+                zoneName: dataZone.name,
+                ownerName: dataZone.ownerName,
+                recordName: "a-\(replacementAttachmentID.uuidString.lowercased())"
+              )
             ))
           } else {
             attachmentTransitions.append(.operationFailed(
@@ -285,7 +337,8 @@ extension CloudFullSyncPersistence {
       nextNamespaceState: Self.nextNamespaceState(
         current: stored.namespaceState,
         batch: batch,
-        dataZone: dataZone
+        dataZone: dataZone,
+        attachmentOperationIDs: attachmentOperationIDs
       ),
       rawBatchData: rawBatchData,
       outboundBindings: outboundBindings,
@@ -328,11 +381,16 @@ extension CloudFullSyncPersistence {
 
   private static func sendRecoveryKind(
     _ batch: CloudSentBatch,
-    normalized: [CloudFetchItemResult]
+    normalized: [CloudFetchItemResult],
+    attachmentOperationIDs: Set<CloudRecordID>
   ) -> CloudFullRecoveryKind? {
     if batch.databaseEvents.contains(where: isDestructiveReset) { return .destructiveReset }
     let failures = normalized.compactMap { item -> CloudOperationFailure? in
-      guard case .failed(_, let failure) = item else { return nil }
+      guard case .failed(let id, let failure) = item else { return nil }
+      if failure != .retryable, let id, attachmentOperationIDs.contains(id)
+      {
+        return nil
+      }
       return failure
     } + batch.databaseEvents.compactMap { event -> CloudOperationFailure? in
       guard case .failed(_, let failure) = event else { return nil }
@@ -349,7 +407,8 @@ extension CloudFullSyncPersistence {
   private static func nextNamespaceState(
     current: CloudFullNamespaceState,
     batch: CloudSyncBatch,
-    dataZone: CloudZoneID
+    dataZone: CloudZoneID,
+    attachmentOperationIDs: Set<CloudRecordID>
   ) -> CloudFullNamespaceState {
     var phase = current.phase
     var zoneCreationPending = current.zoneCreationPending
@@ -375,7 +434,7 @@ extension CloudFullSyncPersistence {
       if sent.databaseEvents.contains(where: isDestructiveReset) {
         phase = .blocked
         zoneCreationPending = false
-      } else if hasMissingZone(sent) {
+      } else if hasMissingZone(sent, attachmentOperationIDs: attachmentOperationIDs) {
         if current.phase == .seeding {
           zoneCreationPending = true
         } else {
@@ -421,9 +480,14 @@ extension CloudFullSyncPersistence {
     }
   }
 
-  private static func hasMissingZone(_ batch: CloudSentBatch) -> Bool {
+  private static func hasMissingZone(
+    _ batch: CloudSentBatch,
+    attachmentOperationIDs: Set<CloudRecordID>
+  ) -> Bool {
     batch.items.contains { item in
-      if case .failed(_, .zoneMissing) = item { true } else { false }
+      if case .failed(let id, .zoneMissing) = item {
+        !attachmentOperationIDs.contains(id)
+      } else { false }
     } || batch.databaseEvents.contains { event in
       if case .failed(_, .zoneMissing) = event { true } else { false }
     } || batch.zoneEvents.contains { event in

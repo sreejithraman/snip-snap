@@ -108,6 +108,8 @@ package extension CloudAttachmentPublication {
 package struct CloudAttachmentCleanup: Equatable, Sendable {
   package let identity: CloudTextStorageIdentity
   package let shadowData: Data?
+  package let blockedByAttachmentID: UUID?
+  package let lastFailure: CloudAttachmentFailure?
   package let revision: UInt64
 }
 
@@ -165,7 +167,12 @@ package enum CloudAttachmentTransition: Codable, Equatable, Sendable {
     expectedRevision: UInt64,
     replacementIdentity: CloudTextStorageIdentity
   )
-  case metadataUnknown(attachmentID: UUID, expectedRevision: UInt64)
+  case metadataUnknown(
+    attachmentID: UUID,
+    expectedRevision: UInt64,
+    replacementAttachmentID: UUID,
+    replacementMetadataIdentity: CloudTextStorageIdentity
+  )
   case operationFailed(
     attachmentID: UUID,
     expectedRevision: UInt64,
@@ -173,11 +180,20 @@ package enum CloudAttachmentTransition: Codable, Equatable, Sendable {
   )
   case metadataDeleteAccepted(attachmentID: UUID, expectedRevision: UInt64)
   case metadataDeleteConflict(
-    attachmentID: UUID, expectedRevision: UInt64, shadowData: Data, systemFields: Data
+    attachmentID: UUID,
+    expectedRevision: UInt64,
+    shadowData: Data,
+    systemFields: Data,
+    payloadIdentity: CloudTextStorageIdentity
   )
   case remoteMetadataDeleted(metadataIdentity: CloudTextStorageIdentity)
   case cleanupAccepted(identity: CloudTextStorageIdentity, expectedRevision: UInt64)
   case cleanupConflict(
     identity: CloudTextStorageIdentity, expectedRevision: UInt64, shadowData: Data
+  )
+  case cleanupFailed(
+    identity: CloudTextStorageIdentity,
+    expectedRevision: UInt64,
+    failure: CloudAttachmentFailure
   )
 }

@@ -175,23 +175,18 @@ struct SnipEditorView: View {
     }
 
     private func previewAttachment(_ attachment: AttachmentDraft) {
-        if let url = attachment.url {
-            previewURL = url
-            return
-        }
-        guard let originalID = attachment.source.originalAttachmentID else { return }
         Task {
-            guard let url = await model.prepareAttachment(originalID, for: .preview),
+            guard let url = await attachment.previewURL(prepareExisting: {
+                await model.prepareAttachment($0, for: .preview)
+            }),
                   let index = attachments.firstIndex(where: { $0.id == attachment.id })
             else { return }
             let current = attachments[index]
-            attachments[index] = AttachmentDraft(
-                id: current.id,
-                fileName: current.fileName,
-                byteCount: current.byteCount,
-                url: url,
-                source: current.source
-            )
+            guard let prepared = current.applyingPreparedURL(
+                url,
+                requestedDraft: attachment
+            ) else { return }
+            attachments[index] = prepared
             previewURL = url
         }
     }

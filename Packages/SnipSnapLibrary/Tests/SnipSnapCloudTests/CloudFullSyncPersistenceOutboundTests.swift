@@ -104,6 +104,215 @@ extension CloudFullSyncPersistenceTests {
     }
   }
 
+  func testTerminalCleanupFailureWithCoreLikePayloadNameStaysRowScoped() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudFullPrefixedCleanupTests-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let dataZone = CloudZoneID(name: "data", ownerName: "owner")
+    let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
+    let namespace = CloudSyncNamespace(
+      cloudScope: "private",
+      accountLineage: "account",
+      generation: UUID(),
+      zones: [dataZone, payloadZone]
+    )
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let attachmentID = UUID()
+    let metadataIdentity = CloudTextStorageIdentity(
+      zoneName: dataZone.name,
+      ownerName: dataZone.ownerName,
+      recordName: "a-\(attachmentID.uuidString.lowercased())"
+    )
+    let payloadIdentity = CloudTextStorageIdentity(
+      zoneName: payloadZone.name,
+      ownerName: payloadZone.ownerName,
+      recordName: "s-valid-remote-payload"
+    )
+    try await library.commitCloudAttachmentTransitions(
+      namespaceKey: namespace.canonicalKey,
+      transitions: [
+        .remoteMetadataAccepted(
+          metadata: CloudAttachmentMetadataValue(
+            attachmentID: attachmentID,
+            snipID: UUID(),
+            position: 0,
+            fileName: "remote.txt",
+            contentType: "text/plain",
+            byteCount: 1,
+            sha256: Data(repeating: 1, count: 32),
+            payloadIdentity: payloadIdentity
+          ),
+          metadataIdentity: metadataIdentity,
+          shadowData: Data(),
+          systemFields: Data()
+        ),
+      ]
+    )
+    try await library.commitCloudAttachmentTransitions(
+      namespaceKey: namespace.canonicalKey,
+      transitions: [.remoteMetadataDeleted(metadataIdentity: metadataIdentity)]
+    )
+    let persistence = CloudFullSyncPersistence(
+      library: library,
+      namespace: namespace,
+      dataZone: dataZone,
+      payloadZone: payloadZone
+    )
+    let outbound = try await persistence.pendingChanges()
+    let cleanup = try XCTUnwrap(outbound.operations.first(where: {
+      $0.id == CloudAttachmentRecordCodec.recordID(payloadIdentity)
+    }))
+    let sent = CloudSentBatch(
+      id: UUID(),
+      items: [.failed(cleanup.id, .rejected)],
+      engineState: nil
+    )
+
+    try await persistence.stage(.sent(sent), outbound: outbound)
+    try await persistence.applyStaged(sent.id)
+
+    let evidence = try await persistence.enrollmentEvidence()
+    XCTAssertFalse(evidence.needsAttention)
+    let attachments = try await library.cloudAttachmentStorageSnapshot(
+      namespaceKey: namespace.canonicalKey
+    )
+    XCTAssertEqual(attachments.cleanups.first?.lastFailure, .rejected)
+    let recovery = try await library.cloudFullRecoveryEvents(
+      namespaceKey: namespace.canonicalKey
+    )
+    XCTAssertFalse(recovery.contains(where: { $0.kind == .terminalSend }))
+  }
+
+  func testDormantAttachmentIdentityCannotCaptureCoreTerminalResults() async throws {
+    for sendsConflict in [false, true] {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudFullDormantAttachmentCollisionTests-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let dataZone = CloudZoneID(name: "data", ownerName: "owner")
+    let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
+    let namespace = CloudSyncNamespace(
+      cloudScope: "private",
+      accountLineage: "account",
+      generation: UUID(),
+      zones: [dataZone, payloadZone]
+    )
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let added = try await library.perform(
+      .add(
+        content: "local with remote attachment",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [],
+        requestID: UUID(),
+        now: Date(timeIntervalSince1970: 1)
+      ),
+      sortedBy: .manual
+    )
+    guard case .add(.added(let snipID)) = added.outcome else {
+      return XCTFail("Expected a saved snip")
+    }
+    let persistence = CloudFullSyncPersistence(
+      library: library,
+      namespace: namespace,
+      dataZone: dataZone,
+      payloadZone: payloadZone
+    )
+    try await persistence.approveEnrollment(references: [
+      CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
+      CloudEntityReference(kind: .snip, domainID: snipID),
+    ])
+    let initialOutbound = try await persistence.pendingChanges()
+    let listOperation = try XCTUnwrap(initialOutbound.operations.first(where: {
+      if case .save(let draft) = $0 { return draft.recordType == "List" }
+      return false
+    }))
+    let attachmentID = UUID()
+    let collidingMetadataIdentity = CloudFullSyncPersistence.storageIdentity(listOperation.id)
+    let payloadIdentity = CloudTextStorageIdentity(
+      zoneName: payloadZone.name,
+      ownerName: payloadZone.ownerName,
+      recordName: "p-\(UUID().uuidString.lowercased())"
+    )
+    let metadata = CloudAttachmentMetadataValue(
+      attachmentID: attachmentID,
+      snipID: snipID,
+      position: 0,
+      fileName: "remote.txt",
+      contentType: "text/plain",
+      byteCount: 1,
+      sha256: Data(repeating: 1, count: 32),
+      payloadIdentity: payloadIdentity
+    )
+    try await library.commitCloudAttachmentTransitions(
+      namespaceKey: namespace.canonicalKey,
+      transitions: [.remoteMetadataAccepted(
+        metadata: metadata,
+        metadataIdentity: collidingMetadataIdentity,
+        shadowData: Data(),
+        systemFields: Data()
+      )]
+    )
+    let beforeSnapshot = try await library.cloudAttachmentStorageSnapshot(
+      namespaceKey: namespace.canonicalKey
+    )
+    let before = try XCTUnwrap(beforeSnapshot.publications.first(where: {
+      $0.metadata.attachmentID == attachmentID
+    }))
+    let outbound = try await persistence.pendingChanges()
+    XCTAssertFalse(outbound.operations.contains(where: { operation in
+      guard operation.id == listOperation.id else { return false }
+      if case .delete = operation { return true }
+      return false
+    }))
+    let conflictDraft = CloudRecordDraft(
+      id: listOperation.id,
+      recordType: CloudAttachmentRecordCodec.metadataRecordType,
+      schemaVersion: CloudAttachmentRecordCodec.schemaVersion,
+      routingFields: ["schemaVersion": .int64(1)],
+      encryptedFields: [
+        "attachmentID": .string(attachmentID.uuidString.lowercased()),
+        "snipID": .string(snipID.uuidString.lowercased()),
+        "position": .int64(0),
+        "fileName": .string(metadata.fileName),
+        "contentType": .string("text/plain"),
+        "byteCount": .int64(metadata.byteCount),
+        "sha256": .data(metadata.sha256),
+        "payloadZoneName": .string(payloadIdentity.zoneName),
+        "payloadOwnerName": .string(payloadIdentity.ownerName),
+        "payloadRecordName": .string(payloadIdentity.recordName),
+      ]
+    )
+    let conflictSnapshot = try CloudKitRecordMapper.snapshot(
+      CloudKitRecordMapper.record(for: conflictDraft)
+    )
+    let sentItems = try outbound.operations.map { operation -> CloudSendItemResult in
+      if operation.id == listOperation.id {
+        return sendsConflict
+          ? .conflict(operation.id, server: conflictSnapshot)
+          : .failed(operation.id, .rejected)
+      }
+      guard case .save(let draft) = operation else {
+        return .deleted(operation.id)
+      }
+      return .saved(try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(for: draft)))
+    }
+    let sent = CloudSentBatch(id: UUID(), items: sentItems, engineState: nil)
+
+    try await persistence.stage(.sent(sent), outbound: outbound)
+    try await persistence.applyStaged(sent.id)
+
+    let evidence = try await persistence.enrollmentEvidence()
+    XCTAssertTrue(evidence.needsAttention)
+    let attachments = try await library.cloudAttachmentStorageSnapshot(
+      namespaceKey: namespace.canonicalKey
+    )
+    XCTAssertEqual(attachments.publications.first(where: {
+      $0.metadata.attachmentID == attachmentID
+    }), before)
+    }
+  }
+
   func testSentResultsBindByIdentityNotArrayOrderAndRejectMalformedBatches() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudFullSentBindingTests-\(UUID().uuidString)")

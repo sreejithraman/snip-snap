@@ -4,6 +4,277 @@ import SnipSnapPersistence
 import XCTest
 
 extension ICloudSyncModeCoordinatorTests {
+    func testActiveSyncQuarantinesTerminalAttachmentFailureAndKeepsSending() async throws {
+      for failure in [CloudOperationFailure.rejected, .zoneMissing] {
+        let root = temporaryDirectory()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceURL = root.appendingPathComponent("initial.txt")
+        try Data("initial attachment".utf8).write(to: sourceURL)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let source = try await persistence.activeLibrary()
+        _ = try await source.perform(
+            .add(
+                content: "attachment owner",
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inbox.id,
+                attachmentURLs: [sourceURL],
+                requestID: UUID(),
+                now: .distantPast
+            ),
+            sortedBy: .manual
+        )
+        let dataZone = CloudZoneID(name: "metadata", ownerName: "owner")
+        let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
+        let namespace = CloudSyncNamespace(
+            cloudScope: "private",
+            accountLineage: "account",
+            generation: UUID(),
+            zones: [dataZone, payloadZone]
+        )
+        let server = FakeCloudServer()
+        let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: dataZone,
+            payloadZone: payloadZone,
+            makeTransport: { transport }
+        )
+        let enabled = try await coordinator.enableOrRetry()
+        XCTAssertEqual(enabled.state, .on)
+        let active = try await persistence.activeLibrary()
+        let current = await active.snapshot(sortedBy: .manual)
+        let snip = try XCTUnwrap(current.snips.first)
+        let oldAttachment = try XCTUnwrap(snip.attachments.first)
+        let replacementURL = root.appendingPathComponent("replacement.txt")
+        try Data("replacement bytes".utf8).write(to: replacementURL)
+        _ = try await active.perform(
+            .editAttachments(
+                snipID: snip.id,
+                content: snip.content,
+                edits: [.replacement(
+                    attachmentID: oldAttachment.id,
+                    sourceURL: replacementURL
+                )],
+                expectedUpdatedAt: snip.updatedAt,
+                now: Date(timeIntervalSince1970: 2)
+            ),
+            sortedBy: .manual
+        )
+        await transport.pauseNextSend()
+        let failingSync = Task { try await coordinator.syncActive() }
+        await transport.waitUntilSendPauses()
+        let activeStore = try await persistence.snapshot().activeStore
+        let activeLibrary = try await persistence.libraryForTransition(storeID: activeStore.id)
+        let attachmentStorage = try await activeLibrary.cloudAttachmentStorageSnapshot(
+            namespaceKey: namespace.canonicalKey
+        )
+        let replacement = try XCTUnwrap(attachmentStorage.publications.first(where: {
+            !$0.payloadAccepted
+        }))
+        let failedPayloadID = CloudAttachmentRecordCodec.recordID(
+            replacement.metadata.payloadIdentity
+        )
+        await transport.failNextSentItem(failedPayloadID, failure: failure)
+        await transport.resumeSend()
+
+        let failedResult = try await failingSync.value
+        XCTAssertEqual(failedResult.state, .on)
+        try await add("unrelated after attachment failure", to: active)
+        let laterResult = try await coordinator.syncActive()
+        XCTAssertEqual(laterResult.state, .on)
+
+        let after = try await activeLibrary.cloudAttachmentStorageSnapshot(
+            namespaceKey: namespace.canonicalKey
+        )
+        XCTAssertEqual(
+            after.publications.first(where: {
+                $0.metadata.attachmentID == replacement.metadata.attachmentID
+            })?.lastFailure,
+            failure == .rejected ? .rejected : .zoneMissing
+        )
+        let pending = try await CloudFullSyncPersistence(
+            library: activeLibrary,
+            namespace: namespace,
+            dataZone: dataZone,
+            payloadZone: payloadZone
+        ).pendingChanges()
+        XCTAssertTrue(pending.operations.isEmpty)
+        XCTAssertTrue(pending.zonesToSave.isEmpty)
+        let final = await active.snapshot(sortedBy: .manual)
+        let unrelated = try XCTUnwrap(final.snips.first(where: {
+            $0.content == "unrelated after attachment failure"
+        }))
+        let remoteUnrelated = await server.fullSnapshot(for: .snip(unrelated.id, in: dataZone))
+        XCTAssertNotNil(remoteUnrelated)
+        let recovery = try await activeLibrary.cloudFullRecoveryEvents(
+            namespaceKey: namespace.canonicalKey
+        )
+        XCTAssertFalse(recovery.contains(where: { $0.kind == .terminalSend }))
+      }
+    }
+
+    func testEnableWithExistingAttachmentPublishesPayloadAndMetadataBeforePointerSwap() async throws {
+        let root = temporaryDirectory()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceURL = root.appendingPathComponent("existing.txt")
+        try Data("existing attachment".utf8).write(to: sourceURL)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let source = try await persistence.activeLibrary()
+        _ = try await source.perform(
+            .add(
+                content: "enable with file",
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inbox.id,
+                attachmentURLs: [sourceURL],
+                requestID: UUID(),
+                now: .distantPast
+            ),
+            sortedBy: .manual
+        )
+        let dataZone = CloudZoneID(name: "metadata", ownerName: "owner")
+        let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
+        let namespace = CloudSyncNamespace(
+            cloudScope: "private",
+            accountLineage: "account",
+            generation: UUID(),
+            zones: [dataZone, payloadZone]
+        )
+        let server = FakeCloudServer()
+        let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: dataZone,
+            payloadZone: payloadZone,
+            makeTransport: { transport }
+        )
+
+        let result = try await coordinator.enableOrRetry()
+
+        XCTAssertEqual(result.state, .on)
+        let storage = try await persistence.snapshot()
+        let active = try await persistence.libraryForTransition(storeID: storage.activeStore.id)
+        let attachments = try await active.cloudAttachmentStorageSnapshot(
+            namespaceKey: namespace.canonicalKey
+        )
+        let publication = try XCTUnwrap(attachments.publications.first)
+        XCTAssertTrue(publication.payloadAccepted)
+        XCTAssertTrue(publication.metadataAccepted)
+        let remotePayload = await server.fullSnapshot(
+            for: CloudAttachmentRecordCodec.recordID(publication.metadata.payloadIdentity)
+        )
+        let remoteMetadata = await server.fullSnapshot(
+            for: CloudAttachmentRecordCodec.recordID(publication.metadataIdentity)
+        )
+        XCTAssertNotNil(remotePayload)
+        XCTAssertNotNil(remoteMetadata)
+    }
+
+    func testEnableWithExistingAttachmentKeepsPartialPayloadOwnedAcrossHardReopen() async throws {
+        let root = temporaryDirectory()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceURL = root.appendingPathComponent("partial.txt")
+        try Data("partial attachment".utf8).write(to: sourceURL)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let source = try await persistence.activeLibrary()
+        _ = try await source.perform(
+            .add(
+                content: "partial attachment enable",
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inbox.id,
+                attachmentURLs: [sourceURL],
+                requestID: UUID(),
+                now: .distantPast
+            ),
+            sortedBy: .manual
+        )
+        let sourceSnapshot = await source.snapshot(sortedBy: .manual)
+        let snip = try XCTUnwrap(sourceSnapshot.snips.first)
+        let attachmentID = try XCTUnwrap(snip.attachments.first?.id)
+        let dataZone = CloudZoneID(name: "metadata", ownerName: "owner")
+        let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
+        let namespace = CloudSyncNamespace(
+            cloudScope: "private",
+            accountLineage: "account",
+            generation: UUID(),
+            zones: [dataZone, payloadZone]
+        )
+        let server = FakeCloudServer()
+        let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        await transport.pauseNextSend()
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: dataZone,
+            payloadZone: payloadZone,
+            makeTransport: { transport }
+        )
+
+        let enabling = Task { try await coordinator.enableOrRetry() }
+        await transport.waitUntilSendPauses()
+        await transport.failNextSentItem(.snip(snip.id, in: dataZone), failure: .retryable)
+        await transport.resumeSend()
+        let partial = try await enabling.value
+
+        XCTAssertEqual(partial.state, .settingUp)
+        let partialStorage = try await persistence.snapshot()
+        XCTAssertEqual(partialStorage.activeStore.kind, .localOnly)
+        let transition = try XCTUnwrap(partialStorage.transition)
+        let candidate = try await persistence.libraryForTransition(
+            storeID: transition.candidateStoreID
+        )
+        let partialAttachments = try await candidate.cloudAttachmentStorageSnapshot(
+            namespaceKey: namespace.canonicalKey
+        )
+        let partialPublication = try XCTUnwrap(
+            partialAttachments.publications.first(where: {
+                $0.metadata.attachmentID == attachmentID
+            })
+        )
+        XCTAssertTrue(partialPublication.payloadAccepted)
+        XCTAssertFalse(partialPublication.metadataAccepted)
+        let partialRemotePayload = await server.fullSnapshot(
+            for: CloudAttachmentRecordCodec.recordID(partialPublication.metadata.payloadIdentity)
+        )
+        XCTAssertNotNil(partialRemotePayload)
+
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+        let retry = ICloudSyncModeCoordinator(
+            persistence: reopened,
+            namespace: namespace,
+            textZone: dataZone,
+            payloadZone: payloadZone,
+            makeTransport: {
+                FakeCloudRecordTransport(server: server, namespace: namespace)
+            }
+        )
+        let completed = try await retry.enableOrRetry()
+
+        XCTAssertEqual(completed.state, .on)
+        let completedStorage = try await reopened.snapshot()
+        let active = try await reopened.libraryForTransition(
+            storeID: completedStorage.activeStore.id
+        )
+        let settled = try await active.cloudAttachmentStorageSnapshot(
+            namespaceKey: namespace.canonicalKey
+        )
+        let publication = try XCTUnwrap(settled.publications.first)
+        XCTAssertTrue(publication.payloadAccepted)
+        XCTAssertTrue(publication.metadataAccepted)
+        XCTAssertEqual(publication.metadata.attachmentID, attachmentID)
+        let remoteMetadata = await server.fullSnapshot(
+            for: CloudAttachmentRecordCodec.recordID(publication.metadataIdentity)
+        )
+        XCTAssertNotNil(remoteMetadata)
+    }
+
     func testLocalOnlyAttachmentSaveNeverCreatesCloudUploadWork() async throws {
         let root = temporaryDirectory()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -1422,7 +1693,7 @@ extension ICloudSyncModeCoordinatorTests {
         let reopened = try SwiftDataSyncModePersistence(rootURL: root)
         let reopenedStorage = try await reopened.snapshot()
         let stored = try XCTUnwrap(reopenedStorage.transition)
-        XCTAssertEqual(Set(stored.sendAttempt?.operations.map(\.reference) ?? []), Set([
+        XCTAssertEqual(Set(stored.sendAttempt?.operations.compactMap(\.reference) ?? []), Set([
             CloudEntityReference(kind: .list, domainID: domainID),
             CloudEntityReference(kind: .snip, domainID: domainID),
         ]))

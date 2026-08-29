@@ -51,7 +51,7 @@ final class CloudAttachmentRecordTests: XCTestCase {
     XCTAssertTrue(payloadDraft.encryptedFields.isEmpty)
     XCTAssertEqual(Set(payloadDraft.assetFields.keys), ["payload"])
 
-    let metadataDraft = CloudAttachmentRecordCodec.metadataDraft(publication)
+    let metadataDraft = try CloudAttachmentRecordCodec.metadataDraft(publication)
     XCTAssertEqual(metadataDraft.id.zone.name, "data-zone")
     XCTAssertEqual(metadataDraft.routingFields, ["schemaVersion": CloudFieldValue.int64(1)])
     XCTAssertTrue(metadataDraft.assetFields.isEmpty)
@@ -62,6 +62,113 @@ final class CloudAttachmentRecordTests: XCTestCase {
     XCTAssertEqual(
       metadataDraft.encryptedFields["payloadRecordName"],
       CloudFieldValue.string(payload.recordName)
+    )
+  }
+
+  func testMetadataDraftRejectsCorruptServerShadow() throws {
+    let attachmentID = UUID()
+    let publication = CloudAttachmentPublication(
+      metadata: CloudAttachmentMetadataValue(
+        attachmentID: attachmentID,
+        snipID: UUID(),
+        position: 0,
+        fileName: "file.txt",
+        contentType: "text/plain",
+        byteCount: 1,
+        sha256: Data(repeating: 1, count: 32),
+        payloadIdentity: CloudTextStorageIdentity(
+          zoneName: "payload-zone",
+          ownerName: "owner",
+          recordName: UUID().uuidString.lowercased()
+        )
+      ),
+      metadataIdentity: CloudTextStorageIdentity(
+        zoneName: "data-zone",
+        ownerName: "owner",
+        recordName: "a-\(attachmentID.uuidString.lowercased())"
+      ),
+      sourceURL: nil,
+      payloadAccepted: true,
+      payloadShadowData: nil,
+      metadataAccepted: false,
+      metadataShadowData: Data("not a shadow".utf8),
+      revision: 1
+    )
+
+    XCTAssertThrowsError(try CloudAttachmentRecordCodec.metadataDraft(publication))
+  }
+
+  func testMetadataDecoderDistinguishesMissingFieldsFromInvalidValues() throws {
+    let publication = CloudAttachmentPublication(
+      metadata: CloudAttachmentMetadataValue(
+        attachmentID: UUID(),
+        snipID: UUID(),
+        position: 0,
+        fileName: "file.txt",
+        contentType: "text/plain",
+        byteCount: 1,
+        sha256: Data(repeating: 1, count: 32),
+        payloadIdentity: CloudTextStorageIdentity(
+          zoneName: "payload-zone",
+          ownerName: "owner",
+          recordName: UUID().uuidString.lowercased()
+        )
+      ),
+      metadataIdentity: CloudTextStorageIdentity(
+        zoneName: "data-zone",
+        ownerName: "owner",
+        recordName: "a-\(UUID().uuidString.lowercased())"
+      ),
+      sourceURL: nil,
+      payloadAccepted: true,
+      payloadShadowData: nil,
+      metadataAccepted: false,
+      metadataShadowData: nil,
+      revision: 1
+    )
+    let valid = try CloudKitRecordMapper.snapshot(
+      CloudKitRecordMapper.record(for: CloudAttachmentRecordCodec.metadataDraft(publication))
+    )
+
+    var missingFields = valid.encryptedFields
+    missingFields["fileName"] = nil
+    XCTAssertThrowsError(
+      try CloudAttachmentRecordCodec.metadata(from: snapshot(valid, fields: missingFields))
+    ) { error in
+      XCTAssertEqual(error as? CloudRecordError, .missingField("fileName"))
+    }
+
+    let invalidValues: [(String, CloudFieldValue)] = [
+      ("fileName", .int64(1)),
+      ("byteCount", .string("1")),
+      ("byteCount", .int64(-1)),
+      ("sha256", .string("not-data")),
+      ("sha256", .data(Data(repeating: 1, count: 31))),
+    ]
+    for (key, value) in invalidValues {
+      var fields = valid.encryptedFields
+      fields[key] = value
+      XCTAssertThrowsError(
+        try CloudAttachmentRecordCodec.metadata(from: snapshot(valid, fields: fields))
+      ) { error in
+        XCTAssertEqual(error as? CloudRecordError, .invalidField(key))
+      }
+    }
+  }
+
+  private func snapshot(
+    _ snapshot: CloudRecordSnapshot,
+    fields: [String: CloudFieldValue]
+  ) -> CloudRecordSnapshot {
+    CloudRecordSnapshot(
+      id: snapshot.id,
+      recordType: snapshot.recordType,
+      schemaVersion: snapshot.schemaVersion,
+      routingFields: snapshot.routingFields,
+      encryptedFields: fields,
+      assetFields: snapshot.assetFields,
+      shadow: snapshot.shadow,
+      completeness: snapshot.completeness
     )
   }
 }

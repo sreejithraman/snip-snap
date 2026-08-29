@@ -16,8 +16,16 @@ extension SwiftDataSnipLibrary {
     defer { withExtendedLifetime(lock) {} }
     let context = Self.makeContext(container: container)
     let loaded = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
-    let existing = try context.fetch(FetchDescriptor<StoredCloudAttachmentPublication>())
-      .filter { $0.namespaceKey == namespaceKey }
+    let existing = try Self.cloudAttachmentPublications(
+      namespaceKey: namespaceKey,
+      context: context
+    )
+    try sweepCloudAttachmentUploads(
+      namespaceKey: namespaceKey,
+      keeping: Set(existing.compactMap { row in
+        row.uploadRelativePath?.split(separator: "/").first.map(String.init)
+      })
+    )
     let byAttachment = Dictionary(uniqueKeysWithValues: existing.map { ($0.attachmentID, $0) })
     var local: [UUID: (UUID, Int, SnipAttachment)] = [:]
     for snip in loaded.state.snips {
@@ -30,119 +38,132 @@ extension SwiftDataSnipLibrary {
     var createdUploadFiles: [URL] = []
     var uploadFilesToRemove: [URL] = []
     do {
-    for (attachmentID, value) in local.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
-      let localSourcePath = value.2.relativePath.hasPrefix("CloudDownloads/")
-        ? nil : value.2.relativePath
-      if let row = byAttachment[attachmentID] {
-        if !row.isLocallyPresent {
-          row.isLocallyPresent = true
-          changed = true
+      for (attachmentID, value) in local.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+        let localSourcePath = value.2.relativePath.hasPrefix("CloudDownloads/")
+          ? nil : value.2.relativePath
+        if let row = byAttachment[attachmentID] {
+          if !row.isLocallyPresent {
+            row.isLocallyPresent = true
+            changed = true
+          }
+          if row.snipID != value.0 || row.position != value.1 {
+            row.snipID = value.0
+            row.position = value.1
+            row.metadataAccepted = false
+            row.lastFailure = nil
+            row.revision += 1
+            changed = true
+          }
+          guard let localSourcePath else {
+            if row.fileName != value.2.fileName || row.contentType != value.2.contentType {
+              row.fileName = value.2.fileName
+              row.contentType = value.2.contentType
+              row.metadataAccepted = false
+              row.lastFailure = nil
+              row.revision += 1
+              changed = true
+            }
+            continue
+          }
+          let sourceURL = try Self.validatedChild(
+            relativePath: localSourcePath,
+            root: attachmentRootURL
+          )
+          let values = try sourceURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+          guard values.isRegularFile == true else {
+            throw CloudAttachmentStorageError.missingPayload
+          }
+          let byteCount = Int64(values.fileSize ?? -1)
+          let digest = try Self.sha256(of: sourceURL)
+          let payloadChanged = row.sha256 != digest || row.byteCount != byteCount
+          let metadataChanged = payloadChanged
+            || row.fileName != value.2.fileName
+            || row.contentType != value.2.contentType
+            || row.sourceRelativePath != localSourcePath
+          if payloadChanged {
+            if row.metadataAccepted {
+              row.priorPayloadZoneName = row.payloadZoneName
+              row.priorPayloadOwnerName = row.payloadOwnerName
+              row.priorPayloadRecordName = row.payloadRecordName
+              row.priorPayloadShadowData = row.payloadShadowData
+            } else if row.payloadAccepted {
+              try Self.insertCleanup(
+                namespaceKey: namespaceKey,
+                identity: row.payloadIdentity,
+                shadowData: row.payloadShadowData,
+                context: context
+              )
+            }
+            if let oldUpload = try row.uploadRelativePath.map({
+              try Self.validatedChild(relativePath: $0, root: cloudAttachmentUploadRoot(
+                namespaceKey: namespaceKey
+              ))
+            }) {
+              uploadFilesToRemove.append(oldUpload)
+            }
+            let payloadRecordName = UUID().uuidString.lowercased()
+            let upload = try stageCloudAttachmentUpload(
+              sourceURL: sourceURL,
+              namespaceKey: namespaceKey,
+              payloadRecordName: payloadRecordName
+            )
+            createdUploadFiles.append(upload.url)
+            row.payloadZoneName = payloadZoneName
+            row.payloadOwnerName = payloadOwnerName
+            row.payloadRecordName = payloadRecordName
+            row.uploadRelativePath = upload.relativePath
+            row.payloadAccepted = false
+            row.payloadShadowData = nil
+            row.payloadSystemFields = nil
+            row.metadataAccepted = false
+          } else if !row.payloadAccepted {
+            let upload = try stageCloudAttachmentUpload(
+              sourceURL: sourceURL,
+              namespaceKey: namespaceKey,
+              payloadRecordName: row.payloadRecordName
+            )
+            if row.uploadRelativePath == nil { createdUploadFiles.append(upload.url) }
+            if row.uploadRelativePath != upload.relativePath {
+              row.uploadRelativePath = upload.relativePath
+              changed = true
+            }
+          }
+          if metadataChanged {
+            row.fileName = value.2.fileName
+            row.contentType = value.2.contentType
+            row.byteCount = byteCount
+            row.sha256 = digest
+            row.sourceRelativePath = localSourcePath
+            row.metadataAccepted = false
+            row.lastFailure = nil
+            row.revision += 1
+            changed = true
+          }
+          continue
         }
-        if row.snipID != value.0 || row.position != value.1 {
-          row.snipID = value.0
-          row.position = value.1
-          row.metadataAccepted = false
-          row.lastFailure = nil
-          row.revision += 1
-          changed = true
-        }
-        guard let localSourcePath else { continue }
         let sourceURL = try Self.validatedChild(
-          relativePath: localSourcePath,
+          relativePath: value.2.relativePath,
           root: attachmentRootURL
         )
-        let values = try sourceURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-        guard values.isRegularFile == true else {
-          throw CloudAttachmentStorageError.missingPayload
-        }
-        let byteCount = Int64(values.fileSize ?? -1)
         let digest = try Self.sha256(of: sourceURL)
-        let payloadChanged = row.sha256 != digest || row.byteCount != byteCount
-        let metadataChanged = payloadChanged
-          || row.fileName != value.2.fileName
-          || row.contentType != value.2.contentType
-          || row.sourceRelativePath != localSourcePath
-        if payloadChanged {
-          if row.metadataAccepted {
-            row.priorPayloadZoneName = row.payloadZoneName
-            row.priorPayloadOwnerName = row.payloadOwnerName
-            row.priorPayloadRecordName = row.payloadRecordName
-            row.priorPayloadShadowData = row.payloadShadowData
-          } else if row.payloadAccepted {
-            try Self.insertCleanup(
-              namespaceKey: namespaceKey,
-              identity: row.payloadIdentity,
-              shadowData: row.payloadShadowData,
-              context: context
-            )
-          }
-          if let oldUpload = try row.uploadRelativePath.map({
-            try Self.validatedChild(relativePath: $0, root: cloudAttachmentUploadRoot(
-              namespaceKey: namespaceKey
-            ))
-          }) {
-            uploadFilesToRemove.append(oldUpload)
-          }
-          let payloadRecordName = UUID().uuidString.lowercased()
-          let upload = try stageCloudAttachmentUpload(
-            sourceURL: sourceURL,
-            namespaceKey: namespaceKey,
-            payloadRecordName: payloadRecordName
-          )
-          createdUploadFiles.append(upload.url)
-          row.payloadZoneName = payloadZoneName
-          row.payloadOwnerName = payloadOwnerName
-          row.payloadRecordName = payloadRecordName
-          row.uploadRelativePath = upload.relativePath
-          row.payloadAccepted = false
-          row.payloadShadowData = nil
-          row.payloadSystemFields = nil
-          row.metadataAccepted = false
-        } else if !row.payloadAccepted {
-          let upload = try stageCloudAttachmentUpload(
-            sourceURL: sourceURL,
-            namespaceKey: namespaceKey,
-            payloadRecordName: row.payloadRecordName
-          )
-          if row.uploadRelativePath == nil { createdUploadFiles.append(upload.url) }
-          row.uploadRelativePath = upload.relativePath
-        }
-        if metadataChanged {
-          row.fileName = value.2.fileName
-          row.contentType = value.2.contentType
-          row.byteCount = byteCount
-          row.sha256 = digest
-          row.sourceRelativePath = localSourcePath
-          row.metadataAccepted = false
-          row.lastFailure = nil
-          row.revision += 1
-          changed = true
-        }
-        continue
-      }
-      let sourceURL = try Self.validatedChild(
-        relativePath: value.2.relativePath,
-        root: attachmentRootURL
-      )
-      let digest = try Self.sha256(of: sourceURL)
-      let metadataIdentity = CloudTextStorageIdentity(
-        zoneName: metadataZoneName,
-        ownerName: metadataOwnerName,
-        recordName: "a-\(attachmentID.uuidString.lowercased())"
-      )
-      let payloadRecordName = UUID().uuidString.lowercased()
-      let payloadIdentity = CloudTextStorageIdentity(
-        zoneName: payloadZoneName,
-        ownerName: payloadOwnerName,
-        recordName: payloadRecordName
-      )
-      let upload = try stageCloudAttachmentUpload(
-        sourceURL: sourceURL,
-        namespaceKey: namespaceKey,
-        payloadRecordName: payloadRecordName
-      )
-      createdUploadFiles.append(upload.url)
-      let row = StoredCloudAttachmentPublication(
+        let metadataIdentity = CloudTextStorageIdentity(
+          zoneName: metadataZoneName,
+          ownerName: metadataOwnerName,
+          recordName: "a-\(attachmentID.uuidString.lowercased())"
+        )
+        let payloadRecordName = UUID().uuidString.lowercased()
+        let payloadIdentity = CloudTextStorageIdentity(
+          zoneName: payloadZoneName,
+          ownerName: payloadOwnerName,
+          recordName: payloadRecordName
+        )
+        let upload = try stageCloudAttachmentUpload(
+          sourceURL: sourceURL,
+          namespaceKey: namespaceKey,
+          payloadRecordName: payloadRecordName
+        )
+        createdUploadFiles.append(upload.url)
+        let row = StoredCloudAttachmentPublication(
           namespaceKey: namespaceKey,
           attachmentID: attachmentID,
           snipID: value.0,
@@ -154,43 +175,46 @@ extension SwiftDataSnipLibrary {
           sourceRelativePath: value.2.relativePath,
           metadataIdentity: metadataIdentity,
           payloadIdentity: payloadIdentity
-      )
-      row.uploadRelativePath = upload.relativePath
-      context.insert(row)
-      changed = true
-    }
-
-    for row in existing where local[row.attachmentID] == nil && row.isLocallyPresent {
-      row.isLocallyPresent = false
-      row.sourceRelativePath = nil
-      row.lastFailure = nil
-      row.revision += 1
-      changed = true
-      if !row.metadataAccepted {
-        if row.payloadAccepted {
-          try Self.insertCleanup(
-            namespaceKey: namespaceKey,
-            identity: row.payloadIdentity,
-            shadowData: row.payloadShadowData,
-            context: context
-          )
-        }
-        if let upload = try row.uploadRelativePath.map({
-          try Self.validatedChild(
-            relativePath: $0,
-            root: cloudAttachmentUploadRoot(namespaceKey: namespaceKey)
-          )
-        }) {
-          uploadFilesToRemove.append(upload)
-        }
-        context.delete(row)
+        )
+        row.uploadRelativePath = upload.relativePath
+        context.insert(row)
+        changed = true
       }
-    }
-    if changed {
-      try afterMutationBeforeSave()
-      try context.save()
-    }
-    for url in uploadFilesToRemove { try? FileManager.default.removeItem(at: url) }
+
+      for row in existing where local[row.attachmentID] == nil && row.isLocallyPresent {
+        row.isLocallyPresent = false
+        row.sourceRelativePath = nil
+        row.lastFailure = nil
+        row.revision += 1
+        changed = true
+        if !row.metadataAccepted {
+          if row.payloadAccepted {
+            try Self.insertCleanup(
+              namespaceKey: namespaceKey,
+              identity: row.payloadIdentity,
+              shadowData: row.payloadShadowData,
+              context: context
+            )
+          }
+          if let upload = try row.uploadRelativePath.map({
+            try Self.validatedChild(
+              relativePath: $0,
+              root: cloudAttachmentUploadRoot(namespaceKey: namespaceKey)
+            )
+          }) {
+            uploadFilesToRemove.append(upload)
+          }
+          context.delete(row)
+        }
+      }
+      if changed {
+        try afterMutationBeforeSave()
+        try context.save()
+      }
+      for url in uploadFilesToRemove {
+        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+      }
     } catch {
       context.rollback()
       for url in createdUploadFiles {
@@ -209,8 +233,10 @@ extension SwiftDataSnipLibrary {
     defer { withExtendedLifetime(lock) {} }
     let context = Self.makeContext(container: container)
     let uploadRoot = try cloudAttachmentUploadRoot(namespaceKey: namespaceKey)
-    let publications = try context.fetch(FetchDescriptor<StoredCloudAttachmentPublication>())
-      .filter { $0.namespaceKey == namespaceKey }
+    let publications = try Self.cloudAttachmentPublications(
+      namespaceKey: namespaceKey,
+      context: context
+    )
       .map { row in
         CloudAttachmentPublication(
           metadata: row.metadata,
@@ -233,19 +259,25 @@ extension SwiftDataSnipLibrary {
         )
       }
       .sorted { $0.metadata.attachmentID.uuidString < $1.metadata.attachmentID.uuidString }
-    let cleanups = try context.fetch(FetchDescriptor<StoredCloudAttachmentCleanup>())
-      .filter { $0.namespaceKey == namespaceKey }
+    let cleanups = try Self.cloudAttachmentCleanups(
+      namespaceKey: namespaceKey,
+      context: context
+    )
       .map {
         CloudAttachmentCleanup(
           identity: $0.identity,
           shadowData: $0.shadowData,
+          blockedByAttachmentID: $0.blockedByAttachmentID,
+          lastFailure: $0.lastFailure.flatMap(CloudAttachmentFailure.init(rawValue:)),
           revision: $0.revision
         )
       }
       .sorted { $0.identity.key < $1.identity.key }
     let cacheRoot = try cloudAttachmentCacheRoot(namespaceKey: namespaceKey)
-    let caches = try context.fetch(FetchDescriptor<StoredCloudAttachmentCacheEntry>())
-      .filter { $0.namespaceKey == namespaceKey }
+    let caches = try Self.cloudAttachmentCacheEntries(
+      namespaceKey: namespaceKey,
+      context: context
+    )
       .map {
         CloudAttachmentCacheEntry(
           attachmentID: $0.attachmentID,
@@ -263,17 +295,153 @@ extension SwiftDataSnipLibrary {
     )
   }
 
+  package func quarantineCloudAttachmentOperations(
+    namespaceKey: String,
+    publicationIDs: Set<UUID>,
+    cleanupIdentities: Set<CloudTextStorageIdentity>
+  ) throws {
+    guard let container else { throw SnipLibraryError.storeUnavailable }
+    guard !publicationIDs.isEmpty || !cleanupIdentities.isEmpty else { return }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    let publications = try Self.cloudAttachmentPublications(
+      namespaceKey: namespaceKey,
+      context: context
+    )
+    let cleanups = try Self.cloudAttachmentCleanups(
+      namespaceKey: namespaceKey,
+      context: context
+    )
+    var changed = false
+    for row in publications where publicationIDs.contains(row.attachmentID)
+      && row.lastFailure != CloudAttachmentFailure.invalidRecord.rawValue
+    {
+      row.lastFailure = CloudAttachmentFailure.invalidRecord.rawValue
+      row.revision += 1
+      changed = true
+    }
+    for row in cleanups where cleanupIdentities.contains(row.identity)
+      && row.lastFailure != CloudAttachmentFailure.invalidRecord.rawValue
+    {
+      row.lastFailure = CloudAttachmentFailure.invalidRecord.rawValue
+      row.revision += 1
+      changed = true
+    }
+    if changed {
+      try afterMutationBeforeSave()
+      try context.save()
+    }
+  }
+
   package func applyCloudAttachmentTransitions(
     namespaceKey: String,
     transitions: [CloudAttachmentTransition],
     context: ModelContext
   ) throws {
-    let publications = try context.fetch(FetchDescriptor<StoredCloudAttachmentPublication>())
-      .filter { $0.namespaceKey == namespaceKey }
-    let byAttachment = Dictionary(uniqueKeysWithValues: publications.map { ($0.attachmentID, $0) })
-    let cleanups = try context.fetch(FetchDescriptor<StoredCloudAttachmentCleanup>())
-      .filter { $0.namespaceKey == namespaceKey }
-    let byCleanup = Dictionary(uniqueKeysWithValues: cleanups.map { ($0.identity, $0) })
+    let publications = try Self.cloudAttachmentPublications(
+      namespaceKey: namespaceKey,
+      context: context
+    )
+    var byAttachment = Dictionary(
+      uniqueKeysWithValues: publications.map { ($0.attachmentID, $0) }
+    )
+    let byMetadataIdentity = Dictionary(
+      publications.map { ($0.metadataIdentity, $0) },
+      uniquingKeysWith: { first, _ in first }
+    )
+    let cleanups = try Self.cloudAttachmentCleanups(
+      namespaceKey: namespaceKey,
+      context: context
+    )
+    var byCleanup = Dictionary(uniqueKeysWithValues: cleanups.map { ($0.identity, $0) })
+    var materializedAttachmentIDs: Set<UUID> = []
+    for transition in transitions {
+      switch transition {
+      case .metadataUnknown(let attachmentID, _, let replacementAttachmentID, _):
+        materializedAttachmentIDs.insert(attachmentID)
+        materializedAttachmentIDs.insert(replacementAttachmentID)
+      case .remoteMetadataDeleted(let metadataIdentity):
+        if let row = byMetadataIdentity[metadataIdentity] {
+          materializedAttachmentIDs.insert(row.attachmentID)
+        }
+      default:
+        break
+      }
+    }
+    let materializedIDs = Array(materializedAttachmentIDs)
+    let storedAttachmentRows: [StoredAttachmentRecord]
+    let storedReferenceRows: [StoredSnipAttachmentReference]
+    if materializedIDs.isEmpty {
+      storedAttachmentRows = []
+      storedReferenceRows = []
+    } else {
+      storedAttachmentRows = try context.fetch(FetchDescriptor<StoredAttachmentRecord>(
+        predicate: #Predicate<StoredAttachmentRecord> { materializedIDs.contains($0.id) }
+      ))
+      storedReferenceRows = try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>(
+        predicate: #Predicate<StoredSnipAttachmentReference> {
+          materializedIDs.contains($0.attachmentID)
+        }
+      ))
+    }
+    var storedAttachments = Dictionary(grouping:
+      storedAttachmentRows,
+      by: \.id
+    )
+    var storedReferences = Dictionary(grouping:
+      storedReferenceRows,
+      by: \.attachmentID
+    )
+    let cacheRows = try Self.cloudAttachmentCacheEntries(
+      namespaceKey: namespaceKey,
+      context: context
+    )
+    var cacheByAttachment = Dictionary(grouping: cacheRows, by: \.attachmentID)
+    var pendingReplacementIDsByLocation = Dictionary(
+      grouping: publications.filter { $0.isLocallyPresent && !$0.metadataAccepted },
+      by: { "\($0.snipID.uuidString)|\($0.position)" }
+    ).mapValues { rows in
+      rows.map(\.attachmentID).sorted { $0.uuidString < $1.uuidString }
+    }
+    func removeCache(for attachmentID: UUID) {
+      for row in cacheByAttachment.removeValue(forKey: attachmentID) ?? [] {
+        context.delete(row)
+      }
+    }
+    func insertCleanup(
+      identity: CloudTextStorageIdentity,
+      shadowData: Data?,
+      blockedByAttachmentID: UUID? = nil
+    ) {
+      if let current = byCleanup[identity] {
+        if current.shadowData == nil { current.shadowData = shadowData }
+        if current.blockedByAttachmentID == nil {
+          current.blockedByAttachmentID = blockedByAttachmentID
+        }
+        return
+      }
+      let row = StoredCloudAttachmentCleanup(
+        namespaceKey: namespaceKey,
+        identity: identity,
+        shadowData: shadowData,
+        blockedByAttachmentID: blockedByAttachmentID
+      )
+      context.insert(row)
+      byCleanup[identity] = row
+    }
+    func removeMaterialized(attachmentID: UUID, snipID: UUID) {
+      let references = storedReferences[attachmentID] ?? []
+      for reference in references where reference.snipID == snipID {
+        context.delete(reference)
+      }
+      let remaining = references.filter { $0.snipID != snipID }
+      storedReferences[attachmentID] = remaining
+      guard remaining.isEmpty else { return }
+      for attachment in storedAttachments.removeValue(forKey: attachmentID) ?? [] {
+        context.delete(attachment)
+      }
+    }
     for transition in transitions {
       switch transition {
       case .remoteMetadataAccepted(
@@ -290,11 +458,7 @@ extension SwiftDataSnipLibrary {
             throw CloudAttachmentStorageError.staleTransition
           }
           if row.payloadIdentity != metadata.payloadIdentity {
-            try removeCloudAttachmentCacheRow(
-              namespaceKey: namespaceKey,
-              attachmentID: metadata.attachmentID,
-              context: context
-            )
+            removeCache(for: metadata.attachmentID)
           }
           row.snipID = metadata.snipID
           row.position = metadata.position
@@ -360,12 +524,7 @@ extension SwiftDataSnipLibrary {
         row.metadataShadowData = shadow
         row.metadataSystemFields = systemFields
         if let prior = row.priorPayloadIdentity {
-          try Self.insertCleanup(
-            namespaceKey: namespaceKey,
-            identity: prior,
-            shadowData: row.priorPayloadShadowData,
-            context: context
-          )
+          insertCleanup(identity: prior, shadowData: row.priorPayloadShadowData)
           row.priorPayloadZoneName = nil
           row.priorPayloadOwnerName = nil
           row.priorPayloadRecordName = nil
@@ -391,15 +550,90 @@ extension SwiftDataSnipLibrary {
         row.payloadRecordName = replacementIdentity.recordName
         row.lastFailure = nil
         row.revision += 1
-      case .metadataUnknown(let attachmentID, let expected):
-        guard let row = byAttachment[attachmentID], row.revision == expected else {
+      case .metadataUnknown(
+        let attachmentID,
+        let expected,
+        let replacementAttachmentID,
+        let replacementMetadataIdentity
+      ):
+        guard let row = byAttachment[attachmentID], row.revision == expected,
+          row.isLocallyPresent,
+          replacementAttachmentID != attachmentID,
+          replacementMetadataIdentity.zoneName == row.metadataZoneName,
+          replacementMetadataIdentity.ownerName == row.metadataOwnerName,
+          replacementMetadataIdentity.recordName
+            == "a-\(replacementAttachmentID.uuidString.lowercased())"
+        else {
           throw CloudAttachmentStorageError.staleTransition
         }
-        row.metadataAccepted = false
-        row.metadataShadowData = nil
-        row.metadataSystemFields = nil
-        row.lastFailure = nil
-        row.revision += 1
+        guard byAttachment[replacementAttachmentID] == nil,
+          !storedAttachments.keys.contains(replacementAttachmentID)
+        else {
+          throw CloudAttachmentStorageError.staleTransition
+        }
+        let oldAttachments = storedAttachments.removeValue(forKey: attachmentID) ?? []
+        var newAttachments: [StoredAttachmentRecord] = []
+        for attachment in oldAttachments {
+          let replacementAttachment = StoredAttachmentRecord(SnipAttachment(
+            id: replacementAttachmentID,
+            fileName: attachment.fileName,
+            relativePath: attachment.relativePath,
+            contentType: attachment.contentType,
+            byteCount: attachment.byteCount
+          ))
+          context.insert(replacementAttachment)
+          newAttachments.append(replacementAttachment)
+          context.delete(attachment)
+        }
+        storedAttachments[replacementAttachmentID] = newAttachments
+        let oldReferences = storedReferences.removeValue(forKey: attachmentID) ?? []
+        var newReferences: [StoredSnipAttachmentReference] = []
+        for reference in oldReferences {
+          let replacementReference = StoredSnipAttachmentReference(
+            snipID: reference.snipID,
+            attachmentID: replacementAttachmentID,
+            position: reference.position
+          )
+          context.insert(replacementReference)
+          newReferences.append(replacementReference)
+          context.delete(reference)
+        }
+        storedReferences[replacementAttachmentID] = newReferences
+        removeCache(for: attachmentID)
+        let replacement = StoredCloudAttachmentPublication(
+          namespaceKey: namespaceKey,
+          attachmentID: replacementAttachmentID,
+          snipID: row.snipID,
+          position: row.position,
+          fileName: row.fileName,
+          contentType: row.contentType,
+          byteCount: row.byteCount,
+          sha256: row.sha256,
+          sourceRelativePath: row.sourceRelativePath,
+          metadataIdentity: replacementMetadataIdentity,
+          payloadIdentity: row.payloadIdentity
+        )
+        replacement.isLocallyPresent = row.isLocallyPresent
+        replacement.uploadRelativePath = row.uploadRelativePath
+        replacement.payloadAccepted = row.payloadAccepted
+        replacement.payloadShadowData = row.payloadShadowData
+        replacement.payloadSystemFields = row.payloadSystemFields
+        replacement.priorPayloadZoneName = row.priorPayloadZoneName
+        replacement.priorPayloadOwnerName = row.priorPayloadOwnerName
+        replacement.priorPayloadRecordName = row.priorPayloadRecordName
+        replacement.priorPayloadShadowData = row.priorPayloadShadowData
+        replacement.revision = row.revision + 1
+        context.insert(replacement)
+        context.delete(row)
+        byAttachment.removeValue(forKey: attachmentID)
+        byAttachment[replacementAttachmentID] = replacement
+        let locationKey = "\(row.snipID.uuidString)|\(row.position)"
+        var replacementIDs = pendingReplacementIDsByLocation[locationKey] ?? []
+        replacementIDs.removeAll { $0 == attachmentID }
+        replacementIDs.append(replacementAttachmentID)
+        pendingReplacementIDsByLocation[locationKey] = Array(Set(replacementIDs)).sorted {
+          $0.uuidString < $1.uuidString
+        }
       case .operationFailed(let attachmentID, let expected, let failure):
         guard let row = byAttachment[attachmentID], row.revision == expected else {
           throw CloudAttachmentStorageError.staleTransition
@@ -410,41 +644,51 @@ extension SwiftDataSnipLibrary {
         guard let row = byAttachment[attachmentID], row.revision == expected,
           !row.isLocallyPresent
         else { throw CloudAttachmentStorageError.staleTransition }
-        try Self.insertCleanup(
-          namespaceKey: namespaceKey,
+        let locationKey = "\(row.snipID.uuidString)|\(row.position)"
+        let replacementAttachmentID = pendingReplacementIDsByLocation[locationKey]?.first(where: {
+          $0 != attachmentID
+        })
+        insertCleanup(
           identity: row.payloadIdentity,
           shadowData: row.payloadShadowData,
-          context: context
+          blockedByAttachmentID: replacementAttachmentID
         )
-        try removeCloudAttachmentCacheRow(
-          namespaceKey: namespaceKey,
-          attachmentID: attachmentID,
-          context: context
-        )
+        removeCache(for: attachmentID)
         context.delete(row)
-      case .metadataDeleteConflict(let attachmentID, let expected, let shadow, let systemFields):
+        byAttachment.removeValue(forKey: attachmentID)
+      case .metadataDeleteConflict(
+        let attachmentID,
+        let expected,
+        let shadow,
+        let systemFields,
+        let payloadIdentity
+      ):
         guard let row = byAttachment[attachmentID], row.revision == expected,
           !row.isLocallyPresent
         else { throw CloudAttachmentStorageError.staleTransition }
+        if row.payloadIdentity != payloadIdentity {
+          insertCleanup(identity: row.payloadIdentity, shadowData: row.payloadShadowData)
+          removeCache(for: attachmentID)
+          row.payloadZoneName = payloadIdentity.zoneName
+          row.payloadOwnerName = payloadIdentity.ownerName
+          row.payloadRecordName = payloadIdentity.recordName
+          row.payloadShadowData = nil
+          row.payloadSystemFields = nil
+        }
+        row.payloadAccepted = true
         row.metadataAccepted = true
         row.metadataShadowData = shadow
         row.metadataSystemFields = systemFields
         row.lastFailure = nil
         row.revision += 1
       case .remoteMetadataDeleted(let metadataIdentity):
-        guard let row = publications.first(where: { $0.metadataIdentity == metadataIdentity })
+        guard let row = byMetadataIdentity[metadataIdentity]
         else { continue }
-        try removeCloudAttachmentCacheRow(
-          namespaceKey: namespaceKey,
-          attachmentID: row.attachmentID,
-          context: context
-        )
-        try removeMaterializedCloudAttachment(
-          attachmentID: row.attachmentID,
-          snipID: row.snipID,
-          context: context
-        )
+        insertCleanup(identity: row.payloadIdentity, shadowData: row.payloadShadowData)
+        removeCache(for: row.attachmentID)
+        removeMaterialized(attachmentID: row.attachmentID, snipID: row.snipID)
         context.delete(row)
+        byAttachment.removeValue(forKey: row.attachmentID)
       case .cleanupAccepted(let identity, let expected):
         guard let row = byCleanup[identity] else { continue }
         guard row.revision == expected else { throw CloudAttachmentStorageError.staleTransition }
@@ -454,6 +698,13 @@ extension SwiftDataSnipLibrary {
           throw CloudAttachmentStorageError.staleTransition
         }
         row.shadowData = shadow
+        row.lastFailure = nil
+        row.revision += 1
+      case .cleanupFailed(let identity, let expected, let failure):
+        guard let row = byCleanup[identity], row.revision == expected else {
+          throw CloudAttachmentStorageError.staleTransition
+        }
+        row.lastFailure = failure.rawValue
         row.revision += 1
       }
     }
@@ -472,9 +723,12 @@ extension SwiftDataSnipLibrary {
       guard case .payloadAccepted(let attachmentID, _, _, _) = transition else { return nil }
       return attachmentID
     })
-    let acceptedUploadFiles = try context.fetch(FetchDescriptor<StoredCloudAttachmentPublication>())
+    let acceptedUploadFiles = try Self.cloudAttachmentPublications(
+      namespaceKey: namespaceKey,
+      context: context
+    )
       .filter {
-        $0.namespaceKey == namespaceKey && acceptedAttachmentIDs.contains($0.attachmentID)
+        acceptedAttachmentIDs.contains($0.attachmentID)
       }
       .compactMap { row in
         try row.uploadRelativePath.map {
@@ -514,6 +768,7 @@ extension SwiftDataSnipLibrary {
   package func installCloudAttachmentCacheFile(
     namespaceKey: String,
     attachmentID: UUID,
+    expectedPayloadIdentity: CloudTextStorageIdentity,
     stagedURL: URL,
     expectedByteCount: Int64,
     expectedSHA256: Data,
@@ -521,6 +776,9 @@ extension SwiftDataSnipLibrary {
     now: Date
   ) throws -> URL {
     guard maximumBytes >= 0, let container else { throw SnipLibraryError.storeUnavailable }
+    guard expectedByteCount <= maximumBytes else {
+      throw CloudAttachmentStorageError.sizeMismatch
+    }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
     let cacheRoot = try cloudAttachmentCacheRoot(namespaceKey: namespaceKey)
@@ -539,9 +797,15 @@ extension SwiftDataSnipLibrary {
     }
     let context = Self.makeContext(container: container)
     var filesToRemoveAfterCommit: [URL] = []
-    guard let publication = try context.fetch(FetchDescriptor<StoredCloudAttachmentPublication>())
-      .first(where: { $0.namespaceKey == namespaceKey && $0.attachmentID == attachmentID })
+    guard let publication = try Self.cloudAttachmentPublications(
+      namespaceKey: namespaceKey,
+      context: context
+    ).first(where: { $0.attachmentID == attachmentID })
     else { throw CloudAttachmentStorageError.missingPublication }
+    guard publication.payloadIdentity == expectedPayloadIdentity,
+      publication.byteCount == expectedByteCount,
+      publication.sha256 == expectedSHA256
+    else { throw CloudAttachmentStorageError.staleTransition }
     let filesRoot = cacheRoot.appendingPathComponent("Files", isDirectory: true)
     try DurableFile.createDirectory(filesRoot)
     let relativePath = "Files/\(attachmentID.uuidString.lowercased())/"
@@ -553,13 +817,16 @@ extension SwiftDataSnipLibrary {
     var didCommit = false
     defer { if !didCommit { try? FileManager.default.removeItem(at: destination) } }
     try DurableFile.syncFile(destination)
+    try DurableFile.syncDirectory(destination.deletingLastPathComponent())
     try DurableFile.syncDirectory(filesRoot)
     let key = StoredCloudAttachmentCacheEntry.key(
       namespaceKey: namespaceKey,
       attachmentID: attachmentID
     )
-    if let old = try context.fetch(FetchDescriptor<StoredCloudAttachmentCacheEntry>())
-      .first(where: { $0.id == key })
+    if let old = try Self.cloudAttachmentCacheEntries(
+      namespaceKey: namespaceKey,
+      context: context
+    ).first(where: { $0.id == key })
     {
       if let oldURL = try? Self.validatedChild(relativePath: old.relativePath, root: cacheRoot) {
         filesToRemoveAfterCommit.append(oldURL)
@@ -576,16 +843,20 @@ extension SwiftDataSnipLibrary {
     ))
     let domainRelativePath = "CloudDownloads/"
       + Self.cloudAttachmentNamespaceDigest(namespaceKey) + "/" + relativePath
-    if let attachment = try context.fetch(FetchDescriptor<StoredAttachmentRecord>())
-      .first(where: { $0.id == attachmentID })
+    if let attachment = try Self.storedAttachments(
+      attachmentID: attachmentID,
+      context: context
+    ).first
     {
       attachment.relativePath = domainRelativePath
       attachment.fileName = publication.fileName
       attachment.contentType = publication.contentType
       attachment.byteCount = publication.byteCount
     }
-    let entries = try context.fetch(FetchDescriptor<StoredCloudAttachmentCacheEntry>())
-      .filter { $0.namespaceKey == namespaceKey }
+    let entries = try Self.cloudAttachmentCacheEntries(
+      namespaceKey: namespaceKey,
+      context: context
+    )
       .sorted {
         if $0.lastAccessedAt != $1.lastAccessedAt { return $0.lastAccessedAt < $1.lastAccessedAt }
         return $0.id < $1.id
@@ -596,10 +867,6 @@ extension SwiftDataSnipLibrary {
       filesToRemoveAfterCommit.append(url)
       total -= entry.byteCount
       context.delete(entry)
-    }
-    if expectedByteCount > maximumBytes {
-      context.rollback()
-      throw CloudAttachmentStorageError.sizeMismatch
     }
     try afterMutationBeforeSave()
     try context.save()
@@ -622,9 +889,10 @@ extension SwiftDataSnipLibrary {
         try FileManager.default.removeItem(at: directory)
       }
     }
-    for entry in try context.fetch(FetchDescriptor<StoredCloudAttachmentCacheEntry>()) {
-      if entry.namespaceKey == namespaceKey { context.delete(entry) }
-    }
+    for entry in try Self.cloudAttachmentCacheEntries(
+      namespaceKey: namespaceKey,
+      context: context
+    ) { context.delete(entry) }
     try afterMutationBeforeSave()
     try context.save()
   }
@@ -640,12 +908,13 @@ extension SwiftDataSnipLibrary {
     let root = try cloudAttachmentCacheRoot(namespaceKey: namespaceKey)
     let context = Self.makeContext(container: container)
     let publications = Dictionary(uniqueKeysWithValues:
-      try context.fetch(FetchDescriptor<StoredCloudAttachmentPublication>())
-        .filter { $0.namespaceKey == namespaceKey }
+      try Self.cloudAttachmentPublications(namespaceKey: namespaceKey, context: context)
         .map { ($0.attachmentID, $0) }
     )
-    let entries = try context.fetch(FetchDescriptor<StoredCloudAttachmentCacheEntry>())
-      .filter { $0.namespaceKey == namespaceKey }
+    let entries = try Self.cloudAttachmentCacheEntries(
+      namespaceKey: namespaceKey,
+      context: context
+    )
       .sorted {
         if $0.lastAccessedAt != $1.lastAccessedAt { return $0.lastAccessedAt < $1.lastAccessedAt }
         return $0.id < $1.id
@@ -711,14 +980,23 @@ extension SwiftDataSnipLibrary {
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
     let context = Self.makeContext(container: container)
-    guard let row = try context.fetch(FetchDescriptor<StoredCloudAttachmentCacheEntry>())
-      .first(where: { $0.namespaceKey == namespaceKey && $0.attachmentID == attachmentID })
+    guard let row = try Self.cloudAttachmentCacheEntries(
+      namespaceKey: namespaceKey,
+      context: context
+    ).first(where: { $0.attachmentID == attachmentID })
     else { return nil }
-    guard let publication = try context.fetch(FetchDescriptor<StoredCloudAttachmentPublication>())
-      .first(where: { $0.namespaceKey == namespaceKey && $0.attachmentID == attachmentID }),
+    guard let publication = try Self.cloudAttachmentPublications(
+      namespaceKey: namespaceKey,
+      context: context
+    ).first(where: { $0.attachmentID == attachmentID }),
       publication.metadataAccepted,
       publication.payloadIdentity == row.payloadIdentity
     else {
+      let root = try cloudAttachmentCacheRoot(namespaceKey: namespaceKey)
+      if let url = try? Self.validatedChild(relativePath: row.relativePath, root: root) {
+        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+      }
       context.delete(row)
       try context.save()
       return nil
@@ -797,6 +1075,35 @@ extension SwiftDataSnipLibrary {
     }
   }
 
+  /// Removes only direct, unowned upload directories so recovery work stays bounded.
+  private func sweepCloudAttachmentUploads(
+    namespaceKey: String,
+    keeping recordNames: Set<String>
+  ) throws {
+    let root = try cloudAttachmentUploadRoot(namespaceKey: namespaceKey)
+    for child in try FileManager.default.contentsOfDirectory(
+      at: root,
+      includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+      options: [.skipsHiddenFiles]
+    ) {
+      let values = try child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+      guard values.isSymbolicLink != true, values.isDirectory == true,
+        recordNames.contains(child.lastPathComponent)
+      else {
+        try FileManager.default.removeItem(at: child)
+        continue
+      }
+      for item in try FileManager.default.contentsOfDirectory(
+        at: child,
+        includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+        options: [.skipsHiddenFiles]
+      ) where item.lastPathComponent != "payload"
+      {
+        try FileManager.default.removeItem(at: item)
+      }
+    }
+  }
+
   private static func cloudAttachmentNamespaceDigest(_ namespaceKey: String) -> String {
     Data(SHA256.hash(data: Data(namespaceKey.utf8)))
       .map { String(format: "%02x", $0) }.joined()
@@ -839,25 +1146,43 @@ extension SwiftDataSnipLibrary {
     namespaceKey: String,
     context: ModelContext
   ) throws {
-    let snipIDs = Set(try context.fetch(FetchDescriptor<StoredSnipRecord>()).map(\.id))
-    let publications = try context.fetch(FetchDescriptor<StoredCloudAttachmentPublication>())
+    let publications = try Self.cloudAttachmentPublications(
+      namespaceKey: namespaceKey,
+      context: context
+    )
       .filter {
-        $0.namespaceKey == namespaceKey && $0.isLocallyPresent && $0.metadataAccepted
-          && $0.sourceRelativePath == nil && snipIDs.contains($0.snipID)
+        $0.isLocallyPresent && $0.metadataAccepted
+          && $0.sourceRelativePath == nil
       }
+    guard !publications.isEmpty else { return }
+    let snipIDs = Array(Set(publications.map(\.snipID)))
+    let attachmentIDs = Array(Set(publications.map(\.attachmentID)))
+    let referenceIDs = publications.map {
+      StoredSnipAttachmentReference.identifier(
+        snipID: $0.snipID,
+        attachmentID: $0.attachmentID
+      )
+    }
+    let storedSnipIDs = Set(try context.fetch(FetchDescriptor<StoredSnipRecord>(
+      predicate: #Predicate<StoredSnipRecord> { snipIDs.contains($0.id) }
+    )).map(\.id))
     var attachments = Dictionary(uniqueKeysWithValues:
-      try context.fetch(FetchDescriptor<StoredAttachmentRecord>()).map { ($0.id, $0) }
+      try context.fetch(FetchDescriptor<StoredAttachmentRecord>(
+        predicate: #Predicate<StoredAttachmentRecord> { attachmentIDs.contains($0.id) }
+      )).map { ($0.id, $0) }
     )
     var references = Dictionary(uniqueKeysWithValues:
-      try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>()).map { ($0.id, $0) }
+      try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>(
+        predicate: #Predicate<StoredSnipAttachmentReference> { referenceIDs.contains($0.id) }
+      )).map { ($0.id, $0) }
     )
     let cacheEntries = Dictionary(uniqueKeysWithValues:
-      try context.fetch(FetchDescriptor<StoredCloudAttachmentCacheEntry>())
-        .filter { $0.namespaceKey == namespaceKey }
+      try Self.cloudAttachmentCacheEntries(namespaceKey: namespaceKey, context: context)
         .map { ($0.attachmentID, $0) }
     )
     let namespaceDigest = Self.cloudAttachmentNamespaceDigest(namespaceKey)
     for publication in publications {
+      guard storedSnipIDs.contains(publication.snipID) else { continue }
       let relativePath: String
       if let cache = cacheEntries[publication.attachmentID],
         cache.payloadIdentity == publication.payloadIdentity
@@ -884,11 +1209,11 @@ extension SwiftDataSnipLibrary {
         context.insert(stored)
         attachments[publication.attachmentID] = stored
       }
-      let id = StoredSnipAttachmentReference.identifier(
+      let referenceID = StoredSnipAttachmentReference.identifier(
         snipID: publication.snipID,
         attachmentID: publication.attachmentID
       )
-      if let reference = references[id] {
+      if let reference = references[referenceID] {
         reference.update(position: publication.position)
       } else {
         let reference = StoredSnipAttachmentReference(
@@ -897,7 +1222,7 @@ extension SwiftDataSnipLibrary {
           position: publication.position
         )
         context.insert(reference)
-        references[id] = reference
+        references[referenceID] = reference
       }
     }
   }
@@ -907,7 +1232,10 @@ extension SwiftDataSnipLibrary {
     snipID: UUID,
     context: ModelContext
   ) throws {
-    let references = try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>())
+    let references = try Self.storedAttachmentReferences(
+      attachmentID: attachmentID,
+      context: context
+    )
     for reference in references
       where reference.attachmentID == attachmentID && reference.snipID == snipID
     {
@@ -916,9 +1244,10 @@ extension SwiftDataSnipLibrary {
     guard !references.contains(where: {
       $0.attachmentID == attachmentID && $0.snipID != snipID
     }) else { return }
-    for attachment in try context.fetch(FetchDescriptor<StoredAttachmentRecord>())
-      where attachment.id == attachmentID
-    {
+    for attachment in try Self.storedAttachments(
+      attachmentID: attachmentID,
+      context: context
+    ) {
       context.delete(attachment)
     }
   }
@@ -928,9 +1257,10 @@ extension SwiftDataSnipLibrary {
     attachmentID: UUID,
     context: ModelContext
   ) throws {
-    for row in try context.fetch(FetchDescriptor<StoredCloudAttachmentCacheEntry>())
-      where row.namespaceKey == namespaceKey && row.attachmentID == attachmentID
-    {
+    for row in try Self.cloudAttachmentCacheEntries(
+      namespaceKey: namespaceKey,
+      context: context
+    ) where row.attachmentID == attachmentID {
       context.delete(row)
     }
   }
@@ -940,25 +1270,33 @@ extension SwiftDataSnipLibrary {
     transitions: [CloudAttachmentTransition],
     context: ModelContext
   ) throws -> [URL] {
-    let publications = try context.fetch(FetchDescriptor<StoredCloudAttachmentPublication>())
-      .filter { $0.namespaceKey == namespaceKey }
+    let publications = try Self.cloudAttachmentPublications(
+      namespaceKey: namespaceKey,
+      context: context
+    )
+    let publicationByAttachment = Dictionary(
+      uniqueKeysWithValues: publications.map { ($0.attachmentID, $0) }
+    )
+    let publicationByMetadataIdentity = Dictionary(
+      publications.map { ($0.metadataIdentity, $0) },
+      uniquingKeysWith: { first, _ in first }
+    )
     var attachmentIDs: Set<UUID> = []
     for transition in transitions {
       switch transition {
       case .remoteMetadataAccepted(let metadata, _, _, _):
-        if let current = publications.first(where: {
-          $0.attachmentID == metadata.attachmentID
-        }), current.payloadIdentity != metadata.payloadIdentity
+        if let current = publicationByAttachment[metadata.attachmentID],
+          current.payloadIdentity != metadata.payloadIdentity
           || current.byteCount != metadata.byteCount || current.sha256 != metadata.sha256
         {
           attachmentIDs.insert(metadata.attachmentID)
         }
       case .metadataDeleteAccepted(let attachmentID, _):
         attachmentIDs.insert(attachmentID)
+      case .metadataUnknown(let attachmentID, _, _, _):
+        attachmentIDs.insert(attachmentID)
       case .remoteMetadataDeleted(let metadataIdentity):
-        if let current = publications.first(where: {
-          $0.metadataIdentity == metadataIdentity
-        }) {
+        if let current = publicationByMetadataIdentity[metadataIdentity] {
           attachmentIDs.insert(current.attachmentID)
         }
       default:
@@ -966,10 +1304,11 @@ extension SwiftDataSnipLibrary {
       }
     }
     let root = try cloudAttachmentCacheRoot(namespaceKey: namespaceKey)
-    return try context.fetch(FetchDescriptor<StoredCloudAttachmentCacheEntry>())
-      .filter {
-        $0.namespaceKey == namespaceKey && attachmentIDs.contains($0.attachmentID)
-      }
+    return try Self.cloudAttachmentCacheEntries(
+      namespaceKey: namespaceKey,
+      context: context
+    )
+      .filter { attachmentIDs.contains($0.attachmentID) }
       .compactMap { try? Self.validatedChild(relativePath: $0.relativePath, root: root) }
   }
 
@@ -983,6 +1322,56 @@ extension SwiftDataSnipLibrary {
     return "CloudDownloads/\(digest)/Files/\(attachmentID.uuidString.lowercased())/\(safeName)"
   }
 
+  private static func cloudAttachmentPublications(
+    namespaceKey: String,
+    context: ModelContext
+  ) throws -> [StoredCloudAttachmentPublication] {
+    let key = namespaceKey
+    return try context.fetch(FetchDescriptor(
+      predicate: #Predicate<StoredCloudAttachmentPublication> { $0.namespaceKey == key }
+    ))
+  }
+
+  private static func cloudAttachmentCleanups(
+    namespaceKey: String,
+    context: ModelContext
+  ) throws -> [StoredCloudAttachmentCleanup] {
+    let key = namespaceKey
+    return try context.fetch(FetchDescriptor(
+      predicate: #Predicate<StoredCloudAttachmentCleanup> { $0.namespaceKey == key }
+    ))
+  }
+
+  private static func cloudAttachmentCacheEntries(
+    namespaceKey: String,
+    context: ModelContext
+  ) throws -> [StoredCloudAttachmentCacheEntry] {
+    let key = namespaceKey
+    return try context.fetch(FetchDescriptor(
+      predicate: #Predicate<StoredCloudAttachmentCacheEntry> { $0.namespaceKey == key }
+    ))
+  }
+
+  private static func storedAttachments(
+    attachmentID: UUID,
+    context: ModelContext
+  ) throws -> [StoredAttachmentRecord] {
+    let id = attachmentID
+    return try context.fetch(FetchDescriptor(
+      predicate: #Predicate<StoredAttachmentRecord> { $0.id == id }
+    ))
+  }
+
+  private static func storedAttachmentReferences(
+    attachmentID: UUID,
+    context: ModelContext
+  ) throws -> [StoredSnipAttachmentReference] {
+    let id = attachmentID
+    return try context.fetch(FetchDescriptor(
+      predicate: #Predicate<StoredSnipAttachmentReference> { $0.attachmentID == id }
+    ))
+  }
+
   private static func safeCloudAttachmentFileName(_ fileName: String) -> String {
     let value = URL(fileURLWithPath: fileName).lastPathComponent
     return value.isEmpty || value == "." || value == ".." ? "Attachment" : value
@@ -992,19 +1381,27 @@ extension SwiftDataSnipLibrary {
     namespaceKey: String,
     identity: CloudTextStorageIdentity,
     shadowData: Data?,
+    blockedByAttachmentID: UUID? = nil,
     context: ModelContext
   ) throws {
     let id = StoredCloudAttachmentCleanup.key(namespaceKey: namespaceKey, identity: identity)
-    if let current = try context.fetch(FetchDescriptor<StoredCloudAttachmentCleanup>())
+    if let current = try Self.cloudAttachmentCleanups(
+      namespaceKey: namespaceKey,
+      context: context
+    )
       .first(where: { $0.id == id })
     {
       if current.shadowData == nil { current.shadowData = shadowData }
+      if current.blockedByAttachmentID == nil {
+        current.blockedByAttachmentID = blockedByAttachmentID
+      }
       return
     }
     context.insert(StoredCloudAttachmentCleanup(
       namespaceKey: namespaceKey,
       identity: identity,
-      shadowData: shadowData
+      shadowData: shadowData,
+      blockedByAttachmentID: blockedByAttachmentID
     ))
   }
 

@@ -100,12 +100,12 @@ extension CloudFullSyncPersistence {
     var operations: [SyncModeSendOperation] = []
     for operation in outbound.operations {
       let id = operation.id
-      guard namespace.zones.contains(id.zone),
-        let reference = Self.reference(for: id)
-      else { throw SyncModePersistenceError.namespaceMismatch }
+      guard namespace.zones.contains(id.zone) else {
+        throw SyncModePersistenceError.namespaceMismatch
+      }
       operations.append(
         SyncModeSendOperation(
-          reference: reference,
+          reference: Self.reference(for: id),
           recordIdentity: Self.storageIdentity(id),
           kind: {
             switch operation {

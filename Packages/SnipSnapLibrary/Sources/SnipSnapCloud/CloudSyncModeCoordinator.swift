@@ -747,11 +747,12 @@ package actor ICloudSyncModeCoordinator {
     ) -> [SyncModeSeedSettlementCandidate] {
         let provenanceIDs = Set(transition.seedProvenance.map(\.candidateSnipID))
         return transition.sendAttempt?.operations.compactMap { operation in
-            guard operation.reference.kind == .snip,
-                  provenanceIDs.contains(operation.reference.domainID)
+            guard let reference = operation.reference,
+                  reference.kind == .snip,
+                  provenanceIDs.contains(reference.domainID)
             else { return nil }
             return SyncModeSeedSettlementCandidate(
-                snipID: operation.reference.domainID,
+                snipID: reference.domainID,
                 acceptedRecordIdentity: operation.recordIdentity
             )
         } ?? []

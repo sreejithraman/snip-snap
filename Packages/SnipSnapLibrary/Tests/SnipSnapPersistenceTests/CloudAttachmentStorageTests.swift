@@ -93,6 +93,71 @@ final class CloudAttachmentStorageTests: XCTestCase {
     XCTAssertNotEqual(a.publications.first?.metadata.payloadIdentity, b.publications.first?.metadata.payloadIdentity)
   }
 
+  func testDownloadedAttachmentMetadataEditRemainsPendingForUpload() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let added = try await library.perform(
+      .add(
+        content: "remote file",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [],
+        requestID: UUID(),
+        now: .distantPast
+      ),
+      sortedBy: .manual
+    )
+    guard case .add(.added(let snipID)) = added.outcome else {
+      return XCTFail("Expected a saved snip")
+    }
+    let attachmentID = UUID()
+    let payloadIdentity = CloudTextStorageIdentity(
+      zoneName: "payload", ownerName: "owner", recordName: UUID().uuidString.lowercased()
+    )
+    try await library.commitCloudAttachmentTransitions(
+      namespaceKey: "namespace",
+      transitions: [.remoteMetadataAccepted(
+        metadata: CloudAttachmentMetadataValue(
+          attachmentID: attachmentID,
+          snipID: snipID,
+          position: 0,
+          fileName: "remote.txt",
+          contentType: "text/plain",
+          byteCount: 4,
+          sha256: Data(repeating: 1, count: 32),
+          payloadIdentity: payloadIdentity
+        ),
+        metadataIdentity: CloudTextStorageIdentity(
+          zoneName: "data",
+          ownerName: "owner",
+          recordName: "a-\(attachmentID.uuidString.lowercased())"
+        ),
+        shadowData: Data("metadata-shadow".utf8),
+        systemFields: Data("metadata-fields".utf8)
+      )]
+    )
+    var local = try await library.checkedSnapshot(sortedBy: .manual).snips
+    local[0].attachments[0].fileName = "renamed.txt"
+    _ = try await library.perform(.replaceAll(local), sortedBy: .manual)
+
+    try await library.reconcileCloudAttachments(
+      namespaceKey: "namespace",
+      metadataZoneName: "data",
+      metadataOwnerName: "owner",
+      payloadZoneName: "payload",
+      payloadOwnerName: "owner"
+    )
+
+    let stored = try await library.cloudAttachmentStorageSnapshot(namespaceKey: "namespace")
+    let publication = try XCTUnwrap(stored.publications.first)
+    XCTAssertEqual(publication.metadata.fileName, "renamed.txt")
+    XCTAssertFalse(publication.metadataAccepted)
+    XCTAssertTrue(publication.payloadAccepted)
+  }
+
   func testRemoteReplacementMovesThePublicationToTheNewPayloadIdentity() async throws {
     let root = temporaryDirectory()
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -144,6 +209,217 @@ final class CloudAttachmentStorageTests: XCTestCase {
     let stored = try await library.cloudAttachmentStorageSnapshot(namespaceKey: "namespace")
     XCTAssertEqual(stored.publications.first?.metadata.payloadIdentity, secondPayload)
     XCTAssertEqual(stored.publications.first?.metadata.sha256, Data(repeating: 2, count: 32))
+  }
+
+  func testReconcileSweepsUntrackedUploadDirectoriesAndKeepsDurableQueuedPayload() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("source.txt")
+    try Data("queued".utf8).write(to: source)
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    _ = try await library.perform(
+      .add(
+        content: "queued upload",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [source],
+        requestID: UUID(),
+        now: .distantPast
+      ),
+      sortedBy: .manual
+    )
+    try await library.reconcileCloudAttachments(
+      namespaceKey: "namespace",
+      metadataZoneName: "data",
+      metadataOwnerName: "owner",
+      payloadZoneName: "payload",
+      payloadOwnerName: "owner"
+    )
+    let initial = try await library.cloudAttachmentStorageSnapshot(namespaceKey: "namespace")
+    let queued = try XCTUnwrap(initial.publications.first?.sourceURL)
+    let uploadRoot = queued.deletingLastPathComponent().deletingLastPathComponent()
+    let orphan = uploadRoot.appendingPathComponent("orphan/payload")
+    try FileManager.default.createDirectory(
+      at: orphan.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try Data("left after a crash".utf8).write(to: orphan)
+
+    try await library.reconcileCloudAttachments(
+      namespaceKey: "namespace",
+      metadataZoneName: "data",
+      metadataOwnerName: "owner",
+      payloadZoneName: "payload",
+      payloadOwnerName: "owner"
+    )
+
+    XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: queued.path))
+  }
+
+  func testReplacementRemovesSupersededUploadDirectory() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("source.txt")
+    try Data("first".utf8).write(to: source)
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    _ = try await library.perform(
+      .add(
+        content: "replace upload",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [source],
+        requestID: UUID(),
+        now: .distantPast
+      ),
+      sortedBy: .manual
+    )
+    try await library.reconcileCloudAttachments(
+      namespaceKey: "namespace",
+      metadataZoneName: "data",
+      metadataOwnerName: "owner",
+      payloadZoneName: "payload",
+      payloadOwnerName: "owner"
+    )
+    let initial = try await library.cloudAttachmentStorageSnapshot(namespaceKey: "namespace")
+    let publication = try XCTUnwrap(initial.publications.first)
+    let oldUpload = try XCTUnwrap(publication.sourceURL)
+    let localSource = try XCTUnwrap(publication.localSourceURL)
+    try Data("replacement".utf8).write(to: localSource)
+
+    try await library.reconcileCloudAttachments(
+      namespaceKey: "namespace",
+      metadataZoneName: "data",
+      metadataOwnerName: "owner",
+      payloadZoneName: "payload",
+      payloadOwnerName: "owner"
+    )
+
+    XCTAssertFalse(FileManager.default.fileExists(atPath: oldUpload.path))
+    XCTAssertFalse(FileManager.default.fileExists(
+      atPath: oldUpload.deletingLastPathComponent().path
+    ))
+  }
+
+  func testFetchedMetadataDeletionQueuesItsPayloadForCleanup() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let attachmentID = UUID()
+    let metadataIdentity = CloudTextStorageIdentity(
+      zoneName: "data",
+      ownerName: "owner",
+      recordName: "a-\(attachmentID.uuidString.lowercased())"
+    )
+    let payloadIdentity = CloudTextStorageIdentity(
+      zoneName: "payload",
+      ownerName: "owner",
+      recordName: UUID().uuidString.lowercased()
+    )
+    try await library.commitCloudAttachmentTransitions(
+      namespaceKey: "namespace",
+      transitions: [.remoteMetadataAccepted(
+        metadata: CloudAttachmentMetadataValue(
+          attachmentID: attachmentID,
+          snipID: UUID(),
+          position: 0,
+          fileName: "remote.txt",
+          contentType: "text/plain",
+          byteCount: 4,
+          sha256: Data(repeating: 1, count: 32),
+          payloadIdentity: payloadIdentity
+        ),
+        metadataIdentity: metadataIdentity,
+        shadowData: Data("metadata-shadow".utf8),
+        systemFields: Data("metadata-fields".utf8)
+      )]
+    )
+
+    try await library.commitCloudAttachmentTransitions(
+      namespaceKey: "namespace",
+      transitions: [.remoteMetadataDeleted(metadataIdentity: metadataIdentity)]
+    )
+
+    let stored = try await library.cloudAttachmentStorageSnapshot(namespaceKey: "namespace")
+    XCTAssertTrue(stored.publications.isEmpty)
+    XCTAssertEqual(stored.cleanups.map(\.identity), [payloadIdentity])
+  }
+
+  func testDeleteConflictAdoptsServerReplacementPayloadBeforeCleanup() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let attachmentID = UUID()
+    let metadataIdentity = CloudTextStorageIdentity(
+      zoneName: "data", ownerName: "owner",
+      recordName: "a-\(attachmentID.uuidString.lowercased())"
+    )
+    let oldPayload = CloudTextStorageIdentity(
+      zoneName: "payload", ownerName: "owner", recordName: "old-payload"
+    )
+    let replacementPayload = CloudTextStorageIdentity(
+      zoneName: "payload", ownerName: "owner", recordName: "replacement-payload"
+    )
+    try await library.commitCloudAttachmentTransitions(
+      namespaceKey: "namespace",
+      transitions: [.remoteMetadataAccepted(
+        metadata: CloudAttachmentMetadataValue(
+          attachmentID: attachmentID,
+          snipID: UUID(),
+          position: 0,
+          fileName: "remote.txt",
+          contentType: "text/plain",
+          byteCount: 4,
+          sha256: Data(repeating: 1, count: 32),
+          payloadIdentity: oldPayload
+        ),
+        metadataIdentity: metadataIdentity,
+        shadowData: Data("old-shadow".utf8),
+        systemFields: Data("old-fields".utf8)
+      )]
+    )
+    try await library.reconcileCloudAttachments(
+      namespaceKey: "namespace",
+      metadataZoneName: "data",
+      metadataOwnerName: "owner",
+      payloadZoneName: "payload",
+      payloadOwnerName: "owner"
+    )
+    let deletingSnapshot = try await library.cloudAttachmentStorageSnapshot(
+      namespaceKey: "namespace"
+    )
+    let deleting = try XCTUnwrap(deletingSnapshot.publications.first)
+    try await library.commitCloudAttachmentTransitions(
+      namespaceKey: "namespace",
+      transitions: [.metadataDeleteConflict(
+        attachmentID: attachmentID,
+        expectedRevision: deleting.revision,
+        shadowData: Data("replacement-shadow".utf8),
+        systemFields: Data("replacement-fields".utf8),
+        payloadIdentity: replacementPayload
+      )]
+    )
+    let conflictedSnapshot = try await library.cloudAttachmentStorageSnapshot(
+      namespaceKey: "namespace"
+    )
+    let conflicted = try XCTUnwrap(conflictedSnapshot.publications.first)
+    XCTAssertEqual(conflicted.metadata.payloadIdentity, replacementPayload)
+
+    try await library.commitCloudAttachmentTransitions(
+      namespaceKey: "namespace",
+      transitions: [.metadataDeleteAccepted(
+        attachmentID: attachmentID,
+        expectedRevision: conflicted.revision
+      )]
+    )
+    let cleaned = try await library.cloudAttachmentStorageSnapshot(namespaceKey: "namespace")
+    XCTAssertEqual(Set(cleaned.cleanups.map(\.identity)), Set([oldPayload, replacementPayload]))
   }
 
   private func temporaryDirectory() -> URL {

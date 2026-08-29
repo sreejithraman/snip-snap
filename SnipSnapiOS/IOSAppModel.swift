@@ -12,7 +12,11 @@ final class IOSAppModel {
     private(set) var snips: [Snip]
     private(set) var lists: [SnipList]
     private(set) var attachmentURLs: [UUID: URL]
+    private var preparedAttachmentURLs: [UUID: URL] = [:]
     private(set) var attachmentTransferStates: [UUID: SyncedAttachmentTransferState] = [:]
+    private(set) var isCloudSyncActive = false
+    private var hasKnownCloudSyncActivity: Bool
+    private var hasKnownCloudAttachmentStates = false
     var selectedListID: UUID
     var selectedSnipID: UUID?
     var errorMessage: String?
@@ -28,6 +32,7 @@ final class IOSAppModel {
     ) {
         self.library = library
         self.cloudSyncHandler = cloudSyncHandler
+        hasKnownCloudSyncActivity = cloudSyncHandler == nil
         snips = initialSnapshot.snips
         lists = initialSnapshot.lists
         attachmentURLs = initialSnapshot.attachmentURLs
@@ -107,23 +112,42 @@ final class IOSAppModel {
     }
 
     func attachmentURL(for attachmentID: UUID) -> URL? {
-        attachmentURLs[attachmentID]
+        if cloudSyncHandler != nil, !hasKnownCloudSyncActivity {
+            return preparedAttachmentURLs[attachmentID]
+        }
+        if isCloudSyncActive,
+           !hasKnownCloudAttachmentStates || attachmentTransferStates[attachmentID] != nil
+        {
+            return preparedAttachmentURLs[attachmentID]
+        }
+        return attachmentURLs[attachmentID]
     }
 
-    var hasCloudSync: Bool { cloudSyncHandler != nil }
+    var hasCloudSync: Bool { isCloudSyncActive }
 
     func attachmentTransferState(for attachmentID: UUID) -> SyncedAttachmentTransferState {
         if let state = attachmentTransferStates[attachmentID] { return state }
+        if cloudSyncHandler != nil, !hasKnownCloudSyncActivity { return .waiting }
+        if isCloudSyncActive, !hasKnownCloudAttachmentStates { return .waiting }
         return attachmentURLs[attachmentID] == nil ? .waiting : .available
     }
 
     func prepareAttachment(_ attachmentID: UUID, for use: SyncedAttachmentUse) async -> URL? {
-        if let local = attachmentURLs[attachmentID] { return local }
-        guard let cloudSyncHandler else { return nil }
+        guard let cloudSyncHandler else { return attachmentURLs[attachmentID] }
+        if hasKnownCloudSyncActivity, !isCloudSyncActive {
+            return attachmentURLs[attachmentID]
+        }
+        if hasKnownCloudSyncActivity,
+           hasKnownCloudAttachmentStates,
+           attachmentTransferStates[attachmentID] == nil
+        {
+            return attachmentURLs[attachmentID]
+        }
         attachmentTransferStates[attachmentID] = .syncing
         do {
             let url = try await cloudSyncHandler.prepareSyncedAttachment(attachmentID, for: use)
             attachmentURLs[attachmentID] = url
+            preparedAttachmentURLs[attachmentID] = url
             attachmentTransferStates[attachmentID] = .available
             return url
         } catch {
@@ -210,6 +234,7 @@ final class IOSAppModel {
         snips = snapshot.snips
         lists = snapshot.lists
         attachmentURLs = snapshot.attachmentURLs
+        preparedAttachmentURLs.removeAll()
 
         if !lists.contains(where: { $0.id == selectedListID }) {
             selectedListID = SnipList.inboxID
@@ -221,14 +246,31 @@ final class IOSAppModel {
 
     private func refreshAttachmentTransferStates() async {
         guard let cloudSyncHandler else {
+            isCloudSyncActive = false
+            hasKnownCloudSyncActivity = true
+            hasKnownCloudAttachmentStates = true
             attachmentTransferStates = Dictionary(uniqueKeysWithValues:
                 attachmentURLs.keys.map { ($0, .available) }
             )
             return
         }
+        hasKnownCloudSyncActivity = false
         do {
+            isCloudSyncActive = try await cloudSyncHandler.isCloudSyncActive()
+            hasKnownCloudSyncActivity = true
+            guard isCloudSyncActive else {
+                hasKnownCloudAttachmentStates = true
+                attachmentTransferStates = [:]
+                preparedAttachmentURLs.removeAll()
+                return
+            }
             attachmentTransferStates = try await cloudSyncHandler.syncedAttachmentStates()
+            hasKnownCloudAttachmentStates = true
+            preparedAttachmentURLs = preparedAttachmentURLs.filter {
+                attachmentTransferStates[$0.key] != nil
+            }
         } catch {
+            if isCloudSyncActive { hasKnownCloudAttachmentStates = false }
             // Keep the last known states while iCloud is unavailable.
         }
     }

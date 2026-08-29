@@ -209,12 +209,15 @@ final class StoredCloudAttachmentCleanup {
   var ownerName: String
   var recordName: String
   var shadowData: Data?
+  var blockedByAttachmentID: UUID?
+  var lastFailure: String?
   var revision: UInt64
 
   init(
     namespaceKey: String,
     identity: CloudTextStorageIdentity,
-    shadowData: Data?
+    shadowData: Data?,
+    blockedByAttachmentID: UUID? = nil
   ) {
     id = Self.key(namespaceKey: namespaceKey, identity: identity)
     self.namespaceKey = namespaceKey
@@ -222,6 +225,8 @@ final class StoredCloudAttachmentCleanup {
     ownerName = identity.ownerName
     recordName = identity.recordName
     self.shadowData = shadowData
+    self.blockedByAttachmentID = blockedByAttachmentID
+    lastFailure = nil
     revision = 1
   }
 

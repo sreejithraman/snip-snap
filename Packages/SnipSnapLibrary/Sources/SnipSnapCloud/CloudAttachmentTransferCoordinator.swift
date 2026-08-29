@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SnipSnapCore
 import SnipSnapPersistence
@@ -69,11 +70,16 @@ package actor CloudAttachmentTransferCoordinator {
 
   package func downloadedURL(attachmentID: UUID) async throws -> URL? {
     if !didSweepCache {
-      try await library.sweepCloudAttachmentCache(
-        namespaceKey: namespaceKey,
-        maximumBytes: maximumCacheBytes
-      )
       didSweepCache = true
+      do {
+        try await library.sweepCloudAttachmentCache(
+          namespaceKey: namespaceKey,
+          maximumBytes: maximumCacheBytes
+        )
+      } catch {
+        didSweepCache = false
+        throw error
+      }
     }
     return try await library.touchCloudAttachmentCache(
       namespaceKey: namespaceKey,
@@ -86,12 +92,27 @@ package actor CloudAttachmentTransferCoordinator {
     if let cached = try await downloadedURL(attachmentID: attachmentID) { return cached }
     let snapshot = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
     guard let publication = snapshot.publications.first(where: {
-      $0.metadata.attachmentID == attachmentID && $0.metadataAccepted && $0.isLocallyPresent
+      $0.metadata.attachmentID == attachmentID && $0.isLocallyPresent
     }) else { throw CloudAttachmentStorageError.missingPublication }
-    if let local = publication.localSourceURL,
-      FileManager.default.fileExists(atPath: local.path)
-    {
-      return local
+    if let local = publication.localSourceURL {
+      do {
+        let values = try local.resourceValues(
+          forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+        )
+        guard values.isRegularFile == true, values.isSymbolicLink != true,
+          Int64(values.fileSize ?? -1) == publication.metadata.byteCount
+        else { throw CloudAttachmentStorageError.sizeMismatch }
+        guard try Self.sha256(of: local) == publication.metadata.sha256 else {
+          throw CloudAttachmentStorageError.hashMismatch
+        }
+        return local
+      } catch {
+        guard !FileManager.default.fileExists(atPath: local.path), publication.metadataAccepted
+        else { throw error }
+      }
+    }
+    guard publication.metadataAccepted else {
+      throw CloudAttachmentStorageError.missingPublication
     }
     guard publication.metadata.payloadIdentity.zoneName == payloadZone.name,
       publication.metadata.payloadIdentity.ownerName == payloadZone.ownerName
@@ -106,11 +127,15 @@ package actor CloudAttachmentTransferCoordinator {
     ) else { throw CloudAttachmentStorageError.missingPayload }
     guard receipt.recordID == recordID,
       receipt.field == CloudAttachmentRecordCodec.assetField
-    else { throw CloudAttachmentStorageError.invalidMetadata }
+    else {
+      Self.removeStagedFileIfSafe(receipt.fileURL, stagingRoot: stagingRoot)
+      throw CloudAttachmentStorageError.invalidMetadata
+    }
     do {
       return try await library.installCloudAttachmentCacheFile(
         namespaceKey: namespaceKey,
         attachmentID: attachmentID,
+        expectedPayloadIdentity: publication.metadata.payloadIdentity,
         stagedURL: receipt.fileURL,
         expectedByteCount: publication.metadata.byteCount,
         expectedSHA256: publication.metadata.sha256,
@@ -118,7 +143,7 @@ package actor CloudAttachmentTransferCoordinator {
         now: now()
       )
     } catch {
-      try? FileManager.default.removeItem(at: receipt.fileURL)
+      Self.removeStagedFileIfSafe(receipt.fileURL, stagingRoot: stagingRoot)
       throw error
     }
   }
@@ -230,5 +255,33 @@ package actor CloudAttachmentTransferCoordinator {
     }.sorted {
       ($0.fileName, $0.attachmentID.uuidString) < ($1.fileName, $1.attachmentID.uuidString)
     }
+  }
+
+  private static func sha256(of url: URL) throws -> Data {
+    let handle = try FileHandle(forReadingFrom: url)
+    defer { try? handle.close() }
+    var hasher = SHA256()
+    while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
+      hasher.update(data: chunk)
+    }
+    return Data(hasher.finalize())
+  }
+
+  private static func removeStagedFileIfSafe(_ fileURL: URL, stagingRoot: URL) {
+    let root = stagingRoot.standardizedFileURL
+    let file = fileURL.standardizedFileURL
+    guard root.isFileURL, file.isFileURL, file != root,
+      file.path.hasPrefix(root.path + "/")
+    else { return }
+    var current = file
+    while current != root {
+      guard let values = try? current.resourceValues(forKeys: [.isSymbolicLinkKey]),
+        values.isSymbolicLink != true
+      else { return }
+      let parent = current.deletingLastPathComponent()
+      guard parent != current else { return }
+      current = parent
+    }
+    try? FileManager.default.removeItem(at: file)
   }
 }

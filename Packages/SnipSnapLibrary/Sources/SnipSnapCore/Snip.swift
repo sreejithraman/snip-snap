@@ -102,7 +102,7 @@ public struct SnipAttachment: Identifiable, Codable, Equatable, Sendable, Hashab
     public var contentType: String?
     public var byteCount: Int64
 
-    public init(
+    package init(
         id: UUID,
         fileName: String,
         relativePath: String,

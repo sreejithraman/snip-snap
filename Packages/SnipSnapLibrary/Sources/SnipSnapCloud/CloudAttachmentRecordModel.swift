@@ -25,7 +25,7 @@ package enum CloudAttachmentRecordCodec {
 
   package static func metadataDraft(
     _ publication: CloudAttachmentPublication
-  ) -> CloudRecordDraft {
+  ) throws -> CloudRecordDraft {
     var fields: [String: CloudFieldValue] = [
       "attachmentID": .string(publication.metadata.attachmentID.uuidString.lowercased()),
       "snipID": .string(publication.metadata.snipID.uuidString.lowercased()),
@@ -40,7 +40,7 @@ package enum CloudAttachmentRecordCodec {
     if let contentType = publication.metadata.contentType {
       fields["contentType"] = .string(contentType)
     }
-    let base = publication.metadataShadowData.flatMap { try? CloudRecordShadow(data: $0) }
+    let base = try publication.metadataShadowData.map(CloudRecordShadow.init(data:))
     return CloudRecordDraft(
       id: recordID(publication.metadataIdentity),
       recordType: metadataRecordType,
@@ -103,9 +103,8 @@ package enum CloudAttachmentRecordCodec {
   private static func string(
     _ fields: [String: CloudFieldValue], _ key: String
   ) throws -> String {
-    guard case .string(let value)? = fields[key] else {
-      throw CloudRecordError.missingField(key)
-    }
+    guard let field = fields[key] else { throw CloudRecordError.missingField(key) }
+    guard case .string(let value) = field else { throw CloudRecordError.invalidField(key) }
     return value
   }
 
@@ -128,8 +127,9 @@ package enum CloudAttachmentRecordCodec {
   private static func int64(
     _ fields: [String: CloudFieldValue], _ key: String
   ) throws -> Int64 {
-    guard case .int64(let value)? = fields[key], value >= 0 else {
-      throw CloudRecordError.missingField(key)
+    guard let field = fields[key] else { throw CloudRecordError.missingField(key) }
+    guard case .int64(let value) = field, value >= 0 else {
+      throw CloudRecordError.invalidField(key)
     }
     return value
   }
@@ -137,8 +137,9 @@ package enum CloudAttachmentRecordCodec {
   private static func data(
     _ fields: [String: CloudFieldValue], _ key: String
   ) throws -> Data {
-    guard case .data(let value)? = fields[key], value.count == 32 else {
-      throw CloudRecordError.missingField(key)
+    guard let field = fields[key] else { throw CloudRecordError.missingField(key) }
+    guard case .data(let value) = field, value.count == 32 else {
+      throw CloudRecordError.invalidField(key)
     }
     return value
   }

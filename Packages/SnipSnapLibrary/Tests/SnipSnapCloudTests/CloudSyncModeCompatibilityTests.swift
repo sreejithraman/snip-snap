@@ -4,6 +4,25 @@ import SnipSnapPersistence
 import XCTest
 
 extension ICloudSyncModeCoordinatorTests {
+    func testSendOperationWithoutDomainReferenceRoundTrips() throws {
+        let operation = SyncModeSendOperation(
+            reference: nil,
+            recordIdentity: CloudTextStorageIdentity(
+                zoneName: "payload",
+                ownerName: "owner",
+                recordName: "payload-id"
+            ),
+            kind: .delete
+        )
+
+        let decoded = try JSONDecoder().decode(
+            SyncModeSendOperation.self,
+            from: JSONEncoder().encode(operation)
+        )
+
+        XCTAssertEqual(decoded, operation)
+    }
+
     func testLegacyModeSendOperationDecodesAsSnipReference() throws {
         let id = UUID()
         let legacy = """

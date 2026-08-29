@@ -251,11 +251,11 @@ package enum SyncModeSendOperationKind: String, Codable, Equatable, Sendable {
 }
 
 package struct SyncModeSendOperation: Codable, Equatable, Sendable {
-  package let reference: CloudEntityReference
+  package let reference: CloudEntityReference?
   package let recordIdentity: CloudTextStorageIdentity
   package let kind: SyncModeSendOperationKind
 
-  package var snipID: UUID { reference.domainID }
+  package var snipID: UUID? { reference?.domainID }
 
   package init(
     snipID: UUID,
@@ -268,7 +268,7 @@ package struct SyncModeSendOperation: Codable, Equatable, Sendable {
   }
 
   package init(
-    reference: CloudEntityReference,
+    reference: CloudEntityReference?,
     recordIdentity: CloudTextStorageIdentity,
     kind: SyncModeSendOperationKind
   ) {
@@ -288,11 +288,10 @@ package struct SyncModeSendOperation: Codable, Equatable, Sendable {
       forKey: .reference
     ) {
       self.reference = reference
+    } else if let legacySnipID = try values.decodeIfPresent(UUID.self, forKey: .snipID) {
+      reference = CloudEntityReference(kind: .snip, domainID: legacySnipID)
     } else {
-      reference = CloudEntityReference(
-        kind: .snip,
-        domainID: try values.decode(UUID.self, forKey: .snipID)
-      )
+      reference = nil
     }
     recordIdentity = try values.decode(CloudTextStorageIdentity.self, forKey: .recordIdentity)
     kind = try values.decode(SyncModeSendOperationKind.self, forKey: .kind)
@@ -300,7 +299,7 @@ package struct SyncModeSendOperation: Codable, Equatable, Sendable {
 
   package func encode(to encoder: any Encoder) throws {
     var values = encoder.container(keyedBy: CodingKeys.self)
-    try values.encode(reference, forKey: .reference)
+    try values.encodeIfPresent(reference, forKey: .reference)
     try values.encode(recordIdentity, forKey: .recordIdentity)
     try values.encode(kind, forKey: .kind)
   }
