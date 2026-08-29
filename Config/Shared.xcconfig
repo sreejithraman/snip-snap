@@ -2,7 +2,7 @@
 // Public product names stay here so forks can replace them in Local.xcconfig.
 
 SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER = world.sree.snipsnap
-SNIP_SNAP_APP_GROUP_IDENTIFIER =
+SNIP_SNAP_APP_GROUP_IDENTIFIER = group.org.example.snipsnap
 SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER =
 
 PRODUCT_BUNDLE_IDENTIFIER = $(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER)

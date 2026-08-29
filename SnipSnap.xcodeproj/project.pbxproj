@@ -76,6 +76,13 @@
 		E1000000000000000000000C /* SnipSnapiOSUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2000000000000000000000A /* SnipSnapiOSUITests.swift */; };
 		E1000000000000000000000D /* SnipSnapCore in Frameworks */ = {isa = PBXBuildFile; productRef = EF0000000000000000000003 /* SnipSnapCore */; };
 		E10000000000000000000020 /* AttachmentViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000020 /* AttachmentViews.swift */; };
+		F10000000000000000000001 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000001 /* ShareViewController.swift */; };
+		F10000000000000000000002 /* ShareExtensionModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000002 /* ShareExtensionModel.swift */; };
+		F10000000000000000000003 /* ShareExtensionInputLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000003 /* ShareExtensionInputLoader.swift */; };
+		F10000000000000000000004 /* ShareExtensionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000004 /* ShareExtensionView.swift */; };
+		F10000000000000000000005 /* SnipSnapCore in Frameworks */ = {isa = PBXBuildFile; productRef = FD0000000000000000000001 /* SnipSnapCore */; };
+		F10000000000000000000006 /* SnipSnapPersistence in Frameworks */ = {isa = PBXBuildFile; productRef = FD0000000000000000000002 /* SnipSnapPersistence */; };
+		F10000000000000000000007 /* SnipSnapShareExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = F20000000000000000000007 /* SnipSnapShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -100,7 +107,28 @@
 			remoteGlobalIDString = E50000000000000000000001;
 			remoteInfo = SnipSnapiOS;
 		};
+		F30000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 400000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F50000000000000000000001;
+			remoteInfo = SnipSnapShareExtension;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		F40000000000000000000001 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				F10000000000000000000007 /* SnipSnapShareExtension.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		200000000000000000000001 /* SnipSnapApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipSnapApp.swift; sourceTree = "<group>"; };
@@ -177,6 +205,15 @@
 		E2000000000000000000000F /* iOSRelease.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = iOSRelease.xcconfig; sourceTree = "<group>"; };
 		E20000000000000000000010 /* iOSShared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = iOSShared.xcconfig; sourceTree = "<group>"; };
 		E20000000000000000000020 /* AttachmentViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentViews.swift; sourceTree = "<group>"; };
+		F20000000000000000000001 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
+		F20000000000000000000002 /* ShareExtensionModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareExtensionModel.swift; sourceTree = "<group>"; };
+		F20000000000000000000003 /* ShareExtensionInputLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareExtensionInputLoader.swift; sourceTree = "<group>"; };
+		F20000000000000000000004 /* ShareExtensionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareExtensionView.swift; sourceTree = "<group>"; };
+		F20000000000000000000005 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		F20000000000000000000006 /* SnipSnapShareExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SnipSnapShareExtension.entitlements; sourceTree = "<group>"; };
+		F20000000000000000000007 /* SnipSnapShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = SnipSnapShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		F20000000000000000000008 /* SnipSnapiOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SnipSnapiOS.entitlements; sourceTree = "<group>"; };
+		F20000000000000000000009 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -223,6 +260,15 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F60000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F10000000000000000000005 /* SnipSnapCore in Frameworks */,
+				F10000000000000000000006 /* SnipSnapPersistence in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -233,6 +279,7 @@
 				700000000000000000000002 /* SnipSnap */,
 				700000000000000000000003 /* SnipSnapTests */,
 				E70000000000000000000001 /* SnipSnapiOS */,
+				F70000000000000000000001 /* SnipSnapShareExtension */,
 				E70000000000000000000002 /* SnipSnapiOSTests */,
 				E70000000000000000000003 /* SnipSnapiOSUITests */,
 				700000000000000000000004 /* Products */,
@@ -312,6 +359,7 @@
 				E2000000000000000000000B /* Snip Snap iOS.app */,
 				E2000000000000000000000C /* SnipSnapiOSTests.xctest */,
 				E2000000000000000000000D /* SnipSnapiOSUITests.xctest */,
+				F20000000000000000000007 /* SnipSnapShareExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -342,6 +390,8 @@
 				E20000000000000000000020 /* AttachmentViews.swift */,
 				E20000000000000000000007 /* PreviewSupport.swift */,
 				E20000000000000000000008 /* Assets.xcassets */,
+				F20000000000000000000008 /* SnipSnapiOS.entitlements */,
+				F20000000000000000000009 /* Info.plist */,
 			);
 			path = SnipSnapiOS;
 			sourceTree = "<group>";
@@ -360,6 +410,19 @@
 				E2000000000000000000000A /* SnipSnapiOSUITests.swift */,
 			);
 			path = SnipSnapiOSUITests;
+			sourceTree = "<group>";
+		};
+		F70000000000000000000001 /* SnipSnapShareExtension */ = {
+			isa = PBXGroup;
+			children = (
+				F20000000000000000000001 /* ShareViewController.swift */,
+				F20000000000000000000002 /* ShareExtensionModel.swift */,
+				F20000000000000000000003 /* ShareExtensionInputLoader.swift */,
+				F20000000000000000000004 /* ShareExtensionView.swift */,
+				F20000000000000000000005 /* Info.plist */,
+				F20000000000000000000006 /* SnipSnapShareExtension.entitlements */,
+			);
+			path = SnipSnapShareExtension;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -416,10 +479,12 @@
 				E90000000000000000000001 /* Sources */,
 				E60000000000000000000001 /* Frameworks */,
 				EA0000000000000000000001 /* Resources */,
+				F40000000000000000000001 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				FB0000000000000000000001 /* PBXTargetDependency */,
 			);
 			name = SnipSnapiOS;
 			packageProductDependencies = (
@@ -471,6 +536,27 @@
 			productReference = E2000000000000000000000D /* SnipSnapiOSUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		F50000000000000000000001 /* SnipSnapShareExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F80000000000000000000001 /* Build configuration list for PBXNativeTarget "SnipSnapShareExtension" */;
+			buildPhases = (
+				F90000000000000000000001 /* Sources */,
+				F60000000000000000000001 /* Frameworks */,
+				FA0000000000000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SnipSnapShareExtension;
+			packageProductDependencies = (
+				FD0000000000000000000001 /* SnipSnapCore */,
+				FD0000000000000000000002 /* SnipSnapPersistence */,
+			);
+			productName = SnipSnapShareExtension;
+			productReference = F20000000000000000000007 /* SnipSnapShareExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -499,6 +585,9 @@
 						CreatedOnToolsVersion = 26.6;
 						TestTargetID = E50000000000000000000001;
 					};
+					F50000000000000000000001 = {
+						CreatedOnToolsVersion = 26.6;
+					};
 				};
 			};
 			buildConfigurationList = 800000000000000000000003 /* Build configuration list for PBXProject "SnipSnap" */;
@@ -524,6 +613,7 @@
 				E50000000000000000000001 /* SnipSnapiOS */,
 				E50000000000000000000002 /* SnipSnapiOSTests */,
 				E50000000000000000000003 /* SnipSnapiOSUITests */,
+				F50000000000000000000001 /* SnipSnapShareExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -560,6 +650,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		EA0000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FA0000000000000000000001 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -663,6 +760,17 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F90000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F10000000000000000000001 /* ShareViewController.swift in Sources */,
+				F10000000000000000000002 /* ShareExtensionModel.swift in Sources */,
+				F10000000000000000000003 /* ShareExtensionInputLoader.swift in Sources */,
+				F10000000000000000000004 /* ShareExtensionView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -680,6 +788,11 @@
 			isa = PBXTargetDependency;
 			target = E50000000000000000000001 /* SnipSnapiOS */;
 			targetProxy = E30000000000000000000002 /* PBXContainerItemProxy */;
+		};
+		FB0000000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = F50000000000000000000001 /* SnipSnapShareExtension */;
+			targetProxy = F30000000000000000000001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -853,7 +966,9 @@
 			baseConfigurationReference = E2000000000000000000000E /* iOSDebug.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_ENTITLEMENTS = "";
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).ios.tests";
 				PRODUCT_MODULE_NAME = SnipSnapiOSTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -866,7 +981,9 @@
 			baseConfigurationReference = E2000000000000000000000F /* iOSRelease.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_ENTITLEMENTS = "";
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).ios.tests";
 				PRODUCT_MODULE_NAME = SnipSnapiOSTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -878,7 +995,9 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = E2000000000000000000000E /* iOSDebug.xcconfig */;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = "";
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).ios.uitests";
 				PRODUCT_MODULE_NAME = SnipSnapiOSUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -890,11 +1009,43 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = E2000000000000000000000F /* iOSRelease.xcconfig */;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = "";
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).ios.uitests";
 				PRODUCT_MODULE_NAME = SnipSnapiOSUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				TEST_TARGET_NAME = SnipSnapiOS;
+			};
+			name = Release;
+		};
+		FC0000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = E2000000000000000000000E /* iOSDebug.xcconfig */;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = SnipSnapShareExtension/SnipSnapShareExtension.entitlements;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = SnipSnapShareExtension/Info.plist;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).ios.share";
+				PRODUCT_MODULE_NAME = SnipSnapShareExtension;
+				PRODUCT_NAME = SnipSnapShareExtension;
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
+		FC0000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = E2000000000000000000000F /* iOSRelease.xcconfig */;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = SnipSnapShareExtension/SnipSnapShareExtension.entitlements;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = SnipSnapShareExtension/Info.plist;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).ios.share";
+				PRODUCT_MODULE_NAME = SnipSnapShareExtension;
+				PRODUCT_NAME = SnipSnapShareExtension;
+				SKIP_INSTALL = YES;
 			};
 			name = Release;
 		};
@@ -955,6 +1106,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		F80000000000000000000001 /* Build configuration list for PBXNativeTarget "SnipSnapShareExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FC0000000000000000000001 /* Debug */,
+				FC0000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -1008,6 +1168,14 @@
 		EF0000000000000000000003 /* SnipSnapCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = SnipSnapCore;
+		};
+		FD0000000000000000000001 /* SnipSnapCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SnipSnapCore;
+		};
+		FD0000000000000000000002 /* SnipSnapPersistence */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SnipSnapPersistence;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

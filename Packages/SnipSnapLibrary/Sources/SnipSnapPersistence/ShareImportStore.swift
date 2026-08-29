@@ -146,6 +146,7 @@ public struct ShareImportStagingArea: Sendable {
 
 /// Keeps an item-provider file before the provider's temporary URL expires.
 public enum ShareProviderFileLoader {
+  @MainActor
   public static func copyFileRepresentation(
     staging: ShareImportStagingArea,
     suggestedName: String? = nil,
