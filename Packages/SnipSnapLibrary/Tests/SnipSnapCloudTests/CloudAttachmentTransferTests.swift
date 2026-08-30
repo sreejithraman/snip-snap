@@ -1624,12 +1624,16 @@ final class CloudAttachmentTransferTests: XCTestCase {
     XCTAssertEqual(payloadSaveCount, 0)
   }
 
-  func testDirectVerifiedDownloadUsesBoundedCacheAndClearKeepsMetadata() async throws {
+  func testTwentyFiveMiBDownloadVerifiesHashRetriesInterruptionAndUsesBoundedCache() async throws {
     let root = temporaryDirectory()
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let source = root.appendingPathComponent("payload.txt")
-    let bytes = Data("download me".utf8)
+    let bytes = Data(
+      repeating: 0xA5,
+      count: Int(SnipSnapCloudAttachmentLimits.maximumFileBytes)
+    )
+    let expectedSHA256 = Data(SHA256.hash(data: bytes))
     try bytes.write(to: source)
     let storeURL = root.appendingPathComponent("store")
     let library = try SwiftDataSnipLibrary(storeURL: storeURL)
@@ -1656,6 +1660,8 @@ final class CloudAttachmentTransferTests: XCTestCase {
     )
     let initialSnapshot = try await snapshot(library, namespace)
     let initial = try XCTUnwrap(initialSnapshot.publications.first)
+    XCTAssertEqual(initial.metadata.byteCount, SnipSnapCloudAttachmentLimits.maximumFileBytes)
+    XCTAssertEqual(initial.metadata.sha256, expectedSHA256)
     let server = FakeCloudServer()
     let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
     let payloadResult = try await transport.send(CloudOutboundBatch(
@@ -1715,7 +1721,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
       namespace: namespace,
       payloadZone: payloadZone,
       transport: transport,
-      maximumCacheBytes: 1024,
+      maximumCacheBytes: SnipSnapCloudAttachmentLimits.maximumFileBytes,
       now: { Date(timeIntervalSince1970: 10) }
     )
     let invalidReceiptDownloads = CloudAttachmentTransferCoordinator(
@@ -1723,7 +1729,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
       namespace: namespace,
       payloadZone: payloadZone,
       transport: MismatchedAssetReceiptTransport(base: transport),
-      maximumCacheBytes: 1024
+      maximumCacheBytes: SnipSnapCloudAttachmentLimits.maximumFileBytes
     )
     do {
       _ = try await invalidReceiptDownloads.download(
@@ -1753,7 +1759,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
       namespace: namespace,
       payloadZone: payloadZone,
       transport: OutsideAssetReceiptTransport(fileURL: outsideReceiptFile),
-      maximumCacheBytes: 1024
+      maximumCacheBytes: SnipSnapCloudAttachmentLimits.maximumFileBytes
     )
     do {
       _ = try await outsideReceiptDownloads.download(
@@ -1772,7 +1778,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
       namespace: namespace,
       payloadZone: payloadZone,
       transport: transport,
-      maximumCacheBytes: 1024
+      maximumCacheBytes: SnipSnapCloudAttachmentLimits.maximumFileBytes
     )
     do {
       _ = try await failingDownloads.download(attachmentID: initial.metadata.attachmentID)
@@ -1812,7 +1818,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
       namespace: namespace,
       payloadZone: payloadZone,
       transport: transport,
-      maximumCacheBytes: 1024,
+      maximumCacheBytes: SnipSnapCloudAttachmentLimits.maximumFileBytes,
       now: { Date(timeIntervalSince1970: 11) }
     )
     _ = try await reopenedDownloads.downloadedURL(attachmentID: initial.metadata.attachmentID)
@@ -1938,13 +1944,190 @@ final class CloudAttachmentTransferTests: XCTestCase {
       maximumCacheBytes: 1024
     )
     let unsupported = try await coordinator.unsupportedFiles(
-      policy: CloudAttachmentCompatibilityPolicy(maximumFileBytes: 4)
+      policy: CloudAttachmentCompatibilityPolicy(
+        maximumFileBytes: 10,
+        maximumSnipBytes: 10
+      )
     )
     XCTAssertEqual(unsupported.map(\.fileName), ["first.bin", "second.bin"])
+    XCTAssertEqual(
+      unsupported.map(\.reason),
+      Array(repeating: .snipTotalTooLarge(maximumBytes: 10), count: 2)
+    )
   }
 
-  func testDefaultCompatibilityPolicyDoesNotPublishAnUntestedFileLimit() {
-    XCTAssertNil(CloudAttachmentCompatibilityPolicy.openSourceDefault.maximumFileBytes)
+  func testActiveSyncRefusesOversizeSnipBeforeAnyAttachmentSend() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let first = root.appendingPathComponent("first.bin")
+    let second = root.appendingPathComponent("second.bin")
+    try Data(repeating: 1, count: 5).write(to: first)
+    try Data(repeating: 2, count: 6).write(to: second)
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let added = try await library.perform(
+      .add(
+        content: "too large after sync is on",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [first, second],
+        requestID: UUID(),
+        now: .distantPast
+      ),
+      sortedBy: .manual
+    )
+    guard case .add(.added(let snipID)) = added.outcome else {
+      return XCTFail("Expected a saved snip")
+    }
+    let namespace = namespaceValue()
+    let dataZone = CloudZoneID(name: "data", ownerName: "owner")
+    let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
+    let server = FakeCloudServer()
+    let store = CloudFullSyncPersistence(
+      library: library,
+      namespace: namespace,
+      dataZone: dataZone,
+      payloadZone: payloadZone,
+      attachmentPolicy: CloudAttachmentCompatibilityPolicy(
+        maximumFileBytes: 10,
+        maximumSnipBytes: 10
+      )
+    )
+    try await store.approveEnrollment(references: [
+      CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
+      CloudEntityReference(kind: .snip, domainID: snipID),
+    ])
+    let sync = CloudFullSyncCoordinator(
+      store: store,
+      transport: FakeCloudRecordTransport(server: server, namespace: namespace),
+      fetchScope: .zones([dataZone])
+    )
+
+    do {
+      try await sync.sync()
+      XCTFail("Expected the public attachment limit to stop the send")
+    } catch let CloudAttachmentSetupError.unsupportedFiles(files) {
+      XCTAssertEqual(files.map(\.fileName), ["first.bin", "second.bin"])
+    }
+
+    let storage = try await snapshot(library, namespace)
+    XCTAssertEqual(storage.publications.count, 2)
+    for publication in storage.publications {
+      let payloadSendCount = await server.acceptedOperationCount(
+        for: CloudAttachmentRecordCodec.recordID(publication.metadata.payloadIdentity)
+      )
+      let metadataSendCount = await server.acceptedOperationCount(
+        for: CloudAttachmentRecordCodec.recordID(publication.metadataIdentity)
+      )
+      XCTAssertEqual(payloadSendCount, 0)
+      XCTAssertEqual(metadataSendCount, 0)
+    }
+    XCTAssertEqual(added.snapshot.snips.first?.attachments.count, 2)
+  }
+
+  func testPublicCompatibilityPolicyUsesTheTestedSnipSnapLimits() {
+    XCTAssertEqual(
+      CloudAttachmentCompatibilityPolicy.openSourceDefault.maximumFileBytes,
+      25 * 1_048_576
+    )
+    XCTAssertEqual(
+      CloudAttachmentCompatibilityPolicy.openSourceDefault.maximumSnipBytes,
+      100 * 1_048_576
+    )
+  }
+
+  func testLocalOnlyLibraryKeepsAttachmentAboveTheSyncLimit() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("local-only-large.bin")
+    _ = FileManager.default.createFile(atPath: source.path, contents: nil)
+    let handle = try FileHandle(forWritingTo: source)
+    try handle.truncate(
+      atOffset: UInt64(SnipSnapCloudAttachmentLimits.maximumFileBytes + 1)
+    )
+    try handle.close()
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("local.store"))
+
+    let saved = try await library.perform(
+      .add(
+        content: "local-only large file",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [source],
+        requestID: UUID(),
+        now: .distantPast
+      ),
+      sortedBy: .manual
+    )
+
+    let attachment = try XCTUnwrap(saved.snapshot.snips.first?.attachments.first)
+    let storedURL = try XCTUnwrap(saved.snapshot.attachmentURLs[attachment.id])
+    XCTAssertEqual(
+      attachment.byteCount,
+      SnipSnapCloudAttachmentLimits.maximumFileBytes + 1
+    )
+    XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
+  }
+
+  func testCompatibilityLimitsAreInclusiveAndReportEveryFileInAnOversizeSnip() throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let policy = CloudAttachmentCompatibilityPolicy(
+      maximumFileBytes: 25,
+      maximumSnipBytes: 100
+    )
+
+    let atBoundary = try compatibilitySnapshot(
+      in: root.appendingPathComponent("boundary"),
+      sizes: [25, 25, 25, 25]
+    )
+    XCTAssertTrue(
+      CloudAttachmentTransferCoordinator.unsupportedFiles(
+        in: atBoundary,
+        policy: policy
+      ).isEmpty
+    )
+
+    let fileOverflow = try compatibilitySnapshot(
+      in: root.appendingPathComponent("file-overflow"),
+      sizes: [26, 27]
+    )
+    let oversizedFiles = CloudAttachmentTransferCoordinator.unsupportedFiles(
+      in: fileOverflow,
+      policy: policy
+    )
+    XCTAssertEqual(oversizedFiles.map(\.fileName), ["file-0.bin", "file-1.bin"])
+    XCTAssertEqual(
+      oversizedFiles.map(\.reason),
+      [.fileTooLarge(maximumBytes: 25), .fileTooLarge(maximumBytes: 25)]
+    )
+
+    let totalOverflow = try compatibilitySnapshot(
+      in: root.appendingPathComponent("total-overflow"),
+      sizes: [25, 25, 25, 25, 1]
+    )
+    let oversizedSnip = CloudAttachmentTransferCoordinator.unsupportedFiles(
+      in: totalOverflow,
+      policy: policy
+    )
+    XCTAssertEqual(
+      oversizedSnip.map(\.fileName),
+      ["file-0.bin", "file-1.bin", "file-2.bin", "file-3.bin", "file-4.bin"]
+    )
+    XCTAssertEqual(
+      oversizedSnip.map(\.reason),
+      Array(repeating: .snipTotalTooLarge(maximumBytes: 100), count: 5)
+    )
+    for fileName in oversizedSnip.map(\.fileName) {
+      XCTAssertTrue(
+        CloudAttachmentSetupError.unsupportedFiles(oversizedSnip)
+          .localizedDescription.contains(fileName)
+      )
+    }
   }
 
   func testCacheInstallRejectsOversizeBeforeConsumingStagedFile() async throws {
@@ -2442,6 +2625,37 @@ final class CloudAttachmentTransferTests: XCTestCase {
   private func temporaryDirectory() -> URL {
     FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudAttachmentTransferTests-\(UUID().uuidString)", isDirectory: true)
+  }
+
+  private func compatibilitySnapshot(
+    in root: URL,
+    sizes: [Int64]
+  ) throws -> SnipLibrarySnapshot {
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    var attachments: [SnipAttachment] = []
+    var urls: [UUID: URL] = [:]
+    for (index, size) in sizes.enumerated() {
+      let id = UUID()
+      let fileName = "file-\(index).bin"
+      let url = root.appendingPathComponent(fileName)
+      _ = FileManager.default.createFile(atPath: url.path, contents: nil)
+      let handle = try FileHandle(forWritingTo: url)
+      try handle.truncate(atOffset: UInt64(size))
+      try handle.close()
+      attachments.append(SnipAttachment(
+        id: id,
+        fileName: fileName,
+        relativePath: id.uuidString,
+        contentType: "application/octet-stream",
+        byteCount: size
+      ))
+      urls[id] = url
+    }
+    return SnipLibrarySnapshot(
+      snips: [Snip(content: "limits", origin: .quickEntry, attachments: attachments)],
+      lists: [.inbox],
+      attachmentURLs: urls
+    )
   }
 }
 

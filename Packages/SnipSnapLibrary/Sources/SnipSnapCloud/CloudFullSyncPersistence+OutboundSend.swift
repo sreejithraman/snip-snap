@@ -22,6 +22,13 @@ extension CloudFullSyncPersistence {
     }
     let local = try await library.checkedSnapshot(sortedBy: .manual)
     let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
+    let unsupportedAttachments = CloudAttachmentTransferCoordinator.unsupportedFiles(
+      in: attachments,
+      policy: attachmentPolicy
+    )
+    if !unsupportedAttachments.isEmpty {
+      throw CloudAttachmentSetupError.unsupportedFiles(unsupportedAttachments)
+    }
     let accepted = Dictionary(uniqueKeysWithValues:
       (stored.readyEntities + stored.deferredEntities).map { ($0.reference, $0) }
     )

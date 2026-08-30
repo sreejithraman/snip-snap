@@ -13,7 +13,7 @@ The research found two issues that the current notes and ADRs now address:
 1. A `CKAsset` field on a record fetched by `CKSyncEngine` is not a documented metadata-first download. `CKSyncEngine.FetchChangesOptions` can scope and rank zones, but it has no `desiredKeys` setting. A normal record fetch returns its asset data. True on-demand files need a separate payload record and a fetch path that can ask for selected keys.
 2. Permanent app-owned tombstone records are not required by CloudKit. Snip Snap can prevent deleted records from returning by treating the remote collection as authoritative during bootstrap, keeping the last server record metadata, and handling `unknownItem` without recreating the deleted record. A recovered edit should get a new record ID.
 
-The proposed 25 MiB per attachment and 100 MiB per snip limits are test candidates, not Apple limits or public Snip Snap limits. Current tests use small fixtures and do not support a byte-count promise. Public sync must stay blocked until one numeric per-attachment limit passes the Mac and Simulator matrix plus the final physical-iPhone check.
+Snip Snap sets a 25 MiB per attachment and 100 MiB per snip limit for iCloud Sync. These are Snip Snap limits, not Apple limits. The release tests cover the inclusive boundaries, one-byte overflow, full incompatible-file reporting, an interrupted 25 MiB transfer with hash and cache checks, and the enable action on iPhone and iPad Simulators. The short physical-iPhone checklist remains the final release check.
 
 ## 1. Attachment fetches and cache behavior
 
@@ -66,11 +66,11 @@ The per-snip total does not protect a single CloudKit request if payloads travel
 
 ### Product choice
 
-The project has not set a public numeric limit. Local-only mode need not have a Snip Snap size cap. Once tests support a synced attachment limit, existing files above it should stay local and block the mode change with a list of the files that need action.
+The project sets 25 MiB per synced attachment and 100 MiB total per synced snip. Local-only mode has no Snip Snap size cap. Existing files above either sync limit stay local and block the mode change with a list of every file that needs action.
 
 ### Recommendation for Q20
 
-Do not record the numbers as settled yet. Use 25 MiB and 100 MiB as test candidates. Before release, test uploads, fresh-device downloads, interrupted transfers, low disk space, and a full iCloud account on supported Mac, iPhone, and iPad systems. Then publish the limits as Snip Snap limits, not CloudKit limits.
+Publish 25 MiB and 100 MiB only as Snip Snap limits, not CloudKit limits. Automated tests cover upload, fresh-client download, interruption, cache and hash checks, low local storage, quota failure, and Mac, iPhone Simulator, and iPad Simulator paths. Run the short physical-iPhone checklist before release.
 
 ## 3. First-time enablement, account status, and network access
 
@@ -209,7 +209,7 @@ ADR 0016 records option 2. The project will prove zone exclusion on Mac and Simu
 - Do not keep permanent CloudKit tombstones in v1.
 - Preserve an offline edit of a deleted snip as a new recovered record.
 - Resolve equal list names with a stable, deterministic suffix rule.
-- Treat 25 MiB per attachment and 100 MiB per snip as test candidates, not public Snip Snap limits or Apple limits.
+- Enforce 25 MiB per attachment and 100 MiB per snip as Snip Snap iCloud Sync limits, not Apple limits.
 - Split attachment metadata from payload to support the accepted on-demand transfer design.
 
 ## Project test scope before schema freeze
@@ -218,7 +218,7 @@ The project will do most checks on the Mac and iPhone and iPad Simulators, backe
 
 1. Verify on Mac and Simulator that excluding the payload zone from `CKSyncEngine` fetches prevents asset transfer during normal sync, then repeat this path in the final physical-iPhone check.
 2. Verify that a direct record fetch downloads one requested payload and that copying it out of CloudKit staging survives later staging cleanup.
-3. Test candidate asset limits on Mac and Simulator, including interrupted transfers. Inject low local storage and exhausted iCloud quota at the storage and sync boundaries.
+3. Keep the 25 MiB and 100 MiB boundary, interrupted-transfer, low-storage, and quota tests green on Mac and Simulator.
 4. Simulate both orders of delete-versus-offline-edit. Confirm the original ID stays deleted and the recovered copy uses a new ID.
 5. Delete the saved sync state in a test build and prove that bootstrap reconciliation does not upload stale local records before fetching the remote snapshot.
 6. Create equal list names on two offline test stores and prove all devices choose the same suffixes after repeated sync.

@@ -116,6 +116,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   let namespace: CloudSyncNamespace
   let dataZone: CloudZoneID
   let payloadZone: CloudZoneID?
+  let attachmentPolicy: CloudAttachmentCompatibilityPolicy
   let namespaceKey: String
   let now: @Sendable () -> Date
   let afterCommitHook: ApplyHook
@@ -126,6 +127,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     namespace: CloudSyncNamespace,
     dataZone: CloudZoneID,
     payloadZone: CloudZoneID? = nil,
+    attachmentPolicy: CloudAttachmentCompatibilityPolicy = .openSourceDefault,
     now: @escaping @Sendable () -> Date = Date.init,
     afterCommitHook: @escaping ApplyHook = {}
   ) {
@@ -135,6 +137,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     self.namespace = namespace
     self.dataZone = dataZone
     self.payloadZone = payloadZone
+    self.attachmentPolicy = attachmentPolicy
     self.now = now
     self.afterCommitHook = afterCommitHook
     namespaceKey = namespace.canonicalKey

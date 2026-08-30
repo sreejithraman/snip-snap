@@ -46,6 +46,10 @@ Snip Snap stores user fields as encrypted values and file bytes as `CKAsset`
 data. Your synced data is end-to-end encrypted only when Advanced Data
 Protection is on for your iCloud account.
 
+Snip Snap supports iCloud Sync attachments up to 25 MiB each and 100 MiB total
+per snip. These are Snip Snap limits, not Apple limits. Local-only attachments
+do not use these sync limits.
+
 Release builds contact the public update feed to check for new versions.
 
 ## Build from source

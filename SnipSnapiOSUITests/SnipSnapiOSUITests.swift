@@ -8,6 +8,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         withRecovery: Bool = false,
         withSyncedContent: Bool = false,
         withSyncEnable: Bool = false,
+        withLimitAttachments: Bool = false,
         withEncryptedReset: Bool = false,
         accountNotice: Bool = false,
         withCopyShareFixtures: Bool = false
@@ -21,6 +22,9 @@ final class SnipSnapiOSUITests: XCTestCase {
             app.launchEnvironment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] = "1"
         }
         if withSyncEnable { app.launchEnvironment["SNIP_SNAP_UI_TEST_SYNC_ENABLE"] = "1" }
+        if withLimitAttachments {
+            app.launchEnvironment["SNIP_SNAP_UI_TEST_LIMIT_ATTACHMENTS"] = "1"
+        }
         if withEncryptedReset {
             app.launchEnvironment["SNIP_SNAP_UI_TEST_ENCRYPTED_RESET"] = "1"
         }
@@ -66,6 +70,36 @@ final class SnipSnapiOSUITests: XCTestCase {
             app.buttons["list-Inbox"].tap()
         }
         XCTAssertTrue(localSnip.waitForExistence(timeout: 3))
+    }
+
+    func testSyncEnableReportsEveryAttachmentAboveTheSnipSnapLimit() {
+        continueAfterFailure = false
+        let app = launchApp(withSyncEnable: true, withLimitAttachments: true)
+        XCTAssertTrue(app.staticTexts["Attachment fixture"].waitForExistence(timeout: 8))
+        let settings = app.buttons["settings"]
+        for _ in 0..<3 where !settings.waitForExistence(timeout: 1) {
+            if app.buttons["Show Sidebar"].exists {
+                app.buttons["Show Sidebar"].tap()
+            } else if app.navigationBars.buttons.firstMatch.exists {
+                app.navigationBars.buttons.firstMatch.tap()
+            }
+        }
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        settings.tap()
+
+        app.buttons["enable-icloud-sync"].tap()
+
+        XCTAssertTrue(app.staticTexts["Sync Needs Attention"].waitForExistence(timeout: 8))
+        let firstDetail = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "over-limit-a.bin")
+        ).firstMatch
+        let secondDetail = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "over-limit-b.bin")
+        ).firstMatch
+        XCTAssertTrue(firstDetail.waitForExistence(timeout: 3))
+        XCTAssertTrue(secondDetail.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["enable-icloud-sync"].exists)
+        XCTAssertFalse(app.staticTexts["iCloud Sync On"].exists)
     }
 
     func testDeleteSyncedContentExplainsAndConfirmsReset() {

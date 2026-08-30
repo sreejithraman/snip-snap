@@ -94,6 +94,26 @@ final class SyncedContentSettingsModelTests: XCTestCase {
   }
 
   @MainActor
+  func testFailedEnableShowsTheExactCompatibilityErrorAndAllowsRetry() async {
+    struct IncompatibleAttachments: LocalizedError {
+      var errorDescription: String? {
+        "These attachments cannot sync: first.bin; second.bin"
+      }
+    }
+    let model = SyncedContentSettingsModel(
+      mode: .localOnly,
+      enableAction: { throw IncompatibleAttachments() }
+    )
+
+    await model.enableICloudSync()
+
+    XCTAssertEqual(model.statusTitle, "Sync Needs Attention")
+    XCTAssertTrue(model.detail.contains("first.bin"))
+    XCTAssertTrue(model.detail.contains("second.bin"))
+    XCTAssertTrue(model.canEnable)
+  }
+
+  @MainActor
   func testEncryptedResetShowsChoicesAndReplacesLibraryBeforeReportingReady() async {
     let calls = DeleteEventRecorder()
     let model = SyncedContentSettingsModel(

@@ -655,7 +655,8 @@ package actor ICloudSyncModeCoordinator {
             library: library,
             namespace: namespace,
             dataZone: textZone,
-            payloadZone: payloadZone
+            payloadZone: payloadZone,
+            attachmentPolicy: attachmentPolicy
         )
     }
 

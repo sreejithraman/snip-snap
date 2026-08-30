@@ -170,12 +170,10 @@ Sources: [Shared data](https://developer.apple.com/documentation/technologyoverv
 - CloudKit returns downloaded asset files in a staging area that the system may clear. Copy a downloaded file into an app-owned cache when it must remain available.
 - Direct CloudKit fetches can omit the asset field and fetch it later on demand.
 - Private attachment data counts against the user's iCloud quota.
-- Snip Snap must set its own supported limit and handle CloudKit limit and quota errors. Do not present that limit as an Apple limit.
-- No public numeric limit is set yet. Current automated tests prove policy rejection and transfer failure handling only with small fixtures; they do not support a byte-count promise.
-- Block public sync release until one numeric per-attachment Snip Snap limit passes Mac, iPhone Simulator, iPad Simulator, and the final physical-iPhone transfer check. Add that limit to the product policy and boundary tests before release.
-- The earlier 25 MiB per attachment and 100 MiB per snip figures remain test candidates. Do not publish them unless those checks pass.
+- Snip Snap supports iCloud Sync attachments up to 25 MiB each and 100 MiB total per snip. These are Snip Snap limits, not Apple limits.
+- Automated tests cover inclusive boundaries, one-byte overflow, every incompatible filename, a generated 25 MiB upload and fresh-client download, hash and cache checks, an interrupted fetch, and the enable action on iPhone and iPad Simulators.
 - Keep local-only attachments unrestricted by a Snip Snap size policy.
-- Set the first public sync limit after Mac and Simulator transfer tests plus the final physical-iPhone check. Report incompatible existing files before enabling sync and never omit them.
+- Report every incompatible existing file before enabling sync and never send it after sync is on.
 - Use one attachment metadata record in the normal sync zone and one immutable payload record in an excluded payload zone.
 - Upload and confirm the payload before publishing its metadata.
 - Fetch a payload directly by record ID only when the user previews, opens, copies, or exports the attachment.
@@ -216,7 +214,7 @@ Apple's current documentation gives conflicting advice about whether a `CKSyncEn
 
 ## Open decisions
 
-- Public sync attachment limit. Keep public sync blocked until one numeric Snip Snap per-attachment limit passes the release matrix and boundary tests.
+- None from the current design review.
 
 ## Delete and merge rules
 
@@ -241,7 +239,7 @@ Automate these checks with temporary durable SwiftData stores, a fake Cloud tran
 - Run two or more local client stores against one fake server and inject offline periods, retries, duplicate events, reordered events, conflicts, account changes, zone deletion, encrypted-data reset, quota errors, and lost sync-engine state.
 - Verify on Mac and Simulator that normal `CKSyncEngine` fetches exclude the payload zone.
 - Verify that a direct payload fetch downloads one requested file and that the app-owned cached copy survives CloudKit staging cleanup.
-- Test candidate attachment limits and interrupted transfers. Simulate low local storage and exhausted iCloud quota at the storage and sync boundaries. Keep public sync blocked until one numeric Snip Snap per-attachment limit passes the full release matrix and becomes a boundary test.
+- Keep the 25 MiB per-attachment and 100 MiB per-snip boundary tests green. Test interrupted transfers and simulate low local storage and exhausted iCloud quota at the storage and sync boundaries.
 - Test both orders of delete versus offline edit and require the recovered edit to use a new ID.
 - Delete saved sync-engine state and prove bootstrap does not upload stale records before fetching the remote collection.
 - Create equal list names on offline client stores and prove every client produces the same suffixes.

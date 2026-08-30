@@ -186,9 +186,16 @@ struct SnipSnapiOSApp: App {
 
         do {
             let seedsCopyShareFixtures = environment["SNIP_SNAP_UI_TEST_COPY_SHARE"] == "1"
-            let fixtureURLs = environment["SNIP_SNAP_UI_TEST_ATTACHMENTS"] == "1"
-                    || seedsCopyShareFixtures
-                ? makeUITestAttachmentFiles(nextTo: storeURL) : []
+            let fixtureURLs: [URL]
+            if environment["SNIP_SNAP_UI_TEST_LIMIT_ATTACHMENTS"] == "1" {
+                fixtureURLs = makeUITestLimitAttachmentFiles(nextTo: storeURL)
+            } else if environment["SNIP_SNAP_UI_TEST_ATTACHMENTS"] == "1"
+                        || seedsCopyShareFixtures
+            {
+                fixtureURLs = makeUITestAttachmentFiles(nextTo: storeURL)
+            } else {
+                fixtureURLs = []
+            }
             let sourceLibrary = try SwiftDataSnipLibrary(storeURL: storeURL)
             let assembly = SnipLibraryAssembly(
                 library: sourceLibrary,
@@ -248,6 +255,32 @@ struct SnipSnapiOSApp: App {
             try png.write(to: imageURL, options: .atomic)
             try Data("A local file attachment".utf8).write(to: textURL, options: .atomic)
             return [imageURL, textURL]
+        } catch {
+            return []
+        }
+    }
+
+    private static func makeUITestLimitAttachmentFiles(nextTo storeURL: URL) -> [URL] {
+        let directory = storeURL.deletingLastPathComponent()
+            .appendingPathComponent("UITestLimitFixtures", isDirectory: true)
+        let first = directory.appendingPathComponent("over-limit-a.bin", isDirectory: false)
+        let second = directory.appendingPathComponent("over-limit-b.bin", isDirectory: false)
+        do {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            for (url, extraByteCount) in [(first, 1), (second, 2)] {
+                _ = FileManager.default.createFile(atPath: url.path, contents: nil)
+                let handle = try FileHandle(forWritingTo: url)
+                try handle.truncate(
+                    atOffset: UInt64(
+                        SnipSnapCloudAttachmentLimits.maximumFileBytes + Int64(extraByteCount)
+                    )
+                )
+                try handle.close()
+            }
+            return [first, second]
         } catch {
             return []
         }

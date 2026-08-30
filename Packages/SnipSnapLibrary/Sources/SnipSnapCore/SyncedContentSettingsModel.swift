@@ -96,6 +96,7 @@ public final class SyncedContentSettingsModel {
 
   public var statusTitle: String {
     switch (mode, state) {
+    case (_, .failed): "Sync Needs Attention"
     case (.localOnly, .enabling): "Setting Up iCloud Sync…"
     case (.localOnly, _): "Local Only"
     case (_, .ready): "iCloud Sync On"
@@ -105,12 +106,13 @@ public final class SyncedContentSettingsModel {
     case (_, .resolvingEncryptedDataReset): "Starting a New Synced Collection…"
     case (_, .removalPending): "Old Synced Content Removal Pending"
     case (_, .deleted): "Synced Content Deleted"
-    case (_, .failed): "Sync Needs Attention"
     }
   }
 
   public var detail: String {
     switch (mode, state) {
+    case (_, .failed(let message)):
+      "Snip Snap could not finish the iCloud action. Nothing was uploaded or removed. \(message)"
     case (.localOnly, .enabling):
       "Snip Snap is fetching iCloud data and preparing a safe merged copy."
     case (.iCloudSync, .enabling):
@@ -129,8 +131,6 @@ public final class SyncedContentSettingsModel {
       "Snip Snap started a fresh empty synced collection, but it could not remove all old iCloud data yet. It will retry the next time it syncs. Your local recovery copy remains."
     case (_, .deleted):
       "Synced content was removed. This device kept a local recovery copy. A small control record remains in iCloud so an old device cannot restore the deleted collection."
-    case (_, .failed(let message)):
-      "Snip Snap could not finish deleting synced content. Your local recovery copy was not removed. \(message)"
     }
   }
 
