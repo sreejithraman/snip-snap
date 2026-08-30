@@ -125,7 +125,7 @@ then
 fi
 [[ ! -e "$fixture_lock" ]] || fail_test "the failed run left the Share fixture lock behind"
 
-/usr/bin/grep -F -- 'let fixtureURL = "http://127.0.0.1:58493/"' \
+/usr/bin/grep -F -- 'URL(string: "http://127.0.0.1:58493/' \
     "$script_dir/../SnipSnapiOSUITests/SnipSnapiOSUITests.swift" >/dev/null || \
     fail_test "the UI test does not use the locked loopback fixture port"
 

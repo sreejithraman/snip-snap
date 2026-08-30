@@ -632,46 +632,37 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     private func shareURLFromSafari(token: String) -> XCUIApplication {
         let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
-        let fixtureURL = "http://127.0.0.1:58493/"
-        safari.launch()
-        if safari.buttons["Continue"].waitForExistence(timeout: 1) {
-            safari.buttons["Continue"].tap()
+        guard let fixtureURL = URL(string: "http://127.0.0.1:58493/#\(token)") else {
+            XCTFail("The fixed Share fixture URL is invalid.")
+            return safari
         }
-        var address = safari.textFields["Address"].firstMatch
-        if !address.waitForExistence(timeout: 3) {
-            safari.buttons["Address"].tap()
-            address = safari.textFields.firstMatch
+        safari.open(fixtureURL)
+        let fixture = safari.staticTexts["Snip Snap Share Fixture"]
+        XCTAssertTrue(fixture.waitForExistence(timeout: 15))
+        let close = safari.buttons["Close"].firstMatch
+        if close.waitForExistence(timeout: 2) {
+            close.tap()
         }
-        XCTAssertTrue(address.waitForExistence(timeout: 3))
-        address.tap()
-        var focusedAddress = safari.textFields.matching(
-            NSPredicate(format: "hasKeyboardFocus == true")
-        ).firstMatch
-        XCTAssertTrue(focusedAddress.waitForExistence(timeout: 3))
-        focusedAddress.typeKey("a", modifierFlags: .command)
-        focusedAddress = safari.textFields.matching(
-            NSPredicate(format: "hasKeyboardFocus == true")
-        ).firstMatch
-        XCTAssertTrue(focusedAddress.waitForExistence(timeout: 3))
-        focusedAddress.typeText("\(fixtureURL)#\(token)")
-        let currentAddress = safari.textFields.matching(
-            NSPredicate(format: "value CONTAINS %@", token)
-        ).firstMatch
-        XCTAssertTrue(currentAddress.waitForExistence(timeout: 5))
-        let go = safari.keyboards.buttons["Go"]
-        XCTAssertTrue(go.waitForExistence(timeout: 3))
-        go.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        XCTAssertTrue(safari.keyboards.firstMatch.waitForNonExistence(timeout: 10))
-        XCTAssertTrue(safari.staticTexts["Snip Snap Share Fixture"].waitForExistence(timeout: 10))
-        if safari.buttons["Close"].exists {
-            safari.buttons["Close"].tap()
+        var share = safari.buttons["Share"].firstMatch
+        if !share.waitForExistence(timeout: 3) {
+            let more = safari.buttons["More"].firstMatch
+            XCTAssertTrue(
+                more.waitForExistence(timeout: 5),
+                "Safari did not expose its Share button or More menu."
+            )
+            more.tap()
+            share = safari.buttons["Share"].firstMatch
         }
-        var share = safari.buttons["Share"]
-        if !share.waitForExistence(timeout: 1) {
-            safari.buttons["More"].tap()
-            share = safari.buttons["Share"]
+        if !share.waitForExistence(timeout: 12) {
+            let more = safari.buttons["More"].firstMatch
+            if more.waitForExistence(timeout: 2) {
+                more.tap()
+            }
         }
-        XCTAssertTrue(share.waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            share.waitForExistence(timeout: 12),
+            "Safari did not expose Share after retrying its menu."
+        )
         share.tap()
         let activity = safari.cells["Snip Snap"]
         XCTAssertTrue(activity.waitForExistence(timeout: 8))
