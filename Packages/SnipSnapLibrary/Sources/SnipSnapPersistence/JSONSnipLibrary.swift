@@ -313,6 +313,26 @@ public actor JSONSnipLibrary: SnipLibrary {
         )
     }
 
+    public func previewTransferSnapshot(
+        revision: UInt64
+    ) async throws -> SnipLibraryTransferSnapshot {
+        try ensureAvailable()
+        let current = makeSnapshot(sortedBy: .manual)
+        var digests: [UUID: Data] = [:]
+        for (id, url) in current.attachmentURLs {
+            digests[id] = try AttachmentFileIO.digest(at: url)
+        }
+        return SnipLibraryTransferSnapshot(
+            revision: revision,
+            snips: current.snips,
+            lists: current.lists,
+            attachmentData: [:],
+            attachmentFileURLs: current.attachmentURLs,
+            attachmentFileDigests: digests,
+            legacyManualPositions: [:]
+        )
+    }
+
     public func mergeTransferSnapshot(
         _ source: SnipLibraryTransferSnapshot,
         transitionID: UUID,
@@ -335,9 +355,6 @@ public actor JSONSnipLibrary: SnipLibrary {
             for snipIndex in transferredSnips.indices {
                 for attachmentIndex in transferredSnips[snipIndex].attachments.indices {
                     var attachment = transferredSnips[snipIndex].attachments[attachmentIndex]
-                    guard let bytes = plan.attachmentData[attachment.id] else {
-                        throw SnipLibraryError.attachmentCopyFailed
-                    }
                     if !targetAttachmentIDs.contains(attachment.id) {
                         let safeName = URL(fileURLWithPath: attachment.fileName).lastPathComponent
                         guard !safeName.isEmpty else {
@@ -349,8 +366,23 @@ public actor JSONSnipLibrary: SnipLibrary {
                         if !FileManager.default.fileExists(atPath: destination.path) {
                             try DurableFile.createDirectory(directory)
                             createdDirectories.append(directory)
-                            try DurableFile.write(bytes, to: destination)
-                        } else if try Data(contentsOf: destination) != bytes {
+                            if let bytes = plan.attachmentData[attachment.id] {
+                                try DurableFile.write(bytes, to: destination)
+                            } else if let sourceURL = plan.attachmentFileURLs[attachment.id] {
+                                let copied = try AttachmentFileIO.copyRegularFile(
+                                    from: sourceURL,
+                                    to: destination,
+                                    expectedByteCount: attachment.byteCount
+                                )
+                                guard copied.digest == plan.attachmentFileDigests[attachment.id]
+                                else { throw SnipLibraryError.importChanged }
+                            } else {
+                                throw SnipLibraryError.attachmentCopyFailed
+                            }
+                        } else if try !plan.attachmentContentsEqual(
+                            attachmentID: attachment.id,
+                            fileURL: destination
+                        ) {
                             throw SnipLibraryError.transferConflict(
                                 .attachmentIdentity(attachment.id)
                             )

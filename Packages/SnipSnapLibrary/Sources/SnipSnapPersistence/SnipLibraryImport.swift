@@ -6,15 +6,48 @@ public enum SnipLibraryImport {
     source: any SnipLibrary,
     target: any SnipLibrary
   ) async throws -> SnipImportPreview {
-    let sourceSnapshot = try await source.transferSnapshot(revision: 0)
-    return try await target.previewImport(sourceSnapshot, transitionID: UUID())
+    let transitionID = UUID()
+    let sourceSnapshot = try await source.previewTransferSnapshot(revision: 0)
+    let staged = try AttachmentFileIO.stagePreviewSnapshot(
+      sourceSnapshot,
+      transitionID: transitionID
+    )
+    do {
+      return try await target.previewImport(
+        staged.snapshot,
+        transitionID: transitionID
+      ).withOptionalStagingLease(staged.lease)
+    } catch {
+      try? staged.lease?.release()
+      throw error
+    }
   }
 
   public static func preview(
     backupURL: URL,
     target: any SnipLibrary
   ) async throws -> SnipImportPreview {
-    try await preview(source: JSONSnipLibrary(fileURL: backupURL), target: target)
+    let transitionID = UUID()
+    let staged = try JSONSnipArchiveTransfer.stageForImport(
+      from: backupURL,
+      transitionID: transitionID
+    )
+    do {
+      let source = SnipLibraryTransferSnapshot(
+        revision: 0,
+        snips: staged.archive.snips,
+        lists: staged.archive.lists,
+        attachmentData: [:],
+        attachmentFileURLs: staged.archive.attachmentURLs,
+        attachmentFileDigests: staged.attachmentDigests,
+        legacyManualPositions: [:]
+      )
+      return try await target.previewImport(source, transitionID: transitionID)
+        .withStagingLease(staged.lease)
+    } catch {
+      try? staged.lease.release()
+      throw error
+    }
   }
 
   public static func apply(
@@ -30,7 +63,7 @@ extension JSONSnipLibrary {
     _ source: SnipLibraryTransferSnapshot,
     transitionID: UUID
   ) async throws -> SnipImportPreview {
-    let target = try await transferSnapshot(revision: 0)
+    let target = try await previewTransferSnapshot(revision: 0)
     let plan = try SnipLibraryTransferPlanner.plan(
       source: source,
       target: target,
@@ -54,14 +87,15 @@ extension SwiftDataSnipLibrary {
     _ source: SnipLibraryTransferSnapshot,
     transitionID: UUID
   ) async throws -> SnipImportPreview {
-    let target = try await transferSnapshot(revision: 0)
+    let target = try await previewTransferSnapshot(revision: 0)
     let plan = try await prepareTransferPlan(
       source,
       transitionID: transitionID,
       replacingTargetSnipIDs: [],
       priorSeedProvenance: [],
       priorServerAcceptedSnipIDs: [],
-      priorSeededListIDs: []
+      priorSeededListIDs: [],
+      targetSnapshot: target
     )
     return SnipLibraryImport.makePreview(
       source: source,
@@ -113,6 +147,7 @@ extension SnipLibraryImport {
     to target: any SnipLibrary,
     beforeCommit: @escaping @Sendable () async throws -> Void = {}
   ) async throws -> SnipImportResult {
+    defer { try? preview.stagingLease?.release() }
     let current = try await target.transferSnapshot(revision: 0)
     guard SnipLibraryTransferPlanner.digest(snapshot: current) == preview.targetDigest else {
       throw SnipLibraryError.importChanged
@@ -129,5 +164,12 @@ extension SnipLibraryImport {
       recoveredSnipCount: transfer.recoveredSourceSnipIDs.count,
       devicePatch: preview.devicePatch
     )
+  }
+}
+
+private extension SnipImportPreview {
+  func withOptionalStagingLease(_ lease: SnipImportStagingLease?) -> Self {
+    guard let lease else { return self }
+    return withStagingLease(lease)
   }
 }

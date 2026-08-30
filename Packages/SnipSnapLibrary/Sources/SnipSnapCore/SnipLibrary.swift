@@ -261,6 +261,8 @@ public struct SnipLibraryTransferSnapshot: Equatable, Sendable {
     public let snips: [Snip]
     public let lists: [SnipList]
     public let attachmentData: [UUID: Data]
+    package let attachmentFileURLs: [UUID: URL]
+    package let attachmentFileDigests: [UUID: Data]
     package let legacyManualPositions: [UUID: Int64]
     package let opaqueSyncStateDigest: Data
     package let opaqueSyncStatePayload: Data
@@ -276,6 +278,8 @@ public struct SnipLibraryTransferSnapshot: Equatable, Sendable {
         self.snips = state.snips
         self.lists = state.lists
         self.attachmentData = attachmentData
+        attachmentFileURLs = [:]
+        attachmentFileDigests = [:]
         legacyManualPositions = [:]
         opaqueSyncStateDigest = Data()
         opaqueSyncStatePayload = Data()
@@ -286,6 +290,8 @@ public struct SnipLibraryTransferSnapshot: Equatable, Sendable {
         snips: [Snip],
         lists: [SnipList],
         attachmentData: [UUID: Data],
+        attachmentFileURLs: [UUID: URL] = [:],
+        attachmentFileDigests: [UUID: Data] = [:],
         legacyManualPositions: [UUID: Int64],
         opaqueSyncStateDigest: Data = Data(),
         opaqueSyncStatePayload: Data = Data()
@@ -295,6 +301,8 @@ public struct SnipLibraryTransferSnapshot: Equatable, Sendable {
         self.snips = state.snips
         self.lists = state.lists
         self.attachmentData = attachmentData
+        self.attachmentFileURLs = attachmentFileURLs
+        self.attachmentFileDigests = attachmentFileDigests
         self.legacyManualPositions = legacyManualPositions
         self.opaqueSyncStateDigest = opaqueSyncStateDigest
         self.opaqueSyncStatePayload = opaqueSyncStatePayload
@@ -306,10 +314,39 @@ public struct SnipLibraryTransferSnapshot: Equatable, Sendable {
             snips: snips,
             lists: lists,
             attachmentData: attachmentData,
+            attachmentFileURLs: attachmentFileURLs,
+            attachmentFileDigests: attachmentFileDigests,
             legacyManualPositions: legacyManualPositions,
             opaqueSyncStateDigest: opaqueSyncStateDigest,
             opaqueSyncStatePayload: payload
         )
+    }
+}
+
+package final class SnipImportStagingLease: @unchecked Sendable {
+    package let rootURL: URL
+    private let cleanup: @Sendable () throws -> Void
+    private let lock = NSLock()
+    private var isReleased = false
+
+    package init(
+        rootURL: URL,
+        cleanup: @escaping @Sendable () throws -> Void
+    ) {
+        self.rootURL = rootURL
+        self.cleanup = cleanup
+    }
+
+    package func release() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isReleased else { return }
+        try cleanup()
+        isReleased = true
+    }
+
+    deinit {
+        try? release()
     }
 }
 
@@ -333,6 +370,10 @@ public struct SnipImportPreview: Equatable, Sendable {
     package let source: SnipLibraryTransferSnapshot
     package let targetDigest: Data
     package let devicePatch: SnipLibraryDevicePatch
+    package let stagingLease: SnipImportStagingLease?
+
+    package var stagedAttachmentURLs: [UUID: URL] { source.attachmentFileURLs }
+    package var stagingRootURL: URL? { stagingLease?.rootURL }
 
     package init(
         totalSnipCount: Int,
@@ -343,7 +384,8 @@ public struct SnipImportPreview: Equatable, Sendable {
         transitionID: UUID,
         source: SnipLibraryTransferSnapshot,
         targetDigest: Data,
-        devicePatch: SnipLibraryDevicePatch
+        devicePatch: SnipLibraryDevicePatch,
+        stagingLease: SnipImportStagingLease? = nil
     ) {
         self.totalSnipCount = totalSnipCount
         self.addedSnipCount = addedSnipCount
@@ -354,6 +396,34 @@ public struct SnipImportPreview: Equatable, Sendable {
         self.source = source
         self.targetDigest = targetDigest
         self.devicePatch = devicePatch
+        self.stagingLease = stagingLease
+    }
+
+    package func withStagingLease(_ lease: SnipImportStagingLease) -> Self {
+        Self(
+            totalSnipCount: totalSnipCount,
+            addedSnipCount: addedSnipCount,
+            recoveredSnipCount: recoveredSnipCount,
+            addedListCount: addedListCount,
+            addedAttachmentCount: addedAttachmentCount,
+            transitionID: transitionID,
+            source: source,
+            targetDigest: targetDigest,
+            devicePatch: devicePatch,
+            stagingLease: lease
+        )
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.totalSnipCount == rhs.totalSnipCount
+            && lhs.addedSnipCount == rhs.addedSnipCount
+            && lhs.recoveredSnipCount == rhs.recoveredSnipCount
+            && lhs.addedListCount == rhs.addedListCount
+            && lhs.addedAttachmentCount == rhs.addedAttachmentCount
+            && lhs.transitionID == rhs.transitionID
+            && lhs.source == rhs.source
+            && lhs.targetDigest == rhs.targetDigest
+            && lhs.devicePatch == rhs.devicePatch
     }
 }
 
@@ -400,6 +470,8 @@ public protocol SnipLibrary: Sendable {
 
     func transferSnapshot(revision: UInt64) async throws -> SnipLibraryTransferSnapshot
 
+    func previewTransferSnapshot(revision: UInt64) async throws -> SnipLibraryTransferSnapshot
+
     func mergeTransferSnapshot(
         _ source: SnipLibraryTransferSnapshot,
         transitionID: UUID,
@@ -432,6 +504,10 @@ public extension SnipLibrary {
 
     func transferSnapshot(revision: UInt64) async throws -> SnipLibraryTransferSnapshot {
         throw SnipLibraryError.transferUnsupported
+    }
+
+    func previewTransferSnapshot(revision: UInt64) async throws -> SnipLibraryTransferSnapshot {
+        try await transferSnapshot(revision: revision)
     }
 
     func mergeTransferSnapshot(

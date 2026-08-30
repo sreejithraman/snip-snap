@@ -177,7 +177,9 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             initialError: store.errorMessage,
             recoveryScope: assembly.recoveryScope,
             userActions: assembly.userActions,
-            userActionsFactory: assembly.userActionsFactory
+            rebindUserActions: SnipLibraryUserActionsRebinder {
+                assembly.userActionsFactory.actions(for: $0)
+            }
         )
         let shortcutSettings = ShortcutSettings()
         let cloudServices: SnipSnapCloudAppServices
@@ -554,6 +556,12 @@ extension FocusedValues {
     }
 }
 
+enum BackupImportCommandRoute: CaseIterable {
+    case previewThenConfirm
+
+    var title: String { "Import Backup…" }
+}
+
 private struct SnipCommands: Commands {
     @FocusedValue(\.snipCommandModel) private var model
     let applicationModel: AppModel
@@ -584,7 +592,9 @@ private struct SnipCommands: Commands {
             }
         }
         CommandMenu("Snips") {
-            Button("Import Backup…") { model?.beginBackupImport() }
+            Button(BackupImportCommandRoute.previewThenConfirm.title) {
+                model?.beginBackupImport()
+            }
                 .disabled(model == nil)
             Divider()
             Button(SnipCommand.copy.title) { perform(.copy) }
@@ -612,10 +622,6 @@ private struct SnipCommands: Commands {
             Button(SnipCommand.delete.title) { perform(.delete) }
                 .keyboardShortcut(.delete, modifiers: [])
                 .disabled(!isAvailable(.delete))
-            Divider()
-            Button("Import JSON Backup…") {
-                importJSONBackup(into: applicationModel)
-            }
             Button("Export JSON Backup…") {
                 exportJSONBackup(from: applicationModel)
             }
@@ -629,28 +635,6 @@ private struct SnipCommands: Commands {
     private func perform(_ command: SnipCommand) {
         guard let model else { return }
         SnipCommandDispatcher(model: model, coordinator: coordinator).perform(command)
-    }
-
-    private func importJSONBackup(into model: AppModel) {
-        let panel = NSOpenPanel()
-        panel.title = "Import JSON Backup"
-        panel.prompt = "Import"
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { @MainActor in
-            let didAccess = url.startAccessingSecurityScopedResource()
-            defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
-            do {
-                let archive = try await Task.detached {
-                    try JSONSnipArchiveTransfer.read(from: url)
-                }.value
-                _ = await model.importArchive(archive)
-            } catch {
-                model.presentedError = error.localizedDescription
-            }
-        }
     }
 
     private func exportJSONBackup(from model: AppModel) {

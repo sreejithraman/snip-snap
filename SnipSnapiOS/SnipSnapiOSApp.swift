@@ -8,7 +8,7 @@ import SwiftUI
 struct SnipSnapiOSApp: App {
     private let library: any SnipLibrary
     private let userActions: any SnipLibraryUserActions
-    private let userActionsFactory: SnipLibraryUserActionsFactory
+    private let rebindUserActions: SnipLibraryUserActionsRebinder
     private let shareImports: ShareImportStore?
     private let startupError: String?
     private let uiTestAttachmentURLs: [URL]
@@ -23,7 +23,7 @@ struct SnipSnapiOSApp: App {
         let startup = Self.makeLibrary()
         library = startup.library
         userActions = startup.userActions
-        userActionsFactory = startup.userActionsFactory
+        rebindUserActions = startup.rebindUserActions
         shareImports = startup.shareImports
         startupError = startup.error
         uiTestAttachmentURLs = startup.uiTestAttachmentURLs
@@ -111,7 +111,7 @@ struct SnipSnapiOSApp: App {
                 cloudSyncSession: cloudSyncSession,
                 accountNoticeModel: accountNoticeModel,
                 cloudSyncHandler: cloudSyncHandler,
-                userActionsFactory: userActionsFactory
+                rebindUserActions: rebindUserActions
             )
         }
     }
@@ -120,7 +120,7 @@ struct SnipSnapiOSApp: App {
         library: any SnipLibrary,
         sourceLibrary: any SnipLibrary,
         userActions: any SnipLibraryUserActions,
-        userActionsFactory: SnipLibraryUserActionsFactory,
+        rebindUserActions: SnipLibraryUserActionsRebinder,
         shareImports: ShareImportStore?,
         error: String?,
         uiTestAttachmentURLs: [URL],
@@ -146,7 +146,9 @@ struct SnipSnapiOSApp: App {
                 library,
                 library,
                 actionsFactory.actions(for: library),
-                actionsFactory,
+                SnipLibraryUserActionsRebinder {
+                    actionsFactory.actions(for: $0)
+                },
                 nil,
                 nil,
                 [],
@@ -197,7 +199,9 @@ struct SnipSnapiOSApp: App {
                 assembly.library,
                 sourceLibrary,
                 assembly.userActions,
-                assembly.userActionsFactory,
+                SnipLibraryUserActionsRebinder {
+                    assembly.userActionsFactory.actions(for: $0)
+                },
                 shareImports,
                 nil,
                 fixtureURLs,
@@ -216,7 +220,9 @@ struct SnipSnapiOSApp: App {
                 assembly.library,
                 sourceLibrary,
                 assembly.userActions,
-                assembly.userActionsFactory,
+                SnipLibraryUserActionsRebinder {
+                    assembly.userActionsFactory.actions(for: $0)
+                },
                 shareImports,
                 "Snip Snap could not open its local library. Your saved data was not changed.",
                 [],

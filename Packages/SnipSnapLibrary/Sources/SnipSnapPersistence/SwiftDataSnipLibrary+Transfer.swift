@@ -28,6 +28,30 @@ extension SwiftDataSnipLibrary {
     )
   }
 
+  public func previewTransferSnapshot(
+    revision: UInt64
+  ) async throws -> SnipLibraryTransferSnapshot {
+    let current = try await checkedSnapshot(sortedBy: .manual)
+    var digests: [UUID: Data] = [:]
+    for (id, url) in current.attachmentURLs {
+      digests[id] = try AttachmentFileIO.digest(at: url)
+    }
+    guard let container else { throw SnipLibraryError.storeUnavailable }
+    let context = Self.makeContext(container: container)
+    let transferMetadata = try Self.transferMetadata(context: context)
+    return SnipLibraryTransferSnapshot(
+      revision: revision,
+      snips: current.snips,
+      lists: current.lists,
+      attachmentData: [:],
+      attachmentFileURLs: current.attachmentURLs,
+      attachmentFileDigests: digests,
+      legacyManualPositions: transferMetadata.legacyManualPositions,
+      opaqueSyncStateDigest: transferMetadata.opaqueSyncStateDigest,
+      opaqueSyncStatePayload: transferMetadata.opaqueSyncStatePayload
+    )
+  }
+
   public func mergeTransferSnapshot(
     _ source: SnipLibraryTransferSnapshot,
     transitionID: UUID,
@@ -77,10 +101,16 @@ extension SwiftDataSnipLibrary {
     priorSeedProvenance: [SyncModeSeedProvenance],
     priorServerAcceptedSnipIDs: Set<UUID>,
     priorSeededListIDs: Set<UUID>,
-    targetRevision: UInt64 = 0
+    targetRevision: UInt64 = 0,
+    targetSnapshot: SnipLibraryTransferSnapshot? = nil
   ) async throws -> SnipLibraryTransferPlan {
     guard isAvailable else { throw SnipLibraryError.storeUnavailable }
-    let target = try await transferSnapshot(revision: targetRevision)
+    let target: SnipLibraryTransferSnapshot
+    if let targetSnapshot {
+      target = targetSnapshot
+    } else {
+      target = try await transferSnapshot(revision: targetRevision)
+    }
     let acceptedTargetTextBySnipID = try acceptedCloudTextValues()
     let acceptedTargetSnipIDs = Set(acceptedTargetTextBySnipID.keys)
     return try SnipLibraryTransferPlanner.plan(
@@ -135,9 +165,6 @@ extension SwiftDataSnipLibrary {
       for snipIndex in transferredSnips.indices {
         for attachmentIndex in transferredSnips[snipIndex].attachments.indices {
           var attachment = transferredSnips[snipIndex].attachments[attachmentIndex]
-          guard let bytes = plan.attachmentData[attachment.id] else {
-            throw SnipLibraryError.attachmentCopyFailed
-          }
           let safeName = URL(fileURLWithPath: attachment.fileName).lastPathComponent
           guard !safeName.isEmpty else { throw SnipLibraryError.attachmentCopyFailed }
           let relativePath = "\(attachment.id.uuidString)/\(safeName)"
@@ -146,8 +173,24 @@ extension SwiftDataSnipLibrary {
           if !FileManager.default.fileExists(atPath: destination.path) {
             try DurableFile.createDirectory(directory)
             createdDirectories.append(directory)
-            try DurableFile.write(bytes, to: destination)
-          } else if try Data(contentsOf: destination) != bytes {
+            if let bytes = plan.attachmentData[attachment.id] {
+              try DurableFile.write(bytes, to: destination)
+            } else if let sourceURL = plan.attachmentFileURLs[attachment.id] {
+              let copied = try AttachmentFileIO.copyRegularFile(
+                from: sourceURL,
+                to: destination,
+                expectedByteCount: attachment.byteCount
+              )
+              guard copied.digest == plan.attachmentFileDigests[attachment.id] else {
+                throw SnipLibraryError.importChanged
+              }
+            } else {
+              throw SnipLibraryError.attachmentCopyFailed
+            }
+          } else if try !plan.attachmentContentsEqual(
+            attachmentID: attachment.id,
+            fileURL: destination
+          ) {
             throw SnipLibraryError.transferConflict(.attachmentIdentity(attachment.id))
           }
           attachment.relativePath = relativePath

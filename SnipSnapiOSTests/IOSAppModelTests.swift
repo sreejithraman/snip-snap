@@ -2,6 +2,7 @@ import SnipSnapCore
 import SnipSnapPersistence
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 import XCTest
 @testable import SnipSnapiOS
 
@@ -1193,7 +1194,9 @@ final class IOSAppModelTests: XCTestCase {
         let model = IOSAppModel(
             library: firstLibrary,
             userActions: factory.actions(for: firstLibrary),
-            userActionsFactory: factory
+            rebindUserActions: SnipLibraryUserActionsRebinder {
+                factory.actions(for: $0)
+            }
         )
         await model.load()
         let created = await model.createSnip(content: "Keep me", in: SnipList.inboxID)
@@ -1208,7 +1211,9 @@ final class IOSAppModelTests: XCTestCase {
         let reopenedModel = IOSAppModel(
             library: reopenedLibrary,
             userActions: factory.actions(for: reopenedLibrary),
-            userActionsFactory: factory
+            rebindUserActions: SnipLibraryUserActionsRebinder {
+                factory.actions(for: $0)
+            }
         )
         await reopenedModel.load()
         XCTAssertEqual(reopenedModel.undoTitle, "Undo Add Snip")
@@ -1259,6 +1264,60 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(model.undoTitle, "Undo Import Backup")
         await model.undo()
         XCTAssertTrue(model.snips.isEmpty)
+    }
+
+    func testIOSBackupPickerAndModelImportAnAttachmentBackupFolder() async throws {
+        XCTAssertEqual(
+            IOSBackupImportPickerPolicy.allowedContentTypes,
+            [.folder, .json]
+        )
+        XCTAssertTrue(IOSBackupImportPickerPolicy.message.contains("folder"))
+        XCTAssertTrue(IOSBackupImportPickerPolicy.message.contains("attachments"))
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("IOSFolderImportTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let inputURL = root.appendingPathComponent("attachment.txt")
+        let bytes = Data("folder attachment".utf8)
+        try bytes.write(to: inputURL)
+        let sourceURL = root.appendingPathComponent("Source/source.json")
+        let source = try JSONSnipLibrary(fileURL: sourceURL)
+        _ = try await source.perform(
+            .add(
+                content: "From folder backup",
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inboxID,
+                attachmentURLs: [inputURL],
+                requestID: UUID(),
+                now: Date(timeIntervalSince1970: 100)
+            ),
+            sortedBy: .chronological
+        )
+        let backupFolder = root.appendingPathComponent("Backup", isDirectory: true)
+        try JSONSnipArchiveTransfer.write(try await source.archive(), to: backupFolder)
+        let targetURL = root.appendingPathComponent("Target/target.json")
+        let target = try JSONSnipLibrary(fileURL: targetURL)
+        let model = IOSAppModel(
+            library: target,
+            userActions: SnipLibraryDeviceActions(
+                library: target,
+                journalURL: root.appendingPathComponent("DeviceActions.json")
+            )
+        )
+        await model.load()
+
+        await model.previewBackupImport(from: backupFolder)
+
+        XCTAssertEqual(model.pendingImportPreview?.addedAttachmentCount, 1)
+        XCTAssertTrue(model.snips.isEmpty)
+        await model.confirmBackupImport()
+        let attachmentID = try XCTUnwrap(model.snips.first?.attachments.first?.id)
+        let targetSnapshot = try await target.checkedSnapshot(sortedBy: .chronological)
+        let savedURL = try XCTUnwrap(targetSnapshot.attachmentURLs[attachmentID])
+        XCTAssertEqual(try Data(contentsOf: savedURL), bytes)
+        XCTAssertEqual(model.undoTitle, "Undo Import Backup")
     }
 
     func testIOSBackupImportPreviewNamesAnAddedEmptyList() async throws {

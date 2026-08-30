@@ -2,6 +2,7 @@ import XCTest
 import SnipSnapCore
 import Foundation
 import AppKit
+import UniformTypeIdentifiers
 @testable import SnipSnap
 @testable import SnipSnapPersistence
 
@@ -1470,6 +1471,15 @@ final class AppModelTests: StoreBackedTestCase {
 
     @MainActor
     func testMacBackupImportWaitsForConfirmationAndCanUndo() async throws {
+        XCTAssertEqual(
+            BackupImportCommandRoute.allCases,
+            [.previewThenConfirm],
+            "The menu must offer only the preview and durable Undo import route."
+        )
+        XCTAssertEqual(
+            BackupImportCommandRoute.previewThenConfirm.title,
+            "Import Backup…"
+        )
         let targetURL = try storeURL()
         let backupURL = targetURL.deletingLastPathComponent()
             .appendingPathComponent("backup.json")
@@ -1504,6 +1514,61 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testMacBackupPickerAndModelImportAnAttachmentBackupFolder() async throws {
+        XCTAssertEqual(
+            MacBackupImportPickerPolicy.allowedContentTypes,
+            [.folder, .json]
+        )
+        XCTAssertTrue(MacBackupImportPickerPolicy.canChooseFiles)
+        XCTAssertTrue(MacBackupImportPickerPolicy.canChooseDirectories)
+        XCTAssertTrue(MacBackupImportPickerPolicy.message.contains("folder"))
+        XCTAssertTrue(MacBackupImportPickerPolicy.message.contains("attachments"))
+
+        let root = try storeURL().deletingLastPathComponent()
+        let inputURL = root.appendingPathComponent("attachment.txt")
+        let bytes = Data("folder attachment".utf8)
+        try bytes.write(to: inputURL)
+        let sourceURL = root.appendingPathComponent("Source/source.json")
+        let source = try JSONSnipLibrary(fileURL: sourceURL)
+        _ = try await source.perform(
+            .add(
+                content: "From folder backup",
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inboxID,
+                attachmentURLs: [inputURL],
+                requestID: UUID(),
+                now: Date(timeIntervalSince1970: 100)
+            ),
+            sortedBy: .chronological
+        )
+        let backupFolder = root.appendingPathComponent("Backup", isDirectory: true)
+        try JSONSnipArchiveTransfer.write(try await source.archive(), to: backupFolder)
+        let targetURL = root.appendingPathComponent("Target/target.json")
+        let target = try JSONSnipLibrary(fileURL: targetURL)
+        let model = AppModel(
+            library: target,
+            defaults: defaults(),
+            userActions: SnipLibraryDeviceActions(
+                library: target,
+                journalURL: root.appendingPathComponent("DeviceActions.json")
+            )
+        )
+        await model.reload()
+
+        await model.previewBackupImport(from: backupFolder)
+
+        XCTAssertEqual(model.pendingImportPreview?.addedAttachmentCount, 1)
+        XCTAssertTrue(model.snips.isEmpty)
+        await model.confirmBackupImport()
+        let attachmentID = try XCTUnwrap(model.snips.first?.attachments.first?.id)
+        let targetSnapshot = try await target.checkedSnapshot(sortedBy: .chronological)
+        let savedURL = try XCTUnwrap(targetSnapshot.attachmentURLs[attachmentID])
+        XCTAssertEqual(try Data(contentsOf: savedURL), bytes)
+        XCTAssertEqual(model.undoTitle, "Undo Import Backup")
+    }
+
+    @MainActor
     func testMacLibraryReplacementKeepsDurableHistoryForTheSameCollectionAndReopen() async throws {
         let targetURL = try storeURL()
         let factory = SnipLibraryUserActionsFactory.durable(
@@ -1520,7 +1585,9 @@ final class AppModelTests: StoreBackedTestCase {
             library: firstLibrary,
             defaults: defaults(),
             userActions: factory.actions(for: firstLibrary),
-            userActionsFactory: factory
+            rebindUserActions: SnipLibraryUserActionsRebinder {
+                factory.actions(for: $0)
+            }
         )
         await model.reload()
         model.selection = [snipID]
@@ -1536,7 +1603,9 @@ final class AppModelTests: StoreBackedTestCase {
             library: reopenedLibrary,
             defaults: defaults(),
             userActions: factory.actions(for: reopenedLibrary),
-            userActionsFactory: factory
+            rebindUserActions: SnipLibraryUserActionsRebinder {
+                factory.actions(for: $0)
+            }
         )
         await reopenedModel.reload()
         XCTAssertEqual(reopenedModel.undoTitle, "Undo Delete")

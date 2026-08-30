@@ -5,6 +5,152 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+enum IOSBackupImportPickerPolicy {
+    static let allowedContentTypes: [UTType] = [.folder, .json]
+    static let message = "Choose a backup folder to include attachments. A plain JSON file can contain text and metadata only."
+}
+
+@MainActor
+final class IOSAppGraph {
+    let model: IOSAppModel
+    let shareImporter: IOSShareImportCoordinator?
+
+    init(
+        library: any SnipLibrary,
+        userActions: (any SnipLibraryUserActions)? = nil,
+        recoveryScope: SnipRecoveryScope? = nil,
+        shareImports: ShareImportStore?,
+        initialSnapshot: SnipLibrarySnapshot,
+        startupError: String?,
+        shareImportOperation: (@Sendable () async -> Int)? = nil,
+        syncOperation: (@MainActor @Sendable () async throws -> Void)? = nil,
+        syncOperationFactory: (@MainActor @Sendable (
+            IOSAppModel
+        ) -> @MainActor @Sendable () async throws -> Void)? = nil,
+        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
+        rebindUserActions: SnipLibraryUserActionsRebinder = .direct
+    ) {
+        let model = IOSAppModel(
+            library: library,
+            userActions: userActions,
+            recoveryScope: recoveryScope,
+            initialSnapshot: initialSnapshot,
+            startupError: startupError,
+            cloudSyncHandler: cloudSyncHandler,
+            rebindUserActions: rebindUserActions
+        )
+        self.model = model
+        let noSync: @MainActor @Sendable () async throws -> Void = {}
+        let resolvedSyncOperation = syncOperation
+            ?? syncOperationFactory?(model)
+            ?? noSync
+        if let shareImportOperation {
+            shareImporter = IOSShareImportCoordinator(
+                model: model,
+                importOperation: shareImportOperation,
+                syncOperation: resolvedSyncOperation
+            )
+        } else if let shareImports {
+            shareImporter = IOSShareImportCoordinator(
+                library: library,
+                imports: shareImports,
+                model: model,
+                syncOperation: resolvedSyncOperation
+            )
+        } else {
+            shareImporter = nil
+        }
+    }
+}
+
+@MainActor
+final class IOSShareImportCoordinator {
+    private struct PassResult: Sendable {
+        let importFailures: Int
+        let syncFailed: Bool
+    }
+
+    private let model: IOSAppModel
+    private let importOperation: @Sendable () async -> Int
+    private let syncOperation: @MainActor @Sendable () async throws -> Void
+    private var inFlight: Task<PassResult, Never>?
+    private var needsTrailingPass = false
+
+    convenience init(
+        library: any SnipLibrary,
+        imports: ShareImportStore,
+        model: IOSAppModel,
+        syncOperation: @escaping @MainActor @Sendable () async throws -> Void = {}
+    ) {
+        self.init(
+            model: model,
+            importOperation: {
+                await imports.importPending(into: library).failed
+            },
+            syncOperation: syncOperation
+        )
+    }
+
+    init(
+        model: IOSAppModel,
+        importOperation: @escaping @Sendable () async -> Int,
+        syncOperation: @escaping @MainActor @Sendable () async throws -> Void = {}
+    ) {
+        self.model = model
+        self.importOperation = importOperation
+        self.syncOperation = syncOperation
+    }
+
+    func importPendingAndReload() async {
+        if let inFlight {
+            needsTrailingPass = true
+            _ = await inFlight.value
+            return
+        }
+        let task = Task { [self] in
+            var importFailures = 0
+            var syncFailed = false
+            repeat {
+                needsTrailingPass = false
+                let result = await runPass()
+                importFailures += result.importFailures
+                syncFailed = syncFailed || result.syncFailed
+            } while needsTrailingPass
+            // Clear this before completing the task. A later trigger will either mark the
+            // current pass dirty or become the sole owner of a new pass.
+            inFlight = nil
+            return PassResult(importFailures: importFailures, syncFailed: syncFailed)
+        }
+        inFlight = task
+        let result = await task.value
+        report(result)
+    }
+
+    private func runPass() async -> PassResult {
+        let failed = await importOperation()
+        await model.load()
+        // A prior launch can commit the request ledger, then stop before sync. Always ask
+        // the one active sync driver to compare the local rows with its accepted shadow,
+        // even when this pass finds only a duplicate request or no pending directory.
+        do {
+            try await syncOperation()
+            return PassResult(importFailures: failed, syncFailed: false)
+        } catch {
+            return PassResult(importFailures: failed, syncFailed: true)
+        }
+    }
+
+    private func report(_ result: PassResult) {
+        if result.importFailures > 0 {
+            model.errorMessage =
+                "One or more shared items could not be added yet. Snip Snap will try again next time."
+        } else if result.syncFailed {
+            model.errorMessage =
+                "The shared item is saved on this device. iCloud sync will try again later."
+        }
+    }
+}
+
 struct IOSAppRootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var appGraph: IOSAppGraph
@@ -12,6 +158,7 @@ struct IOSAppRootView: View {
     @State private var accountNoticeModel: AppleAccountNoticeModel?
     @State private var copyShare = IOSCopyShareCoordinator()
     @State private var isImportingBackup = false
+    @State private var isExplainingBackupImport = false
     private let uiTestAttachmentURLs: [URL]
     private let seedsCopyShareFixtures: Bool
     private let syncedContentSettings: SyncedContentSettingsModel
@@ -31,7 +178,7 @@ struct IOSAppRootView: View {
         shareImportOperation: (@Sendable () async -> Int)? = nil,
         accountNoticeModel: AppleAccountNoticeModel? = nil,
         cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
-        userActionsFactory: SnipLibraryUserActionsFactory = .direct
+        rebindUserActions: SnipLibraryUserActionsRebinder = .direct
     ) {
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         self.seedsCopyShareFixtures = seedsCopyShareFixtures
@@ -67,7 +214,7 @@ struct IOSAppRootView: View {
                 }
             },
             cloudSyncHandler: cloudSyncHandler,
-            userActionsFactory: userActionsFactory
+            rebindUserActions: rebindUserActions
         )
         if let cloudSyncSession {
             let reloadActiveLibrary: SyncedContentSettingsModel.DeleteCompletionAction = {
@@ -99,7 +246,7 @@ struct IOSAppRootView: View {
             ListSidebarView(
                 model: model,
                 sheet: $sheet,
-                importBackup: { isImportingBackup = true }
+                importBackup: { isExplainingBackupImport = true }
             )
         } content: {
             SnipCollectionView(model: model, copyShare: copyShare, sheet: $sheet)
@@ -180,9 +327,19 @@ struct IOSAppRootView: View {
         } message: {
             Text(copyShare.errorMessage ?? "Please try again.")
         }
+        .confirmationDialog(
+            "Choose a backup",
+            isPresented: $isExplainingBackupImport,
+            titleVisibility: .visible
+        ) {
+            Button("Choose Backup") { isImportingBackup = true }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(IOSBackupImportPickerPolicy.message)
+        }
         .fileImporter(
             isPresented: $isImportingBackup,
-            allowedContentTypes: [.json],
+            allowedContentTypes: IOSBackupImportPickerPolicy.allowedContentTypes,
             allowsMultipleSelection: false
         ) { result in
             switch result {

@@ -52,6 +52,24 @@ public protocol SnipLibraryUserActions: Sendable {
   func clear(sortedBy sortMode: SnipSortMode) async throws
 }
 
+public struct SnipLibraryUserActionsRebinder: Sendable {
+  private let makeActions: @Sendable (any SnipLibrary) -> any SnipLibraryUserActions
+
+  public init(
+    _ makeActions: @escaping @Sendable (any SnipLibrary) -> any SnipLibraryUserActions
+  ) {
+    self.makeActions = makeActions
+  }
+
+  public static var direct: Self {
+    Self { DirectSnipLibraryUserActions(library: $0) }
+  }
+
+  public func actions(for library: any SnipLibrary) -> any SnipLibraryUserActions {
+    makeActions(library)
+  }
+}
+
 public actor DirectSnipLibraryUserActions: SnipLibraryUserActions {
   private let library: any SnipLibrary
 

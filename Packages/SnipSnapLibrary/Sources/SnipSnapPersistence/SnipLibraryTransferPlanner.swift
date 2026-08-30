@@ -8,6 +8,8 @@ package struct SnipLibraryTransferPlan: Sendable {
   package let snips: [Snip]
   package let lists: [SnipList]
   package let attachmentData: [UUID: Data]
+  package let attachmentFileURLs: [UUID: URL]
+  package let attachmentFileDigests: [UUID: Data]
   package let opaqueSyncStateDigest: Data
   package let opaqueSyncStatePayload: Data
   package let result: SnipLibraryTransferResult
@@ -23,6 +25,8 @@ package struct SnipLibraryTransferPlan: Sendable {
           snips: snips,
           lists: lists,
           attachmentData: attachmentData,
+          attachmentFileURLs: attachmentFileURLs,
+          attachmentFileDigests: attachmentFileDigests,
           legacyManualPositions: [:],
           opaqueSyncStateDigest: opaqueSyncStateDigest,
           opaqueSyncStatePayload: opaqueSyncStatePayload
@@ -75,6 +79,12 @@ package enum SnipLibraryTransferPlanner {
       snips: retainedTargetSnips,
       lists: target.lists,
       attachmentData: target.attachmentData.filter { retainedAttachmentIDs.contains($0.key) },
+      attachmentFileURLs: target.attachmentFileURLs.filter {
+        retainedAttachmentIDs.contains($0.key)
+      },
+      attachmentFileDigests: target.attachmentFileDigests.filter {
+        retainedAttachmentIDs.contains($0.key)
+      },
       legacyManualPositions: target.legacyManualPositions.filter { entry in
         retainedTargetSnips.contains(where: { $0.id == entry.key })
       },
@@ -96,12 +106,12 @@ package enum SnipLibraryTransferPlanner {
     let targetAttachments = attachmentMap(target.snips)
     let sourceAttachments = attachmentMap(source.snips)
     for (id, sourceAttachment) in sourceAttachments {
-      guard let sourceData = source.attachmentData[id] else {
+      guard let sourceDigest = attachmentDigest(id: id, in: source) else {
         throw SnipLibraryError.attachmentCopyFailed
       }
       if let targetAttachment = targetAttachments[id] {
         guard targetAttachment == sourceAttachment,
-          target.attachmentData[id] == sourceData
+          attachmentDigest(id: id, in: target) == sourceDigest
         else {
           throw SnipLibraryError.transferConflict(.attachmentIdentity(id))
         }
@@ -149,12 +159,20 @@ package enum SnipLibraryTransferPlanner {
 
     approved.formUnion(retry.approvedSnipIDs)
 
+    let targetAttachmentIDs = Set(target.attachmentData.keys)
+      .union(target.attachmentFileURLs.keys)
     return SnipLibraryTransferPlan(
       targetRevision: targetRevision,
       targetDigest: targetDigest,
       snips: snips,
       lists: lists,
       attachmentData: target.attachmentData.merging(source.attachmentData) { target, _ in target },
+      attachmentFileURLs: target.attachmentFileURLs.merging(
+        source.attachmentFileURLs.filter { !targetAttachmentIDs.contains($0.key) }
+      ) { target, _ in target },
+      attachmentFileDigests: target.attachmentFileDigests.merging(
+        source.attachmentFileDigests.filter { !targetAttachmentIDs.contains($0.key) }
+      ) { target, _ in target },
       opaqueSyncStateDigest: Data(SHA256.hash(data: mergedSyncPayload)),
       opaqueSyncStatePayload: mergedSyncPayload,
       result: SnipLibraryTransferResult(
@@ -167,6 +185,7 @@ package enum SnipLibraryTransferPlanner {
   package static func digest(
     snip: Snip?,
     attachmentData: [UUID: Data],
+    attachmentFileDigests: [UUID: Data] = [:],
     version: Int = 2,
     legacyManualPosition: Int64? = nil
   ) -> Data {
@@ -206,6 +225,9 @@ package enum SnipLibraryTransferPlanner {
       if let data = attachmentData[attachment.id] {
         bytes.append(1)
         append(Data(SHA256.hash(data: data)), to: &bytes)
+      } else if let digest = attachmentFileDigests[attachment.id] {
+        bytes.append(1)
+        append(digest, to: &bytes)
       } else {
         bytes.append(0)
       }
@@ -226,10 +248,27 @@ package enum SnipLibraryTransferPlanner {
     }
     append(UInt64(snapshot.snips.count), to: &bytes)
     for snip in snapshot.snips {
-      append(digest(snip: snip, attachmentData: snapshot.attachmentData), to: &bytes)
+      append(
+        digest(
+          snip: snip,
+          attachmentData: snapshot.attachmentData,
+          attachmentFileDigests: snapshot.attachmentFileDigests
+        ),
+        to: &bytes
+      )
     }
     append(snapshot.opaqueSyncStateDigest, to: &bytes)
     return Data(SHA256.hash(data: bytes))
+  }
+
+  private static func attachmentDigest(
+    id: UUID,
+    in snapshot: SnipLibraryTransferSnapshot
+  ) -> Data? {
+    if let data = snapshot.attachmentData[id] {
+      return Data(SHA256.hash(data: data))
+    }
+    return snapshot.attachmentFileDigests[id]
   }
 
   package static func remoteDigest(snip: Snip?) -> Data {

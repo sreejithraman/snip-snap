@@ -2,7 +2,14 @@ import AppKit
 import Combine
 import Foundation
 import SnipSnapCore
-import SnipSnapPersistence
+import UniformTypeIdentifiers
+
+enum MacBackupImportPickerPolicy {
+    static let allowedContentTypes: [UTType] = [.folder, .json]
+    static let canChooseFiles = true
+    static let canChooseDirectories = true
+    static let message = "Choose a backup folder to include attachments, or a plain JSON file for a text-only backup."
+}
 
 private actor AppModelCommandLock {
     private var isLocked = false
@@ -88,7 +95,7 @@ final class AppModel: ObservableObject {
     @Published private var attachmentURLs: [UUID: URL] = [:]
     private var cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private var userActions: any SnipLibraryUserActions
-    private let userActionsFactory: SnipLibraryUserActionsFactory
+    private let rebindUserActions: SnipLibraryUserActionsRebinder
     private let defaults: UserDefaults
     private let commandLock = AppModelCommandLock()
     private let composerDrafts: ComposerDraftStore
@@ -136,7 +143,7 @@ final class AppModel: ObservableObject {
         recoveryScope: SnipRecoveryScope? = nil,
         cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
         userActions: (any SnipLibraryUserActions)? = nil,
-        userActionsFactory: SnipLibraryUserActionsFactory = .direct
+        rebindUserActions: SnipLibraryUserActionsRebinder = .direct
     ) {
         Self.migrateRenamedDefaults(in: defaults)
         self.defaults = defaults
@@ -154,8 +161,8 @@ final class AppModel: ObservableObject {
             rawValue: defaults.string(forKey: Self.appearanceDefaultsKey) ?? ""
         ) ?? .system
         self.library = library
-        self.userActionsFactory = userActionsFactory
-        self.userActions = userActions ?? userActionsFactory.actions(for: library)
+        self.rebindUserActions = rebindUserActions
+        self.userActions = userActions ?? rebindUserActions.actions(for: library)
         self.recoveryScope = recoveryScope
         self.cloudSyncHandler = cloudSyncHandler
         presentedError = initialError
@@ -257,7 +264,7 @@ final class AppModel: ObservableObject {
         await withCommandLock {
             self.library = library
             self.recoveryScope = recoveryScope
-            self.userActions = userActionsFactory.actions(for: library)
+            self.userActions = rebindUserActions.actions(for: library)
             selection = []
             editingID = nil
             await reloadUnlocked()
@@ -276,24 +283,6 @@ final class AppModel: ObservableObject {
             seenRequestIDs: archive.seenRequestIDs,
             attachmentURLs: archive.attachmentURLs.merging(prepared) { _, ready in ready }
         )
-    }
-
-    func importArchive(_ archive: SnipLibraryArchive) async -> Bool {
-        let result: Result<Void, Error> = await performMutation {
-            let update = try await library.perform(
-                .importArchive(archive),
-                sortedBy: sortMode
-            )
-            return (update, ())
-        }
-        switch result {
-        case .success:
-            await clearHistory()
-            return true
-        case .failure(let error):
-            presentedError = error.localizedDescription
-            return false
-        }
     }
 
     private func reloadUnlocked() async {
@@ -743,9 +732,13 @@ final class AppModel: ObservableObject {
 
     func beginBackupImport() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.json]
+        panel.title = "Import Backup"
+        panel.prompt = "Review Backup"
+        panel.message = MacBackupImportPickerPolicy.message
+        panel.allowedContentTypes = MacBackupImportPickerPolicy.allowedContentTypes
         panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
+        panel.canChooseFiles = MacBackupImportPickerPolicy.canChooseFiles
+        panel.canChooseDirectories = MacBackupImportPickerPolicy.canChooseDirectories
         panel.begin { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
             Task { @MainActor [weak self] in await self?.previewBackupImport(from: url) }

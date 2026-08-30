@@ -54,25 +54,29 @@ public enum JSONSnipArchiveReader {
   public static func read(from fileURL: URL) throws -> JSONSnipArchive {
     do {
       let data = try Data(contentsOf: fileURL)
-      let decoder = JSONDecoder()
-      decoder.dateDecodingStrategy = .iso8601
-      let document = try decoder.decode(Document.self, from: data)
-      guard document.version == JSONSnipLibrary.currentVersion
-        || document.version == JSONSnipLibrary.legacyVersion
-      else { throw SnipLibraryError.invalidStore }
-      let lists = try validatedLists(document.lists, snips: document.snips)
-      try validateAttachments(in: document.snips)
-      return JSONSnipArchive(
-        version: document.version,
-        snips: document.snips,
-        lists: lists,
-        seenRequestIDs: document.seenRequestIDs
-      )
+      return try read(data: data)
     } catch let error as SnipLibraryError {
       throw error
     } catch {
       throw SnipLibraryError.invalidStore
     }
+  }
+
+  package static func read(data: Data) throws -> JSONSnipArchive {
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let document = try decoder.decode(Document.self, from: data)
+    guard document.version == JSONSnipLibrary.currentVersion
+      || document.version == JSONSnipLibrary.legacyVersion
+    else { throw SnipLibraryError.invalidStore }
+    let lists = try validatedLists(document.lists, snips: document.snips)
+    try validateAttachments(in: document.snips)
+    return JSONSnipArchive(
+      version: document.version,
+      snips: document.snips,
+      lists: lists,
+      seenRequestIDs: document.seenRequestIDs
+    )
   }
 
   private static func validatedLists(_ stored: [SnipList], snips: [Snip]) throws -> [SnipList] {
@@ -116,6 +120,12 @@ public enum JSONSnipArchiveReader {
 }
 
 public enum JSONSnipArchiveTransfer {
+  package struct StagedImport: Sendable {
+    let archive: SnipLibraryArchive
+    let attachmentDigests: [UUID: Data]
+    let lease: SnipImportStagingLease
+  }
+
   private struct Document: Encodable {
     let version: Int
     let snips: [Snip]
@@ -141,6 +151,84 @@ public enum JSONSnipArchiveTransfer {
       seenRequestIDs: archive.seenRequestIDs,
       attachmentURLs: attachmentURLs
     )
+  }
+
+  package static func stageForImport(
+    from selectedURL: URL,
+    transitionID: UUID,
+    afterManifestRead: () throws -> Void = {}
+  ) throws -> StagedImport {
+    let documentURL = try documentURL(from: selectedURL)
+    let sourceRoot = try AttachmentFileIO.RootedDirectory(
+      rootURL: documentURL.deletingLastPathComponent()
+    )
+    let documentData = try sourceRoot.readRegularFile(
+      relativePath: documentURL.lastPathComponent
+    )
+    let source = try JSONSnipArchiveReader.read(data: documentData)
+    try afterManifestRead()
+    let stagingRoot = FileManager.default.temporaryDirectory
+      .appendingPathComponent("SnipSnapImportPreviews", isDirectory: true)
+      .appendingPathComponent(transitionID.uuidString, isDirectory: true)
+    let attachmentRoot = stagingRoot.appendingPathComponent("Attachments", isDirectory: true)
+    do {
+      try FileManager.default.createDirectory(
+        at: attachmentRoot,
+        withIntermediateDirectories: true
+      )
+      let attachments = Dictionary(
+        source.snips.flatMap(\.attachments).map { ($0.id, $0) },
+        uniquingKeysWith: { first, _ in first }
+      )
+      let sourceAttachmentRoot = attachments.isEmpty
+        ? nil
+        : try sourceRoot.openDirectory(relativePath: "Attachments")
+      var stagedURLs: [UUID: URL] = [:]
+      var digests: [UUID: Data] = [:]
+      for (id, attachment) in attachments {
+        guard JSONSnipArchiveReader.isSafeRelativePath(attachment.relativePath) else {
+          throw SnipLibraryError.invalidStore
+        }
+        let destination = attachmentRoot.appendingPathComponent(attachment.relativePath)
+        try FileManager.default.createDirectory(
+          at: destination.deletingLastPathComponent(),
+          withIntermediateDirectories: true
+        )
+        guard let sourceAttachmentRoot else {
+          throw SnipLibraryError.invalidStore
+        }
+        let copied = try sourceAttachmentRoot.copyRegularFile(
+          relativePath: attachment.relativePath,
+          to: destination,
+          expectedByteCount: attachment.byteCount
+        )
+        guard copied.byteCount == attachment.byteCount else {
+          throw SnipLibraryError.invalidStore
+        }
+        try FileManager.default.setAttributes(
+          [.posixPermissions: NSNumber(value: 0o400)],
+          ofItemAtPath: destination.path
+        )
+        stagedURLs[id] = destination
+        digests[id] = copied.digest
+      }
+      let lease = SnipImportStagingLease(rootURL: stagingRoot) {
+        try FileManager.default.removeItem(at: stagingRoot)
+      }
+      return StagedImport(
+        archive: SnipLibraryArchive(
+          snips: source.snips,
+          lists: source.lists,
+          seenRequestIDs: source.seenRequestIDs,
+          attachmentURLs: stagedURLs
+        ),
+        attachmentDigests: digests,
+        lease: lease
+      )
+    } catch {
+      try? FileManager.default.removeItem(at: stagingRoot)
+      throw error
+    }
   }
 
   public static func write(

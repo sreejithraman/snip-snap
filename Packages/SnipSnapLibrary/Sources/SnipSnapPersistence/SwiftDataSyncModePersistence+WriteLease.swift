@@ -117,6 +117,16 @@ extension SwiftDataSyncModePersistence {
       .previewImport(source, transitionID: transitionID)
   }
 
+  fileprivate func managedPreviewTransferSnapshot(
+    revision: UInt64
+  ) async throws -> SnipLibraryTransferSnapshot {
+    guard !writeAdmissionInProgress, manifest.writeReservation == nil,
+      manifest.transition == nil
+    else { throw SnipLibraryError.modeTransitionInProgress }
+    return try await libraryForTransition(storeID: manifest.activeStoreID)
+      .previewTransferSnapshot(revision: revision)
+  }
+
   fileprivate func managedApplyImport(
     _ preview: SnipImportPreview
   ) async throws -> SnipImportResult {
@@ -213,6 +223,10 @@ private actor ModeManagedSnipLibrary: SnipLibrary {
 
   func transferSnapshot(revision: UInt64) async throws -> SnipLibraryTransferSnapshot {
     throw SnipLibraryError.transferUnsupported
+  }
+
+  func previewTransferSnapshot(revision: UInt64) async throws -> SnipLibraryTransferSnapshot {
+    try await persistence.managedPreviewTransferSnapshot(revision: revision)
   }
 
   func mergeTransferSnapshot(
