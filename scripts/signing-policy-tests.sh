@@ -183,8 +183,18 @@ print 'Build settings for action build and target SnipSnapShareExtension:' \
     >> "$multi_target_complete"
 print '    CODE_SIGN_ENTITLEMENTS = SnipSnapShareExtension/SnipSnapShareExtension.entitlements' \
     >> "$multi_target_complete"
+print '    SNIP_SNAP_APP_GROUP_IDENTIFIER = group.org.example.snipsnap' \
+    >> "$multi_target_complete"
 assert_succeeds signing_policy_preflight \
     device "$multi_target_complete" "$test_root" SnipSnapiOS
+
+mismatched_share_group="$test_root/mismatched-share-group.txt"
+/bin/cp "$multi_target_complete" "$mismatched_share_group"
+/usr/bin/sed -i '' '$s/group\.org\.example\.snipsnap/group.org.example.other/' \
+    "$mismatched_share_group"
+assert_fails_with_all \
+    "signing_policy_preflight device '$mismatched_share_group' '$test_root' SnipSnapiOS" \
+    'Share extension App Group build setting'
 
 missing_share_target="$test_root/missing-share-target.txt"
 print 'Build settings for action build and target SnipSnapiOS:' > "$missing_share_target"

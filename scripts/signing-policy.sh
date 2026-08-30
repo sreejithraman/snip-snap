@@ -214,12 +214,19 @@ signing_policy_preflight() {
     fi
 
     if [[ ( "$lane" == cloud || "$lane" == device ) && "$scheme" == SnipSnapiOS ]]; then
+        local share_app_group_identifier=""
         local share_entitlement_setting=""
         local share_entitlements=""
+        share_app_group_identifier="$(signing_policy_resolve_setting \
+            "$settings_file" SNIP_SNAP_APP_GROUP_IDENTIFIER SnipSnapShareExtension)"
         share_entitlement_setting="$(signing_policy_resolve_setting \
             "$settings_file" CODE_SIGN_ENTITLEMENTS SnipSnapShareExtension)"
         if /usr/bin/grep -Eq \
             '^Build settings for action .* and target .*:$' "$settings_file"; then
+            if [[ -z "$share_app_group_identifier" || \
+                  "$share_app_group_identifier" != "$app_group_identifier" ]]; then
+                missing+=("Share extension App Group build setting")
+            fi
             if [[ -z "$share_entitlement_setting" ]]; then
                 missing+=("Share extension CODE_SIGN_ENTITLEMENTS")
             else
@@ -227,15 +234,18 @@ signing_policy_preflight() {
                     "$repo_dir" "$share_entitlement_setting")"
             fi
         else
+            share_app_group_identifier="$app_group_identifier"
             share_entitlements="$repo_dir/SnipSnapShareExtension/SnipSnapShareExtension.entitlements"
         fi
-        if [[ ! -f "$share_entitlements" ]] || \
+        if [[ -z "$share_entitlements" ]]; then
+            :
+        elif [[ ! -f "$share_entitlements" ]] || \
            ! /usr/bin/plutil -lint "$share_entitlements" >/dev/null 2>&1; then
             missing+=("valid Share extension entitlement plist")
         else
             signing_policy_plist_array_contains \
                 "$share_entitlements" com.apple.security.application-groups \
-                "$app_group_identifier" '$(SNIP_SNAP_APP_GROUP_IDENTIFIER)' || \
+                "$share_app_group_identifier" '$(SNIP_SNAP_APP_GROUP_IDENTIFIER)' || \
                 missing+=("Share extension App Group entitlement")
             if signing_policy_plist_has_key \
                 "$share_entitlements" com.apple.developer.icloud-container-identifiers || \

@@ -58,4 +58,8 @@ done
 [[ "$(/usr/bin/grep -Fc -- 'CODE_SIGNING_ALLOWED=NO' "$args_file")" == 4 ]] || \
     fail_test "one or more Simulator tests allowed signing"
 
+/usr/bin/grep -F -- 'run: ./scripts/build.sh' \
+    "$script_dir/../.github/workflows/ci.yml" >/dev/null || \
+    fail_test "CI does not run the Release compile check"
+
 print "Release matrix test checks passed."

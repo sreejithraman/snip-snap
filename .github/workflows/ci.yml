@@ -27,6 +27,9 @@ jobs:
       - name: Run tests
         run: ./scripts/test.sh
 
+      - name: Compile Release iOS and Mac apps
+        run: ./scripts/build.sh
+
       - name: Build Mac, iPhone, iPad, and Share extension
         run: ./scripts/build-matrix.sh
 
