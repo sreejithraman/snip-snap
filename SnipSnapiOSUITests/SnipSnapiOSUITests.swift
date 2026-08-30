@@ -593,12 +593,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         let shareText = safari.textViews["share-text"]
         XCTAssertTrue(shareText.waitForExistence(timeout: 8))
         let loadedText = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value CONTAINS %@", "Example Domain"),
+            predicate: NSPredicate(format: "value CONTAINS %@", token),
             object: shareText
         )
         XCTAssertEqual(XCTWaiter.wait(for: [loadedText], timeout: 8), .completed)
-        safari.buttons["share-save"].tap()
-        XCTAssertTrue(safari.buttons["share-save"].waitForNonExistence(timeout: 8))
+        assertShareExtensionReportedLocalSave(in: safari)
 
         if mainAppState == .unavailable {
             app.terminate()
@@ -633,6 +632,7 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     private func shareURLFromSafari(token: String) -> XCUIApplication {
         let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
+        let fixtureURL = "http://127.0.0.1:58493/"
         safari.launch()
         if safari.buttons["Continue"].waitForExistence(timeout: 1) {
             safari.buttons["Continue"].tap()
@@ -653,7 +653,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             NSPredicate(format: "hasKeyboardFocus == true")
         ).firstMatch
         XCTAssertTrue(focusedAddress.waitForExistence(timeout: 3))
-        focusedAddress.typeText("https://example.com/#\(token)")
+        focusedAddress.typeText("\(fixtureURL)#\(token)")
         let currentAddress = safari.textFields.matching(
             NSPredicate(format: "value CONTAINS %@", token)
         ).firstMatch
@@ -662,7 +662,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(go.waitForExistence(timeout: 3))
         go.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(safari.keyboards.firstMatch.waitForNonExistence(timeout: 10))
-        XCTAssertTrue(safari.staticTexts["Example Domain"].waitForExistence(timeout: 10))
+        XCTAssertTrue(safari.staticTexts["Snip Snap Share Fixture"].waitForExistence(timeout: 10))
         if safari.buttons["Close"].exists {
             safari.buttons["Close"].tap()
         }
@@ -677,6 +677,17 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(activity.waitForExistence(timeout: 8))
         activity.tap()
         return safari
+    }
+
+    private func assertShareExtensionReportedLocalSave(in safari: XCUIApplication) {
+        let save = safari.buttons["share-save"]
+        XCTAssertTrue(save.waitForExistence(timeout: 3))
+        save.tap()
+        XCTAssertTrue(
+            save.waitForNonExistence(timeout: 8),
+            "The extension did not report a completed local save to its host."
+        )
+        XCTAssertFalse(safari.otherElements["share-error"].exists)
     }
 
     private func assertShareProcessCount(_ expected: Int, in app: XCUIApplication) {

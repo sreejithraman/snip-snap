@@ -42,6 +42,8 @@ entitlements="$test_root/Fake.entitlements"
     -json '["iCloud.org.example.snipsnap"]' "$entitlements"
 /usr/bin/plutil -insert 'com\.apple\.developer\.icloud-services' \
     -json '["CloudKit"]' "$entitlements"
+/usr/bin/plutil -insert 'com\.apple\.developer\.icloud-container-environment' \
+    -string Development "$entitlements"
 complete="$test_root/complete-settings.txt"
 print '    DEVELOPMENT_TEAM = FAKE123456' > "$complete"
 print '    PRODUCT_BUNDLE_IDENTIFIER = org.example.snipsnap' >> "$complete"
@@ -58,6 +60,17 @@ share_entitlements="$share_entitlements_dir/SnipSnapShareExtension.entitlements"
 
 assert_succeeds signing_policy_preflight cloud "$complete" "$test_root" SnipSnap
 assert_succeeds signing_policy_preflight device "$complete" "$test_root" SnipSnapiOS
+
+production_entitlements="$test_root/Production.entitlements"
+/bin/cp "$entitlements" "$production_entitlements"
+/usr/bin/plutil -replace 'com\.apple\.developer\.icloud-container-environment' \
+    -string Production "$production_entitlements"
+production_settings="$test_root/production-settings.txt"
+/bin/cp "$complete" "$production_settings"
+/usr/bin/sed -i '' 's/Fake.entitlements/Production.entitlements/' "$production_settings"
+assert_fails_with_all \
+    "signing_policy_preflight cloud '$production_settings' '$test_root' SnipSnap" \
+    'CloudKit Development environment entitlement'
 
 empty_entitlements="$test_root/Empty.entitlements"
 /usr/bin/plutil -create xml1 "$empty_entitlements"

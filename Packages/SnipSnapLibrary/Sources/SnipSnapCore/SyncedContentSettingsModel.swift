@@ -120,7 +120,7 @@ public final class SyncedContentSettingsModel {
     case (.iCloudSync, .enabling):
       "Snip Snap is finishing iCloud Sync setup."
     case (.localOnly, _):
-      "Saved snips and attachments stay on this device. Nothing is uploaded to iCloud."
+      "Snip Snap does not send local-only data to CloudKit."
     case (_, .ready):
       "Saved snips and attachments sync through your private iCloud database. Snip Snap’s maintainers cannot inspect private records in CloudKit Console. Apple encrypts synced data in transit and at rest; user fields use encrypted values and files use CKAsset data. Those user fields and attachments are end-to-end encrypted only when Advanced Data Protection is on."
     case (_, .deleting):

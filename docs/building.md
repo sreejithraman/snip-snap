@@ -21,8 +21,8 @@ Run the full unsigned build matrix before a pull request or release:
 ./scripts/build-matrix.sh
 ```
 
-The matrix builds the Mac app, the iPhone Simulator app, and the iPad
-Simulator app. It also checks that each iOS app contains
+The matrix builds the Mac app in Debug and the iPhone and iPad Simulator apps
+in Debug. It also checks that each iOS app contains
 `SnipSnapShareExtension.appex`. The defaults use generic Simulator
 destinations, so the command needs no device ID. To build against installed
 Simulator names, pass overrides:
@@ -44,11 +44,14 @@ Run the same release tests on an iPhone and iPad Simulator:
 ```
 
 This command runs the generated 25 MiB upload, download, hash, cache, and
-interruption test on both device families. It also runs the iCloud limit,
-Share, and local attachment actions. Last, Safari opens the embedded Share
-extension with the main app open, closed, and unable to migrate. These process
-tests use ad-hoc Simulator signing and no Team ID. The default Simulator names
-match the CI image. Override them without checking in a device ID:
+interruption test on both device families. It also checks the 100 MiB total
+boundary, quota and interrupted-upload retries, the iCloud limit action,
+Share, and local attachment actions. Last, Safari opens a fixed loopback page
+and invokes the embedded Share extension with the main app open, closed, and
+unable to migrate. An exclusive run lock guards the loopback port. These
+process tests use ad-hoc Simulator signing and no Team ID. The default
+Simulator names match the CI image. Override them without checking in a device
+ID:
 
 ```sh
 ./scripts/release-matrix-tests.sh \
@@ -156,6 +159,20 @@ xcodebuild \
 The preflight lists missing setting names but does not print their values.
 The iOS build embeds the Share extension. Confirm the signed device build in
 Xcode before installing it on a registered device.
+
+Maintainers with valid Cloud Dev signing and container access can run the
+small fake-versus-real transport contract:
+
+```sh
+SNIP_SNAP_RUN_CLOUD_DEV_TRANSPORT_CONTRACT=1 \
+  ./scripts/cloud-dev-transport-contract.sh
+```
+
+The command runs the signed-lane preflight first. It then checks that the fake
+and real development-container transports follow the same save, fetch,
+confirm, and delete rules. Contributor CI does not run this command. If the
+local signing or container setup is missing, leave the release checklist item
+unchecked; do not report a skipped run as a pass.
 
 ## Make an official release
 

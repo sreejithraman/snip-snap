@@ -3,6 +3,18 @@ import XCTest
 
 final class SyncedContentSettingsModelTests: XCTestCase {
   @MainActor
+  func testLocalOnlyCopyNamesTheCloudKitBoundaryWithoutClaimingDeviceOnlyStorage() {
+    let model = SyncedContentSettingsModel(mode: .localOnly)
+
+    XCTAssertEqual(
+      model.detail,
+      "Snip Snap does not send local-only data to CloudKit."
+    )
+    XCTAssertFalse(model.detail.contains("stay on this device"))
+    XCTAssertFalse(model.detail.contains("Nothing is uploaded"))
+  }
+
+  @MainActor
   func testICloudReadyDetailStatesThePrivacyBoundaryWithoutOverclaimingEncryption() {
     let model = SyncedContentSettingsModel(mode: .iCloudSync)
 

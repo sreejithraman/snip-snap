@@ -109,7 +109,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     XCTAssertEqual(afterLaterSync.attachmentURLs[receivedAttachmentID], downloaded)
   }
 
-  func testFailedUploadLeavesLocalSaveAndDurablePayloadWorkForLaterRun() async throws {
+  func testQuotaUploadFailureDoesNotFalseAcceptBeforeRetry() async throws {
     let root = temporaryDirectory()
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -168,6 +168,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: localURL), bytes)
     let queued = try await snapshot(try XCTUnwrap(library), namespace)
     XCTAssertEqual(queued.publications.first?.transferState, .failed(.quotaExceeded))
+    XCTAssertFalse(try XCTUnwrap(queued.publications.first).metadataAccepted)
+    let failedPayloadCount = await server.acceptedOperationCount(
+      for: CloudAttachmentRecordCodec.recordID(queuedPublication.metadata.payloadIdentity)
+    )
+    XCTAssertEqual(failedPayloadCount, 0)
     let durableUpload = try XCTUnwrap(queued.publications.first?.sourceURL)
     XCTAssertNotEqual(durableUpload.standardizedFileURL, localURL.standardizedFileURL)
     XCTAssertEqual(try Data(contentsOf: durableUpload), bytes)
@@ -190,7 +195,42 @@ final class CloudAttachmentTransferTests: XCTestCase {
 
     let settled = try await snapshot(reopened, namespace)
     XCTAssertTrue(try XCTUnwrap(settled.publications.first).metadataAccepted)
+    let retriedPayloadCount = await server.acceptedOperationCount(
+      for: CloudAttachmentRecordCodec.recordID(queuedPublication.metadata.payloadIdentity)
+    )
+    XCTAssertEqual(retriedPayloadCount, 1)
     XCTAssertFalse(FileManager.default.fileExists(atPath: durableUpload.path))
+  }
+
+  func testInterruptedUploadRetriesWithoutDuplicateAcceptance() async throws {
+    let fixture = try await makePendingAttachmentFixture(names: ["interrupted"])
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let initial = try await snapshot(fixture.library, fixture.namespace)
+    let publication = try XCTUnwrap(initial.publications.first)
+    let payloadID = CloudAttachmentRecordCodec.recordID(publication.metadata.payloadIdentity)
+    let server = FakeCloudServer()
+    let transport = FakeCloudRecordTransport(server: server, namespace: fixture.namespace)
+    await transport.failNextSentItem(payloadID, failure: .retryable)
+    let coordinator = CloudFullSyncCoordinator(
+      store: fixture.store,
+      transport: transport,
+      fetchScope: .zones([CloudZoneID(name: "data", ownerName: "owner")])
+    )
+
+    try await coordinator.sendPending()
+
+    let interrupted = try await snapshot(fixture.library, fixture.namespace)
+    XCTAssertFalse(try XCTUnwrap(interrupted.publications.first).metadataAccepted)
+    let interruptedCount = await server.acceptedOperationCount(for: payloadID)
+    XCTAssertEqual(interruptedCount, 0)
+
+    try await coordinator.sendPending()
+    try await coordinator.sendPending()
+
+    let settled = try await snapshot(fixture.library, fixture.namespace)
+    XCTAssertTrue(try XCTUnwrap(settled.publications.first).metadataAccepted)
+    let settledCount = await server.acceptedOperationCount(for: payloadID)
+    XCTAssertEqual(settledCount, 1)
   }
 
   func testReplacementPublishesNewPayloadAndMetadataBeforeDeletingOldPayload() async throws {
@@ -2204,6 +2244,44 @@ final class CloudAttachmentTransferTests: XCTestCase {
           .localizedDescription.contains(fileName)
       )
     }
+  }
+
+  func testHundredMiBPerSnipLimitAcceptsInclusiveTotalAndRejectsOneByteOver() throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let fileLimit = SnipSnapCloudAttachmentLimits.maximumFileBytes
+    let policy = CloudAttachmentCompatibilityPolicy.openSourceDefault
+    let boundary = try compatibilitySnapshot(
+      in: root.appendingPathComponent("boundary"),
+      sizes: [fileLimit, fileLimit, fileLimit, fileLimit]
+    )
+
+    XCTAssertTrue(
+      CloudAttachmentTransferCoordinator.unsupportedFiles(
+        in: boundary,
+        policy: policy
+      ).isEmpty
+    )
+
+    let overflow = try compatibilitySnapshot(
+      in: root.appendingPathComponent("overflow"),
+      sizes: [fileLimit, fileLimit, fileLimit, fileLimit, 1]
+    )
+    let unsupported = CloudAttachmentTransferCoordinator.unsupportedFiles(
+      in: overflow,
+      policy: policy
+    )
+    XCTAssertEqual(unsupported.count, 5)
+    XCTAssertEqual(
+      unsupported.map(\.reason),
+      Array(
+        repeating: .snipTotalTooLarge(
+          maximumBytes: SnipSnapCloudAttachmentLimits.maximumAttachmentBytesPerSnip
+        ),
+        count: 5
+      )
+    )
   }
 
   func testCacheInstallRejectsOversizeBeforeConsumingStagedFile() async throws {

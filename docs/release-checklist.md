@@ -1,3 +1,7 @@
+# Maintainer release gate
+
+- [ ] Run the maintainer-only signed Cloud Dev fake-versus-real transport contract.
+
 # Physical iPhone release check
 
 Run this short check once with a release-like signed build:

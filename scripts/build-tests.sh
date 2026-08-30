@@ -22,6 +22,15 @@ grep -F -- "CODE_SIGNING_ALLOWED=NO" "$test_dir/build-args" >/dev/null
 grep -F -- "SnipSnapiOS" "$test_dir/build-args" >/dev/null
 grep -F -- "Release" "$test_dir/build-args" >/dev/null
 grep -F -- "generic/platform=iOS Simulator" "$test_dir/build-args" >/dev/null
+mac_build="$({
+    /usr/bin/awk '
+        /-scheme SnipSnap / && /-destination platform=macOS/ { print; exit }
+    ' "$test_dir/build-args"
+})"
+[[ "$mac_build" == *"-configuration Release"* ]] || {
+    print -u2 "The Mac compile check did not use Release."
+    exit 1
+}
 grep -F -- 'PRODUCT_BUNDLE_IDENTIFIER=$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).compilecheck' \
     "$test_dir/build-args" >/dev/null
 grep -F -- "PRODUCT_NAME=SnipSnapCompileCheck" "$test_dir/build-args" >/dev/null

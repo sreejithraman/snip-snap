@@ -35,9 +35,9 @@ into your work.
 
 ## Private by default
 
-Snip Snap needs no sign-in and has no tracking. Clipboard history
-stays on your device. Saved snips and attachments also stay on your device
-unless you turn on iCloud Sync.
+Snip Snap needs no sign-in and has no tracking. Snip Snap does not send
+local-only data to CloudKit. Turn on iCloud Sync to sync saved snips and
+attachments.
 
 With iCloud Sync on, Snip Snap stores saved snips and attachments in your
 private iCloud database. Snip Snap's maintainers cannot inspect your private

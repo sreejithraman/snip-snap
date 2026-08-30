@@ -171,7 +171,7 @@ Sources: [Shared data](https://developer.apple.com/documentation/technologyoverv
 - Direct CloudKit fetches can omit the asset field and fetch it later on demand.
 - Private attachment data counts against the user's iCloud quota.
 - Snip Snap supports iCloud Sync attachments up to 25 MiB each and 100 MiB total per snip. These are Snip Snap limits, not Apple limits.
-- Automated tests cover inclusive boundaries, one-byte overflow, every incompatible filename, a generated 25 MiB upload and fresh-client download, hash and cache checks, an interrupted fetch, and the enable action on iPhone and iPad Simulators.
+- Automated tests cover inclusive boundaries, one-byte overflow, every incompatible filename, a generated 25 MiB upload and fresh-client download, hash and cache checks, interrupted fetch and upload retries, quota failure without false acceptance, and the enable action on iPhone and iPad Simulators.
 - Keep local-only attachments unrestricted by a Snip Snap size policy.
 - Report every incompatible existing file before enabling sync and never send it after sync is on.
 - Use one attachment metadata record in the normal sync zone and one immutable payload record in an excluded payload zone.

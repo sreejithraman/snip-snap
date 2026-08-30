@@ -31,7 +31,7 @@ xcodebuild \
 xcodebuild \
     -project "$repo_dir/SnipSnap.xcodeproj" \
     -scheme SnipSnap \
-    -configuration Debug \
+    -configuration Release \
     -destination 'platform=macOS' \
     -derivedDataPath "$derived_data" \
     CODE_SIGNING_ALLOWED=NO \

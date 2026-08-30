@@ -122,6 +122,18 @@ signing_policy_plist_has_key() {
     /usr/bin/plutil -extract "$escaped_key" raw -o - "$file" >/dev/null 2>&1
 }
 
+signing_policy_plist_value_equals() {
+    local file="$1"
+    local key="$2"
+    local wanted="$3"
+    local escaped_key="${key//./\\.}"
+    local value
+
+    value="$(/usr/bin/plutil -extract "$escaped_key" raw -o - "$file" 2>/dev/null)" || \
+        return 1
+    [[ "$value" == "$wanted" ]]
+}
+
 signing_policy_preflight() {
     local lane="$1"
     local settings_file="$2"
@@ -210,6 +222,12 @@ signing_policy_preflight() {
             signing_policy_plist_array_contains \
                 "$entitlement_path" com.apple.developer.icloud-services CloudKit || \
                 missing+=("CloudKit service entitlement")
+            if [[ "$lane" == cloud ]]; then
+                signing_policy_plist_value_equals \
+                    "$entitlement_path" \
+                    com.apple.developer.icloud-container-environment \
+                    Development || missing+=("CloudKit Development environment entitlement")
+            fi
         fi
     fi
 
