@@ -30,6 +30,21 @@ grep -F -- "INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Compile Check" \
 [[ "$output" == *"Do not launch this build."* ]]
 [[ "$output" == *"Use scripts/run.sh"* ]]
 
+: > "$test_dir/build-args"
+unset SNIP_SNAP_DERIVED_DATA
+PATH="$test_dir/bin:$PATH" \
+    SNIP_SNAP_BUILD_ARGS_FILE="$test_dir/build-args" \
+    "$script_dir/build.sh" >/dev/null
+default_derived_data="$(
+    /usr/bin/awk '{
+        for (i = 1; i <= NF; i += 1) {
+            if ($i == "-derivedDataPath") { print $(i + 1); exit }
+        }
+    }' "$test_dir/build-args"
+)"
+[[ "$default_derived_data" == /private/tmp/snip-snap-derived-data.* ]]
+[[ ! -e "$default_derived_data" ]]
+
 SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER=org.example.environment \
     PATH="$test_dir/bin:$PATH" \
     SNIP_SNAP_BUILD_ARGS_FILE="$test_dir/build-args" \
