@@ -515,17 +515,21 @@ final class SnipSnapiOSUITests: XCTestCase {
         ]
         if let visibleButton = candidates.first(where: { $0.waitForExistence(timeout: 1) }) {
             visibleButton.tap()
-            return
+            if preview.waitForNonExistence(timeout: 3) {
+                return
+            }
         }
 
         preview.tap()
         if let visibleButton = candidates.first(where: { $0.waitForExistence(timeout: 2) }) {
             visibleButton.tap()
-            return
+            if preview.waitForNonExistence(timeout: 3) {
+                return
+            }
         }
 
         preview.swipeDown()
-        XCTAssertFalse(preview.waitForExistence(timeout: 2))
+        XCTAssertTrue(preview.waitForNonExistence(timeout: 5))
     }
 
     private func openAttachmentFixture(in app: XCUIApplication) {
