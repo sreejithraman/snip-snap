@@ -38,16 +38,10 @@ struct IOSCopySharePayloadBuilder {
         for snips: [Snip],
         attachmentURL: (UUID) -> URL?
     ) -> IOSCopySharePayload {
-        let orderedSnips = snips.sorted { lhs, rhs in
-            if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
-            return lhs.id.uuidString < rhs.id.uuidString
-        }
-        var seenAttachmentIDs: Set<UUID> = []
         var attachments: [URL] = []
         var unavailableFileNames: [String] = []
 
-        for attachment in orderedSnips.flatMap(\.attachments) {
-            guard seenAttachmentIDs.insert(attachment.id).inserted else { continue }
+        for attachment in uniqueAttachments(in: snips) {
             guard let url = attachmentURL(attachment.id), isAvailableFile(url) else {
                 unavailableFileNames.append(attachment.fileName)
                 continue
@@ -60,6 +54,17 @@ struct IOSCopySharePayloadBuilder {
             attachments: attachments,
             unavailableFileNames: unavailableFileNames
         )
+    }
+
+    func uniqueAttachments(in snips: [Snip]) -> [SnipAttachment] {
+        let orderedSnips = snips.sorted { lhs, rhs in
+            if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+        var seenAttachmentIDs: Set<UUID> = []
+        return orderedSnips.flatMap(\.attachments).filter {
+            seenAttachmentIDs.insert($0.id).inserted
+        }
     }
 
     private func isAvailableFile(_ url: URL) -> Bool {
@@ -323,8 +328,8 @@ final class IOSCopyShareCoordinator {
         self.payloadBuilder = payloadBuilder
     }
 
-    func copy(snips: [Snip], model: IOSAppModel) {
-        let payload = makePayload(snips: snips, model: model)
+    func copy(snips: [Snip], model: IOSAppModel) async {
+        let payload = await makePreparedPayload(snips: snips, model: model, use: .copy)
         guard requireAllFiles(in: payload) else { return }
         write(payload.copyItems, status: "Copied")
     }
@@ -333,14 +338,14 @@ final class IOSCopyShareCoordinator {
         write(makePayload(snips: snips, model: model).textItems, status: "Copied Text")
     }
 
-    func copyAttachments(snips: [Snip], model: IOSAppModel) {
-        let payload = makePayload(snips: snips, model: model)
+    func copyAttachments(snips: [Snip], model: IOSAppModel) async {
+        let payload = await makePreparedPayload(snips: snips, model: model, use: .copy)
         guard requireAllFiles(in: payload) else { return }
         write(payload.attachmentItems, status: "Copied Attachments")
     }
 
-    func share(snips: [Snip], model: IOSAppModel) {
-        let payload = makePayload(snips: snips, model: model)
+    func share(snips: [Snip], model: IOSAppModel) async {
+        let payload = await makePreparedPayload(snips: snips, model: model, use: .export)
         guard requireAllFiles(in: payload) else { return }
         shareRequest = IOSShareRequest(items: payload.copyItems)
     }
@@ -359,11 +364,23 @@ final class IOSCopyShareCoordinator {
         payloadBuilder.payload(for: snips, attachmentURL: model.attachmentURL(for:))
     }
 
+    private func makePreparedPayload(
+        snips: [Snip],
+        model: IOSAppModel,
+        use: SyncedAttachmentUse
+    ) async -> IOSCopySharePayload {
+        for attachment in payloadBuilder.uniqueAttachments(in: snips) {
+            _ = await model.prepareAttachment(attachment.id, for: use)
+        }
+        return makePayload(snips: snips, model: model)
+    }
+
     private func requireAllFiles(in payload: IOSCopySharePayload) -> Bool {
         guard payload.unavailableFileNames.isEmpty else {
             unavailableFilesNotice = IOSUnavailableFilesNotice(payload: payload)
             return false
         }
+        unavailableFilesNotice = nil
         return true
     }
 
@@ -389,7 +406,7 @@ struct CopyShareActions: View {
 
     var body: some View {
         Button("Copy", systemImage: "doc.on.doc") {
-            coordinator.copy(snips: snips, model: model)
+            Task { await coordinator.copy(snips: snips, model: model) }
         }
         .accessibilityIdentifier("copy-\(identifierSuffix)")
 
@@ -399,13 +416,13 @@ struct CopyShareActions: View {
         .accessibilityIdentifier("copy-text-\(identifierSuffix)")
 
         Button("Copy Attachments", systemImage: "paperclip") {
-            coordinator.copyAttachments(snips: snips, model: model)
+            Task { await coordinator.copyAttachments(snips: snips, model: model) }
         }
         .disabled(!hasAttachments)
         .accessibilityIdentifier("copy-attachments-\(identifierSuffix)")
 
         Button("Share", systemImage: "square.and.arrow.up") {
-            coordinator.share(snips: snips, model: model)
+            Task { await coordinator.share(snips: snips, model: model) }
         }
         .accessibilityIdentifier("share-\(identifierSuffix)")
     }

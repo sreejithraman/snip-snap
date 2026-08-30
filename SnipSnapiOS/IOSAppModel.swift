@@ -287,6 +287,13 @@ final class IOSAppModel {
     }
 
     func prepareAttachment(_ attachmentID: UUID, for use: SyncedAttachmentUse) async -> URL? {
+        if let preparedURL = preparedAttachmentURLs[attachmentID],
+           isAvailablePreparedAttachment(preparedURL)
+        {
+            attachmentTransferStates[attachmentID] = .available
+            return preparedURL
+        }
+        preparedAttachmentURLs[attachmentID] = nil
         guard let cloudSyncHandler else { return attachmentURLs[attachmentID] }
         if hasKnownCloudSyncActivity, !isCloudSyncActive {
             return attachmentURLs[attachmentID]
@@ -306,9 +313,23 @@ final class IOSAppModel {
             return url
         } catch {
             attachmentTransferStates[attachmentID] = .failed
-            errorMessage = "Snip Snap could not download that attachment. Please try again."
+            switch use {
+            case .preview, .open:
+                errorMessage = "Snip Snap could not download that attachment. Please try again."
+            case .copy, .export:
+                break
+            }
             return nil
         }
+    }
+
+    private func isAvailablePreparedAttachment(_ url: URL) -> Bool {
+        guard FileManager.default.isReadableFile(atPath: url.path) else { return false }
+        guard let values = try? url.resourceValues(forKeys: [
+            .isRegularFileKey,
+            .isSymbolicLinkKey,
+        ]) else { return false }
+        return values.isRegularFile == true && values.isSymbolicLink != true
     }
 
     func clearDownloadedFiles() async {

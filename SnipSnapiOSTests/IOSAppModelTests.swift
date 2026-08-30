@@ -608,7 +608,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(unavailablePayload.copyItems, [.text("Keep this text")])
     }
 
-    func testCopyShareCoordinatorWritesWholePlansAndStopsForUnavailableFiles() throws {
+    func testCopyShareCoordinatorWritesWholePlansAndStopsForUnavailableFiles() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SnipSnapCopyCoordinator-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -630,22 +630,209 @@ final class IOSAppModelTests: XCTestCase {
         let pasteboard = RecordingPasteboard()
         let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
 
-        coordinator.copy(snips: [mixed], model: model)
+        await coordinator.copy(snips: [mixed], model: model)
         XCTAssertEqual(pasteboard.writes, [[.text("Text"), .file(fileURL)]])
         coordinator.copyText(snips: [mixed], model: model)
         XCTAssertEqual(pasteboard.writes.last, [.text("Text")])
-        coordinator.copyAttachments(snips: [mixed], model: model)
+        await coordinator.copyAttachments(snips: [mixed], model: model)
         XCTAssertEqual(pasteboard.writes.last, [.file(fileURL)])
-        coordinator.share(snips: [mixed], model: model)
+        await coordinator.share(snips: [mixed], model: model)
         XCTAssertEqual(coordinator.shareRequest?.items, [.text("Text"), .file(fileURL)])
 
         let writeCount = pasteboard.writes.count
-        coordinator.copy(snips: [missing], model: model)
+        await coordinator.copy(snips: [missing], model: model)
         XCTAssertEqual(pasteboard.writes.count, writeCount)
         XCTAssertEqual(coordinator.unavailableFilesNotice?.payload.unavailableFileNames, ["missing.txt"])
         coordinator.copyTextFromNotice()
         XCTAssertEqual(pasteboard.writes.last, [.text("Safe text")])
         XCTAssertNil(coordinator.unavailableFilesNotice)
+    }
+
+    func testCopyAndCopyAttachmentsPrepareEachUniqueAttachmentWithCopyIntent() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapCopyPrepare-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let preparedURL = directory.appendingPathComponent("prepared.txt")
+        let preparedAttachmentsURL = directory.appendingPathComponent("prepared-again.txt")
+        try Data("Prepared".utf8).write(to: preparedURL)
+        try Data("Prepared again".utf8).write(to: preparedAttachmentsURL)
+        let attachmentID = UUID()
+        let attachment = try testAttachment(id: attachmentID, fileName: "prepared.txt")
+        let first = Snip(content: "First", origin: .quickEntry, attachments: [attachment])
+        let second = Snip(content: "Second", origin: .quickEntry, attachments: [attachment])
+        let handler = IOSCopyShareActionHandlerProbe(
+            states: [attachmentID: .waiting],
+            results: [.success(preparedURL), .success(preparedAttachmentsURL)]
+        )
+        let model = IOSAppModel(
+            library: ModelTestLibrary(),
+            initialSnapshot: SnipLibrarySnapshot(snips: [first, second], lists: [.inbox]),
+            cloudSyncHandler: handler
+        )
+        await model.load()
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+
+        await coordinator.copy(snips: [second, first], model: model)
+
+        let calls = await handler.prepareCalls()
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.id, attachmentID)
+        XCTAssertEqual(calls.first?.use, .copy)
+        XCTAssertEqual(
+            pasteboard.writes,
+            [[.text(SnipFormatter.formatForClipboard(snips: [second, first])), .file(preparedURL)]]
+        )
+
+        try FileManager.default.removeItem(at: preparedURL)
+        await coordinator.copyAttachments(snips: [first, second], model: model)
+
+        let allCalls = await handler.prepareCalls()
+        XCTAssertEqual(allCalls.count, 2)
+        XCTAssertEqual(allCalls.last?.id, attachmentID)
+        XCTAssertEqual(allCalls.last?.use, .copy)
+        XCTAssertEqual(pasteboard.writes.last, [.file(preparedAttachmentsURL)])
+    }
+
+    func testShareUsesExportAndDoesNotCreateAPartialRequestAfterPrepareFailure() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapSharePrepare-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let secondURL = directory.appendingPathComponent("second.txt")
+        try Data("Second".utf8).write(to: secondURL)
+        let firstID = UUID()
+        let secondID = UUID()
+        let firstAttachment = try testAttachment(id: firstID, fileName: "first.txt")
+        let secondAttachment = try testAttachment(id: secondID, fileName: "second.txt")
+        let snip = Snip(
+            content: "Share",
+            origin: .quickEntry,
+            attachments: [firstAttachment, secondAttachment]
+        )
+        let handler = IOSCopyShareActionHandlerProbe(
+            states: [firstID: .waiting, secondID: .waiting],
+            results: [.failure(SnipLibraryError.attachmentCopyFailed), .success(secondURL)]
+        )
+        let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
+        await model.load()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: RecordingPasteboard())
+
+        await coordinator.share(snips: [snip], model: model)
+
+        let calls = await handler.prepareCalls()
+        XCTAssertEqual(calls.map(\.id), [firstID, secondID])
+        XCTAssertEqual(calls.map(\.use), [.export, .export])
+        XCTAssertNil(coordinator.shareRequest)
+        XCTAssertEqual(coordinator.unavailableFilesNotice?.payload.unavailableFileNames, ["first.txt"])
+        XCTAssertNil(model.errorMessage)
+    }
+
+    func testCopyFailureWritesNothingAndCanRetryWithoutACompetingAlert() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapCopyRetry-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let preparedURL = directory.appendingPathComponent("retry.txt")
+        try Data("Retry".utf8).write(to: preparedURL)
+        let attachmentID = UUID()
+        let attachment = try testAttachment(id: attachmentID, fileName: "retry.txt")
+        let snip = Snip(content: "Retry", origin: .quickEntry, attachments: [attachment])
+        let handler = IOSCopyShareActionHandlerProbe(
+            states: [attachmentID: .waiting],
+            results: [.failure(SnipLibraryError.attachmentCopyFailed), .success(preparedURL)]
+        )
+        let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
+        await model.load()
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+
+        await coordinator.copy(snips: [snip], model: model)
+
+        XCTAssertTrue(pasteboard.writes.isEmpty)
+        XCTAssertEqual(coordinator.unavailableFilesNotice?.payload.unavailableFileNames, ["retry.txt"])
+        XCTAssertNil(model.errorMessage)
+
+        await coordinator.copy(snips: [snip], model: model)
+
+        XCTAssertEqual(pasteboard.writes, [[.text("Retry"), .file(preparedURL)]])
+        XCTAssertNil(coordinator.unavailableFilesNotice)
+        let calls = await handler.prepareCalls()
+        XCTAssertEqual(calls.map(\.use), [.copy, .copy])
+    }
+
+    func testCopyTextNeverPreparesAttachments() async throws {
+        let attachmentID = UUID()
+        let attachment = try testAttachment(id: attachmentID, fileName: "remote.txt")
+        let snip = Snip(content: "Text only", origin: .quickEntry, attachments: [attachment])
+        let handler = IOSCopyShareActionHandlerProbe(
+            states: [attachmentID: .waiting],
+            results: []
+        )
+        let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
+        await model.load()
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+
+        coordinator.copyText(snips: [snip], model: model)
+
+        XCTAssertEqual(pasteboard.writes, [[.text("Text only")]])
+        let calls = await handler.prepareCalls()
+        XCTAssertTrue(calls.isEmpty)
+    }
+
+    func testCopyUsesCachedLocalFileWithoutCallingCloudHandler() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapCopyCached-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let cachedURL = directory.appendingPathComponent("cached.txt")
+        try Data("Cached".utf8).write(to: cachedURL)
+        let attachmentID = UUID()
+        let attachment = try testAttachment(id: attachmentID, fileName: "cached.txt")
+        let snip = Snip(content: "Cached", origin: .quickEntry, attachments: [attachment])
+        let handler = IOSCopyShareActionHandlerProbe(states: [:], results: [])
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: [snip], attachmentURLs: [attachmentID: cachedURL]),
+            cloudSyncHandler: handler
+        )
+        await model.load()
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+
+        await coordinator.copy(snips: [snip], model: model)
+
+        XCTAssertEqual(pasteboard.writes, [[.text("Cached"), .file(cachedURL)]])
+        let calls = await handler.prepareCalls()
+        XCTAssertTrue(calls.isEmpty)
+    }
+
+    func testCopyReusesVerifiedSyncedCacheWithoutCallingCloudHandlerAgain() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapCopyVerifiedCache-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let cachedURL = directory.appendingPathComponent("cached.txt")
+        try Data("Cached".utf8).write(to: cachedURL)
+        let attachmentID = UUID()
+        let attachment = try testAttachment(id: attachmentID, fileName: "cached.txt")
+        let snip = Snip(content: "Cached", origin: .quickEntry, attachments: [attachment])
+        let handler = IOSCopyShareActionHandlerProbe(
+            states: [attachmentID: .available],
+            results: [.success(cachedURL)]
+        )
+        let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
+        await model.load()
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+
+        await coordinator.copy(snips: [snip], model: model)
+        await coordinator.copy(snips: [snip], model: model)
+
+        XCTAssertEqual(pasteboard.writes.count, 2)
+        let calls = await handler.prepareCalls()
+        XCTAssertEqual(calls.count, 1)
     }
 
     func testPasteboardProviderLoadsStagedBytesAfterLibrarySourceIsPruned() async throws {
@@ -1644,6 +1831,40 @@ private struct RootReinitHarness: View {
         )
         .environment(\.scenePhase, state.phase)
     }
+}
+
+private actor IOSCopyShareActionHandlerProbe: OptionalCloudSyncHandling {
+    struct PrepareCall: Equatable {
+        let id: UUID
+        let use: SyncedAttachmentUse
+    }
+
+    private let states: [UUID: SyncedAttachmentTransferState]
+    private var results: [Result<URL, any Error>]
+    private var calls: [PrepareCall] = []
+
+    init(
+        states: [UUID: SyncedAttachmentTransferState],
+        results: [Result<URL, any Error>]
+    ) {
+        self.states = states
+        self.results = results
+    }
+
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
+    func syncWhenPossible() async {}
+    func isCloudSyncActive() async throws -> Bool { true }
+    func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { states }
+    func clearDownloadedFiles() async throws {}
+
+    func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {
+        calls.append(PrepareCall(id: id, use: use))
+        guard !results.isEmpty else { throw SnipLibraryError.attachmentCopyFailed }
+        return try results.removeFirst().get()
+    }
+
+    func prepareCalls() -> [PrepareCall] { calls }
 }
 
 @MainActor
