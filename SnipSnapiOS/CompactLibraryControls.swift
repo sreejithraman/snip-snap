@@ -16,15 +16,17 @@ struct CompactLibraryControls: View {
     @State private var isImporting = false
     @State private var composerFieldID = UUID()
     @State private var stagingTask: Task<Void, Never>?
-    @FocusState private var isComposerFocused: Bool
+    @FocusState.Binding private var isComposerFocused: Bool
 
     init(
         model: IOSAppModel,
         storage: CompactComposerStorage,
+        isComposerFocused: FocusState<Bool>.Binding,
         sheet: Binding<AppSheet?>
     ) {
         self.model = model
         self.storage = storage
+        _isComposerFocused = isComposerFocused
         _sheet = sheet
     }
 

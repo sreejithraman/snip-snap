@@ -160,6 +160,7 @@ struct IOSAppRootView: View {
     @State private var compactComposerStorage = CompactComposerStorage()
     @State private var isImportingBackup = false
     @State private var isExplainingBackupImport = false
+    @FocusState private var isCompactComposerFocused: Bool
     private let uiTestAttachmentURLs: [URL]
     private let seedsCopyShareFixtures: Bool
     private let shareProcessToken: String?
@@ -422,12 +423,16 @@ struct IOSAppRootView: View {
                     model: model,
                     copyShare: copyShare,
                     sheet: $sheet,
-                    layout: .compactStack
+                    layout: .compactStack,
+                    dismissComposerKeyboard: {
+                        isCompactComposerFocused = false
+                    }
                 )
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     CompactLibraryControls(
                         model: model,
                         storage: compactComposerStorage,
+                        isComposerFocused: $isCompactComposerFocused,
                         sheet: $sheet
                     )
                 }

@@ -150,6 +150,7 @@ struct SnipCollectionView: View {
     let copyShare: IOSCopyShareCoordinator
     @Binding var sheet: AppSheet?
     var layout = SnipCollectionLayout.splitView
+    var dismissComposerKeyboard: () -> Void = {}
     @State private var editMode: EditMode = .inactive
     @State private var isSelecting = false
     @State private var inlineEditSession: CompactInlineEditSession?
@@ -160,6 +161,11 @@ struct SnipCollectionView: View {
             get: { model.selectedSnipID },
             set: { model.selectedSnipID = $0 }
         )
+    }
+
+    private var listSelection: Binding<UUID?>? {
+        guard !isSelecting, layout != .compactStack else { return nil }
+        return singleSelection
     }
 
     var body: some View {
@@ -176,7 +182,7 @@ struct SnipCollectionView: View {
                     .accessibilityIdentifier("empty-snips")
                 }
             } else {
-                List(selection: isSelecting ? nil : singleSelection) {
+                List(selection: listSelection) {
                     ForEach(model.pendingRecoveredSnips.filter { recovery in
                         recovery.recovered.listID == model.selectedListID
                             && !model.snips.contains { $0.id == recovery.id }
@@ -229,30 +235,27 @@ struct SnipCollectionView: View {
                                         save: saveInlineEdit
                                     )
                                 } else {
-                                    Button {
-                                        model.selectedSnipID = snip.id
-                                    } label: {
-                                        SnipRow(
-                                            snip: snip,
-                                            model: model,
-                                            isRecovered: model.isRecoveredSnip(snip.id)
-                                        )
-                                    }
-                                    .buttonStyle(.plain)
+                                    SnipRow(
+                                        snip: snip,
+                                        model: model,
+                                        isRecovered: model.isRecoveredSnip(snip.id)
+                                    )
+                                    .contentShape(Rectangle())
                                     .highPriorityGesture(
                                         TapGesture(count: 2).onEnded {
                                             beginEditing(snip)
                                         }
                                     )
+                                    .accessibilityElement(children: .combine)
+                                    .accessibilityAddTraits(.isButton)
                                     .accessibilityHint("Double tap to edit. Touch and hold for actions.")
+                                    .accessibilityAction {
+                                        beginEditing(snip)
+                                    }
                                     .accessibilityAction(named: "Edit") {
                                         beginEditing(snip)
                                     }
                                     .accessibilityIdentifier("snip-\(snip.id)")
-                                    .listRowBackground(
-                                        model.selectedSnipID == snip.id
-                                            ? SnipSnapTheme.selectionFill : Color.clear
-                                    )
                                 }
                             } else {
                                 NavigationLink(value: snip.id) {
@@ -284,6 +287,11 @@ struct SnipCollectionView: View {
                                 Task { await model.toggleDone(id: snip.id) }
                             }
                             Button("Edit") { beginEditing(snip) }
+                            Button("Edit Attachments…", systemImage: "paperclip") {
+                                model.selectedSnipID = snip.id
+                                sheet = .editSnip(id: snip.id)
+                            }
+                            .accessibilityIdentifier("edit-attachments")
                             MoveSnipMenu(model: model, snip: snip)
                             Divider()
                             CopyShareActions(
@@ -301,6 +309,18 @@ struct SnipCollectionView: View {
                     .onMove(perform: move)
                     .moveDisabled(!model.canReorderVisibleSnips)
                 }
+                .scrollDismissesKeyboard(
+                    layout == .compactStack ? .interactively : .automatic
+                )
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 12).onChanged { value in
+                        guard layout == .compactStack,
+                              value.translation.height > 8,
+                              abs(value.translation.height) > abs(value.translation.width)
+                        else { return }
+                        dismissComposerKeyboard()
+                    }
+                )
             }
         }
         .navigationTitle(model.selectedList.name)

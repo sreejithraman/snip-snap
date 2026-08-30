@@ -386,6 +386,38 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertFalse(send.isEnabled)
     }
 
+    func testCompactRowTapStaysUnselected() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        let composer = app.descendants(matching: .any)["composer-text"]
+
+        guard composer.waitForExistence(timeout: 5) else {
+            throw XCTSkip("The compact library is limited to iPhone.")
+        }
+
+        createSnip("Compact interaction fixture", in: app)
+        let snipRow = row(named: "Compact interaction fixture", in: app)
+        snipRow.tap()
+        XCTAssertFalse(snipRow.isSelected)
+    }
+
+    func testCompactListDragDismissesKeyboard() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        let composer = app.descendants(matching: .any)["composer-text"]
+
+        guard composer.waitForExistence(timeout: 5) else {
+            throw XCTSkip("The compact library is limited to iPhone.")
+        }
+
+        createSnip("Compact keyboard fixture", in: app)
+        composer.tap()
+        composer.typeText("Unsent draft")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+        app.swipeDown()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
+    }
+
     func testCompactListTabsCreateAndSwitchLists() throws {
         continueAfterFailure = false
         let app = launchApp()
@@ -613,7 +645,10 @@ final class SnipSnapiOSUITests: XCTestCase {
             NSPredicate(format: "label BEGINSWITH %@", "Attachment fixture")
         ).firstMatch
         XCTAssertTrue(fixtureRow.waitForExistence(timeout: 5))
-        fixtureRow.doubleTap()
+        fixtureRow.press(forDuration: 1)
+        let editAttachments = app.buttons["edit-attachments"]
+        XCTAssertTrue(editAttachments.waitForExistence(timeout: 3))
+        editAttachments.tap()
         XCTAssertTrue(app.textViews["snip-text"].waitForExistence(timeout: 3))
     }
 
