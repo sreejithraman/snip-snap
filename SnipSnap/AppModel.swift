@@ -84,7 +84,8 @@ final class AppModel: ObservableObject {
 
     private var library: any SnipLibrary
     private var recoveryScope: SnipRecoveryScope?
-    private var attachmentURLs: [UUID: URL] = [:]
+    @Published private var attachmentURLs: [UUID: URL] = [:]
+    private var cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private let defaults: UserDefaults
     private let commandLock = AppModelCommandLock()
     private let composerDrafts: ComposerDraftStore
@@ -120,9 +121,8 @@ final class AppModel: ObservableObject {
         lists.first(where: { $0.id == activeListID }) ?? .inbox
     }
 
-    func attachmentURL(for attachment: SnipAttachment) -> URL {
+    func attachmentURL(for attachment: SnipAttachment) -> URL? {
         attachmentURLs[attachment.id]
-            ?? URL(fileURLWithPath: "/missing-snip-attachment/\(attachment.id.uuidString)")
     }
 
     init(
@@ -130,7 +130,8 @@ final class AppModel: ObservableObject {
         defaults: UserDefaults = .standard,
         clipboardHistory: ClipboardHistory? = nil,
         initialError: String? = nil,
-        recoveryScope: SnipRecoveryScope? = nil
+        recoveryScope: SnipRecoveryScope? = nil,
+        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil
     ) {
         Self.migrateRenamedDefaults(in: defaults)
         self.defaults = defaults
@@ -149,8 +150,60 @@ final class AppModel: ObservableObject {
         ) ?? .system
         self.library = library
         self.recoveryScope = recoveryScope
+        self.cloudSyncHandler = cloudSyncHandler
         presentedError = initialError
         Task { await reload() }
+    }
+
+    func setCloudSyncHandler(_ handler: (any OptionalCloudSyncHandling)?) {
+        cloudSyncHandler = handler
+    }
+
+    func prepareAttachments(
+        _ attachments: [SnipAttachment],
+        for use: SyncedAttachmentUse
+    ) async throws -> [UUID: URL] {
+        var prepared: [UUID: URL] = [:]
+        for attachment in uniqueAttachments(in: attachments) {
+            if let cached = attachmentURLs[attachment.id],
+               FileManager.default.fileExists(atPath: cached.path) {
+                prepared[attachment.id] = cached
+                continue
+            }
+            attachmentURLs[attachment.id] = nil
+            guard let cloudSyncHandler else {
+                throw SnipLibraryError.attachmentCopyFailed
+            }
+            let url = try await cloudSyncHandler.prepareSyncedAttachment(
+                attachment.id,
+                for: use
+            )
+            attachmentURLs[attachment.id] = url
+            prepared[attachment.id] = url
+        }
+        return prepared
+    }
+
+    private func uniqueAttachments(
+        in attachments: [SnipAttachment]
+    ) -> [SnipAttachment] {
+        var seen: Set<UUID> = []
+        return attachments.filter { seen.insert($0.id).inserted }
+    }
+
+    @discardableResult
+    func prepareAttachmentsForExternalDrag(snipIDs: [UUID]) async -> Bool {
+        let ids = Set(snipIDs)
+        let attachments = snips
+            .filter { ids.contains($0.id) }
+            .flatMap(\.attachments)
+        do {
+            _ = try await prepareAttachments(attachments, for: .export)
+            return true
+        } catch {
+            presentedError = error.localizedDescription
+            return false
+        }
     }
 
     private static func migrateRenamedDefaults(in defaults: UserDefaults) {
@@ -187,7 +240,17 @@ final class AppModel: ObservableObject {
     }
 
     func exportArchive() async throws -> SnipLibraryArchive {
-        try await library.archive()
+        let prepared = try await prepareAttachments(
+            snips.flatMap(\.attachments),
+            for: .export
+        )
+        let archive = try await library.archive()
+        return SnipLibraryArchive(
+            snips: archive.snips,
+            lists: archive.lists,
+            seenRequestIDs: archive.seenRequestIDs,
+            attachmentURLs: archive.attachmentURLs.merging(prepared) { _, ready in ready }
+        )
     }
 
     func importArchive(_ archive: SnipLibraryArchive) async -> Bool {
@@ -795,24 +858,63 @@ final class AppModel: ObservableObject {
     }
 
     func beginEditingSelection() {
-        editingID = filteredSnips.first(where: { selection.contains($0.id) })?.id
+        Task { await beginEditingSelectionNow() }
+    }
+
+    @discardableResult
+    func beginEditingSelectionNow() async -> Bool {
+        guard let snip = filteredSnips.first(where: { selection.contains($0.id) }) else {
+            return false
+        }
+        return await beginEditing(snip.id)
+    }
+
+    @discardableResult
+    func beginEditing(_ id: UUID) async -> Bool {
+        guard let snip = snips.first(where: { $0.id == id }) else { return false }
+        do {
+            _ = try await prepareAttachments(snip.attachments, for: .open)
+            editingID = id
+            return true
+        } catch {
+            presentedError = error.localizedDescription
+            return false
+        }
     }
 
     @discardableResult
     func copySelection() -> Bool {
+        guard !selectedSnips.isEmpty else { return false }
+        Task { await copySelectionNow() }
+        return true
+    }
+
+    @discardableResult
+    func copySelectionNow(to pasteboard: NSPasteboard = .general) async -> Bool {
         let selected = selectedSnips
         guard !selected.isEmpty else { return false }
+        let attachments = uniqueAttachments(in: selected.flatMap(\.attachments))
+        let prepared: [UUID: URL]
+        do {
+            prepared = try await prepareAttachments(attachments, for: .copy)
+        } catch {
+            presentedError = error.localizedDescription
+            return false
+        }
         let text = SnipFormatter.formatForClipboard(snips: selected)
-        let pasteboard = NSPasteboard.general
         let textItem = NSPasteboardItem()
         textItem.setString(text, forType: .string)
         textItem.setData(Data(), forType: ClipboardHistory.internalType)
-        pasteboard.clearContents()
         var objects: [NSPasteboardWriting] = [textItem]
-        objects.append(contentsOf: selected.flatMap(\.attachments).map {
-            attachmentURL(for: $0) as NSURL
-        })
+        objects.append(contentsOf: attachments.compactMap { prepared[$0.id] as NSURL? })
+        pasteboard.clearContents()
         return pasteboard.writeObjects(objects)
+    }
+
+    func clearDownloadedFiles() async throws {
+        guard let cloudSyncHandler else { throw SnipLibraryError.transferUnsupported }
+        try await cloudSyncHandler.clearDownloadedFiles()
+        await reload()
     }
 
     func mergeSelection() {

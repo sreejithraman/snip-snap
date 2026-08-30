@@ -8,8 +8,9 @@ struct SnipCardRow: View {
     let isEditing: Bool
     @Binding var editAttachments: [URL]
     @Binding var isSaving: Bool
-    let attachmentURL: (SnipAttachment) -> URL
-    let onPreviewAttachments: ([URL], URL) -> Void
+    let attachmentURL: (SnipAttachment) -> URL?
+    let onPreviewSavedAttachments: ([SnipAttachment], SnipAttachment) -> Void
+    let onPreviewLocalAttachments: ([URL], URL) -> Void
     let onRemovePreviewURL: (URL) -> Void
     let onSelect: () -> Void
     let onOpen: () -> Void
@@ -102,8 +103,11 @@ struct SnipCardRow: View {
             if !snip.attachments.isEmpty {
                 AttachmentPreviewStrip(
                     items: attachmentPreviewItems,
-                    onPreview: { url in
-                        onPreviewAttachments(attachmentPreviewItems.map(\.url), url)
+                    onPreview: { item in
+                        guard let attachment = snip.attachments.first(where: {
+                            $0.id.uuidString == item.id
+                        }) else { return }
+                        onPreviewSavedAttachments(snip.attachments, attachment)
                     }
                 )
             }
@@ -125,12 +129,14 @@ struct SnipCardRow: View {
             if !editAttachments.isEmpty {
                 AttachmentPreviewStrip(
                     items: editAttachmentPreviewItems,
-                    onPreview: { url in
-                        onPreviewAttachments(editAttachments, url)
+                    onPreview: { item in
+                        guard let url = item.url else { return }
+                        onPreviewLocalAttachments(editAttachments, url)
                     },
                     onRemove: { snip in
-                        onRemovePreviewURL(snip.url)
-                        editAttachments.removeAll { $0 == snip.url }
+                        guard let url = snip.url else { return }
+                        onRemovePreviewURL(url)
+                        editAttachments.removeAll { $0 == url }
                     }
                 )
                 .padding(.top, SnipSnapSpacing.cardContentInset)

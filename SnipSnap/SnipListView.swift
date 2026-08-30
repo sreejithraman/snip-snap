@@ -315,7 +315,7 @@ struct SnipListView: View {
                     model.snips.first(where: { $0.id == snipID }).map { snip in
                         InlineEditSession(
                             snipID: snipID,
-                            attachments: snip.attachments.map(model.attachmentURL)
+                            attachments: snip.attachments.compactMap(model.attachmentURL)
                         )
                     }
                 }
@@ -374,7 +374,7 @@ struct SnipListView: View {
         } else {
             session = InlineEditSession(
                 snipID: snipID,
-                attachments: snip.attachments.map(model.attachmentURL)
+                attachments: snip.attachments.compactMap(model.attachmentURL)
             )
         }
         guard !session.isSaving else { return }
@@ -450,6 +450,13 @@ struct SnipListView: View {
                             controller: snipDragSourceController,
                             id: snip.id,
                             payload: payload,
+                            onNeedsAttachmentPreparation: {
+                                Task { @MainActor in
+                                    _ = await model.prepareAttachmentsForExternalDrag(
+                                        snipIDs: payload.ids
+                                    )
+                                }
+                            },
                             onBegan: {
                                 beginDrag(payload, orderedIDs: snips.map(\.id))
                             },
@@ -680,7 +687,8 @@ struct SnipListView: View {
             editAttachments: editAttachmentsBinding(for: snip),
             isSaving: savingBinding(for: snip),
             attachmentURL: model.attachmentURL,
-            onPreviewAttachments: onPreviewAttachments,
+            onPreviewSavedAttachments: previewSavedAttachments,
+            onPreviewLocalAttachments: onPreviewAttachments,
             onRemovePreviewURL: onRemovePreviewURL,
             onSelect: { select(snip.id) },
             onOpen: { edit(snip.id) },
@@ -758,11 +766,32 @@ struct SnipListView: View {
         }
     }
 
+    private func previewSavedAttachments(
+        _ attachments: [SnipAttachment],
+        selected: SnipAttachment
+    ) {
+        Task { @MainActor in
+            do {
+                let prepared = try await model.prepareAttachments(
+                    [selected],
+                    for: .preview
+                )
+                let urls = attachments.compactMap {
+                    prepared[$0.id] ?? model.attachmentURL(for: $0)
+                }
+                guard let selectedURL = prepared[selected.id] else { return }
+                onPreviewAttachments(urls, selectedURL)
+            } catch {
+                model.presentedError = error.localizedDescription
+            }
+        }
+    }
+
     private func editAttachmentsBinding(for snip: Snip) -> Binding<[URL]> {
         Binding(
             get: {
                 guard let editSession, editSession.snipID == snip.id else {
-                    return snip.attachments.map(model.attachmentURL)
+                    return snip.attachments.compactMap(model.attachmentURL)
                 }
                 return editSession.attachments
             },
@@ -786,7 +815,7 @@ struct SnipListView: View {
                 if let editSession, editSession.snipID == snip.id {
                     attachments = editSession.attachments
                 } else {
-                    attachments = snip.attachments.map(model.attachmentURL)
+                    attachments = snip.attachments.compactMap(model.attachmentURL)
                 }
                 editSession = InlineEditSession(
                     snipID: snip.id,
@@ -813,7 +842,10 @@ struct SnipListView: View {
     private func edit(_ id: UUID) {
         selectExclusively(id)
         focusedTarget = nil
-        model.editingID = id
+        Task { @MainActor in
+            let opened = await model.beginEditing(id)
+            if !opened { focusedTarget = .list }
+        }
     }
 
     private func selectExclusively(_ id: UUID) {

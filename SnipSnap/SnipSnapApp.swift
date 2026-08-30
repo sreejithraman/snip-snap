@@ -119,7 +119,7 @@ private struct AppSettingsContent: View {
                     clearDownloadsError = nil
                     Task {
                         do {
-                            try await cloudSyncHandler.clearDownloadedFiles()
+                            try await model.clearDownloadedFiles()
                         } catch {
                             clearDownloadsError = "Snip Snap could not clear the downloaded files."
                         }
@@ -256,6 +256,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             syncWhenPossible: syncAction
         )
         cloudSyncHandler = productionCloudSyncHandler
+        model.setCloudSyncHandler(productionCloudSyncHandler)
         if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_ACCOUNT_NOTICE"] == "signedOut" {
             accountNoticeModel = AppleAccountNoticeModel(
                 notice: .signedOut,

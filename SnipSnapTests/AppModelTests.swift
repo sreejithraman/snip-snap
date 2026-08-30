@@ -82,14 +82,20 @@ final class AppModelTests: StoreBackedTestCase {
 
     private actor InMemorySnipLibrary: SnipLibrary {
         private var snips: [Snip]
+        private var attachmentURLs: [UUID: URL]
         private var recovery: SnipRecoverySnapshot
         private(set) var addedContents: [String] = []
         private(set) var snapshotCallCount = 0
         private(set) var recoveryChoices: [SnipRecoveryChoice] = []
 
-        init(snips: [Snip], recovery: SnipRecoverySnapshot = .empty) {
+        init(
+            snips: [Snip],
+            recovery: SnipRecoverySnapshot = .empty,
+            attachmentURLs: [UUID: URL] = [:]
+        ) {
             self.snips = snips
             self.recovery = recovery
+            self.attachmentURLs = attachmentURLs
         }
 
         func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
@@ -98,7 +104,13 @@ final class AppModelTests: StoreBackedTestCase {
         }
 
         private func makeSnapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
-            SnipLibrarySnapshot(snips: Snip.sorted(snips, by: sortMode), lists: [.inbox])
+            SnipLibrarySnapshot(
+                snips: Snip.sorted(snips, by: sortMode),
+                lists: [.inbox],
+                attachmentURLs: attachmentURLs.filter {
+                    FileManager.default.fileExists(atPath: $0.value.path)
+                }
+            )
         }
 
         func perform(
@@ -954,7 +966,7 @@ final class AppModelTests: StoreBackedTestCase {
         let didUpdate = await model.update(
             id: snip.id,
             content: "After",
-            attachmentURLs: [model.attachmentURL(for: originalAttachment)]
+            attachmentURLs: [try XCTUnwrap(model.attachmentURL(for: originalAttachment))]
         )
         XCTAssertTrue(didUpdate)
 
@@ -965,6 +977,269 @@ final class AppModelTests: StoreBackedTestCase {
             includingPropertiesForKeys: nil
         )
         XCTAssertEqual(directories.count, 1)
+    }
+
+    @MainActor
+    func testPreparingACachedAttachmentDoesNotCallCloudHandler() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("cached.md")
+        try Data("Cached".utf8).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let added = try await repository.add(
+            content: "Cached attachment",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let snip = try XCTUnwrap(added)
+        let attachment = try XCTUnwrap(snip.attachments.first)
+        let handler = MacOptionalCloudSyncHandlerProbe()
+        let model = AppModel(
+            library: repository,
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        await model.reload()
+
+        let prepared = try await model.prepareAttachments([attachment], for: .preview)
+        let requests = await handler.preparationRequests()
+
+        XCTAssertEqual(prepared[attachment.id], repository.attachmentURL(for: attachment))
+        XCTAssertTrue(requests.isEmpty)
+    }
+
+    @MainActor
+    func testPreparingRemoteAttachmentsMapsIntentsAndDeduplicatesIDs() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("remote.md")
+        try Data("Remote".utf8).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let added = try await repository.add(
+            content: "Remote attachment",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let attachment = try XCTUnwrap(added?.attachments.first)
+        let storedURL = repository.attachmentURL(for: attachment)
+        try FileManager.default.removeItem(at: storedURL)
+        let downloadedURL = store.deletingLastPathComponent().appendingPathComponent("downloaded.md")
+        try Data("Downloaded".utf8).write(to: downloadedURL)
+        let handler = MacOptionalCloudSyncHandlerProbe(urls: [attachment.id: downloadedURL])
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [try XCTUnwrap(added)]),
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        await model.reload()
+
+        let prepared = try await model.prepareAttachments(
+            [attachment, attachment],
+            for: .open
+        )
+        let requests = await handler.preparationRequests()
+
+        XCTAssertEqual(prepared, [attachment.id: downloadedURL])
+        XCTAssertEqual(
+            requests,
+            [MacAttachmentPreparationRequest(id: attachment.id, use: .open)]
+        )
+    }
+
+    @MainActor
+    func testAttachmentPreparationFailureCanRetry() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("retry.md")
+        try Data("Retry".utf8).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let added = try await repository.add(
+            content: "Retry attachment",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let attachment = try XCTUnwrap(added?.attachments.first)
+        try FileManager.default.removeItem(at: repository.attachmentURL(for: attachment))
+        let downloadedURL = store.deletingLastPathComponent().appendingPathComponent("retry-downloaded.md")
+        try Data("Ready".utf8).write(to: downloadedURL)
+        let handler = MacOptionalCloudSyncHandlerProbe(
+            urls: [attachment.id: downloadedURL],
+            failuresRemaining: 1
+        )
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [try XCTUnwrap(added)]),
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        await model.reload()
+
+        do {
+            _ = try await model.prepareAttachments([attachment], for: .preview)
+            XCTFail("Expected the first preparation to fail")
+        } catch {}
+        let retried = try await model.prepareAttachments([attachment], for: .preview)
+        let requests = await handler.preparationRequests()
+
+        XCTAssertEqual(retried[attachment.id], downloadedURL)
+        XCTAssertEqual(requests.count, 2)
+    }
+
+    @MainActor
+    func testCopyingTextOnlyDoesNotCallCloudHandler() async {
+        let snip = Snip(content: "Text only", origin: .quickEntry)
+        let library = InMemorySnipLibrary(snips: [snip])
+        let handler = MacOptionalCloudSyncHandlerProbe()
+        let model = AppModel(
+            library: library,
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        await model.reload()
+        model.selection = [snip.id]
+
+        let copied = await model.copySelectionNow()
+        let requests = await handler.preparationRequests()
+        XCTAssertTrue(copied)
+        XCTAssertTrue(requests.isEmpty)
+    }
+
+    @MainActor
+    func testCopyFailureDoesNotReplacePasteboardContent() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("copy.md")
+        try Data("Copy".utf8).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let added = try await repository.add(
+            content: "Copy attachment",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let snip = try XCTUnwrap(added)
+        let attachment = try XCTUnwrap(snip.attachments.first)
+        try FileManager.default.removeItem(at: repository.attachmentURL(for: attachment))
+        let handler = MacOptionalCloudSyncHandlerProbe(failuresRemaining: 1)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [snip]),
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        await model.reload()
+        model.selection = [snip.id]
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-copy-failure-\(UUID())"))
+        pasteboard.clearContents()
+        pasteboard.setString("Keep this", forType: .string)
+
+        let copied = await model.copySelectionNow(to: pasteboard)
+        let requests = await handler.preparationRequests()
+        XCTAssertFalse(copied)
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "Keep this")
+        XCTAssertEqual(
+            requests,
+            [MacAttachmentPreparationRequest(id: attachment.id, use: .copy)]
+        )
+    }
+
+    @MainActor
+    func testCopyingARepeatedRemoteAttachmentWritesOneFileObject() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("copy-once.md")
+        try Data("One copy".utf8).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let added = try await repository.add(
+            content: "First",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let first = try XCTUnwrap(added)
+        let attachment = try XCTUnwrap(first.attachments.first)
+        let second = Snip(
+            content: "Second",
+            origin: .quickEntry,
+            attachments: [attachment]
+        )
+        let downloadedURL = store.deletingLastPathComponent().appendingPathComponent("copy-ready.md")
+        try Data("Ready".utf8).write(to: downloadedURL)
+        let handler = MacOptionalCloudSyncHandlerProbe(urls: [attachment.id: downloadedURL])
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [first, second]),
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        await model.reload()
+        model.selection = [first.id, second.id]
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-copy-once-\(UUID())"))
+
+        let copied = await model.copySelectionNow(to: pasteboard)
+        let requests = await handler.preparationRequests()
+        XCTAssertTrue(copied)
+
+        let fileItems = pasteboard.pasteboardItems?.filter {
+            $0.string(forType: .fileURL) != nil
+        } ?? []
+        XCTAssertEqual(fileItems.count, 1)
+        XCTAssertEqual(requests.count, 1)
+    }
+
+    @MainActor
+    func testExportArchiveUsesThePreparedRemoteAttachmentURL() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("export.md")
+        try Data("Old".utf8).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let added = try await repository.add(
+            content: "Export attachment",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let snip = try XCTUnwrap(added)
+        let attachment = try XCTUnwrap(snip.attachments.first)
+        let readyURL = store.deletingLastPathComponent().appendingPathComponent("export-ready.md")
+        try Data("Prepared bytes".utf8).write(to: readyURL)
+        let handler = MacOptionalCloudSyncHandlerProbe(urls: [attachment.id: readyURL])
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [snip]),
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        await model.reload()
+
+        let archive = try await model.exportArchive()
+        let exportedURL = try XCTUnwrap(archive.attachmentURLs[attachment.id])
+
+        XCTAssertEqual(exportedURL, readyURL)
+        XCTAssertEqual(try String(contentsOf: exportedURL, encoding: .utf8), "Prepared bytes")
+        let requests = await handler.preparationRequests()
+        XCTAssertEqual(requests, [MacAttachmentPreparationRequest(id: attachment.id, use: .export)])
+    }
+
+    @MainActor
+    func testClearingDownloadedFilesRefreshesAttachmentURLs() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("clear.md")
+        try Data("Clear".utf8).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let added = try await repository.add(
+            content: "Clear attachment",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let attachment = try XCTUnwrap(added?.attachments.first)
+        let storedURL = repository.attachmentURL(for: attachment)
+        let handler = MacOptionalCloudSyncHandlerProbe(clearURLs: [storedURL])
+        let model = AppModel(
+            library: InMemorySnipLibrary(
+                snips: [try XCTUnwrap(added)],
+                attachmentURLs: [attachment.id: storedURL]
+            ),
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        await model.reload()
+        XCTAssertEqual(model.attachmentURL(for: attachment), storedURL)
+
+        try await model.clearDownloadedFiles()
+        let clearCount = await handler.clearCount()
+
+        XCTAssertNil(model.attachmentURL(for: attachment))
+        XCTAssertEqual(clearCount, 1)
     }
 
     @MainActor
@@ -1080,4 +1355,60 @@ private actor MacAppleAccountCacheHandlerProbe: AppleAccountCacheHandling {
 
     func choices() -> [AppleAccountCacheChoice] { received }
     func refreshCount() -> Int { noticeReads }
+}
+
+private struct MacAttachmentPreparationRequest: Equatable, Sendable {
+    let id: UUID
+    let use: SyncedAttachmentUse
+}
+
+private enum MacAttachmentPreparationError: Error {
+    case unavailable
+}
+
+private actor MacOptionalCloudSyncHandlerProbe: OptionalCloudSyncHandling {
+    private var requests: [MacAttachmentPreparationRequest] = []
+    private let urls: [UUID: URL]
+    private var failuresRemaining: Int
+    private let clearURLs: [URL]
+    private var clears = 0
+
+    init(
+        urls: [UUID: URL] = [:],
+        failuresRemaining: Int = 0,
+        clearURLs: [URL] = []
+    ) {
+        self.urls = urls
+        self.failuresRemaining = failuresRemaining
+        self.clearURLs = clearURLs
+    }
+
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
+    func syncWhenPossible() async {}
+    func isCloudSyncActive() async throws -> Bool { true }
+    func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { [:] }
+
+    func prepareSyncedAttachment(
+        _ id: UUID,
+        for use: SyncedAttachmentUse
+    ) async throws -> URL {
+        requests.append(MacAttachmentPreparationRequest(id: id, use: use))
+        if failuresRemaining > 0 {
+            failuresRemaining -= 1
+            throw MacAttachmentPreparationError.unavailable
+        }
+        guard let url = urls[id] else { throw MacAttachmentPreparationError.unavailable }
+        return url
+    }
+
+    func clearDownloadedFiles() async throws {
+        clears += 1
+        for url in clearURLs where FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+    }
+
+    func preparationRequests() -> [MacAttachmentPreparationRequest] { requests }
+    func clearCount() -> Int { clears }
 }

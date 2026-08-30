@@ -416,12 +416,14 @@ struct ContentView: View {
                 if !entryDraft.attachments.isEmpty {
                     AttachmentPreviewStrip(
                         items: draftAttachmentPreviewItems,
-                        onPreview: { url in
+                        onPreview: { item in
+                            guard let url = item.url else { return }
                             openAttachmentPreview(entryDraft.attachments, selectedURL: url)
                         },
                         onRemove: { item in
-                            removePreviewURL(item.url)
-                            model.removeDraftAttachment(item.url, from: model.activeListID)
+                            guard let url = item.url else { return }
+                            removePreviewURL(url)
+                            model.removeDraftAttachment(url, from: model.activeListID)
                             entryDraft = model.composerDraft(for: model.activeListID)
                         }
                     )

@@ -166,6 +166,23 @@ final class SnipListModelsTests: XCTestCase {
         XCTAssertNotNil(privateItem.data(forType: SnipDragExportPackage.privateType))
     }
 
+    func testRemoteOnlyDragPayloadWaitsForPreparationWithoutInventingAFileURL() {
+        let attachmentID = UUID()
+        let payload = SnipDragPayload(
+            ids: [UUID()],
+            text: "Remote attachment",
+            attachmentIDs: [attachmentID]
+        )
+
+        XCTAssertTrue(payload.hasRemoteOnlyAttachments)
+        XCTAssertTrue(payload.attachmentURLs.isEmpty)
+        XCTAssertFalse(
+            SnipDragExportPackage(payload: payload).pasteboardWriters().contains { writer in
+                (writer as? NSURL)?.isFileURL == true
+            }
+        )
+    }
+
     func testTextOnlySnipDragOffersPlainTextBeforeItsPrivatePayload() throws {
         let payload = SnipDragPayload(
             ids: [UUID()],

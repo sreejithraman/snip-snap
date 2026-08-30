@@ -267,6 +267,7 @@ final class SnipDragSourceController: NSObject, NSDraggingSource, NSGestureRecog
     private final class Region {
         weak var view: NSView?
         let payload: SnipDragPayload
+        let onNeedsAttachmentPreparation: () -> Void
         let onBegan: () -> Void
         let onMoved: (NSPoint) -> Void
         let onEnded: (SnipDragOutcome, NSPoint) -> Void
@@ -274,12 +275,14 @@ final class SnipDragSourceController: NSObject, NSDraggingSource, NSGestureRecog
         init(
             view: NSView,
             payload: SnipDragPayload,
+            onNeedsAttachmentPreparation: @escaping () -> Void,
             onBegan: @escaping () -> Void,
             onMoved: @escaping (NSPoint) -> Void,
             onEnded: @escaping (SnipDragOutcome, NSPoint) -> Void
         ) {
             self.view = view
             self.payload = payload
+            self.onNeedsAttachmentPreparation = onNeedsAttachmentPreparation
             self.onBegan = onBegan
             self.onMoved = onMoved
             self.onEnded = onEnded
@@ -315,6 +318,7 @@ final class SnipDragSourceController: NSObject, NSDraggingSource, NSGestureRecog
         id: UUID,
         view: NSView?,
         payload: SnipDragPayload,
+        onNeedsAttachmentPreparation: @escaping () -> Void = {},
         onBegan: @escaping () -> Void,
         onMoved: @escaping (NSPoint) -> Void,
         onEnded: @escaping (SnipDragOutcome, NSPoint) -> Void
@@ -326,6 +330,7 @@ final class SnipDragSourceController: NSObject, NSDraggingSource, NSGestureRecog
         regions[id] = Region(
             view: view,
             payload: payload,
+            onNeedsAttachmentPreparation: onNeedsAttachmentPreparation,
             onBegan: onBegan,
             onMoved: onMoved,
             onEnded: onEnded
@@ -396,6 +401,10 @@ final class SnipDragSourceController: NSObject, NSDraggingSource, NSGestureRecog
               let event = NSApp.currentEvent,
               let region = pendingRegion else { return }
         pendingRegion = nil
+        guard !region.payload.hasRemoteOnlyAttachments else {
+            region.onNeedsAttachmentPreparation()
+            return
+        }
         let origin = hostView.convert(event.locationInWindow, from: nil)
         let scale = hostView.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         let colorScheme: ColorScheme = hostView.effectiveAppearance.bestMatch(
@@ -514,6 +523,7 @@ struct SnipDragSourceRegion: NSViewRepresentable {
     let controller: SnipDragSourceController
     let id: UUID
     let payload: SnipDragPayload
+    let onNeedsAttachmentPreparation: () -> Void
     let onBegan: () -> Void
     let onMoved: (NSPoint) -> Void
     let onEnded: (SnipDragOutcome, NSPoint) -> Void
@@ -523,6 +533,7 @@ struct SnipDragSourceRegion: NSViewRepresentable {
             controller: controller,
             id: id,
             payload: payload,
+            onNeedsAttachmentPreparation: onNeedsAttachmentPreparation,
             onBegan: onBegan,
             onMoved: onMoved,
             onEnded: onEnded
@@ -532,6 +543,7 @@ struct SnipDragSourceRegion: NSViewRepresentable {
     func updateNSView(_ nsView: SnipDragSourceRegionView, context: Context) {
         nsView.configure(
             payload: payload,
+            onNeedsAttachmentPreparation: onNeedsAttachmentPreparation,
             onBegan: onBegan,
             onMoved: onMoved,
             onEnded: onEnded
@@ -548,6 +560,7 @@ final class SnipDragSourceRegionView: NSView {
     private let controller: SnipDragSourceController
     private let id: UUID
     private var payload: SnipDragPayload
+    private var onNeedsAttachmentPreparation: () -> Void
     private var onBegan: () -> Void
     private var onMoved: (NSPoint) -> Void
     private var onEnded: (SnipDragOutcome, NSPoint) -> Void
@@ -556,6 +569,7 @@ final class SnipDragSourceRegionView: NSView {
         controller: SnipDragSourceController,
         id: UUID,
         payload: SnipDragPayload,
+        onNeedsAttachmentPreparation: @escaping () -> Void,
         onBegan: @escaping () -> Void,
         onMoved: @escaping (NSPoint) -> Void,
         onEnded: @escaping (SnipDragOutcome, NSPoint) -> Void
@@ -563,6 +577,7 @@ final class SnipDragSourceRegionView: NSView {
         self.controller = controller
         self.id = id
         self.payload = payload
+        self.onNeedsAttachmentPreparation = onNeedsAttachmentPreparation
         self.onBegan = onBegan
         self.onMoved = onMoved
         self.onEnded = onEnded
@@ -576,11 +591,13 @@ final class SnipDragSourceRegionView: NSView {
 
     func configure(
         payload: SnipDragPayload,
+        onNeedsAttachmentPreparation: @escaping () -> Void,
         onBegan: @escaping () -> Void,
         onMoved: @escaping (NSPoint) -> Void,
         onEnded: @escaping (SnipDragOutcome, NSPoint) -> Void
     ) {
         self.payload = payload
+        self.onNeedsAttachmentPreparation = onNeedsAttachmentPreparation
         self.onBegan = onBegan
         self.onMoved = onMoved
         self.onEnded = onEnded
@@ -610,6 +627,7 @@ final class SnipDragSourceRegionView: NSView {
             id: id,
             view: window == nil ? nil : self,
             payload: payload,
+            onNeedsAttachmentPreparation: onNeedsAttachmentPreparation,
             onBegan: onBegan,
             onMoved: onMoved,
             onEnded: onEnded

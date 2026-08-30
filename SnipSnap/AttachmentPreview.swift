@@ -36,7 +36,7 @@ struct AttachmentPreviewArtwork: View {
 
 struct AttachmentPreviewItem: Identifiable, Hashable {
     let id: String
-    let url: URL
+    let url: URL?
     let fileName: String
 
     init(url: URL) {
@@ -45,7 +45,7 @@ struct AttachmentPreviewItem: Identifiable, Hashable {
         fileName = url.lastPathComponent
     }
 
-    init(attachment: SnipAttachment, url: URL) {
+    init(attachment: SnipAttachment, url: URL?) {
         id = attachment.id.uuidString
         self.url = url
         fileName = attachment.fileName
@@ -54,7 +54,7 @@ struct AttachmentPreviewItem: Identifiable, Hashable {
 
 struct AttachmentPreviewStrip: View {
     let items: [AttachmentPreviewItem]
-    let onPreview: (URL) -> Void
+    let onPreview: (AttachmentPreviewItem) -> Void
     var onRemove: ((AttachmentPreviewItem) -> Void)?
 
     var body: some View {
@@ -82,7 +82,7 @@ struct AttachmentPreviewStrip: View {
             AttachmentPreviewTile(
                 url: item.url,
                 fileName: item.fileName,
-                onPreview: { onPreview(item.url) }
+                onPreview: { onPreview(item) }
             )
 
             if let onRemove {
@@ -108,7 +108,7 @@ struct AttachmentPreviewStrip: View {
 }
 
 private struct AttachmentPreviewTile: View {
-    let url: URL
+    let url: URL?
     let fileName: String
     let onPreview: () -> Void
 
@@ -131,6 +131,10 @@ private struct AttachmentPreviewTile: View {
         .accessibilityLabel("Preview \(fileName)")
         .accessibilityHint("Shows a Quick Look preview")
         .task(id: thumbnailRequestID) {
+            guard let url else {
+                thumbnail = nil
+                return
+            }
             thumbnail = await PreviewImageCache.shared.fileThumbnail(
                 url: url,
                 size: CGSize(
@@ -162,7 +166,7 @@ private struct AttachmentPreviewTile: View {
     }
 
     private var thumbnailRequestID: String {
-        "\(url.standardizedFileURL.path)|\(displayScale)"
+        "\(url?.standardizedFileURL.path ?? "remote")|\(displayScale)"
     }
 }
 

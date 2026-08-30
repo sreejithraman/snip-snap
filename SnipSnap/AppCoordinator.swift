@@ -198,8 +198,18 @@ final class AppCoordinator {
     }
 
     func editSelectionInNewWindow() {
+        Task { await editSelectionInNewWindowNow() }
+    }
+
+    func editSelectionInNewWindowNow() async {
         guard model.selection.count == 1,
               let snip = model.selectedSnips.first else { return }
+        do {
+            _ = try await model.prepareAttachments(snip.attachments, for: .open)
+        } catch {
+            model.presentedError = error.localizedDescription
+            return
+        }
         if let existing = editorWindows[snip.id] {
             existing.show()
             return

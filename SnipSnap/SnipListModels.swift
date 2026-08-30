@@ -11,6 +11,7 @@ extension UTType {
 struct SnipDragPayload: Codable, Equatable, Sendable, Transferable {
     let ids: [UUID]
     let text: String
+    let attachmentIDs: [UUID]
     let attachmentURLs: [URL]
     let previewSourceLabel: String
     let previewIsDone: Bool
@@ -18,12 +19,14 @@ struct SnipDragPayload: Codable, Equatable, Sendable, Transferable {
     init(
         ids: [UUID],
         text: String,
+        attachmentIDs: [UUID] = [],
         attachmentURLs: [URL] = [],
         previewSourceLabel: String = "Snip Snap",
         previewIsDone: Bool = false
     ) {
         self.ids = ids
         self.text = text
+        self.attachmentIDs = attachmentIDs
         self.attachmentURLs = attachmentURLs
         self.previewSourceLabel = previewSourceLabel
         self.previewIsDone = previewIsDone
@@ -41,21 +44,30 @@ struct SnipDragPayload: Codable, Equatable, Sendable, Transferable {
 
     static func make(
         snips: [Snip],
-        attachmentURL: ((SnipAttachment) -> URL)?
+        attachmentURL: ((SnipAttachment) -> URL?)?
     ) -> SnipDragPayload {
-        SnipDragPayload(
+        var seenAttachmentIDs: Set<UUID> = []
+        let attachments = snips.flatMap(\.attachments).filter {
+            seenAttachmentIDs.insert($0.id).inserted
+        }
+        return SnipDragPayload(
             ids: snips.map(\.id),
             text: snips.count == 1
                 ? snips[0].content
                 : SnipFormatter.formatInGivenOrder(snips: snips),
+            attachmentIDs: attachments.map(\.id),
             attachmentURLs: attachmentURL.map { resolve in
-                snips.flatMap(\.attachments).map(resolve)
+                attachments.compactMap(resolve)
             } ?? [],
             previewSourceLabel: snips.count == 1
                 ? snips[0].displaySourceLabel
                 : "\(snips.count) snips",
             previewIsDone: snips.allSatisfy(\.isDone)
         )
+    }
+
+    var hasRemoteOnlyAttachments: Bool {
+        attachmentURLs.count < attachmentIDs.count
     }
 }
 
@@ -173,7 +185,7 @@ struct SnipListSnapshot {
         lists: [SnipList],
         selection: Set<UUID>,
         keepsEmptyListID: UUID? = nil,
-        attachmentURL: ((SnipAttachment) -> URL)? = nil
+        attachmentURL: ((SnipAttachment) -> URL?)? = nil
     ) {
         groups = Self.groups(
             for: visibleSnips,
@@ -200,7 +212,7 @@ struct SnipListSnapshot {
         return SnipDragPayload.make(snips: [snip], attachmentURL: attachmentURL)
     }
 
-    private let attachmentURL: ((SnipAttachment) -> URL)?
+    private let attachmentURL: ((SnipAttachment) -> URL?)?
 
     private static func groups(
         for snips: [Snip],
