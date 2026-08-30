@@ -29,12 +29,12 @@ SNIP_SNAP_DERIVED_DATA="$test_root/derived-data" \
         --iphone-destination 'platform=iOS Simulator,name=Example iPhone' \
         --ipad-destination 'platform=iOS Simulator,name=Example iPad' >/dev/null
 
-[[ "$(/usr/bin/wc -l < "$args_file" | /usr/bin/tr -d ' ')" == 4 ]] || \
-    fail_test "the release matrix did not run exactly four Simulator test commands"
+[[ "$(/usr/bin/wc -l < "$args_file" | /usr/bin/tr -d ' ')" == 6 ]] || \
+    fail_test "the release matrix did not run exactly six Simulator test commands"
 
-for line in 1 3; do
+for line in 1 4; do
     destination='platform=iOS Simulator,name=Example iPhone'
-    [[ "$line" == 3 ]] && destination='platform=iOS Simulator,name=Example iPad'
+    [[ "$line" == 4 ]] && destination='platform=iOS Simulator,name=Example iPad'
     /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
         "Packages/SnipSnapLibrary :: -scheme SnipSnapLibrary-Package -configuration Debug -destination $destination" >/dev/null || \
         fail_test "the package transfer test missed $destination"
@@ -43,7 +43,7 @@ for line in 1 3; do
         fail_test "the package command missed the exact 25 MiB transfer test"
 done
 
-for line in 2 4; do
+for line in 2 5; do
     /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
         '-only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testSyncEnableReportsEveryAttachmentAboveTheSnipSnapLimit' >/dev/null || \
         fail_test "the app command missed the over-limit setup action"
@@ -55,8 +55,28 @@ for line in 2 4; do
         fail_test "the app command missed the attachment flow"
 done
 
+for line in 3 6; do
+    destination='platform=iOS Simulator,name=Example iPhone'
+    [[ "$line" == 6 ]] && destination='platform=iOS Simulator,name=Example iPad'
+    /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
+        "-scheme SnipSnapiOS -configuration Debug -destination $destination" >/dev/null || \
+        fail_test "the Share extension process command missed $destination"
+    for test_name in \
+        testShareExtensionImportsExactlyOnceWhileMainAppIsOpen \
+        testShareExtensionImportsExactlyOnceWhileMainAppIsClosed \
+        testShareExtensionDefersExactlyOnceWhileMainStoreIsUnavailable
+    do
+        /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
+            "-only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/$test_name" >/dev/null || \
+            fail_test "the Share extension process command missed $test_name"
+    done
+    /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
+        'CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM=' >/dev/null || \
+        fail_test "the Share extension process command was not ad-hoc signed"
+done
+
 [[ "$(/usr/bin/grep -Fc -- 'CODE_SIGNING_ALLOWED=NO' "$args_file")" == 4 ]] || \
-    fail_test "one or more Simulator tests allowed signing"
+    fail_test "one or more package or app-action tests allowed signing"
 
 /usr/bin/grep -F -- 'run: ./scripts/build.sh' \
     "$script_dir/../.github/workflows/ci.yml" >/dev/null || \

@@ -267,6 +267,18 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(activityView(in: app).waitForExistence(timeout: 5))
     }
 
+    func testShareExtensionImportsExactlyOnceWhileMainAppIsOpen() {
+        assertShareExtensionImportsExactlyOnce(mainAppState: .open)
+    }
+
+    func testShareExtensionImportsExactlyOnceWhileMainAppIsClosed() {
+        assertShareExtensionImportsExactlyOnce(mainAppState: .closed)
+    }
+
+    func testShareExtensionDefersExactlyOnceWhileMainStoreIsUnavailable() {
+        assertShareExtensionImportsExactlyOnce(mainAppState: .unavailable)
+    }
+
     func testUnavailableAttachmentOffersOnlyCopyTextOrCancel() {
         continueAfterFailure = false
         let app = launchApp(withCopyShareFixtures: true)
@@ -554,6 +566,126 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     private func activityView(in app: XCUIApplication) -> XCUIElement {
         app.otherElements["ActivityListView"]
+    }
+
+    private enum ShareProcessMainAppState: Equatable {
+        case open
+        case closed
+        case unavailable
+    }
+
+    private func assertShareExtensionImportsExactlyOnce(
+        mainAppState: ShareProcessMainAppState
+    ) {
+        continueAfterFailure = false
+        let token = "snipsnap-share-process-\(UUID().uuidString)"
+        var app = launchShareProcessApp(
+            token: token,
+            storeUnavailable: mainAppState == .unavailable
+        )
+        XCTAssertTrue(app.staticTexts["share-process-count"].waitForExistence(timeout: 8))
+        XCTAssertEqual(app.staticTexts["share-process-count"].label, "0")
+        if mainAppState == .closed {
+            app.terminate()
+        }
+
+        let safari = shareURLFromSafari(token: token)
+        let shareText = safari.textViews["share-text"]
+        XCTAssertTrue(shareText.waitForExistence(timeout: 8))
+        let loadedText = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value CONTAINS %@", "Example Domain"),
+            object: shareText
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [loadedText], timeout: 8), .completed)
+        safari.buttons["share-save"].tap()
+        XCTAssertTrue(safari.buttons["share-save"].waitForNonExistence(timeout: 8))
+
+        if mainAppState == .unavailable {
+            app.terminate()
+            app = launchShareProcessApp(token: token, repairStore: true)
+        } else {
+            app.activate()
+        }
+        assertShareProcessCount(1, in: app)
+
+        safari.activate()
+        app.activate()
+        assertShareProcessCount(1, in: app)
+    }
+
+    private func launchShareProcessApp(
+        token: String,
+        storeUnavailable: Bool = false,
+        repairStore: Bool = false
+    ) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment["SNIP_SNAP_UI_TEST_SHARE_EXTENSION_PROCESS"] = "1"
+        app.launchEnvironment["SNIP_SNAP_UI_TEST_SHARE_TOKEN"] = token
+        if storeUnavailable {
+            app.launchEnvironment["SNIP_SNAP_UI_TEST_SHARE_STORE_UNAVAILABLE"] = "1"
+        }
+        if repairStore {
+            app.launchEnvironment["SNIP_SNAP_UI_TEST_SHARE_STORE_REPAIR"] = "1"
+        }
+        app.launch()
+        return app
+    }
+
+    private func shareURLFromSafari(token: String) -> XCUIApplication {
+        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
+        safari.launch()
+        if safari.buttons["Continue"].waitForExistence(timeout: 1) {
+            safari.buttons["Continue"].tap()
+        }
+        var address = safari.textFields["Address"].firstMatch
+        if !address.waitForExistence(timeout: 3) {
+            safari.buttons["Address"].tap()
+            address = safari.textFields.firstMatch
+        }
+        XCTAssertTrue(address.waitForExistence(timeout: 3))
+        address.tap()
+        var focusedAddress = safari.textFields.matching(
+            NSPredicate(format: "hasKeyboardFocus == true")
+        ).firstMatch
+        XCTAssertTrue(focusedAddress.waitForExistence(timeout: 3))
+        focusedAddress.typeKey("a", modifierFlags: .command)
+        focusedAddress = safari.textFields.matching(
+            NSPredicate(format: "hasKeyboardFocus == true")
+        ).firstMatch
+        XCTAssertTrue(focusedAddress.waitForExistence(timeout: 3))
+        focusedAddress.typeText("https://example.com/#\(token)")
+        let currentAddress = safari.textFields.matching(
+            NSPredicate(format: "value CONTAINS %@", token)
+        ).firstMatch
+        XCTAssertTrue(currentAddress.waitForExistence(timeout: 5))
+        let go = safari.keyboards.buttons["Go"]
+        XCTAssertTrue(go.waitForExistence(timeout: 3))
+        go.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(safari.keyboards.firstMatch.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(safari.staticTexts["Example Domain"].waitForExistence(timeout: 10))
+        if safari.buttons["Close"].exists {
+            safari.buttons["Close"].tap()
+        }
+        var share = safari.buttons["Share"]
+        if !share.waitForExistence(timeout: 1) {
+            safari.buttons["More"].tap()
+            share = safari.buttons["Share"]
+        }
+        XCTAssertTrue(share.waitForExistence(timeout: 5))
+        share.tap()
+        let activity = safari.cells["Snip Snap"]
+        XCTAssertTrue(activity.waitForExistence(timeout: 8))
+        activity.tap()
+        return safari
+    }
+
+    private func assertShareProcessCount(_ expected: Int, in app: XCUIApplication) {
+        let count = app.staticTexts["share-process-count"]
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label == %@", String(expected)),
+            object: count
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 10), .completed)
     }
 
     func testSearchDoneFilterAndUndo() {

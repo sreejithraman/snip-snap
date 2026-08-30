@@ -77,13 +77,34 @@ run_app_actions() {
         test
 }
 
+run_share_process() {
+    local destination="$1"
+    local derived_data="$2"
+    "$xcodebuild_tool" \
+        -project "$repo_dir/SnipSnap.xcodeproj" \
+        -scheme SnipSnapiOS \
+        -configuration Debug \
+        -destination "$destination" \
+        -derivedDataPath "$derived_data" \
+        CODE_SIGNING_ALLOWED=YES \
+        DEVELOPMENT_TEAM= \
+        -only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testShareExtensionImportsExactlyOnceWhileMainAppIsOpen \
+        -only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testShareExtensionImportsExactlyOnceWhileMainAppIsClosed \
+        -only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testShareExtensionDefersExactlyOnceWhileMainStoreIsUnavailable \
+        test
+}
+
 print "Release matrix tests: iPhone 25 MiB transfer"
 run_transfer_test "$iphone_destination" "$derived_data_root/iphone-transfer"
 print "Release matrix tests: iPhone limit, Share, and attachment actions"
 run_app_actions "$iphone_destination" "$derived_data_root/iphone-app"
+print "Release matrix tests: iPhone Share extension process"
+run_share_process "$iphone_destination" "$derived_data_root/iphone-share-process"
 print "Release matrix tests: iPad 25 MiB transfer"
 run_transfer_test "$ipad_destination" "$derived_data_root/ipad-transfer"
 print "Release matrix tests: iPad limit, Share, and attachment actions"
 run_app_actions "$ipad_destination" "$derived_data_root/ipad-app"
+print "Release matrix tests: iPad Share extension process"
+run_share_process "$ipad_destination" "$derived_data_root/ipad-share-process"
 
 print "iPhone and iPad release-matrix tests passed."

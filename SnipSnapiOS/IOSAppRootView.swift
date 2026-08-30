@@ -161,6 +161,7 @@ struct IOSAppRootView: View {
     @State private var isExplainingBackupImport = false
     private let uiTestAttachmentURLs: [URL]
     private let seedsCopyShareFixtures: Bool
+    private let shareProcessToken: String?
     private let syncedContentSettings: SyncedContentSettingsModel
     private let cloudLifecycleHooks: SnipSnapCloudLifecycleHooks
 
@@ -173,6 +174,7 @@ struct IOSAppRootView: View {
         startupError: String? = nil,
         uiTestAttachmentURLs: [URL] = [],
         seedsCopyShareFixtures: Bool = false,
+        shareProcessToken: String? = nil,
         syncedContentSettings: SyncedContentSettingsModel? = nil,
         cloudSyncSession: SnipSnapCloudSyncSession? = nil,
         shareImportOperation: (@Sendable () async -> Int)? = nil,
@@ -182,6 +184,7 @@ struct IOSAppRootView: View {
     ) {
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         self.seedsCopyShareFixtures = seedsCopyShareFixtures
+        self.shareProcessToken = shareProcessToken
         let settings = syncedContentSettings
             ?? SyncedContentSettingsModel(mode: .localOnly)
         self.syncedContentSettings = settings
@@ -268,6 +271,19 @@ struct IOSAppRootView: View {
                     .accessibilityIdentifier("copy-status")
             }
         }
+#if DEBUG
+        .overlay(alignment: .topLeading) {
+            if let shareProcessToken {
+                Text(
+                    String(model.snips.filter { $0.content.contains(shareProcessToken) }.count)
+                )
+                .font(.caption2)
+                .frame(width: 1, height: 1)
+                .opacity(0.01)
+                .accessibilityIdentifier("share-process-count")
+            }
+        }
+#endif
         .safeAreaInset(edge: .top, spacing: 0) {
             if let accountNoticeModel, accountNoticeModel.notice != nil {
                 AppleAccountNoticeBanner(model: accountNoticeModel)

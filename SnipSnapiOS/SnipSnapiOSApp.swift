@@ -13,6 +13,7 @@ struct SnipSnapiOSApp: App {
     private let startupError: String?
     private let uiTestAttachmentURLs: [URL]
     private let seedsCopyShareFixtures: Bool
+    private let shareProcessToken: String?
     private let recoveryScope: SnipRecoveryScope?
     private let syncedContentSettings: SyncedContentSettingsModel
     private let cloudSyncSession: SnipSnapCloudSyncSession?
@@ -28,6 +29,14 @@ struct SnipSnapiOSApp: App {
         startupError = startup.error
         uiTestAttachmentURLs = startup.uiTestAttachmentURLs
         seedsCopyShareFixtures = startup.seedsCopyShareFixtures
+#if DEBUG
+        let environment = ProcessInfo.processInfo.environment
+        shareProcessToken = environment["SNIP_SNAP_UI_TEST_SHARE_EXTENSION_PROCESS"] == "1"
+            ? environment["SNIP_SNAP_UI_TEST_SHARE_TOKEN"]
+            : nil
+#else
+        shareProcessToken = nil
+#endif
         recoveryScope = startup.recoveryScope
         let cloudServices: SnipSnapCloudAppServices
 #if DEBUG
@@ -107,6 +116,7 @@ struct SnipSnapiOSApp: App {
                 startupError: startupError,
                 uiTestAttachmentURLs: uiTestAttachmentURLs,
                 seedsCopyShareFixtures: seedsCopyShareFixtures,
+                shareProcessToken: shareProcessToken,
                 syncedContentSettings: syncedContentSettings,
                 cloudSyncSession: cloudSyncSession,
                 accountNoticeModel: accountNoticeModel,
@@ -164,6 +174,7 @@ struct SnipSnapiOSApp: App {
         let storeURL: URL
         let syncModeRootURL: URL
         let shareImports: ShareImportStore?
+        var uiTestShareStoreUnavailable = false
 
         if environment["SNIP_SNAP_UI_TESTING"] == "1" {
             let storeName = environment["SNIP_SNAP_UI_TEST_STORE"] ?? UUID().uuidString
@@ -177,6 +188,12 @@ struct SnipSnapiOSApp: App {
             storeURL = ShareImportStore.storeURL(in: sharedRootURL)
             syncModeRootURL = sharedRootURL.appendingPathComponent("SyncMode", isDirectory: true)
             shareImports = ShareImportStore(sharedRootURL: sharedRootURL)
+#if DEBUG
+            uiTestShareStoreUnavailable = prepareShareProcessStoreControl(
+                sharedRootURL: sharedRootURL,
+                environment: environment
+            )
+#endif
         } else {
             storeURL = SwiftDataSnipLibrary.defaultStoreURL()
             syncModeRootURL = storeURL.deletingLastPathComponent()
@@ -185,6 +202,9 @@ struct SnipSnapiOSApp: App {
         }
 
         do {
+            if uiTestShareStoreUnavailable {
+                throw SnipLibraryError.storeUnavailable
+            }
             let seedsCopyShareFixtures = environment["SNIP_SNAP_UI_TEST_COPY_SHARE"] == "1"
             let fixtureURLs: [URL]
             if environment["SNIP_SNAP_UI_TEST_LIMIT_ATTACHMENTS"] == "1" {
@@ -240,6 +260,29 @@ struct SnipSnapiOSApp: App {
             )
         }
     }
+
+#if DEBUG
+    private static func prepareShareProcessStoreControl(
+        sharedRootURL: URL,
+        environment: [String: String]
+    ) -> Bool {
+        guard environment["SNIP_SNAP_UI_TEST_SHARE_EXTENSION_PROCESS"] == "1" else {
+            return false
+        }
+        let markerURL = sharedRootURL.appendingPathComponent(
+            "ShareProcessMainStoreUnavailable",
+            isDirectory: false
+        )
+        if environment["SNIP_SNAP_UI_TEST_SHARE_STORE_REPAIR"] == "1" {
+            try? FileManager.default.removeItem(at: markerURL)
+        } else if environment["SNIP_SNAP_UI_TEST_SHARE_STORE_UNAVAILABLE"] == "1" {
+            try? Data("unavailable".utf8).write(to: markerURL, options: .atomic)
+        } else {
+            try? FileManager.default.removeItem(at: markerURL)
+        }
+        return FileManager.default.fileExists(atPath: markerURL.path)
+    }
+#endif
 
     private static func makeUITestAttachmentFiles(nextTo storeURL: URL) -> [URL] {
         let directory = storeURL.deletingLastPathComponent()

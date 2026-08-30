@@ -45,8 +45,10 @@ Run the same release tests on an iPhone and iPad Simulator:
 
 This command runs the generated 25 MiB upload, download, hash, cache, and
 interruption test on both device families. It also runs the iCloud limit,
-Share, and local attachment actions. The default Simulator names match the CI
-image. Override them without checking in a device ID:
+Share, and local attachment actions. Last, Safari opens the embedded Share
+extension with the main app open, closed, and unable to migrate. These process
+tests use ad-hoc Simulator signing and no Team ID. The default Simulator names
+match the CI image. Override them without checking in a device ID:
 
 ```sh
 ./scripts/release-matrix-tests.sh \
