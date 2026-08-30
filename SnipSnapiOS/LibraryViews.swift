@@ -55,7 +55,11 @@ struct ListSidebarView: View {
                 .accessibilityIdentifier("settings")
             }
             ToolbarItem(placement: .secondaryAction) {
-                LibraryActionsMenu(model: model, importBackup: importBackup)
+                LibraryActionsMenu(
+                    model: model,
+                    importBackup: importBackup,
+                    editSelectedList: { sheet = .editList(id: model.selectedListID) }
+                )
             }
             ToolbarItem(placement: .primaryAction) {
                 Button("New List", systemImage: "folder.badge.plus") {
@@ -76,6 +80,8 @@ struct LibraryActionsMenu: View {
     let model: IOSAppModel
     let importBackup: () -> Void
     var includesCloudActions = false
+    var editSelectedList: (() -> Void)?
+    @State private var confirmsDeleteList = false
 
     var body: some View {
         Menu("Library Actions", systemImage: "ellipsis.circle") {
@@ -89,12 +95,27 @@ struct LibraryActionsMenu: View {
             .disabled(!model.canRedo)
             Divider()
             Button("Import Backup…", systemImage: "square.and.arrow.down", action: importBackup)
+            if model.selectedListID != SnipList.inboxID, let editSelectedList {
+                Divider()
+                Button("Rename List", systemImage: "pencil", action: editSelectedList)
+                Button("Delete List", systemImage: "trash", role: .destructive) {
+                    confirmsDeleteList = true
+                }
+            }
             if includesCloudActions, model.hasCloudSync {
                 Divider()
                 CloudLibraryActions(model: model)
             }
         }
         .accessibilityIdentifier("library-actions")
+        .alert("Delete \(model.selectedList.name)?", isPresented: $confirmsDeleteList) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete List", role: .destructive) {
+                Task { await model.deleteList(id: model.selectedListID) }
+            }
+        } message: {
+            Text("The list will be removed. Its snips will move to Inbox.")
+        }
     }
 }
 
@@ -184,13 +205,8 @@ struct SnipCollectionView: View {
                                     model.selectedSnipIDs.contains(snip.id) ? .isSelected : []
                                 )
                             } else if layout == .compactStack {
-                                NavigationLink {
-                                    SnipDetailView(
-                                        model: model,
-                                        copyShare: copyShare,
-                                        sheet: $sheet
-                                    )
-                                    .onAppear { model.selectedSnipID = snip.id }
+                                Button {
+                                    model.selectedSnipID = snip.id
                                 } label: {
                                     SnipRow(
                                         snip: snip,
@@ -198,6 +214,22 @@ struct SnipCollectionView: View {
                                         isRecovered: model.isRecoveredSnip(snip.id)
                                     )
                                 }
+                                .buttonStyle(.plain)
+                                .highPriorityGesture(
+                                    TapGesture(count: 2).onEnded {
+                                        model.selectedSnipID = snip.id
+                                        sheet = .editSnip(id: snip.id)
+                                    }
+                                )
+                                .accessibilityHint("Double tap to edit. Touch and hold for actions.")
+                                .accessibilityAction(named: "Edit") {
+                                    model.selectedSnipID = snip.id
+                                    sheet = .editSnip(id: snip.id)
+                                }
+                                .listRowBackground(
+                                    model.selectedSnipID == snip.id
+                                        ? Color.accentColor.opacity(0.1) : Color.clear
+                                )
                             } else {
                                 NavigationLink(value: snip.id) {
                                     SnipRow(
@@ -248,14 +280,13 @@ struct SnipCollectionView: View {
             }
         }
         .navigationTitle(model.selectedList.name)
-        .searchable(
+        .modifier(PhoneAwareSearchModifier(
+            isEnabled: layout == .splitView,
             text: Binding(
                 get: { model.searchText },
                 set: { model.searchText = $0 }
-            ),
-            placement: .navigationBarDrawer(displayMode: .always),
-            prompt: "Search Snips"
-        )
+            )
+        ))
         .environment(\.editMode, $editMode)
         .toolbar {
             if layout == .splitView {
@@ -342,6 +373,24 @@ struct SnipCollectionView: View {
         editMode = selecting ? .active : .inactive
         model.selectedSnipIDs = []
         if selecting { model.selectedSnipID = nil }
+    }
+}
+
+private struct PhoneAwareSearchModifier: ViewModifier {
+    let isEnabled: Bool
+    @Binding var text: String
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.searchable(
+                text: $text,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: "Search Snips"
+            )
+        } else {
+            content
+        }
     }
 }
 

@@ -110,6 +110,63 @@ final class SyncedContentSettingsModelTests: XCTestCase {
   }
 
   @MainActor
+  func testTurningSyncOffCopiesTheLibraryBeforeReportingLocalOnly() async {
+    let calls = DeleteEventRecorder()
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      disableAction: { choice in
+        XCTAssertEqual(choice, .refreshThenCopy)
+        await calls.record("disable")
+      }
+    )
+    model.setDisableCompletionAction {
+      XCTAssertEqual(model.mode, .iCloudSync)
+      await calls.record("replace-library")
+    }
+
+    await model.disableICloudSync(.refreshThenCopy)
+
+    let events = await calls.values()
+    XCTAssertEqual(events, ["disable", "replace-library"])
+    XCTAssertEqual(model.mode, .localOnly)
+    XCTAssertEqual(model.state, .ready)
+    XCTAssertEqual(model.statusTitle, "Local Only")
+  }
+
+  @MainActor
+  func testFailedRefreshKeepsSyncOnAndAllowsUsingTheDeviceCopy() async {
+    struct Offline: LocalizedError {
+      var errorDescription: String? { "iCloud is unavailable." }
+    }
+    let calls = DeleteEventRecorder()
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      disableAction: { choice in
+        switch choice {
+        case .refreshThenCopy:
+          throw Offline()
+        case .useCurrentCache:
+          await calls.record("use-cache")
+        }
+      }
+    )
+
+    await model.disableICloudSync(.refreshThenCopy)
+
+    XCTAssertEqual(model.mode, .iCloudSync)
+    XCTAssertEqual(model.statusTitle, "Sync Needs Attention")
+    XCTAssertTrue(model.detail.contains("iCloud is unavailable"))
+    XCTAssertTrue(model.canDisable)
+
+    await model.disableICloudSync(.useCurrentCache)
+
+    let events = await calls.values()
+    XCTAssertEqual(events, ["use-cache"])
+    XCTAssertEqual(model.mode, .localOnly)
+    XCTAssertEqual(model.state, .ready)
+  }
+
+  @MainActor
   func testFailedEnableShowsTheExactCompatibilityErrorAndAllowsRetry() async {
     struct IncompatibleAttachments: LocalizedError {
       var errorDescription: String? {

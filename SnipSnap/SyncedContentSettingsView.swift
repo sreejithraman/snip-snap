@@ -4,9 +4,14 @@ import SwiftUI
 struct SyncedContentSettingsView: View {
     @Bindable var model: SyncedContentSettingsModel
     @State private var confirmsDelete = false
+    @State private var confirmsUsingDeviceCopy = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            Toggle("Sync with iCloud", isOn: syncEnabled)
+                .disabled(!canChangeSync)
+                .accessibilityIdentifier("icloud-sync-toggle")
+
             Label(model.statusTitle, systemImage: statusImage)
                 .font(.headline)
                 .accessibilityIdentifier("sync-status")
@@ -20,6 +25,9 @@ struct SyncedContentSettingsView: View {
             if case .enabling = model.state {
                 ProgressView("Setting up iCloud Sync…")
                     .controlSize(.small)
+            } else if case .disabling = model.state {
+                ProgressView("Making a local copy…")
+                    .controlSize(.small)
             } else if case .deleting = model.state {
                 ProgressView("Deleting synced content…")
                     .controlSize(.small)
@@ -28,11 +36,6 @@ struct SyncedContentSettingsView: View {
                     .controlSize(.small)
             } else if case .encryptedDataReset = model.state {
                 encryptedDataResetChoices
-            } else if model.canEnable {
-                Button("Enable iCloud Sync…") {
-                    Task { await model.enableICloudSync() }
-                }
-                .accessibilityIdentifier("enable-icloud-sync")
             } else if model.canDelete {
                 Button("Delete Synced Content…", role: .destructive) {
                     confirmsDelete = true
@@ -51,6 +54,36 @@ struct SyncedContentSettingsView: View {
         } message: {
             Text("This starts a fresh empty synced collection and removes the old synced snips and attachments from iCloud. This device keeps a local recovery copy. A small control record remains in iCloud to stop old devices from restoring deleted content.")
         }
+        .alert("Use This Mac’s Copy?", isPresented: $confirmsUsingDeviceCopy) {
+            Button("Cancel", role: .cancel) {}
+            Button("Use Mac Copy") {
+                Task { await model.disableICloudSync(.useCurrentCache) }
+            }
+        } message: {
+            Text("Snip Snap could not refresh iCloud. You can keep sync on and try again, or turn it off with the copy already on this Mac. That copy may not include recent changes from other devices. Your iCloud data will not be deleted.")
+        }
+    }
+
+    private var syncEnabled: Binding<Bool> {
+        Binding(
+            get: { model.mode == .iCloudSync },
+            set: { enabled in
+                Task {
+                    if enabled {
+                        await model.enableICloudSync()
+                    } else {
+                        await model.disableICloudSync(.refreshThenCopy)
+                        if model.mode == .iCloudSync, case .failed = model.state {
+                            confirmsUsingDeviceCopy = true
+                        }
+                    }
+                }
+            }
+        )
+    }
+
+    private var canChangeSync: Bool {
+        model.mode == .iCloudSync ? model.canDisable : model.canEnable
     }
 
     private var encryptedDataResetChoices: some View {

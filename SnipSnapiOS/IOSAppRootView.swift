@@ -228,6 +228,7 @@ struct IOSAppRootView: View {
                 )
             }
             settings.setEnableCompletionAction(reloadActiveLibrary)
+            settings.setDisableCompletionAction(reloadActiveLibrary)
             settings.setDeleteCompletionAction(reloadActiveLibrary)
             settings.setEncryptedDataResetCompletionAction(reloadActiveLibrary)
         }
@@ -433,7 +434,9 @@ struct IOSAppRootView: View {
                         LibraryActionsMenu(
                             model: model,
                             importBackup: { isExplainingBackupImport = true },
-                            includesCloudActions: true
+                            includesCloudActions: true,
+                            editSelectedList: model.selectedListID == SnipList.inboxID
+                                ? nil : { sheet = .editList(id: model.selectedListID) }
                         )
                     }
                 }

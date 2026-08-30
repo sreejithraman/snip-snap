@@ -286,6 +286,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 )
             }
             syncedContentSettings.setEnableCompletionAction(reloadActiveLibrary)
+            syncedContentSettings.setDisableCompletionAction(reloadActiveLibrary)
             syncedContentSettings.setDeleteCompletionAction(reloadActiveLibrary)
             syncedContentSettings.setEncryptedDataResetCompletionAction(reloadActiveLibrary)
         }

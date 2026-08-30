@@ -276,6 +276,48 @@ package actor SnipSnapCloudModeLifecycle {
     return syncResult(for: try await coordinator.synchronize())
   }
 
+  package func disableICloudSync(_ choice: SyncedContentDisableChoice) async throws {
+    guard let persistence else { return }
+    if choice == .refreshThenCopy {
+      let result = try await synchronize()
+      if result == .encryptedDataResetRequiresChoice {
+        throw CloudCollectionError.encryptedDataResetRequiresChoice
+      }
+    }
+    let snapshot = try await persistence.snapshot()
+    guard snapshot.activeStore.kind == .iCloudSync,
+      let activeBinding = snapshot.activeStore.namespace
+    else { return }
+    let descriptor = try await descriptor(
+      for: activeBinding,
+      allowsCachedRoles: choice == .useCurrentCache
+    )
+    let namespace = descriptor.namespace(
+      cloudScope: activeBinding.scope,
+      accountLineage: activeBinding.accountLineage
+    )
+    let mode = ICloudSyncModeCoordinator(
+      persistence: persistence,
+      namespace: namespace,
+      textZone: descriptor.metadataZone,
+      payloadZone: descriptor.payloadZone,
+      makeTransport: { [makeRecordTransport] in
+        makeRecordTransport(
+          CloudCollectionSyncContext(
+            namespace: namespace,
+            metadataZone: descriptor.metadataZone,
+            payloadZone: descriptor.payloadZone
+          )
+        )
+      }
+    )
+    let optOutChoice: ICloudSyncOptOutChoice = choice == .refreshThenCopy
+      ? .refreshThenCopy : .useCurrentCacheAfterStaleDataWarning
+    let status = try await mode.optOut(optOutChoice)
+    guard status.state == .off else { throw CloudSyncRetryableError.itemFailure }
+    collectionCoordinator = nil
+  }
+
   package func deleteSyncedContent() async throws -> SyncedContentDeleteOutcome {
     guard let coordinator = try await activeCollectionCoordinator() else {
       throw CloudCollectionError.noActiveCollection
@@ -362,6 +404,54 @@ package actor SnipSnapCloudModeLifecycle {
       operationGate: operationGate
     )
   }
+
+  private func descriptor(
+    for binding: ICloudSyncNamespaceBinding,
+    allowsCachedRoles: Bool
+  ) async throws -> CloudCollectionDescriptor {
+    do {
+      if let remote = try await controlTransport.fetchControl() {
+        try remote.descriptor.validate(ownerName: ownerName, reservedZones: reservedZones)
+        guard namespaceBinding(for: remote.descriptor) == binding else {
+          throw CloudCollectionError.invalidDescriptor
+        }
+        return remote.descriptor
+      }
+    } catch where allowsCachedRoles {
+      return try cachedDescriptor(for: binding)
+    }
+    guard allowsCachedRoles else { throw CloudCollectionError.noActiveCollection }
+    return try cachedDescriptor(for: binding)
+  }
+
+  private func cachedDescriptor(
+    for binding: ICloudSyncNamespaceBinding
+  ) throws -> CloudCollectionDescriptor {
+    let zones = binding.zones.map { CloudZoneID(name: $0.name, ownerName: $0.ownerName) }
+    guard let metadata = zones.first(where: { $0.name.hasPrefix("snips-") }),
+      let payload = zones.first(where: { $0.name.hasPrefix("payloads-") })
+    else { throw CloudCollectionError.invalidDescriptor }
+    let descriptor = CloudCollectionDescriptor(
+      generation: binding.generation,
+      metadataZone: metadata,
+      payloadZone: payload
+    )
+    try descriptor.validate(ownerName: ownerName, reservedZones: reservedZones)
+    return descriptor
+  }
+
+  private func namespaceBinding(
+    for descriptor: CloudCollectionDescriptor
+  ) -> ICloudSyncNamespaceBinding {
+    ICloudSyncNamespaceBinding(
+      scope: cloudScope,
+      accountLineage: accountLineage,
+      generation: descriptor.generation,
+      zones: Set(descriptor.zones.map {
+        ICloudSyncZoneBinding(name: $0.name, ownerName: $0.ownerName)
+      })
+    )
+  }
 }
 
 /// One app-owned lane for normal sync, enabling sync, and deleting synced content.
@@ -376,6 +466,7 @@ public actor SnipSnapCloudSyncSession {
 
   private let synchronizeAction: SynchronizeAction
   private let enableAction: Action
+  private let disableAction: SyncedContentSettingsModel.DisableAction
   private let deleteAction: DeleteAction
   private let libraryAction: LibraryAction
   private let encryptedDataResetAction: EncryptedDataResetAction
@@ -388,6 +479,7 @@ public actor SnipSnapCloudSyncSession {
       syncResult(for: try await coordinator.synchronize())
     }
     enableAction = { _ = try await coordinator.enableSync() }
+    disableAction = { _ in throw CloudCollectionError.noActiveCollection }
     deleteAction = { deleteOutcome(for: try await coordinator.deleteSyncedContent()) }
     encryptedDataResetAction = { choice in
       syncResult(for: try await coordinator.resolveEncryptedDataReset(choice))
@@ -406,6 +498,9 @@ public actor SnipSnapCloudSyncSession {
   package init(
     synchronize: @escaping SynchronizeAction,
     enable: @escaping Action,
+    disable: @escaping SyncedContentSettingsModel.DisableAction = { _ in
+      throw CloudCollectionError.noActiveCollection
+    },
     delete: @escaping DeleteAction,
     activeLibrary: @escaping LibraryAction,
     resolveEncryptedDataReset: @escaping EncryptedDataResetAction = { _ in
@@ -414,6 +509,7 @@ public actor SnipSnapCloudSyncSession {
   ) {
     synchronizeAction = synchronize
     enableAction = enable
+    disableAction = disable
     deleteAction = delete
     libraryAction = activeLibrary
     encryptedDataResetAction = resolveEncryptedDataReset
@@ -423,6 +519,9 @@ public actor SnipSnapCloudSyncSession {
     try await synchronizeAction()
   }
   public func enableICloudSync() async throws { try await enableAction() }
+  public func disableICloudSync(_ choice: SyncedContentDisableChoice) async throws {
+    try await disableAction(choice)
+  }
   package func enableCollectionIfNeeded() async throws { try await enableAction() }
   public func deleteSyncedContent() async throws -> SyncedContentDeleteOutcome {
     try await deleteAction()
@@ -498,6 +597,7 @@ public enum SnipSnapCloudAppAssembly {
     let session = SnipSnapCloudSyncSession(
       synchronize: { try await lifecycle.synchronize() },
       enable: { try await lifecycle.enableICloudSync() },
+      disable: { choice in try await lifecycle.disableICloudSync(choice) },
       delete: { try await lifecycle.deleteSyncedContent() },
       activeLibrary: { try await lifecycle.activeLibrary() },
       resolveEncryptedDataReset: { choice in
@@ -509,6 +609,7 @@ public enum SnipSnapCloudAppAssembly {
         syncedContentSettings: SyncedContentSettingsModel(
           mode: .localOnly,
           enableAction: { try await session.enableICloudSync() },
+          disableAction: { choice in try await session.disableICloudSync(choice) },
           encryptedDataResetAction: { choice in
             resolutionOutcome(for: try await session.resolveEncryptedDataReset(choice))
           }
@@ -520,6 +621,7 @@ public enum SnipSnapCloudAppAssembly {
       syncedContentSettings: SyncedContentSettingsModel(
         mode: .iCloudSync,
         enableAction: { try await session.enableICloudSync() },
+        disableAction: { choice in try await session.disableICloudSync(choice) },
         deleteAction: { try await session.deleteSyncedContent() },
         encryptedDataResetAction: { choice in
           resolutionOutcome(for: try await session.resolveEncryptedDataReset(choice))
@@ -551,6 +653,7 @@ public enum SnipSnapCloudAppAssembly {
     let session = SnipSnapCloudSyncSession(
       synchronize: { try await reset.synchronize() },
       enable: { try await reset.enableSync() },
+      disable: { choice in try await reset.disableICloudSync(choice) },
       delete: { try await reset.deleteSyncedContent() },
       activeLibrary: { try await reset.activeLibrary() },
       resolveEncryptedDataReset: { choice in
@@ -561,6 +664,7 @@ public enum SnipSnapCloudAppAssembly {
       syncedContentSettings: SyncedContentSettingsModel(
         mode: .iCloudSync,
         enableAction: { try await session.enableICloudSync() },
+        disableAction: { choice in try await session.disableICloudSync(choice) },
         deleteAction: { try await session.deleteSyncedContent() },
         encryptedDataResetAction: { choice in
           resolutionOutcome(for: try await session.resolveEncryptedDataReset(choice))
@@ -595,6 +699,7 @@ public enum SnipSnapCloudAppAssembly {
     let session = SnipSnapCloudSyncSession(
       synchronize: { try await lifecycle.synchronize() },
       enable: { try await lifecycle.enableICloudSync() },
+      disable: { choice in try await lifecycle.disableICloudSync(choice) },
       delete: { try await lifecycle.deleteSyncedContent() },
       activeLibrary: { try await lifecycle.activeLibrary() },
       resolveEncryptedDataReset: { choice in
@@ -604,7 +709,8 @@ public enum SnipSnapCloudAppAssembly {
     return SnipSnapCloudAppServices(
       syncedContentSettings: SyncedContentSettingsModel(
         mode: .localOnly,
-        enableAction: { try await session.enableICloudSync() }
+        enableAction: { try await session.enableICloudSync() },
+        disableAction: { choice in try await session.disableICloudSync(choice) }
       ),
       syncSession: session
     )
@@ -658,6 +764,27 @@ private actor SimulatedCloudCollectionReset {
   func enableSync() async throws {
     let coordinator = try await prepare()
     _ = try await coordinator.enableSync()
+  }
+
+  func disableICloudSync(_ choice: SyncedContentDisableChoice) async throws {
+    _ = try await prepare()
+    let namespace = old.namespace(
+      cloudScope: "private",
+      accountLineage: "ui-test-account"
+    )
+    let mode = ICloudSyncModeCoordinator(
+      persistence: persistence,
+      namespace: namespace,
+      textZone: old.metadataZone,
+      payloadZone: old.payloadZone,
+      makeTransport: { [server] in
+        FakeCloudRecordTransport(server: server, namespace: namespace)
+      }
+    )
+    let mapped: ICloudSyncOptOutChoice = choice == .refreshThenCopy
+      ? .refreshThenCopy : .useCurrentCacheAfterStaleDataWarning
+    let status = try await mode.optOut(mapped)
+    guard status.state == .off else { throw CloudSyncRetryableError.itemFailure }
   }
 
   func deleteSyncedContent() async throws -> SyncedContentDeleteOutcome {

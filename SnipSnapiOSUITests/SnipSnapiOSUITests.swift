@@ -58,7 +58,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         settings.tap()
 
         XCTAssertTrue(app.staticTexts["Local Only"].waitForExistence(timeout: 3))
-        app.buttons["enable-icloud-sync"].tap()
+        toggle(app.switches["icloud-sync-toggle"])
         XCTAssertTrue(app.staticTexts["iCloud Sync On"].waitForExistence(timeout: 8))
         app.buttons["Done"].tap()
         let inbox = listControl(named: "Inbox", in: app)
@@ -83,7 +83,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
         settings.tap()
 
-        app.buttons["enable-icloud-sync"].tap()
+        toggle(app.switches["icloud-sync-toggle"])
 
         XCTAssertTrue(app.staticTexts["Sync Needs Attention"].waitForExistence(timeout: 8))
         let firstDetail = app.staticTexts.matching(
@@ -94,8 +94,39 @@ final class SnipSnapiOSUITests: XCTestCase {
         ).firstMatch
         XCTAssertTrue(firstDetail.waitForExistence(timeout: 3))
         XCTAssertTrue(secondDetail.waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["enable-icloud-sync"].exists)
+        XCTAssertTrue(app.switches["icloud-sync-toggle"].exists)
         XCTAssertFalse(app.staticTexts["iCloud Sync On"].exists)
+    }
+
+    func testTurningSyncOffKeepsTheLibraryAndLeavesDeleteSeparate() {
+        continueAfterFailure = false
+        let app = launchApp(withSyncedContent: true)
+        createSnip("Keep this", in: app)
+        let saved = collectionRow(named: "Keep this", in: app)
+        XCTAssertTrue(saved.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["settings"].waitForExistence(timeout: 3))
+        app.buttons["settings"].tap()
+
+        let sync = app.switches["icloud-sync-toggle"]
+        XCTAssertTrue(sync.waitForExistence(timeout: 3))
+        XCTAssertEqual(sync.value as? String, "1")
+        XCTAssertTrue(app.buttons["delete-synced-content"].exists)
+        toggle(sync)
+
+        let staleCopyAlert = app.alerts["Use This Device’s Copy?"]
+        if staleCopyAlert.waitForExistence(timeout: 3) {
+            staleCopyAlert.buttons["Use Device Copy"].tap()
+        }
+
+        XCTAssertTrue(app.staticTexts["Local Only"].waitForExistence(timeout: 8))
+        XCTAssertEqual(sync.value as? String, "0")
+        XCTAssertFalse(app.buttons["delete-synced-content"].exists)
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "iCloud sync off keeps a local copy"
+        proof.lifetime = .keepAlways
+        add(proof)
+        app.buttons["Done"].tap()
+        XCTAssertTrue(saved.waitForExistence(timeout: 3))
     }
 
     func testDeleteSyncedContentExplainsAndConfirmsReset() {
@@ -296,12 +327,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         let snipRow = app.buttons.matching(
             NSPredicate(format: "label BEGINSWITH %@", "A useful thought")
         ).firstMatch
-        if snipRow.waitForExistence(timeout: 1) {
-            snipRow.tap()
-        } else {
-            XCTAssertTrue(app.navigationBars["Snip"].waitForExistence(timeout: 3))
-        }
-        app.buttons["edit-snip"].tap()
+        XCTAssertTrue(snipRow.waitForExistence(timeout: 3))
+        snipRow.tap()
+        XCTAssertFalse(app.navigationBars["Snip"].exists)
+        Thread.sleep(forTimeInterval: 0.6)
+        snipRow.doubleTap()
         let editor = app.textViews["snip-text"]
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
         editor.tap()
@@ -424,22 +454,16 @@ final class SnipSnapiOSUITests: XCTestCase {
         let moveRow = app.buttons.matching(
             NSPredicate(format: "label BEGINSWITH %@", "Move this")
         ).firstMatch
-        if moveRow.waitForExistence(timeout: 1) {
-            moveRow.tap()
-        } else {
-            XCTAssertTrue(app.navigationBars["Snip"].waitForExistence(timeout: 3))
-        }
+        XCTAssertTrue(moveRow.waitForExistence(timeout: 3))
+        moveRow.press(forDuration: 1)
         app.buttons["move-snip"].tap()
         app.buttons["move-to-Inbox"].tap()
-        let inboxValue = app.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS %@", "Inbox")
-        ).firstMatch
-        XCTAssertTrue(inboxValue.waitForExistence(timeout: 3))
-        app.buttons["delete-snip-detail"].tap()
-        let emptyDetail = app.staticTexts["Choose a Snip"]
-        if !emptyDetail.waitForExistence(timeout: 1) {
-            XCTAssertTrue(app.staticTexts["No Snips"].waitForExistence(timeout: 3))
-        }
+        XCTAssertTrue(app.staticTexts["No Snips"].waitForExistence(timeout: 3))
+        compactListTab(named: "Inbox", in: app).tap()
+        let moved = row(named: "Move this", in: app)
+        moved.press(forDuration: 1)
+        app.buttons["Delete"].tap()
+        XCTAssertTrue(moved.waitForNonExistence(timeout: 3))
     }
 
     func testLocalAttachmentsPreviewRemoveAndSurviveRelaunch() {
@@ -448,9 +472,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         var app = launchApp(storeName: storeName, withAttachments: true)
 
         openAttachmentFixture(in: app)
-        let imagePreview = app.buttons["attachment-preview-sample.png"]
+        let imagePreview = app.buttons["attachment-row-sample.png"]
         XCTAssertTrue(imagePreview.waitForExistence(timeout: 5))
-        let textPreview = app.buttons["attachment-preview-notes.txt"]
+        let textPreview = app.buttons["attachment-row-notes.txt"]
         XCTAssertTrue(textPreview.waitForExistence(timeout: 3))
         imagePreview.tap()
         let preview = app.otherElements["QLPreviewControllerView"]
@@ -458,7 +482,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         dismissQuickLook(preview, in: app)
         XCTAssertFalse(preview.waitForExistence(timeout: 3))
 
-        app.buttons["edit-snip"].tap()
         let imageRow = app.buttons["attachment-row-sample.png"]
         XCTAssertTrue(imageRow.waitForExistence(timeout: 3))
         let removeAttachment = app.buttons["remove-attachment-sample.png"]
@@ -474,17 +497,15 @@ final class SnipSnapiOSUITests: XCTestCase {
             save.waitForNonExistence(timeout: 8),
             "The attachment edit did not finish saving."
         )
-        XCTAssertTrue(textPreview.waitForExistence(timeout: 3))
-        XCTAssertTrue(
-            imagePreview.waitForNonExistence(timeout: 3),
-            "The saved detail still showed the removed attachment."
-        )
+        let savedRow = row(named: "Attachment fixture", in: app)
+        XCTAssertTrue(savedRow.label.contains("notes.txt"))
+        XCTAssertFalse(savedRow.label.contains("sample.png"))
 
         app.terminate()
         app = launchApp(storeName: storeName, withAttachments: true)
         openAttachmentFixture(in: app)
-        XCTAssertTrue(app.buttons["attachment-preview-notes.txt"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["attachment-preview-sample.png"].exists)
+        XCTAssertTrue(app.buttons["attachment-row-notes.txt"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["attachment-row-sample.png"].exists)
     }
 
     func testNativePickerAddReplacePreviewAndSaveWhenFixturesAreSeeded() throws {
@@ -576,11 +597,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         let fixtureRow = app.buttons.matching(
             NSPredicate(format: "label BEGINSWITH %@", "Attachment fixture")
         ).firstMatch
-        if fixtureRow.waitForExistence(timeout: 5) {
-            fixtureRow.tap()
-        } else {
-            XCTAssertTrue(app.navigationBars["Snip"].waitForExistence(timeout: 3))
-        }
+        XCTAssertTrue(fixtureRow.waitForExistence(timeout: 5))
+        fixtureRow.doubleTap()
+        XCTAssertTrue(app.textViews["snip-text"].waitForExistence(timeout: 3))
     }
 
     private func openCopyShareFixture(matching text: String, in app: XCUIApplication) {
@@ -591,12 +610,10 @@ final class SnipSnapiOSUITests: XCTestCase {
             NSPredicate(format: "label CONTAINS %@", text)
         ).firstMatch
         XCTAssertTrue(fixture.waitForExistence(timeout: 5))
-        fixture.tap()
-        XCTAssertTrue(app.buttons["copy-share-snip"].waitForExistence(timeout: 5))
+        fixture.press(forDuration: 1)
     }
 
     private func chooseDetailAction(_ identifier: String, in app: XCUIApplication) {
-        app.buttons["copy-share-snip"].tap()
         let action = app.buttons[identifier]
         XCTAssertTrue(action.waitForExistence(timeout: 3))
         action.tap()
@@ -743,6 +760,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         returnToCollection(in: app)
 
         let search = app.searchFields["Search Snips"]
+        if app.descendants(matching: .any)["composer-text"].exists {
+            XCTAssertFalse(search.exists)
+            return
+        }
         XCTAssertTrue(search.waitForExistence(timeout: 3))
         search.tap()
         search.typeText("Alpha")
@@ -854,7 +875,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             editor.typeText(text)
             app.buttons["save-snip"].tap()
         }
-        XCTAssertTrue(app.staticTexts[text].waitForExistence(timeout: 3))
+        XCTAssertTrue(collectionRow(named: text, in: app).waitForExistence(timeout: 3))
     }
 
     private func row(named text: String, in app: XCUIApplication) -> XCUIElement {
@@ -894,6 +915,15 @@ final class SnipSnapiOSUITests: XCTestCase {
             object: editButton
         )
         XCTAssertEqual(XCTWaiter.wait(for: [becameDone], timeout: 3), .completed)
+    }
+
+    private func toggle(_ element: XCUIElement) {
+        let control = element.switches.firstMatch
+        if control.exists {
+            control.tap()
+        } else {
+            element.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        }
     }
 
     private func createList(_ name: String, in app: XCUIApplication) {

@@ -174,6 +174,55 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertEqual(foreground, .contentUpdated)
   }
 
+  func testModeLifecycleTurnsSyncOffWithoutDeletingCloudContent() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudModeDisable-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let source = try JSONSnipLibrary(
+      fileURL: root.appendingPathComponent("source.json", isDirectory: false)
+    )
+    _ = try await source.perform(
+      .add(
+        content: "keep this after turning sync off",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [],
+        requestID: UUID(),
+        now: .distantPast
+      ),
+      sortedBy: .manual
+    )
+    let active = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    let server = FakeCloudServer()
+    let lifecycle = SnipSnapCloudModeLifecycle(
+      rootURL: root.appendingPathComponent("SyncMode", isDirectory: true),
+      sourceLibrary: source,
+      syncModeStore: nil,
+      cloudScope: "private",
+      accountLineage: "account-a",
+      ownerName: "owner",
+      controlTransport: FakeCloudControlTransport(server: server),
+      makeRecordTransport: { context in
+        FakeCloudRecordTransport(server: server, namespace: context.namespace)
+      },
+      makeDescriptor: { active }
+    )
+
+    try await lifecycle.enableICloudSync()
+    try await lifecycle.disableICloudSync(.refreshThenCopy)
+
+    let local = try await lifecycle.activeLibrary().library.checkedSnapshot(sortedBy: .manual)
+    let manifest = SyncModeActivationManifestReader.activeCloudNamespace(
+      atSyncModeRootURL: root.appendingPathComponent("SyncMode", isDirectory: true)
+    )
+    let cloudControl = await server.controlDescriptor()
+    XCTAssertEqual(local.snips.map(\.content), ["keep this after turning sync off"])
+    XCTAssertNil(manifest)
+    XCTAssertEqual(cloudControl, active)
+  }
+
   func testExplicitEnableStagesConflictZonesBeforeCleanupAndRetriesOnForeground() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudModeConflict-\(UUID().uuidString)")
