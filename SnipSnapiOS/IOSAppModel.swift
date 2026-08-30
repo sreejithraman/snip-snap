@@ -114,23 +114,29 @@ final class IOSAppModel {
         _ library: any SnipLibrary,
         recoveryScope: SnipRecoveryScope?
     ) async {
-        self.library = library
-        self.recoveryScope = recoveryScope
-        selectedSnipID = nil
-        await load()
+        await withSerializedMutation {
+            await clearUndoHistoryAndReleaseAttachments()
+            self.library = library
+            self.recoveryScope = recoveryScope
+            selectedSnipID = nil
+            await loadUnlocked()
+        }
     }
 
     @discardableResult
     func resolveRecovery(_ id: UUID, choice: SnipRecoveryChoice) async -> Bool {
-        guard let recoveryScope else { return false }
-        do {
-            apply(try await library.resolveRecovery(id, in: recoveryScope, choice: choice))
-            await loadRecoveries()
-            return true
-        } catch {
-            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            await load()
-            return false
+        await withSerializedMutation {
+            guard let recoveryScope else { return false }
+            do {
+                apply(try await library.resolveRecovery(id, in: recoveryScope, choice: choice))
+                await loadRecoveries()
+                return true
+            } catch {
+                errorMessage =
+                    (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                await loadUnlocked()
+                return false
+            }
         }
     }
 
@@ -631,6 +637,18 @@ final class IOSAppModel {
                 sortedBy: sortMode
             )
             apply(update.snapshot)
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    private func clearUndoHistoryAndReleaseAttachments() async {
+        undoHistory = IOSUndoHistory()
+        do {
+            _ = try await library.perform(
+                .pruneAttachments(retaining: []),
+                sortedBy: sortMode
+            )
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }

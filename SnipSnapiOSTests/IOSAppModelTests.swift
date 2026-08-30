@@ -35,6 +35,107 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(model.recoverySnapshot.promotedSnips, [recovered])
     }
 
+    func testLocalToCloudReplacementWaitsForAnEditAndClearsOldUndoRetention() async throws {
+        let attachmentID = UUID()
+        let attachment = try testAttachment(id: attachmentID, fileName: "local.txt")
+        let localSnip = Snip(
+            content: "Local content",
+            origin: .quickEntry,
+            attachments: [attachment]
+        )
+        let localURL = URL(fileURLWithPath: "/tmp/local.txt")
+        let localLibrary = ModelTestLibrary(
+            snips: [localSnip],
+            attachmentURLs: [attachmentID: localURL],
+            suspendsFirstCommand: true
+        )
+        let cloudSnip = Snip(content: "Cloud content", origin: .quickEntry)
+        let cloudLibrary = ModelTestLibrary(snips: [cloudSnip])
+        let model = IOSAppModel(
+            library: localLibrary,
+            initialSnapshot: SnipLibrarySnapshot(
+                snips: [localSnip],
+                lists: [.inbox],
+                attachmentURLs: [attachmentID: localURL]
+            )
+        )
+
+        let deletion = Task { await model.deleteSnip(id: localSnip.id) }
+        await localLibrary.waitUntilFirstCommandStarts()
+        let replacement = Task {
+            await model.replaceLibrary(cloudLibrary, recoveryScope: nil)
+        }
+        await localLibrary.resumeFirstCommand()
+        let deleted = await deletion.value
+        XCTAssertTrue(deleted)
+        await replacement.value
+
+        XCTAssertEqual(model.snips, [cloudSnip])
+        XCTAssertFalse(model.canUndo)
+        let localRetentionCalls = await localLibrary.retentionCalls()
+        XCTAssertEqual(localRetentionCalls.last, Set<UUID>())
+        let cloudRetentionCalls = await cloudLibrary.retentionCalls()
+        XCTAssertTrue(cloudRetentionCalls.allSatisfy { !$0.contains(attachmentID) })
+    }
+
+    func testResetReplacementWaitsForAnEditAndDropsItsUndoEntry() async {
+        let localLibrary = ModelTestLibrary(suspendsFirstCommand: true)
+        let resetLibrary = ModelTestLibrary()
+        let model = IOSAppModel(library: localLibrary)
+
+        let creation = Task {
+            await model.createSnip(content: "In flight", in: SnipList.inboxID)
+        }
+        await localLibrary.waitUntilFirstCommandStarts()
+        let replacement = Task {
+            await model.replaceLibrary(resetLibrary, recoveryScope: nil)
+        }
+        await localLibrary.resumeFirstCommand()
+        let created = await creation.value
+        XCTAssertTrue(created)
+        await replacement.value
+
+        XCTAssertTrue(model.snips.isEmpty)
+        XCTAssertFalse(model.canUndo)
+    }
+
+    func testRecoveryResolutionWaitsForAnInFlightEdit() async {
+        let recoveredValue = Snip(content: "Recovered", origin: .quickEntry)
+        let recovered = RecoveredSnip(
+            id: recoveredValue.id,
+            currentSnipID: recoveredValue.id,
+            recovered: recoveredValue,
+            conflictingFields: [.text]
+        )
+        let library = ModelTestLibrary(
+            recovery: SnipRecoverySnapshot(pendingSnips: [recovered]),
+            suspendsFirstCommand: true
+        )
+        let model = IOSAppModel(
+            library: library,
+            recoveryScope: SnipRecoveryScope("cloud")
+        )
+
+        let creation = Task {
+            await model.createSnip(content: "In flight", in: SnipList.inboxID)
+        }
+        await library.waitUntilFirstCommandStarts()
+        let resolution = Task {
+            await model.resolveRecovery(recovered.id, choice: .keepCurrent)
+        }
+        try? await Task.sleep(for: .milliseconds(20))
+        let recoveryStartedWhileEditWasPaused = await library.didRecoveryStart()
+        await library.resumeFirstCommand()
+        let created = await creation.value
+        let resolved = await resolution.value
+        XCTAssertTrue(created)
+        XCTAssertTrue(resolved)
+
+        XCTAssertFalse(recoveryStartedWhileEditWasPaused)
+        let maximumConcurrentOperations = await library.maximumConcurrentOperations()
+        XCTAssertEqual(maximumConcurrentOperations, 1)
+    }
+
     func testExplicitSyncEnableReplacesTheVisibleLibraryBeforeReportingOn() async {
         let oldLibrary = ModelTestLibrary(
             snips: [Snip(content: "Local before enable", origin: .quickEntry)]
@@ -445,6 +546,8 @@ final class IOSAppModelTests: XCTestCase {
         await coordinator.importPendingAndReload()
         let foregroundCallCount = await probe.callCount()
         XCTAssertEqual(foregroundCallCount, 2)
+    }
+
     func testCopySharePayloadsCoverTextFileMixedMultiAndUnavailableCases() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SnipSnapCopyPayload-\(UUID().uuidString)", isDirectory: true)
@@ -965,7 +1068,8 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertTrue(deletedList)
         XCTAssertEqual(model.selectedListID, SnipList.inboxID)
         XCTAssertEqual(model.snips.first?.listID, SnipList.inboxID)
-        XCTAssertEqual(model.lists.first, .inbox)
+        XCTAssertEqual(model.lists.first?.id, SnipList.inboxID)
+        XCTAssertEqual(model.lists.first?.name, SnipList.inbox.name)
     }
 
     func testRecoveryReviewLoadsScopedAttentionRefreshesCurrentAndResolves() async throws {
@@ -1576,6 +1680,11 @@ private actor ModelTestLibrary: SnipLibrary {
     private var resolvedChoices: [SnipRecoveryChoice] = []
     private var attachmentRetentionCalls: [Set<UUID>] = []
     private let commandDelay: Duration?
+    private var suspendsFirstCommand: Bool
+    private var firstCommandStarted = false
+    private var firstCommandStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var firstCommandContinuation: CheckedContinuation<Void, Never>?
+    private var recoveryStarted = false
     private var activeCommandCount = 0
     private var maximumActiveCommandCount = 0
 
@@ -1583,12 +1692,14 @@ private actor ModelTestLibrary: SnipLibrary {
         snips: [Snip] = [],
         recovery: SnipRecoverySnapshot = .empty,
         attachmentURLs: [UUID: URL] = [:],
-        commandDelay: Duration? = nil
+        commandDelay: Duration? = nil,
+        suspendsFirstCommand: Bool = false
     ) {
         self.snips = snips
         self.recovery = recovery
         self.attachmentURLs = attachmentURLs
         self.commandDelay = commandDelay
+        self.suspendsFirstCommand = suspendsFirstCommand
     }
 
     func addedAttachmentURLs() -> [URL] {
@@ -1617,7 +1728,11 @@ private actor ModelTestLibrary: SnipLibrary {
         _ id: UUID,
         in scope: SnipRecoveryScope,
         choice: SnipRecoveryChoice
-    ) throws -> SnipLibrarySnapshot {
+    ) async throws -> SnipLibrarySnapshot {
+        recoveryStarted = true
+        activeCommandCount += 1
+        maximumActiveCommandCount = max(maximumActiveCommandCount, activeCommandCount)
+        defer { activeCommandCount -= 1 }
         _ = scope
         guard recovery.pendingSnips.contains(where: { $0.id == id })
             || recovery.pendingLists.contains(where: { $0.id == id })
@@ -1631,6 +1746,20 @@ private actor ModelTestLibrary: SnipLibrary {
         attachmentRetentionCalls
     }
 
+    func waitUntilFirstCommandStarts() async {
+        if firstCommandStarted { return }
+        await withCheckedContinuation { firstCommandStartWaiters.append($0) }
+    }
+
+    func resumeFirstCommand() {
+        firstCommandContinuation?.resume()
+        firstCommandContinuation = nil
+    }
+
+    func didRecoveryStart() -> Bool {
+        recoveryStarted
+    }
+
     func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
         makeSnapshot(sortMode: sortMode)
     }
@@ -1642,12 +1771,23 @@ private actor ModelTestLibrary: SnipLibrary {
         activeCommandCount += 1
         maximumActiveCommandCount = max(maximumActiveCommandCount, activeCommandCount)
         defer { activeCommandCount -= 1 }
+        if suspendsFirstCommand {
+            suspendsFirstCommand = false
+            firstCommandStarted = true
+            firstCommandStartWaiters.forEach { $0.resume() }
+            firstCommandStartWaiters.removeAll()
+            await withCheckedContinuation { firstCommandContinuation = $0 }
+        }
         if let commandDelay { try? await Task.sleep(for: commandDelay) }
         let outcome = try apply(command)
         return SnipLibraryUpdate(snapshot: makeSnapshot(sortMode: sortMode), outcome: outcome)
     }
 
     func maximumConcurrentCommands() -> Int {
+        maximumActiveCommandCount
+    }
+
+    func maximumConcurrentOperations() -> Int {
         maximumActiveCommandCount
     }
 

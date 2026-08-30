@@ -369,7 +369,7 @@ final class IOSCopyShareCoordinator {
 
     private func write(_ items: [IOSCopyItem], status: String) {
         guard pasteboard.write(items) else {
-            errorMessage = "Snip Snap could not copy those items."
+            errorMessage = "Snip Snap could not copy that content."
             return
         }
         errorMessage = nil

@@ -183,6 +183,8 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         app.buttons["keep-account-cache"].tap()
         XCTAssertFalse(notice.waitForExistence(timeout: 1))
+    }
+
     func testCopiesTextOnlySnip() {
         continueAfterFailure = false
         let app = launchApp(withCopyShareFixtures: true)

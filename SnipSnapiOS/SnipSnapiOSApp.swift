@@ -291,7 +291,10 @@ private actor RecoveryUITestSnipLibrary: SnipLibrary {
         _ command: SnipLibraryCommand,
         sortedBy sortMode: SnipSortMode
     ) throws -> SnipLibraryUpdate {
-        throw SnipLibraryError.storeUnavailable
+        guard case .pruneAttachments = command else {
+            throw SnipLibraryError.storeUnavailable
+        }
+        return SnipLibraryUpdate(snapshot: snapshot(sortedBy: sortMode), outcome: .none)
     }
 
     func recoverySnapshot(in scope: SnipRecoveryScope) -> SnipRecoverySnapshot {
