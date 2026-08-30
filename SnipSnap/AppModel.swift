@@ -166,7 +166,7 @@ final class AppModel: ObservableObject {
         var prepared: [UUID: URL] = [:]
         for attachment in uniqueAttachments(in: attachments) {
             if let cached = attachmentURLs[attachment.id],
-               FileManager.default.fileExists(atPath: cached.path) {
+               isAvailablePreparedAttachment(cached) {
                 prepared[attachment.id] = cached
                 continue
             }
@@ -184,11 +184,30 @@ final class AppModel: ObservableObject {
         return prepared
     }
 
+    func prepareAttachmentPreview(
+        _ attachments: [SnipAttachment],
+        selected: SnipAttachment
+    ) async throws -> (urls: [URL], selectedURL: URL)? {
+        let prepared = try await prepareAttachments(attachments, for: .preview)
+        let urls = uniqueAttachments(in: attachments).compactMap { prepared[$0.id] }
+        guard let selectedURL = prepared[selected.id] else { return nil }
+        return (urls, selectedURL)
+    }
+
     private func uniqueAttachments(
         in attachments: [SnipAttachment]
     ) -> [SnipAttachment] {
         var seen: Set<UUID> = []
         return attachments.filter { seen.insert($0.id).inserted }
+    }
+
+    private func isAvailablePreparedAttachment(_ url: URL) -> Bool {
+        guard FileManager.default.isReadableFile(atPath: url.path) else { return false }
+        guard let values = try? url.resourceValues(forKeys: [
+            .isRegularFileKey,
+            .isSymbolicLinkKey,
+        ]) else { return false }
+        return values.isRegularFile == true && values.isSymbolicLink != true
     }
 
     @discardableResult

@@ -772,15 +772,11 @@ struct SnipListView: View {
     ) {
         Task { @MainActor in
             do {
-                let prepared = try await model.prepareAttachments(
-                    [selected],
-                    for: .preview
-                )
-                let urls = attachments.compactMap {
-                    prepared[$0.id] ?? model.attachmentURL(for: $0)
-                }
-                guard let selectedURL = prepared[selected.id] else { return }
-                onPreviewAttachments(urls, selectedURL)
+                guard let preview = try await model.prepareAttachmentPreview(
+                    attachments,
+                    selected: selected
+                ) else { return }
+                onPreviewAttachments(preview.urls, preview.selectedURL)
             } catch {
                 model.presentedError = error.localizedDescription
             }

@@ -1008,6 +1008,103 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testPreparingInvalidCachedPathsDownloadsReadableRegularFiles() async throws {
+        let store = try storeURL()
+        let root = store.deletingLastPathComponent()
+        let directory = root.appendingPathComponent("cached-directory")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let symlinkTarget = root.appendingPathComponent("symlink-target.md")
+        try Data("Target".utf8).write(to: symlinkTarget)
+        let symlink = root.appendingPathComponent("cached-symlink.md")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: symlinkTarget)
+        let sourceOne = root.appendingPathComponent("one.md")
+        let sourceTwo = root.appendingPathComponent("two.md")
+        try Data("One".utf8).write(to: sourceOne)
+        try Data("Two".utf8).write(to: sourceTwo)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let added = try await repository.add(
+            content: "Invalid cached paths",
+            origin: .quickEntry,
+            attachmentURLs: [sourceOne, sourceTwo]
+        )
+        let snip = try XCTUnwrap(added)
+        let first = try XCTUnwrap(snip.attachments.first)
+        let second = try XCTUnwrap(snip.attachments.last)
+        let downloadedOne = root.appendingPathComponent("downloaded-one.md")
+        let downloadedTwo = root.appendingPathComponent("downloaded-two.md")
+        try Data("Ready one".utf8).write(to: downloadedOne)
+        try Data("Ready two".utf8).write(to: downloadedTwo)
+        let handler = MacOptionalCloudSyncHandlerProbe(urls: [
+            first.id: downloadedOne,
+            second.id: downloadedTwo,
+        ])
+        let model = AppModel(
+            library: InMemorySnipLibrary(
+                snips: [snip],
+                attachmentURLs: [first.id: directory, second.id: symlink]
+            ),
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        await model.reload()
+
+        let prepared = try await model.prepareAttachments(snip.attachments, for: .preview)
+        let requests = await handler.preparationRequests()
+
+        XCTAssertEqual(prepared, [first.id: downloadedOne, second.id: downloadedTwo])
+        XCTAssertEqual(requests.map(\.id), [first.id, second.id])
+    }
+
+    @MainActor
+    func testPreparingPreviewDownloadsEveryAttachmentForQuickLookNavigation() async throws {
+        let store = try storeURL()
+        let root = store.deletingLastPathComponent()
+        let sourceOne = root.appendingPathComponent("preview-one.md")
+        let sourceTwo = root.appendingPathComponent("preview-two.md")
+        try Data("One".utf8).write(to: sourceOne)
+        try Data("Two".utf8).write(to: sourceTwo)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let added = try await repository.add(
+            content: "Preview all",
+            origin: .quickEntry,
+            attachmentURLs: [sourceOne, sourceTwo]
+        )
+        let snip = try XCTUnwrap(added)
+        let first = try XCTUnwrap(snip.attachments.first)
+        let second = try XCTUnwrap(snip.attachments.last)
+        let downloadedOne = root.appendingPathComponent("ready-one.md")
+        let downloadedTwo = root.appendingPathComponent("ready-two.md")
+        try Data("Ready one".utf8).write(to: downloadedOne)
+        try Data("Ready two".utf8).write(to: downloadedTwo)
+        let handler = MacOptionalCloudSyncHandlerProbe(urls: [
+            first.id: downloadedOne,
+            second.id: downloadedTwo,
+        ])
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [snip]),
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        await model.reload()
+
+        let preview = try await model.prepareAttachmentPreview(
+            snip.attachments,
+            selected: second
+        )
+        let requests = await handler.preparationRequests()
+
+        XCTAssertEqual(preview?.urls, [downloadedOne, downloadedTwo])
+        XCTAssertEqual(preview?.selectedURL, downloadedTwo)
+        XCTAssertEqual(
+            requests,
+            [
+                MacAttachmentPreparationRequest(id: first.id, use: .preview),
+                MacAttachmentPreparationRequest(id: second.id, use: .preview),
+            ]
+        )
+    }
+
+    @MainActor
     func testPreparingRemoteAttachmentsMapsIntentsAndDeduplicatesIDs() async throws {
         let store = try storeURL()
         let source = store.deletingLastPathComponent().appendingPathComponent("remote.md")
