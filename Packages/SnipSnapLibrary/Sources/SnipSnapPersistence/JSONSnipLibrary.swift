@@ -115,10 +115,8 @@ public actor JSONSnipLibrary: SnipLibrary {
         } catch {
             throw SnipLibraryError.invalidStore
         }
-        Self.removeUnreferencedAttachmentDirectories(
-            at: attachmentRootURL,
-            keeping: Set(snips.flatMap(\.attachments).map(\.relativePath))
-        )
+        // Durable Undo or Redo may be the only reference to an attachment.
+        // SnipLibraryDeviceActions prunes after it reconciles that journal.
     }
 
     private init(unavailableAt fileURL: URL) {
@@ -256,6 +254,7 @@ public actor JSONSnipLibrary: SnipLibrary {
                     let liveIDs = Set(currentSnips.flatMap(\.attachments).map(\.id))
                         .union(retainedIDs)
                     let retainedPaths = Set(liveIDs.compactMap { self.knownAttachmentPaths[$0] })
+                        .union(retainedIDs.map { "\($0.uuidString)/" })
                     self.removeUnreferencedAttachments(
                         currentSnips: currentSnips,
                         keepingAdditional: retainedPaths

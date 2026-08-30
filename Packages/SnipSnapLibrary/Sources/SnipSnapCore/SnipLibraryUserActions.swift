@@ -65,7 +65,9 @@ public actor DirectSnipLibraryUserActions: SnipLibraryUserActions {
     sortedBy sortMode: SnipSortMode
   ) async throws -> SnipLibraryUpdate {
     _ = name
-    return try await library.perform(command, sortedBy: sortMode)
+    let update = try await library.perform(command, sortedBy: sortMode)
+    _ = try? await library.perform(.pruneAttachments(retaining: []), sortedBy: sortMode)
+    return update
   }
 
   public func previewImport(backupURL: URL) async throws -> SnipImportPreview {
@@ -78,11 +80,13 @@ public actor DirectSnipLibraryUserActions: SnipLibraryUserActions {
     sortedBy sortMode: SnipSortMode
   ) async throws -> SnipImportResult {
     let applied = try await library.applyImport(preview)
-    return SnipImportResult(
+    let result = SnipImportResult(
       snapshot: try await library.checkedSnapshot(sortedBy: sortMode),
       addedSnipCount: applied.addedSnipCount,
       recoveredSnipCount: applied.recoveredSnipCount
     )
+    _ = try? await library.perform(.pruneAttachments(retaining: []), sortedBy: sortMode)
+    return result
   }
 
   public func state(sortedBy sortMode: SnipSortMode) async throws -> SnipDeviceActionState {

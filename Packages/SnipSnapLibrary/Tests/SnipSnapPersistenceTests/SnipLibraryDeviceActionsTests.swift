@@ -648,6 +648,22 @@ final class SnipLibraryDeviceActionsTests: XCTestCase {
     XCTAssertEqual(redoResult?.snapshot.snips.first { $0.id == snip.id }?.listID, list.id)
   }
 
+  func testJSONDeleteReopenUnrelatedActionThenUndoKeepsAttachmentBytes() async throws {
+    try await assertDeleteReopenUndoKeepsAttachmentBytes(using: .json)
+  }
+
+  func testSwiftDataDeleteReopenUnrelatedActionThenUndoKeepsAttachmentBytes() async throws {
+    try await assertDeleteReopenUndoKeepsAttachmentBytes(using: .swiftData)
+  }
+
+  func testJSONDirectActionsPruneDeletedAttachmentBytes() async throws {
+    try await assertDirectActionsPruneDeletedAttachmentBytes(using: .json)
+  }
+
+  func testSwiftDataDirectActionsPruneDeletedAttachmentBytes() async throws {
+    try await assertDirectActionsPruneDeletedAttachmentBytes(using: .swiftData)
+  }
+
   func testFailedActionDoesNotReplaceExistingUndoHistory() async throws {
     let directory = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -722,6 +738,103 @@ final class SnipLibraryDeviceActionsTests: XCTestCase {
     return try XCTUnwrap(update.snapshot.snips.first { $0.content == content })
   }
 
+  private func assertDeleteReopenUndoKeepsAttachmentBytes(
+    using adapter: DurableTestAdapter
+  ) async throws {
+    let directory = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let storeURL = adapter.storeURL(in: directory)
+    let journalURL = directory.appendingPathComponent("device-actions.json")
+    let sourceURL = directory.appendingPathComponent("source.txt")
+    let expectedBytes = Data("durable Undo attachment".utf8)
+    try expectedBytes.write(to: sourceURL)
+
+    var library: (any SnipLibrary)? = try adapter.open(storeURL: storeURL)
+    var actions: SnipLibraryDeviceActions? = SnipLibraryDeviceActions(
+      library: try XCTUnwrap(library),
+      journalURL: journalURL
+    )
+    let added = try await actions?.perform(
+      name: "Add",
+      command: .add(
+        content: "With file",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inboxID,
+        attachmentURLs: [sourceURL],
+        requestID: UUID(),
+        now: Date(timeIntervalSince1970: 100)
+      ),
+      sortedBy: .manual
+    )
+    let snip = try XCTUnwrap(added?.snapshot.snips.first)
+    let attachmentID = try XCTUnwrap(snip.attachments.first?.id)
+    let storedURL = try XCTUnwrap(added?.snapshot.attachmentURLs.values.first)
+    _ = try await actions?.perform(
+      name: "Delete",
+      command: .delete(ids: [snip.id]),
+      sortedBy: .manual
+    )
+    XCTAssertEqual(try Data(contentsOf: storedURL), expectedBytes)
+
+    actions = nil
+    library = nil
+    let reopenedLibrary = try adapter.open(storeURL: storeURL)
+    let reopenedActions = SnipLibraryDeviceActions(
+      library: reopenedLibrary,
+      journalURL: journalURL
+    )
+    _ = try await reopenedActions.perform(
+      name: "Create List",
+      command: .createList(name: "After reopen", systemImage: "folder"),
+      sortedBy: .manual
+    )
+    XCTAssertEqual(try Data(contentsOf: storedURL), expectedBytes)
+    _ = try await reopenedActions.undo(sortedBy: .manual)
+    XCTAssertEqual(try Data(contentsOf: storedURL), expectedBytes)
+    let undoResult = try await reopenedActions.undo(sortedBy: .manual)
+    let restored = try XCTUnwrap(undoResult)
+    let restoredURL = try XCTUnwrap(restored.snapshot.attachmentURLs[attachmentID])
+
+    XCTAssertEqual(restored.snapshot.snips.map(\.id), [snip.id])
+    XCTAssertTrue(FileManager.default.fileExists(atPath: restoredURL.path))
+    XCTAssertEqual(try Data(contentsOf: restoredURL), expectedBytes)
+  }
+
+  private func assertDirectActionsPruneDeletedAttachmentBytes(
+    using adapter: DurableTestAdapter
+  ) async throws {
+    let directory = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let sourceURL = directory.appendingPathComponent("source.txt")
+    try Data("direct attachment".utf8).write(to: sourceURL)
+    let library = try adapter.open(storeURL: adapter.storeURL(in: directory))
+    let actions = DirectSnipLibraryUserActions(library: library)
+    let added = try await actions.perform(
+      name: "Add",
+      command: .add(
+        content: "With file",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inboxID,
+        attachmentURLs: [sourceURL],
+        requestID: UUID(),
+        now: Date(timeIntervalSince1970: 100)
+      ),
+      sortedBy: .manual
+    )
+    let snip = try XCTUnwrap(added.snapshot.snips.first)
+    let storedURL = try XCTUnwrap(added.snapshot.attachmentURLs.values.first)
+
+    _ = try await actions.perform(
+      name: "Delete",
+      command: .delete(ids: [snip.id]),
+      sortedBy: .manual
+    )
+
+    XCTAssertFalse(FileManager.default.fileExists(atPath: storedURL.path))
+  }
+
   private func createList(
     named name: String,
     in library: any SnipLibrary
@@ -753,6 +866,29 @@ final class SnipLibraryDeviceActionsTests: XCTestCase {
       generation: generation,
       zones: [ICloudSyncZoneBinding(name: "SnipSnapData", ownerName: "owner")]
     )
+  }
+}
+
+private enum DurableTestAdapter {
+  case json
+  case swiftData
+
+  func storeURL(in directory: URL) -> URL {
+    switch self {
+    case .json:
+      directory.appendingPathComponent("snips.json")
+    case .swiftData:
+      directory.appendingPathComponent("snips.store")
+    }
+  }
+
+  func open(storeURL: URL) throws -> any SnipLibrary {
+    switch self {
+    case .json:
+      try JSONSnipLibrary(fileURL: storeURL)
+    case .swiftData:
+      try SwiftDataSnipLibrary(storeURL: storeURL)
+    }
   }
 }
 

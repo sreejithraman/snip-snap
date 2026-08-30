@@ -530,10 +530,8 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       loaded.attachments.map { ($0.id, $0.relativePath) },
       uniquingKeysWith: { first, _ in first }
     )
-    Self.removeUnreferencedAttachmentDirectories(
-      at: attachmentRootURL,
-      keeping: Set(loaded.attachments.map(\.relativePath))
-    )
+    // Durable Undo or Redo may be the only reference to an attachment.
+    // SnipLibraryDeviceActions prunes after it reconciles that journal.
     try? Self.publishShareDestinations(loaded.state.lists, storeURL: storeURL)
   }
 
@@ -762,6 +760,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
         pruneAttachments: { retainedIDs, currentSnips in
           let liveIDs = Set(currentSnips.flatMap(\.attachments).map(\.id)).union(retainedIDs)
           let retainedPaths = Set(liveIDs.compactMap { self.knownAttachmentPaths[$0] })
+            .union(retainedIDs.map { "\($0.uuidString)/" })
           Self.removeUnreferencedAttachmentDirectories(
             at: self.attachmentRootURL,
             keeping: retainedPaths.union(currentSnips.flatMap(\.attachments).map(\.relativePath))
