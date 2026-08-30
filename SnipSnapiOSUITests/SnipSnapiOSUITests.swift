@@ -323,6 +323,12 @@ final class SnipSnapiOSUITests: XCTestCase {
             NSPredicate(format: "label CONTAINS %@", "A useful thought")
         ).firstMatch
         XCTAssertTrue(savedText.waitForExistence(timeout: 3))
+        let composer = app.descendants(matching: .any)["composer-text"]
+        expectation(
+            for: NSPredicate(format: "value == %@ OR value == %@", "New snip", ""),
+            evaluatedWith: composer
+        )
+        waitForExpectations(timeout: 5)
 
         let snipRow = app.buttons.matching(
             NSPredicate(format: "label BEGINSWITH %@", "A useful thought")
@@ -332,11 +338,16 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertFalse(app.navigationBars["Snip"].exists)
         Thread.sleep(forTimeInterval: 0.6)
         snipRow.doubleTap()
-        let editor = app.textViews["snip-text"]
+        let editor = app.descendants(matching: .any)["inline-snip-text"]
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.navigationBars["Edit Snip"].exists)
+        let inlineEditorScreenshot = XCTAttachment(screenshot: app.screenshot())
+        inlineEditorScreenshot.name = "Inline Snip Editor"
+        inlineEditorScreenshot.lifetime = .keepAlways
+        add(inlineEditorScreenshot)
         editor.tap()
         editor.typeText(" updated")
-        app.buttons["save-snip"].tap()
+        app.buttons["inline-snip-save"].tap()
 
         let updatedText = app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS %@", "updated")

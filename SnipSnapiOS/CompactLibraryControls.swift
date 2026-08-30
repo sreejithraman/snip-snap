@@ -1,3 +1,4 @@
+import Observation
 import QuickLook
 import SnipSnapCore
 import SwiftUI
@@ -7,19 +8,23 @@ struct CompactLibraryControls: View {
     @Environment(\.colorScheme) private var colorScheme
 
     let model: IOSAppModel
+    let storage: CompactComposerStorage
     @Binding var sheet: AppSheet?
 
-    @StateObject private var storage = CompactComposerStorage()
     @State private var draft = ComposerDraft()
     @State private var previewURL: URL?
     @State private var isImporting = false
-    @State private var isSaving = false
-    @State private var submittedText: String?
+    @State private var composerFieldID = UUID()
     @State private var stagingTask: Task<Void, Never>?
     @FocusState private var isComposerFocused: Bool
 
-    init(model: IOSAppModel, sheet: Binding<AppSheet?>) {
+    init(
+        model: IOSAppModel,
+        storage: CompactComposerStorage,
+        sheet: Binding<AppSheet?>
+    ) {
         self.model = model
+        self.storage = storage
         _sheet = sheet
     }
 
@@ -52,10 +57,14 @@ struct CompactLibraryControls: View {
         }
         .quickLookPreview($previewURL, in: draft.attachments)
         .onAppear {
-            draft = storage.draftStore.draft(for: model.selectedListID)
+            if storage.savingListID != model.selectedListID {
+                draft = storage.draftStore.draft(for: model.selectedListID)
+            }
         }
         .onChange(of: model.selectedListID) { _, listID in
-            draft = storage.draftStore.draft(for: listID)
+            draft = storage.savingListID == listID
+                ? ComposerDraft()
+                : storage.draftStore.draft(for: listID)
         }
         .onDisappear {
             stagingTask?.cancel()
@@ -80,7 +89,7 @@ struct CompactLibraryControls: View {
                     }
             }
             .buttonStyle(.plain)
-            .disabled(isSaving || isStaging)
+            .disabled(storage.isSaving || isStaging)
             .accessibilityLabel("Add Attachments")
             .accessibilityIdentifier("composer-add-attachments")
 
@@ -96,6 +105,7 @@ struct CompactLibraryControls: View {
                         .textFieldStyle(.plain)
                         .lineLimit(1...5)
                         .focused($isComposerFocused)
+                        .disabled(storage.isSaving)
                         .padding(.leading, 16)
                         .padding(.vertical, 15)
                         .accessibilityIdentifier("composer-text")
@@ -106,15 +116,18 @@ struct CompactLibraryControls: View {
                         Image(systemName: "arrow.up")
                             .font(.body.weight(.bold))
                             .foregroundStyle(
-                                SnipSnapTheme.primaryActionLabel(for: colorScheme)
+                                canSend
+                                    ? SnipSnapTheme.primaryActionLabel(for: colorScheme)
+                                    : SnipSnapTheme.disabledPrimaryActionLabel(for: colorScheme)
                             )
                             .frame(width: 46, height: 36)
                             .background {
                                 Capsule(style: .continuous).fill(
-                                    SnipSnapTheme.primaryActionTint(for: colorScheme)
+                                    canSend
+                                        ? SnipSnapTheme.primaryActionTint(for: colorScheme)
+                                        : SnipSnapTheme.disabledPrimaryActionTint(for: colorScheme)
                                 )
                             }
-                            .opacity(canSend ? 1 : 0.24)
                     }
                     .buttonStyle(.plain)
                     .disabled(!canSend)
@@ -123,6 +136,7 @@ struct CompactLibraryControls: View {
                     .accessibilityLabel("Send Snip")
                     .accessibilityIdentifier("composer-send")
                 }
+                .id(composerFieldID)
             }
             .frame(minHeight: 52)
             .glassEffect(
@@ -157,17 +171,15 @@ struct CompactLibraryControls: View {
     }
 
     private var composerText: Binding<String> {
-        Binding(
+        let fieldID = composerFieldID
+        return Binding(
             get: { draft.text },
             set: { value in
-                let storedText = storage.draftStore.draft(for: model.selectedListID).text
-                if value == submittedText {
-                    if storedText.isEmpty {
-                        draft.text = ""
-                    }
+                guard fieldID == composerFieldID else { return }
+                guard storage.savingListID != model.selectedListID else {
+                    draft.text = ""
                     return
                 }
-                submittedText = nil
                 draft.text = value
                 storage.draftStore.setText(value, for: model.selectedListID)
             }
@@ -176,7 +188,7 @@ struct CompactLibraryControls: View {
 
     private var canSend: Bool {
         AttachmentDraftLifecycle.allowsSaving(
-            isSaving: isSaving,
+            isSaving: storage.isSaving,
             isStaging: isStaging,
             isImporting: isImporting,
             isPreviewing: previewURL != nil
@@ -188,8 +200,10 @@ struct CompactLibraryControls: View {
     private func send() async {
         guard canSend else { return }
         let snapshot = storage.draftStore.beginSave(listID: model.selectedListID)
-        submittedText = snapshot.draft.text
-        isSaving = true
+        storage.savingListID = snapshot.listID
+        storage.isSaving = true
+        composerFieldID = UUID()
+        draft = ComposerDraft()
         let saved = await model.createSnip(
             content: snapshot.draft.text,
             in: snapshot.listID,
@@ -197,20 +211,16 @@ struct CompactLibraryControls: View {
             selectCreatedSnip: false
         )
         storage.draftStore.finishSave(snapshot, saved: saved)
+        if saved {
+            storage.draftStore.flushText()
+        }
+        storage.savingListID = nil
+        storage.isSaving = false
         if model.selectedListID == snapshot.listID {
             draft = storage.draftStore.draft(for: snapshot.listID)
         }
         if !saved {
-            submittedText = nil
-        }
-        isSaving = false
-        if saved {
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(500))
-                if submittedText == snapshot.draft.text {
-                    submittedText = nil
-                }
-            }
+            composerFieldID = UUID()
         }
     }
 
@@ -263,17 +273,33 @@ struct CompactLibraryControls: View {
 }
 
 @MainActor
-private final class CompactComposerStorage: ObservableObject {
+@Observable
+final class CompactComposerStorage {
     let draftStore: ComposerDraftStore
     let stagingDirectory: URL
+    var isSaving = false
+    var savingListID: UUID?
 
     init() {
         let stagingDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SnipSnapCompactDrafts", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let textDefaultsKey: String
+#if DEBUG
+        let environment = ProcessInfo.processInfo.environment
+        if environment["SNIP_SNAP_UI_TESTING"] == "1",
+           let storeName = environment["SNIP_SNAP_UI_TEST_STORE"]
+        {
+            textDefaultsKey = "snipsnap.ios.composer.text.v1.ui-test.\(storeName)"
+        } else {
+            textDefaultsKey = "snipsnap.ios.composer.text.v1"
+        }
+#else
+        textDefaultsKey = "snipsnap.ios.composer.text.v1"
+#endif
         self.stagingDirectory = stagingDirectory
         draftStore = ComposerDraftStore(
-            textDefaultsKey: "snipsnap.ios.composer.text.v1",
+            textDefaultsKey: textDefaultsKey,
             temporaryRootDirectory: stagingDirectory
         )
     }
@@ -285,42 +311,70 @@ private struct CompactListTabBar: View {
     let deleteList: (UUID) async -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal) {
-                    HStack(spacing: 2) {
-                        ForEach(model.lists) { list in
-                            tab(for: list)
-                                .id(list.id)
-                        }
-                    }
-                    .padding(.horizontal, 6)
-                }
-                .scrollIndicators(.hidden)
-                .onAppear { scrollToSelection(using: proxy) }
-                .onChange(of: model.selectedListID) { _, _ in
-                    scrollToSelection(using: proxy)
-                }
-                .onChange(of: model.lists) { _, _ in
-                    scrollToSelection(using: proxy)
-                }
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                tabStrip
+                    .fixedSize(horizontal: true, vertical: false)
+                newListButton
             }
-            .frame(maxWidth: .infinity)
+            .fixedSize(horizontal: true, vertical: false)
+
+            HStack(spacing: 8) {
+                scrollingTabStrip
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                newListButton
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var tabStrip: some View {
+        tabItems
+            .padding(.horizontal, 6)
             .frame(height: 56)
             .glassEffect(.regular, in: Capsule())
+    }
 
-            Button {
-                sheet = .newList
-            } label: {
-                Image(systemName: "plus")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 56, height: 56)
+    private var scrollingTabStrip: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal) {
+                tabItems
+                    .padding(.horizontal, 6)
             }
-            .buttonStyle(.plain)
-            .glassEffect(.regular.interactive(), in: Circle())
-            .accessibilityLabel("New List")
-            .accessibilityIdentifier("new-list")
+            .scrollIndicators(.hidden)
+            .frame(height: 56)
+            .glassEffect(.regular, in: Capsule())
+            .onAppear { scrollToSelection(using: proxy) }
+            .onChange(of: model.selectedListID) { _, _ in
+                scrollToSelection(using: proxy)
+            }
+            .onChange(of: model.lists) { _, _ in
+                scrollToSelection(using: proxy)
+            }
         }
+    }
+
+    private var tabItems: some View {
+        HStack(spacing: 0) {
+            ForEach(model.lists) { list in
+                tab(for: list)
+                    .id(list.id)
+            }
+        }
+    }
+
+    private var newListButton: some View {
+        Button {
+            sheet = .newList
+        } label: {
+            Image(systemName: "plus")
+                .font(.body.weight(.semibold))
+                .frame(width: 56, height: 56)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: Circle())
+        .accessibilityLabel("New List")
+        .accessibilityIdentifier("new-list")
     }
 
     private func tab(for list: SnipList) -> some View {
@@ -332,12 +386,13 @@ private struct CompactListTabBar: View {
                 .symbolVariant(selected ? .fill : .none)
                 .font(.title3.weight(selected ? .semibold : .regular))
                 .foregroundStyle(selected ? Color.primary : Color.secondary)
-                .frame(width: 46, height: 46)
+                .frame(width: 44, height: 36)
                 .background(
-                    selected ? Color.primary.opacity(0.1) : Color.clear,
-                    in: Circle()
+                    selected ? SnipSnapTheme.compactSelectionFill : Color.clear,
+                    in: Capsule(style: .continuous)
                 )
-                .contentShape(Circle())
+                .frame(width: 52, height: 56)
+                .contentShape(Rectangle())
                 .accessibilityHidden(true)
         }
         .buttonStyle(.plain)

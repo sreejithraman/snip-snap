@@ -157,6 +157,7 @@ struct IOSAppRootView: View {
     @State private var sheet: AppSheet?
     @State private var accountNoticeModel: AppleAccountNoticeModel?
     @State private var copyShare = IOSCopyShareCoordinator()
+    @State private var compactComposerStorage = CompactComposerStorage()
     @State private var isImportingBackup = false
     @State private var isExplainingBackupImport = false
     private let uiTestAttachmentURLs: [URL]
@@ -424,7 +425,11 @@ struct IOSAppRootView: View {
                     layout: .compactStack
                 )
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    CompactLibraryControls(model: model, sheet: $sheet)
+                    CompactLibraryControls(
+                        model: model,
+                        storage: compactComposerStorage,
+                        sheet: $sheet
+                    )
                 }
                 .toolbar {
                     ToolbarItemGroup(placement: .topBarLeading) {

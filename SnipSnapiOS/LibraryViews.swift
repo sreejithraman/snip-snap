@@ -139,6 +139,12 @@ enum SnipCollectionLayout: Equatable {
     case compactStack
 }
 
+private struct CompactInlineEditSession {
+    let original: Snip
+    var text: String
+    var isSaving = false
+}
+
 struct SnipCollectionView: View {
     let model: IOSAppModel
     let copyShare: IOSCopyShareCoordinator
@@ -146,6 +152,8 @@ struct SnipCollectionView: View {
     var layout = SnipCollectionLayout.splitView
     @State private var editMode: EditMode = .inactive
     @State private var isSelecting = false
+    @State private var inlineEditSession: CompactInlineEditSession?
+    @FocusState private var isInlineEditorFocused: Bool
 
     private var singleSelection: Binding<UUID?> {
         Binding(
@@ -157,12 +165,16 @@ struct SnipCollectionView: View {
     var body: some View {
         Group {
             if model.visibleSnips.isEmpty {
-                ContentUnavailableView(
-                    emptyTitle,
-                    systemImage: emptySystemImage,
-                    description: Text(emptyDescription)
-                )
-                .accessibilityIdentifier("empty-snips")
+                if layout == .compactStack {
+                    compactEmptyState
+                } else {
+                    ContentUnavailableView(
+                        emptyTitle,
+                        systemImage: emptySystemImage,
+                        description: Text(emptyDescription)
+                    )
+                    .accessibilityIdentifier("empty-snips")
+                }
             } else {
                 List(selection: isSelecting ? nil : singleSelection) {
                     ForEach(model.pendingRecoveredSnips.filter { recovery in
@@ -204,32 +216,44 @@ struct SnipCollectionView: View {
                                 .accessibilityAddTraits(
                                     model.selectedSnipIDs.contains(snip.id) ? .isSelected : []
                                 )
+                                .accessibilityIdentifier("snip-\(snip.id)")
                             } else if layout == .compactStack {
-                                Button {
-                                    model.selectedSnipID = snip.id
-                                } label: {
-                                    SnipRow(
+                                if inlineEditSession?.original.id == snip.id {
+                                    CompactInlineSnipEditor(
                                         snip: snip,
                                         model: model,
-                                        isRecovered: model.isRecoveredSnip(snip.id)
+                                        text: inlineEditText,
+                                        isSaving: inlineEditSession?.isSaving == true,
+                                        isFocused: $isInlineEditorFocused,
+                                        cancel: cancelInlineEdit,
+                                        save: saveInlineEdit
+                                    )
+                                } else {
+                                    Button {
+                                        model.selectedSnipID = snip.id
+                                    } label: {
+                                        SnipRow(
+                                            snip: snip,
+                                            model: model,
+                                            isRecovered: model.isRecoveredSnip(snip.id)
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .highPriorityGesture(
+                                        TapGesture(count: 2).onEnded {
+                                            beginEditing(snip)
+                                        }
+                                    )
+                                    .accessibilityHint("Double tap to edit. Touch and hold for actions.")
+                                    .accessibilityAction(named: "Edit") {
+                                        beginEditing(snip)
+                                    }
+                                    .accessibilityIdentifier("snip-\(snip.id)")
+                                    .listRowBackground(
+                                        model.selectedSnipID == snip.id
+                                            ? SnipSnapTheme.selectionFill : Color.clear
                                     )
                                 }
-                                .buttonStyle(.plain)
-                                .highPriorityGesture(
-                                    TapGesture(count: 2).onEnded {
-                                        model.selectedSnipID = snip.id
-                                        sheet = .editSnip(id: snip.id)
-                                    }
-                                )
-                                .accessibilityHint("Double tap to edit. Touch and hold for actions.")
-                                .accessibilityAction(named: "Edit") {
-                                    model.selectedSnipID = snip.id
-                                    sheet = .editSnip(id: snip.id)
-                                }
-                                .listRowBackground(
-                                    model.selectedSnipID == snip.id
-                                        ? Color.accentColor.opacity(0.1) : Color.clear
-                                )
                             } else {
                                 NavigationLink(value: snip.id) {
                                     SnipRow(
@@ -238,10 +262,10 @@ struct SnipCollectionView: View {
                                         isRecovered: model.isRecoveredSnip(snip.id)
                                     )
                                 }
+                                .accessibilityIdentifier("snip-\(snip.id)")
                             }
                         }
                         .tag(snip.id)
-                        .accessibilityIdentifier("snip-\(snip.id)")
                         .swipeActions(edge: .leading) {
                             Button(snip.isDone ? "Mark Not Done" : "Mark Done") {
                                 Task { await model.toggleDone(id: snip.id) }
@@ -259,7 +283,7 @@ struct SnipCollectionView: View {
                             Button(snip.isDone ? "Mark Not Done" : "Mark Done") {
                                 Task { await model.toggleDone(id: snip.id) }
                             }
-                            Button("Edit") { sheet = .editSnip(id: snip.id) }
+                            Button("Edit") { beginEditing(snip) }
                             MoveSnipMenu(model: model, snip: snip)
                             Divider()
                             CopyShareActions(
@@ -324,6 +348,7 @@ struct SnipCollectionView: View {
             }
         }
         .onChange(of: model.selectedListID) {
+            cancelInlineEdit()
             guard isSelecting else { return }
             setSelecting(false)
         }
@@ -350,6 +375,81 @@ struct SnipCollectionView: View {
             : "Change the filter to see other snips."
     }
 
+    private var compactEmptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: emptySystemImage)
+                .font(.title3.weight(.regular))
+                .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
+            Text(emptyTitle)
+                .font(.subheadline.weight(.semibold))
+            Text(emptyDescription)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("empty-snips")
+    }
+
+    private var inlineEditText: Binding<String> {
+        Binding(
+            get: { inlineEditSession?.text ?? "" },
+            set: { value in
+                guard var session = inlineEditSession else { return }
+                session.text = value
+                inlineEditSession = session
+            }
+        )
+    }
+
+    private func beginEditing(_ snip: Snip) {
+        model.selectedSnipID = snip.id
+        guard layout == .compactStack else {
+            sheet = .editSnip(id: snip.id)
+            return
+        }
+        inlineEditSession = CompactInlineEditSession(
+            original: snip,
+            text: snip.content
+        )
+        Task { @MainActor in
+            await Task.yield()
+            isInlineEditorFocused = true
+        }
+    }
+
+    private func cancelInlineEdit() {
+        guard inlineEditSession?.isSaving != true else { return }
+        isInlineEditorFocused = false
+        inlineEditSession = nil
+    }
+
+    private func saveInlineEdit() {
+        guard var session = inlineEditSession,
+              !session.isSaving,
+              !session.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !session.original.attachments.isEmpty else { return }
+        session.isSaving = true
+        inlineEditSession = session
+        Task { @MainActor in
+            let saved = await model.editSnip(
+                session.original,
+                content: session.text
+            )
+            guard inlineEditSession?.original.id == session.original.id else { return }
+            if saved {
+                isInlineEditorFocused = false
+                inlineEditSession = nil
+            } else {
+                session.isSaving = false
+                inlineEditSession = session
+            }
+        }
+    }
+
     private func move(from source: IndexSet, to destination: Int) {
         var orderedIDs = model.visibleSnips.map(\.id)
         orderedIDs.move(fromOffsets: source, toOffset: destination)
@@ -369,10 +469,101 @@ struct SnipCollectionView: View {
     }
 
     private func setSelecting(_ selecting: Bool) {
+        if selecting { cancelInlineEdit() }
         isSelecting = selecting
         editMode = selecting ? .active : .inactive
         model.selectedSnipIDs = []
         if selecting { model.selectedSnipID = nil }
+    }
+}
+
+private struct CompactInlineSnipEditor: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    let snip: Snip
+    let model: IOSAppModel
+    @Binding var text: String
+    let isSaving: Bool
+    @FocusState.Binding var isFocused: Bool
+    let cancel: () -> Void
+    let save: () -> Void
+
+    private var canSave: Bool {
+        !isSaving
+            && (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !snip.attachments.isEmpty)
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: snip.isDone ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 12) {
+                TextField("Snip text", text: $text, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(1...8)
+                    .focused($isFocused)
+                    .disabled(isSaving)
+                    .accessibilityIdentifier("inline-snip-text")
+
+                if !snip.attachments.isEmpty {
+                    HStack(spacing: 8) {
+                        ForEach(Array(snip.attachments.prefix(3))) { attachment in
+                            AttachmentStatusThumbnail(attachment: attachment, model: model)
+                                .frame(width: 48, height: 48)
+                        }
+                        if snip.attachments.count > 3 {
+                            Text("+\(snip.attachments.count - 3)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    Spacer(minLength: 8)
+
+                    Button(action: cancel) {
+                        Image(systemName: "xmark")
+                            .font(.body.weight(.semibold))
+                            .frame(width: 44, height: 36)
+                            .background(
+                                SnipSnapTheme.standaloneActionFill,
+                                in: Capsule(style: .continuous)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isSaving)
+                    .accessibilityLabel("Cancel Editing")
+                    .accessibilityIdentifier("inline-snip-cancel")
+
+                    Button(action: save) {
+                        Image(systemName: "checkmark")
+                            .font(.body.weight(.bold))
+                            .foregroundStyle(
+                                canSave
+                                    ? SnipSnapTheme.primaryActionLabel(for: colorScheme)
+                                    : SnipSnapTheme.disabledPrimaryActionLabel(for: colorScheme)
+                            )
+                            .frame(width: 46, height: 36)
+                            .background {
+                                Capsule(style: .continuous).fill(
+                                    canSave
+                                        ? SnipSnapTheme.primaryActionTint(for: colorScheme)
+                                        : SnipSnapTheme.disabledPrimaryActionTint(for: colorScheme)
+                                )
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSave)
+                    .accessibilityLabel("Save Snip")
+                    .accessibilityIdentifier("inline-snip-save")
+                }
+            }
+        }
+        .padding(.vertical, 8)
     }
 }
 

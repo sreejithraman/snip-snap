@@ -56,6 +56,14 @@ enum SnipSnapColors {
         SnipSnapTheme.primaryActionLabel(for: colorScheme)
     }
 
+    static func disabledPrimaryActionTint(for colorScheme: ColorScheme) -> Color {
+        SnipSnapTheme.disabledPrimaryActionTint(for: colorScheme)
+    }
+
+    static func disabledPrimaryActionLabel(for colorScheme: ColorScheme) -> Color {
+        SnipSnapTheme.disabledPrimaryActionLabel(for: colorScheme)
+    }
+
     // MARK: Surfaces
 
     static let standaloneActionFill = SnipSnapTheme.standaloneActionFill

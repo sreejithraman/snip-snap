@@ -20,4 +20,12 @@ enum SnipSnapTheme {
     static func primaryActionLabel(for colorScheme: ColorScheme) -> Color {
         colorScheme == .dark ? .black : .white
     }
+
+    static func disabledPrimaryActionTint(for colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark ? .white.opacity(0.14) : .black.opacity(0.14)
+    }
+
+    static func disabledPrimaryActionLabel(for colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark ? .white.opacity(0.60) : .black.opacity(0.60)
+    }
 }
