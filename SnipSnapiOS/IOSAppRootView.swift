@@ -38,6 +38,17 @@ struct IOSAppRootView: View {
         let settings = syncedContentSettings
             ?? SyncedContentSettingsModel(mode: .localOnly)
         self.syncedContentSettings = settings
+        let activeShareImportOperation = shareImportOperation ?? shareImports.map { imports in
+            { @Sendable in
+                if let cloudSyncSession {
+                    guard let active = try? await cloudSyncSession.activeLibrary() else {
+                        return 1
+                    }
+                    return await imports.importPending(into: active.library).failed
+                }
+                return await imports.importPending(into: library).failed
+            }
+        }
         let graph = IOSAppGraph(
             library: library,
             userActions: userActions,
@@ -45,7 +56,16 @@ struct IOSAppRootView: View {
             shareImports: shareImports,
             initialSnapshot: initialSnapshot ?? SnipLibrarySnapshot(snips: [], lists: [.inbox]),
             startupError: startupError,
-            shareImportOperation: shareImportOperation,
+            shareImportOperation: activeShareImportOperation,
+            syncOperationFactory: { model in
+                {
+                    try await synchronizeCloudSessionOrThrow(
+                        cloudSyncSession,
+                        model: model,
+                        settings: settings
+                    )
+                }
+            },
             cloudSyncHandler: cloudSyncHandler,
             userActionsFactory: userActionsFactory
         )
@@ -267,29 +287,42 @@ private func synchronizeCloudSession(
     model: IOSAppModel,
     settings: SyncedContentSettingsModel
 ) async {
-    guard let session else { return }
     do {
-        let result = try await session.synchronize()
-        switch result {
-        case .noChange:
-            break
-        case .contentUpdated:
-            await model.load()
-        case .libraryReplaced, .oldSyncedContentRemovalPending,
-                .oldSyncedContentRemovalCompleted, .encryptedDataResetRequiresChoice,
-                .syncKeptOff:
-            let active = try await session.activeLibrary()
-            await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
-            if case .oldSyncedContentRemovalPending = result {
-                settings.recordRemovalPending(true)
-            } else if case .oldSyncedContentRemovalCompleted = result {
-                settings.recordRemovalPending(false)
-            } else if case .encryptedDataResetRequiresChoice = result {
-                settings.recordEncryptedDataReset()
-            }
-        }
+        try await synchronizeCloudSessionOrThrow(
+            session,
+            model: model,
+            settings: settings
+        )
     } catch {
         model.errorMessage = error.localizedDescription
+    }
+}
+
+@MainActor
+private func synchronizeCloudSessionOrThrow(
+    _ session: SnipSnapCloudSyncSession?,
+    model: IOSAppModel,
+    settings: SyncedContentSettingsModel
+) async throws {
+    guard let session else { return }
+    let result = try await session.synchronize()
+    switch result {
+    case .noChange:
+        break
+    case .contentUpdated:
+        await model.load()
+    case .libraryReplaced, .oldSyncedContentRemovalPending,
+            .oldSyncedContentRemovalCompleted, .encryptedDataResetRequiresChoice,
+            .syncKeptOff:
+        let active = try await session.activeLibrary()
+        await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+        if case .oldSyncedContentRemovalPending = result {
+            settings.recordRemovalPending(true)
+        } else if case .oldSyncedContentRemovalCompleted = result {
+            settings.recordRemovalPending(false)
+        } else if case .encryptedDataResetRequiresChoice = result {
+            settings.recordEncryptedDataReset()
+        }
     }
 }
 

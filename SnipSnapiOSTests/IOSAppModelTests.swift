@@ -516,7 +516,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(discardedGraphCalls, 0)
     }
 
-    func testLaunchAndForegroundShareOneImportThenALaterForegroundRunsAgain() async {
+    func testLaunchAndForegroundQueueOneTrailingImportThenALaterForegroundRunsAgain() async {
         let snip = Snip(
             requestID: UUID(),
             content: "From Share",
@@ -526,9 +526,11 @@ final class IOSAppModelTests: XCTestCase {
         let library = ModelTestLibrary(snips: [snip])
         let model = makeModel(library: library)
         let probe = PendingImportProbe()
+        let syncProbe = SyncCallProbe()
         let coordinator = IOSShareImportCoordinator(
             model: model,
-            importOperation: { await probe.run() }
+            importOperation: { await probe.run() },
+            syncOperation: { try await syncProbe.run() }
         )
 
         let launch = Task { await coordinator.importPendingAndReload() }
@@ -540,12 +542,117 @@ final class IOSAppModelTests: XCTestCase {
         await overlappingForeground.value
 
         let overlappingCallCount = await probe.callCount()
-        XCTAssertEqual(overlappingCallCount, 1)
+        XCTAssertEqual(overlappingCallCount, 2)
+        let overlappingSyncCallCount = await syncProbe.callCount()
+        XCTAssertEqual(overlappingSyncCallCount, 2)
         XCTAssertEqual(model.snips.map(\.id), [snip.id])
 
         await coordinator.importPendingAndReload()
         let foregroundCallCount = await probe.callCount()
-        XCTAssertEqual(foregroundCallCount, 2)
+        XCTAssertEqual(foregroundCallCount, 3)
+        let foregroundSyncCallCount = await syncProbe.callCount()
+        XCTAssertEqual(foregroundSyncCallCount, 3)
+    }
+
+    func testTriggerDuringImportTailQueuesOneTrailingPassForANewerRequest() async {
+        let library = ModelTestLibrary()
+        let model = IOSAppModel(library: library)
+        let probe = TrailingShareImportProbe(library: library)
+        let firstRequestID = UUID()
+        let secondRequestID = UUID()
+        await probe.publish(content: "First request", requestID: firstRequestID)
+        let coordinator = IOSShareImportCoordinator(
+            model: model,
+            importOperation: { await probe.importPending() },
+            syncOperation: { await probe.sync() }
+        )
+
+        let firstTrigger = Task { await coordinator.importPendingAndReload() }
+        await probe.waitUntilFirstPassScanned()
+        await probe.publish(content: "Second request", requestID: secondRequestID)
+        let overlappingTrigger = Task { await coordinator.importPendingAndReload() }
+        await Task.yield()
+        await probe.releaseFirstPass()
+        await firstTrigger.value
+        await overlappingTrigger.value
+
+        let snapshot = await library.snapshot(sortedBy: .chronological)
+        XCTAssertEqual(snapshot.snips.count, 2)
+        XCTAssertEqual(Set(snapshot.snips.map(\.requestID)), [firstRequestID, secondRequestID])
+        let importPasses = await probe.importCallCount()
+        XCTAssertEqual(importPasses, 2)
+        let syncPasses = await probe.syncCallCount()
+        XCTAssertEqual(syncPasses, 2)
+    }
+
+    func testEveryImportPassRequestsSyncAfterImportEvenWhenNoItemWasImported() async {
+        let model = IOSAppModel(library: ModelTestLibrary())
+        let probe = ImportThenSyncProbe()
+        let coordinator = IOSShareImportCoordinator(
+            model: model,
+            importOperation: { await probe.importPending() },
+            syncOperation: { try await probe.syncActive() }
+        )
+
+        await coordinator.importPendingAndReload()
+        await coordinator.importPendingAndReload()
+
+        let events = await probe.events()
+        XCTAssertEqual(events, [.importPending, .syncActive, .importPending, .syncActive])
+    }
+
+    func testSyncFailureKeepsImportFailureReportingDistinct() async {
+        let model = IOSAppModel(library: ModelTestLibrary())
+        let syncProbe = SyncCallProbe(error: ProbeError.offline)
+        let coordinator = IOSShareImportCoordinator(
+            model: model,
+            importOperation: { 1 },
+            syncOperation: { try await syncProbe.run() }
+        )
+
+        await coordinator.importPendingAndReload()
+
+        let syncCalls = await syncProbe.callCount()
+        XCTAssertEqual(syncCalls, 1)
+        XCTAssertEqual(
+            model.errorMessage,
+            "One or more shared items could not be added yet. Snip Snap will try again next time."
+        )
+    }
+
+    func testSyncFailureDoesNotTurnALocalImportIntoAFailedSave() async throws {
+        let library = ModelTestLibrary()
+        let model = IOSAppModel(library: library)
+        let requestID = UUID()
+        let coordinator = IOSShareImportCoordinator(
+            model: model,
+            importOperation: {
+                _ = try? await library.perform(
+                    .add(
+                        content: "Saved before sync",
+                        origin: .share,
+                        source: nil,
+                        listID: SnipList.inboxID,
+                        attachmentURLs: [],
+                        requestID: requestID,
+                        now: Date(timeIntervalSince1970: 50)
+                    ),
+                    sortedBy: .chronological
+                )
+                return 0
+            },
+            syncOperation: { throw ProbeError.offline }
+        )
+
+        await coordinator.importPendingAndReload()
+
+        XCTAssertEqual(model.snips.map(\.requestID), [requestID])
+        let acceptedLocalSnapshot = await library.snapshot(sortedBy: .chronological)
+        XCTAssertEqual(acceptedLocalSnapshot.snips.map(\.requestID), [requestID])
+        XCTAssertEqual(
+            model.errorMessage,
+            "The shared item is saved on this device. iCloud sync will try again later."
+        )
     }
 
     func testCopySharePayloadsCoverTextFileMixedMultiAndUnavailableCases() throws {
@@ -2217,6 +2324,113 @@ private actor ImportCallProbe {
     func run() -> Int {
         calls += 1
         return 0
+    }
+
+    func callCount() -> Int { calls }
+}
+
+private enum ImportThenSyncEvent: Equatable {
+    case importPending
+    case syncActive
+}
+
+private actor ImportThenSyncProbe {
+    private var recorded: [ImportThenSyncEvent] = []
+
+    func importPending() -> Int {
+        recorded.append(.importPending)
+        return 0
+    }
+
+    func syncActive() throws {
+        recorded.append(.syncActive)
+    }
+
+    func events() -> [ImportThenSyncEvent] { recorded }
+}
+
+private actor TrailingShareImportProbe {
+    private struct PendingRequest: Sendable {
+        let content: String
+        let requestID: UUID
+    }
+
+    private let library: ModelTestLibrary
+    private var pending: [PendingRequest] = []
+    private var importCalls = 0
+    private var syncCalls = 0
+    private var didFirstPassScan = false
+    private var firstPassWaiters: [CheckedContinuation<Void, Never>] = []
+    private var firstPassRelease: CheckedContinuation<Void, Never>?
+
+    init(library: ModelTestLibrary) {
+        self.library = library
+    }
+
+    func publish(content: String, requestID: UUID) {
+        pending.append(PendingRequest(content: content, requestID: requestID))
+    }
+
+    func importPending() async -> Int {
+        importCalls += 1
+        let scanned = pending
+        pending.removeAll()
+        for request in scanned {
+            _ = try? await library.perform(
+                .add(
+                    content: request.content,
+                    origin: .share,
+                    source: nil,
+                    listID: SnipList.inboxID,
+                    attachmentURLs: [],
+                    requestID: request.requestID,
+                    now: Date(timeIntervalSince1970: TimeInterval(importCalls))
+                ),
+                sortedBy: .chronological
+            )
+        }
+        guard importCalls == 1 else { return 0 }
+        didFirstPassScan = true
+        firstPassWaiters.forEach { $0.resume() }
+        firstPassWaiters.removeAll()
+        await withCheckedContinuation { firstPassRelease = $0 }
+        return 0
+    }
+
+    func waitUntilFirstPassScanned() async {
+        if didFirstPassScan { return }
+        await withCheckedContinuation { firstPassWaiters.append($0) }
+    }
+
+    func releaseFirstPass() {
+        firstPassRelease?.resume()
+        firstPassRelease = nil
+    }
+
+    func sync() {
+        syncCalls += 1
+    }
+
+    func importCallCount() -> Int { importCalls }
+
+    func syncCallCount() -> Int { syncCalls }
+}
+
+private enum ProbeError: Error {
+    case offline
+}
+
+private actor SyncCallProbe {
+    private var calls = 0
+    private let error: (any Error)?
+
+    init(error: (any Error)? = nil) {
+        self.error = error
+    }
+
+    func run() throws {
+        calls += 1
+        if let error { throw error }
     }
 
     func callCount() -> Int { calls }

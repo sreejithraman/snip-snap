@@ -1,9 +1,55 @@
 import Foundation
 import SnipSnapCore
+import SwiftData
 @testable import SnipSnapPersistence
 import XCTest
 
 final class ShareImportStoreTests: XCTestCase {
+  func testPendingShareWaitsForStoreMigrationThenImportsOnceAcrossRelaunch() async throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let storeURL = ShareImportStore.storeURL(in: root)
+    try FileManager.default.createDirectory(
+      at: storeURL.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    do {
+      let schema = Schema(versionedSchema: SnipSnapSchemaV2.self)
+      let configuration = ModelConfiguration(
+        "BeforeShareSync",
+        schema: schema,
+        url: storeURL,
+        cloudKitDatabase: .none
+      )
+      let container = try ModelContainer(for: schema, configurations: [configuration])
+      let context = ModelContext(container)
+      context.insert(StoredListRecord(.inbox))
+      try context.save()
+    }
+    let requestID = UUID()
+    let imports = ShareImportStore(sharedRootURL: root)
+    _ = try await imports.save(
+      ShareImportRequest(
+        content: "Wait for migration",
+        destinationListID: SnipList.inbox.id,
+        requestID: requestID
+      )
+    )
+    let pendingBeforeMigration = await imports.pendingImportCount()
+    XCTAssertEqual(pendingBeforeMigration, 1)
+
+    let migrated = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let firstImport = await imports.importPending(into: migrated)
+    XCTAssertEqual(firstImport, ShareImportSummary(imported: 1, failed: 0))
+
+    let reopened = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let repeatedImport = await imports.importPending(into: reopened)
+    XCTAssertEqual(repeatedImport, ShareImportSummary(imported: 0, failed: 0))
+    let snapshot = await reopened.snapshot(sortedBy: .chronological)
+    XCTAssertEqual(snapshot.snips.map(\.requestID), [requestID])
+    XCTAssertEqual(snapshot.snips.map(\.content), ["Wait for migration"])
+  }
+
   func testAppGroupContainerUsesOneValidatedIdentifierLookup() {
     let expected = URL(fileURLWithPath: "/tmp/shared-container", isDirectory: true)
     var resolvedIdentifiers: [String] = []

@@ -739,6 +739,10 @@ final class IOSAppGraph {
         initialSnapshot: SnipLibrarySnapshot,
         startupError: String?,
         shareImportOperation: (@Sendable () async -> Int)? = nil,
+        syncOperation: (@MainActor @Sendable () async throws -> Void)? = nil,
+        syncOperationFactory: (@MainActor @Sendable (
+            IOSAppModel
+        ) -> @MainActor @Sendable () async throws -> Void)? = nil,
         cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
         userActionsFactory: SnipLibraryUserActionsFactory = .direct
     ) {
@@ -752,16 +756,22 @@ final class IOSAppGraph {
             userActionsFactory: userActionsFactory
         )
         self.model = model
+        let noSync: @MainActor @Sendable () async throws -> Void = {}
+        let resolvedSyncOperation = syncOperation
+            ?? syncOperationFactory?(model)
+            ?? noSync
         if let shareImportOperation {
             shareImporter = IOSShareImportCoordinator(
                 model: model,
-                importOperation: shareImportOperation
+                importOperation: shareImportOperation,
+                syncOperation: resolvedSyncOperation
             )
         } else if let shareImports {
             shareImporter = IOSShareImportCoordinator(
                 library: library,
                 imports: shareImports,
-                model: model
+                model: model,
+                syncOperation: resolvedSyncOperation
             )
         } else {
             shareImporter = nil
@@ -771,47 +781,88 @@ final class IOSAppGraph {
 
 @MainActor
 final class IOSShareImportCoordinator {
+    private struct PassResult: Sendable {
+        let importFailures: Int
+        let syncFailed: Bool
+    }
+
     private let model: IOSAppModel
     private let importOperation: @Sendable () async -> Int
-    private var inFlight: Task<Int, Never>?
+    private let syncOperation: @MainActor @Sendable () async throws -> Void
+    private var inFlight: Task<PassResult, Never>?
+    private var needsTrailingPass = false
 
     convenience init(
         library: any SnipLibrary,
         imports: ShareImportStore,
-        model: IOSAppModel
+        model: IOSAppModel,
+        syncOperation: @escaping @MainActor @Sendable () async throws -> Void = {}
     ) {
         self.init(
             model: model,
             importOperation: {
                 await imports.importPending(into: library).failed
-            }
+            },
+            syncOperation: syncOperation
         )
     }
 
     init(
         model: IOSAppModel,
-        importOperation: @escaping @Sendable () async -> Int
+        importOperation: @escaping @Sendable () async -> Int,
+        syncOperation: @escaping @MainActor @Sendable () async throws -> Void = {}
     ) {
         self.model = model
         self.importOperation = importOperation
+        self.syncOperation = syncOperation
     }
 
     func importPendingAndReload() async {
         if let inFlight {
+            needsTrailingPass = true
             _ = await inFlight.value
             return
         }
-        let task = Task { [model, importOperation] in
-            let failed = await importOperation()
-            await model.load()
-            if failed > 0 {
-                model.errorMessage =
-                    "One or more shared items could not be added yet. Snip Snap will try again next time."
-            }
-            return failed
+        let task = Task { [self] in
+            var importFailures = 0
+            var syncFailed = false
+            repeat {
+                needsTrailingPass = false
+                let result = await runPass()
+                importFailures += result.importFailures
+                syncFailed = syncFailed || result.syncFailed
+            } while needsTrailingPass
+            // Clear this before completing the task. A later trigger will either mark the
+            // current pass dirty or become the sole owner of a new pass.
+            inFlight = nil
+            return PassResult(importFailures: importFailures, syncFailed: syncFailed)
         }
         inFlight = task
-        _ = await task.value
-        inFlight = nil
+        let result = await task.value
+        report(result)
+    }
+
+    private func runPass() async -> PassResult {
+        let failed = await importOperation()
+        await model.load()
+        // A prior launch can commit the request ledger, then stop before sync. Always ask
+        // the one active sync driver to compare the local rows with its accepted shadow,
+        // even when this pass finds only a duplicate request or no pending directory.
+        do {
+            try await syncOperation()
+            return PassResult(importFailures: failed, syncFailed: false)
+        } catch {
+            return PassResult(importFailures: failed, syncFailed: true)
+        }
+    }
+
+    private func report(_ result: PassResult) {
+        if result.importFailures > 0 {
+            model.errorMessage =
+                "One or more shared items could not be added yet. Snip Snap will try again next time."
+        } else if result.syncFailed {
+            model.errorMessage =
+                "The shared item is saved on this device. iCloud sync will try again later."
+        }
     }
 }

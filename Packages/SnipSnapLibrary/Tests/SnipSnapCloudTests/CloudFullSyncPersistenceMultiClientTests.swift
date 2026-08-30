@@ -396,6 +396,103 @@ extension CloudFullSyncPersistenceTests {
     }
   }
 
+  func testClosedAppShareReplayEntersTheExistingFullSyncPathExactlyOnce() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudFullShareSync-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sharedRoot = root.appendingPathComponent("Shared", isDirectory: true)
+    let firstStoreURL = ShareImportStore.storeURL(in: sharedRoot)
+    let secondStoreURL = root.appendingPathComponent("second.store")
+    let namespace = makeNamespace()
+    let zone = try XCTUnwrap(namespace.zones.first)
+    let server = FakeCloudServer()
+
+    do {
+      let library = try SwiftDataSnipLibrary(storeURL: firstStoreURL)
+      let persistence = CloudFullSyncPersistence(
+        library: library,
+        namespace: namespace,
+        dataZone: zone
+      )
+      try await persistence.approveEnrollment(
+        references: [CloudEntityReference(kind: .list, domainID: SnipList.inbox.id)]
+      )
+      let coordinator = CloudFullSyncCoordinator(
+        store: persistence,
+        transport: FakeCloudRecordTransport(server: server, namespace: namespace)
+      )
+      try await coordinator.sync()
+    }
+
+    let requestID = UUID()
+    let intake = ShareImportStore(sharedRootURL: sharedRoot)
+    _ = try await intake.save(
+      ShareImportRequest(
+        content: "Saved while closed",
+        destinationListID: SnipList.inbox.id,
+        requestID: requestID,
+        createdAt: Date(timeIntervalSince1970: 45)
+      )
+    )
+
+    let importedLibrary = try SwiftDataSnipLibrary(storeURL: firstStoreURL)
+    let interrupted = ShareImportStore(
+      sharedRootURL: sharedRoot,
+      afterPendingSaveBeforeCleanup: { throw ShareSyncCrash.afterLocalSave }
+    )
+    let interruptedResult = await interrupted.importPending(into: importedLibrary)
+    XCTAssertEqual(interruptedResult, ShareImportSummary(imported: 0, failed: 1))
+    let savedLocally = await importedLibrary.snapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(savedLocally.snips.first(where: { $0.requestID == requestID }))
+
+    let firstPersistence = CloudFullSyncPersistence(
+      library: importedLibrary,
+      namespace: namespace,
+      dataZone: zone
+    )
+    let firstRead = try await firstPersistence.pendingChanges()
+    let repeatedRead = try await firstPersistence.pendingChanges()
+    XCTAssertEqual(firstRead.operations, repeatedRead.operations)
+    XCTAssertEqual(
+      firstRead.operations.map(\.id),
+      [CloudRecordID.snip(snip.id, in: zone)]
+    )
+
+    let firstCoordinator = CloudFullSyncCoordinator(
+      store: firstPersistence,
+      transport: FakeCloudRecordTransport(server: server, namespace: namespace)
+    )
+    try await firstCoordinator.sync()
+
+    let relaunchedLibrary = try SwiftDataSnipLibrary(storeURL: firstStoreURL)
+    let replay = await ShareImportStore(sharedRootURL: sharedRoot)
+      .importPending(into: relaunchedLibrary)
+    XCTAssertEqual(replay, ShareImportSummary(imported: 1, failed: 0))
+    let relaunchedPersistence = CloudFullSyncPersistence(
+      library: relaunchedLibrary,
+      namespace: namespace,
+      dataZone: zone
+    )
+    let afterAcceptance = try await relaunchedPersistence.pendingChanges()
+    XCTAssertTrue(afterAcceptance.operations.isEmpty)
+
+    let secondLibrary = try SwiftDataSnipLibrary(storeURL: secondStoreURL)
+    let secondCoordinator = CloudFullSyncCoordinator(
+      store: CloudFullSyncPersistence(
+        library: secondLibrary,
+        namespace: namespace,
+        dataZone: zone
+      ),
+      transport: FakeCloudRecordTransport(server: server, namespace: namespace)
+    )
+    try await secondCoordinator.fetchRemote()
+    let received = await secondLibrary.snapshot(sortedBy: .manual)
+    XCTAssertEqual(received.snips.map(\.requestID), [requestID])
+    XCTAssertEqual(received.snips.map(\.content), ["Saved while closed"])
+    let acceptedCount = await server.acceptedOperationCount(for: .snip(snip.id, in: zone))
+    XCTAssertEqual(acceptedCount, 1)
+  }
+
   func testTwoDurableClientsExchangeFullSnipAndListRecords() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudFullSyncPersistenceTests-\(UUID().uuidString)")
@@ -930,4 +1027,8 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertTrue(blocked.operations.isEmpty)
   }
 
+}
+
+private enum ShareSyncCrash: Error {
+  case afterLocalSave
 }

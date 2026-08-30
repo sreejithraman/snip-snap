@@ -4,6 +4,9 @@ import SnipSnapPersistence
 
 extension CloudFullSyncPersistence {
   package func pendingChanges() async throws -> CloudOutboundBatch {
+    // The durable local rows and request ledger, compared with the durable accepted shadows,
+    // are the change-history seam. Share imports use this same path; keep one sync driver and
+    // do not add a second Share-only queue or cursor.
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     guard stored.namespaceState.phase != .blocked else {
       return CloudOutboundBatch(operations: [], zonesToSave: [])
