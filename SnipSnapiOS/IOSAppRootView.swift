@@ -3,6 +3,7 @@ import SnipSnapCloud
 import SnipSnapPersistence
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct IOSAppRootView: View {
     @Environment(\.scenePhase) private var scenePhase
@@ -10,6 +11,7 @@ struct IOSAppRootView: View {
     @State private var sheet: AppSheet?
     @State private var accountNoticeModel: AppleAccountNoticeModel?
     @State private var copyShare = IOSCopyShareCoordinator()
+    @State private var isImportingBackup = false
     private let uiTestAttachmentURLs: [URL]
     private let seedsCopyShareFixtures: Bool
     private let syncedContentSettings: SyncedContentSettingsModel
@@ -17,6 +19,7 @@ struct IOSAppRootView: View {
 
     init(
         library: any SnipLibrary,
+        userActions: (any SnipLibraryUserActions)? = nil,
         recoveryScope: SnipRecoveryScope? = nil,
         shareImports: ShareImportStore? = nil,
         initialSnapshot: SnipLibrarySnapshot? = nil,
@@ -27,7 +30,8 @@ struct IOSAppRootView: View {
         cloudSyncSession: SnipSnapCloudSyncSession? = nil,
         shareImportOperation: (@Sendable () async -> Int)? = nil,
         accountNoticeModel: AppleAccountNoticeModel? = nil,
-        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil
+        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
+        userActionsFactory: SnipLibraryUserActionsFactory = .direct
     ) {
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         self.seedsCopyShareFixtures = seedsCopyShareFixtures
@@ -36,12 +40,14 @@ struct IOSAppRootView: View {
         self.syncedContentSettings = settings
         let graph = IOSAppGraph(
             library: library,
+            userActions: userActions,
             recoveryScope: recoveryScope,
             shareImports: shareImports,
             initialSnapshot: initialSnapshot ?? SnipLibrarySnapshot(snips: [], lists: [.inbox]),
             startupError: startupError,
             shareImportOperation: shareImportOperation,
-            cloudSyncHandler: cloudSyncHandler
+            cloudSyncHandler: cloudSyncHandler,
+            userActionsFactory: userActionsFactory
         )
         if let cloudSyncSession {
             let reloadActiveLibrary: SyncedContentSettingsModel.DeleteCompletionAction = {
@@ -70,7 +76,11 @@ struct IOSAppRootView: View {
 
     var body: some View {
         NavigationSplitView {
-            ListSidebarView(model: model, sheet: $sheet)
+            ListSidebarView(
+                model: model,
+                sheet: $sheet,
+                importBackup: { isImportingBackup = true }
+            )
         } content: {
             SnipCollectionView(model: model, copyShare: copyShare, sheet: $sheet)
         } detail: {
@@ -149,6 +159,34 @@ struct IOSAppRootView: View {
             Button("OK") { copyShare.errorMessage = nil }
         } message: {
             Text(copyShare.errorMessage ?? "Please try again.")
+        }
+        .fileImporter(
+            isPresented: $isImportingBackup,
+            allowedContentTypes: [.json],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                Task { await model.previewBackupImport(from: url) }
+            case .failure(let error):
+                if (error as NSError).code != NSUserCancelledError {
+                    model.errorMessage = error.localizedDescription
+                }
+            }
+        }
+        .confirmationDialog(
+            "Import this backup?",
+            isPresented: Binding(
+                get: { model.pendingImportPreview != nil },
+                set: { if !$0 { model.cancelBackupImport() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Import Backup") { Task { await model.confirmBackupImport() } }
+            Button("Cancel", role: .cancel) { model.cancelBackupImport() }
+        } message: {
+            Text("Review: \(model.importPreviewSummary). Snip Snap will merge these records with your saved snips.")
         }
         .task {
             await cloudLifecycleHooks.launch()

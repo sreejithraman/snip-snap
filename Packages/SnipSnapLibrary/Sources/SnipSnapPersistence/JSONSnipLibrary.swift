@@ -222,6 +222,7 @@ public actor JSONSnipLibrary: SnipLibrary {
         sortedBy sortMode: SnipSortMode
     ) throws -> SnipLibraryUpdate {
         try ensureAvailable()
+        let before = makeSnapshot(sortedBy: sortMode)
         var state = SnipLibraryState(
             snips: snips,
             lists: lists,
@@ -286,9 +287,18 @@ public actor JSONSnipLibrary: SnipLibrary {
             snips.flatMap(\.attachments).map { ($0.id, $0.relativePath) },
             uniquingKeysWith: { _, latest in latest }
         )
+        if command.editsAttachments {
+            removeUnreferencedAttachments(currentSnips: snips, keepingAdditional: [])
+            knownAttachmentPaths = knownAttachmentPaths.filter { id, _ in
+                snips.contains { snip in snip.attachments.contains { $0.id == id } }
+            }
+        }
+
+        let snapshot = makeSnapshot(sortedBy: sortMode)
         return SnipLibraryUpdate(
-            snapshot: makeSnapshot(sortedBy: sortMode),
-            outcome: outcome
+            snapshot: snapshot,
+            outcome: outcome,
+            devicePatch: .between(before, snapshot)
         )
     }
 
@@ -313,7 +323,8 @@ public actor JSONSnipLibrary: SnipLibrary {
 
     public func mergeTransferSnapshot(
         _ source: SnipLibraryTransferSnapshot,
-        transitionID: UUID
+        transitionID: UUID,
+        expectedTargetDigest: Data?
     ) async throws -> SnipLibraryTransferResult {
         try ensureAvailable()
         let target = try await transferSnapshot(revision: 0)
@@ -322,6 +333,9 @@ public actor JSONSnipLibrary: SnipLibrary {
             target: target,
             transitionID: transitionID
         )
+        if let expectedTargetDigest, plan.targetDigest != expectedTargetDigest {
+            throw SnipLibraryError.importChanged
+        }
         var transferredSnips = plan.snips
         let targetAttachmentIDs = Set(target.attachmentData.keys)
         var createdDirectories: [URL] = []
@@ -697,5 +711,12 @@ public actor JSONSnipLibrary: SnipLibrary {
         result.insert(.inbox, at: 0)
         for index in result.indices { result[index].position = index }
         return result
+    }
+}
+
+private extension SnipLibraryCommand {
+    var editsAttachments: Bool {
+        if case .editAttachments = self { return true }
+        return false
     }
 }

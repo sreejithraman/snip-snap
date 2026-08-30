@@ -372,7 +372,8 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       )
       XCTAssertTrue(
         snapshot.snips.contains(where: {
-          $0.id == replacement.id && $0.content == replacement.content
+          $0.id == replacement.id
+            && $0.content == replacement.content
             && $0.listID == replacement.listID
         }),
         adapter.rawValue

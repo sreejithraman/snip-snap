@@ -281,6 +281,35 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(updatedText.waitForExistence(timeout: 3))
     }
 
+    func testLibraryActionsExposeUndoRedoAndBackupImport() {
+        continueAfterFailure = false
+        let app = launchApp()
+        var actions = app.buttons["library-actions"]
+        if !actions.waitForExistence(timeout: 1) {
+            let showSidebar = app.buttons["Show Sidebar"]
+            if showSidebar.exists {
+                showSidebar.tap()
+            } else if app.buttons["BackButton"].exists {
+                app.buttons["BackButton"].tap()
+            } else {
+                app.navigationBars.buttons.firstMatch.tap()
+            }
+        }
+
+        if !actions.waitForExistence(timeout: 1) {
+            let more = app.buttons["More"]
+            XCTAssertTrue(more.waitForExistence(timeout: 3))
+            more.tap()
+            actions = app.buttons["Library Actions"]
+        }
+
+        XCTAssertTrue(actions.waitForExistence(timeout: 3))
+        actions.tap()
+        XCTAssertTrue(app.buttons["Undo"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Redo"].exists)
+        XCTAssertTrue(app.buttons["Import Backup…"].exists)
+    }
+
     func testCreatesListMovesSnipAndDeletesIt() {
         continueAfterFailure = false
         let app = launchApp()

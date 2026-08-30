@@ -57,6 +57,8 @@ public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {
     case recoveryNotFound
     case recoveryChanged
     case invalidRecoveryChoice
+    case importChanged
+    case deviceActionChanged
 
     public var errorDescription: String? {
         switch self {
@@ -94,6 +96,10 @@ public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {
             "That recovered edit changed. Refresh the review and try again."
         case .invalidRecoveryChoice:
             "That choice does not apply to this recovered edit."
+        case .importChanged:
+            "The backup or saved snips changed. Review the import again."
+        case .deviceActionChanged:
+            "That action cannot be undone because the same fields changed on another device."
         }
     }
 }
@@ -208,6 +214,7 @@ public indirect enum SnipLibraryCommand: Sendable {
     case place(ids: [UUID], in: UUID, before: UUID?, basedOn: SnipSortMode)
     case replaceAll([Snip])
     case importArchive(SnipLibraryArchive)
+    case applyDevicePatch(SnipLibraryDevicePatch, now: Date)
     case pruneAttachments(retaining: Set<UUID>)
     case batch([SnipLibraryCommand])
     case guarded(expectation: SnipLibraryExpectation, command: SnipLibraryCommand)
@@ -223,10 +230,22 @@ public enum SnipLibraryOutcome: Equatable, Sendable {
 public struct SnipLibraryUpdate: Equatable, Sendable {
     public let snapshot: SnipLibrarySnapshot
     public let outcome: SnipLibraryOutcome
+    package let devicePatch: SnipLibraryDevicePatch?
 
     public init(snapshot: SnipLibrarySnapshot, outcome: SnipLibraryOutcome) {
         self.snapshot = snapshot
         self.outcome = outcome
+        devicePatch = nil
+    }
+
+    package init(
+        snapshot: SnipLibrarySnapshot,
+        outcome: SnipLibraryOutcome,
+        devicePatch: SnipLibraryDevicePatch
+    ) {
+        self.snapshot = snapshot
+        self.outcome = outcome
+        self.devicePatch = devicePatch
     }
 }
 
@@ -304,6 +323,70 @@ public struct SnipLibraryTransferResult: Codable, Equatable, Sendable {
     }
 }
 
+public struct SnipImportPreview: Equatable, Sendable {
+    public let totalSnipCount: Int
+    public let addedSnipCount: Int
+    public let recoveredSnipCount: Int
+    public let addedListCount: Int
+    public let addedAttachmentCount: Int
+    package let transitionID: UUID
+    package let source: SnipLibraryTransferSnapshot
+    package let targetDigest: Data
+    package let devicePatch: SnipLibraryDevicePatch
+
+    package init(
+        totalSnipCount: Int,
+        addedSnipCount: Int,
+        recoveredSnipCount: Int,
+        addedListCount: Int,
+        addedAttachmentCount: Int,
+        transitionID: UUID,
+        source: SnipLibraryTransferSnapshot,
+        targetDigest: Data,
+        devicePatch: SnipLibraryDevicePatch
+    ) {
+        self.totalSnipCount = totalSnipCount
+        self.addedSnipCount = addedSnipCount
+        self.recoveredSnipCount = recoveredSnipCount
+        self.addedListCount = addedListCount
+        self.addedAttachmentCount = addedAttachmentCount
+        self.transitionID = transitionID
+        self.source = source
+        self.targetDigest = targetDigest
+        self.devicePatch = devicePatch
+    }
+}
+
+public struct SnipImportResult: Equatable, Sendable {
+    public let snapshot: SnipLibrarySnapshot
+    public let addedSnipCount: Int
+    public let recoveredSnipCount: Int
+    package let devicePatch: SnipLibraryDevicePatch?
+
+    public init(
+        snapshot: SnipLibrarySnapshot,
+        addedSnipCount: Int,
+        recoveredSnipCount: Int
+    ) {
+        self.snapshot = snapshot
+        self.addedSnipCount = addedSnipCount
+        self.recoveredSnipCount = recoveredSnipCount
+        devicePatch = nil
+    }
+
+    package init(
+        snapshot: SnipLibrarySnapshot,
+        addedSnipCount: Int,
+        recoveredSnipCount: Int,
+        devicePatch: SnipLibraryDevicePatch
+    ) {
+        self.snapshot = snapshot
+        self.addedSnipCount = addedSnipCount
+        self.recoveredSnipCount = recoveredSnipCount
+        self.devicePatch = devicePatch
+    }
+}
+
 public protocol SnipLibrary: Sendable {
     func snapshot(sortedBy sortMode: SnipSortMode) async -> SnipLibrarySnapshot
 
@@ -319,8 +402,16 @@ public protocol SnipLibrary: Sendable {
 
     func mergeTransferSnapshot(
         _ source: SnipLibraryTransferSnapshot,
-        transitionID: UUID
+        transitionID: UUID,
+        expectedTargetDigest: Data?
     ) async throws -> SnipLibraryTransferResult
+
+    func previewImport(
+        _ source: SnipLibraryTransferSnapshot,
+        transitionID: UUID
+    ) async throws -> SnipImportPreview
+
+    func applyImport(_ preview: SnipImportPreview) async throws -> SnipImportResult
 
     func recoverySnapshot(in scope: SnipRecoveryScope) async throws -> SnipRecoverySnapshot
 
@@ -345,8 +436,34 @@ public extension SnipLibrary {
 
     func mergeTransferSnapshot(
         _ source: SnipLibraryTransferSnapshot,
+        transitionID: UUID,
+        expectedTargetDigest: Data?
+    ) async throws -> SnipLibraryTransferResult {
+        _ = (source, transitionID, expectedTargetDigest)
+        throw SnipLibraryError.transferUnsupported
+    }
+
+    func mergeTransferSnapshot(
+        _ source: SnipLibraryTransferSnapshot,
         transitionID: UUID
     ) async throws -> SnipLibraryTransferResult {
+        try await mergeTransferSnapshot(
+            source,
+            transitionID: transitionID,
+            expectedTargetDigest: nil
+        )
+    }
+
+    func previewImport(
+        _ source: SnipLibraryTransferSnapshot,
+        transitionID: UUID
+    ) async throws -> SnipImportPreview {
+        _ = (source, transitionID)
+        throw SnipLibraryError.transferUnsupported
+    }
+
+    func applyImport(_ preview: SnipImportPreview) async throws -> SnipImportResult {
+        _ = preview
         throw SnipLibraryError.transferUnsupported
     }
 

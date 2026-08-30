@@ -7,6 +7,8 @@ import SwiftUI
 @MainActor
 struct SnipSnapiOSApp: App {
     private let library: any SnipLibrary
+    private let userActions: any SnipLibraryUserActions
+    private let userActionsFactory: SnipLibraryUserActionsFactory
     private let shareImports: ShareImportStore?
     private let startupError: String?
     private let uiTestAttachmentURLs: [URL]
@@ -20,6 +22,8 @@ struct SnipSnapiOSApp: App {
     init() {
         let startup = Self.makeLibrary()
         library = startup.library
+        userActions = startup.userActions
+        userActionsFactory = startup.userActionsFactory
         shareImports = startup.shareImports
         startupError = startup.error
         uiTestAttachmentURLs = startup.uiTestAttachmentURLs
@@ -97,6 +101,7 @@ struct SnipSnapiOSApp: App {
         WindowGroup {
             IOSAppRootView(
                 library: library,
+                userActions: userActions,
                 recoveryScope: recoveryScope,
                 shareImports: shareImports,
                 startupError: startupError,
@@ -105,7 +110,8 @@ struct SnipSnapiOSApp: App {
                 syncedContentSettings: syncedContentSettings,
                 cloudSyncSession: cloudSyncSession,
                 accountNoticeModel: accountNoticeModel,
-                cloudSyncHandler: cloudSyncHandler
+                cloudSyncHandler: cloudSyncHandler,
+                userActionsFactory: userActionsFactory
             )
         }
     }
@@ -113,6 +119,8 @@ struct SnipSnapiOSApp: App {
     private static func makeLibrary() -> (
         library: any SnipLibrary,
         sourceLibrary: any SnipLibrary,
+        userActions: any SnipLibraryUserActions,
+        userActionsFactory: SnipLibraryUserActionsFactory,
         shareImports: ShareImportStore?,
         error: String?,
         uiTestAttachmentURLs: [URL],
@@ -124,9 +132,21 @@ struct SnipSnapiOSApp: App {
         let environment = ProcessInfo.processInfo.environment
 #if DEBUG
         if environment["SNIP_SNAP_UI_TEST_RECOVERY"] == "1" {
+            let library = RecoveryUITestSnipLibrary()
+            let actionsFactory = SnipLibraryUserActionsFactory.durable(
+                journalURL: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("SnipSnap-RecoveryUITest-Actions.json"),
+                collectionIdentity: {
+                    SnipLibraryCollectionIdentity(
+                        digest: Data("ui-test-recovery-library".utf8)
+                    )
+                }
+            )
             return (
-                RecoveryUITestSnipLibrary(),
-                RecoveryUITestSnipLibrary(),
+                library,
+                library,
+                actionsFactory.actions(for: library),
+                actionsFactory,
                 nil,
                 nil,
                 [],
@@ -176,6 +196,8 @@ struct SnipSnapiOSApp: App {
             return (
                 assembly.library,
                 sourceLibrary,
+                assembly.userActions,
+                assembly.userActionsFactory,
                 shareImports,
                 nil,
                 fixtureURLs,
@@ -193,6 +215,8 @@ struct SnipSnapiOSApp: App {
             return (
                 assembly.library,
                 sourceLibrary,
+                assembly.userActions,
+                assembly.userActionsFactory,
                 shareImports,
                 "Snip Snap could not open its local library. Your saved data was not changed.",
                 [],

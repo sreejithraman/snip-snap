@@ -175,7 +175,9 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let model = AppModel(
             library: assembly.library,
             initialError: store.errorMessage,
-            recoveryScope: assembly.recoveryScope
+            recoveryScope: assembly.recoveryScope,
+            userActions: assembly.userActions,
+            userActionsFactory: assembly.userActionsFactory
         )
         let shortcutSettings = ShortcutSettings()
         let cloudServices: SnipSnapCloudAppServices
@@ -582,6 +584,9 @@ private struct SnipCommands: Commands {
             }
         }
         CommandMenu("Snips") {
+            Button("Import Backup…") { model?.beginBackupImport() }
+                .disabled(model == nil)
+            Divider()
             Button(SnipCommand.copy.title) { perform(.copy) }
                 .keyboardShortcut("c", modifiers: .command)
                 .disabled(!isAvailable(.copy))

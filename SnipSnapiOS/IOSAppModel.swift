@@ -9,7 +9,8 @@ final class IOSAppModel {
     private var library: any SnipLibrary
     private var recoveryScope: SnipRecoveryScope?
     private let cloudSyncHandler: (any OptionalCloudSyncHandling)?
-    private var undoHistory = IOSUndoHistory()
+    private var userActions: any SnipLibraryUserActions
+    private let userActionsFactory: SnipLibraryUserActionsFactory
     private var mutationInProgress = false
     private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -22,6 +23,11 @@ final class IOSAppModel {
     private(set) var isCloudSyncActive = false
     private var hasKnownCloudSyncActivity: Bool
     private var hasKnownCloudAttachmentStates = false
+    private(set) var deviceActionState = SnipDeviceActionState(
+        undoTitle: "Undo",
+        redoTitle: "Redo"
+    )
+    private(set) var pendingImportPreview: SnipImportPreview?
     var selectedListID: UUID
     var selectedSnipID: UUID?
     var selectedSnipIDs: Set<UUID> = []
@@ -32,15 +38,19 @@ final class IOSAppModel {
 
     init(
         library: any SnipLibrary,
+        userActions: (any SnipLibraryUserActions)? = nil,
         recoveryScope: SnipRecoveryScope? = nil,
         initialSnapshot: SnipLibrarySnapshot = SnipLibrarySnapshot(
             snips: [],
             lists: [.inbox]
         ),
         startupError: String? = nil,
-        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil
+        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
+        userActionsFactory: SnipLibraryUserActionsFactory = .direct
     ) {
         self.library = library
+        self.userActionsFactory = userActionsFactory
+        self.userActions = userActions ?? userActionsFactory.actions(for: library)
         self.recoveryScope = recoveryScope
         self.cloudSyncHandler = cloudSyncHandler
         hasKnownCloudSyncActivity = cloudSyncHandler == nil
@@ -82,8 +92,6 @@ final class IOSAppModel {
         return Snip.sorted(matches, by: sortMode)
     }
 
-    var canUndo: Bool { undoHistory.canUndo }
-    var undoTitle: String { undoHistory.title }
     var canReorderVisibleSnips: Bool {
         sortMode == .manual && completionFilter == .all
             && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -115,9 +123,9 @@ final class IOSAppModel {
         recoveryScope: SnipRecoveryScope?
     ) async {
         await withSerializedMutation {
-            await clearUndoHistoryAndReleaseAttachments()
             self.library = library
             self.recoveryScope = recoveryScope
+            self.userActions = userActionsFactory.actions(for: library)
             selectedSnipID = nil
             await loadUnlocked()
         }
@@ -126,17 +134,7 @@ final class IOSAppModel {
     @discardableResult
     func resolveRecovery(_ id: UUID, choice: SnipRecoveryChoice) async -> Bool {
         await withSerializedMutation {
-            guard let recoveryScope else { return false }
-            do {
-                apply(try await library.resolveRecovery(id, in: recoveryScope, choice: choice))
-                await loadRecoveries()
-                return true
-            } catch {
-                errorMessage =
-                    (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                await loadUnlocked()
-                return false
-            }
+            await resolveRecoveryUnlocked(id, choice: choice)
         }
     }
 
@@ -230,19 +228,40 @@ final class IOSAppModel {
         await withSerializedMutation { await undoUnlocked() }
     }
 
+    @discardableResult
+    func redo() async -> Bool {
+        await withSerializedMutation { await redoUnlocked() }
+    }
+
     private func loadUnlocked() async {
         apply(await library.snapshot(sortedBy: sortMode))
+        await loadDeviceActions()
         await loadRecoveries()
         await refreshAttachmentTransferStates()
-        await pruneAttachmentsRetainedByUndo()
+    }
+
+    private func resolveRecoveryUnlocked(
+        _ id: UUID,
+        choice: SnipRecoveryChoice
+    ) async -> Bool {
+        guard let recoveryScope else { return false }
+        do {
+            apply(try await library.resolveRecovery(id, in: recoveryScope, choice: choice))
+            await loadRecoveries()
+            return true
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            await loadUnlocked()
+            return false
+    }
     }
 
     private func createSnipUnlocked(
         content: String,
         in listID: UUID,
-        attachmentURLs: [URL]
+        attachmentURLs: [URL] = []
     ) async -> Bool {
-        await performUndoable(
+        return await performUserAction(
             .add(
                 content: content,
                 origin: .quickEntry,
@@ -252,11 +271,7 @@ final class IOSAppModel {
                 requestID: UUID(),
                 now: Date()
             ),
-            name: "New Snip",
-            inverse: { _, update in
-                guard case .add(.added(let id)) = update.outcome else { return nil }
-                return .delete(ids: [id])
-            }
+            name: "Add Snip"
         ) { outcome in
             if case .add(.added(let id)) = outcome {
                 selectedListID = listID
@@ -371,30 +386,16 @@ final class IOSAppModel {
                 now: Date()
             )
         }
-        return await performUndoable(
+        return await performUserAction(
             command,
-            name: "Edit",
-            inverse: { before, update in
-                guard let old = before.snips.first(where: { $0.id == snip.id }),
-                    let current = update.snapshot.snips.first(where: { $0.id == snip.id })
-                else { return nil }
-                return attachmentEdits == nil
-                    ? .update(before: old, expectedUpdatedAt: current.updatedAt)
-                    : .replace(before: old, expectedUpdatedAt: current.updatedAt)
-            }
+            name: "Edit Snip"
         )
     }
 
     private func moveSnipUnlocked(id: UUID, to listID: UUID) async -> Bool {
-        let sourceListIDs = Set(snips.filter { $0.id == id }.map(\.listID))
-        let touched = sourceListIDs.union([listID])
-        return await performUndoable(
+        return await performUserAction(
             .moveChronologically(ids: [id], to: listID),
-            name: "Move",
-            touchedListIDs: touched,
-            inverse: { before, _ in
-                .placements(IOSUndoHistory.placements(in: before, listIDs: touched))
-            }
+            name: "Move"
         ) { _ in
             selectedListID = listID
             selectedSnipID = id
@@ -405,8 +406,6 @@ final class IOSAppModel {
         let selected = selectedVisibleSnipIDs
         let ids = visibleSnips.map(\.id).filter(selected.contains)
         guard !ids.isEmpty else { return false }
-        let sourceListIDs = Set(snips.filter { selected.contains($0.id) }.map(\.listID))
-        let touched = sourceListIDs.union([listID])
         let command: SnipLibraryCommand
         if sortMode == .manual {
             let moving = Set(ids)
@@ -418,13 +417,9 @@ final class IOSAppModel {
         } else {
             command = .moveChronologically(ids: ids, to: listID)
         }
-        return await performUndoable(
+        return await performUserAction(
             command,
-            name: "Move",
-            touchedListIDs: touched,
-            inverse: { before, _ in
-                .placements(IOSUndoHistory.placements(in: before, listIDs: touched))
-            }
+            name: "Move"
         ) { _ in
             selectedSnipIDs = []
             selectedSnipID = nil
@@ -437,13 +432,9 @@ final class IOSAppModel {
             orderedIDs.count == visibleSnips.count
         else { return false }
         let listID = selectedListID
-        return await performUndoable(
+        return await performUserAction(
             .place(ids: orderedIDs, in: listID, before: nil, basedOn: .manual),
-            name: "Reorder",
-            touchedListIDs: [listID],
-            inverse: { before, _ in
-                .placements(IOSUndoHistory.placements(in: before, listIDs: [listID]))
-            }
+            name: "Reorder"
         )
     }
 
@@ -468,36 +459,24 @@ final class IOSAppModel {
     private func setSelectionDoneUnlocked(_ done: Bool) async -> Bool {
         let ids = selectedVisibleSnipIDs
         guard !ids.isEmpty else { return false }
-        return await performUndoable(
+        return await performUserAction(
             .setDone(ids: ids, done: done),
-            name: done ? "Mark Done" : "Mark Not Done",
-            inverse: { before, _ in
-                .setDone(states: Dictionary(uniqueKeysWithValues: before.snips
-                    .filter { ids.contains($0.id) }.map { ($0.id, $0.isDone) }))
-            }
+            name: done ? "Mark Done" : "Mark Not Done"
         )
     }
 
     private func toggleDoneUnlocked(id: UUID) async -> Bool {
         guard let snip = snips.first(where: { $0.id == id }) else { return false }
-        return await performUndoable(
+        return await performUserAction(
             .setDone(ids: [id], done: !snip.isDone),
-            name: snip.isDone ? "Mark Not Done" : "Mark Done",
-            inverse: { before, _ in
-                guard let prior = before.snips.first(where: { $0.id == id }) else { return nil }
-                return .setDone(states: [id: prior.isDone])
-            }
+            name: snip.isDone ? "Mark Not Done" : "Mark Done"
         )
     }
 
     private func createListUnlocked(name: String) async -> Bool {
-        await performUndoable(
+        await performUserAction(
             .createList(name: name, systemImage: "list.bullet"),
-            name: "New List",
-            inverse: { _, update in
-                guard case .listCreated(let list) = update.outcome else { return nil }
-                return .deleteList(id: list.id)
-            }
+            name: "Create List"
         ) { outcome in
             if case .listCreated(let list) = outcome {
                 selectedListID = list.id
@@ -508,29 +487,17 @@ final class IOSAppModel {
     }
 
     private func renameListUnlocked(_ list: SnipList, name: String) async -> Bool {
-        await performUndoable(
+        await performUserAction(
             .updateList(id: list.id, name: name, systemImage: list.systemImage),
-            name: "Rename List",
-            inverse: { before, _ in
-                before.lists.first(where: { $0.id == list.id })
-                    .map(IOSUndoHistory.InverseEdit.updateList)
-            }
+            name: "Rename List"
         )
     }
 
     private func deleteListUnlocked(id: UUID) async -> Bool {
-        guard let deleted = lists.first(where: { $0.id == id }) else { return false }
-        let touched: Set<UUID> = [SnipList.inboxID, id]
-        return await performUndoable(
+        guard lists.contains(where: { $0.id == id }) else { return false }
+        return await performUserAction(
             .deleteList(id: id),
-            name: "Delete List",
-            touchedListIDs: touched,
-            inverse: { before, _ in
-                .restoreList(
-                    deleted,
-                    placements: IOSUndoHistory.placements(in: before, listIDs: touched)
-                )
-            }
+            name: "Delete List"
         ) { _ in
             selectedListID = SnipList.inboxID
             selectedSnipID = nil
@@ -539,37 +506,35 @@ final class IOSAppModel {
     }
 
     private func undoUnlocked() async -> Bool {
-        guard let operation = undoHistory.latest else { return false }
         do {
-            let update = try await library.perform(
-                .guarded(
-                    expectation: operation.expectation,
-                    command: operation.inverse.command(now: Date())
-                ),
-                sortedBy: sortMode
-            )
-            undoHistory.discardLatest()
-            apply(update.snapshot)
-            selectedListID = lists.contains(where: { $0.id == operation.selection.listID })
-                ? operation.selection.listID : SnipList.inboxID
-            selectedSnipID = operation.selection.snipID.flatMap { id in
-                snips.contains(where: { $0.id == id }) ? id : nil
+            guard let update = try await userActions.undo(sortedBy: sortMode) else {
+                await loadDeviceActions()
+                return false
             }
-            selectedSnipIDs = operation.selection.snipIDs.intersection(snips.map(\.id))
-            await pruneAttachmentsRetainedByUndo()
+            apply(update.snapshot)
+            await loadDeviceActions()
+            await loadRecoveries()
             return true
         } catch {
-            if let libraryError = error as? SnipLibraryError,
-                libraryError == .snipChanged
-                    || libraryError == .duplicateList
-                    || libraryError == .invalidList
-            {
-                undoHistory.discardLatest()
-                errorMessage = "That change can no longer be undone because its snips or lists changed."
-                await pruneAttachmentsRetainedByUndo()
-            } else {
-                errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            await loadDeviceActions()
+            return false
+        }
+    }
+
+    private func redoUnlocked() async -> Bool {
+        do {
+            guard let update = try await userActions.redo(sortedBy: sortMode) else {
+                await loadDeviceActions()
+                return false
             }
+            apply(update.snapshot)
+            await loadDeviceActions()
+            await loadRecoveries()
+            return true
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            await loadDeviceActions()
             return false
         }
     }
@@ -580,54 +545,98 @@ final class IOSAppModel {
 
     private func deleteSnips(ids: Set<UUID>) async -> Bool {
         guard !ids.isEmpty else { return false }
-        return await performUndoable(
+        return await performUserAction(
             .delete(ids: ids),
-            name: "Delete",
-            inverse: { before, _ in
-                .restore(snips: before.snips.filter { ids.contains($0.id) })
-            }
+            name: "Delete"
         ) { _ in
             if let selectedSnipID, ids.contains(selectedSnipID) { self.selectedSnipID = nil }
             selectedSnipIDs.subtract(ids)
         }
     }
 
-    private func performUndoable(
+    private func performUserAction(
         _ command: SnipLibraryCommand,
         name: String,
-        touchedListIDs: Set<UUID> = [],
-        inverse: (SnipLibrarySnapshot, SnipLibraryUpdate) -> IOSUndoHistory.InverseEdit?,
         afterSuccess: (SnipLibraryOutcome) -> Void = { _ in }
     ) async -> Bool {
-        let before = currentSnapshot
-        let selectionBefore = IOSUndoHistory.Selection(
-            listID: selectedListID,
-            snipID: selectedSnipID,
-            snipIDs: selectedSnipIDs
-        )
         do {
-            let update = try await library.perform(command, sortedBy: sortMode)
+            let update = try await userActions.perform(
+                name: name,
+                command: command,
+                sortedBy: sortMode
+            )
             apply(update.snapshot)
+            await loadDeviceActions()
             await loadRecoveries()
             await refreshAttachmentTransferStates()
             afterSuccess(update.outcome)
-            if (before.snips != update.snapshot.snips || before.lists != update.snapshot.lists),
-                let inverse = inverse(before, update)
-            {
-                undoHistory.record(
-                    name: name,
-                    before: before,
-                    after: update.snapshot,
-                    touchedListIDs: touchedListIDs,
-                    inverse: inverse,
-                    selection: selectionBefore
-                )
-            }
-            await pruneAttachmentsRetainedByUndo()
             return true
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             return false
+        }
+    }
+
+    var canUndo: Bool { deviceActionState.canUndo }
+    var canRedo: Bool { deviceActionState.canRedo }
+    var undoTitle: String { deviceActionState.undoTitle }
+    var redoTitle: String { deviceActionState.redoTitle }
+
+    var importPreviewSummary: String {
+        guard let preview = pendingImportPreview else { return "" }
+        var parts = ["\(preview.totalSnipCount) snips"]
+        if preview.addedSnipCount > 0 { parts.append("\(preview.addedSnipCount) new") }
+        if preview.recoveredSnipCount > 0 {
+            parts.append("\(preview.recoveredSnipCount) recovered edits")
+        }
+        if preview.addedListCount > 0 {
+            let noun = preview.addedListCount == 1 ? "list" : "lists"
+            parts.append("\(preview.addedListCount) new \(noun)")
+        }
+        if preview.addedAttachmentCount > 0 {
+            parts.append("\(preview.addedAttachmentCount) attachments")
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    func previewBackupImport(from url: URL) async {
+        let didAccess = url.startAccessingSecurityScopedResource()
+        defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+        do {
+            pendingImportPreview = try await userActions.previewImport(backupURL: url)
+        } catch {
+            pendingImportPreview = nil
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    func cancelBackupImport() {
+        pendingImportPreview = nil
+    }
+
+    func confirmBackupImport() async {
+        guard let preview = pendingImportPreview else { return }
+        do {
+            let result = try await userActions.applyImport(preview, sortedBy: .chronological)
+            pendingImportPreview = nil
+            apply(result.snapshot)
+            await loadDeviceActions()
+            await loadRecoveries()
+        } catch {
+            pendingImportPreview = nil
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            await load()
+        }
+    }
+
+    private func loadDeviceActions() async {
+        do {
+            deviceActionState = try await userActions.state(sortedBy: .chronological)
+        } catch {
+            deviceActionState = SnipDeviceActionState(
+                undoTitle: "Undo",
+                redoTitle: "Redo"
+            )
         }
     }
 
@@ -640,38 +649,6 @@ final class IOSAppModel {
             recoverySnapshot = try await library.recoverySnapshot(in: recoveryScope)
         } catch {
             recoverySnapshot = .empty
-        }
-    }
-
-    private var currentSnapshot: SnipLibrarySnapshot {
-        SnipLibrarySnapshot(
-            snips: snips,
-            lists: lists,
-            attachmentURLs: attachmentURLs
-        )
-    }
-
-    private func pruneAttachmentsRetainedByUndo() async {
-        do {
-            let update = try await library.perform(
-                .pruneAttachments(retaining: undoHistory.retainedAttachmentIDs),
-                sortedBy: sortMode
-            )
-            apply(update.snapshot)
-        } catch {
-            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        }
-    }
-
-    private func clearUndoHistoryAndReleaseAttachments() async {
-        undoHistory = IOSUndoHistory()
-        do {
-            _ = try await library.perform(
-                .pruneAttachments(retaining: []),
-                sortedBy: sortMode
-            )
-        } catch {
-            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
@@ -746,6 +723,7 @@ final class IOSAppModel {
         }
         mutationWaiters.removeFirst().resume()
     }
+
 }
 
 @MainActor
@@ -755,19 +733,23 @@ final class IOSAppGraph {
 
     init(
         library: any SnipLibrary,
+        userActions: (any SnipLibraryUserActions)? = nil,
         recoveryScope: SnipRecoveryScope? = nil,
         shareImports: ShareImportStore?,
         initialSnapshot: SnipLibrarySnapshot,
         startupError: String?,
         shareImportOperation: (@Sendable () async -> Int)? = nil,
-        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil
+        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
+        userActionsFactory: SnipLibraryUserActionsFactory = .direct
     ) {
         let model = IOSAppModel(
             library: library,
+            userActions: userActions,
             recoveryScope: recoveryScope,
             initialSnapshot: initialSnapshot,
             startupError: startupError,
-            cloudSyncHandler: cloudSyncHandler
+            cloudSyncHandler: cloudSyncHandler,
+            userActionsFactory: userActionsFactory
         )
         self.model = model
         if let shareImportOperation {

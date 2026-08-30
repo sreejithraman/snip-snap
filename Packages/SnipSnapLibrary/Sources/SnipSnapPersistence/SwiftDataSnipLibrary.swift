@@ -50,6 +50,13 @@ final class StoredSnipRecord {
   }
 }
 
+private extension SnipLibraryCommand {
+  var editsAttachments: Bool {
+    if case .editAttachments = self { return true }
+    return false
+  }
+}
+
 @Model
 final class StoredListRecord {
   @Attribute(.unique) var id: UUID
@@ -462,6 +469,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
   let container: ModelContainer?
   let isAvailable: Bool
   let afterMutationBeforeSave: @Sendable () throws -> Void
+  let beforeImportCommit: @Sendable () async throws -> Void
   var seenRequestIDs: Set<UUID>
   var knownAttachmentPaths: [UUID: String]
   var lastKnownState: SnipLibraryState
@@ -473,6 +481,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
   package init(
     storeURL: URL,
     afterMutationBeforeSave: @escaping @Sendable () throws -> Void = {},
+    beforeImportCommit: @escaping @Sendable () async throws -> Void = {},
     metadataBackfillHook: @escaping @Sendable (LibraryMetadataBackfillPoint) throws -> Void = { _ in },
     cloudFullRecordBackfillHook: @escaping @Sendable (CloudFullRecordBackfillPoint) throws -> Void = { _ in }
   ) throws {
@@ -497,6 +506,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     self.container = container
     isAvailable = true
     self.afterMutationBeforeSave = afterMutationBeforeSave
+    self.beforeImportCommit = beforeImportCommit
     seenRequestIDs = []
     knownAttachmentPaths = [:]
     lastKnownState = SnipLibraryState(snips: [], lists: [.inbox], seenRequestIDs: [])
@@ -544,6 +554,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     container = nil
     isAvailable = false
     afterMutationBeforeSave = {}
+    beforeImportCommit = {}
     seenRequestIDs = []
     knownAttachmentPaths = [:]
     lastKnownState = SnipLibraryState(snips: [], lists: [.inbox], seenRequestIDs: [])
@@ -728,6 +739,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     let context = Self.makeContext(container: container)
     let loaded = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
     try Self.validate(loaded.state)
+    let before = makeSnapshot(state: loaded.state, sortedBy: sortMode)
     knownAttachmentPaths.merge(
       loaded.attachments.map { ($0.id, $0.relativePath) },
       uniquingKeysWith: { _, latest in latest }
@@ -782,9 +794,19 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
         state.lists,
         storeURL: lockURL.deletingPathExtension()
       )
+      if command.editsAttachments {
+        let liveIDs = Set(state.snips.flatMap(\.attachments).map(\.id))
+        Self.removeUnreferencedAttachmentDirectories(
+          at: attachmentRootURL,
+          keeping: Set(state.snips.flatMap(\.attachments).map(\.relativePath))
+        )
+        knownAttachmentPaths = knownAttachmentPaths.filter { liveIDs.contains($0.key) }
+      }
+      let snapshot = makeSnapshot(state: state, sortedBy: sortMode)
       return SnipLibraryUpdate(
-        snapshot: makeSnapshot(state: state, sortedBy: sortMode),
-        outcome: outcome
+        snapshot: snapshot,
+        outcome: outcome,
+        devicePatch: .between(before, snapshot)
       )
     } catch {
       context.rollback()

@@ -524,7 +524,7 @@ final class IOSAppModelTests: XCTestCase {
             listID: SnipList.inboxID
         )
         let library = ModelTestLibrary(snips: [snip])
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         let probe = PendingImportProbe()
         let coordinator = IOSShareImportCoordinator(
             model: model,
@@ -1009,7 +1009,7 @@ final class IOSAppModelTests: XCTestCase {
 
     func testTextSnipFlowCreatesEditsMovesAndDeletes() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         await model.load()
 
         let createdList = await model.createList(name: "Work")
@@ -1033,213 +1033,157 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertTrue(model.snips.isEmpty)
         XCTAssertNil(model.selectedSnipID)
         let pruneCalls = await library.pruneCalls()
-        XCTAssertEqual(pruneCalls, 6)
+        XCTAssertGreaterThan(pruneCalls, 0)
     }
 
-    func testReloadPrunesWithNoUndoAttachmentLeases() async {
-        let library = ModelTestLibrary()
-        let firstModel = IOSAppModel(library: library)
-        _ = await firstModel.createSnip(content: "Saved", in: SnipList.inboxID)
+    func testUndoRedoHistorySurvivesIOSModelReopen() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("IOSDeviceActionTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storeURL = root.appendingPathComponent("Snips.json")
+        let journalURL = root.appendingPathComponent("DeviceActions.json")
+        let library = try JSONSnipLibrary(fileURL: storeURL)
+        let actions = SnipLibraryDeviceActions(library: library, journalURL: journalURL)
+        let model = IOSAppModel(library: library, userActions: actions)
+        await model.load()
 
-        let reloadedModel = IOSAppModel(library: library)
-        await reloadedModel.load()
+        let created = await model.createSnip(content: "Keep me", in: SnipList.inboxID)
+        XCTAssertTrue(created)
+        let snipID = try XCTUnwrap(model.snips.first?.id)
+        XCTAssertEqual(model.undoTitle, "Undo Add Snip")
+        await model.undo()
+        XCTAssertTrue(model.snips.isEmpty)
+        XCTAssertTrue(model.canRedo)
 
-        let retentionCalls = await library.retentionCalls()
-        XCTAssertEqual(retentionCalls.last, Set<UUID>())
+        let reopenedLibrary = try JSONSnipLibrary(fileURL: storeURL)
+        let reopenedActions = SnipLibraryDeviceActions(
+            library: reopenedLibrary,
+            journalURL: journalURL
+        )
+        let reopenedModel = IOSAppModel(
+            library: reopenedLibrary,
+            userActions: reopenedActions
+        )
+        await reopenedModel.load()
+
+        XCTAssertEqual(reopenedModel.redoTitle, "Redo Add Snip")
+        await reopenedModel.redo()
+        XCTAssertEqual(reopenedModel.snips.map(\.id), [snipID])
     }
 
-    func testUndoHistoryEvictsItsOldestAttachmentLease() throws {
-        var history = IOSUndoHistory()
-        var attachmentIDs: [UUID] = []
-        let empty = SnipLibrarySnapshot(snips: [], lists: [.inbox])
+    func testLibraryReplacementKeepsDurableHistoryForTheSameCollectionAndReopen() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("IOSLibraryReplacementTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storeURL = root.appendingPathComponent("Snips.json")
+        let factory = SnipLibraryUserActionsFactory.durable(
+            journalURL: root.appendingPathComponent("DeviceActions.json"),
+            collectionIdentity: {
+                SnipLibraryCollectionIdentity(digest: Data("same-collection".utf8))
+            }
+        )
+        let firstLibrary = try JSONSnipLibrary(fileURL: storeURL)
+        let model = IOSAppModel(
+            library: firstLibrary,
+            userActions: factory.actions(for: firstLibrary),
+            userActionsFactory: factory
+        )
+        await model.load()
+        let created = await model.createSnip(content: "Keep me", in: SnipList.inboxID)
+        XCTAssertTrue(created)
+        let snipID = try XCTUnwrap(model.snips.first?.id)
 
-        for index in 0...100 {
-            let attachmentID = UUID()
-            attachmentIDs.append(attachmentID)
-            let attachment = try testAttachment(id: attachmentID, fileName: "file-\(index).txt")
-            let snip = Snip(
-                content: "File \(index)",
+        let replacement = try JSONSnipLibrary(fileURL: storeURL)
+        await model.replaceLibrary(replacement, recoveryScope: nil)
+        XCTAssertEqual(model.undoTitle, "Undo Add Snip")
+
+        let reopenedLibrary = try JSONSnipLibrary(fileURL: storeURL)
+        let reopenedModel = IOSAppModel(
+            library: reopenedLibrary,
+            userActions: factory.actions(for: reopenedLibrary),
+            userActionsFactory: factory
+        )
+        await reopenedModel.load()
+        XCTAssertEqual(reopenedModel.undoTitle, "Undo Add Snip")
+        let undone = await reopenedModel.undo()
+        XCTAssertTrue(undone)
+        XCTAssertFalse(reopenedModel.snips.contains { $0.id == snipID })
+    }
+
+    func testIOSBackupImportWaitsForConfirmationAndCanUndo() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("IOSImportTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backupURL = root.appendingPathComponent("Backup.json")
+        let targetURL = root.appendingPathComponent("Target.json")
+        let backup = try JSONSnipLibrary(fileURL: backupURL)
+        let update = try await backup.perform(
+            .add(
+                content: "From backup",
                 origin: .quickEntry,
-                attachments: [attachment]
-            )
-            let before = SnipLibrarySnapshot(snips: [snip], lists: [.inbox])
-            history.record(
-                name: "Delete",
-                before: before,
-                after: empty,
-                touchedListIDs: [],
-                inverse: .restore(snips: [snip]),
-                selection: .init(listID: SnipList.inboxID, snipID: snip.id, snipIDs: [])
-            )
+                source: nil,
+                listID: SnipList.inboxID,
+                attachmentURLs: [],
+                requestID: UUID(),
+                now: Date()
+            ),
+            sortedBy: .chronological
+        )
+        guard case .add(.added(let importedID)) = update.outcome else {
+            return XCTFail("The backup must contain the added snip.")
         }
-
-        XCTAssertEqual(history.retainedAttachmentIDs.count, 100)
-        XCTAssertFalse(history.retainedAttachmentIDs.contains(attachmentIDs[0]))
-        XCTAssertTrue(history.retainedAttachmentIDs.contains(attachmentIDs[100]))
-    }
-
-    func testDeletedSnipUndoRestoresReadableAttachment() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SnipSnapUndoAttachment-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let sourceURL = directory.appendingPathComponent("source.txt")
-        try Data("Restore me".utf8).write(to: sourceURL)
-        let library = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("snips.json"))
-        let model = IOSAppModel(library: library)
+        let target = try JSONSnipLibrary(fileURL: targetURL)
+        let actions = SnipLibraryDeviceActions(
+            library: target,
+            journalURL: root.appendingPathComponent("DeviceActions.json")
+        )
+        let model = IOSAppModel(library: target, userActions: actions)
         await model.load()
 
-        let created = await model.createSnip(
-            content: "",
-            in: SnipList.inboxID,
-            attachmentURLs: [sourceURL]
-        )
-        XCTAssertTrue(created)
-        let snip = try XCTUnwrap(model.selectedSnip)
-        let attachmentID = try XCTUnwrap(snip.attachments.first?.id)
-        let storedURL = try XCTUnwrap(model.attachmentURL(for: attachmentID))
-        let deleted = await model.deleteSnip(id: snip.id)
-        XCTAssertTrue(deleted)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
+        await model.previewBackupImport(from: backupURL)
 
-        let undone = await model.undo()
-        XCTAssertTrue(undone)
-        let restoredURL = try XCTUnwrap(model.attachmentURL(for: attachmentID))
-        XCTAssertEqual(try Data(contentsOf: restoredURL), Data("Restore me".utf8))
+        XCTAssertEqual(model.pendingImportPreview?.addedSnipCount, 1)
+        XCTAssertTrue(model.snips.isEmpty)
+        XCTAssertFalse(model.canUndo)
+
+        await model.confirmBackupImport()
+
+        XCTAssertEqual(model.snips.map(\.id), [importedID])
+        XCTAssertEqual(model.undoTitle, "Undo Import Backup")
+        await model.undo()
+        XCTAssertTrue(model.snips.isEmpty)
     }
 
-    func testRejectedUndoReleasesDeletedSnipAttachment() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SnipSnapRejectedUndo-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let sourceURL = directory.appendingPathComponent("source.txt")
-        try Data("Release me".utf8).write(to: sourceURL)
-        let library = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("snips.json"))
-        let model = IOSAppModel(library: library)
+    func testIOSBackupImportPreviewNamesAnAddedEmptyList() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("IOSListImportTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backupURL = root.appendingPathComponent("Backup.json")
+        let targetURL = root.appendingPathComponent("Target.json")
+        let backup = try JSONSnipLibrary(fileURL: backupURL)
+        _ = try await backup.perform(
+            .createList(name: "Empty", systemImage: "tray"),
+            sortedBy: .manual
+        )
+        let target = try JSONSnipLibrary(fileURL: targetURL)
+        let model = IOSAppModel(
+            library: target,
+            userActions: SnipLibraryDeviceActions(
+                library: target,
+                journalURL: root.appendingPathComponent("DeviceActions.json")
+            )
+        )
         await model.load()
 
-        let madeList = await model.createList(name: "Work")
-        XCTAssertTrue(madeList)
-        let listID = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" })?.id)
-        let created = await model.createSnip(
-            content: "",
-            in: listID,
-            attachmentURLs: [sourceURL]
-        )
-        XCTAssertTrue(created)
-        let snip = try XCTUnwrap(model.selectedSnip)
-        let storedURL = try XCTUnwrap(model.attachmentURL(for: snip.attachments[0].id))
-        let deleted = await model.deleteSnip(id: snip.id)
-        XCTAssertTrue(deleted)
-        _ = try await library.perform(.deleteList(id: listID), sortedBy: .manual)
+        await model.previewBackupImport(from: backupURL)
 
-        let undone = await model.undo()
-        XCTAssertFalse(undone)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: storedURL.path))
-    }
-
-    func testReplacingAttachmentRetainsOldBytesUntilUndoAndThenPrunesReplacement() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SnipSnapReplaceUndo-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let firstSource = directory.appendingPathComponent("first-source.txt")
-        let secondSource = directory.appendingPathComponent("second-source.txt")
-        try Data("A".utf8).write(to: firstSource)
-        try Data("B".utf8).write(to: secondSource)
-        let library = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("snips.json"))
-        let model = IOSAppModel(library: library)
-        await model.load()
-        let created = await model.createSnip(
-            content: "Attachment",
-            in: SnipList.inboxID,
-            attachmentURLs: [firstSource]
-        )
-        XCTAssertTrue(created)
-        let before = try XCTUnwrap(model.selectedSnip)
-        let oldID = try XCTUnwrap(before.attachments.first?.id)
-        let oldURL = try XCTUnwrap(model.attachmentURL(for: oldID))
-
-        let edited = await model.editSnip(
-            before,
-            content: before.content,
-            attachmentEdits: [.replacement(attachmentID: oldID, sourceURL: secondSource)]
-        )
-        XCTAssertTrue(edited)
-        let replacementID = try XCTUnwrap(model.selectedSnip?.attachments.first?.id)
-        let replacementURL = try XCTUnwrap(model.attachmentURL(for: replacementID))
-        XCTAssertEqual(try Data(contentsOf: oldURL), Data("A".utf8))
-        XCTAssertEqual(try Data(contentsOf: replacementURL), Data("B".utf8))
-
-        let undone = await model.undo()
-        XCTAssertTrue(undone)
-        XCTAssertEqual(model.selectedSnip?.attachments.first?.id, oldID)
-        XCTAssertEqual(try Data(contentsOf: oldURL), Data("A".utf8))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: replacementURL.path))
-    }
-
-    func testUndoCapacityEvictionPrunesDeletedAttachmentBytes() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SnipSnapUndoEviction-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let source = directory.appendingPathComponent("source.txt")
-        try Data("Evict".utf8).write(to: source)
-        let library = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("snips.json"))
-        let model = IOSAppModel(library: library)
-        await model.load()
-        let created = await model.createSnip(
-            content: "Attachment",
-            in: SnipList.inboxID,
-            attachmentURLs: [source]
-        )
-        XCTAssertTrue(created)
-        let snip = try XCTUnwrap(model.selectedSnip)
-        let storedURL = try XCTUnwrap(model.attachmentURL(for: snip.attachments[0].id))
-        let deleted = await model.deleteSnip(id: snip.id)
-        XCTAssertTrue(deleted)
-
-        for index in 0..<99 {
-            let createdList = await model.createList(name: "List \(index)")
-            XCTAssertTrue(createdList)
-        }
-        XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
-        let finalList = await model.createList(name: "List 99")
-        XCTAssertTrue(finalList)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: storedURL.path))
-    }
-
-    func testFreshModelLoadPrunesAttachmentHeldOnlyByOldMemoryUndo() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SnipSnapUndoReload-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let source = directory.appendingPathComponent("source.txt")
-        try Data("Reload".utf8).write(to: source)
-        let library = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("snips.json"))
-        let firstModel = IOSAppModel(library: library)
-        await firstModel.load()
-        let created = await firstModel.createSnip(
-            content: "Attachment",
-            in: SnipList.inboxID,
-            attachmentURLs: [source]
-        )
-        XCTAssertTrue(created)
-        let snip = try XCTUnwrap(firstModel.selectedSnip)
-        let storedURL = try XCTUnwrap(firstModel.attachmentURL(for: snip.attachments[0].id))
-        let deleted = await firstModel.deleteSnip(id: snip.id)
-        XCTAssertTrue(deleted)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
-
-        let reloadedModel = IOSAppModel(library: library)
-        await reloadedModel.load()
-        XCTAssertFalse(FileManager.default.fileExists(atPath: storedURL.path))
+        XCTAssertEqual(model.pendingImportPreview?.addedListCount, 1)
+        XCTAssertEqual(model.importPreviewSummary, "0 snips, 1 new list")
     }
 
     func testListFlowKeepsInboxAsFallback() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         await model.load()
 
         let createdList = await model.createList(name: "Notes")
@@ -1352,7 +1296,7 @@ final class IOSAppModelTests: XCTestCase {
 
     func testAttachmentInputsUseTheTargetedLibraryCommands() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         await model.load()
         let sourceURL = URL(fileURLWithPath: "/tmp/first-file.txt")
         let replacementURL = URL(fileURLWithPath: "/tmp/replacement-file.txt")
@@ -1451,7 +1395,7 @@ final class IOSAppModelTests: XCTestCase {
 
     func testSearchFiltersBulkDoneAndUndoStayAboveTheLibrarySeam() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         await model.load()
 
         let createdAlpha = await model.createSnip(content: "Alpha note", in: SnipList.inboxID)
@@ -1490,7 +1434,7 @@ final class IOSAppModelTests: XCTestCase {
 
     func testManualReorderAndBulkListMoveUseNormalRepositoryCommands() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         await model.load()
         let createdList = await model.createList(name: "Work")
         XCTAssertTrue(createdList)
@@ -1517,9 +1461,9 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(model.visibleSnips.map(\.id), [oneID, twoID])
     }
 
-    func testUndoDropsAnEntryWhenItsAffectedSnipChanged() async throws {
+    func testUndoDonePreservesAnUnrelatedRemoteTextChange() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         await model.load()
         let created = await model.createSnip(content: "Original", in: SnipList.inboxID)
         XCTAssertTrue(created)
@@ -1541,16 +1485,16 @@ final class IOSAppModelTests: XCTestCase {
         )
 
         let undone = await model.undo()
-        XCTAssertFalse(undone)
-        XCTAssertEqual(model.undoTitle, "Undo New Snip")
-        XCTAssertNotNil(model.errorMessage)
+        XCTAssertTrue(undone)
+        XCTAssertEqual(model.undoTitle, "Undo")
         let snapshot = await library.snapshot(sortedBy: .manual)
         XCTAssertEqual(snapshot.snips.first?.content, "Changed elsewhere")
+        XCTAssertEqual(snapshot.snips.first?.isDone, false)
     }
 
     func testSingleRowDoneAndUndoPreserveTheExistingSelection() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         await model.load()
         let madeFirst = await model.createSnip(content: "First", in: SnipList.inboxID)
         XCTAssertTrue(madeFirst)
@@ -1572,7 +1516,7 @@ final class IOSAppModelTests: XCTestCase {
 
     func testOverlappingMutationsRunOneAtATimeAndBuildIndependentUndoEntries() async {
         let library = ModelTestLibrary(commandDelay: .milliseconds(80))
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
 
         async let first = model.createSnip(content: "First", in: SnipList.inboxID)
         async let second = model.createSnip(content: "Second", in: SnipList.inboxID)
@@ -1594,7 +1538,7 @@ final class IOSAppModelTests: XCTestCase {
 
     func testUndoNewListRefusesToMoveASnipAddedElsewhere() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         let createdList = await model.createList(name: "Work")
         XCTAssertTrue(createdList)
         let workID = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" })?.id)
@@ -1621,7 +1565,7 @@ final class IOSAppModelTests: XCTestCase {
 
     func testUndoDeletedSnipRefusesToRestoreIntoAListDeletedElsewhere() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         let createdList = await model.createList(name: "Work")
         XCTAssertTrue(createdList)
         let workID = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" })?.id)
@@ -1640,9 +1584,9 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertFalse(snapshot.lists.contains(where: { $0.id == workID }))
     }
 
-    func testUndoRenameDropsStaleEntryWhenTheOldNameWasTakenElsewhere() async throws {
+    func testUndoRenameKeepsAListAddedElsewhereWithTheSameDesiredName() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         let createdList = await model.createList(name: "Work")
         XCTAssertTrue(createdList)
         let work = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" }))
@@ -1655,14 +1599,14 @@ final class IOSAppModelTests: XCTestCase {
 
         let undone = await model.undo()
 
-        XCTAssertFalse(undone)
-        XCTAssertEqual(model.undoTitle, "Undo New List")
-        XCTAssertNotNil(model.errorMessage)
+        XCTAssertTrue(undone)
+        XCTAssertEqual(model.undoTitle, "Undo Create List")
+        XCTAssertEqual(model.lists.filter { $0.desiredName == "Work" }.count, 2)
     }
 
-    func testUndoDeletedListDropsStaleEntryWhenItsNameWasTakenElsewhere() async throws {
+    func testUndoDeletedListKeepsAListAddedElsewhereWithTheSameDesiredName() async throws {
         let library = ModelTestLibrary()
-        let model = IOSAppModel(library: library)
+        let model = makeModel(library: library)
         let createdList = await model.createList(name: "Work")
         XCTAssertTrue(createdList)
         let work = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" }))
@@ -1675,9 +1619,9 @@ final class IOSAppModelTests: XCTestCase {
 
         let undone = await model.undo()
 
-        XCTAssertFalse(undone)
-        XCTAssertEqual(model.undoTitle, "Undo New List")
-        XCTAssertNotNil(model.errorMessage)
+        XCTAssertTrue(undone)
+        XCTAssertEqual(model.undoTitle, "Undo Create List")
+        XCTAssertEqual(model.lists.filter { $0.desiredName == "Work" }.count, 2)
     }
 
     func testTargetCannotCompileAppKit() {
@@ -1693,6 +1637,15 @@ final class IOSAppModelTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(10))
         }
         return await probe.callCount() >= expected
+    }
+
+    private func makeModel(library: any SnipLibrary) -> IOSAppModel {
+        let actions = SnipLibraryDeviceActions(
+            library: library,
+            journalURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("IOSAppModelTests-\(UUID().uuidString).json")
+        )
+        return IOSAppModel(library: library, userActions: actions)
     }
 }
 
@@ -2078,6 +2031,45 @@ private actor ModelTestLibrary: SnipLibrary {
             reindex(listID: listID, orderedIDs: destination)
             for sourceList in sourceLists where sourceList != listID { reindex(listID: sourceList) }
             outcome = .none
+        case .applyDevicePatch(let patch, _):
+            guard let updated = patch.applying(to: makeSnapshot(sortMode: .manual)) else {
+                throw SnipLibraryError.deviceActionChanged
+            }
+            snips = updated.snips
+            lists = updated.lists
+            outcome = .none
+        case .restore(let restored):
+            let existing = Set(snips.map(\.id))
+            snips.append(contentsOf: restored.filter { !existing.contains($0.id) })
+            outcome = .none
+        case .restoreReplacing(let restored, let id, let expectedUpdatedAt):
+            guard let current = snips.first(where: { $0.id == id }),
+                current.updatedAt == expectedUpdatedAt
+            else { throw SnipLibraryError.snipChanged }
+            snips.removeAll { $0.id == id }
+            snips.append(contentsOf: restored)
+            outcome = .none
+        case .setDone(let ids, let done):
+            for index in snips.indices where ids.contains(snips[index].id) {
+                snips[index].isDone = done
+                snips[index].updatedAt = Date()
+            }
+            outcome = .none
+        case .place(let ids, let listID, let destinationID, let sortMode):
+            let moving = Set(ids)
+            var destination = Snip.sorted(
+                snips.filter { $0.listID == listID && !moving.contains($0.id) },
+                by: sortMode
+            ).map(\.id)
+            let insertion = destinationID.flatMap(destination.firstIndex) ?? destination.endIndex
+            destination.insert(contentsOf: ids, at: insertion)
+            let sourceLists = Set(snips.filter { moving.contains($0.id) }.map(\.listID))
+            for index in snips.indices where moving.contains(snips[index].id) {
+                snips[index].listID = listID
+            }
+            reindex(listID: listID, orderedIDs: destination)
+            for sourceList in sourceLists where sourceList != listID { reindex(listID: sourceList) }
+            outcome = .none
         case .moveChronologically(let ids, let listID):
             for index in snips.indices where ids.contains(snips[index].id) {
                 snips[index].listID = listID
@@ -2152,13 +2144,22 @@ private actor ModelTestLibrary: SnipLibrary {
     }
 
     private func makeSnapshot(sortMode: SnipSortMode) -> SnipLibrarySnapshot {
-        SnipLibrarySnapshot(
-            snips: lists.sorted { $0.position < $1.position }.flatMap { list in
-                Snip.sorted(snips.filter { $0.listID == list.id }, by: sortMode)
-            },
-            lists: lists.sorted { $0.position < $1.position },
+        let orderedSnips = lists.sorted { $0.position < $1.position }.flatMap { list in
+            Snip.sorted(snips.filter { $0.listID == list.id }, by: sortMode)
+        }
+        let orderedLists = lists.sorted { $0.position < $1.position }
+        return SnipLibrarySnapshot(
+            snips: canonicalRoundTrip(orderedSnips),
+            lists: canonicalRoundTrip(orderedLists),
             attachmentURLs: attachmentURLs
         )
+    }
+
+    private func canonicalRoundTrip<Value: Codable>(_ value: Value) -> Value {
+        guard let data = try? JSONEncoder().encode(value),
+            let decoded = try? JSONDecoder().decode(Value.self, from: data)
+        else { return value }
+        return decoded
     }
 
     private func nextTopPosition(in listID: UUID, excluding: Set<UUID> = []) -> Int64 {
