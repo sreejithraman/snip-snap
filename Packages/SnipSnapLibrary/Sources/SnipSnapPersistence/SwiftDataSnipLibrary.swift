@@ -50,13 +50,6 @@ final class StoredSnipRecord {
   }
 }
 
-private extension SnipLibraryCommand {
-  var editsAttachments: Bool {
-    if case .editAttachments = self { return true }
-    return false
-  }
-}
-
 @Model
 final class StoredListRecord {
   @Attribute(.unique) var id: UUID
@@ -794,14 +787,6 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
         state.lists,
         storeURL: lockURL.deletingPathExtension()
       )
-      if command.editsAttachments {
-        let liveIDs = Set(state.snips.flatMap(\.attachments).map(\.id))
-        Self.removeUnreferencedAttachmentDirectories(
-          at: attachmentRootURL,
-          keeping: Set(state.snips.flatMap(\.attachments).map(\.relativePath))
-        )
-        knownAttachmentPaths = knownAttachmentPaths.filter { liveIDs.contains($0.key) }
-      }
       let snapshot = makeSnapshot(state: state, sortedBy: sortMode)
       return SnipLibraryUpdate(
         snapshot: snapshot,

@@ -287,13 +287,6 @@ public actor JSONSnipLibrary: SnipLibrary {
             snips.flatMap(\.attachments).map { ($0.id, $0.relativePath) },
             uniquingKeysWith: { _, latest in latest }
         )
-        if command.editsAttachments {
-            removeUnreferencedAttachments(currentSnips: snips, keepingAdditional: [])
-            knownAttachmentPaths = knownAttachmentPaths.filter { id, _ in
-                snips.contains { snip in snip.attachments.contains { $0.id == id } }
-            }
-        }
-
         let snapshot = makeSnapshot(sortedBy: sortMode)
         return SnipLibraryUpdate(
             snapshot: snapshot,
@@ -711,12 +704,5 @@ public actor JSONSnipLibrary: SnipLibrary {
         result.insert(.inbox, at: 0)
         for index in result.indices { result[index].position = index }
         return result
-    }
-}
-
-private extension SnipLibraryCommand {
-    var editsAttachments: Bool {
-        if case .editAttachments = self { return true }
-        return false
     }
 }
