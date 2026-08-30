@@ -95,6 +95,8 @@
 		E10000000000000000000030 /* IOSCopyShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000030 /* IOSCopyShare.swift */; };
 		E10000000000000000000033 /* CompactLibraryControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000033 /* CompactLibraryControls.swift */; };
 		E10000000000000000000034 /* ComposerDraftStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000037 /* ComposerDraftStore.swift */; };
+		A10000000000000000000001 /* SnipSnapTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* SnipSnapTheme.swift */; };
+		A10000000000000000000002 /* SnipSnapTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* SnipSnapTheme.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -186,6 +188,7 @@
 		200000000000000000000034 /* ClipboardViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardViews.swift; sourceTree = "<group>"; };
 		200000000000000000000036 /* PreviewImageCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewImageCache.swift; sourceTree = "<group>"; };
 		200000000000000000000037 /* ComposerDraftStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerDraftStore.swift; sourceTree = "<group>"; };
+		A20000000000000000000001 /* SnipSnapTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipSnapTheme.swift; sourceTree = "<group>"; };
 		200000000000000000000039 /* AttachmentPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentPreview.swift; sourceTree = "<group>"; };
 		20000000000000000000003A /* SnipDragExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipDragExport.swift; sourceTree = "<group>"; };
 		20000000000000000000003B /* PanelFileDrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelFileDrop.swift; sourceTree = "<group>"; };
@@ -408,6 +411,7 @@
 			isa = PBXGroup;
 			children = (
 				200000000000000000000037 /* ComposerDraftStore.swift */,
+				A20000000000000000000001 /* SnipSnapTheme.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -751,6 +755,7 @@
 				10000000000000000000002B /* ClipboardViews.swift in Sources */,
 				10000000000000000000002D /* PreviewImageCache.swift in Sources */,
 				10000000000000000000002E /* ComposerDraftStore.swift in Sources */,
+				A10000000000000000000001 /* SnipSnapTheme.swift in Sources */,
 				10000000000000000000003B /* ComposerDraftStore+ScreenCapture.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -791,6 +796,7 @@
 				E10000000000000000000030 /* IOSCopyShare.swift in Sources */,
 				E10000000000000000000033 /* CompactLibraryControls.swift in Sources */,
 				E10000000000000000000034 /* ComposerDraftStore.swift in Sources */,
+				A10000000000000000000002 /* SnipSnapTheme.swift in Sources */,
 				E10000000000000000000007 /* PreviewSupport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -247,6 +247,7 @@ struct IOSAppRootView: View {
 
     var body: some View {
         appNavigation
+        .tint(SnipSnapTheme.controlTint)
         .background {
             IOSShareSheetPresenter(request: $copyShare.shareRequest)
                 .frame(width: 0, height: 0)

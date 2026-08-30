@@ -4,6 +4,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct CompactLibraryControls: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     let model: IOSAppModel
     @Binding var sheet: AppSheet?
 
@@ -12,6 +14,7 @@ struct CompactLibraryControls: View {
     @State private var previewURL: URL?
     @State private var isImporting = false
     @State private var isSaving = false
+    @State private var submittedText: String?
     @State private var stagingTask: Task<Void, Never>?
     @FocusState private var isComposerFocused: Bool
 
@@ -61,54 +64,81 @@ struct CompactLibraryControls: View {
     }
 
     private var composer: some View {
-        VStack(spacing: 8) {
-            if !draft.attachments.isEmpty {
-                attachmentStrip
-                    .padding(.horizontal, 12)
-                    .padding(.top, 10)
+        HStack(alignment: .bottom, spacing: 8) {
+            Button {
+                isImporting = true
+            } label: {
+                Image(systemName: isStaging ? "hourglass" : "plus")
+                    .font(.title3.weight(.medium))
+                    .frame(width: 52, height: 52)
+                    .glassEffect(.regular.interactive(), in: Circle())
+                    .overlay {
+                        Circle().strokeBorder(
+                            SnipSnapTheme.glassEdge,
+                            lineWidth: 0.5
+                        )
+                    }
             }
+            .buttonStyle(.plain)
+            .disabled(isSaving || isStaging)
+            .accessibilityLabel("Add Attachments")
+            .accessibilityIdentifier("composer-add-attachments")
 
-            HStack(alignment: .bottom, spacing: 8) {
-                Button {
-                    isImporting = true
-                } label: {
-                    Image(systemName: isStaging ? "hourglass" : "plus")
-                        .font(.body.weight(.semibold))
-                        .frame(width: 36, height: 36)
+            VStack(spacing: 8) {
+                if !draft.attachments.isEmpty {
+                    attachmentStrip
+                        .padding(.horizontal, 12)
+                        .padding(.top, 10)
                 }
-                .buttonStyle(.plain)
-                .disabled(isSaving || isStaging)
-                .accessibilityLabel("Add Attachments")
-                .accessibilityIdentifier("composer-add-attachments")
 
-                TextField("New snip", text: composerText, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...5)
-                    .focused($isComposerFocused)
-                    .accessibilityIdentifier("composer-text")
+                HStack(alignment: .bottom, spacing: 8) {
+                    TextField("New snip", text: composerText, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .lineLimit(1...5)
+                        .focused($isComposerFocused)
+                        .padding(.leading, 16)
+                        .padding(.vertical, 15)
+                        .accessibilityIdentifier("composer-text")
 
-                Button {
-                    Task { await send() }
-                } label: {
-                    Image(systemName: "arrow.up")
-                        .font(.body.weight(.bold))
-                        .foregroundStyle(canSend ? Color.white : Color.secondary)
-                        .frame(width: 36, height: 36)
-                        .background(canSend ? Color.accentColor : Color.secondary.opacity(0.16))
-                        .clipShape(Circle())
+                    Button {
+                        Task { await send() }
+                    } label: {
+                        Image(systemName: "arrow.up")
+                            .font(.body.weight(.bold))
+                            .foregroundStyle(
+                                SnipSnapTheme.primaryActionLabel(for: colorScheme)
+                            )
+                            .frame(width: 46, height: 36)
+                            .background {
+                                Capsule(style: .continuous).fill(
+                                    SnipSnapTheme.primaryActionTint(for: colorScheme)
+                                )
+                            }
+                            .opacity(canSend ? 1 : 0.24)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSend)
+                    .padding(.trailing, 6)
+                    .padding(.vertical, 6)
+                    .accessibilityLabel("Send Snip")
+                    .accessibilityIdentifier("composer-send")
                 }
-                .buttonStyle(.plain)
-                .disabled(!canSend)
-                .accessibilityLabel("Send Snip")
-                .accessibilityIdentifier("composer-send")
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .frame(minHeight: 52)
+            .glassEffect(
+                .regular.interactive(),
+                in: RoundedRectangle(cornerRadius: 26, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .strokeBorder(
+                        isComposerFocused
+                            ? SnipSnapTheme.focusedGlassEdge
+                            : SnipSnapTheme.emphasizedGlassEdge,
+                        lineWidth: isComposerFocused ? 1 : 0.75
+                    )
+            }
         }
-        .glassEffect(
-            .regular.interactive(),
-            in: RoundedRectangle(cornerRadius: 26, style: .continuous)
-        )
     }
 
     private var attachmentStrip: some View {
@@ -130,6 +160,14 @@ struct CompactLibraryControls: View {
         Binding(
             get: { draft.text },
             set: { value in
+                let storedText = storage.draftStore.draft(for: model.selectedListID).text
+                if value == submittedText {
+                    if storedText.isEmpty {
+                        draft.text = ""
+                    }
+                    return
+                }
+                submittedText = nil
                 draft.text = value
                 storage.draftStore.setText(value, for: model.selectedListID)
             }
@@ -150,6 +188,7 @@ struct CompactLibraryControls: View {
     private func send() async {
         guard canSend else { return }
         let snapshot = storage.draftStore.beginSave(listID: model.selectedListID)
+        submittedText = snapshot.draft.text
         isSaving = true
         let saved = await model.createSnip(
             content: snapshot.draft.text,
@@ -161,7 +200,18 @@ struct CompactLibraryControls: View {
         if model.selectedListID == snapshot.listID {
             draft = storage.draftStore.draft(for: snapshot.listID)
         }
+        if !saved {
+            submittedText = nil
+        }
         isSaving = false
+        if saved {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(500))
+                if submittedText == snapshot.draft.text {
+                    submittedText = nil
+                }
+            }
+        }
     }
 
     private func stage(_ result: Result<[URL], any Error>) {

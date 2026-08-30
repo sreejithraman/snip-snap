@@ -368,6 +368,10 @@ final class SnipSnapiOSUITests: XCTestCase {
             NSPredicate(format: "label CONTAINS %@", "Sent from the quick composer")
         ).firstMatch
         XCTAssertTrue(savedText.waitForExistence(timeout: 5))
+
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
         XCTAssertFalse(send.isEnabled)
     }
 
