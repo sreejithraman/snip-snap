@@ -133,6 +133,8 @@ run_app_actions() {
         -derivedDataPath "$derived_data" \
         CODE_SIGNING_ALLOWED=NO \
         -only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testSyncEnableReportsEveryAttachmentAboveTheSnipSnapLimit \
+        -only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testQuickComposerSendsWithoutOpeningTheEditor \
+        -only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testCompactListTabsCreateAndSwitchLists \
         -only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testSharesMultipleSelectedSnips \
         -only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testLocalAttachmentsPreviewRemoveAndSurviveRelaunch \
         test

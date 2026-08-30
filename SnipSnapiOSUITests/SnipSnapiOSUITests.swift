@@ -41,12 +41,7 @@ final class SnipSnapiOSUITests: XCTestCase {
     func testExplicitEnableKeepsLocalContentAndTurnsSyncOn() {
         continueAfterFailure = false
         let app = launchApp(withSyncEnable: true)
-        app.buttons["new-snip"].tap()
-        let editor = app.textViews["snip-text"]
-        XCTAssertTrue(editor.waitForExistence(timeout: 3))
-        editor.tap()
-        editor.typeText("Keep while enabling sync")
-        app.buttons["save-snip"].tap()
+        createSnip("Keep while enabling sync", in: app)
         let localSnip = app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS %@", "Keep while enabling sync")
         ).firstMatch
@@ -66,8 +61,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         app.buttons["enable-icloud-sync"].tap()
         XCTAssertTrue(app.staticTexts["iCloud Sync On"].waitForExistence(timeout: 8))
         app.buttons["Done"].tap()
-        if app.buttons["list-Inbox"].waitForExistence(timeout: 2) {
-            app.buttons["list-Inbox"].tap()
+        let inbox = listControl(named: "Inbox", in: app)
+        if inbox.waitForExistence(timeout: 2) {
+            inbox.tap()
         }
         XCTAssertTrue(localSnip.waitForExistence(timeout: 3))
     }
@@ -105,12 +101,7 @@ final class SnipSnapiOSUITests: XCTestCase {
     func testDeleteSyncedContentExplainsAndConfirmsReset() {
         continueAfterFailure = false
         let app = launchApp(withSyncedContent: true)
-        app.buttons["new-snip"].tap()
-        let editor = app.textViews["snip-text"]
-        XCTAssertTrue(editor.waitForExistence(timeout: 3))
-        editor.tap()
-        editor.typeText("Visible before cloud reset")
-        app.buttons["save-snip"].tap()
+        createSnip("Visible before cloud reset", in: app)
         let priorSnip = app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS %@", "Visible before cloud reset")
         ).firstMatch
@@ -295,12 +286,7 @@ final class SnipSnapiOSUITests: XCTestCase {
     func testCreatesAndEditsTextSnip() {
         continueAfterFailure = false
         let app = launchApp()
-        app.buttons["new-snip"].tap()
-        let editor = app.textViews["snip-text"]
-        XCTAssertTrue(editor.waitForExistence(timeout: 3))
-        editor.tap()
-        editor.typeText("A useful thought")
-        app.buttons["save-snip"].tap()
+        createSnip("A useful thought", in: app)
 
         let savedText = app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS %@", "A useful thought")
@@ -316,6 +302,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             XCTAssertTrue(app.navigationBars["Snip"].waitForExistence(timeout: 3))
         }
         app.buttons["edit-snip"].tap()
+        let editor = app.textViews["snip-text"]
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
         editor.tap()
         editor.typeText(" updated")
@@ -325,6 +312,56 @@ final class SnipSnapiOSUITests: XCTestCase {
             NSPredicate(format: "label CONTAINS %@", "updated")
         ).firstMatch
         XCTAssertTrue(updatedText.waitForExistence(timeout: 3))
+    }
+
+    func testQuickComposerSendsWithoutOpeningTheEditor() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        let composer = app.descendants(matching: .any)["composer-text"]
+        let send = app.buttons["composer-send"]
+        let newList = app.buttons["new-list"]
+
+        guard composer.waitForExistence(timeout: 5) else {
+            throw XCTSkip("The quick composer is limited to compact layouts.")
+        }
+        XCTAssertTrue(newList.exists)
+        XCTAssertFalse(send.isEnabled)
+
+        composer.tap()
+        composer.typeText("Sent from the quick composer")
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        XCTAssertFalse(newList.exists)
+        XCTAssertTrue(send.isEnabled)
+        send.tap()
+
+        let savedText = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "Sent from the quick composer")
+        ).firstMatch
+        XCTAssertTrue(savedText.waitForExistence(timeout: 5))
+        XCTAssertFalse(send.isEnabled)
+    }
+
+    func testCompactListTabsCreateAndSwitchLists() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        guard app.descendants(matching: .any)["composer-text"].waitForExistence(timeout: 5)
+        else {
+            throw XCTSkip("The compact list tabs are limited to iPhone.")
+        }
+
+        let inbox = compactListTab(named: "Inbox", in: app)
+        XCTAssertTrue(inbox.waitForExistence(timeout: 3))
+        XCTAssertTrue(inbox.isSelected)
+
+        createList("Work", in: app)
+        let work = compactListTab(named: "Work", in: app)
+        XCTAssertTrue(work.waitForExistence(timeout: 3))
+        XCTAssertTrue(work.isSelected)
+        XCTAssertTrue(app.navigationBars["Work"].exists)
+
+        inbox.tap()
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+        XCTAssertTrue(inbox.isSelected)
     }
 
     func testLibraryActionsExposeUndoRedoAndBackupImport() {
@@ -376,24 +413,13 @@ final class SnipSnapiOSUITests: XCTestCase {
         name.typeText("Work")
         app.buttons["save-list"].tap()
 
-        let workList = app.buttons["list-Work"]
+        let workList = listControl(named: "Work", in: app)
         if workList.waitForExistence(timeout: 1) {
             workList.tap()
         } else {
             XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
         }
-        let newSnip = app.buttons["new-snip"]
-        if !newSnip.isHittable {
-            let hideSidebar = app.navigationBars["Lists"].buttons["Hide Sidebar"].firstMatch
-            XCTAssertTrue(hideSidebar.waitForExistence(timeout: 3))
-            hideSidebar.tap()
-        }
-        XCTAssertTrue(newSnip.waitForExistence(timeout: 3))
-        newSnip.tap()
-        let editor = app.textViews["snip-text"]
-        editor.tap()
-        editor.typeText("Move this")
-        app.buttons["save-snip"].tap()
+        createSnip("Move this", in: app)
 
         let moveRow = app.buttons.matching(
             NSPredicate(format: "label BEGINSWITH %@", "Move this")
@@ -438,8 +464,21 @@ final class SnipSnapiOSUITests: XCTestCase {
         let removeAttachment = app.buttons["remove-attachment-sample.png"]
         XCTAssertTrue(removeAttachment.waitForExistence(timeout: 3))
         removeAttachment.tap()
-        app.buttons["save-snip"].tap()
+        XCTAssertTrue(
+            imageRow.waitForNonExistence(timeout: 3),
+            "The editor did not remove the attachment before saving."
+        )
+        let save = app.buttons["save-snip"]
+        save.tap()
+        XCTAssertTrue(
+            save.waitForNonExistence(timeout: 8),
+            "The attachment edit did not finish saving."
+        )
         XCTAssertTrue(textPreview.waitForExistence(timeout: 3))
+        XCTAssertTrue(
+            imagePreview.waitForNonExistence(timeout: 3),
+            "The saved detail still showed the removed attachment."
+        )
 
         app.terminate()
         app = launchApp(storeName: storeName, withAttachments: true)
@@ -455,14 +494,14 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
         continueAfterFailure = false
         let app = launchApp(storeName: "picker-manual-\(UUID().uuidString)")
-        app.buttons["new-snip"].tap()
-        let editor = app.textViews["snip-text"]
-        editor.tap()
-        editor.typeText("Picker flow")
+        let composer = app.descendants(matching: .any)["composer-text"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.tap()
+        composer.typeText("Picker flow")
 
-        app.buttons["add-attachments"].tap()
+        app.buttons["composer-add-attachments"].tap()
         pickFile(named: "attachment-one.txt", in: app, confirmsSelection: true)
-        let added = app.buttons["attachment-row-attachment-one.txt"]
+        let added = app.buttons["composer-attachment-attachment-one.txt"]
         XCTAssertTrue(added.waitForExistence(timeout: 5))
         added.tap()
         let preview = app.otherElements["QLPreviewControllerView"]
@@ -470,12 +509,13 @@ final class SnipSnapiOSUITests: XCTestCase {
         dismissQuickLook(preview, in: app)
         XCTAssertFalse(preview.waitForExistence(timeout: 3))
 
-        app.buttons["replace-attachment-attachment-one.txt"].tap()
+        app.buttons["composer-remove-attachment-attachment-one.txt"].tap()
+        app.buttons["composer-add-attachments"].tap()
         pickFile(named: "attachment-two.txt", in: app, confirmsSelection: false)
         XCTAssertTrue(
-            app.buttons["attachment-row-attachment-two.txt"].waitForExistence(timeout: 5)
+            app.buttons["composer-attachment-attachment-two.txt"].waitForExistence(timeout: 5)
         )
-        app.buttons["save-snip"].tap()
+        app.buttons["composer-send"].tap()
         XCTAssertTrue(
             app.buttons["attachment-preview-attachment-two.txt"].waitForExistence(timeout: 5)
         )
@@ -748,7 +788,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         let app = launchApp()
         createList("Work", in: app)
         returnToLists(in: app)
-        app.buttons["list-Inbox"].tap()
+        listControl(named: "Inbox", in: app).tap()
         createSnip("One", in: app)
         returnToCollection(in: app)
         createSnip("Two", in: app)
@@ -762,7 +802,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         app.buttons["move-selection-to-Work"].tap()
 
         returnToLists(in: app)
-        app.buttons["list-Work"].tap()
+        listControl(named: "Work", in: app).tap()
         XCTAssertTrue(app.staticTexts["One"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["Two"].waitForExistence(timeout: 3))
         app.buttons["workflow-options"].tap()
@@ -784,7 +824,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         let app = launchApp()
         createList("Work", in: app)
         returnToLists(in: app)
-        app.buttons["list-Inbox"].tap()
+        listControl(named: "Inbox", in: app).tap()
         createSnip("Selected note", in: app)
         returnToCollection(in: app)
 
@@ -792,18 +832,28 @@ final class SnipSnapiOSUITests: XCTestCase {
         row(named: "Selected note", in: app).tap()
         XCTAssertTrue(app.buttons["selection-actions"].waitForExistence(timeout: 3))
 
-        if !app.buttons["list-Work"].exists { returnToLists(in: app) }
-        app.buttons["list-Work"].tap()
+        let workList = listControl(named: "Work", in: app)
+        if !workList.exists { returnToLists(in: app) }
+        listControl(named: "Work", in: app).tap()
         XCTAssertTrue(app.buttons["selection-actions"].waitForNonExistence(timeout: 3))
     }
 
     private func createSnip(_ text: String, in app: XCUIApplication) {
-        app.buttons["new-snip"].tap()
-        let editor = app.textViews["snip-text"]
-        XCTAssertTrue(editor.waitForExistence(timeout: 3))
-        editor.tap()
-        editor.typeText(text)
-        app.buttons["save-snip"].tap()
+        let composer = app.descendants(matching: .any)["composer-text"]
+        if composer.waitForExistence(timeout: 1) {
+            composer.tap()
+            composer.typeText(text)
+            let send = app.buttons["composer-send"]
+            XCTAssertTrue(send.isEnabled)
+            send.tap()
+        } else {
+            app.buttons["new-snip"].tap()
+            let editor = app.textViews["snip-text"]
+            XCTAssertTrue(editor.waitForExistence(timeout: 3))
+            editor.tap()
+            editor.typeText(text)
+            app.buttons["save-snip"].tap()
+        }
         XCTAssertTrue(app.staticTexts[text].waitForExistence(timeout: 3))
     }
 
@@ -816,6 +866,22 @@ final class SnipSnapiOSUITests: XCTestCase {
     private func collectionRow(named text: String, in app: XCUIApplication) -> XCUIElement {
         app.buttons.matching(
             NSPredicate(format: "label BEGINSWITH %@", text)
+        ).firstMatch
+    }
+
+    private func listControl(named name: String, in app: XCUIApplication) -> XCUIElement {
+        let sidebarList = app.buttons["list-\(name)"]
+        if sidebarList.exists { return sidebarList }
+        return compactListTab(named: name, in: app)
+    }
+
+    private func compactListTab(named name: String, in app: XCUIApplication) -> XCUIElement {
+        app.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@ AND label == %@",
+                "list-tab-",
+                name
+            )
         ).firstMatch
     }
 

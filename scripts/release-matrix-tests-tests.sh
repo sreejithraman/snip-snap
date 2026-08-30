@@ -59,6 +59,12 @@ for line in 2 5; do
         '-only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testSyncEnableReportsEveryAttachmentAboveTheSnipSnapLimit' >/dev/null || \
         fail_test "the app command missed the over-limit setup action"
     /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
+        '-only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testQuickComposerSendsWithoutOpeningTheEditor' >/dev/null || \
+        fail_test "the app command missed the compact composer flow"
+    /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
+        '-only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testCompactListTabsCreateAndSwitchLists' >/dev/null || \
+        fail_test "the app command missed the compact list-tab flow"
+    /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
         '-only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testSharesMultipleSelectedSnips' >/dev/null || \
         fail_test "the app command missed the Share flow"
     /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \

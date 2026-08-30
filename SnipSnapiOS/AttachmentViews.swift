@@ -210,12 +210,13 @@ enum AttachmentDraftLifecycle {
 
 enum AttachmentDraftStager {
     static func stage(_ urls: [URL], in root: URL) async throws -> [StagedAttachment] {
-        try await Task.detached(priority: .userInitiated) {
+        let worker = Task.detached(priority: .userInitiated) {
             let fileManager = FileManager.default
             let batchDirectory = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
             var staged: [StagedAttachment] = []
             do {
                 for sourceURL in urls {
+                    try Task.checkCancellation()
                     let didAccess = sourceURL.startAccessingSecurityScopedResource()
                     defer { if didAccess { sourceURL.stopAccessingSecurityScopedResource() } }
                     let sourceValues = try sourceURL.resourceValues(
@@ -233,6 +234,7 @@ enum AttachmentDraftStager {
                     )
                     let destination = directory.appendingPathComponent(fileName, isDirectory: false)
                     try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+                    try Task.checkCancellation()
                     try fileManager.copyItem(at: sourceURL, to: destination)
                     let values = try destination.resourceValues(
                         forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
@@ -253,11 +255,25 @@ enum AttachmentDraftStager {
                 clean(batchDirectory)
                 throw error
             }
-        }.value
+        }
+        return try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
     nonisolated static func clean(_ root: URL) {
         try? FileManager.default.removeItem(at: root)
+    }
+
+    nonisolated static func clean(_ staged: [StagedAttachment]) {
+        let batchDirectories = Set(staged.map {
+            $0.url.deletingLastPathComponent().deletingLastPathComponent()
+        })
+        for directory in batchDirectories {
+            clean(directory)
+        }
     }
 }
 

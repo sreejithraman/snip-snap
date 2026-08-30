@@ -245,17 +245,7 @@ struct IOSAppRootView: View {
     private var model: IOSAppModel { appGraph.model }
 
     var body: some View {
-        NavigationSplitView {
-            ListSidebarView(
-                model: model,
-                sheet: $sheet,
-                importBackup: { isExplainingBackupImport = true }
-            )
-        } content: {
-            SnipCollectionView(model: model, copyShare: copyShare, sheet: $sheet)
-        } detail: {
-            SnipDetailView(model: model, copyShare: copyShare, sheet: $sheet)
-        }
+        appNavigation
         .background {
             IOSShareSheetPresenter(request: $copyShare.shareRequest)
                 .frame(width: 0, height: 0)
@@ -417,6 +407,48 @@ struct IOSAppRootView: View {
                 }
             default:
                 break
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var appNavigation: some View {
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            NavigationStack {
+                SnipCollectionView(
+                    model: model,
+                    copyShare: copyShare,
+                    sheet: $sheet,
+                    layout: .compactStack
+                )
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    CompactLibraryControls(model: model, sheet: $sheet)
+                }
+                .toolbar {
+                    ToolbarItemGroup(placement: .topBarLeading) {
+                        Button("Settings", systemImage: "gearshape") {
+                            sheet = .settings
+                        }
+                        .accessibilityIdentifier("settings")
+                        LibraryActionsMenu(
+                            model: model,
+                            importBackup: { isExplainingBackupImport = true },
+                            includesCloudActions: true
+                        )
+                    }
+                }
+            }
+        } else {
+            NavigationSplitView {
+                ListSidebarView(
+                    model: model,
+                    sheet: $sheet,
+                    importBackup: { isExplainingBackupImport = true }
+                )
+            } content: {
+                SnipCollectionView(model: model, copyShare: copyShare, sheet: $sheet)
+            } detail: {
+                SnipDetailView(model: model, copyShare: copyShare, sheet: $sheet)
             }
         }
     }

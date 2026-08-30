@@ -12,9 +12,7 @@ struct ListSidebarView: View {
             get: { model.selectedListID },
             set: { id in
                 guard let id else { return }
-                model.selectedListID = id
-                model.selectedSnipID = nil
-                model.selectedSnipIDs = []
+                model.selectList(id)
             }
         )
     }
@@ -57,21 +55,7 @@ struct ListSidebarView: View {
                 .accessibilityIdentifier("settings")
             }
             ToolbarItem(placement: .secondaryAction) {
-                Menu("Library Actions", systemImage: "ellipsis.circle") {
-                    Button(model.undoTitle, systemImage: "arrow.uturn.backward") {
-                        Task { await model.undo() }
-                    }
-                    .disabled(!model.canUndo)
-                    Button(model.redoTitle, systemImage: "arrow.uturn.forward") {
-                        Task { await model.redo() }
-                    }
-                    .disabled(!model.canRedo)
-                    Divider()
-                    Button("Import Backup…", systemImage: "square.and.arrow.down") {
-                        importBackup()
-                    }
-                }
-                .accessibilityIdentifier("library-actions")
+                LibraryActionsMenu(model: model, importBackup: importBackup)
             }
             ToolbarItem(placement: .primaryAction) {
                 Button("New List", systemImage: "folder.badge.plus") {
@@ -80,27 +64,65 @@ struct ListSidebarView: View {
                 .accessibilityIdentifier("new-list")
             }
             if model.hasCloudSync {
-                ToolbarItem(placement: .secondaryAction) {
-                    Button("Sync Now", systemImage: "arrow.triangle.2.circlepath") {
-                        Task { await model.syncWhenPossible() }
-                    }
-                    .accessibilityIdentifier("sync-icloud-now")
-                }
-                ToolbarItem(placement: .secondaryAction) {
-                    Button("Clear Downloaded Files", systemImage: "icloud.and.arrow.down") {
-                        Task { await model.clearDownloadedFiles() }
-                    }
-                    .accessibilityIdentifier("clear-icloud-downloads")
+                ToolbarItemGroup(placement: .secondaryAction) {
+                    CloudLibraryActions(model: model)
                 }
             }
         }
     }
 }
 
+struct LibraryActionsMenu: View {
+    let model: IOSAppModel
+    let importBackup: () -> Void
+    var includesCloudActions = false
+
+    var body: some View {
+        Menu("Library Actions", systemImage: "ellipsis.circle") {
+            Button(model.undoTitle, systemImage: "arrow.uturn.backward") {
+                Task { await model.undo() }
+            }
+            .disabled(!model.canUndo)
+            Button(model.redoTitle, systemImage: "arrow.uturn.forward") {
+                Task { await model.redo() }
+            }
+            .disabled(!model.canRedo)
+            Divider()
+            Button("Import Backup…", systemImage: "square.and.arrow.down", action: importBackup)
+            if includesCloudActions, model.hasCloudSync {
+                Divider()
+                CloudLibraryActions(model: model)
+            }
+        }
+        .accessibilityIdentifier("library-actions")
+    }
+}
+
+private struct CloudLibraryActions: View {
+    let model: IOSAppModel
+
+    var body: some View {
+        Button("Sync Now", systemImage: "arrow.triangle.2.circlepath") {
+            Task { await model.syncWhenPossible() }
+        }
+        .accessibilityIdentifier("sync-icloud-now")
+        Button("Clear Downloaded Files", systemImage: "icloud.and.arrow.down") {
+            Task { await model.clearDownloadedFiles() }
+        }
+        .accessibilityIdentifier("clear-icloud-downloads")
+    }
+}
+
+enum SnipCollectionLayout: Equatable {
+    case splitView
+    case compactStack
+}
+
 struct SnipCollectionView: View {
     let model: IOSAppModel
     let copyShare: IOSCopyShareCoordinator
     @Binding var sheet: AppSheet?
+    var layout = SnipCollectionLayout.splitView
     @State private var editMode: EditMode = .inactive
     @State private var isSelecting = false
 
@@ -161,6 +183,21 @@ struct SnipCollectionView: View {
                                 .accessibilityAddTraits(
                                     model.selectedSnipIDs.contains(snip.id) ? .isSelected : []
                                 )
+                            } else if layout == .compactStack {
+                                NavigationLink {
+                                    SnipDetailView(
+                                        model: model,
+                                        copyShare: copyShare,
+                                        sheet: $sheet
+                                    )
+                                    .onAppear { model.selectedSnipID = snip.id }
+                                } label: {
+                                    SnipRow(
+                                        snip: snip,
+                                        model: model,
+                                        isRecovered: model.isRecoveredSnip(snip.id)
+                                    )
+                                }
                             } else {
                                 NavigationLink(value: snip.id) {
                                     SnipRow(
@@ -221,13 +258,15 @@ struct SnipCollectionView: View {
         )
         .environment(\.editMode, $editMode)
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button(model.undoTitle, systemImage: "arrow.uturn.backward") {
-                    Task { _ = await model.undo() }
+            if layout == .splitView {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(model.undoTitle, systemImage: "arrow.uturn.backward") {
+                        Task { _ = await model.undo() }
+                    }
+                    .disabled(!model.canUndo)
+                    .keyboardShortcut("z", modifiers: .command)
+                    .accessibilityIdentifier("undo-change")
                 }
-                .disabled(!model.canUndo)
-                .keyboardShortcut("z", modifiers: .command)
-                .accessibilityIdentifier("undo-change")
             }
             ToolbarItemGroup(placement: .primaryAction) {
                 if isSelecting {
@@ -245,7 +284,7 @@ struct SnipCollectionView: View {
                 }
                     .disabled(model.visibleSnips.isEmpty)
                     .accessibilityIdentifier("select-snips")
-                if !isSelecting {
+                if !isSelecting && layout == .splitView {
                     Button("New Snip", systemImage: "square.and.pencil") {
                         sheet = .newSnip(listID: model.selectedListID)
                     }

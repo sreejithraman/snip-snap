@@ -69,6 +69,12 @@ final class IOSAppModel {
         return snips.first(where: { $0.id == selectedSnipID })
     }
 
+    func selectList(_ listID: UUID) {
+        selectedListID = listID
+        selectedSnipID = nil
+        selectedSnipIDs = []
+    }
+
     var selectedVisibleSnips: [Snip] {
         visibleSnips.filter { selectedSnipIDs.contains($0.id) }
     }
@@ -141,13 +147,15 @@ final class IOSAppModel {
     func createSnip(
         content: String,
         in listID: UUID,
-        attachmentURLs: [URL] = []
+        attachmentURLs: [URL] = [],
+        selectCreatedSnip: Bool = true
     ) async -> Bool {
         await withSerializedMutation {
             await createSnipUnlocked(
                 content: content,
                 in: listID,
-                attachmentURLs: attachmentURLs
+                attachmentURLs: attachmentURLs,
+                selectCreatedSnip: selectCreatedSnip
             )
         }
     }
@@ -258,7 +266,8 @@ final class IOSAppModel {
     private func createSnipUnlocked(
         content: String,
         in listID: UUID,
-        attachmentURLs: [URL] = []
+        attachmentURLs: [URL] = [],
+        selectCreatedSnip: Bool = true
     ) async -> Bool {
         return await performUserAction(
             .add(
@@ -272,7 +281,7 @@ final class IOSAppModel {
             ),
             name: "Add Snip"
         ) { outcome in
-            if case .add(.added(let id)) = outcome {
+            if selectCreatedSnip, case .add(.added(let id)) = outcome {
                 selectedListID = listID
                 selectedSnipID = id
             }

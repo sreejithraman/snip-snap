@@ -1144,6 +1144,49 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertGreaterThan(pruneCalls, 0)
     }
 
+    func testQuickComposerCreateDoesNotChangeTheCurrentSelection() async throws {
+        let library = ModelTestLibrary()
+        let model = makeModel(library: library)
+        await model.load()
+        let createdList = await model.createList(name: "Work")
+        XCTAssertTrue(createdList)
+        let workID = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" })?.id)
+        model.selectedListID = SnipList.inboxID
+        model.selectedSnipID = nil
+
+        let created = await model.createSnip(
+            content: "Saved in the background",
+            in: workID,
+            selectCreatedSnip: false
+        )
+
+        XCTAssertTrue(created)
+        XCTAssertEqual(model.selectedListID, SnipList.inboxID)
+        XCTAssertNil(model.selectedSnipID)
+        XCTAssertEqual(model.snips.first(where: { $0.content == "Saved in the background" })?.listID, workID)
+    }
+
+    func testComposerDraftsStaySeparateAndPreserveNewTextDuringSave() {
+        let suiteName = "IOSComposerDraftTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = ComposerDraftStore(
+            defaults: defaults,
+            textDefaultsKey: "drafts"
+        )
+        let workID = UUID()
+        store.setText("Inbox draft", for: SnipList.inboxID)
+        store.setText("Work draft", for: workID)
+
+        let snapshot = store.beginSave(listID: SnipList.inboxID)
+        store.setText("New inbox text", for: SnipList.inboxID)
+        store.finishSave(snapshot, saved: true)
+
+        XCTAssertEqual(store.draft(for: SnipList.inboxID).text, "New inbox text")
+        XCTAssertEqual(store.draft(for: workID).text, "Work draft")
+    }
+
     func testUndoRedoHistorySurvivesIOSModelReopen() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("IOSDeviceActionTests-\(UUID().uuidString)", isDirectory: true)
