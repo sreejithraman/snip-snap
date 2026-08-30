@@ -10,7 +10,7 @@ These notes record the accepted product direction and the facts that support it.
 - Keep iCloud sync optional and off by default on each device.
 - Let the Mac app remain fully useful with local storage only.
 - Let the iOS app remain fully useful with local storage only.
-- Never require a Snip Snap account.
+- Never require a separate sign-in.
 - Keep clipboard history, drafts, shortcuts, panel state, and other device settings local.
 - Sync only saved snips, lists, and attachments that belong to saved snips.
 - Sync through the user's private iCloud database. Do not add shared lists or collaboration in the first release.
@@ -247,6 +247,6 @@ Automate these checks with temporary durable SwiftData stores, a fake Cloud tran
 - Exercise text, image, file, mixed, and multi-snip Copy and Share flows in both iPhone and iPad Simulators.
 - Run the same SwiftData migration, repository, merge, sync, and recovery test suites for the Mac and iOS targets.
 
-Before release, run the [physical-iPhone release checklist](release-checklist.md) with a release-like signed build.
+Before release, run the [physical-iPhone release checklist](release-checklist.md) with a release-like signed build. Automated Mac and Simulator evidence sets the Snip Snap attachment policy, but it does not complete that physical transfer gate.
 
 Accept that Simulator and injected failures do not prove every production push, background, storage-pressure, account, or file-provider behavior. Record any physical-device-only bug found later as a release fix, but do not require a larger device lab for the first release.

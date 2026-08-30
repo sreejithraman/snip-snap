@@ -35,7 +35,13 @@ assert_fails_with_all() {
 }
 
 entitlements="$test_root/Fake.entitlements"
-print '<?xml version="1.0"?><plist version="1.0"><dict/></plist>' > "$entitlements"
+/usr/bin/plutil -create xml1 "$entitlements"
+/usr/bin/plutil -insert 'com\.apple\.security\.application-groups' \
+    -json '["group.org.example.snipsnap"]' "$entitlements"
+/usr/bin/plutil -insert 'com\.apple\.developer\.icloud-container-identifiers' \
+    -json '["iCloud.org.example.snipsnap"]' "$entitlements"
+/usr/bin/plutil -insert 'com\.apple\.developer\.icloud-services' \
+    -json '["CloudKit"]' "$entitlements"
 complete="$test_root/complete-settings.txt"
 print '    DEVELOPMENT_TEAM = FAKE123456' > "$complete"
 print '    PRODUCT_BUNDLE_IDENTIFIER = org.example.snipsnap' >> "$complete"
@@ -43,8 +49,52 @@ print '    SNIP_SNAP_APP_GROUP_IDENTIFIER = group.org.example.snipsnap' >> "$com
 print '    SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER = iCloud.org.example.snipsnap' >> "$complete"
 print '    CODE_SIGN_ENTITLEMENTS = Fake.entitlements' >> "$complete"
 
-assert_succeeds signing_policy_preflight cloud "$complete" "$test_root"
-assert_succeeds signing_policy_preflight device "$complete" "$test_root"
+share_entitlements_dir="$test_root/SnipSnapShareExtension"
+/bin/mkdir -p "$share_entitlements_dir"
+share_entitlements="$share_entitlements_dir/SnipSnapShareExtension.entitlements"
+/usr/bin/plutil -create xml1 "$share_entitlements"
+/usr/bin/plutil -insert 'com\.apple\.security\.application-groups' \
+    -json '["$(SNIP_SNAP_APP_GROUP_IDENTIFIER)"]' "$share_entitlements"
+
+assert_succeeds signing_policy_preflight cloud "$complete" "$test_root" SnipSnap
+assert_succeeds signing_policy_preflight device "$complete" "$test_root" SnipSnapiOS
+
+empty_entitlements="$test_root/Empty.entitlements"
+/usr/bin/plutil -create xml1 "$empty_entitlements"
+empty_settings="$test_root/empty-entitlements-settings.txt"
+/bin/cp "$complete" "$empty_settings"
+/usr/bin/sed -i '' 's/Fake.entitlements/Empty.entitlements/' "$empty_settings"
+assert_fails_with_all \
+    "signing_policy_preflight cloud '$empty_settings' '$test_root' SnipSnap" \
+    'App Group entitlement' \
+    'CloudKit container entitlement' \
+    'CloudKit service entitlement'
+
+wrong_entitlements="$test_root/Wrong.entitlements"
+/usr/bin/plutil -create xml1 "$wrong_entitlements"
+/usr/bin/plutil -insert 'com\.apple\.security\.application-groups' \
+    -json '["group.org.example.other"]' "$wrong_entitlements"
+/usr/bin/plutil -insert 'com\.apple\.developer\.icloud-container-identifiers' \
+    -json '["iCloud.org.example.other"]' "$wrong_entitlements"
+/usr/bin/plutil -insert 'com\.apple\.developer\.icloud-services' \
+    -json '["CloudDocuments"]' "$wrong_entitlements"
+wrong_settings="$test_root/wrong-entitlements-settings.txt"
+/bin/cp "$complete" "$wrong_settings"
+/usr/bin/sed -i '' 's/Fake.entitlements/Wrong.entitlements/' "$wrong_settings"
+assert_fails_with_all \
+    "signing_policy_preflight device '$wrong_settings' '$test_root' SnipSnapiOS" \
+    'App Group entitlement' \
+    'CloudKit container entitlement' \
+    'CloudKit service entitlement'
+
+corrupt_entitlements="$test_root/Corrupt.entitlements"
+print 'not a plist' > "$corrupt_entitlements"
+corrupt_settings="$test_root/corrupt-entitlements-settings.txt"
+/bin/cp "$complete" "$corrupt_settings"
+/usr/bin/sed -i '' 's/Fake.entitlements/Corrupt.entitlements/' "$corrupt_settings"
+assert_fails_with_all \
+    "signing_policy_preflight cloud '$corrupt_settings' '$test_root' SnipSnap" \
+    'valid entitlement plist'
 
 fake_xcodebuild="$test_root/fake-xcodebuild"
 fake_xcodebuild_args="$test_root/fake-xcodebuild-args"
@@ -111,6 +161,39 @@ print '    DEVELOPMENT_TEAM =' > "$resolved_override"
 print '    DEVELOPMENT_TEAM = FAKE123456' >> "$resolved_override"
 [[ "$(signing_policy_resolve_setting "$resolved_override" DEVELOPMENT_TEAM)" == \
     FAKE123456 ]] || fail_test "the last resolved override did not win"
+
+multi_target="$test_root/multi-target-settings.txt"
+print 'Build settings for action build and target SnipSnapiOS:' > "$multi_target"
+print '    CODE_SIGN_ENTITLEMENTS = Fake.entitlements' >> "$multi_target"
+print 'Build settings for action build and target SnipSnapShareExtension:' >> "$multi_target"
+print '    CODE_SIGN_ENTITLEMENTS = SnipSnapShareExtension/SnipSnapShareExtension.entitlements' \
+    >> "$multi_target"
+[[ "$(signing_policy_resolve_setting \
+    "$multi_target" CODE_SIGN_ENTITLEMENTS SnipSnapiOS)" == Fake.entitlements ]] || \
+    fail_test "the app target resolved the Share extension entitlement file"
+[[ "$(signing_policy_resolve_setting \
+    "$multi_target" CODE_SIGN_ENTITLEMENTS SnipSnapShareExtension)" == \
+    SnipSnapShareExtension/SnipSnapShareExtension.entitlements ]] || \
+    fail_test "the Share extension target did not resolve its own entitlement file"
+
+multi_target_complete="$test_root/multi-target-complete.txt"
+print 'Build settings for action build and target SnipSnapiOS:' > "$multi_target_complete"
+/usr/bin/sed -n '/^[[:space:]]/p' "$complete" >> "$multi_target_complete"
+print 'Build settings for action build and target SnipSnapShareExtension:' \
+    >> "$multi_target_complete"
+print '    CODE_SIGN_ENTITLEMENTS = SnipSnapShareExtension/SnipSnapShareExtension.entitlements' \
+    >> "$multi_target_complete"
+assert_succeeds signing_policy_preflight \
+    device "$multi_target_complete" "$test_root" SnipSnapiOS
+
+missing_share_target="$test_root/missing-share-target.txt"
+print 'Build settings for action build and target SnipSnapiOS:' > "$missing_share_target"
+/usr/bin/sed -n '/^[[:space:]]/p' "$complete" >> "$missing_share_target"
+print 'Build settings for action build and target SnipSnapShareExtension:' \
+    >> "$missing_share_target"
+assert_fails_with_all \
+    "signing_policy_preflight device '$missing_share_target' '$test_root' SnipSnapiOS" \
+    'Share extension CODE_SIGN_ENTITLEMENTS'
 
 export_options="$test_root/export-options.plist"
 assert_succeeds signing_policy_write_export_options "$export_options" FAKE123456

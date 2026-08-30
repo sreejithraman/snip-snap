@@ -5,29 +5,30 @@ import SnipSnapPersistence
 
 public enum SnipSnapCloudAttachmentLimits {
   public static let maximumFileBytes: Int64 = 25 * 1_048_576
-  public static let maximumSnipBytes: Int64 = 100 * 1_048_576
+  public static let maximumAttachmentBytesPerSnip: Int64 = 100 * 1_048_576
 }
 
 package struct CloudAttachmentCompatibilityPolicy: Equatable, Sendable {
   package let maximumFileBytes: Int64?
-  package let maximumSnipBytes: Int64?
+  package let maximumAttachmentBytesPerSnip: Int64?
   package let supportedContentTypes: Set<String>?
 
   package init(
     maximumFileBytes: Int64? = nil,
-    maximumSnipBytes: Int64? = nil,
+    maximumAttachmentBytesPerSnip: Int64? = nil,
     supportedContentTypes: Set<String>? = nil
   ) {
     precondition(maximumFileBytes.map { $0 >= 0 } ?? true)
-    precondition(maximumSnipBytes.map { $0 >= 0 } ?? true)
+    precondition(maximumAttachmentBytesPerSnip.map { $0 >= 0 } ?? true)
     self.maximumFileBytes = maximumFileBytes
-    self.maximumSnipBytes = maximumSnipBytes
+    self.maximumAttachmentBytesPerSnip = maximumAttachmentBytesPerSnip
     self.supportedContentTypes = supportedContentTypes
   }
 
   package static let openSourceDefault = CloudAttachmentCompatibilityPolicy(
     maximumFileBytes: SnipSnapCloudAttachmentLimits.maximumFileBytes,
-    maximumSnipBytes: SnipSnapCloudAttachmentLimits.maximumSnipBytes
+    maximumAttachmentBytesPerSnip:
+      SnipSnapCloudAttachmentLimits.maximumAttachmentBytesPerSnip
   )
 }
 
@@ -229,117 +230,102 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
     in snapshot: CloudAttachmentStorageSnapshot,
     policy: CloudAttachmentCompatibilityPolicy
   ) -> [CloudUnsupportedAttachment] {
-    let localPublications = snapshot.publications.filter(\.isLocallyPresent)
-    let oversizedSnipIDs = oversizedSnipIDs(
-      localPublications.map { ($0.metadata.snipID, $0.metadata.byteCount) },
-      maximum: policy.maximumSnipBytes
-    )
-    return snapshot.publications.compactMap { publication in
+    let inputs: [CompatibilityInput] = snapshot.publications.compactMap { publication in
       guard publication.isLocallyPresent else { return nil }
-      guard let localURL = publication.localSourceURL else {
-        return publication.metadataAccepted ? nil : CloudUnsupportedAttachment(
-          attachmentID: publication.metadata.attachmentID,
-          fileName: publication.metadata.fileName,
-          reason: .missingLocalFile
-        )
-      }
-      let values = try? localURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-      guard values?.isRegularFile == true,
-        Int64(values?.fileSize ?? -1) == publication.metadata.byteCount
-      else {
-        return CloudUnsupportedAttachment(
-          attachmentID: publication.metadata.attachmentID,
-          fileName: publication.metadata.fileName,
-          reason: .missingLocalFile
-        )
-      }
-      if let maximum = policy.maximumFileBytes,
-        publication.metadata.byteCount > maximum
-      {
-        return CloudUnsupportedAttachment(
-          attachmentID: publication.metadata.attachmentID,
-          fileName: publication.metadata.fileName,
-          reason: .fileTooLarge(maximumBytes: maximum)
-        )
-      }
-      if let maximum = policy.maximumSnipBytes,
-        oversizedSnipIDs.contains(publication.metadata.snipID)
-      {
-        return CloudUnsupportedAttachment(
-          attachmentID: publication.metadata.attachmentID,
-          fileName: publication.metadata.fileName,
-          reason: .snipTotalTooLarge(maximumBytes: maximum)
-        )
-      }
-      if let supported = policy.supportedContentTypes,
-        publication.metadata.contentType.map(supported.contains) != true
-      {
-        return CloudUnsupportedAttachment(
-          attachmentID: publication.metadata.attachmentID,
-          fileName: publication.metadata.fileName,
-          reason: .contentType(publication.metadata.contentType)
-        )
-      }
-      return nil
-    }.sorted {
-      ($0.fileName, $0.attachmentID.uuidString) < ($1.fileName, $1.attachmentID.uuidString)
+      return CompatibilityInput(
+        attachmentID: publication.metadata.attachmentID,
+        snipID: publication.metadata.snipID,
+        fileName: publication.metadata.fileName,
+        contentType: publication.metadata.contentType,
+        byteCount: publication.metadata.byteCount,
+        localURL: publication.localSourceURL,
+        allowsMissingLocalFile: publication.metadataAccepted
+      )
     }
+    return unsupportedFiles(in: inputs, policy: policy)
   }
 
   package static func unsupportedFiles(
     in snapshot: SnipLibrarySnapshot,
     policy: CloudAttachmentCompatibilityPolicy
   ) -> [CloudUnsupportedAttachment] {
-    let oversizedSnipIDs = oversizedSnipIDs(
-      snapshot.snips.flatMap { snip in
-        snip.attachments.map { (snip.id, $0.byteCount) }
-      },
-      maximum: policy.maximumSnipBytes
-    )
-    return snapshot.snips.flatMap { snip in
-      snip.attachments.compactMap { attachment in
-        guard let url = snapshot.attachmentURLs[attachment.id] else {
-          return CloudUnsupportedAttachment(
-            attachmentID: attachment.id,
-            fileName: attachment.fileName,
-            reason: .missingLocalFile
-          )
-        }
-        let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-        guard values?.isRegularFile == true,
-          Int64(values?.fileSize ?? -1) == attachment.byteCount
-        else {
-          return CloudUnsupportedAttachment(
-            attachmentID: attachment.id,
-            fileName: attachment.fileName,
-            reason: .missingLocalFile
-          )
-        }
-        if let maximum = policy.maximumFileBytes, attachment.byteCount > maximum {
-          return CloudUnsupportedAttachment(
-            attachmentID: attachment.id,
-            fileName: attachment.fileName,
-            reason: .fileTooLarge(maximumBytes: maximum)
-          )
-        }
-        if let maximum = policy.maximumSnipBytes, oversizedSnipIDs.contains(snip.id) {
-          return CloudUnsupportedAttachment(
-            attachmentID: attachment.id,
-            fileName: attachment.fileName,
-            reason: .snipTotalTooLarge(maximumBytes: maximum)
-          )
-        }
-        if let supported = policy.supportedContentTypes,
-          attachment.contentType.map(supported.contains) != true
-        {
-          return CloudUnsupportedAttachment(
-            attachmentID: attachment.id,
-            fileName: attachment.fileName,
-            reason: .contentType(attachment.contentType)
-          )
-        }
-        return nil
+    let inputs = snapshot.snips.flatMap { snip in
+      snip.attachments.map { attachment in
+        CompatibilityInput(
+          attachmentID: attachment.id,
+          snipID: snip.id,
+          fileName: attachment.fileName,
+          contentType: attachment.contentType,
+          byteCount: attachment.byteCount,
+          localURL: snapshot.attachmentURLs[attachment.id],
+          allowsMissingLocalFile: false
+        )
       }
+    }
+    return unsupportedFiles(in: inputs, policy: policy)
+  }
+
+  private struct CompatibilityInput {
+    let attachmentID: UUID
+    let snipID: UUID
+    let fileName: String
+    let contentType: String?
+    let byteCount: Int64
+    let localURL: URL?
+    let allowsMissingLocalFile: Bool
+  }
+
+  private static func unsupportedFiles(
+    in inputs: [CompatibilityInput],
+    policy: CloudAttachmentCompatibilityPolicy
+  ) -> [CloudUnsupportedAttachment] {
+    let oversizedSnipIDs = oversizedSnipIDs(
+      inputs.map { ($0.snipID, $0.byteCount) },
+      maximum: policy.maximumAttachmentBytesPerSnip
+    )
+    return inputs.compactMap { input in
+      if input.localURL == nil, input.allowsMissingLocalFile { return nil }
+      guard let localURL = input.localURL else {
+        return CloudUnsupportedAttachment(
+          attachmentID: input.attachmentID,
+          fileName: input.fileName,
+          reason: .missingLocalFile
+        )
+      }
+      let values = try? localURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+      guard values?.isRegularFile == true, Int64(values?.fileSize ?? -1) == input.byteCount else {
+        return CloudUnsupportedAttachment(
+          attachmentID: input.attachmentID,
+          fileName: input.fileName,
+          reason: .missingLocalFile
+        )
+      }
+      if let maximum = policy.maximumFileBytes, input.byteCount > maximum {
+        return CloudUnsupportedAttachment(
+          attachmentID: input.attachmentID,
+          fileName: input.fileName,
+          reason: .fileTooLarge(maximumBytes: maximum)
+        )
+      }
+      if let maximum = policy.maximumAttachmentBytesPerSnip,
+        oversizedSnipIDs.contains(input.snipID)
+      {
+        return CloudUnsupportedAttachment(
+          attachmentID: input.attachmentID,
+          fileName: input.fileName,
+          reason: .snipTotalTooLarge(maximumBytes: maximum)
+        )
+      }
+      if let supported = policy.supportedContentTypes,
+        input.contentType.map(supported.contains) != true
+      {
+        return CloudUnsupportedAttachment(
+          attachmentID: input.attachmentID,
+          fileName: input.fileName,
+          reason: .contentType(input.contentType)
+        )
+      }
+      return nil
     }.sorted {
       ($0.fileName, $0.attachmentID.uuidString) < ($1.fileName, $1.attachmentID.uuidString)
     }

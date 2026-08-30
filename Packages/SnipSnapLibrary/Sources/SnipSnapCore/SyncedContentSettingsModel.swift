@@ -111,8 +111,10 @@ public final class SyncedContentSettingsModel {
 
   public var detail: String {
     switch (mode, state) {
+    case (.localOnly, .failed(let message)):
+      "Snip Snap could not finish setting up iCloud Sync. Your local library remains available. \(message)"
     case (_, .failed(let message)):
-      "Snip Snap could not finish the iCloud action. Nothing was uploaded or removed. \(message)"
+      "Snip Snap could not finish the iCloud action. Check the current sync status before you retry. \(message)"
     case (.localOnly, .enabling):
       "Snip Snap is fetching iCloud data and preparing a safe merged copy."
     case (.iCloudSync, .enabling):
@@ -120,7 +122,7 @@ public final class SyncedContentSettingsModel {
     case (.localOnly, _):
       "Saved snips and attachments stay on this device. Nothing is uploaded to iCloud."
     case (_, .ready):
-      "Saved snips and attachments sync through your private iCloud database. Snip Snap’s maintainers cannot inspect private records in CloudKit Console. Apple encrypts synced data in transit and at rest; user fields use encrypted values and files use CKAsset data. This data is end-to-end encrypted only when Advanced Data Protection is on."
+      "Saved snips and attachments sync through your private iCloud database. Snip Snap’s maintainers cannot inspect private records in CloudKit Console. Apple encrypts synced data in transit and at rest; user fields use encrypted values and files use CKAsset data. Those user fields and attachments are end-to-end encrypted only when Advanced Data Protection is on."
     case (_, .deleting):
       "Snip Snap is starting a fresh empty synced collection and removing the old data zones."
     case (_, .encryptedDataReset):

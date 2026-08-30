@@ -36,9 +36,11 @@ while (( $# )); do
     esac
 done
 if [[ "$scheme" == SnipSnapiOS && "${SNIP_SNAP_FAKE_EMBED_EXTENSION:-YES}" != NO ]]; then
-    extension_path="$derived_data/Build/Products/Debug-iphonesimulator/Snip Snap iOS.app/PlugIns/SnipSnapShareExtension.appex"
+    app_path="$derived_data/Build/Products/Debug-iphonesimulator/Snip Snap iOS.app"
+    extension_path="$app_path/PlugIns/SnipSnapShareExtension.appex"
     /bin/mkdir -p "$extension_path"
     if [[ "${SNIP_SNAP_FAKE_EMBED_EXTENSION:-YES}" == YES ]]; then
+        : > "$app_path/Snip Snap iOS"
         : > "$extension_path/Info.plist"
         : > "$extension_path/SnipSnapShareExtension"
     fi
@@ -97,5 +99,24 @@ if failure_output="$(
 fi
 [[ "$failure_output" == *'built Share extension bundle'* ]] || \
     fail_test "the empty extension error did not name the failed check"
+
+stale_root="$test_root/stale-derived-data"
+for family in iphone ipad; do
+    stale_extension="$stale_root/$family/Build/Products/Debug-iphonesimulator/Snip Snap iOS.app/PlugIns/SnipSnapShareExtension.appex"
+    /bin/mkdir -p "$stale_extension"
+    : > "$stale_extension/Info.plist"
+    : > "$stale_extension/SnipSnapShareExtension"
+done
+if failure_output="$(
+    SNIP_SNAP_XCODEBUILD="$test_root/bin/xcodebuild" \
+    SNIP_SNAP_FAKE_EMBED_EXTENSION=NO \
+    SNIP_SNAP_BUILD_ARGS_FILE="$test_root/stale-extension-args" \
+    SNIP_SNAP_DERIVED_DATA="$stale_root" \
+        "$script_dir/build-matrix.sh" 2>&1
+)"; then
+    fail_test "the matrix accepted a stale Share extension from an earlier run"
+fi
+[[ "$failure_output" == *'embedded Share extension'* ]] || \
+    fail_test "the stale extension error did not name the failed check"
 
 print "Build matrix checks passed."

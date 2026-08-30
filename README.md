@@ -35,7 +35,7 @@ into your work.
 
 ## Private by default
 
-Snip Snap needs no Snip Snap account and has no tracking. Clipboard history
+Snip Snap needs no sign-in and has no tracking. Clipboard history
 stays on your device. Saved snips and attachments also stay on your device
 unless you turn on iCloud Sync.
 
@@ -43,8 +43,8 @@ With iCloud Sync on, Snip Snap stores saved snips and attachments in your
 private iCloud database. Snip Snap's maintainers cannot inspect your private
 records in CloudKit Console. Apple encrypts synced data in transit and at rest;
 Snip Snap stores user fields as encrypted values and file bytes as `CKAsset`
-data. Your synced data is end-to-end encrypted only when Advanced Data
-Protection is on for your iCloud account.
+data. Those user fields and attachments are end-to-end encrypted only when
+Advanced Data Protection is on for your iCloud account.
 
 Snip Snap supports iCloud Sync attachments up to 25 MiB each and 100 MiB total
 per snip. These are Snip Snap limits, not Apple limits. Local-only attachments

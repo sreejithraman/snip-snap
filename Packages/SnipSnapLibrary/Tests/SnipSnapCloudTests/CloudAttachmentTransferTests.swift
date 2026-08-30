@@ -1946,7 +1946,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let unsupported = try await coordinator.unsupportedFiles(
       policy: CloudAttachmentCompatibilityPolicy(
         maximumFileBytes: 10,
-        maximumSnipBytes: 10
+        maximumAttachmentBytesPerSnip: 10
       )
     )
     XCTAssertEqual(unsupported.map(\.fileName), ["first.bin", "second.bin"])
@@ -1954,6 +1954,82 @@ final class CloudAttachmentTransferTests: XCTestCase {
       unsupported.map(\.reason),
       Array(repeating: .snipTotalTooLarge(maximumBytes: 10), count: 2)
     )
+  }
+
+  func testAcceptedRemoteOnlyAttachmentCountsTowardSnipTotalWithoutMissingFileError() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let localURL = root.appendingPathComponent("local.bin")
+    try Data(repeating: 1, count: 30).write(to: localURL)
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let added = try await library.perform(
+      .add(
+        content: "local and remote",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [localURL],
+        requestID: UUID(),
+        now: .distantPast
+      ),
+      sortedBy: .manual
+    )
+    guard case .add(.added(let snipID)) = added.outcome else {
+      return XCTFail("Expected a saved snip")
+    }
+    let namespace = namespaceValue()
+    try await library.reconcileCloudAttachments(
+      namespaceKey: namespace.canonicalKey,
+      metadataZoneName: "data",
+      metadataOwnerName: "owner",
+      payloadZoneName: "payload",
+      payloadOwnerName: "owner"
+    )
+    let remoteID = UUID()
+    try await library.commitCloudAttachmentTransitions(
+      namespaceKey: namespace.canonicalKey,
+      transitions: [
+        .remoteMetadataAccepted(
+          metadata: CloudAttachmentMetadataValue(
+            attachmentID: remoteID,
+            snipID: snipID,
+            position: 1,
+            fileName: "remote.bin",
+            contentType: "application/octet-stream",
+            byteCount: 80,
+            sha256: Data(repeating: 2, count: 32),
+            payloadIdentity: CloudTextStorageIdentity(
+              zoneName: "payload",
+              ownerName: "owner",
+              recordName: remoteID.uuidString
+            )
+          ),
+          metadataIdentity: CloudTextStorageIdentity(
+            zoneName: "data",
+            ownerName: "owner",
+            recordName: remoteID.uuidString
+          ),
+          shadowData: Data("shadow".utf8),
+          systemFields: Data("fields".utf8)
+        )
+      ]
+    )
+    let coordinator = CloudAttachmentTransferCoordinator(
+      library: library,
+      namespace: namespace,
+      payloadZone: CloudZoneID(name: "payload", ownerName: "owner"),
+      transport: FakeCloudRecordTransport(server: FakeCloudServer()),
+      maximumCacheBytes: 1024
+    )
+    let unsupported = try await coordinator.unsupportedFiles(
+      policy: CloudAttachmentCompatibilityPolicy(
+        maximumAttachmentBytesPerSnip: 100
+      )
+    )
+
+    XCTAssertEqual(unsupported.map(\.fileName), ["local.bin"])
+    XCTAssertEqual(unsupported.first?.reason, .snipTotalTooLarge(maximumBytes: 100))
   }
 
   func testActiveSyncRefusesOversizeSnipBeforeAnyAttachmentSend() async throws {
@@ -1991,7 +2067,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
       payloadZone: payloadZone,
       attachmentPolicy: CloudAttachmentCompatibilityPolicy(
         maximumFileBytes: 10,
-        maximumSnipBytes: 10
+        maximumAttachmentBytesPerSnip: 10
       )
     )
     try await store.approveEnrollment(references: [
@@ -2032,7 +2108,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
       25 * 1_048_576
     )
     XCTAssertEqual(
-      CloudAttachmentCompatibilityPolicy.openSourceDefault.maximumSnipBytes,
+      CloudAttachmentCompatibilityPolicy.openSourceDefault.maximumAttachmentBytesPerSnip,
       100 * 1_048_576
     )
   }
@@ -2078,7 +2154,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: root) }
     let policy = CloudAttachmentCompatibilityPolicy(
       maximumFileBytes: 25,
-      maximumSnipBytes: 100
+      maximumAttachmentBytesPerSnip: 100
     )
 
     let atBoundary = try compatibilitySnapshot(

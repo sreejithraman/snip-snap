@@ -10,7 +10,11 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     XCTAssertTrue(model.detail.contains("cannot inspect private records in CloudKit Console"))
     XCTAssertTrue(model.detail.contains("encrypts synced data in transit and at rest"))
     XCTAssertTrue(model.detail.contains("encrypted values and files use CKAsset data"))
-    XCTAssertTrue(model.detail.contains("end-to-end encrypted only when Advanced Data Protection is on"))
+    XCTAssertTrue(
+      model.detail.contains(
+        "Those user fields and attachments are end-to-end encrypted only when Advanced Data Protection is on"
+      )
+    )
   }
 
   @MainActor
@@ -108,6 +112,9 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     await model.enableICloudSync()
 
     XCTAssertEqual(model.statusTitle, "Sync Needs Attention")
+    XCTAssertTrue(model.detail.contains("could not finish setting up iCloud Sync"))
+    XCTAssertTrue(model.detail.contains("local library remains available"))
+    XCTAssertFalse(model.detail.contains("Nothing was uploaded or removed"))
     XCTAssertTrue(model.detail.contains("first.bin"))
     XCTAssertTrue(model.detail.contains("second.bin"))
     XCTAssertTrue(model.canEnable)

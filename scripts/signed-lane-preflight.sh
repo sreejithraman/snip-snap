@@ -74,4 +74,4 @@ if [[ -z "$settings_file" ]]; then
         "$temp_root/DerivedData" "$scheme"
 fi
 
-signing_policy_preflight "$lane" "$settings_file" "$repo_dir"
+signing_policy_preflight "$lane" "$settings_file" "$repo_dir" "$scheme"

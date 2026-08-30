@@ -33,8 +33,40 @@ Simulator names, pass overrides:
   --ipad-destination 'platform=iOS Simulator,name=Example iPad'
 ```
 
-CI runs `scripts/test.sh` and this matrix on a clean checkout. Both commands
-set `CODE_SIGNING_ALLOWED=NO` for app builds.
+CI runs `scripts/test.sh`, this build matrix, and the named Simulator release
+tests on a clean checkout. These commands set `CODE_SIGNING_ALLOWED=NO` for
+app builds.
+
+Run the same release tests on an iPhone and iPad Simulator:
+
+```sh
+./scripts/release-matrix-tests.sh
+```
+
+This command runs the generated 25 MiB upload, download, hash, cache, and
+interruption test on both device families. It also runs the iCloud limit,
+Share, and local attachment actions. The default Simulator names match the CI
+image. Override them without checking in a device ID:
+
+```sh
+./scripts/release-matrix-tests.sh \
+  --iphone-destination 'platform=iOS Simulator,name=Example iPhone' \
+  --ipad-destination 'platform=iOS Simulator,name=Example iPad'
+```
+
+Run the full iOS UI suite when changing an iOS workflow:
+
+```sh
+xcodebuild \
+  -project SnipSnap.xcodeproj \
+  -scheme SnipSnapiOS \
+  -configuration Debug \
+  -destination 'platform=iOS Simulator,name=Example iPhone' \
+  -derivedDataPath /tmp/snip-snap-ios-ui-tests \
+  CODE_SIGNING_ALLOWED=NO \
+  -only-testing:SnipSnapiOSUITests \
+  test
+```
 
 ## Run the local Dev app
 

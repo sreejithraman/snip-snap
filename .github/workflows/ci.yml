@@ -18,7 +18,7 @@ jobs:
   test:
     name: Portable build and test matrix
     runs-on: macos-26
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Check out source
@@ -29,3 +29,6 @@ jobs:
 
       - name: Build Mac, iPhone, iPad, and Share extension
         run: ./scripts/build-matrix.sh
+
+      - name: Test release paths on iPhone and iPad Simulators
+        run: ./scripts/release-matrix-tests.sh
