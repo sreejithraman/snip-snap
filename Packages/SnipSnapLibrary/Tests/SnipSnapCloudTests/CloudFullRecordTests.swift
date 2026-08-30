@@ -294,6 +294,43 @@ final class CloudFullRecordTests: XCTestCase {
     XCTAssertEqual(edited["schemaVersion"] as? Int64, 7)
   }
 
+  func testListFutureVersionAndUnknownFieldsSurviveNewOldNewEdit() throws {
+    let zone = CloudZoneID(name: "metadata", ownerName: "owner")
+    var list = SnipList(
+      id: UUID(uuidString: "23232323-2323-2323-2323-232323232323")!,
+      name: "Before",
+      systemImage: "folder",
+      position: 1
+    )
+    let first = try CloudKitRecordMapper.record(
+      for: CloudFullRecordCodec.listDraft(
+        list,
+        updatedAt: Date(timeIntervalSince1970: 1),
+        in: zone
+      )
+    )
+    first["schemaVersion"] = Int64(7)
+    first["futureRouting"] = "keep ordinary"
+    first.encryptedValues["futurePrivate"] = "keep encrypted"
+    let accepted = try CloudFullRecordCodec.list(
+      from: CloudKitRecordMapper.snapshot(first)
+    )
+
+    list.name = "After"
+    let edited = try CloudKitRecordMapper.record(
+      for: CloudFullRecordCodec.listDraft(
+        list,
+        updatedAt: Date(timeIntervalSince1970: 2),
+        accepted: accepted
+      )
+    )
+
+    XCTAssertEqual(edited.encryptedValues["desiredName"] as? String, "After")
+    XCTAssertEqual(edited["futureRouting"] as? String, "keep ordinary")
+    XCTAssertEqual(edited.encryptedValues["futurePrivate"] as? String, "keep encrypted")
+    XCTAssertEqual(edited["schemaVersion"] as? Int64, 7)
+  }
+
   func testTypedStorageRoundTripKeepsPresenceAndVersion() throws {
     let zone = CloudZoneID(name: "metadata", ownerName: "owner")
     let id = UUID()

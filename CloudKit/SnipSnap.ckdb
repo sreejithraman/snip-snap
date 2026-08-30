@@ -1,0 +1,53 @@
+DEFINE SCHEMA
+
+RECORD TYPE Snip (
+    schemaVersion INT64,
+    snipID STRING,
+    requestID ENCRYPTED STRING,
+    createdAt ENCRYPTED BYTES,
+    updatedAt ENCRYPTED BYTES,
+    origin ENCRYPTED STRING,
+    text ENCRYPTED STRING,
+    sourceState ENCRYPTED INT64,
+    sourceValue ENCRYPTED BYTES,
+    isDone ENCRYPTED INT64,
+    listID ENCRYPTED STRING,
+    orderKey ENCRYPTED BYTES
+);
+
+RECORD TYPE List (
+    schemaVersion INT64,
+    listID STRING,
+    desiredName ENCRYPTED STRING,
+    systemImage ENCRYPTED STRING,
+    orderKey ENCRYPTED BYTES,
+    updatedAt ENCRYPTED BYTES
+);
+
+RECORD TYPE AttachmentMetadata (
+    schemaVersion INT64,
+    attachmentID ENCRYPTED STRING,
+    snipID ENCRYPTED STRING,
+    position ENCRYPTED INT64,
+    fileName ENCRYPTED STRING,
+    contentType ENCRYPTED STRING,
+    byteCount ENCRYPTED INT64,
+    sha256 ENCRYPTED BYTES,
+    payloadZoneName ENCRYPTED STRING,
+    payloadOwnerName ENCRYPTED STRING,
+    payloadRecordName ENCRYPTED STRING
+);
+
+RECORD TYPE AttachmentPayload (
+    schemaVersion INT64,
+    payload ASSET
+);
+
+RECORD TYPE SnipSnapCollectionControl (
+    schemaVersion INT64,
+    generation STRING,
+    metadataZoneName STRING,
+    metadataZoneOwner STRING,
+    payloadZoneName STRING,
+    payloadZoneOwner STRING
+);

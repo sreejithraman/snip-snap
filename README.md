@@ -33,11 +33,20 @@ system-wide capture and Shift shortcuts can work.
 Everything stays in a small panel where you can edit, copy, or drag snips back
 into your work.
 
-## Private on your Mac
+## Private by default
 
-Snip Snap stores snips and clipboard history on your Mac. It has no account,
-sync, or tracking. Release builds contact the public update feed to check for
-new versions.
+Snip Snap needs no Snip Snap account and has no tracking. Clipboard history
+stays on your device. Saved snips and attachments also stay on your device
+unless you turn on iCloud Sync.
+
+With iCloud Sync on, Snip Snap stores saved snips and attachments in your
+private iCloud database. Snip Snap's maintainers cannot inspect your private
+records in CloudKit Console. Apple encrypts synced data in transit and at rest;
+Snip Snap stores user fields as encrypted values and file bytes as `CKAsset`
+data. Your synced data is end-to-end encrypted only when Advanced Data
+Protection is on for your iCloud account.
+
+Release builds contact the public update feed to check for new versions.
 
 ## Build from source
 

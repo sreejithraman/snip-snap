@@ -15,6 +15,27 @@ Use Xcode 26 or later:
 These commands do not sign the app. They need no Apple Developer account,
 certificate, provisioning profile, or CloudKit access.
 
+Run the full unsigned build matrix before a pull request or release:
+
+```sh
+./scripts/build-matrix.sh
+```
+
+The matrix builds the Mac app, the iPhone Simulator app, and the iPad
+Simulator app. It also checks that each iOS app contains
+`SnipSnapShareExtension.appex`. The defaults use generic Simulator
+destinations, so the command needs no device ID. To build against installed
+Simulator names, pass overrides:
+
+```sh
+./scripts/build-matrix.sh \
+  --iphone-destination 'platform=iOS Simulator,name=Example iPhone' \
+  --ipad-destination 'platform=iOS Simulator,name=Example iPad'
+```
+
+CI runs `scripts/test.sh` and this matrix on a clean checkout. Both commands
+set `CODE_SIGNING_ALLOWED=NO` for app builds.
+
 ## Run the local Dev app
 
 ```sh
@@ -39,7 +60,7 @@ project file.
 Forks can also replace the public bundle, App Group, and CloudKit container
 names in that local file.
 
-## Cloud and physical-device builds
+## Cloud Dev and physical-device builds
 
 Cloud and physical-device lanes need all of these inputs:
 
@@ -48,16 +69,59 @@ Cloud and physical-device lanes need all of these inputs:
 - Registered App Group and CloudKit container names
 - The lane's entitlement file
 
-The shared preflight checks all required inputs at once and lists missing
-setting names without printing their values:
+Keep the values in `Config/Local.xcconfig` on a development Mac. CI can pass
+the same setting names as secret inputs. Set these names in the local file:
 
-```sh
-./scripts/signed-lane-preflight.sh cloud --configuration CloudDev
-./scripts/signed-lane-preflight.sh device --destination 'generic/platform=iOS'
+```text
+DEVELOPMENT_TEAM = <your team>
+SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER = <your registered bundle root>
+SNIP_SNAP_APP_GROUP_IDENTIFIER = <your registered App Group>
+SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER = <your registered iCloud container>
+CODE_SIGN_ENTITLEMENTS = Config/Local.entitlements
 ```
 
-The commands that build those lanes will be added with the iOS and CloudKit
-work. Until then, the preflight is the shared contract for those commands.
+`Config/Local.xcconfig` and `Config/Local.entitlements` stay out of Git. The
+entitlement file must include the App Group and CloudKit capabilities tied to
+those settings. Do not put a team ID, profile name, device ID, certificate, or
+local path in a tracked file.
+
+For a Mac Cloud Dev build, run the preflight and build with the same scheme,
+configuration, and destination:
+
+```sh
+./scripts/signed-lane-preflight.sh cloud \
+  --scheme SnipSnap \
+  --configuration Debug \
+  --destination 'generic/platform=macOS'
+xcodebuild \
+  -project SnipSnap.xcodeproj \
+  -scheme SnipSnap \
+  -configuration Debug \
+  -destination 'generic/platform=macOS' \
+  -derivedDataPath /tmp/snip-snap-cloud-dev-mac \
+  build
+```
+
+For a signed iPhone or iPad device build, use the iOS scheme. A generic device
+build checks signing without storing a device ID:
+
+```sh
+./scripts/signed-lane-preflight.sh device \
+  --scheme SnipSnapiOS \
+  --configuration Debug \
+  --destination 'generic/platform=iOS'
+xcodebuild \
+  -project SnipSnap.xcodeproj \
+  -scheme SnipSnapiOS \
+  -configuration Debug \
+  -destination 'generic/platform=iOS' \
+  -derivedDataPath /tmp/snip-snap-device \
+  build
+```
+
+The preflight lists missing setting names but does not print their values.
+The iOS build embeds the Share extension. Confirm the signed device build in
+Xcode before installing it on a registered device.
 
 ## Make an official release
 

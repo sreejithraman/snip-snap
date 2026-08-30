@@ -12,6 +12,7 @@ derived_data="${SNIP_SNAP_DERIVED_DATA:-/tmp/snip-snap-derived-data}"
 "$script_dir/showroom-delivery-tests.sh"
 "$script_dir/dev-slot-tests.sh"
 "$script_dir/build-tests.sh"
+"$script_dir/build-matrix-tests.sh"
 "$script_dir/ios-target-policy-tests.sh"
 
 swift test --package-path "$repo_dir/Packages/SnipSnapLibrary"

@@ -4,4 +4,6 @@ Snip Snap will use CloudKit encrypted values for every user-derived record field
 
 ## Consequences
 
-Record names must use random IDs and must not contain meaningful user data. The app cannot use server indexes or sorting for encrypted fields, which the local store does not need. CloudKit cannot change an ordinary production field into an encrypted field later, so the first production schema must get this boundary right. The app will state that Apple encrypts synced data in transit and on its servers. It will claim end-to-end encryption only when the user's Advanced Data Protection setting supplies it. The release process must check the final build before making an App Store privacy-label claim.
+Record names must use random IDs and must not contain meaningful user data. The app cannot use server indexes or sorting for encrypted fields, which the local store does not need. CloudKit cannot change an ordinary production field into an encrypted field later, so the first production schema must get this boundary right.
+
+Synced records live in the user's private iCloud database. Snip Snap's maintainers cannot inspect private records in CloudKit Console. Apple encrypts synced data in transit and at rest. Snip Snap stores user fields as CloudKit encrypted values and file bytes as `CKAsset` data. The app must say that synced data is end-to-end encrypted only when Advanced Data Protection is on for the user's iCloud account. The release process must check the final build before making an App Store privacy-label claim.

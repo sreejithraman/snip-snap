@@ -46,6 +46,27 @@ print '    CODE_SIGN_ENTITLEMENTS = Fake.entitlements' >> "$complete"
 assert_succeeds signing_policy_preflight cloud "$complete" "$test_root"
 assert_succeeds signing_policy_preflight device "$complete" "$test_root"
 
+fake_xcodebuild="$test_root/fake-xcodebuild"
+fake_xcodebuild_args="$test_root/fake-xcodebuild-args"
+print -r -- '#!/bin/zsh
+print -r -- "$@" > "$SNIP_SNAP_FAKE_XCODEBUILD_ARGS"
+print -r -- "    DEVELOPMENT_TEAM = FAKE123456"
+print -r -- "    PRODUCT_BUNDLE_IDENTIFIER = org.example.snipsnap.ios"
+print -r -- "    SNIP_SNAP_APP_GROUP_IDENTIFIER = group.org.example.snipsnap"
+print -r -- "    SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER = iCloud.org.example.snipsnap"
+print -r -- "    CODE_SIGN_ENTITLEMENTS = $SNIP_SNAP_FAKE_ENTITLEMENTS"' > \
+    "$fake_xcodebuild"
+/bin/chmod +x "$fake_xcodebuild"
+SNIP_SNAP_XCODEBUILD="$fake_xcodebuild" \
+SNIP_SNAP_FAKE_XCODEBUILD_ARGS="$fake_xcodebuild_args" \
+SNIP_SNAP_FAKE_ENTITLEMENTS="$entitlements" \
+    assert_succeeds "$script_dir/signed-lane-preflight.sh" cloud \
+        --scheme SnipSnapiOS \
+        --configuration Debug \
+        --destination 'generic/platform=iOS'
+/usr/bin/grep -F -- '-scheme SnipSnapiOS' "$fake_xcodebuild_args" >/dev/null || \
+    fail_test "the signed-lane scheme did not reach xcodebuild"
+
 incomplete_cloud="$test_root/incomplete-cloud.txt"
 print '    PRODUCT_BUNDLE_IDENTIFIER = org.example.snipsnap' > "$incomplete_cloud"
 assert_fails_with_all \

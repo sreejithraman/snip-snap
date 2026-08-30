@@ -55,6 +55,41 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertNil(record["text"])
   }
 
+  func testControlUpdatesKeepUnknownOrdinaryFieldsWithoutDowngradingFutureVersion() throws {
+    let original = descriptor(
+      generation: "24242424-2424-2424-2424-242424242424",
+      metadata: "control-metadata",
+      payload: "control-payload"
+    )
+    let replacement = descriptor(
+      generation: "25252525-2525-2525-2525-252525252525",
+      metadata: "next-metadata",
+      payload: "next-payload"
+    )
+    let controlID = CloudRecordID(
+      zone: CloudZoneID(name: "control", ownerName: "owner"),
+      name: "active-collection"
+    )
+    let future = try CloudCollectionControlCodec.record(
+      original,
+      id: controlID,
+      replacing: nil
+    )
+    future["schemaVersion"] = Int64(7)
+    future["futureRouting"] = "keep ordinary"
+
+    let decoded = try CloudCollectionControlCodec.decode(future, expectedID: controlID)
+    let edited = try CloudCollectionControlCodec.record(
+      replacement,
+      id: controlID,
+      replacing: decoded.version
+    )
+
+    XCTAssertEqual(edited["generation"] as? String, replacement.generation.uuidString.lowercased())
+    XCTAssertEqual(edited["futureRouting"] as? String, "keep ordinary")
+    XCTAssertEqual(edited["schemaVersion"] as? Int64, 7)
+  }
+
   func testProductionAssemblyUsesOneFixedControlRecord() {
     XCTAssertEqual(
       CloudCollectionAssembly.productionControlID,

@@ -3,6 +3,17 @@ import XCTest
 
 final class SyncedContentSettingsModelTests: XCTestCase {
   @MainActor
+  func testICloudReadyDetailStatesThePrivacyBoundaryWithoutOverclaimingEncryption() {
+    let model = SyncedContentSettingsModel(mode: .iCloudSync)
+
+    XCTAssertTrue(model.detail.contains("private iCloud database"))
+    XCTAssertTrue(model.detail.contains("cannot inspect private records in CloudKit Console"))
+    XCTAssertTrue(model.detail.contains("encrypts synced data in transit and at rest"))
+    XCTAssertTrue(model.detail.contains("encrypted values and files use CKAsset data"))
+    XCTAssertTrue(model.detail.contains("end-to-end encrypted only when Advanced Data Protection is on"))
+  }
+
+  @MainActor
   func testConfirmedDeleteReportsProgressAndExplainsTheRemainingControlRecord() async {
     let calls = DeleteCallCounter()
     let model = SyncedContentSettingsModel(

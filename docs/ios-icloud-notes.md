@@ -170,10 +170,12 @@ Sources: [Shared data](https://developer.apple.com/documentation/technologyoverv
 - CloudKit returns downloaded asset files in a staging area that the system may clear. Copy a downloaded file into an app-owned cache when it must remain available.
 - Direct CloudKit fetches can omit the asset field and fetch it later on demand.
 - Private attachment data counts against the user's iCloud quota.
-- Apple's current native CloudKit documentation does not promise a fixed maximum asset size. Snip Snap must set its own supported limit and handle CloudKit limit and quota errors.
-- The earlier 25 MiB per attachment and 100 MiB per snip figures are test candidates, not Apple limits or settled product limits.
+- Snip Snap must set its own supported limit and handle CloudKit limit and quota errors. Do not present that limit as an Apple limit.
+- No public numeric limit is set yet. Current automated tests prove policy rejection and transfer failure handling only with small fixtures; they do not support a byte-count promise.
+- Block public sync release until one numeric per-attachment Snip Snap limit passes Mac, iPhone Simulator, iPad Simulator, and the final physical-iPhone transfer check. Add that limit to the product policy and boundary tests before release.
+- The earlier 25 MiB per attachment and 100 MiB per snip figures remain test candidates. Do not publish them unless those checks pass.
 - Keep local-only attachments unrestricted by a Snip Snap size policy.
-- Set the first public sync limits after Mac and Simulator transfer tests plus the final physical-iPhone check. Report incompatible existing files before enabling sync and never omit them.
+- Set the first public sync limit after Mac and Simulator transfer tests plus the final physical-iPhone check. Report incompatible existing files before enabling sync and never omit them.
 - Use one attachment metadata record in the normal sync zone and one immutable payload record in an excluded payload zone.
 - Upload and confirm the payload before publishing its metadata.
 - Fetch a payload directly by record ID only when the user previews, opens, copies, or exports the attachment.
@@ -203,7 +205,9 @@ Full findings: [Optional iCloud sync policy research](icloud-sync-policy-researc
 - Never put text, URLs, filenames, hashes, or other meaningful data in record names.
 - Sync source app, window title, and URL as part of a saved snip. Explain this in the sync disclosure.
 - Search, filter, and sort only in the local SwiftData store. Do not query CloudKit for user content.
-- Say that Apple encrypts synced data in transit and on its servers. Claim end-to-end encryption only when Advanced Data Protection supplies it.
+- Synced records live in the user's private iCloud database. Snip Snap's maintainers cannot inspect private records in CloudKit Console.
+- Say that Apple encrypts synced data in transit and at rest. Snip Snap stores user fields as CloudKit encrypted values and file bytes as `CKAsset` data.
+- Say that synced data is end-to-end encrypted only when Advanced Data Protection is on for the user's iCloud account.
 - Recheck the App Store privacy label against the final build and every included service before release.
 
 Sources: [CloudKit encrypted values](https://developer.apple.com/documentation/cloudkit/encrypting-user-data), [private CloudKit database](https://developer.apple.com/documentation/cloudkit/ckcontainer/privateclouddatabase), and [iCloud data security](https://support.apple.com/en-us/102651).
@@ -212,7 +216,7 @@ Apple's current documentation gives conflicting advice about whether a `CKSyncEn
 
 ## Open decisions
 
-- None from the current design review.
+- Public sync attachment limit. Keep public sync blocked until one numeric Snip Snap per-attachment limit passes the release matrix and boundary tests.
 
 ## Delete and merge rules
 
@@ -237,7 +241,7 @@ Automate these checks with temporary durable SwiftData stores, a fake Cloud tran
 - Run two or more local client stores against one fake server and inject offline periods, retries, duplicate events, reordered events, conflicts, account changes, zone deletion, encrypted-data reset, quota errors, and lost sync-engine state.
 - Verify on Mac and Simulator that normal `CKSyncEngine` fetches exclude the payload zone.
 - Verify that a direct payload fetch downloads one requested file and that the app-owned cached copy survives CloudKit staging cleanup.
-- Test candidate attachment limits and interrupted transfers. Simulate low local storage and exhausted iCloud quota at the storage and sync boundaries.
+- Test candidate attachment limits and interrupted transfers. Simulate low local storage and exhausted iCloud quota at the storage and sync boundaries. Keep public sync blocked until one numeric Snip Snap per-attachment limit passes the full release matrix and becomes a boundary test.
 - Test both orders of delete versus offline edit and require the recovered edit to use a new ID.
 - Delete saved sync-engine state and prove bootstrap does not upload stale records before fetching the remote collection.
 - Create equal list names on offline client stores and prove every client produces the same suffixes.
@@ -245,12 +249,6 @@ Automate these checks with temporary durable SwiftData stores, a fake Cloud tran
 - Exercise text, image, file, mixed, and multi-snip Copy and Share flows in both iPhone and iPad Simulators.
 - Run the same SwiftData migration, repository, merge, sync, and recovery test suites for the Mac and iOS targets.
 
-Before release, run one short sanity check on a physical iPhone with a release-like signed build:
-
-- Sync a text snip and one attachment between the Mac and iPhone.
-- Confirm attachment metadata arrives before its payload and opening the attachment fetches it.
-- Save one item through the Share extension while the app is closed.
-- Make one offline same-text conflict and resolve it through the recovery comparison.
-- Relaunch both apps and confirm the final data remains correct.
+Before release, run the [physical-iPhone release checklist](release-checklist.md) with a release-like signed build.
 
 Accept that Simulator and injected failures do not prove every production push, background, storage-pressure, account, or file-provider behavior. Record any physical-device-only bug found later as a release fix, but do not require a larger device lab for the first release.

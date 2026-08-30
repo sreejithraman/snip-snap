@@ -1943,6 +1943,10 @@ final class CloudAttachmentTransferTests: XCTestCase {
     XCTAssertEqual(unsupported.map(\.fileName), ["first.bin", "second.bin"])
   }
 
+  func testDefaultCompatibilityPolicyDoesNotPublishAnUntestedFileLimit() {
+    XCTAssertNil(CloudAttachmentCompatibilityPolicy.openSourceDefault.maximumFileBytes)
+  }
+
   func testCacheInstallRejectsOversizeBeforeConsumingStagedFile() async throws {
     let root = temporaryDirectory()
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

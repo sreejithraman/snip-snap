@@ -37,11 +37,12 @@ signing_policy_capture_build_settings() {
     local destination="$3"
     local output_file="$4"
     local derived_data="${5:-}"
+    local scheme="${6:-SnipSnap}"
     local xcodebuild_tool="${SNIP_SNAP_XCODEBUILD:-xcodebuild}"
     local command=(
         "$xcodebuild_tool"
         -project "$repo_dir/SnipSnap.xcodeproj"
-        -scheme SnipSnap
+        -scheme "$scheme"
         -configuration "$configuration"
         -destination "$destination"
         -showBuildSettings

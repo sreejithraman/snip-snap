@@ -20,7 +20,8 @@ package enum CloudCollectionControlCodec {
     } else {
       record = CKRecord(recordType: recordType, recordID: expectedID)
     }
-    record["schemaVersion"] = schemaVersion as CKRecordValue
+    let storedVersion = record["schemaVersion"] as? Int64 ?? 0
+    record["schemaVersion"] = max(storedVersion, schemaVersion) as CKRecordValue
     record["generation"] = descriptor.generation.uuidString.lowercased() as CKRecordValue
     record["metadataZoneName"] = descriptor.metadataZone.name as CKRecordValue
     record["metadataZoneOwner"] = descriptor.metadataZone.ownerName as CKRecordValue
@@ -35,7 +36,8 @@ package enum CloudCollectionControlCodec {
   ) throws -> CloudCollectionControlRecord {
     guard record.recordID == CloudKitRecordMapper.recordID(for: expectedID),
       record.recordType == recordType,
-      record["schemaVersion"] as? Int64 == schemaVersion,
+      let storedVersion = record["schemaVersion"] as? Int64,
+      storedVersion >= schemaVersion,
       let generationText = record["generation"] as? String,
       let generation = UUID(uuidString: generationText),
       let metadataName = record["metadataZoneName"] as? String,

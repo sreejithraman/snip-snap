@@ -13,7 +13,7 @@ The research found two issues that the current notes and ADRs now address:
 1. A `CKAsset` field on a record fetched by `CKSyncEngine` is not a documented metadata-first download. `CKSyncEngine.FetchChangesOptions` can scope and rank zones, but it has no `desiredKeys` setting. A normal record fetch returns its asset data. True on-demand files need a separate payload record and a fetch path that can ask for selected keys.
 2. Permanent app-owned tombstone records are not required by CloudKit. Snip Snap can prevent deleted records from returning by treating the remote collection as authoritative during bootstrap, keeping the last server record metadata, and handling `unknownItem` without recreating the deleted record. A recovered edit should get a new record ID.
 
-The proposed 25 MiB per attachment and 100 MiB per snip limits are product limits, not Apple limits. A 25 MiB first-release cap is a reasonable test target, but the project should label it as its own policy and verify it on Mac and Simulator, then repeat it during the final physical-iPhone check before it becomes a promise.
+The proposed 25 MiB per attachment and 100 MiB per snip limits are test candidates, not Apple limits or public Snip Snap limits. Current tests use small fixtures and do not support a byte-count promise. Public sync must stay blocked until one numeric per-attachment limit passes the Mac and Simulator matrix plus the final physical-iPhone check.
 
 ## 1. Attachment fetches and cache behavior
 
@@ -66,7 +66,7 @@ The per-snip total does not protect a single CloudKit request if payloads travel
 
 ### Product choice
 
-The project may adopt 25 MiB per synced attachment and 100 MiB per synced snip as its own v1 support policy. Local-only mode need not share those limits. Existing files above the sync limit should stay local and block the mode change with a list of the files that need action.
+The project has not set a public numeric limit. Local-only mode need not have a Snip Snap size cap. Once tests support a synced attachment limit, existing files above it should stay local and block the mode change with a list of the files that need action.
 
 ### Recommendation for Q20
 
@@ -209,7 +209,7 @@ ADR 0016 records option 2. The project will prove zone exclusion on Mac and Simu
 - Do not keep permanent CloudKit tombstones in v1.
 - Preserve an offline edit of a deleted snip as a new recovered record.
 - Resolve equal list names with a stable, deterministic suffix rule.
-- Treat 25 MiB per attachment and 100 MiB per snip as test candidates, not settled Apple limits.
+- Treat 25 MiB per attachment and 100 MiB per snip as test candidates, not public Snip Snap limits or Apple limits.
 - Split attachment metadata from payload to support the accepted on-demand transfer design.
 
 ## Project test scope before schema freeze
