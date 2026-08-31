@@ -86,7 +86,7 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
                     .padding(.horizontal, PanelListMetrics.horizontalContentInset)
                     .padding(.vertical, verticalContentPadding)
                 } header: {
-                    PanelListSectionHeader(
+                    PanelListHeader(
                         "Clipboard",
                         hasScrolledFromTop: hasScrolledFromTop,
                         actions: headerActions
@@ -109,13 +109,9 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
         }
         .scrollEdgeEffectStyle(.hard, for: .top)
         .onScrollGeometryChange(for: Bool.self) { geometry in
-            PinnedListHeaderGlass.hasScrolled(
-                visibleOriginY: geometry.contentOffset.y
-            )
+            geometry.contentOffset.y > PanelGeometryChange.minimumMeaningfulChange
         } action: { _, hasScrolled in
-            if hasScrolledFromTop != hasScrolled {
-                hasScrolledFromTop = hasScrolled
-            }
+            hasScrolledFromTop = hasScrolled
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
             guard PanelGeometryChange.shouldApply(

@@ -3,6 +3,16 @@
     <channel>
         <title>Snip Snap</title>
         <item>
+            <title>0.4.1</title>
+            <pubDate>Mon, 31 Aug 2026 16:22:03 -0400</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.4.1</link>
+            <sparkle:version>6</sparkle:version>
+            <sparkle:shortVersionString>0.4.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:releaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.4.1.md</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.4.1/Snip-Snap-0.4.1.zip" length="4689251" type="application/octet-stream" sparkle:edSignature="9FsxQSLqYjIFCqMJ8SAZ4beH7vNosi2wnzhHfsKxdxysyyVxaed1Yns2QHqdjEQwD+upMZ1CDjLIko0rGVVyBA=="/>
+        </item>
+        <item>
             <title>0.4.0</title>
             <pubDate>Mon, 31 Aug 2026 12:14:39 -0400</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.4.0</link>
