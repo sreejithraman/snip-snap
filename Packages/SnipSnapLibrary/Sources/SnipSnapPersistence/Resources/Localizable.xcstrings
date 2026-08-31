@@ -1,0 +1,67 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "%@ Snip Snap also could not open the JSON store, so it cannot save new snips." : {
+      "extractionState" : "manual"
+    },
+    "A Local store exists without a valid migration marker. Snip Snap left it in place." : {
+      "extractionState" : "manual"
+    },
+    "An attachment did not match its copied file: %@." : {
+      "extractionState" : "manual"
+    },
+    "Snip Snap could not create its local storage folder, so it cannot save new snips. %@" : {
+      "extractionState" : "manual"
+    },
+    "Snip Snap could not finish its storage upgrade. It kept the JSON store active. %@" : {
+      "extractionState" : "manual"
+    },
+    "Snip Snap could not keep the shared files." : {
+      "extractionState" : "manual"
+    },
+    "Snip Snap could not open its SwiftData store. It left the Local and JSON stores unchanged, so it cannot save new snips." : {
+      "extractionState" : "manual"
+    },
+    "Snip Snap could not open its migrated SwiftData store and could not safely move Local back to staging. It left Local and JSON in place and will not save new snips. %@" : {
+      "extractionState" : "manual"
+    },
+    "Snip Snap kept the unreadable JSON as %@ and started a new JSON store. %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Snip Snap kept the unreadable JSON as %1$@ and started a new JSON store. %2$@"
+          }
+        }
+      }
+    },
+    "The JSON store changed while Snip Snap was copying it." : {
+      "extractionState" : "manual"
+    },
+    "The JSON store refers to a missing attachment: %@." : {
+      "extractionState" : "manual"
+    },
+    "The Local store migration marker is invalid. Snip Snap left the store in place." : {
+      "extractionState" : "manual"
+    },
+    "The SwiftData check did not match the JSON store." : {
+      "extractionState" : "manual"
+    },
+    "This build does not have access to the shared Snip Snap container." : {
+      "extractionState" : "manual"
+    },
+    "attachment.genericName" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attachment"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.1"
+}

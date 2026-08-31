@@ -36,6 +36,10 @@ _Avoid_: Cloud mode, online mode, Snip Snap account
 A saved copy created when a three-way merge finds different edits to the same field. It links to the current snip until the user chooses which edit to keep or keeps both as normal snips.
 _Avoid_: Conflict, error copy
 
+**Done / Not Done**:
+The two completion states and action labels for a snip.
+_Avoid_: Mark Done, Mark Not Done, Complete, Incomplete
+
 **Sync generation**:
 A random identity for one version of the user's synced collection. Devices must match it before they may upload.
 _Avoid_: Schema version, account ID

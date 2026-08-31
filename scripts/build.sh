@@ -36,9 +36,9 @@ xcodebuild \
     -derivedDataPath "$derived_data" \
     CODE_SIGNING_ALLOWED=NO \
     "${bundle_arguments[@]}" \
-    'PRODUCT_BUNDLE_IDENTIFIER=$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).compilecheck' \
-    PRODUCT_NAME=SnipSnapCompileCheck \
-    'INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Compile Check' \
+    'SNIP_SNAP_EFFECTIVE_PRODUCT_BUNDLE_IDENTIFIER=$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).compilecheck' \
+    SNIP_SNAP_PRODUCT_NAME=SnipSnapCompileCheck \
+    'SNIP_SNAP_DISPLAY_NAME=Snip Snap Compile Check' \
     build
 
 print "Compile checks passed. Do not launch this build. Use scripts/run.sh to build and open the Dev app."

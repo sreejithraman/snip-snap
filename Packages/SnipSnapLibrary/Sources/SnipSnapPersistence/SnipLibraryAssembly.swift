@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import SnipSnapCore
 
@@ -7,37 +6,6 @@ public struct SnipSyncModeStore: Sendable {
 
   package init(_ persistence: SwiftDataSyncModePersistence) {
     self.persistence = persistence
-  }
-}
-
-public struct SnipLibraryUserActionsFactory: Sendable {
-  private let makeActions: @Sendable (any SnipLibrary) -> any SnipLibraryUserActions
-
-  private init(
-    makeActions: @escaping @Sendable (any SnipLibrary) -> any SnipLibraryUserActions
-  ) {
-    self.makeActions = makeActions
-  }
-
-  public static var direct: Self {
-    Self { DirectSnipLibraryUserActions(library: $0) }
-  }
-
-  public static func durable(
-    journalURL: URL,
-    collectionIdentity: @escaping @Sendable () async -> SnipLibraryCollectionIdentity
-  ) -> Self {
-    Self { library in
-      SnipLibraryDeviceActions(
-        library: library,
-        journalURL: journalURL,
-        collectionIdentity: collectionIdentity
-      )
-    }
-  }
-
-  public func actions(for library: any SnipLibrary) -> any SnipLibraryUserActions {
-    makeActions(library)
   }
 }
 
@@ -73,7 +41,7 @@ public enum SnipRecoveryScopeFactory {
 public struct SnipLibraryAssembly: Sendable {
   public let library: any SnipLibrary
   public let userActions: any SnipLibraryUserActions
-  public let userActionsFactory: SnipLibraryUserActionsFactory
+  public let userActionsRebinder: SnipLibraryUserActionsRebinder
   public let recoveryScope: SnipRecoveryScope?
   public let syncModeStore: SnipSyncModeStore?
 
@@ -82,8 +50,9 @@ public struct SnipLibraryAssembly: Sendable {
     activeCloudNamespace: ICloudSyncNamespaceBinding?
   ) {
     self.library = library
-    userActionsFactory = .direct
-    userActions = userActionsFactory.actions(for: library)
+    let rebinder = Self.makeUserActionsRebinder()
+    userActionsRebinder = rebinder
+    userActions = rebinder.actions(for: library)
     recoveryScope = SnipRecoveryScopeFactory.scope(
       forActiveCloudNamespace: activeCloudNamespace
     )
@@ -93,8 +62,7 @@ public struct SnipLibraryAssembly: Sendable {
   public init(
     library: any SnipLibrary,
     syncModeRootURL: URL,
-    initializeSyncModeStore: Bool = false,
-    actionJournalURL: URL? = nil
+    initializeSyncModeStore: Bool = false
   ) {
     let namespace = SyncModeActivationManifestReader.activeCloudNamespace(
       atSyncModeRootURL: syncModeRootURL
@@ -114,99 +82,19 @@ public struct SnipLibraryAssembly: Sendable {
       syncModeStore = nil
     }
     self.library = resolvedLibrary
-    let collectionRootURL = syncModeRootURL.deletingLastPathComponent()
-    userActionsFactory = .durable(
-      journalURL: actionJournalURL ?? SnipLibraryDeviceActions.defaultJournalURL(
-        nextTo: collectionRootURL.appendingPathComponent("snips.store")
-      ),
-      collectionIdentity: {
-        SnipLibraryCollectionIdentityFactory.activeIdentity(
-          atSyncModeRootURL: syncModeRootURL,
-          standaloneRootURL: collectionRootURL
-        )
-      }
-    )
-    userActions = userActionsFactory.actions(for: resolvedLibrary)
-  }
-}
-
-package enum SnipLibraryCollectionIdentityFactory {
-  package static func identity(
-    storeID: UUID,
-    kind: String,
-    namespace: ICloudSyncNamespaceBinding?
-  ) -> SnipLibraryCollectionIdentity {
-    var data = Data()
-    append("snipsnap-active-collection-v1", to: &data)
-    append(storeID.uuidString.lowercased(), to: &data)
-    append(kind, to: &data)
-    if let namespace {
-      append(namespace.scope, to: &data)
-      append(namespace.accountLineage, to: &data)
-      append(namespace.generation.uuidString.lowercased(), to: &data)
-      for zone in namespace.zones.sorted(by: {
-        ($0.ownerName, $0.name) < ($1.ownerName, $1.name)
-      }) {
-        append(zone.ownerName, to: &data)
-        append(zone.name, to: &data)
-      }
-    }
-    return SnipLibraryCollectionIdentity(digest: Data(SHA256.hash(data: data)))
+    let rebinder = Self.makeUserActionsRebinder()
+    userActionsRebinder = rebinder
+    userActions = rebinder.actions(for: resolvedLibrary)
   }
 
-  package static func standalone(rootURL: URL) -> SnipLibraryCollectionIdentity {
-    hashed(domain: "snipsnap-standalone-collection-v1", value: rootURL.standardizedFileURL.path)
-  }
-
-  package static func unavailable(rootURL: URL) -> SnipLibraryCollectionIdentity {
-    hashed(domain: "snipsnap-unavailable-collection-v1", value: rootURL.standardizedFileURL.path)
-  }
-
-  package static func activeIdentity(
-    atSyncModeRootURL rootURL: URL,
-    standaloneRootURL: URL
-  ) -> SnipLibraryCollectionIdentity {
-    let manifestURL = rootURL.appendingPathComponent("activation.json", isDirectory: false)
-    guard FileManager.default.fileExists(atPath: manifestURL.path) else {
-      return standalone(rootURL: standaloneRootURL)
-    }
-    do {
-      let values = try manifestURL.resourceValues(
-        forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+  private static func makeUserActionsRebinder() -> SnipLibraryUserActionsRebinder {
+    SnipLibraryUserActionsRebinder { library in
+      DirectSnipLibraryUserActions(
+        library: library,
+        previewBackupImport: { backupURL, target in
+          try await SnipLibraryImport.preview(backupURL: backupURL, target: target)
+        }
       )
-      guard values.isRegularFile == true, values.isSymbolicLink != true else {
-        return unavailable(rootURL: rootURL)
-      }
-      let manifest = try JSONDecoder().decode(
-        SwiftDataSyncModePersistence.Manifest.self,
-        from: Data(contentsOf: manifestURL)
-      )
-      try SwiftDataSyncModePersistence.validate(manifest)
-      _ = try SwiftDataSyncModePersistence.validatedStoreRoots(manifest.stores, rootURL: rootURL)
-      guard let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID }) else {
-        return unavailable(rootURL: rootURL)
-      }
-      return identity(
-        storeID: active.id,
-        kind: active.kind.rawValue,
-        namespace: active.namespace
-      )
-    } catch {
-      return unavailable(rootURL: rootURL)
     }
-  }
-
-  private static func hashed(domain: String, value: String) -> SnipLibraryCollectionIdentity {
-    var data = Data()
-    append(domain, to: &data)
-    append(value, to: &data)
-    return SnipLibraryCollectionIdentity(digest: Data(SHA256.hash(data: data)))
-  }
-
-  private static func append(_ value: String, to data: inout Data) {
-    let bytes = Data(value.utf8)
-    var count = UInt64(bytes.count).bigEndian
-    withUnsafeBytes(of: &count) { data.append(contentsOf: $0) }
-    data.append(bytes)
   }
 }

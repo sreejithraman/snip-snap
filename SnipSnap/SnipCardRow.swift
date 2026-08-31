@@ -29,7 +29,7 @@ struct SnipCardRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             Toggle(
-                "Done",
+                SnipCompletionLanguage.done,
                 isOn: Binding(
                     get: { snip.isDone },
                     set: { _ in onToggleDone() }
@@ -43,7 +43,7 @@ struct SnipCardRow: View {
             .padding(.trailing, SnipSnapSpacing.relatedContent)
             .padding(.vertical, SnipSnapSpacing.cardContentInset)
             .disabled(isEditing)
-            .help(snip.isDone ? "Mark Not Done" : "Mark Done")
+            .help(SnipCompletionLanguage.actionTitle(isDone: snip.isDone))
 
             if isEditing {
                 editingBody
@@ -56,14 +56,14 @@ struct SnipCardRow: View {
         .panelContentCardSurface(isSelected: isSelected, isDone: snip.isDone)
         .overlay(alignment: .topTrailing) {
             if isRecovered && !isEditing {
-                Text("Recovered")
+                Text(.recovered)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
                     .background(.thinMaterial, in: Capsule())
                     .padding(8)
-                    .accessibilityLabel("Recovered Snip")
+                    .accessibilityLabel(.recoveredSnip)
             }
         }
         .contentShape(Rectangle())
@@ -144,7 +144,7 @@ struct SnipCardRow: View {
             }
 
             PanelMultilineTextInput(
-                "Snip text",
+                String(localized: .snipText),
                 text: $editText,
                 lineRange: PanelInlineEditMetrics.textLineRange,
                 lineSpacing: 2,
@@ -236,8 +236,8 @@ struct SnipCardRow: View {
     private var editActions: some View {
         HStack(spacing: SnipSnapSpacing.relatedContent) {
             Menu {
-                Button("Choose Files…", action: onChooseFiles)
-                Button("Capture Screen Area…", action: captureScreenAreaIntoEdit)
+                Button(.chooseFiles, action: onChooseFiles)
+                Button(.captureScreenArea, action: captureScreenAreaIntoEdit)
             } label: {
                 editActionIcon("plus")
                     .panelEmbeddedActionControl()
@@ -245,8 +245,8 @@ struct SnipCardRow: View {
             .menuIndicator(.hidden)
             .buttonStyle(.plain)
             .disabled(isSaving)
-            .help("Add Attachment")
-            .accessibilityLabel("Add Attachment")
+            .help(.addAttachment)
+            .accessibilityLabel(.addAttachment)
 
             Spacer(minLength: SnipSnapSpacing.relatedContent)
 
@@ -256,8 +256,8 @@ struct SnipCardRow: View {
             }
             .buttonStyle(.plain)
             .keyboardShortcut(.cancelAction)
-            .help("Cancel Editing")
-            .accessibilityLabel("Cancel Editing")
+            .help(.cancelEditing)
+            .accessibilityLabel(.cancelEditing)
 
             Button(action: saveEdit) {
                 Image(systemName: "checkmark")
@@ -266,8 +266,8 @@ struct SnipCardRow: View {
             .panelEmbeddedProminentActionControl()
             .keyboardShortcut("s", modifiers: .command)
             .disabled(!canSaveEdit)
-            .help("Save Snip")
-            .accessibilityLabel("Save Snip")
+            .help(.saveSnip)
+            .accessibilityLabel(.saveSnip)
         }
     }
 

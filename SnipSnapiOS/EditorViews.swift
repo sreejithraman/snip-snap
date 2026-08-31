@@ -28,8 +28,8 @@ struct SnipEditorView: View {
 
     private var title: String {
         switch mode {
-        case .create: "New Snip"
-        case .edit: "Edit Snip"
+        case .create: String(localized: .screenNewSnipTitle)
+        case .edit: String(localized: .editSnip)
         }
     }
 
@@ -38,7 +38,7 @@ struct SnipEditorView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Text") {
+                Section(.text) {
                     TextEditor(text: $content)
                         .frame(minHeight: 180)
                         .accessibilityIdentifier("snip-text")
@@ -65,7 +65,7 @@ struct SnipEditorView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button(.cancel) {
                         cleanStagingDirectory()
                         dismiss()
                     }
@@ -77,8 +77,10 @@ struct SnipEditorView: View {
                     )
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(isSaving ? "Saving…" : "Save") {
+                    Button {
                         Task { await save() }
+                    } label: {
+                        Text(isSaving ? .saving : .save)
                     }
                     .disabled(
                         !AttachmentDraftLifecycle.allowsSaving(
@@ -269,16 +271,16 @@ struct ListEditorView: View {
 
     private var title: String {
         switch mode {
-        case .create: "New List"
-        case .edit: "Rename List"
+        case .create: String(localized: .screenNewListTitle)
+        case .edit: String(localized: .renameList)
         }
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Name") {
-                    TextField("List name", text: $name)
+                Section(.name) {
+                    TextField(.listName, text: $name)
                         .textInputAutocapitalization(.words)
                         .accessibilityIdentifier("list-name")
                 }
@@ -287,11 +289,13 @@ struct ListEditorView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(.cancel) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(isSaving ? "Saving…" : "Save") {
+                    Button {
                         Task { await save() }
+                    } label: {
+                        Text(isSaving ? .saving : .save)
                     }
                     .disabled(isSaving || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityIdentifier("save-list")

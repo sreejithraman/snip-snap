@@ -24,7 +24,7 @@ struct ListSidebarView: View {
                     Button {
                         sheet = .recoveryCenter
                     } label: {
-                        Label("Needs Attention", systemImage: "exclamationmark.bubble")
+                        Label(.needsAttention, systemImage: "exclamationmark.bubble")
                     }
                     .badge(model.needsAttentionCount)
                     .accessibilityIdentifier("needs-attention")
@@ -32,24 +32,24 @@ struct ListSidebarView: View {
             }
             ForEach(model.lists) { list in
                 NavigationLink(value: list.id) {
-                    Label(list.name, systemImage: list.systemImage)
+                    Label(list.displayName, systemImage: list.systemImage)
                 }
                 .tag(list.id)
                 .accessibilityIdentifier("list-\(list.name)")
                 .contextMenu {
                     if list.id != SnipList.inboxID {
-                        Button("Rename") { sheet = .editList(id: list.id) }
-                        Button("Delete", role: .destructive) {
+                        Button(.rename) { sheet = .editList(id: list.id) }
+                        Button(.delete, role: .destructive) {
                             Task { await model.deleteList(id: list.id) }
                         }
                     }
                 }
             }
         }
-        .navigationTitle("Lists")
+        .navigationTitle(.lists)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button("Settings", systemImage: "gearshape") {
+                Button(.settings, systemImage: "gearshape") {
                     sheet = .settings
                 }
                 .accessibilityIdentifier("settings")
@@ -62,7 +62,7 @@ struct ListSidebarView: View {
                 )
             }
             ToolbarItem(placement: .primaryAction) {
-                Button("New List", systemImage: "folder.badge.plus") {
+                Button(.screenNewListTitle, systemImage: "folder.badge.plus") {
                     sheet = .newList
                 }
                 .accessibilityIdentifier("new-list")
@@ -84,21 +84,12 @@ struct LibraryActionsMenu: View {
     @State private var confirmsDeleteList = false
 
     var body: some View {
-        Menu("Library Actions", systemImage: "ellipsis.circle") {
-            Button(model.undoTitle, systemImage: "arrow.uturn.backward") {
-                Task { await model.undo() }
-            }
-            .disabled(!model.canUndo)
-            Button(model.redoTitle, systemImage: "arrow.uturn.forward") {
-                Task { await model.redo() }
-            }
-            .disabled(!model.canRedo)
-            Divider()
-            Button("Import Backup…", systemImage: "square.and.arrow.down", action: importBackup)
+        Menu(.libraryActions, systemImage: "ellipsis.circle") {
+            Button(.actionImportBackup, systemImage: "square.and.arrow.down", action: importBackup)
             if model.selectedListID != SnipList.inboxID, let editSelectedList {
                 Divider()
-                Button("Rename List", systemImage: "pencil", action: editSelectedList)
-                Button("Delete List", systemImage: "trash", role: .destructive) {
+                Button(.renameList, systemImage: "pencil", action: editSelectedList)
+                Button(.deleteList, systemImage: "trash", role: .destructive) {
                     confirmsDeleteList = true
                 }
             }
@@ -108,13 +99,13 @@ struct LibraryActionsMenu: View {
             }
         }
         .accessibilityIdentifier("library-actions")
-        .alert("Delete \(model.selectedList.name)?", isPresented: $confirmsDeleteList) {
-            Button("Cancel", role: .cancel) {}
-            Button("Delete List", role: .destructive) {
+        .alert(.delete(model.selectedList.name), isPresented: $confirmsDeleteList) {
+            Button(.cancel, role: .cancel) {}
+            Button(.deleteList, role: .destructive) {
                 Task { await model.deleteList(id: model.selectedListID) }
             }
         } message: {
-            Text("The list will be removed. Its snips will move to Inbox.")
+            Text(.theListWillBeRemovedItsSnipsWillMoveToInbox)
         }
     }
 }
@@ -123,11 +114,11 @@ private struct CloudLibraryActions: View {
     let model: IOSAppModel
 
     var body: some View {
-        Button("Sync Now", systemImage: "arrow.triangle.2.circlepath") {
+        Button(.syncNow, systemImage: "arrow.triangle.2.circlepath") {
             Task { await model.syncWhenPossible() }
         }
         .accessibilityIdentifier("sync-icloud-now")
-        Button("Clear Downloaded Files", systemImage: "icloud.and.arrow.down") {
+        Button(.clearDownloadedFiles, systemImage: "icloud.and.arrow.down") {
             Task { await model.clearDownloadedFiles() }
         }
         .accessibilityIdentifier("clear-icloud-downloads")
@@ -196,115 +187,7 @@ struct SnipCollectionView: View {
                         .accessibilityIdentifier("recovered-snip-\(recovery.id)")
                     }
                     ForEach(model.visibleSnips) { snip in
-                        Group {
-                            if isSelecting {
-                                Button {
-                                    toggleSelection(snip.id)
-                                } label: {
-                                    HStack(alignment: .top, spacing: 12) {
-                                        Image(systemName: model.selectedSnipIDs.contains(snip.id)
-                                            ? "checkmark.circle.fill" : "circle")
-                                            .foregroundStyle(
-                                                model.selectedSnipIDs.contains(snip.id)
-                                                    ? Color.accentColor : Color.secondary
-                                            )
-                                            .accessibilityHidden(true)
-                                        SnipRow(
-                                            snip: snip,
-                                            model: model,
-                                            isRecovered: model.isRecoveredSnip(snip.id),
-                                            showsStatusIcon: false
-                                        )
-                                    }
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityAddTraits(
-                                    model.selectedSnipIDs.contains(snip.id) ? .isSelected : []
-                                )
-                                .accessibilityIdentifier("snip-\(snip.id)")
-                            } else if layout == .compactStack {
-                                if inlineEditSession?.original.id == snip.id {
-                                    CompactInlineSnipEditor(
-                                        snip: snip,
-                                        model: model,
-                                        text: inlineEditText,
-                                        isSaving: inlineEditSession?.isSaving == true,
-                                        isFocused: $isInlineEditorFocused,
-                                        cancel: cancelInlineEdit,
-                                        save: saveInlineEdit
-                                    )
-                                } else {
-                                    SnipRow(
-                                        snip: snip,
-                                        model: model,
-                                        isRecovered: model.isRecoveredSnip(snip.id)
-                                    )
-                                    .contentShape(Rectangle())
-                                    .highPriorityGesture(
-                                        TapGesture(count: 2).onEnded {
-                                            beginEditing(snip)
-                                        }
-                                    )
-                                    .accessibilityElement(children: .combine)
-                                    .accessibilityAddTraits(.isButton)
-                                    .accessibilityHint("Double tap to edit. Touch and hold for actions.")
-                                    .accessibilityAction {
-                                        beginEditing(snip)
-                                    }
-                                    .accessibilityAction(named: "Edit") {
-                                        beginEditing(snip)
-                                    }
-                                    .accessibilityIdentifier("snip-\(snip.id)")
-                                }
-                            } else {
-                                NavigationLink(value: snip.id) {
-                                    SnipRow(
-                                        snip: snip,
-                                        model: model,
-                                        isRecovered: model.isRecoveredSnip(snip.id)
-                                    )
-                                }
-                                .accessibilityIdentifier("snip-\(snip.id)")
-                            }
-                        }
-                        .tag(snip.id)
-                        .swipeActions(edge: .leading) {
-                            Button(snip.isDone ? "Mark Not Done" : "Mark Done") {
-                                Task { await model.toggleDone(id: snip.id) }
-                            }
-                            .tint(snip.isDone ? .secondary : .green)
-                            .accessibilityIdentifier(snip.isDone ? "mark-not-done" : "mark-done")
-                        }
-                        .swipeActions(edge: .trailing) {
-                            Button("Delete", role: .destructive) {
-                                Task { await model.deleteSnip(id: snip.id) }
-                            }
-                            .accessibilityIdentifier("delete-snip")
-                        }
-                        .contextMenu {
-                            Button(snip.isDone ? "Mark Not Done" : "Mark Done") {
-                                Task { await model.toggleDone(id: snip.id) }
-                            }
-                            Button("Edit") { beginEditing(snip) }
-                            Button("Edit Attachments…", systemImage: "paperclip") {
-                                model.selectedSnipID = snip.id
-                                sheet = .editSnip(id: snip.id)
-                            }
-                            .accessibilityIdentifier("edit-attachments")
-                            MoveSnipMenu(model: model, snip: snip)
-                            Divider()
-                            CopyShareActions(
-                                snips: [snip],
-                                model: model,
-                                coordinator: copyShare,
-                                identifierSuffix: "snip"
-                            )
-                            Divider()
-                            Button("Delete", role: .destructive) {
-                                Task { await model.deleteSnip(id: snip.id) }
-                            }
-                        }
+                        snipItem(snip)
                     }
                     .onMove(perform: move)
                     .moveDisabled(!model.canReorderVisibleSnips)
@@ -333,16 +216,6 @@ struct SnipCollectionView: View {
         ))
         .environment(\.editMode, $editMode)
         .toolbar {
-            if layout == .splitView {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(model.undoTitle, systemImage: "arrow.uturn.backward") {
-                        Task { _ = await model.undo() }
-                    }
-                    .disabled(!model.canUndo)
-                    .keyboardShortcut("z", modifiers: .command)
-                    .accessibilityIdentifier("undo-change")
-                }
-            }
             ToolbarItemGroup(placement: .primaryAction) {
                 if isSelecting {
                     SelectionActionsMenu(
@@ -354,13 +227,15 @@ struct SnipCollectionView: View {
                 } else {
                     WorkflowOptionsMenu(model: model)
                 }
-                Button(isSelecting ? "Done" : "Edit") {
+                Button {
                     setSelecting(!isSelecting)
+                } label: {
+                    Text(isSelecting ? .done : .edit)
                 }
                     .disabled(model.visibleSnips.isEmpty)
                     .accessibilityIdentifier("select-snips")
                 if !isSelecting && layout == .splitView {
-                    Button("New Snip", systemImage: "square.and.pencil") {
+                    Button(.screenNewSnipTitle, systemImage: "square.and.pencil") {
                         sheet = .newSnip(listID: model.selectedListID)
                     }
                     .accessibilityIdentifier("new-snip")
@@ -374,9 +249,133 @@ struct SnipCollectionView: View {
         }
     }
 
+    @ViewBuilder
+    private func snipItem(_ snip: Snip) -> some View {
+        let isSelected = model.selectedSnipIDs.contains(snip.id)
+
+        Group {
+            if isSelecting {
+                Button {
+                    toggleSelection(snip.id)
+                } label: {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                            .accessibilityHidden(true)
+                        SnipRow(
+                            snip: snip,
+                            model: model,
+                            isRecovered: model.isRecoveredSnip(snip.id),
+                            showsStatusIcon: false
+                        )
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+                .accessibilityIdentifier("snip-\(snip.id)")
+            } else if layout == .compactStack {
+                if inlineEditSession?.original.id == snip.id {
+                    CompactInlineSnipEditor(
+                        snip: snip,
+                        model: model,
+                        text: inlineEditText,
+                        isSaving: inlineEditSession?.isSaving == true,
+                        isFocused: $isInlineEditorFocused,
+                        cancel: cancelInlineEdit,
+                        save: saveInlineEdit
+                    )
+                } else {
+                    SnipRow(
+                        snip: snip,
+                        model: model,
+                        isRecovered: model.isRecoveredSnip(snip.id)
+                    )
+                    .contentShape(Rectangle())
+                    .highPriorityGesture(
+                        TapGesture(count: 2).onEnded {
+                            beginEditing(snip)
+                        }
+                    )
+                    .accessibilityElement(children: .combine)
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityHint(.doubleTapToEditTouchAndHoldForActions)
+                    .accessibilityAction {
+                        beginEditing(snip)
+                    }
+                    .accessibilityAction(named: .edit) {
+                        beginEditing(snip)
+                    }
+                    .accessibilityIdentifier("snip-\(snip.id)")
+                }
+            } else {
+                NavigationLink(value: snip.id) {
+                    SnipRow(
+                        snip: snip,
+                        model: model,
+                        isRecovered: model.isRecoveredSnip(snip.id)
+                    )
+                }
+                .accessibilityIdentifier("snip-\(snip.id)")
+            }
+        }
+        .tag(snip.id)
+        .swipeActions(edge: .leading) {
+            SemanticSwipeAction(
+                title: SnipCompletionLanguage.actionTitle(isDone: snip.isDone),
+                systemImage: snip.isDone ? "circle" : "checkmark",
+                tint: snip.isDone ? .gray : .green,
+                role: nil,
+                accessibilityIdentifier: snip.isDone ? "mark-not-done" : "mark-done"
+            ) {
+                Task { await model.toggleDone(id: snip.id) }
+            }
+        }
+        .swipeActions(edge: .trailing) {
+            SemanticSwipeAction(
+                title: String(localized: .delete),
+                systemImage: "trash",
+                tint: .red,
+                role: .destructive,
+                accessibilityIdentifier: "delete-snip"
+            ) {
+                Task { await model.deleteSnip(id: snip.id) }
+            }
+        }
+        .contextMenu {
+            Button(SnipCompletionLanguage.actionTitle(isDone: snip.isDone)) {
+                Task { await model.toggleDone(id: snip.id) }
+            }
+            Button(.edit) { beginEditing(snip) }
+            Button {
+                model.selectedSnipID = snip.id
+                sheet = .editSnip(id: snip.id)
+            } label: {
+                Label {
+                    Text(.actionEditAttachments)
+                } icon: {
+                    Image(systemName: "paperclip")
+                }
+            }
+            .accessibilityIdentifier("edit-attachments")
+            MoveSnipMenu(model: model, snip: snip)
+            Divider()
+            CopyShareActions(
+                snips: [snip],
+                model: model,
+                coordinator: copyShare,
+                identifierSuffix: "snip"
+            )
+            Divider()
+            Button(.delete, role: .destructive) {
+                Task { await model.deleteSnip(id: snip.id) }
+            }
+        }
+    }
+
     private var emptyTitle: String {
         if !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "No Results"
+            return String(localized: .noResults)
         }
         return model.completionFilter.emptyStateTitle
     }
@@ -388,11 +387,11 @@ struct SnipCollectionView: View {
 
     private var emptyDescription: String {
         if !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "Try a different search."
+            return String(localized: .tryADifferentSearch)
         }
         return model.completionFilter == .all
-            ? "Save text here when you want to keep it close."
-            : "Change the filter to see other snips."
+            ? String(localized: .saveTextHereWhenYouWantToKeepItClose)
+            : String(localized: .changeTheFilterToSeeOtherSnips)
     }
 
     private var compactEmptyState: some View {
@@ -521,7 +520,7 @@ private struct CompactInlineSnipEditor: View {
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 12) {
-                TextField("Snip text", text: $text, axis: .vertical)
+                TextField(.snipText, text: $text, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...8)
                     .focused($isFocused)
@@ -535,7 +534,7 @@ private struct CompactInlineSnipEditor: View {
                                 .frame(width: 48, height: 48)
                         }
                         if snip.attachments.count > 3 {
-                            Text("+\(snip.attachments.count - 3)")
+                            Text(.attachmentRemainingCount(snip.attachments.count - 3))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -556,7 +555,7 @@ private struct CompactInlineSnipEditor: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(isSaving)
-                    .accessibilityLabel("Cancel Editing")
+                    .accessibilityLabel(.cancelEditing)
                     .accessibilityIdentifier("inline-snip-cancel")
 
                     Button(action: save) {
@@ -578,7 +577,7 @@ private struct CompactInlineSnipEditor: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!canSave)
-                    .accessibilityLabel("Save Snip")
+                    .accessibilityLabel(.saveSnip)
                     .accessibilityIdentifier("inline-snip-save")
                 }
             }
@@ -597,7 +596,7 @@ private struct PhoneAwareSearchModifier: ViewModifier {
             content.searchable(
                 text: $text,
                 placement: .navigationBarDrawer(displayMode: .always),
-                prompt: "Search Snips"
+                prompt: String(localized: .searchSnips)
             )
         } else {
             content
@@ -628,7 +627,7 @@ private struct SnipRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if isRecovered {
-                    Label("Recovered", systemImage: "arrow.uturn.backward.circle.fill")
+                    Label(.recovered, systemImage: "arrow.uturn.backward.circle.fill")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.orange)
                 }
@@ -639,7 +638,7 @@ private struct SnipRow: View {
                                 .frame(width: 48, height: 48)
                         }
                         if snip.attachments.count > 3 {
-                            Text("+\(snip.attachments.count - 3)")
+                            Text(.attachmentRemainingCount(snip.attachments.count - 3))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -650,7 +649,9 @@ private struct SnipRow: View {
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
-        .accessibilityValue(snip.isDone ? "Done" : "Not Done")
+        .accessibilityValue(
+            SnipCompletionLanguage.stateTitle(isDone: snip.isDone)
+        )
     }
 
     private var accessibilityLabel: String {
@@ -658,7 +659,7 @@ private struct SnipRow: View {
         let attachments = snip.attachments.map(\.fileName).joined(separator: ", ")
         return [
             text.isEmpty ? nil : text,
-            attachments.isEmpty ? nil : "Attachments: \(attachments)",
+            attachments.isEmpty ? nil : String(localized: .attachments(attachments)),
         ]
         .compactMap { $0 }
         .joined(separator: ", ")
@@ -670,10 +671,14 @@ private struct RecoveredSnipRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(recovery.recovered.content.isEmpty ? "Recovered edit" : recovery.recovered.content)
+            Text(
+                recovery.recovered.content.isEmpty
+                    ? String(localized: .recoveredEdit)
+                    : recovery.recovered.content
+            )
                 .lineLimit(3)
                 .foregroundStyle(.primary)
-            Label("Recovered", systemImage: "arrow.uturn.backward.circle.fill")
+            Label(.recovered, systemImage: "arrow.uturn.backward.circle.fill")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.orange)
         }
@@ -690,7 +695,7 @@ struct RecoveryCenterView: View {
         NavigationStack {
             List {
                 if !model.pendingRecoveredSnips.isEmpty {
-                    Section("Recovered Snips") {
+                    Section(.recoveredSnips) {
                         ForEach(model.pendingRecoveredSnips) { recovery in
                             NavigationLink {
                                 RecoveredSnipReviewView(model: model, recoveryID: recovery.id)
@@ -701,7 +706,7 @@ struct RecoveryCenterView: View {
                     }
                 }
                 if !model.pendingRecoveredLists.isEmpty {
-                    Section("Recovered List Edits") {
+                    Section(.recoveredListEdits) {
                         ForEach(model.pendingRecoveredLists) { recovery in
                             NavigationLink {
                                 RecoveredListReviewView(model: model, recoveryID: recovery.id)
@@ -712,10 +717,10 @@ struct RecoveryCenterView: View {
                     }
                 }
             }
-            .navigationTitle("Needs Attention")
+            .navigationTitle(.needsAttention)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
+                    Button(.done) { dismiss() }
                 }
             }
         }
@@ -739,9 +744,13 @@ struct RecoveredSnipReviewView: View {
                 if let recovery, let current = model.currentSnip(for: recovery) {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 24) {
-                            recoverySnipCard("Current", snip: current, fields: recovery.conflictingFields)
                             recoverySnipCard(
-                                "Recovered Edit",
+                                String(localized: .recoveryCurrentTitle),
+                                snip: current,
+                                fields: recovery.conflictingFields
+                            )
+                            recoverySnipCard(
+                                String(localized: .recoveredEdit),
                                 snip: recovery.recovered,
                                 fields: recovery.conflictingFields
                             )
@@ -752,15 +761,15 @@ struct RecoveredSnipReviewView: View {
                     .safeAreaInset(edge: .bottom) {
                         VStack(spacing: 12) {
                             HStack {
-                                Button("Keep Current") { resolve(.keepCurrent) }
+                                Button(.keepCurrent) { resolve(.keepCurrent) }
                                 Spacer()
-                                Button("Use Recovered") { resolve(.useRecovered) }
+                                Button(.useRecovered) { resolve(.useRecovered) }
                                     .buttonStyle(.borderedProminent)
                             }
                             HStack {
-                                Button("Keep Both") { resolve(.keepBoth) }
+                                Button(.keepBoth) { resolve(.keepBoth) }
                                 Spacer()
-                                Button("Edit") {
+                                Button(.edit) {
                                     if let edited { resolve(.editSnip(edited)) }
                                 }
                             }
@@ -771,13 +780,13 @@ struct RecoveredSnipReviewView: View {
                     .disabled(isResolving)
                     .onAppear { if edited == nil { edited = recovery.recovered } }
                 } else {
-                    ContentUnavailableView("Recovered Edit Is Gone", systemImage: "checkmark.circle")
+                    ContentUnavailableView(.recoveredEditIsGone, systemImage: "checkmark.circle")
                 }
             }
-            .navigationTitle("Recovered Snip")
+            .navigationTitle(.recoveredSnip)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button(.close) { dismiss() } }
             }
             .task {
                 while !Task.isCancelled {
@@ -795,17 +804,21 @@ struct RecoveredSnipReviewView: View {
     ) -> some View {
         GroupBox(title) {
             VStack(alignment: .leading, spacing: 12) {
-                if fields.contains(.text) { LabeledContent("Text", value: snip.content) }
+                if fields.contains(.text) { LabeledContent(.text, value: snip.content) }
                 if fields.contains(.source) {
-                    LabeledContent("Source", value: snip.source?.conciseLabel ?? "None")
+                    LabeledContent(.source, value: snip.source?.conciseLabel ?? String(localized: .none))
                 }
                 if fields.contains(.done) {
-                    LabeledContent("State", value: snip.isDone ? "Done" : "Not Done")
+                    LabeledContent(
+                        .state,
+                        value: SnipCompletionLanguage.stateTitle(isDone: snip.isDone)
+                    )
                 }
                 if fields.contains(.placement) {
                     LabeledContent(
-                        "List",
-                        value: model.lists.first { $0.id == snip.listID }?.name ?? "Inbox"
+                        .listGenericName,
+                        value: model.lists.first { $0.id == snip.listID }?.displayName
+                            ?? String(localized: .inbox)
                     )
                 }
             }
@@ -816,15 +829,15 @@ struct RecoveredSnipReviewView: View {
     @ViewBuilder
     private func editSnipFields(_ recovery: RecoveredSnip) -> some View {
         if let binding = Binding($edited) {
-            GroupBox("Edit Conflicting Fields") {
+            GroupBox(.editConflictingFields) {
                 VStack(alignment: .leading, spacing: 12) {
                     if recovery.conflictingFields.contains(.text) {
-                        TextField("Text", text: binding.content, axis: .vertical)
+                        TextField(.text, text: binding.content, axis: .vertical)
                             .lineLimit(3...8)
                     }
                     if recovery.conflictingFields.contains(.source) {
                         TextField(
-                            "Source app",
+                            .sourceApp,
                             text: Binding(
                                 get: { binding.wrappedValue.source?.applicationName ?? "" },
                                 set: { value in
@@ -839,11 +852,11 @@ struct RecoveredSnipReviewView: View {
                         sourceField("URL", keyPath: \.url, snip: binding)
                     }
                     if recovery.conflictingFields.contains(.done) {
-                        Toggle("Done", isOn: binding.isDone)
+                        Toggle(SnipCompletionLanguage.done, isOn: binding.isDone)
                     }
                     if recovery.conflictingFields.contains(.placement) {
-                        Picker("List", selection: binding.listID) {
-                            ForEach(model.lists) { Text($0.name).tag($0.id) }
+                        Picker(.listGenericName, selection: binding.listID) {
+                            ForEach(model.lists) { Text($0.displayName).tag($0.id) }
                         }
                     }
                 }
@@ -899,28 +912,28 @@ struct RecoveredListReviewView: View {
             Group {
                 if let recovery, let current = model.currentList(for: recovery) {
                     Form {
-                        Section("Current List") { listValues(current, fields: recovery.conflictingFields) }
-                        Section("Recovered Edit") {
+                        Section(.currentList) { listValues(current, fields: recovery.conflictingFields) }
+                        Section(.recoveredEdit) {
                             listValues(recovery.recovered, fields: recovery.conflictingFields)
                         }
                         if let binding = Binding($edited) {
-                            Section("Edit Conflicting Fields") {
+                            Section(.editConflictingFields) {
                                 if recovery.conflictingFields.contains(.name) {
-                                    TextField("Name", text: binding.name)
+                                    TextField(.name, text: binding.name)
                                 }
                                 if recovery.conflictingFields.contains(.icon) {
-                                    TextField("Symbol", text: binding.systemImage)
+                                    TextField(.symbol, text: binding.systemImage)
                                 }
                             }
                         }
                     }
                     .safeAreaInset(edge: .bottom) {
                         HStack {
-                            Button("Keep Current") { resolve(.keepCurrent) }
+                            Button(.keepCurrent) { resolve(.keepCurrent) }
                             Spacer()
-                            Button("Use Recovered") { resolve(.useRecovered) }
+                            Button(.useRecovered) { resolve(.useRecovered) }
                                 .buttonStyle(.borderedProminent)
-                            Button("Edit") {
+                            Button(.edit) {
                                 if let edited { resolve(.editList(edited)) }
                             }
                         }
@@ -930,13 +943,13 @@ struct RecoveredListReviewView: View {
                     .disabled(isResolving)
                     .onAppear { if edited == nil { edited = recovery.recovered } }
                 } else {
-                    ContentUnavailableView("Recovered Edit Is Gone", systemImage: "checkmark.circle")
+                    ContentUnavailableView(.recoveredEditIsGone, systemImage: "checkmark.circle")
                 }
             }
-            .navigationTitle("Recovered List Edit")
+            .navigationTitle(.recoveredListEdit)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button(.close) { dismiss() } }
             }
             .task {
                 while !Task.isCancelled {
@@ -949,7 +962,7 @@ struct RecoveredListReviewView: View {
 
     @ViewBuilder
     private func listValues(_ list: SnipList, fields: Set<RecoveredListField>) -> some View {
-        if fields.contains(.name) { LabeledContent("Name", value: list.name) }
+        if fields.contains(.name) { LabeledContent(.name, value: list.name) }
         if fields.contains(.icon) { Label(list.systemImage, systemImage: list.systemImage) }
     }
 
@@ -993,7 +1006,7 @@ struct SnipDetailView: View {
 
                     if !snip.attachments.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
-                            Text("Attachments")
+                            Text(.attachments)
                                 .font(.headline)
                             LazyVGrid(
                                 columns: [GridItem(.adaptive(minimum: 144), spacing: 12)],
@@ -1015,19 +1028,20 @@ struct SnipDetailView: View {
 
                     Divider()
 
-                    LabeledContent("Saved", value: snip.createdAt.formatted(date: .abbreviated, time: .shortened))
+                    LabeledContent(.saved, value: snip.createdAt.formatted(date: .abbreviated, time: .shortened))
                     LabeledContent(
-                        "List",
-                        value: model.lists.first(where: { $0.id == snip.listID })?.name ?? "Inbox"
+                        .listGenericName,
+                        value: model.lists.first(where: { $0.id == snip.listID })?.displayName
+                            ?? String(localized: .inbox)
                     )
                 }
                 .padding(24)
             }
-            .navigationTitle("Snip")
+            .navigationTitle(.snip)
             .quickLookPreview($previewURL, in: attachmentItems.map(\.url))
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
-                    Menu("Copy and Share", systemImage: "square.and.arrow.up") {
+                    Menu(.copyAndShare, systemImage: "square.and.arrow.up") {
                         CopyShareActions(
                             snips: [snip],
                             model: model,
@@ -1037,11 +1051,11 @@ struct SnipDetailView: View {
                     }
                     .accessibilityIdentifier("copy-share-snip")
                     MoveSnipMenu(model: model, snip: snip)
-                    Button("Edit", systemImage: "pencil") {
+                    Button(.edit, systemImage: "pencil") {
                         sheet = .editSnip(id: snip.id)
                     }
                     .accessibilityIdentifier("edit-snip")
-                    Button("Delete", systemImage: "trash", role: .destructive) {
+                    Button(.delete, systemImage: "trash", role: .destructive) {
                         Task { await model.deleteSnip(id: snip.id) }
                     }
                     .accessibilityIdentifier("delete-snip-detail")
@@ -1049,9 +1063,9 @@ struct SnipDetailView: View {
             }
         } else {
             ContentUnavailableView(
-                "Choose a Snip",
+                .chooseASnip,
                 systemImage: "text.page",
-                description: Text("Select a saved snip to read or edit it.")
+                description: Text(.selectASavedSnipToReadOrEditIt)
             )
         }
     }
@@ -1085,15 +1099,17 @@ private struct AttachmentStatusThumbnail: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .accessibilityLabel("\(attachment.fileName), \(stateLabel)")
+        .accessibilityLabel(
+            .accessibilityAttachmentFileAndState(attachment.fileName, stateLabel)
+        )
     }
 
     private var stateLabel: String {
         switch model.attachmentTransferState(for: attachment.id) {
-        case .waiting: "waiting for iCloud"
-        case .syncing: "syncing"
-        case .failed: "failed"
-        case .available: "available"
+        case .waiting: String(localized: .attachmentStateWaitingForICloud)
+        case .syncing: String(localized: .attachmentStateSyncing)
+        case .failed: String(localized: .failed)
+        case .available: String(localized: .available)
         }
     }
 }
@@ -1133,17 +1149,17 @@ private struct SyncedAttachmentTile: View {
     private var statusLabel: String {
         if model.attachmentURL(for: attachment.id) != nil {
             return switch state {
-            case .waiting: "Available Offline — Waiting for iCloud"
-            case .syncing: "Available Offline — Syncing"
-            case .failed: "Available Offline — Sync Failed"
-            case .available: "Available Offline"
+            case .waiting: String(localized: .availableOfflineWaitingForICloud)
+            case .syncing: String(localized: .availableOfflineSyncing)
+            case .failed: String(localized: .availableOfflineSyncFailed)
+            case .available: String(localized: .availableOffline)
             }
         }
         return switch state {
-        case .waiting: "Waiting for iCloud"
-        case .syncing: "Downloading…"
-        case .failed: "Download Failed — Tap to Retry"
-        case .available: "Ready to Download"
+        case .waiting: String(localized: .attachmentStatusWaitingForICloud)
+        case .syncing: String(localized: .downloading)
+        case .failed: String(localized: .downloadFailedTapToRetry)
+        case .available: String(localized: .readyToDownload)
         }
     }
 }
@@ -1153,9 +1169,9 @@ struct MoveSnipMenu: View {
     let snip: Snip
 
     var body: some View {
-        Menu("Move", systemImage: "folder") {
+        Menu(.move, systemImage: "folder") {
             ForEach(model.lists.filter { $0.id != snip.listID }) { list in
-                Button(list.name) {
+                Button(list.displayName) {
                     Task { await model.moveSnip(id: snip.id, to: list.id) }
                 }
                 .accessibilityIdentifier("move-to-\(list.name)")

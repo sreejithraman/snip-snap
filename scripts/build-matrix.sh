@@ -21,13 +21,21 @@ iphone_destination="${SNIP_SNAP_IPHONE_DESTINATION:-generic/platform=iOS Simulat
 ipad_destination="${SNIP_SNAP_IPAD_DESTINATION:-generic/platform=iOS Simulator}"
 xcodebuild_tool="${SNIP_SNAP_XCODEBUILD:-xcodebuild}"
 source_packages="$derived_data_root/SourcePackages"
+build_mac=YES
+build_iphone=YES
+build_ipad=YES
 
 usage() {
-    print -u2 "Usage: $program [--mac-destination DESTINATION] [--iphone-destination DESTINATION] [--ipad-destination DESTINATION]"
+    print -u2 "Usage: $program [--iphone-only] [--mac-destination DESTINATION] [--iphone-destination DESTINATION] [--ipad-destination DESTINATION]"
 }
 
 while (( $# )); do
     case "$1" in
+        --iphone-only)
+            build_mac=NO
+            build_ipad=NO
+            shift
+            ;;
         --mac-destination)
             (( $# >= 2 )) || { usage; exit 2; }
             mac_destination="$2"
@@ -98,17 +106,27 @@ assert_embedded_share_extension() {
     }
 }
 
-print "Build matrix: Mac"
-build SnipSnap "$mac_destination" "$derived_data_root/mac"
+if [[ "$build_mac" == YES ]]; then
+    print "Build matrix: Mac"
+    build SnipSnap "$mac_destination" "$derived_data_root/mac"
+fi
 
-print "Build matrix: iPhone Simulator and Share extension"
-build SnipSnapiOS "$iphone_destination" "$derived_data_root/iphone" \
-    TARGETED_DEVICE_FAMILY=1
-assert_embedded_share_extension "$derived_data_root/iphone"
+if [[ "$build_iphone" == YES ]]; then
+    print "Build matrix: iPhone Simulator and Share extension"
+    build SnipSnapiOS "$iphone_destination" "$derived_data_root/iphone" \
+        TARGETED_DEVICE_FAMILY=1
+    assert_embedded_share_extension "$derived_data_root/iphone"
+fi
 
-print "Build matrix: iPad Simulator and Share extension"
-build SnipSnapiOS "$ipad_destination" "$derived_data_root/ipad" \
-    TARGETED_DEVICE_FAMILY=2
-assert_embedded_share_extension "$derived_data_root/ipad"
+if [[ "$build_ipad" == YES ]]; then
+    print "Build matrix: iPad Simulator and Share extension"
+    build SnipSnapiOS "$ipad_destination" "$derived_data_root/ipad" \
+        TARGETED_DEVICE_FAMILY=2
+    assert_embedded_share_extension "$derived_data_root/ipad"
+fi
 
-print "Unsigned Mac, iPhone, iPad, embedded Share extension, and privacy manifest builds passed."
+if [[ "$build_mac" == YES && "$build_ipad" == YES ]]; then
+    print "Unsigned Mac, iPhone, iPad, embedded Share extension, and privacy manifest builds passed."
+else
+    print "Unsigned iPhone, embedded Share extension, and privacy manifest build passed."
+fi

@@ -8,7 +8,7 @@ enum MacBackupImportPickerPolicy {
     static let allowedContentTypes: [UTType] = [.folder, .json]
     static let canChooseFiles = true
     static let canChooseDirectories = true
-    static let message = "Choose a backup folder to include attachments, or a plain JSON file for a text-only backup."
+    static let message = String(localized: .chooseABackupFolderToIncludeAttachmentsOrAPlainJsonFileForATextOnlyBackup)
 }
 
 private actor AppModelCommandLock {
@@ -35,13 +35,6 @@ private actor AppModelCommandLock {
 @MainActor
 final class AppModel: ObservableObject {
 
-    private struct HistoryPresentation {
-        let beforeSortMode: SnipSortMode
-        let afterSortMode: SnipSortMode
-        let beforeSelection: Set<UUID>
-        let afterSelection: Set<UUID>
-    }
-
     static let sortModeDefaultsKey = "snipSortMode"
     static let activeListDefaultsKey = "activeListID"
     static let listDraftsDefaultsKey = "listDrafts"
@@ -64,23 +57,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var sortMode: SnipSortMode
     @Published private(set) var appearance: AppAppearance
     @Published private(set) var recoverySnapshot: SnipRecoverySnapshot = .empty
-    @Published private var deviceActionState = SnipDeviceActionState(
-        undoTitle: "Undo",
-        redoTitle: "Redo"
-    )
-    private var historyPresentations: [UUID: HistoryPresentation] = [:]
     @Published private(set) var pendingImportPreview: SnipImportPreview?
-
-    var undoTitle: String {
-        deviceActionState.undoTitle
-    }
-
-    var redoTitle: String {
-        deviceActionState.redoTitle
-    }
-
-    var canUndo: Bool { deviceActionState.canUndo }
-    var canRedo: Bool { deviceActionState.canRedo }
+    @Published var toast: AppToast?
     var canReorderSelection: Bool { canReorder(ids: selection) }
 
     func canReorder(ids: Set<UUID>) -> Bool {
@@ -95,7 +73,7 @@ final class AppModel: ObservableObject {
     @Published private var attachmentURLs: [UUID: URL] = [:]
     private var cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private var userActions: any SnipLibraryUserActions
-    private let rebindUserActions: SnipLibraryUserActionsRebinder
+    private let userActionsRebinder: SnipLibraryUserActionsRebinder
     private let defaults: UserDefaults
     private let commandLock = AppModelCommandLock()
     private let composerDrafts: ComposerDraftStore
@@ -143,7 +121,7 @@ final class AppModel: ObservableObject {
         recoveryScope: SnipRecoveryScope? = nil,
         cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
         userActions: (any SnipLibraryUserActions)? = nil,
-        rebindUserActions: SnipLibraryUserActionsRebinder = .direct
+        userActionsRebinder: SnipLibraryUserActionsRebinder = .direct
     ) {
         Self.migrateRenamedDefaults(in: defaults)
         self.defaults = defaults
@@ -161,8 +139,8 @@ final class AppModel: ObservableObject {
             rawValue: defaults.string(forKey: Self.appearanceDefaultsKey) ?? ""
         ) ?? .system
         self.library = library
-        self.rebindUserActions = rebindUserActions
-        self.userActions = userActions ?? rebindUserActions.actions(for: library)
+        self.userActionsRebinder = userActionsRebinder
+        self.userActions = userActions ?? userActionsRebinder.actions(for: library)
         self.recoveryScope = recoveryScope
         self.cloudSyncHandler = cloudSyncHandler
         presentedError = initialError
@@ -262,9 +240,10 @@ final class AppModel: ObservableObject {
         recoveryScope: SnipRecoveryScope?
     ) async {
         await withCommandLock {
+            await commitPendingDeletion()
             self.library = library
             self.recoveryScope = recoveryScope
-            self.userActions = rebindUserActions.actions(for: library)
+            self.userActions = userActionsRebinder.actions(for: library)
             selection = []
             editingID = nil
             await reloadUnlocked()
@@ -287,7 +266,6 @@ final class AppModel: ObservableObject {
 
     private func reloadUnlocked() async {
         let snapshot = await library.snapshot(sortedBy: sortMode)
-        await refreshDeviceActionStateUnlocked()
         apply(snapshot)
         await refreshRecoveryUnlocked()
     }
@@ -405,7 +383,7 @@ final class AppModel: ObservableObject {
         requestID: UUID = UUID()
     ) async -> Result<SnipAddOutcome, Error> {
         await withCommandLock {
-            let result = await performMutationUnlocked(clearingHistory: false) {
+            let result = await performMutationUnlocked {
                 let update = try await library.perform(
                     .add(
                         content: content,
@@ -428,7 +406,6 @@ final class AppModel: ObservableObject {
                 switch outcome {
                 case .added(let id):
                     latestAddedSnipID = id
-                    await clearHistory()
                     return .success(.added(id))
                 case .duplicate:
                     return .success(.duplicate)
@@ -546,7 +523,7 @@ final class AppModel: ObservableObject {
         systemImage: String,
         movingIDs: Set<UUID> = []
     ) async -> Bool {
-        let result = await performMutation(clearingHistory: false) {
+        let result = await performMutation {
             let update = try await library.perform(
                 .createList(name: name, systemImage: systemImage),
                 sortedBy: sortMode
@@ -612,7 +589,7 @@ final class AppModel: ObservableObject {
                 try entry.materializeForSnip()
             }.value
         } catch {
-            presentedError = "Snip Snap could not prepare the clipboard image."
+            presentedError = String(localized: .snipSnapCouldNotPrepareTheClipboardImage)
             return false
         }
         defer { materialization.removeTemporaryFiles() }
@@ -644,69 +621,52 @@ final class AppModel: ObservableObject {
         let ids = selection
         let snipsToDelete = selectedSnips
         guard !ids.isEmpty, !snipsToDelete.isEmpty else { return }
-        let result = await performHistoryCommand(
-            name: "Delete",
-            command: .delete(ids: ids),
-            afterSelection: { _ in [] }
-        )
-        switch result {
-        case .success:
-            selection = []
-        case .failure(let error):
-            presentedError = error.localizedDescription
-        }
-    }
-
-    func undo() {
-        Task { await undoNow() }
-    }
-
-    func undoNow() async {
+        let token = UUID()
         await withCommandLock {
-            await refreshDeviceActionStateUnlocked()
-            guard deviceActionState.canUndo else { return }
             do {
-                guard let update = try await userActions.undo(sortedBy: sortMode) else {
-                    await refreshDeviceActionStateUnlocked()
-                    return
-                }
+                let update = try await userActions.delete(
+                    ids: ids,
+                    token: token,
+                    sortedBy: sortMode
+                )
                 apply(update.snapshot)
-                await refreshDeviceActionStateUnlocked()
-                let presentation = deviceActionState.redoActionIDs.last.flatMap {
-                    historyPresentations[$0]
-                }
-                if let presentation {
-                    setSortMode(presentation.beforeSortMode)
-                    selection = presentation.beforeSelection
-                }
+                selection = []
+                toast = .deleted(count: snipsToDelete.count, id: token)
             } catch {
                 presentedError = error.localizedDescription
             }
         }
     }
 
-    func redo() {
-        Task { await redoNow() }
+    func performToastAction(_ presentedToast: AppToast) {
+        Task { await performToastActionNow(presentedToast) }
     }
 
-    func redoNow() async {
+    func performToastActionNow(_ presentedToast: AppToast) async {
+        guard presentedToast.action == .undoDelete else { return }
+        await restoreDeletion(token: presentedToast.id)
+    }
+
+    func dismissToast(_ presentedToast: AppToast) {
+        guard presentedToast.action == .undoDelete else { return }
+        Task {
+            await userActions.discardDeletion(
+                token: presentedToast.id,
+                sortedBy: sortMode
+            )
+            if toast?.id == presentedToast.id { toast = nil }
+        }
+    }
+
+    private func restoreDeletion(token: UUID) async {
         await withCommandLock {
-            await refreshDeviceActionStateUnlocked()
-            guard deviceActionState.canRedo else { return }
             do {
-                guard let update = try await userActions.redo(sortedBy: sortMode) else {
-                    await refreshDeviceActionStateUnlocked()
-                    return
-                }
+                guard let update = try await userActions.restoreDeletion(
+                    token: token,
+                    sortedBy: sortMode
+                ) else { return }
                 apply(update.snapshot)
-                await refreshDeviceActionStateUnlocked()
-                let presentation = deviceActionState.undoActionIDs.last.flatMap {
-                    historyPresentations[$0]
-                }
-                if let presentation {
-                    setSortMode(presentation.afterSortMode)
-                    selection = presentation.afterSelection
-                }
+                if toast?.id == token { toast = nil }
             } catch {
                 presentedError = error.localizedDescription
             }
@@ -715,25 +675,34 @@ final class AppModel: ObservableObject {
 
     var importPreviewSummary: String {
         guard let preview = pendingImportPreview else { return "" }
-        var parts = ["\(preview.totalSnipCount) snips"]
-        if preview.addedSnipCount > 0 { parts.append("\(preview.addedSnipCount) new") }
+        var parts = [preview.totalSnipCount == 1
+            ? String(localized: ._1Snip)
+            : String(localized: .snips(preview.totalSnipCount))]
+        if preview.addedSnipCount > 0 {
+            parts.append(String(localized: .new(preview.addedSnipCount)))
+        }
         if preview.recoveredSnipCount > 0 {
-            parts.append("\(preview.recoveredSnipCount) recovered edits")
+            parts.append(preview.recoveredSnipCount == 1
+                ? String(localized: ._1RecoveredEdit)
+                : String(localized: .recoveredEdits(preview.recoveredSnipCount)))
         }
         if preview.addedListCount > 0 {
-            let noun = preview.addedListCount == 1 ? "list" : "lists"
-            parts.append("\(preview.addedListCount) new \(noun)")
+            parts.append(preview.addedListCount == 1
+                ? String(localized: ._1NewList)
+                : String(localized: .newLists(preview.addedListCount)))
         }
         if preview.addedAttachmentCount > 0 {
-            parts.append("\(preview.addedAttachmentCount) attachments")
+            parts.append(preview.addedAttachmentCount == 1
+                ? String(localized: ._1Attachment)
+                : String(localized: .attachments(preview.addedAttachmentCount)))
         }
         return parts.joined(separator: ", ")
     }
 
     func beginBackupImport() {
         let panel = NSOpenPanel()
-        panel.title = "Import Backup"
-        panel.prompt = "Review Backup"
+        panel.title = String(localized: .dialogImportBackupTitle)
+        panel.prompt = String(localized: .reviewBackup)
         panel.message = MacBackupImportPickerPolicy.message
         panel.allowedContentTypes = MacBackupImportPickerPolicy.allowedContentTypes
         panel.allowsMultipleSelection = false
@@ -765,9 +734,9 @@ final class AppModel: ObservableObject {
         await withCommandLock {
             do {
                 let result = try await userActions.applyImport(preview, sortedBy: sortMode)
+                await commitPendingDeletion()
                 pendingImportPreview = nil
                 apply(result.snapshot)
-                await refreshDeviceActionStateUnlocked()
                 await refreshRecoveryUnlocked()
             } catch {
                 pendingImportPreview = nil
@@ -863,8 +832,7 @@ final class AppModel: ObservableObject {
         guard !ids.isEmpty else { return false }
         let currentSortMode = sortMode
         let finalSelection = selectionAfterMove ?? selectedIDs
-        let result = await performHistoryCommand(
-            name: "Move",
+        let result = await performCommand(
             command: .place(
                 ids: ids,
                 in: listID,
@@ -891,8 +859,7 @@ final class AppModel: ObservableObject {
         let selectedIDs = Set(ids)
         guard !ids.isEmpty else { return false }
         let finalSelection = selectionAfterMove ?? selectedIDs
-        let result = await performHistoryCommand(
-            name: "Move",
+        let result = await performCommand(
             command: .moveChronologically(ids: ids, to: listID),
             afterSelection: { _ in finalSelection }
         )
@@ -982,7 +949,11 @@ final class AppModel: ObservableObject {
         var objects: [NSPasteboardWriting] = [textItem]
         objects.append(contentsOf: attachments.compactMap { prepared[$0.id] as NSURL? })
         pasteboard.clearContents()
-        return pasteboard.writeObjects(objects)
+        let copied = pasteboard.writeObjects(objects)
+        if copied, toast?.action == nil {
+            toast = .copied(count: selected.count)
+        }
+        return copied
     }
 
     func clearDownloadedFiles() async throws {
@@ -999,8 +970,7 @@ final class AppModel: ObservableObject {
         let ids = selection
         let snipsToMerge = selectedSnips
         guard ids.count >= 2, snipsToMerge.count >= 2 else { return }
-        let result = await performHistoryCommand(
-            name: "Merge",
+        let result = await performCommand(
             command: .merge(ids: ids, now: Date()),
             afterSelection: { outcome in
                 guard case .merged(let snip) = outcome else { return [] }
@@ -1018,24 +988,20 @@ final class AppModel: ObservableObject {
     }
 
     private func performMutation<Value>(
-        clearingHistory: Bool = true,
         _ mutation: () async throws -> (SnipLibraryUpdate, Value)
     ) async -> Result<Value, Error> {
         await withCommandLock {
-            await performMutationUnlocked(clearingHistory: clearingHistory, mutation)
+            await performMutationUnlocked(mutation)
         }
     }
 
     private func performMutationUnlocked<Value>(
-        clearingHistory: Bool,
         _ mutation: () async throws -> (SnipLibraryUpdate, Value)
     ) async -> Result<Value, Error> {
         do {
             let (update, value) = try await mutation()
+            await commitPendingDeletion()
             apply(update.snapshot)
-            if clearingHistory {
-                await clearHistory()
-            }
             return .success(value)
         } catch {
             return .failure(error)
@@ -1050,37 +1016,21 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func performHistoryCommand(
-        name: String,
+    private func performCommand(
         command: SnipLibraryCommand,
         afterSelection: ((SnipLibraryOutcome) -> Set<UUID>)? = nil,
         afterSortMode: SnipSortMode? = nil,
     ) async -> Result<SnipLibraryOutcome, Error> {
         await withCommandLock {
-            let beforeSortMode = sortMode
-            let beforeSelection = selection
-            let priorUndoActionIDs = Set(deviceActionState.undoActionIDs)
             do {
                 let update = try await userActions.perform(
-                    name: name,
                     command: command,
                     sortedBy: sortMode
                 )
+                await commitPendingDeletion()
                 apply(update.snapshot)
-                await refreshDeviceActionStateUnlocked()
-                if let actionID = deviceActionState.undoActionIDs.last,
-                   !priorUndoActionIDs.contains(actionID) {
-                    let savedAfterSortMode = afterSortMode ?? sortMode
-                    setSortMode(savedAfterSortMode)
-                    let savedSelection = afterSelection?(update.outcome) ?? selection
-                    selection = savedSelection
-                    historyPresentations[actionID] = HistoryPresentation(
-                        beforeSortMode: beforeSortMode,
-                        afterSortMode: savedAfterSortMode,
-                        beforeSelection: beforeSelection,
-                        afterSelection: savedSelection
-                    )
-                }
+                if let afterSortMode { setSortMode(afterSortMode) }
+                if let afterSelection { selection = afterSelection(update.outcome) }
                 return .success(update.outcome)
             } catch {
                 return .failure(error)
@@ -1097,30 +1047,9 @@ final class AppModel: ObservableObject {
         return value
     }
 
-    private func clearHistory() async {
-        try? await userActions.clear(sortedBy: sortMode)
-        historyPresentations = [:]
-        deviceActionState = SnipDeviceActionState(
-            undoTitle: "Undo",
-            redoTitle: "Redo"
-        )
-    }
-
-    private func refreshDeviceActionStateUnlocked() async {
-        do {
-            deviceActionState = try await userActions.state(sortedBy: sortMode)
-            let retainedActionIDs = Set(
-                deviceActionState.undoActionIDs + deviceActionState.redoActionIDs
-            )
-            historyPresentations = historyPresentations.filter {
-                retainedActionIDs.contains($0.key)
-            }
-        } catch {
-            historyPresentations = [:]
-            deviceActionState = SnipDeviceActionState(
-                undoTitle: "Undo",
-                redoTitle: "Redo"
-            )
-        }
+    private func commitPendingDeletion() async {
+        guard let toast, toast.action == .undoDelete else { return }
+        self.toast = nil
+        await userActions.discardDeletion(token: toast.id, sortedBy: sortMode)
     }
 }

@@ -9,9 +9,9 @@ public enum ShareImportError: Error, Equatable, LocalizedError, Sendable {
   public var errorDescription: String? {
     switch self {
     case .invalidStaging:
-      "Snip Snap could not keep the shared files."
+      String(localized: LocalizedStringResource.snipSnapCouldNotKeepTheSharedFiles)
     case .noSharedContainer:
-      "This build does not have access to the shared Snip Snap container."
+      String(localized: LocalizedStringResource.thisBuildDoesNotHaveAccessToTheSharedSnipSnapContainer)
     }
   }
 }
@@ -135,7 +135,9 @@ public struct ShareImportStagingArea: Sendable {
 
   private static func safeFileName(_ value: String) -> String {
     let name = URL(fileURLWithPath: value).lastPathComponent
-    return name.isEmpty || name == "." || name == ".." ? "Attachment" : name
+    return name.isEmpty || name == "." || name == ".."
+      ? String(localized: LocalizedStringResource.attachmentGenericName)
+      : name
   }
 
   public func discard() {

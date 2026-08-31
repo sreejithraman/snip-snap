@@ -1,12 +1,30 @@
 import SnipSnapCore
 import SwiftUI
 
+struct SemanticSwipeAction: View {
+    let title: String
+    let systemImage: String
+    let tint: Color
+    let role: ButtonRole?
+    let accessibilityIdentifier: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(role: role, action: action) {
+            Label(title, systemImage: systemImage)
+                .labelStyle(.titleAndIcon)
+        }
+        .tint(tint)
+        .accessibilityIdentifier(accessibilityIdentifier)
+    }
+}
+
 struct WorkflowOptionsMenu: View {
     let model: IOSAppModel
 
     var body: some View {
-        Menu("View Options", systemImage: "line.3.horizontal.decrease.circle") {
-            Section("Show") {
+        Menu(.viewOptions, systemImage: "line.3.horizontal.decrease.circle") {
+            Section(.show) {
                 ForEach(SnipCompletionFilter.allCases, id: \.self) { filter in
                     Button {
                         model.completionFilter = filter
@@ -20,7 +38,7 @@ struct WorkflowOptionsMenu: View {
                     .accessibilityIdentifier("filter-\(filter.rawValue)")
                 }
             }
-            Section("Sort") {
+            Section(.sort) {
                 ForEach(SnipSortMode.allCases, id: \.self) { mode in
                     Button {
                         model.sortMode = mode
@@ -45,24 +63,24 @@ struct SelectionActionsMenu: View {
     let endSelection: () -> Void
 
     var body: some View {
-        Menu("Selected", systemImage: "ellipsis.circle") {
-            Button("Mark Done", systemImage: "checkmark.circle") {
+        Menu(.selected, systemImage: "ellipsis.circle") {
+            Button(SnipCompletionLanguage.done, systemImage: "checkmark.circle") {
                 Task {
                     if await model.setSelectionDone(true) { endSelection() }
                 }
             }
             .accessibilityIdentifier("mark-selection-done")
 
-            Button("Mark Not Done", systemImage: "circle") {
+            Button(SnipCompletionLanguage.notDone, systemImage: "circle") {
                 Task {
                     if await model.setSelectionDone(false) { endSelection() }
                 }
             }
             .accessibilityIdentifier("mark-selection-not-done")
 
-            Menu("Move", systemImage: "folder") {
+            Menu(.move, systemImage: "folder") {
                 ForEach(model.lists.filter { $0.id != model.selectedListID }) { list in
-                    Button(list.name) {
+                    Button(list.displayName) {
                         Task {
                             if await model.moveSelection(to: list.id) { endSelection() }
                         }
@@ -74,11 +92,11 @@ struct SelectionActionsMenu: View {
 
             if model.canReorderVisibleSnips {
                 Divider()
-                Button("Move Up", systemImage: "arrow.up") {
+                Button(.moveUp, systemImage: "arrow.up") {
                     Task { _ = await model.moveSelection(by: -1) }
                 }
                 .accessibilityIdentifier("move-selection-up")
-                Button("Move Down", systemImage: "arrow.down") {
+                Button(.moveDown, systemImage: "arrow.down") {
                     Task { _ = await model.moveSelection(by: 1) }
                 }
                 .accessibilityIdentifier("move-selection-down")
@@ -93,7 +111,7 @@ struct SelectionActionsMenu: View {
             )
 
             Divider()
-            Button("Delete", systemImage: "trash", role: .destructive) {
+            Button(.delete, systemImage: "trash", role: .destructive) {
                 Task {
                     if await model.deleteSelection() { endSelection() }
                 }
@@ -107,8 +125,8 @@ struct SelectionActionsMenu: View {
 private extension SnipSortMode {
     var title: String {
         switch self {
-        case .chronological: "Newest First"
-        case .manual: "Manual"
+        case .chronological: String(localized: .newestFirst)
+        case .manual: String(localized: .manual)
         }
     }
 }

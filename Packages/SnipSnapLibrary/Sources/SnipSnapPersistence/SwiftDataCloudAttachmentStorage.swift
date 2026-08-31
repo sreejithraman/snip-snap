@@ -1459,7 +1459,9 @@ extension SwiftDataSnipLibrary {
 
   private static func safeCloudAttachmentFileName(_ fileName: String) -> String {
     let value = URL(fileURLWithPath: fileName).lastPathComponent
-    return value.isEmpty || value == "." || value == ".." ? "Attachment" : value
+    return value.isEmpty || value == "." || value == ".."
+      ? String(localized: LocalizedStringResource.attachmentGenericName)
+      : value
   }
 
   private static func insertCleanup(

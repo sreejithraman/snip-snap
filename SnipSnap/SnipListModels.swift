@@ -21,7 +21,7 @@ struct SnipDragPayload: Codable, Equatable, Sendable, Transferable {
         text: String,
         attachmentIDs: [UUID] = [],
         attachmentURLs: [URL] = [],
-        previewSourceLabel: String = "Snip Snap",
+        previewSourceLabel: String = String(localized: .snipSnap),
         previewIsDone: Bool = false
     ) {
         self.ids = ids
@@ -61,7 +61,7 @@ struct SnipDragPayload: Codable, Equatable, Sendable, Transferable {
             } ?? [],
             previewSourceLabel: snips.count == 1
                 ? snips[0].displaySourceLabel
-                : "\(snips.count) snips",
+                : String(localized: .snips(snips.count)),
             previewIsDone: snips.allSatisfy(\.isDone)
         )
     }
@@ -223,7 +223,7 @@ struct SnipListSnapshot {
         return lists.compactMap { list in
             let snips = grouped[list.id] ?? []
             guard !snips.isEmpty || list.id == keepsEmptyListID else { return nil }
-            return SnipListGroup(listID: list.id, listName: list.name, snips: snips)
+            return SnipListGroup(listID: list.id, listName: list.displayName, snips: snips)
         }
     }
 }

@@ -63,43 +63,43 @@ public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .emptyContent:
-            "There is nothing to save."
+            String(localized: LocalizedStringResource.thereIsNothingToSave)
         case .snipNotFound:
-            "That snip no longer exists."
+            String(localized: LocalizedStringResource.thatSnipNoLongerExists)
         case .invalidStore:
-            "Snip Snap could not read its saved snips."
+            String(localized: LocalizedStringResource.snipSnapCouldNotReadItsSavedSnips)
         case .storeUnavailable:
-            "Snip Snap cannot save changes until its snip store is available."
+            String(localized: LocalizedStringResource.snipSnapCannotSaveChangesUntilItsSnipStoreIsAvailable)
         case .requiresMultipleSnips:
-            "Select at least two snips to merge."
+            String(localized: LocalizedStringResource.selectAtLeastTwoSnipsToMerge)
         case .snipChanged:
-            "This snip changed in another window. Copy your edits, reopen it, and try again."
+            String(localized: LocalizedStringResource.thisSnipChangedInAnotherWindowCopyYourEditsReopenItAndTryAgain)
         case .duplicateList:
-            "A list with that name already exists."
+            String(localized: LocalizedStringResource.aListWithThatNameAlreadyExists)
         case .invalidList:
-            "That list is not available."
+            String(localized: LocalizedStringResource.thatListIsNotAvailable)
         case .invalidCommand:
-            "That change cannot run with other changes."
+            String(localized: LocalizedStringResource.thatChangeCannotRunWithOtherChanges)
         case .attachmentCopyFailed:
-            "Snip Snap could not copy one of the files."
+            String(localized: LocalizedStringResource.snipSnapCouldNotCopyOneOfTheFiles)
         case .modeTransitionInProgress:
-            "This device is changing its storage choice. Try again when setup finishes."
+            String(localized: LocalizedStringResource.thisDeviceIsChangingItsStorageChoiceTryAgainWhenSetupFinishes)
         case .readOnlyRecovery:
-            "This is a recovery copy. Restore it to an active library before making changes."
+            String(localized: LocalizedStringResource.thisIsARecoveryCopyRestoreItToAnActiveLibraryBeforeMakingChanges)
         case .transferUnsupported:
-            "This snip store cannot change storage modes."
+            String(localized: LocalizedStringResource.thisSnipStoreCannotChangeStorageModes)
         case .transferConflict:
-            "Snip Snap found records it could not copy safely."
+            String(localized: LocalizedStringResource.snipSnapFoundRecordsItCouldNotCopySafely)
         case .recoveryNotFound:
-            "That recovered edit is no longer available."
+            String(localized: LocalizedStringResource.thatRecoveredEditIsNoLongerAvailable)
         case .recoveryChanged:
-            "That recovered edit changed. Refresh the review and try again."
+            String(localized: LocalizedStringResource.thatRecoveredEditChangedRefreshTheReviewAndTryAgain)
         case .invalidRecoveryChoice:
-            "That choice does not apply to this recovered edit."
+            String(localized: LocalizedStringResource.thatChoiceDoesNotApplyToThisRecoveredEdit)
         case .importChanged:
-            "The backup or saved snips changed. Review the import again."
+            String(localized: LocalizedStringResource.theBackupOrSavedSnipsChangedReviewTheImportAgain)
         case .deviceActionChanged:
-            "That action cannot be undone because the same fields changed on another device."
+            String(localized: LocalizedStringResource.thatActionCannotBeUndoneBecauseTheSameFieldsChangedOnAnotherDevice)
         }
     }
 }

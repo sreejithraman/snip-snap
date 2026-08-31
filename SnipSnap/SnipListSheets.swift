@@ -8,7 +8,7 @@ private struct SnipListNameAndIconField: View {
     var body: some View {
         HStack(spacing: 8) {
             SnipListIconPicker(selection: $selection)
-            TextField("List name", text: $name)
+            TextField(.listName, text: $name)
         }
     }
 }
@@ -34,8 +34,10 @@ private struct SnipListIconPicker: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.regular)
-        .accessibilityLabel("Choose list icon, current: \(SnipListIconOptions.title(for: selection))")
-        .help("Choose List Icon")
+        .accessibilityLabel(
+            .chooseListIconCurrent(SnipListIconOptions.title(for: selection))
+        )
+        .help(.chooseListIcon)
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
             SnipListIconBrowser(selection: $selection)
         }
@@ -62,7 +64,7 @@ private struct SnipListIconBrowser: View {
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanQuery.isEmpty else {
             guard !recentIcons.isEmpty else { return SnipListIconOptions.categories }
-            return [SnipListIconCategory(title: "Recent", icons: recentIcons)]
+            return [SnipListIconCategory(title: String(localized: .recent), icons: recentIcons)]
                 + SnipListIconOptions.categories
         }
 
@@ -78,7 +80,7 @@ private struct SnipListIconBrowser: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TextField("Search icons", text: $query)
+            TextField(.searchIcons, text: $query)
                 .textFieldStyle(.roundedBorder)
                 .focused($searchIsFocused)
                 .submitScope()
@@ -160,7 +162,7 @@ struct NewSnipListSheet: View {
 
     var body: some View {
         VStack(alignment: .leading) {
-            Text("New list")
+            Text(.fieldNewListPlaceholder)
                 .font(.system(size: 15, weight: .semibold))
             SnipListNameAndIconField(name: $name, selection: $systemImage)
                 .textFieldStyle(.automatic)
@@ -168,9 +170,9 @@ struct NewSnipListSheet: View {
                 .onSubmit(create)
             HStack {
                 Spacer()
-                Button("Cancel") { isPresented = false }
+                Button(.cancel) { isPresented = false }
                     .keyboardShortcut(.cancelAction)
-                Button("Create") { create() }
+                Button(.create) { create() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -211,12 +213,12 @@ struct SnipListEditSheet: View {
 
     var body: some View {
         VStack(alignment: .leading) {
-            Text("Edit list").font(.headline)
+            Text(.screenEditListTitle).font(.headline)
             SnipListNameAndIconField(name: $name, selection: $systemImage)
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Save") {
+                Button(.cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(.save) {
                     Task {
                         if await model.updateList(list, name: name, systemImage: systemImage) {
                             dismiss()

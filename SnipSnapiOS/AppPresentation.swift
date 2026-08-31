@@ -52,9 +52,9 @@ final class AppleAccountNoticeModel {
 
     var title: String {
         switch notice {
-        case .paused: "iCloud Sync Paused"
-        case .signedOut: "Signed Out of iCloud"
-        case .accountChanged: "Apple Account Changed"
+        case .paused: String(localized: .iCloudSyncPaused)
+        case .signedOut: String(localized: .signedOutOfICloud)
+        case .accountChanged: String(localized: .appleAccountChanged)
         case nil: ""
         }
     }
@@ -62,9 +62,9 @@ final class AppleAccountNoticeModel {
     var message: String {
         switch notice {
         case .paused:
-            "Your synced cache is still on this device. Snip Snap will try again when iCloud is available."
+            String(localized: .yourSyncedCacheIsStillOnThisDeviceSnipSnapWillTryAgainWhenICloudIsAvailable)
         case .signedOut, .accountChanged:
-            "Snip Snap kept the prior account’s cache apart. Keep it as a local copy or remove it from this device."
+            String(localized: .snipSnapKeptThePriorAccountsCacheApartKeepItAsALocalCopyOrRemoveItFromThisDevice)
         case nil:
             ""
         }
@@ -83,7 +83,7 @@ final class AppleAccountNoticeModel {
             notice = try await handler.refreshAppleAccountNotice()
             errorMessage = nil
         } catch {
-            errorMessage = "Snip Snap could not finish that choice. Please try again."
+            errorMessage = String(localized: .snipSnapCouldNotFinishThatChoicePleaseTryAgain)
         }
     }
 

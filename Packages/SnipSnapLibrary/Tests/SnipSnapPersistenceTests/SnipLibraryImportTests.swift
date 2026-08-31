@@ -426,10 +426,7 @@ final class SnipLibraryImportTests: XCTestCase {
       sortedBy: .manual
     )
     let preview = try await SnipLibraryImport.preview(source: source, target: target)
-    let actions = SnipLibraryDeviceActions(
-      library: target,
-      journalURL: directory.appendingPathComponent("device-actions.json")
-    )
+    let actions = DirectSnipLibraryUserActions(library: target)
 
     do {
       _ = try await actions.applyImport(preview, sortedBy: .manual)
@@ -438,9 +435,7 @@ final class SnipLibraryImportTests: XCTestCase {
     }
 
     let current = try await target.checkedSnapshot(sortedBy: .manual)
-    let history = try await actions.state(sortedBy: .manual)
     XCTAssertEqual(current.snips.map(\.content), ["Remote"])
-    XCTAssertFalse(history.canUndo)
   }
 
   func testCommitRejectsSameIDListThatArrivesAfterValidation() async throws {
@@ -486,10 +481,7 @@ final class SnipLibraryImportTests: XCTestCase {
       transitionID: UUID()
     )
     let preview = try await SnipLibraryImport.preview(source: source, target: target)
-    let actions = SnipLibraryDeviceActions(
-      library: target,
-      journalURL: directory.appendingPathComponent("device-actions.json")
-    )
+    let actions = DirectSnipLibraryUserActions(library: target)
 
     do {
       _ = try await actions.applyImport(preview, sortedBy: .manual)
@@ -498,10 +490,8 @@ final class SnipLibraryImportTests: XCTestCase {
     }
 
     let current = try await target.checkedSnapshot(sortedBy: .manual)
-    let history = try await actions.state(sortedBy: .manual)
     XCTAssertEqual(current.lists.first { $0.id == sharedID }?.name, "Remote")
     XCTAssertTrue(current.snips.isEmpty)
-    XCTAssertFalse(history.canUndo)
   }
 
   func testRenamedListInBackupKeepsCurrentFieldsAndImportsItsSnips() async throws {
@@ -603,11 +593,10 @@ final class SnipLibraryImportTests: XCTestCase {
     XCTAssertEqual(current.snips.map(\.content), ["Arrived later"])
   }
 
-  func testConfirmedImportEntersDurableUndoHistory() async throws {
+  func testConfirmedImportReturnsTheImportedSnapshot() async throws {
     let directory = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
     let storeURL = directory.appendingPathComponent("target.store")
-    let journalURL = directory.appendingPathComponent("device-actions.json")
     let source = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("source.json"))
     let target = try SwiftDataSnipLibrary(storeURL: storeURL)
     _ = try await source.perform(
@@ -615,15 +604,10 @@ final class SnipLibraryImportTests: XCTestCase {
       sortedBy: .chronological
     )
     let preview = try await SnipLibraryImport.preview(source: source, target: target)
-    let actions = SnipLibraryDeviceActions(library: target, journalURL: journalURL)
+    let actions = DirectSnipLibraryUserActions(library: target)
 
     let imported = try await actions.applyImport(preview, sortedBy: .chronological)
     XCTAssertEqual(imported.snapshot.snips.map(\.content), ["From backup"])
-
-    let reopened = try SwiftDataSnipLibrary(storeURL: storeURL)
-    let reopenedActions = SnipLibraryDeviceActions(library: reopened, journalURL: journalURL)
-    let undone = try await reopenedActions.undo(sortedBy: .chronological)
-    XCTAssertEqual(undone?.snapshot.snips, [])
   }
 
   func testConfirmedImportReturnsTheRequestedManualOrder() async throws {
@@ -654,10 +638,7 @@ final class SnipLibraryImportTests: XCTestCase {
       sortedBy: .manual
     )
     let preview = try await SnipLibraryImport.preview(source: source, target: target)
-    let actions = SnipLibraryDeviceActions(
-      library: target,
-      journalURL: directory.appendingPathComponent("device-actions.json")
-    )
+    let actions = DirectSnipLibraryUserActions(library: target)
 
     let result = try await actions.applyImport(preview, sortedBy: .manual)
 

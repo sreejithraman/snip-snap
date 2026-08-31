@@ -31,10 +31,10 @@ mac_build="$({
     print -u2 "The Mac compile check did not use Release."
     exit 1
 }
-grep -F -- 'PRODUCT_BUNDLE_IDENTIFIER=$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).compilecheck' \
+grep -F -- 'SNIP_SNAP_EFFECTIVE_PRODUCT_BUNDLE_IDENTIFIER=$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).compilecheck' \
     "$test_dir/build-args" >/dev/null
-grep -F -- "PRODUCT_NAME=SnipSnapCompileCheck" "$test_dir/build-args" >/dev/null
-grep -F -- "INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Compile Check" \
+grep -F -- "SNIP_SNAP_PRODUCT_NAME=SnipSnapCompileCheck" "$test_dir/build-args" >/dev/null
+grep -F -- "SNIP_SNAP_DISPLAY_NAME=Snip Snap Compile Check" \
     "$test_dir/build-args" >/dev/null
 [[ "$output" == *"Do not launch this build."* ]]
 [[ "$output" == *"Use scripts/run.sh"* ]]

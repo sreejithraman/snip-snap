@@ -25,9 +25,9 @@ final class ShareViewController: UIViewController {
 
     private func showUnavailable() {
         let unavailable = ContentUnavailableView(
-            "Shared Storage Unavailable",
+            .sharedStorageUnavailable,
             systemImage: "externaldrive.badge.exclamationmark",
-            description: Text("This build cannot access Snip Snap’s shared container.")
+            description: Text(.thisBuildCannotAccessSnipSnapsSharedContainer)
         )
         let host = UIHostingController(rootView: unavailable)
         addChild(host)

@@ -4,6 +4,7 @@ import PackageDescription
 
 let package = Package(
     name: "SnipSnapLibrary",
+    defaultLocalization: "en",
     platforms: [
         .macOS(.v26),
         .iOS(.v26),
@@ -14,14 +15,19 @@ let package = Package(
         .library(name: "SnipSnapCloud", targets: ["SnipSnapCloud"]),
     ],
     targets: [
-        .target(name: "SnipSnapCore"),
+        .target(
+            name: "SnipSnapCore",
+            resources: [.process("Resources")]
+        ),
         .target(
             name: "SnipSnapPersistence",
-            dependencies: ["SnipSnapCore"]
+            dependencies: ["SnipSnapCore"],
+            resources: [.process("Resources")]
         ),
         .target(
             name: "SnipSnapCloud",
-            dependencies: ["SnipSnapCore", "SnipSnapPersistence"]
+            dependencies: ["SnipSnapCore", "SnipSnapPersistence"],
+            resources: [.process("Resources")]
         ),
         .testTarget(
             name: "SnipSnapPersistenceTests",

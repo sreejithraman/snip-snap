@@ -8,7 +8,7 @@ import SwiftUI
 struct SnipSnapiOSApp: App {
     private let library: any SnipLibrary
     private let userActions: any SnipLibraryUserActions
-    private let rebindUserActions: SnipLibraryUserActionsRebinder
+    private let userActionsRebinder: SnipLibraryUserActionsRebinder
     private let shareImports: ShareImportStore?
     private let startupError: String?
     private let uiTestAttachmentURLs: [URL]
@@ -24,7 +24,7 @@ struct SnipSnapiOSApp: App {
         let startup = Self.makeLibrary()
         library = startup.library
         userActions = startup.userActions
-        rebindUserActions = startup.rebindUserActions
+        userActionsRebinder = startup.userActionsRebinder
         shareImports = startup.shareImports
         startupError = startup.error
         uiTestAttachmentURLs = startup.uiTestAttachmentURLs
@@ -111,6 +111,7 @@ struct SnipSnapiOSApp: App {
             IOSAppRootView(
                 library: library,
                 userActions: userActions,
+                userActionsRebinder: userActionsRebinder,
                 recoveryScope: recoveryScope,
                 shareImports: shareImports,
                 startupError: startupError,
@@ -120,8 +121,7 @@ struct SnipSnapiOSApp: App {
                 syncedContentSettings: syncedContentSettings,
                 cloudSyncSession: cloudSyncSession,
                 accountNoticeModel: accountNoticeModel,
-                cloudSyncHandler: cloudSyncHandler,
-                rebindUserActions: rebindUserActions
+                cloudSyncHandler: cloudSyncHandler
             )
         }
     }
@@ -130,7 +130,7 @@ struct SnipSnapiOSApp: App {
         library: any SnipLibrary,
         sourceLibrary: any SnipLibrary,
         userActions: any SnipLibraryUserActions,
-        rebindUserActions: SnipLibraryUserActionsRebinder,
+        userActionsRebinder: SnipLibraryUserActionsRebinder,
         shareImports: ShareImportStore?,
         error: String?,
         uiTestAttachmentURLs: [URL],
@@ -143,22 +143,11 @@ struct SnipSnapiOSApp: App {
 #if DEBUG
         if environment["SNIP_SNAP_UI_TEST_RECOVERY"] == "1" {
             let library = RecoveryUITestSnipLibrary()
-            let actionsFactory = SnipLibraryUserActionsFactory.durable(
-                journalURL: FileManager.default.temporaryDirectory
-                    .appendingPathComponent("SnipSnap-RecoveryUITest-Actions.json"),
-                collectionIdentity: {
-                    SnipLibraryCollectionIdentity(
-                        digest: Data("ui-test-recovery-library".utf8)
-                    )
-                }
-            )
             return (
                 library,
                 library,
-                actionsFactory.actions(for: library),
-                SnipLibraryUserActionsRebinder {
-                    actionsFactory.actions(for: $0)
-                },
+                DirectSnipLibraryUserActions(library: library),
+                .direct,
                 nil,
                 nil,
                 [],
@@ -226,9 +215,7 @@ struct SnipSnapiOSApp: App {
                 assembly.library,
                 sourceLibrary,
                 assembly.userActions,
-                SnipLibraryUserActionsRebinder {
-                    assembly.userActionsFactory.actions(for: $0)
-                },
+                assembly.userActionsRebinder,
                 shareImports,
                 nil,
                 fixtureURLs,
@@ -247,11 +234,9 @@ struct SnipSnapiOSApp: App {
                 assembly.library,
                 sourceLibrary,
                 assembly.userActions,
-                SnipLibraryUserActionsRebinder {
-                    assembly.userActionsFactory.actions(for: $0)
-                },
+                assembly.userActionsRebinder,
                 shareImports,
-                "Snip Snap could not open its local library. Your saved data was not changed.",
+                String(localized: .snipSnapCouldNotOpenItsLocalLibraryYourSavedDataWasNotChanged),
                 [],
                 false,
                 assembly.recoveryScope,

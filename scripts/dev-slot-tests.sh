@@ -121,10 +121,10 @@ PATH="$test_dir/bin:$PATH" \
     SNIP_SNAP_DEV_SLOT=2 \
     "$script_dir/build.sh" >/dev/null
 grep -F -- "$test_dir/state/build/slot-2" "$test_dir/build-args" >/dev/null
-grep -F -- "PRODUCT_BUNDLE_IDENTIFIER=world.sree.snipsnap.dev2" \
+grep -F -- "SNIP_SNAP_EFFECTIVE_PRODUCT_BUNDLE_IDENTIFIER=world.sree.snipsnap.dev2" \
     "$test_dir/build-args" >/dev/null
-grep -F -- "PRODUCT_NAME=SnipSnapDev2" "$test_dir/build-args" >/dev/null
-grep -F -- "INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Dev 2" \
+grep -F -- "SNIP_SNAP_PRODUCT_NAME=SnipSnapDev2" "$test_dir/build-args" >/dev/null
+grep -F -- "SNIP_SNAP_DISPLAY_NAME=Snip Snap Dev 2" \
     "$test_dir/build-args" >/dev/null
 grep -F -- "CODE_SIGN_IDENTITY=-" "$test_dir/build-args" >/dev/null
 grep -F -- "DEVELOPMENT_TEAM=" "$test_dir/build-args" >/dev/null

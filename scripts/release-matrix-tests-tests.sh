@@ -79,6 +79,7 @@ for line in 3 6; do
         "-scheme SnipSnapiOS -configuration Debug -destination $destination" >/dev/null || \
         fail_test "the Share extension process command missed $destination"
     for test_name in \
+        testSharesSnipBackIntoSnipSnap \
         testShareExtensionImportsExactlyOnceWhileMainAppIsOpen \
         testShareExtensionImportsExactlyOnceWhileMainAppIsClosed \
         testShareExtensionDefersExactlyOnceWhileMainStoreIsUnavailable
@@ -95,9 +96,21 @@ done
 [[ "$(/usr/bin/grep -Fc -- 'CODE_SIGNING_ALLOWED=NO' "$args_file")" == 4 ]] || \
     fail_test "one or more package or app-action tests allowed signing"
 
-/usr/bin/grep -F -- 'run: ./scripts/build.sh' \
+/usr/bin/grep -F -- 'run: ./scripts/build-matrix.sh --iphone-only' \
     "$script_dir/../.github/workflows/ci.yml" >/dev/null || \
-    fail_test "CI does not run the Release compile check"
+    fail_test "CI does not run the focused iPhone and Share extension build"
+
+for slow_command in \
+    'run: ./scripts/build.sh' \
+    'run: ./scripts/build-matrix.sh' \
+    'run: ./scripts/release-matrix-tests.sh'
+do
+    if /usr/bin/grep -Fx -- "        $slow_command" \
+        "$script_dir/../.github/workflows/ci.yml" >/dev/null
+    then
+        fail_test "CI still runs a slow build or release step: $slow_command"
+    fi
+done
 
 /usr/bin/grep -F -- 'assertShareExtensionReportedLocalSave' \
     "$script_dir/../SnipSnapiOSUITests/SnipSnapiOSUITests.swift" >/dev/null || \

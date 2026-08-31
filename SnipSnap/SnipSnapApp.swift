@@ -75,7 +75,7 @@ private struct AppSettingsContent: View {
         TabView {
             ShortcutSettingsView(coordinator: coordinator)
                 .environmentObject(shortcutSettings)
-                .tabItem { Label("Shortcuts", systemImage: "keyboard") }
+                .tabItem { Label(.shortcuts, systemImage: "keyboard") }
 
             VStack(spacing: 0) {
                 if let accountNoticeModel, accountNoticeModel.notice != nil {
@@ -88,7 +88,7 @@ private struct AppSettingsContent: View {
                 SyncedContentSettingsView(model: syncedContentSettings)
                 attachmentControls
             }
-                .tabItem { Label("Sync", systemImage: "icloud") }
+                .tabItem { Label(.sync, systemImage: "icloud") }
         }
         .preferredColorScheme(model.appearance.colorScheme)
     }
@@ -99,13 +99,15 @@ private struct AppSettingsContent: View {
             Divider()
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("iCloud Attachments").font(.headline)
-                    Text("Downloaded files can be fetched again when you open them.")
+                    Text(.iCloudAttachments).font(.headline)
+                    Text(.downloadedFilesCanBeFetchedAgainWhenYouOpenThem)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button(isSyncing ? "Syncing…" : "Sync Now") {
+                Button(isSyncing
+                    ? String(localized: .actionSyncing)
+                    : String(localized: .syncNow)) {
                     isSyncing = true
                     Task {
                         await cloudSyncHandler.syncWhenPossible()
@@ -114,17 +116,19 @@ private struct AppSettingsContent: View {
                 }
                 .disabled(isSyncing)
                 .accessibilityIdentifier("sync-icloud-now")
-                Button(isClearingDownloads ? "Clearing…" : "Clear Downloaded Files") {
+                Button {
                     isClearingDownloads = true
                     clearDownloadsError = nil
                     Task {
                         do {
                             try await model.clearDownloadedFiles()
                         } catch {
-                            clearDownloadsError = "Snip Snap could not clear the downloaded files."
+                            clearDownloadsError = String(localized: .snipSnapCouldNotClearTheDownloadedFiles)
                         }
                         isClearingDownloads = false
                     }
+                } label: {
+                    Text(isClearingDownloads ? .clearing : .clearDownloadedFiles)
                 }
                 .disabled(isClearingDownloads)
                 .accessibilityIdentifier("clear-icloud-downloads")
@@ -177,9 +181,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             initialError: store.errorMessage,
             recoveryScope: assembly.recoveryScope,
             userActions: assembly.userActions,
-            rebindUserActions: SnipLibraryUserActionsRebinder {
-                assembly.userActionsFactory.actions(for: $0)
-            }
+            userActionsRebinder: assembly.userActionsRebinder
         )
         let shortcutSettings = ShortcutSettings()
         let cloudServices: SnipSnapCloudAppServices
@@ -419,9 +421,9 @@ final class AppleAccountNoticeModel {
 
     var title: String {
         switch notice {
-        case .paused: "iCloud Sync Paused"
-        case .signedOut: "Signed Out of iCloud"
-        case .accountChanged: "Apple Account Changed"
+        case .paused: String(localized: .iCloudSyncPaused)
+        case .signedOut: String(localized: .signedOutOfICloud)
+        case .accountChanged: String(localized: .appleAccountChanged)
         case nil: ""
         }
     }
@@ -429,9 +431,9 @@ final class AppleAccountNoticeModel {
     var message: String {
         switch notice {
         case .paused:
-            "Your synced cache is still on this Mac. Snip Snap will try again when iCloud is available."
+            String(localized: .yourSyncedCacheIsStillOnThisMacSnipSnapWillTryAgainWhenICloudIsAvailable)
         case .signedOut, .accountChanged:
-            "Snip Snap kept the prior account’s cache apart. Keep it as a local copy or remove it from this Mac."
+            String(localized: .snipSnapKeptThePriorAccountsCacheApartKeepItAsALocalCopyOrRemoveItFromThisMac)
         case nil:
             ""
         }
@@ -450,7 +452,7 @@ final class AppleAccountNoticeModel {
             notice = try await handler.refreshAppleAccountNotice()
             errorMessage = nil
         } catch {
-            errorMessage = "Snip Snap could not finish that choice. Please try again."
+            errorMessage = String(localized: .snipSnapCouldNotFinishThatChoicePleaseTryAgain)
         }
     }
 
@@ -471,7 +473,7 @@ struct AppleAccountNoticeView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Needs Attention")
+            Text(.needsAttention)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
@@ -487,12 +489,12 @@ struct AppleAccountNoticeView: View {
                 .fixedSize(horizontal: false, vertical: true)
             if model.showsResolutionActions {
                 HStack(spacing: 12) {
-                    Button("Keep Local Copy") {
+                    Button(.keepLocalCopy) {
                         Task { await model.resolve(.keepLocalCopy) }
                     }
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("keep-account-cache")
-                    Button("Remove", role: .destructive) {
+                    Button(.remove, role: .destructive) {
                         Task { await model.resolve(.remove) }
                     }
                     .buttonStyle(.bordered)
@@ -528,7 +530,7 @@ private struct UpdateCommands: Commands {
 
     var body: some Commands {
         CommandGroup(after: .appInfo) {
-            Button("Check for Updates…") {
+            Button(.checkForUpdates) {
                 updaterController.checkForUpdates(nil)
             }
         }
@@ -539,7 +541,7 @@ private struct ShortcutCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .appSettings) {
             SettingsLink {
-                Text("Keyboard Shortcuts…")
+                Text(.actionOpenKeyboardShortcuts)
             }
             .keyboardShortcut("/", modifiers: .command)
         }
@@ -560,7 +562,7 @@ extension FocusedValues {
 enum BackupImportCommandRoute: CaseIterable {
     case previewThenConfirm
 
-    var title: String { "Import Backup…" }
+    var title: String { String(localized: .actionImportBackup) }
 }
 
 private struct SnipCommands: Commands {
@@ -575,24 +577,10 @@ private struct SnipCommands: Commands {
 
     var body: some Commands {
         CommandGroup(after: .pasteboard) {
-            Button("Search") { coordinator.focusPanelSearch() }
+            Button(.search) { coordinator.focusPanelSearch() }
                 .keyboardShortcut("f", modifiers: .command)
         }
-        if let model {
-            CommandGroup(replacing: .undoRedo) {
-                Button(model.undoTitle) {
-                    model.undo()
-                }
-                .keyboardShortcut("z", modifiers: .command)
-                .disabled(!model.canUndo)
-                Button(model.redoTitle) {
-                    model.redo()
-                }
-                .keyboardShortcut("z", modifiers: [.command, .shift])
-                .disabled(!model.canRedo)
-            }
-        }
-        CommandMenu("Snips") {
+        CommandMenu(.snips) {
             Button(BackupImportCommandRoute.previewThenConfirm.title) {
                 model?.beginBackupImport()
             }
@@ -602,7 +590,7 @@ private struct SnipCommands: Commands {
                 .keyboardShortcut("c", modifiers: .command)
                 .disabled(!isAvailable(.copy))
             Divider()
-            Button("Done or Not Done") { perform(.toggleDone) }
+            Button(SnipCompletionLanguage.toggle) { perform(.toggleDone) }
                 .appKeyboardShortcut(coordinator.shortcutSettings.chord(for: .toggleDone))
                 .disabled(!isAvailable(.toggleDone))
             Button(SnipCommand.edit.title) { perform(.edit) }
@@ -615,15 +603,15 @@ private struct SnipCommands: Commands {
                 .appKeyboardShortcut(coordinator.shortcutSettings.chord(for: .merge))
                 .disabled(!isAvailable(.merge))
             Divider()
-            Button("Move Up") { model?.moveSelectionUp() }
+            Button(.moveUp) { model?.moveSelectionUp() }
                 .disabled(model?.canReorderSelection != true)
-            Button("Move Down") { model?.moveSelectionDown() }
+            Button(.moveDown) { model?.moveSelectionDown() }
                 .disabled(model?.canReorderSelection != true)
             Divider()
             Button(SnipCommand.delete.title) { perform(.delete) }
                 .keyboardShortcut(.delete, modifiers: [])
                 .disabled(!isAvailable(.delete))
-            Button("Export JSON Backup…") {
+            Button(.actionExportBackup) {
                 exportJSONBackup(from: applicationModel)
             }
         }
@@ -640,9 +628,9 @@ private struct SnipCommands: Commands {
 
     private func exportJSONBackup(from model: AppModel) {
         let panel = NSSavePanel()
-        panel.title = "Export JSON Backup"
-        panel.prompt = "Export"
-        panel.nameFieldStringValue = "Snip Snap Backup"
+        panel.title = String(localized: .dialogExportBackupTitle)
+        panel.prompt = String(localized: .export)
+        panel.nameFieldStringValue = String(localized: .snipSnapBackup)
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { @MainActor in

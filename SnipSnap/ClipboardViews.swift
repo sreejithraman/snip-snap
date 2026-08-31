@@ -23,10 +23,12 @@ struct ClipboardListView: View {
             maxHeight: .infinity
         ) {
             HStack(spacing: SnipSnapSpacing.relatedContent) {
-                Button(history.isPaused ? "Resume" : "Pause") {
+                Button {
                     history.setPaused(!history.isPaused)
+                } label: {
+                    Text(history.isPaused ? .resume : .pause)
                 }
-                Button("Clear") { showingClearConfirmation = true }.disabled(history.entries.isEmpty)
+                Button(.clear) { showingClearConfirmation = true }.disabled(history.entries.isEmpty)
             }
         }
     }
@@ -68,7 +70,7 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
                     .padding(.vertical, verticalContentPadding)
                 } header: {
                     PanelListSectionHeader(
-                        "Clipboard",
+                        String(localized: .clipboard),
                         hasScrolledFromTop: hasScrolledFromTop,
                         actions: headerActions
                     )
@@ -123,7 +125,8 @@ struct ClipboardEntryRow: View {
                     .frame(width: 42, height: 42)
             }
             VStack(alignment: .leading) {
-                Text(entry.text.isEmpty ? "Clipboard item" : entry.text).lineLimit(3)
+                Text(entry.text.isEmpty ? String(localized: .clipboardItemPlaceholder) : entry.text)
+                    .lineLimit(3)
                 if let source = entry.sourceApplication {
                     Text(source)
                         .font(.caption2)
@@ -131,14 +134,14 @@ struct ClipboardEntryRow: View {
                 }
             }
             Spacer()
-            Button("Save", action: save).buttonStyle(.borderless)
+            Button(.save, action: save).buttonStyle(.borderless)
         }
         .padding(SnipSnapSpacing.cardContentInset)
         .panelContentCardSurface()
         .contentShape(Rectangle())
         .onTapGesture(perform: copy)
         .draggable(ClipboardDragPayload(entryID: entry.id))
-        .contextMenu { Button("Save to Active List", action: save) }
+        .contextMenu { Button(.saveToActiveList, action: save) }
     }
 }
 

@@ -7,11 +7,11 @@ struct ShareExtensionView: View {
     var body: some View {
         NavigationStack {
             content
-                .navigationTitle("Save to Snip Snap")
+                .navigationTitle(.saveToSnipSnap)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel", action: model.cancel)
+                        Button(.cancel, action: model.cancel)
                             .disabled(model.phase == .saving)
                     }
                 }
@@ -23,12 +23,12 @@ struct ShareExtensionView: View {
     private var content: some View {
         switch model.phase {
         case .loading:
-            ProgressView("Loading shared content…")
+            ProgressView(.loadingSharedContent)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .accessibilityIdentifier("share-loading")
         case .editing, .saving:
             Form {
-                Section("Preview") {
+                Section(.preview) {
                     TextEditor(text: Bindable(model).content)
                         .frame(minHeight: 112)
                         .accessibilityIdentifier("share-text")
@@ -54,10 +54,10 @@ struct ShareExtensionView: View {
                     }
                 }
 
-                Section("List") {
-                    Picker("Destination", selection: Bindable(model).destinationListID) {
+                Section(.listGenericName) {
+                    Picker(.destination, selection: Bindable(model).destinationListID) {
                         ForEach(model.lists) { list in
-                            Label(list.name, systemImage: list.systemImage)
+                            Label(list.displayName, systemImage: list.systemImage)
                                 .tag(list.id)
                         }
                     }
@@ -65,7 +65,7 @@ struct ShareExtensionView: View {
                 }
 
                 Section {
-                    Button("Save") {
+                    Button(.save) {
                         Task { await model.save() }
                     }
                     .disabled(!model.canSave)
@@ -75,14 +75,14 @@ struct ShareExtensionView: View {
             .disabled(model.phase == .saving)
             .overlay {
                 if model.phase == .saving {
-                    ProgressView("Saving…")
+                    ProgressView(.saving)
                         .padding()
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
             }
         case .failed(let message):
             ContentUnavailableView(
-                "Could Not Save",
+                .couldNotSave,
                 systemImage: "exclamationmark.triangle",
                 description: Text(message)
             )

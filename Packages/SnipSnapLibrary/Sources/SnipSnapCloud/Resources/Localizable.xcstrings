@@ -1,0 +1,54 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "%lld bytes" : {
+      "extractionState" : "manual"
+    },
+    "%lld MiB" : {
+      "extractionState" : "manual"
+    },
+    "Another iCloud Sync task is still running." : {
+      "extractionState" : "manual"
+    },
+    "attachment.error.detail" : {
+      "comment" : "A file name followed by the reason that attachment cannot sync.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@: %2$@"
+          }
+        }
+      }
+    },
+    "Choose how to handle the iCloud encrypted-data reset before turning sync on." : {
+      "extractionState" : "manual"
+    },
+    "iCloud Sync does not have an active collection." : {
+      "extractionState" : "manual"
+    },
+    "larger than Snip Snap’s %@ per-file limit" : {
+      "extractionState" : "manual"
+    },
+    "local file is missing or changed" : {
+      "extractionState" : "manual"
+    },
+    "part of a snip above Snip Snap’s %@ attachment limit" : {
+      "extractionState" : "manual"
+    },
+    "The iCloud Sync collection is not valid." : {
+      "extractionState" : "manual"
+    },
+    "These attachments cannot sync. %@" : {
+      "extractionState" : "manual"
+    },
+    "unknown" : {
+      "extractionState" : "manual"
+    },
+    "unsupported file type %@" : {
+      "extractionState" : "manual"
+    }
+  },
+  "version" : "1.1"
+}

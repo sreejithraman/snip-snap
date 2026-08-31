@@ -54,9 +54,9 @@ extension CloudAttachmentSetupError: LocalizedError {
     switch self {
     case .unsupportedFiles(let files):
       let details = files.map { file in
-        "\(file.fileName): \(file.reason.errorDescription)"
+        String(localized: LocalizedStringResource.attachmentErrorDetail(file.fileName, file.reason.errorDescription))
       }.joined(separator: "; ")
-      return "These attachments cannot sync. \(details)"
+      return String(localized: LocalizedStringResource.theseAttachmentsCannotSync(details))
     }
   }
 }
@@ -65,21 +65,23 @@ private extension CloudAttachmentUnsupportedReason {
   var errorDescription: String {
     switch self {
     case .fileTooLarge(let maximumBytes):
-      "larger than Snip Snap’s \(formatSnipSnapByteLimit(maximumBytes)) per-file limit"
+      String(localized: LocalizedStringResource.largerThanSnipSnapsPerFileLimit(formatSnipSnapByteLimit(maximumBytes)))
     case .snipTotalTooLarge(let maximumBytes):
-      "part of a snip above Snip Snap’s \(formatSnipSnapByteLimit(maximumBytes)) attachment limit"
+      String(localized: LocalizedStringResource.partOfASnipAboveSnipSnapsAttachmentLimit(formatSnipSnapByteLimit(maximumBytes)))
     case .contentType(let value):
-      "unsupported file type \(value ?? "unknown")"
+      String(localized: LocalizedStringResource.unsupportedFileType(value ?? String(localized: LocalizedStringResource.unknown)))
     case .missingLocalFile:
-      "local file is missing or changed"
+      String(localized: LocalizedStringResource.localFileIsMissingOrChanged)
     }
   }
 }
 
 private func formatSnipSnapByteLimit(_ byteCount: Int64) -> String {
   let mib: Int64 = 1_048_576
-  if byteCount.isMultiple(of: mib) { return "\(byteCount / mib) MiB" }
-  return "\(byteCount) bytes"
+  if byteCount.isMultiple(of: mib) {
+    return String(localized: LocalizedStringResource.miB(Int(byteCount / mib)))
+  }
+  return String(localized: LocalizedStringResource.bytes(Int(byteCount)))
 }
 
 package enum CloudAttachmentUse: Equatable, Sendable {

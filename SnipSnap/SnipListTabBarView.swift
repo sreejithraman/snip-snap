@@ -51,17 +51,19 @@ struct SnipListTabBarView: View {
             SnipListEditSheet(model: model, list: list)
         }
         .confirmationDialog(
-            "Delete \(listPendingDeletion?.name ?? "list")?",
+            String(localized: .delete(
+                listPendingDeletion?.name ?? String(localized: .listGenericNameInSentence)
+            )),
             isPresented: listDeletionPresented
         ) {
-            Button("Delete List", role: .destructive) {
+            Button(.deleteList, role: .destructive) {
                 guard let list = listPendingDeletion else { return }
                 listPendingDeletion = nil
                 Task { await model.deleteList(list) }
             }
-            Button("Cancel", role: .cancel) { listPendingDeletion = nil }
+            Button(.cancel, role: .cancel) { listPendingDeletion = nil }
         } message: {
-            Text("Its snips will move to Inbox.")
+            Text(.itsSnipsWillMoveToInbox)
         }
     }
 
@@ -92,8 +94,8 @@ struct SnipListTabBarView: View {
                 .panelStandaloneActionControl()
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("New List")
-        .help("New List")
+        .accessibilityLabel(.screenNewListTitle)
+        .help(.screenNewListTitle)
     }
 
     private var tabStrip: some View {
@@ -145,9 +147,9 @@ struct SnipListTabBarView: View {
             if case .list(let listID) = tab,
                listID != SnipList.inboxID,
                let list = model.lists.first(where: { $0.id == listID }) {
-                Button("Edit List…") { editingList = list }
+                Button(.actionEditList) { editingList = list }
                 Divider()
-                Button("Delete List", role: .destructive) {
+                Button(.deleteList, role: .destructive) {
                     listPendingDeletion = list
                 }
             }
@@ -266,9 +268,10 @@ struct SnipListTabBarView: View {
     private func tabName(_ tab: TabSelection) -> String {
         switch tab {
         case .clipboard:
-            "Clipboard"
+            String(localized: .clipboard)
         case .list(let listID):
-            model.lists.first(where: { $0.id == listID })?.name ?? "List"
+            model.lists.first(where: { $0.id == listID })?.displayName
+                ?? String(localized: .listGenericName)
         }
     }
 
@@ -296,13 +299,13 @@ struct SnipListTabBarView: View {
         switch tab {
         case .clipboard:
             Image(systemName: "clipboard.fill")
-                .accessibilityLabel("Clipboard")
-                .help("Clipboard")
+                .accessibilityLabel(.clipboard)
+                .help(.clipboard)
         case .list(let listID):
             if let list = model.lists.first(where: { $0.id == listID }) {
                 Image(systemName: list.systemImage)
-                    .accessibilityLabel(list.name)
-                    .help(list.name)
+                    .accessibilityLabel(list.displayName)
+                    .help(list.displayName)
             }
         }
     }

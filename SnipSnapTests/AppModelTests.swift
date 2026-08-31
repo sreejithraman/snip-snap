@@ -460,7 +460,7 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testAppModelUndoDeleteRestoresTheFullSelection() async throws {
+    func testDeleteToastRestoresSnipsWithoutKeepingSelectionHistory() async throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let addedFirst = try await repository.add(content: "First", origin: .quickEntry)
         let addedSecond = try await repository.add(content: "Second", origin: .quickEntry)
@@ -472,75 +472,14 @@ final class AppModelTests: StoreBackedTestCase {
 
         await model.deleteSelectionNow()
         XCTAssertTrue(model.snips.isEmpty)
-        XCTAssertTrue(model.canUndo)
+        XCTAssertEqual(model.toast?.message, "2 snips deleted")
+        XCTAssertEqual(model.toast?.action, .undoDelete)
 
-        await model.undoNow()
+        let toast = try XCTUnwrap(model.toast)
+        await model.performToastActionNow(toast)
         XCTAssertEqual(Set(model.snips.map(\.id)), [first.id, second.id])
-        XCTAssertEqual(model.selection, [first.id, second.id])
-        XCTAssertFalse(model.canUndo)
-    }
-
-    @MainActor
-    func testTwoRapidUndosConsumeOneOperationSafely() async throws {
-        let repository = try JSONSnipLibrary(fileURL: storeURL())
-        let added = try await repository.add(content: "Delete me", origin: .quickEntry)
-        let snip = try XCTUnwrap(added)
-        let model = AppModel(library: repository, userActions: userActions(for: repository))
-        await model.reload()
-        model.selection = [snip.id]
-        await model.deleteSelectionNow()
-
-        async let first: Void = model.undoNow()
-        async let second: Void = model.undoNow()
-        _ = await (first, second)
-
-        XCTAssertEqual(model.snips.map(\.id), [snip.id])
-        XCTAssertFalse(model.canUndo)
-        XCTAssertTrue(model.canRedo)
-    }
-
-    @MainActor
-    func testAppModelUndoMergeRestoresTheOriginalItems() async throws {
-        let repository = try JSONSnipLibrary(fileURL: storeURL())
-        let addedFirst = try await repository.add(content: "First", origin: .quickEntry)
-        let addedSecond = try await repository.add(content: "Second", origin: .quickEntry)
-        let first = try XCTUnwrap(addedFirst)
-        let second = try XCTUnwrap(addedSecond)
-        let model = AppModel(library: repository, userActions: userActions(for: repository))
-        await model.reload()
-        model.selection = [first.id, second.id]
-
-        await model.mergeSelectionNow()
-        XCTAssertEqual(model.snips.count, 1)
-        XCTAssertEqual(model.undoTitle, "Undo Merge")
-
-        await model.undoNow()
-        XCTAssertEqual(Set(model.snips.map(\.id)), [first.id, second.id])
-        XCTAssertEqual(model.selection, [first.id, second.id])
-        XCTAssertFalse(model.canUndo)
-    }
-
-    @MainActor
-    func testEditingAMergeClearsTheStaleMergeUndo() async throws {
-        let repository = try JSONSnipLibrary(fileURL: storeURL())
-        let addedFirst = try await repository.add(content: "First", origin: .quickEntry)
-        let addedSecond = try await repository.add(content: "Second", origin: .quickEntry)
-        let first = try XCTUnwrap(addedFirst)
-        let second = try XCTUnwrap(addedSecond)
-        let model = AppModel(library: repository, userActions: userActions(for: repository))
-        await model.reload()
-        model.selection = [first.id, second.id]
-
-        await model.mergeSelectionNow()
-        let merged = try XCTUnwrap(model.snips.first)
-        XCTAssertTrue(model.canUndo)
-
-        let saved = await model.update(id: merged.id, content: "Edited merge")
-        XCTAssertTrue(saved)
-        XCTAssertFalse(model.canUndo)
-        await model.undoNow()
-
-        XCTAssertEqual(model.snips.map(\.content), ["Edited merge"])
+        XCTAssertTrue(model.selection.isEmpty)
+        XCTAssertNil(model.toast)
     }
 
     @MainActor
@@ -661,7 +600,7 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testMoveKeepsEditorTokenAndSupportsMultiStepUndoRedo() async throws {
+    func testMoveKeepsEditorToken() async throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let firstResult = try await repository.add(content: "First", origin: .quickEntry)
         let secondResult = try await repository.add(content: "Second", origin: .quickEntry)
@@ -681,57 +620,11 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertTrue(movedFirst)
         XCTAssertTrue(movedSecond)
         XCTAssertEqual(model.snips.first { $0.id == first.id }?.updatedAt, token)
-        XCTAssertTrue(model.canUndo)
-
-        await model.undoNow()
-        XCTAssertEqual(model.snips.first { $0.id == second.id }?.listID, SnipList.inboxID)
-        await model.undoNow()
-        XCTAssertEqual(model.snips.first { $0.id == first.id }?.listID, SnipList.inboxID)
-        XCTAssertTrue(model.canRedo)
-
-        await model.redoNow()
-        await model.redoNow()
         XCTAssertEqual(Set(model.snips.filter { $0.listID == review.id }.map(\.id)), [first.id, second.id])
-        XCTAssertFalse(model.canRedo)
     }
 
     @MainActor
-    func testNewActionKeepsItsPresentationWhenRemoteWorkDropsAnOlderUndo() async throws {
-        let repository = try JSONSnipLibrary(fileURL: storeURL())
-        let firstResult = try await repository.add(content: "First", origin: .quickEntry)
-        let secondResult = try await repository.add(content: "Second", origin: .quickEntry)
-        let thirdResult = try await repository.add(content: "Third", origin: .quickEntry)
-        let first = try XCTUnwrap(firstResult)
-        let second = try XCTUnwrap(secondResult)
-        let third = try XCTUnwrap(thirdResult)
-        let work = try await repository.createList(name: "Work", systemImage: "folder")
-        let model = AppModel(
-            library: repository,
-            defaults: defaults(),
-            userActions: userActions(for: repository)
-        )
-        await model.reload()
-
-        let movedFirst = await model.moveChronologically(ids: [first.id], to: work.id)
-        let movedSecond = await model.moveChronologically(ids: [second.id], to: work.id)
-        XCTAssertTrue(movedFirst)
-        XCTAssertTrue(movedSecond)
-        _ = try await repository.perform(
-            .moveChronologically(ids: [first.id], to: SnipList.inboxID),
-            sortedBy: .manual
-        )
-
-        let movedThird = await model.moveChronologically(ids: [third.id], to: work.id)
-        XCTAssertTrue(movedThird)
-        await model.undoNow()
-
-        XCTAssertEqual(model.selection, [second.id])
-        XCTAssertEqual(model.snips.first { $0.id == third.id }?.listID, SnipList.inboxID)
-        XCTAssertEqual(model.undoTitle, "Undo Move")
-    }
-
-    @MainActor
-    func testMoveUpUsesManualOrderAndCanUndo() async throws {
+    func testMoveUpUsesManualOrder() async throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let firstResult = try await repository.add(content: "First", origin: .quickEntry)
         let secondResult = try await repository.add(content: "Second", origin: .quickEntry)
@@ -749,8 +642,6 @@ final class AppModelTests: StoreBackedTestCase {
 
         await model.moveSelectionNow(by: -1)
         XCTAssertEqual(model.snips.map(\.id), [first.id, second.id])
-        await model.undoNow()
-        XCTAssertEqual(model.snips.map(\.id), [second.id, first.id])
     }
 
     @MainActor
@@ -790,18 +681,10 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertTrue(moved)
         XCTAssertEqual(model.sortMode, .manual)
         XCTAssertEqual(model.snips.map(\.id), [middle.id, new.id, old.id])
-
-        await model.undoNow()
-        XCTAssertEqual(model.sortMode, .chronological)
-        XCTAssertEqual(model.snips.map(\.id), [new.id, middle.id, old.id])
-
-        await model.redoNow()
-        XCTAssertEqual(model.sortMode, .manual)
-        XCTAssertEqual(model.snips.map(\.id), [middle.id, new.id, old.id])
     }
 
     @MainActor
-    func testDropMoveCanPreserveSelectionThroughUndoAndRedo() async throws {
+    func testDropMovePreservesSelection() async throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let movedResult = try await repository.add(content: "Moved", origin: .quickEntry)
         let selectedResult = try await repository.add(content: "Selected", origin: .quickEntry)
@@ -823,10 +706,6 @@ final class AppModelTests: StoreBackedTestCase {
         )
 
         XCTAssertTrue(didMove)
-        XCTAssertEqual(model.selection, [selected.id])
-        await model.undoNow()
-        XCTAssertEqual(model.selection, [selected.id])
-        await model.redoNow()
         XCTAssertEqual(model.selection, [selected.id])
         XCTAssertEqual(model.snips.first { $0.id == moved.id }?.listID, review.id)
     }
@@ -979,7 +858,7 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testAttachmentFilesSurviveUndoAndAreRemovedAfterHistoryClears() async throws {
+    func testAttachmentFilesSurviveToastUndoAndAreRemovedAfterTheNextAction() async throws {
         let url = try storeURL()
         let source = url.deletingLastPathComponent().appendingPathComponent("context.md")
         try Data("Context".utf8).write(to: source)
@@ -1001,12 +880,13 @@ final class AppModelTests: StoreBackedTestCase {
 
         await model.deleteSelectionNow()
         XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
-        await model.undoNow()
+        let toast = try XCTUnwrap(model.toast)
+        await model.performToastActionNow(toast)
         XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
 
         model.selection = [snip.id]
         await model.deleteSelectionNow()
-        let didAdd = await model.add(content: "Clears undo", origin: .quickEntry)
+        let didAdd = await model.add(content: "Commits delete", origin: .quickEntry)
         XCTAssertTrue(didAdd)
         XCTAssertFalse(FileManager.default.fileExists(atPath: storedURL.path))
     }
@@ -1470,11 +1350,11 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testMacBackupImportWaitsForConfirmationAndCanUndo() async throws {
+    func testMacBackupImportWaitsForConfirmation() async throws {
         XCTAssertEqual(
             BackupImportCommandRoute.allCases,
             [.previewThenConfirm],
-            "The menu must offer only the preview and durable Undo import route."
+            "The menu must offer only the preview and confirm import route."
         )
         XCTAssertEqual(
             BackupImportCommandRoute.previewThenConfirm.title,
@@ -1487,11 +1367,7 @@ final class AppModelTests: StoreBackedTestCase {
         let added = try await backup.add(content: "From backup", origin: .quickEntry)
         let importedID = try XCTUnwrap(added?.id)
         let target = try JSONSnipLibrary(fileURL: targetURL)
-        let actions = SnipLibraryDeviceActions(
-            library: target,
-            journalURL: targetURL.deletingLastPathComponent()
-                .appendingPathComponent("DeviceActions.json")
-        )
+        let actions = userActions(for: target)
         let model = AppModel(
             library: target,
             defaults: defaults(),
@@ -1503,14 +1379,10 @@ final class AppModelTests: StoreBackedTestCase {
 
         XCTAssertEqual(model.pendingImportPreview?.addedSnipCount, 1)
         XCTAssertTrue(model.snips.isEmpty)
-        XCTAssertFalse(model.canUndo)
 
         await model.confirmBackupImport()
 
         XCTAssertEqual(model.snips.map(\.id), [importedID])
-        XCTAssertEqual(model.undoTitle, "Undo Import Backup")
-        await model.undoNow()
-        XCTAssertTrue(model.snips.isEmpty)
     }
 
     @MainActor
@@ -1549,10 +1421,7 @@ final class AppModelTests: StoreBackedTestCase {
         let model = AppModel(
             library: target,
             defaults: defaults(),
-            userActions: SnipLibraryDeviceActions(
-                library: target,
-                journalURL: root.appendingPathComponent("DeviceActions.json")
-            )
+            userActions: userActions(for: target)
         )
         await model.reload()
 
@@ -1565,52 +1434,6 @@ final class AppModelTests: StoreBackedTestCase {
         let targetSnapshot = try await target.checkedSnapshot(sortedBy: .chronological)
         let savedURL = try XCTUnwrap(targetSnapshot.attachmentURLs[attachmentID])
         XCTAssertEqual(try Data(contentsOf: savedURL), bytes)
-        XCTAssertEqual(model.undoTitle, "Undo Import Backup")
-    }
-
-    @MainActor
-    func testMacLibraryReplacementKeepsDurableHistoryForTheSameCollectionAndReopen() async throws {
-        let targetURL = try storeURL()
-        let factory = SnipLibraryUserActionsFactory.durable(
-            journalURL: targetURL.deletingLastPathComponent()
-                .appendingPathComponent("DeviceActions.json"),
-            collectionIdentity: {
-                SnipLibraryCollectionIdentity(digest: Data("same-collection".utf8))
-            }
-        )
-        let firstLibrary = try JSONSnipLibrary(fileURL: targetURL)
-        let seeded = try await firstLibrary.add(content: "Keep me", origin: .quickEntry)
-        let snipID = try XCTUnwrap(seeded?.id)
-        let model = AppModel(
-            library: firstLibrary,
-            defaults: defaults(),
-            userActions: factory.actions(for: firstLibrary),
-            rebindUserActions: SnipLibraryUserActionsRebinder {
-                factory.actions(for: $0)
-            }
-        )
-        await model.reload()
-        model.selection = [snipID]
-        await model.deleteSelectionNow()
-        XCTAssertEqual(model.undoTitle, "Undo Delete")
-
-        let replacement = try JSONSnipLibrary(fileURL: targetURL)
-        await model.replaceLibrary(replacement, recoveryScope: nil)
-        XCTAssertEqual(model.undoTitle, "Undo Delete")
-
-        let reopenedLibrary = try JSONSnipLibrary(fileURL: targetURL)
-        let reopenedModel = AppModel(
-            library: reopenedLibrary,
-            defaults: defaults(),
-            userActions: factory.actions(for: reopenedLibrary),
-            rebindUserActions: SnipLibraryUserActionsRebinder {
-                factory.actions(for: $0)
-            }
-        )
-        await reopenedModel.reload()
-        XCTAssertEqual(reopenedModel.undoTitle, "Undo Delete")
-        await reopenedModel.undoNow()
-        XCTAssertTrue(reopenedModel.snips.contains { $0.id == snipID })
     }
 
     @MainActor
@@ -1637,11 +1460,12 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(model.importPreviewSummary, "0 snips, 1 new list")
     }
 
-    private func userActions(for library: any SnipLibrary) -> SnipLibraryDeviceActions {
-        SnipLibraryDeviceActions(
+    private func userActions(for library: any SnipLibrary) -> DirectSnipLibraryUserActions {
+        DirectSnipLibraryUserActions(
             library: library,
-            journalURL: FileManager.default.temporaryDirectory
-                .appendingPathComponent("AppModelTests-Actions-\(UUID().uuidString).json")
+            previewBackupImport: { backupURL, target in
+                try await SnipLibraryImport.preview(backupURL: backupURL, target: target)
+            }
         )
     }
 }

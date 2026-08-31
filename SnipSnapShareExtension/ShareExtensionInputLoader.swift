@@ -27,13 +27,17 @@ enum ShareExtensionInputLoader {
         var textParts: [String] = []
         var attachments: [ShareImportAttachment] = []
         for item in items {
-            if let attributedText = item.attributedContentText?.string,
-                !attributedText.isEmpty
-            {
+            let attributedText = item.attributedContentText?.string
+            let hasAttributedText = attributedText?.isEmpty == false
+            if let attributedText, hasAttributedText {
                 textParts.append(attributedText)
             }
             for provider in item.attachments ?? [] {
-                let part = try await load(provider: provider, staging: staging)
+                let part = try await load(
+                    provider: provider,
+                    staging: staging,
+                    hasTextFallback: hasAttributedText
+                )
                 switch part {
                 case .text(let text):
                     textParts.append(text)
@@ -55,7 +59,8 @@ enum ShareExtensionInputLoader {
 
     private static func load(
         provider: NSItemProvider,
-        staging: ShareImportStagingArea
+        staging: ShareImportStagingArea,
+        hasTextFallback: Bool
     ) async throws -> Part {
         if let imageType = preferredType(in: provider, conformingTo: .image) {
             return .attachment(
@@ -84,10 +89,14 @@ enum ShareExtensionInputLoader {
             return .text(url.absoluteString)
         }
 
-        if provider.canLoadObject(ofClass: String.self),
-            let text = try await loadText(provider)
-        {
-            return .text(text)
+        if provider.canLoadObject(ofClass: String.self) {
+            do {
+                if let text = try await loadText(provider) {
+                    return .text(text)
+                }
+            } catch where hasTextFallback {
+                return .none
+            }
         }
 
         if let type = preferredFileType(in: provider) {

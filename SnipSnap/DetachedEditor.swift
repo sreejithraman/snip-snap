@@ -23,7 +23,7 @@ final class DetachedEditorWindowController: NSWindowController, NSWindowDelegate
             backing: .buffered,
             defer: true
         )
-        window.title = "Edit Snip"
+        window.title = String(localized: .editSnip)
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 420, height: 280)
         window.center()
@@ -111,13 +111,13 @@ private struct DetachedEditorView: View {
             }
 
             HStack {
-                Text("⌘S save")
+                Text(.sSave)
                     .font(.system(size: 10.5))
                     .foregroundStyle(SnipSnapColors.textSecondary)
                 Spacer()
-                Button("Cancel", action: onCancel)
+                Button(.cancel, action: onCancel)
                     .keyboardShortcut(.cancelAction)
-                Button("Save", action: onSave)
+                Button(.save, action: onSave)
                     .keyboardShortcut("s", modifiers: .command)
                     .disabled(
                         session.isSaving

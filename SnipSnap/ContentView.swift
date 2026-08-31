@@ -67,6 +67,13 @@ struct ContentView: View {
                     )
             }
         }
+        .appToast(
+            $model.toast,
+            alignment: .top,
+            edge: .top,
+            onAction: model.performToastAction,
+            onDismiss: model.dismissToast
+        )
         .background {
             PanelDragRegion()
         }
@@ -184,41 +191,42 @@ struct ContentView: View {
             MacRecoveryReviewSheet(model: model)
         }
         .confirmationDialog(
-            "Import this backup?",
+            .importThisBackup,
             isPresented: Binding(
                 get: { model.pendingImportPreview != nil },
                 set: { if !$0 { model.cancelBackupImport() } }
             ),
             titleVisibility: .visible
         ) {
-            Button("Import Backup") {
+            Button(.dialogImportBackupTitle) {
                 Task { await model.confirmBackupImport() }
             }
-            Button("Cancel", role: .cancel) { model.cancelBackupImport() }
+            Button(.cancel, role: .cancel) { model.cancelBackupImport() }
         } message: {
-            Text("Review: \(model.importPreviewSummary). Snip Snap will merge these records with your saved snips.")
+            Text(.reviewSnipSnapWillMergeTheseRecordsWithYourSavedSnips(
+                model.importPreviewSummary
+            ))
         }
         .alert(
-            "Allow Accessibility Access?",
+            .allowAccessibilityAccess,
             isPresented: $model.isAccessibilityAccessExplanationPresented
         ) {
-            Button("Not Now", role: .cancel) {}
-            Button("Continue") {
+            Button(.notNow, role: .cancel) {}
+            Button(.`continue`) {
                 coordinator.requestAccessibilityAccess()
             }
         } message: {
-            Text(
-                "Snip Snap uses Accessibility to detect Shift shortcuts and capture selected content. macOS will ask you to allow access in System Settings."
+            Text(.snipSnapUsesAccessibilityToDetectShiftShortcutsAndCaptureSelectedContentMacOSWillAskYouToAllowAccessInSystemSettings
             )
         }
         .alert(
-            "Snip Snap",
+            .snipSnap,
             isPresented: Binding(
                 get: { model.presentedError != nil },
                 set: { if !$0 { model.presentedError = nil } }
             )
         ) {
-            Button("OK") { model.presentedError = nil }
+            Button(.ok) { model.presentedError = nil }
         } message: {
             Text(model.presentedError ?? "")
         }
@@ -299,10 +307,13 @@ struct ContentView: View {
                 Button {
                     showingRecoveryReview = true
                 } label: {
-                    Label("Needs Attention (\(model.needsAttentionCount))", systemImage: "exclamationmark.circle.fill")
+                    Label(
+                        .needsAttention(model.needsAttentionCount),
+                        systemImage: "exclamationmark.circle.fill"
+                    )
                 }
                 .buttonStyle(.bordered)
-                .help("Review recovered edits")
+                .help(.reviewRecoveredEdits)
             }
 
             PanelMoreButton(
@@ -321,7 +332,7 @@ struct ContentView: View {
     }
 
     private var searchField: some View {
-        TextField("Search", text: $model.query)
+        TextField(.search, text: $model.query)
             .panelInputStyle()
             .focused($focusedTarget, equals: .search)
     }
@@ -394,7 +405,9 @@ struct ContentView: View {
                 .font(.system(size: 12.5, weight: .medium))
                 .foregroundStyle(SnipSnapColors.textSecondary)
             if model.query.isEmpty, model.completionFilter == .all {
-                Text("\(shortcutSettings.configuration.captureSelection.displayName) captures the selection")
+                Text(.capturesTheSelection(
+                    shortcutSettings.configuration.captureSelection.displayName
+                ))
                     .font(.system(size: 10.5))
                     .foregroundStyle(SnipSnapColors.textTertiary)
             }
@@ -418,7 +431,7 @@ struct ContentView: View {
 
     private var emptyStateTitle: String {
         if !model.query.isEmpty {
-            return "No matches"
+            return String(localized: .noMatches)
         }
         return model.completionFilter.emptyStateTitle
     }
@@ -472,11 +485,11 @@ struct ContentView: View {
 
     private var inlineAttachmentMenu: some View {
         Menu {
-            Button("Choose Files…") {
+            Button(.chooseFiles) {
                 fileImportTarget = .composer(model.activeListID)
                 showingFileImporter = true
             }
-            Button("Capture Screen Area…") { captureScreenArea() }
+            Button(.captureScreenArea) { captureScreenArea() }
         } label: {
             Image(systemName: "plus")
                 .font(.body.weight(.semibold))
@@ -488,13 +501,13 @@ struct ContentView: View {
         }
         .menuIndicator(.hidden)
         .buttonStyle(.plain)
-        .help("Add Attachment")
-        .accessibilityLabel("Add Attachment")
+        .help(.addAttachment)
+        .accessibilityLabel(.addAttachment)
     }
 
     private var inlineEntryField: some View {
         PanelMultilineTextInput(
-            "Add to \(model.activeList.name)…",
+            String(localized: .composerAddToListPlaceholder(model.activeList.displayName)),
             text: entryText,
             lineRange: PanelComposerMetrics.textLineRange,
             isFocused: focusedTarget == .inlineEntry,
@@ -535,8 +548,8 @@ struct ContentView: View {
         }
         .panelEmbeddedProminentActionControl()
         .disabled(!canSaveInlineEntry)
-        .accessibilityLabel("Add to \(model.activeList.name)")
-        .help("Add to \(model.activeList.name)")
+        .accessibilityLabel(.addTo(model.activeList.displayName))
+        .help(.addTo(model.activeList.displayName))
     }
 
     private var isInlineEntryExpanded: Bool {
@@ -684,7 +697,7 @@ struct ContentView: View {
         }
         do { try process.run() } catch {
             completion(false)
-            model.presentedError = "Snip Snap could not start screen capture."
+            model.presentedError = String(localized: .snipSnapCouldNotStartScreenCapture)
         }
     }
 
@@ -724,18 +737,18 @@ private struct ClipboardAlertHost: View {
         Color.clear
             .frame(width: 0, height: 0)
             .confirmationDialog(
-                "Clear clipboard history?",
+                .clearClipboardHistory,
                 isPresented: $showingClearConfirmation
             ) {
-                Button("Clear History", role: .destructive) { history.clear() }
+                Button(.clearHistory, role: .destructive) { history.clear() }
             } message: {
-                Text("This leaves the current Mac clipboard unchanged.")
+                Text(.thisLeavesTheCurrentMacClipboardUnchanged)
             }
             .alert(
-                "Clipboard History Was Not Saved",
+                .clipboardHistoryWasNotSaved,
                 isPresented: persistenceErrorPresented
             ) {
-                Button("OK") { history.dismissPersistenceError() }
+                Button(.ok) { history.dismissPersistenceError() }
             } message: {
                 Text(history.persistenceError ?? "")
             }
@@ -780,8 +793,10 @@ private struct MacRecoveryReviewSheet: View {
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(route == nil ? "Done" : "Back") {
+                    Button {
                         if route == nil { dismiss() } else { route = nil }
+                    } label: {
+                        Text(route == nil ? .done : .back)
                     }
                 }
             }
@@ -798,15 +813,19 @@ private struct MacRecoveryReviewSheet: View {
     private var recoveryList: some View {
         List {
             if !model.pendingRecoveredSnips.isEmpty {
-                Section("Recovered Snips") {
+                Section(.recoveredSnips) {
                     ForEach(model.pendingRecoveredSnips) { recovery in
                         Button {
                             route = .snip(recovery.id)
                         } label: {
                             VStack(alignment: .leading, spacing: 5) {
-                                Text(recovery.recovered.content.isEmpty ? "Recovered edit" : recovery.recovered.content)
+                                Text(
+                                    recovery.recovered.content.isEmpty
+                                        ? String(localized: .recoveredEdit)
+                                        : recovery.recovered.content
+                                )
                                     .lineLimit(2)
-                                Text("Recovered")
+                                Text(.recovered)
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(.orange)
                             }
@@ -816,7 +835,7 @@ private struct MacRecoveryReviewSheet: View {
                 }
             }
             if !model.pendingRecoveredLists.isEmpty {
-                Section("Recovered List Edits") {
+                Section(.recoveredListEdits) {
                     ForEach(model.pendingRecoveredLists) { recovery in
                         Button {
                             route = .list(recovery.id)
@@ -828,10 +847,10 @@ private struct MacRecoveryReviewSheet: View {
                 }
             }
             if model.needsAttentionCount == 0 {
-                ContentUnavailableView("No Edits Need Review", systemImage: "checkmark.circle")
+                ContentUnavailableView(.noEditsNeedReview, systemImage: "checkmark.circle")
             }
         }
-        .navigationTitle("Needs Attention")
+        .navigationTitle(.needsAttention)
     }
 }
 
@@ -852,17 +871,25 @@ private struct MacRecoveredSnipReview: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         HStack(alignment: .top, spacing: 16) {
-                            values("Current", snip: current, fields: recovery.conflictingFields)
-                            values("Recovered Edit", snip: recovery.recovered, fields: recovery.conflictingFields)
+                            values(
+                                String(localized: .recoveryCurrentTitle),
+                                snip: current,
+                                fields: recovery.conflictingFields
+                            )
+                            values(
+                                String(localized: .recoveredEdit),
+                                snip: recovery.recovered,
+                                fields: recovery.conflictingFields
+                            )
                         }
                         editFields(recovery)
                         HStack {
-                            Button("Keep Current") { resolve(.keepCurrent) }
-                            Button("Keep Both") { resolve(.keepBoth) }
+                            Button(.keepCurrent) { resolve(.keepCurrent) }
+                            Button(.keepBoth) { resolve(.keepBoth) }
                             Spacer()
-                            Button("Use Recovered") { resolve(.useRecovered) }
+                            Button(.useRecovered) { resolve(.useRecovered) }
                                 .buttonStyle(.borderedProminent)
-                            Button("Use Edited") {
+                            Button(.useEdited) {
                                 if let edited { resolve(.editSnip(edited)) }
                             }
                         }
@@ -872,10 +899,10 @@ private struct MacRecoveredSnipReview: View {
                 .disabled(isResolving)
                 .onAppear { if edited == nil { edited = recovery.recovered } }
             } else {
-                ContentUnavailableView("Recovered Edit Is Gone", systemImage: "checkmark.circle")
+                ContentUnavailableView(.recoveredEditIsGone, systemImage: "checkmark.circle")
             }
         }
-        .navigationTitle("Recovered Snip")
+        .navigationTitle(.recoveredSnip)
     }
 
     private func values(
@@ -885,17 +912,21 @@ private struct MacRecoveredSnipReview: View {
     ) -> some View {
         GroupBox(title) {
             VStack(alignment: .leading, spacing: 10) {
-                if fields.contains(.text) { LabeledContent("Text", value: snip.content) }
+                if fields.contains(.text) { LabeledContent(.text, value: snip.content) }
                 if fields.contains(.source) {
-                    LabeledContent("Source", value: snip.source?.conciseLabel ?? "None")
+                    LabeledContent(.source, value: snip.source?.conciseLabel ?? String(localized: .none))
                 }
                 if fields.contains(.done) {
-                    LabeledContent("State", value: snip.isDone ? "Done" : "Not Done")
+                    LabeledContent(
+                        .state,
+                        value: SnipCompletionLanguage.stateTitle(isDone: snip.isDone)
+                    )
                 }
                 if fields.contains(.placement) {
                     LabeledContent(
-                        "List",
-                        value: model.lists.first { $0.id == snip.listID }?.name ?? "Inbox"
+                        .listGenericName,
+                        value: model.lists.first { $0.id == snip.listID }?.displayName
+                            ?? String(localized: .inbox)
                     )
                 }
             }
@@ -907,15 +938,15 @@ private struct MacRecoveredSnipReview: View {
     @ViewBuilder
     private func editFields(_ recovery: RecoveredSnip) -> some View {
         if let binding = Binding($edited) {
-            GroupBox("Edit Conflicting Fields") {
+            GroupBox(.editConflictingFields) {
                 VStack(alignment: .leading, spacing: 10) {
                     if recovery.conflictingFields.contains(.text) {
-                        TextField("Text", text: binding.content, axis: .vertical)
+                        TextField(.text, text: binding.content, axis: .vertical)
                             .lineLimit(3...8)
                     }
                     if recovery.conflictingFields.contains(.source) {
                         TextField(
-                            "Source app",
+                            .sourceApp,
                             text: Binding(
                                 get: { binding.wrappedValue.source?.applicationName ?? "" },
                                 set: { value in
@@ -930,11 +961,11 @@ private struct MacRecoveredSnipReview: View {
                         sourceField("URL", keyPath: \.url, snip: binding)
                     }
                     if recovery.conflictingFields.contains(.done) {
-                        Toggle("Done", isOn: binding.isDone)
+                        Toggle(SnipCompletionLanguage.done, isOn: binding.isDone)
                     }
                     if recovery.conflictingFields.contains(.placement) {
-                        Picker("List", selection: binding.listID) {
-                            ForEach(model.lists) { Text($0.name).tag($0.id) }
+                        Picker(.listGenericName, selection: binding.listID) {
+                            ForEach(model.lists) { Text($0.displayName).tag($0.id) }
                         }
                     }
                 }
@@ -989,24 +1020,24 @@ private struct MacRecoveredListReview: View {
         Group {
             if let recovery, let current = model.currentList(for: recovery) {
                 Form {
-                    Section("Current List") { values(current, fields: recovery.conflictingFields) }
-                    Section("Recovered Edit") { values(recovery.recovered, fields: recovery.conflictingFields) }
+                    Section(.currentList) { values(current, fields: recovery.conflictingFields) }
+                    Section(.recoveredEdit) { values(recovery.recovered, fields: recovery.conflictingFields) }
                     if let binding = Binding($edited) {
-                        Section("Edit Conflicting Fields") {
+                        Section(.editConflictingFields) {
                             if recovery.conflictingFields.contains(.name) {
-                                TextField("Name", text: binding.name)
+                                TextField(.name, text: binding.name)
                             }
                             if recovery.conflictingFields.contains(.icon) {
-                                TextField("Symbol", text: binding.systemImage)
+                                TextField(.symbol, text: binding.systemImage)
                             }
                         }
                     }
                     HStack {
-                        Button("Keep Current") { resolve(.keepCurrent) }
+                        Button(.keepCurrent) { resolve(.keepCurrent) }
                         Spacer()
-                        Button("Use Recovered") { resolve(.useRecovered) }
+                        Button(.useRecovered) { resolve(.useRecovered) }
                             .buttonStyle(.borderedProminent)
-                        Button("Use Edited") {
+                        Button(.useEdited) {
                             if let edited { resolve(.editList(edited)) }
                         }
                     }
@@ -1015,15 +1046,15 @@ private struct MacRecoveredListReview: View {
                 .disabled(isResolving)
                 .onAppear { if edited == nil { edited = recovery.recovered } }
             } else {
-                ContentUnavailableView("Recovered Edit Is Gone", systemImage: "checkmark.circle")
+                ContentUnavailableView(.recoveredEditIsGone, systemImage: "checkmark.circle")
             }
         }
-        .navigationTitle("Recovered List Edit")
+        .navigationTitle(.recoveredListEdit)
     }
 
     @ViewBuilder
     private func values(_ list: SnipList, fields: Set<RecoveredListField>) -> some View {
-        if fields.contains(.name) { LabeledContent("Name", value: list.name) }
+        if fields.contains(.name) { LabeledContent(.name, value: list.name) }
         if fields.contains(.icon) { Label(list.systemImage, systemImage: list.systemImage) }
     }
 
