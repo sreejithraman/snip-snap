@@ -146,6 +146,7 @@ final class AccessibilityPermissionController: ObservableObject {
         case .initial:
             requestAccess()
         case .needsRepair:
+            requestAccess()
             openSettings()
         }
     }
