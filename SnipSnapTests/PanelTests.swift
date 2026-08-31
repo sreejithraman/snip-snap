@@ -1393,6 +1393,27 @@ final class PanelTests: StoreBackedTestCase {
         )
     }
 
+    func testPinnedListHeaderSurfaceAppearsOnlyAfterScrollingAtTheTopEdge() {
+        XCTAssertFalse(
+            PinnedListHeaderSurface.isVisible(
+                hasScrolledFromTop: false,
+                headerMinY: 0
+            )
+        )
+        XCTAssertTrue(
+            PinnedListHeaderSurface.isVisible(
+                hasScrolledFromTop: true,
+                headerMinY: 0
+            )
+        )
+        XCTAssertFalse(
+            PinnedListHeaderSurface.isVisible(
+                hasScrolledFromTop: true,
+                headerMinY: 12
+            )
+        )
+    }
+
     @MainActor
     func testPanelContextMenuKeepsActionsAndDisabledState() throws {
         var actionCount = 0

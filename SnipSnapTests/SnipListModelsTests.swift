@@ -320,50 +320,6 @@ final class SnipListModelsTests: XCTestCase {
         )
     }
 
-    func testPinnedHeaderGlassRequiresRealScrollMovement() {
-        XCTAssertFalse(
-            PinnedListHeaderGlass.isVisible(
-                isPinned: true,
-                hasScrolled: PinnedListHeaderGlass.hasScrolled(visibleOriginY: 0)
-            )
-        )
-        XCTAssertTrue(
-            PinnedListHeaderGlass.isVisible(
-                isPinned: true,
-                hasScrolled: PinnedListHeaderGlass.hasScrolled(visibleOriginY: 1)
-            )
-        )
-        XCTAssertFalse(
-            PinnedListHeaderGlass.isVisible(
-                isPinned: false,
-                hasScrolled: PinnedListHeaderGlass.hasScrolled(visibleOriginY: 1)
-            )
-        )
-    }
-
-    func testPinnedHeaderGeometryOnlyMatchesAHeaderAtTheTopEdge() {
-        XCTAssertFalse(
-            PinnedListHeaderGlass.isPinned(
-                frame: CGRect(x: 0, y: 12, width: 200, height: 32)
-            )
-        )
-        XCTAssertTrue(
-            PinnedListHeaderGlass.isPinned(
-                frame: CGRect(x: 0, y: 0, width: 200, height: 32)
-            )
-        )
-        XCTAssertTrue(
-            PinnedListHeaderGlass.isPinned(
-                frame: CGRect(x: 0, y: -12, width: 200, height: 32)
-            )
-        )
-        XCTAssertFalse(
-            PinnedListHeaderGlass.isPinned(
-                frame: CGRect(x: 0, y: -32, width: 200, height: 32)
-            )
-        )
-    }
-
     func testNewSnipRevealWaitsForTheAddedRowWhenTheListWasAtTheTop() {
         let existingID = UUID()
         let addedID = UUID()
