@@ -18,7 +18,7 @@ enum SnipCompletionLanguage {
 extension SnipCompletionFilter {
     var title: String {
         switch self {
-        case .all: String(localized: "All")
+        case .all: String(localized: .all)
         case .done: SnipCompletionLanguage.done
         case .notDone: SnipCompletionLanguage.notDone
         }
@@ -26,9 +26,9 @@ extension SnipCompletionFilter {
 
     var emptyStateTitle: String {
         switch self {
-        case .all: String(localized: "Nothing captured yet")
-        case .done: String(localized: "No done snips")
-        case .notDone: String(localized: "No unfinished snips")
+        case .all: String(localized: .nothingCapturedYet)
+        case .done: String(localized: .noDoneSnips)
+        case .notDone: String(localized: .noUnfinishedSnips)
         }
     }
 }
@@ -36,7 +36,7 @@ extension SnipCompletionFilter {
 extension SnipList {
     var displayName: String {
         guard id == Self.inboxID, name == "Inbox" else { return name }
-        return String(localized: "Inbox")
+        return String(localized: .inbox)
     }
 }
 
@@ -47,10 +47,10 @@ extension Snip {
             if !label.isEmpty { return label }
         }
         return switch origin {
-        case .selection: String(localized: "Captured Selection")
-        case .quickEntry: String(localized: "Snip Snap — Quick Entry")
-        case .clipboard: String(localized: "Clipboard")
-        case .share: String(localized: "Shared")
+        case .selection: String(localized: .capturedSelection)
+        case .quickEntry: String(localized: .snipSnapQuickEntry)
+        case .clipboard: String(localized: .clipboard)
+        case .share: String(localized: .shared)
         }
     }
 }

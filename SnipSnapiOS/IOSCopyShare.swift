@@ -291,8 +291,8 @@ struct IOSUnavailableFilesNotice: Identifiable, Equatable {
     var message: String {
         let names = payload.unavailableFileNames.joined(separator: ", ")
         return names.isEmpty
-            ? String(localized: "One or more files could not be read.")
-            : String(localized: "These files could not be read: \(names)")
+            ? String(localized: .oneOrMoreFilesCouldNotBeRead)
+            : String(localized: .theseFilesCouldNotBeRead(names))
     }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -336,7 +336,7 @@ final class IOSCopyShareCoordinator {
     func copyText(snips: [Snip], model: IOSAppModel) {
         if write(makePayload(snips: snips, model: model).textItems) {
             model.presentToast(
-                AppToast(systemImage: "doc.on.doc", message: String(localized: "Copied Text"))
+                AppToast(systemImage: "doc.on.doc", message: String(localized: .copiedText))
             )
         }
     }
@@ -346,7 +346,7 @@ final class IOSCopyShareCoordinator {
         guard requireAllFiles(in: payload) else { return }
         if write(payload.attachmentItems) {
             model.presentToast(
-                AppToast(systemImage: "paperclip", message: String(localized: "Copied Attachments"))
+                AppToast(systemImage: "paperclip", message: String(localized: .copiedAttachments))
             )
         }
     }
@@ -362,7 +362,7 @@ final class IOSCopyShareCoordinator {
         unavailableFilesNotice = nil
         if write(notice.payload.textItems) {
             model.presentToast(
-                AppToast(systemImage: "doc.on.doc", message: String(localized: "Copied Text"))
+                AppToast(systemImage: "doc.on.doc", message: String(localized: .copiedText))
             )
         }
     }
@@ -397,7 +397,7 @@ final class IOSCopyShareCoordinator {
 
     private func write(_ items: [IOSCopyItem]) -> Bool {
         guard pasteboard.write(items) else {
-            errorMessage = String(localized: "Snip Snap could not copy that content.")
+            errorMessage = String(localized: .snipSnapCouldNotCopyThatContent)
             return false
         }
         errorMessage = nil
@@ -416,23 +416,23 @@ struct CopyShareActions: View {
     }
 
     var body: some View {
-        Button("Copy", systemImage: "doc.on.doc") {
+        Button(.copy, systemImage: "doc.on.doc") {
             Task { await coordinator.copy(snips: snips, model: model) }
         }
         .accessibilityIdentifier("copy-\(identifierSuffix)")
 
-        Button("Copy Text", systemImage: "text.page") {
+        Button(.copyText, systemImage: "text.page") {
             coordinator.copyText(snips: snips, model: model)
         }
         .accessibilityIdentifier("copy-text-\(identifierSuffix)")
 
-        Button("Copy Attachments", systemImage: "paperclip") {
+        Button(.copyAttachments, systemImage: "paperclip") {
             Task { await coordinator.copyAttachments(snips: snips, model: model) }
         }
         .disabled(!hasAttachments)
         .accessibilityIdentifier("copy-attachments-\(identifierSuffix)")
 
-        Button("Share", systemImage: "square.and.arrow.up") {
+        Button(.share, systemImage: "square.and.arrow.up") {
             Task { await coordinator.share(snips: snips, model: model) }
         }
         .accessibilityIdentifier("share-\(identifierSuffix)")

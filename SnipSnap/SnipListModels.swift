@@ -21,7 +21,7 @@ struct SnipDragPayload: Codable, Equatable, Sendable, Transferable {
         text: String,
         attachmentIDs: [UUID] = [],
         attachmentURLs: [URL] = [],
-        previewSourceLabel: String = String(localized: "Snip Snap"),
+        previewSourceLabel: String = String(localized: .snipSnap),
         previewIsDone: Bool = false
     ) {
         self.ids = ids
@@ -61,7 +61,7 @@ struct SnipDragPayload: Codable, Equatable, Sendable, Transferable {
             } ?? [],
             previewSourceLabel: snips.count == 1
                 ? snips[0].displaySourceLabel
-                : String(localized: "\(snips.count) snips"),
+                : String(localized: .snips(snips.count)),
             previewIsDone: snips.allSatisfy(\.isDone)
         )
     }

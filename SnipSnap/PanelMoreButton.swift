@@ -29,42 +29,42 @@ struct PanelMoreButton: View {
 
     @ViewBuilder
     private var actions: some View {
-        Picker("Filter: \(completionFilterTitle)", selection: $model.completionFilter) {
-            Text("All").tag(SnipCompletionFilter.all)
+        Picker(.filter(completionFilterTitle), selection: $model.completionFilter) {
+            Text(.all).tag(SnipCompletionFilter.all)
             Text(SnipCompletionLanguage.done).tag(SnipCompletionFilter.done)
             Text(SnipCompletionLanguage.notDone).tag(SnipCompletionFilter.notDone)
         }
 
-        Picker("Sort: \(sortModeTitle)", selection: sortModeBinding) {
-            Text("Chronological").tag(SnipSortMode.chronological)
-            Text("Manual").tag(SnipSortMode.manual)
+        Picker(.sort(sortModeTitle), selection: sortModeBinding) {
+            Text(.chronological).tag(SnipSortMode.chronological)
+            Text(.manual).tag(SnipSortMode.manual)
         }
 
-        Picker("Appearance", selection: appearanceBinding) {
-            Label("System", systemImage: "circle.lefthalf.filled")
+        Picker(.appearance, selection: appearanceBinding) {
+            Label(.system, systemImage: "circle.lefthalf.filled")
                 .tag(AppAppearance.system)
-            Label("Light", systemImage: "sun.max")
+            Label(.light, systemImage: "sun.max")
                 .tag(AppAppearance.light)
-            Label("Dark", systemImage: "moon")
+            Label(.dark, systemImage: "moon")
                 .tag(AppAppearance.dark)
         }
 
         Divider()
 
-        Button("Move to New List…") {
+        Button(.moveToNewList) {
             focusedTarget = nil
             moveSelectionToNewList()
         }
         .disabled(model.selection.isEmpty)
 
-        Button("Select All") {
+        Button(.selectAll) {
             selectAllVisible()
         }
         .disabled(model.filteredSnips.isEmpty)
 
         Divider()
 
-        Button("Keyboard Shortcuts…") {
+        Button(.actionOpenKeyboardShortcuts) {
             openSettings()
         }
     }
@@ -81,8 +81,8 @@ struct PanelMoreButton: View {
     }
 
     private var moreLabel: String {
-        guard let developmentBuild else { return String(localized: "More") }
-        return String(localized: "More, development build \(developmentBuild.slot)")
+        guard let developmentBuild else { return String(localized: .more) }
+        return String(localized: .moreDevelopmentBuild(developmentBuild.slot))
     }
 
     private var appearanceBinding: Binding<AppAppearance> {
@@ -99,9 +99,9 @@ struct PanelMoreButton: View {
     private var sortModeTitle: String {
         switch model.sortMode {
         case .chronological:
-            String(localized: "Chronological")
+            String(localized: .chronological)
         case .manual:
-            String(localized: "Manual")
+            String(localized: .manual)
         }
     }
 }

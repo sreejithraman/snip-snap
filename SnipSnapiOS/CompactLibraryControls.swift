@@ -92,7 +92,7 @@ struct CompactLibraryControls: View {
             }
             .buttonStyle(.plain)
             .disabled(storage.isSaving || isStaging)
-            .accessibilityLabel("Add Attachments")
+            .accessibilityLabel(.addAttachments)
             .accessibilityIdentifier("composer-add-attachments")
 
             VStack(spacing: 8) {
@@ -103,7 +103,7 @@ struct CompactLibraryControls: View {
                 }
 
                 HStack(alignment: .bottom, spacing: 8) {
-                    TextField("New snip", text: composerText, axis: .vertical)
+                    TextField(.fieldNewSnipPlaceholder, text: composerText, axis: .vertical)
                         .textFieldStyle(.plain)
                         .lineLimit(1...5)
                         .focused($isComposerFocused)
@@ -135,7 +135,7 @@ struct CompactLibraryControls: View {
                     .disabled(!canSend)
                     .padding(.trailing, 6)
                     .padding(.vertical, 6)
-                    .accessibilityLabel("Send Snip")
+                    .accessibilityLabel(.sendSnip)
                     .accessibilityIdentifier("composer-send")
                 }
                 .id(composerFieldID)
@@ -375,7 +375,7 @@ private struct CompactListTabBar: View {
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.interactive(), in: Circle())
-        .accessibilityLabel("New List")
+        .accessibilityLabel(.screenNewListTitle)
         .accessibilityIdentifier("new-list")
     }
 
@@ -404,8 +404,8 @@ private struct CompactListTabBar: View {
         .accessibilityIdentifier("list-tab-\(list.id.uuidString)")
         .contextMenu {
             if list.id != SnipList.inboxID {
-                Button("Rename") { sheet = .editList(id: list.id) }
-                Button("Delete", role: .destructive) {
+                Button(.rename) { sheet = .editList(id: list.id) }
+                Button(.delete, role: .destructive) {
                     Task { await deleteList(list.id) }
                 }
             }
@@ -435,7 +435,7 @@ private struct CompactDraftAttachment: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Preview \(url.lastPathComponent)")
+            .accessibilityLabel(.preview(url.lastPathComponent))
             .accessibilityIdentifier("composer-attachment-\(url.lastPathComponent)")
 
             Button(action: remove) {
@@ -447,7 +447,7 @@ private struct CompactDraftAttachment: View {
             }
             .buttonStyle(.plain)
             .offset(x: 5, y: -5)
-            .accessibilityLabel("Remove \(url.lastPathComponent)")
+            .accessibilityLabel(.remove(url.lastPathComponent))
             .accessibilityIdentifier("composer-remove-attachment-\(url.lastPathComponent)")
         }
         .padding(.top, 5)

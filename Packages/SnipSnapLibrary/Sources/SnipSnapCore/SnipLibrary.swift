@@ -63,43 +63,43 @@ public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .emptyContent:
-            String(localized: "There is nothing to save.", bundle: .main)
+            String(localized: LocalizedStringResource.thereIsNothingToSave)
         case .snipNotFound:
-            String(localized: "That snip no longer exists.", bundle: .main)
+            String(localized: LocalizedStringResource.thatSnipNoLongerExists)
         case .invalidStore:
-            String(localized: "Snip Snap could not read its saved snips.", bundle: .main)
+            String(localized: LocalizedStringResource.snipSnapCouldNotReadItsSavedSnips)
         case .storeUnavailable:
-            String(localized: "Snip Snap cannot save changes until its snip store is available.", bundle: .main)
+            String(localized: LocalizedStringResource.snipSnapCannotSaveChangesUntilItsSnipStoreIsAvailable)
         case .requiresMultipleSnips:
-            String(localized: "Select at least two snips to merge.", bundle: .main)
+            String(localized: LocalizedStringResource.selectAtLeastTwoSnipsToMerge)
         case .snipChanged:
-            String(localized: "This snip changed in another window. Copy your edits, reopen it, and try again.", bundle: .main)
+            String(localized: LocalizedStringResource.thisSnipChangedInAnotherWindowCopyYourEditsReopenItAndTryAgain)
         case .duplicateList:
-            String(localized: "A list with that name already exists.", bundle: .main)
+            String(localized: LocalizedStringResource.aListWithThatNameAlreadyExists)
         case .invalidList:
-            String(localized: "That list is not available.", bundle: .main)
+            String(localized: LocalizedStringResource.thatListIsNotAvailable)
         case .invalidCommand:
-            String(localized: "That change cannot run with other changes.", bundle: .main)
+            String(localized: LocalizedStringResource.thatChangeCannotRunWithOtherChanges)
         case .attachmentCopyFailed:
-            String(localized: "Snip Snap could not copy one of the files.", bundle: .main)
+            String(localized: LocalizedStringResource.snipSnapCouldNotCopyOneOfTheFiles)
         case .modeTransitionInProgress:
-            String(localized: "This device is changing its storage choice. Try again when setup finishes.", bundle: .main)
+            String(localized: LocalizedStringResource.thisDeviceIsChangingItsStorageChoiceTryAgainWhenSetupFinishes)
         case .readOnlyRecovery:
-            String(localized: "This is a recovery copy. Restore it to an active library before making changes.", bundle: .main)
+            String(localized: LocalizedStringResource.thisIsARecoveryCopyRestoreItToAnActiveLibraryBeforeMakingChanges)
         case .transferUnsupported:
-            String(localized: "This snip store cannot change storage modes.", bundle: .main)
+            String(localized: LocalizedStringResource.thisSnipStoreCannotChangeStorageModes)
         case .transferConflict:
-            String(localized: "Snip Snap found records it could not copy safely.", bundle: .main)
+            String(localized: LocalizedStringResource.snipSnapFoundRecordsItCouldNotCopySafely)
         case .recoveryNotFound:
-            String(localized: "That recovered edit is no longer available.", bundle: .main)
+            String(localized: LocalizedStringResource.thatRecoveredEditIsNoLongerAvailable)
         case .recoveryChanged:
-            String(localized: "That recovered edit changed. Refresh the review and try again.", bundle: .main)
+            String(localized: LocalizedStringResource.thatRecoveredEditChangedRefreshTheReviewAndTryAgain)
         case .invalidRecoveryChoice:
-            String(localized: "That choice does not apply to this recovered edit.", bundle: .main)
+            String(localized: LocalizedStringResource.thatChoiceDoesNotApplyToThisRecoveredEdit)
         case .importChanged:
-            String(localized: "The backup or saved snips changed. Review the import again.", bundle: .main)
+            String(localized: LocalizedStringResource.theBackupOrSavedSnipsChangedReviewTheImportAgain)
         case .deviceActionChanged:
-            String(localized: "That action cannot be undone because the same fields changed on another device.", bundle: .main)
+            String(localized: LocalizedStringResource.thatActionCannotBeUndoneBecauseTheSameFieldsChangedOnAnotherDevice)
         }
     }
 }

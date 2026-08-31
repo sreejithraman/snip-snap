@@ -1,0 +1,150 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "%lld bytes" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld bytes"
+          }
+        }
+      }
+    },
+    "%lld MiB" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld MiB"
+          }
+        }
+      }
+    },
+    "Another iCloud Sync task is still running." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Another iCloud Sync task is still running."
+          }
+        }
+      }
+    },
+    "attachment.error.detail" : {
+      "comment" : "A file name followed by the reason that attachment cannot sync.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@: %2$@"
+          }
+        }
+      }
+    },
+    "Choose how to handle the iCloud encrypted-data reset before turning sync on." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose how to handle the iCloud encrypted-data reset before turning sync on."
+          }
+        }
+      }
+    },
+    "iCloud Sync does not have an active collection." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iCloud Sync does not have an active collection."
+          }
+        }
+      }
+    },
+    "larger than Snip Snap’s %@ per-file limit" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "larger than Snip Snap’s %@ per-file limit"
+          }
+        }
+      }
+    },
+    "local file is missing or changed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "local file is missing or changed"
+          }
+        }
+      }
+    },
+    "part of a snip above Snip Snap’s %@ attachment limit" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "part of a snip above Snip Snap’s %@ attachment limit"
+          }
+        }
+      }
+    },
+    "The iCloud Sync collection is not valid." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The iCloud Sync collection is not valid."
+          }
+        }
+      }
+    },
+    "These attachments cannot sync. %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "These attachments cannot sync. %@"
+          }
+        }
+      }
+    },
+    "unknown" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "unknown"
+          }
+        }
+      }
+    },
+    "unsupported file type %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "unsupported file type %@"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.1"
+}

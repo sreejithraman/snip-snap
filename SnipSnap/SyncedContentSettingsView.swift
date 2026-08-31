@@ -8,7 +8,7 @@ struct SyncedContentSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Toggle("Sync with iCloud", isOn: syncEnabled)
+            Toggle(.syncWithICloud, isOn: syncEnabled)
                 .disabled(!canChangeSync)
                 .accessibilityIdentifier("icloud-sync-toggle")
 
@@ -23,21 +23,21 @@ struct SyncedContentSettingsView: View {
             Spacer(minLength: 0)
 
             if case .enabling = model.state {
-                ProgressView("Setting up iCloud Sync…")
+                ProgressView(.progressSettingUpICloud)
                     .controlSize(.small)
             } else if case .disabling = model.state {
-                ProgressView("Making a local copy…")
+                ProgressView(.makingALocalCopy)
                     .controlSize(.small)
             } else if case .deleting = model.state {
-                ProgressView("Deleting synced content…")
+                ProgressView(.progressDeletingSyncedContent)
                     .controlSize(.small)
             } else if case .resolvingEncryptedDataReset = model.state {
-                ProgressView("Starting a new synced collection…")
+                ProgressView(.progressStartingNewCollection)
                     .controlSize(.small)
             } else if case .encryptedDataReset = model.state {
                 encryptedDataResetChoices
             } else if model.canDelete {
-                Button("Delete Synced Content…", role: .destructive) {
+                Button(.actionOpenDeleteSyncedContent, role: .destructive) {
                     confirmsDelete = true
                 }
                 .accessibilityIdentifier("delete-synced-content")
@@ -46,21 +46,21 @@ struct SyncedContentSettingsView: View {
         .padding(20)
         .frame(width: 420, height: model.state == .encryptedDataReset ? 330 : 230,
                alignment: .topLeading)
-        .alert("Delete Synced Content?", isPresented: $confirmsDelete) {
-            Button("Cancel", role: .cancel) {}
-            Button("Delete Synced Content", role: .destructive) {
+        .alert(.dialogDeleteSyncedContentTitle, isPresented: $confirmsDelete) {
+            Button(.cancel, role: .cancel) {}
+            Button(.actionDeleteSyncedContent, role: .destructive) {
                 Task { await model.deleteSyncedContent() }
             }
         } message: {
-            Text("This starts a fresh empty synced collection and removes the old synced snips and attachments from iCloud. This device keeps a local recovery copy. A small control record remains in iCloud to stop old devices from restoring deleted content.")
+            Text(.thisStartsAFreshEmptySyncedCollectionAndRemovesTheOldSyncedSnipsAndAttachmentsFromICloudThisDeviceKeepsALocalRecoveryCopyASmallControlRecordRemainsInICloudToStopOldDevicesFromRestoringDeletedContent)
         }
-        .alert("Use This Mac’s Copy?", isPresented: $confirmsUsingDeviceCopy) {
-            Button("Cancel", role: .cancel) {}
-            Button("Use Mac Copy") {
+        .alert(.useThisMacsCopy, isPresented: $confirmsUsingDeviceCopy) {
+            Button(.cancel, role: .cancel) {}
+            Button(.useMacCopy) {
                 Task { await model.disableICloudSync(.useCurrentCache) }
             }
         } message: {
-            Text("Snip Snap could not refresh iCloud. You can keep sync on and try again, or turn it off with the copy already on this Mac. That copy may not include recent changes from other devices. Your iCloud data will not be deleted.")
+            Text(.snipSnapCouldNotRefreshICloudYouCanKeepSyncOnAndTryAgainOrTurnItOffWithTheCopyAlreadyOnThisMacThatCopyMayNotIncludeRecentChangesFromOtherDevicesYourICloudDataWillNotBeDeleted)
         }
     }
 
@@ -88,17 +88,17 @@ struct SyncedContentSettingsView: View {
 
     private var encryptedDataResetChoices: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button("Restore from This Device") {
+            Button(.restoreFromThisDevice) {
                 Task { await model.resolveEncryptedDataReset(.restoreFromThisDevice) }
             }
             .accessibilityIdentifier("encrypted-reset-restore")
 
-            Button("Start Empty") {
+            Button(.startEmpty) {
                 Task { await model.resolveEncryptedDataReset(.startEmpty) }
             }
             .accessibilityIdentifier("encrypted-reset-start-empty")
 
-            Button("Keep Sync Off") {
+            Button(.keepSyncOff) {
                 Task { await model.resolveEncryptedDataReset(.keepSyncOff) }
             }
             .accessibilityIdentifier("encrypted-reset-keep-off")

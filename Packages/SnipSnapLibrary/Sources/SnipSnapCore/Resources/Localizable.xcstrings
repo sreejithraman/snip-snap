@@ -1,0 +1,457 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "A list with that name already exists." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A list with that name already exists."
+          }
+        }
+      }
+    },
+    "Deleting Synced Content…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Deleting Synced Content…"
+          }
+        }
+      }
+    },
+    "iCloud Encrypted Data Was Reset" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iCloud Encrypted Data Was Reset"
+          }
+        }
+      }
+    },
+    "iCloud Sync On" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iCloud Sync On"
+          }
+        }
+      }
+    },
+    "Local Only" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Local Only"
+          }
+        }
+      }
+    },
+    "Old Synced Content Removal Pending" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Old Synced Content Removal Pending"
+          }
+        }
+      }
+    },
+    "Saved snips and attachments sync through your private iCloud database. Snip Snap’s maintainers cannot inspect private records in CloudKit Console. Apple encrypts synced data in transit and at rest; user fields use encrypted values and files use CKAsset data. Those user fields and attachments are end-to-end encrypted only when Advanced Data Protection is on." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saved snips and attachments sync through your private iCloud database. Snip Snap’s maintainers cannot inspect private records in CloudKit Console. Apple encrypts synced data in transit and at rest; user fields use encrypted values and files use CKAsset data. Those user fields and attachments are end-to-end encrypted only when Advanced Data Protection is on."
+          }
+        }
+      }
+    },
+    "Select at least two snips to merge." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select at least two snips to merge."
+          }
+        }
+      }
+    },
+    "Setting Up iCloud Sync…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Setting Up iCloud Sync…"
+          }
+        }
+      }
+    },
+    "Snip Snap cannot save changes until its snip store is available." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap cannot save changes until its snip store is available."
+          }
+        }
+      }
+    },
+    "Snip Snap could not copy one of the files." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not copy one of the files."
+          }
+        }
+      }
+    },
+    "Snip Snap could not finish setting up iCloud Sync. Your local library remains available. %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not finish setting up iCloud Sync. Your local library remains available. %@"
+          }
+        }
+      }
+    },
+    "Snip Snap could not finish the iCloud action. Check the current sync status before you retry. %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not finish the iCloud action. Check the current sync status before you retry. %@"
+          }
+        }
+      }
+    },
+    "Snip Snap could not read its saved snips." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not read its saved snips."
+          }
+        }
+      }
+    },
+    "Snip Snap does not send local-only data to CloudKit." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap does not send local-only data to CloudKit."
+          }
+        }
+      }
+    },
+    "Snip Snap found records it could not copy safely." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap found records it could not copy safely."
+          }
+        }
+      }
+    },
+    "Snip Snap is checking iCloud before it starts or joins the new synced collection." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap is checking iCloud before it starts or joins the new synced collection."
+          }
+        }
+      }
+    },
+    "Snip Snap is fetching iCloud data and preparing a safe merged copy." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap is fetching iCloud data and preparing a safe merged copy."
+          }
+        }
+      }
+    },
+    "Snip Snap is finishing iCloud Sync setup." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap is finishing iCloud Sync setup."
+          }
+        }
+      }
+    },
+    "Snip Snap is making a local copy of your synced library. Your iCloud copy will stay in place." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap is making a local copy of your synced library. Your iCloud copy will stay in place."
+          }
+        }
+      }
+    },
+    "Snip Snap is starting a fresh empty synced collection and removing the old data zones." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap is starting a fresh empty synced collection and removing the old data zones."
+          }
+        }
+      }
+    },
+    "Snip Snap started a fresh empty synced collection, but it could not remove all old iCloud data yet. It will retry the next time it syncs. Your local recovery copy remains." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap started a fresh empty synced collection, but it could not remove all old iCloud data yet. It will retry the next time it syncs. Your local recovery copy remains."
+          }
+        }
+      }
+    },
+    "Snip Snap stopped sync and kept this device’s snips and available attachment files as a read-only recovery copy. Choose how to start again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap stopped sync and kept this device’s snips and available attachment files as a read-only recovery copy. Choose how to start again."
+          }
+        }
+      }
+    },
+    "Starting a New Synced Collection…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starting a New Synced Collection…"
+          }
+        }
+      }
+    },
+    "Sync Needs Attention" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sync Needs Attention"
+          }
+        }
+      }
+    },
+    "Synced Content Deleted" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Synced Content Deleted"
+          }
+        }
+      }
+    },
+    "Synced content was removed. This device kept a local recovery copy. A small control record remains in iCloud so an old device cannot restore the deleted collection." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Synced content was removed. This device kept a local recovery copy. A small control record remains in iCloud so an old device cannot restore the deleted collection."
+          }
+        }
+      }
+    },
+    "That action cannot be undone because the same fields changed on another device." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "That action cannot be undone because the same fields changed on another device."
+          }
+        }
+      }
+    },
+    "That change cannot run with other changes." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "That change cannot run with other changes."
+          }
+        }
+      }
+    },
+    "That choice does not apply to this recovered edit." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "That choice does not apply to this recovered edit."
+          }
+        }
+      }
+    },
+    "That list is not available." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "That list is not available."
+          }
+        }
+      }
+    },
+    "That recovered edit changed. Refresh the review and try again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "That recovered edit changed. Refresh the review and try again."
+          }
+        }
+      }
+    },
+    "That recovered edit is no longer available." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "That recovered edit is no longer available."
+          }
+        }
+      }
+    },
+    "That snip no longer exists." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "That snip no longer exists."
+          }
+        }
+      }
+    },
+    "The backup or saved snips changed. Review the import again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The backup or saved snips changed. Review the import again."
+          }
+        }
+      }
+    },
+    "There is nothing to save." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "There is nothing to save."
+          }
+        }
+      }
+    },
+    "This device is changing its storage choice. Try again when setup finishes." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This device is changing its storage choice. Try again when setup finishes."
+          }
+        }
+      }
+    },
+    "This is a recovery copy. Restore it to an active library before making changes." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This is a recovery copy. Restore it to an active library before making changes."
+          }
+        }
+      }
+    },
+    "This snip changed in another window. Copy your edits, reopen it, and try again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This snip changed in another window. Copy your edits, reopen it, and try again."
+          }
+        }
+      }
+    },
+    "This snip store cannot change storage modes." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This snip store cannot change storage modes."
+          }
+        }
+      }
+    },
+    "Turning Off iCloud Sync…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Turning Off iCloud Sync…"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.1"
+}

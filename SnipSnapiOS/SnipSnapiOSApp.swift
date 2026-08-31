@@ -236,7 +236,7 @@ struct SnipSnapiOSApp: App {
                 assembly.userActions,
                 assembly.userActionsRebinder,
                 shareImports,
-                String(localized: "Snip Snap could not open its local library. Your saved data was not changed."),
+                String(localized: .snipSnapCouldNotOpenItsLocalLibraryYourSavedDataWasNotChanged),
                 [],
                 false,
                 assembly.recoveryScope,

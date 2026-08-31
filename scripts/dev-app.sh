@@ -190,9 +190,9 @@ run_signed_build() {
         SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER=
         "${signing_arguments[@]}"
         "SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER=$product_bundle_identifier"
-        "PRODUCT_BUNDLE_IDENTIFIER=$product_bundle_identifier.dev$slot"
-        "PRODUCT_NAME=$process_name"
-        "INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Dev $slot"
+        "SNIP_SNAP_EFFECTIVE_PRODUCT_BUNDLE_IDENTIFIER=$product_bundle_identifier.dev$slot"
+        "SNIP_SNAP_PRODUCT_NAME=$process_name"
+        "SNIP_SNAP_DISPLAY_NAME=Snip Snap Dev $slot"
         build
     )
     if [[ -n "$build_log" ]]; then

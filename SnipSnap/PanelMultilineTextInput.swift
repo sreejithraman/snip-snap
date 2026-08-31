@@ -41,7 +41,7 @@ enum PanelImagePasteboard {
         if let imageType,
            let data = item.data(forType: imageType) {
             let suffix = UTType(imageType.rawValue)?.preferredFilenameExtension ?? "png"
-            return .data(fileName: "Pasted Image.\(suffix)", data: data)
+            return .data(fileName: String(localized: .fileNamePastedImage(suffix)), data: data)
         }
         return nil
     }
@@ -51,7 +51,7 @@ enum PanelPastedImageStagingError: Error, LocalizedError, Sendable {
     case writeFailed
 
     var errorDescription: String? {
-        String(localized: "Snip Snap could not prepare the pasted images.")
+        String(localized: .snipSnapCouldNotPrepareThePastedImages)
     }
 }
 

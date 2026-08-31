@@ -98,17 +98,17 @@ private enum LocalStoreMigrationError: LocalizedError {
   var errorDescription: String? {
     switch self {
     case .unmarkedLocalStore:
-      String(localized: "A Local store exists without a valid migration marker. Snip Snap left it in place.", bundle: .main)
+      String(localized: LocalizedStringResource.aLocalStoreExistsWithoutAValidMigrationMarkerSnipSnapLeftItInPlace)
     case .invalidMarker:
-      String(localized: "The Local store migration marker is invalid. Snip Snap left the store in place.", bundle: .main)
+      String(localized: LocalizedStringResource.theLocalStoreMigrationMarkerIsInvalidSnipSnapLeftTheStoreInPlace)
     case .sourceChanged:
-      String(localized: "The JSON store changed while Snip Snap was copying it.", bundle: .main)
+      String(localized: LocalizedStringResource.theJsonStoreChangedWhileSnipSnapWasCopyingIt)
     case .missingAttachment(let name):
-      String(localized: "The JSON store refers to a missing attachment: \(name).", bundle: .main)
+      String(localized: LocalizedStringResource.theJsonStoreRefersToAMissingAttachment(name))
     case .changedAttachment(let name):
-      String(localized: "An attachment did not match its copied file: \(name).", bundle: .main)
+      String(localized: LocalizedStringResource.anAttachmentDidNotMatchItsCopiedFile(name))
     case .importedRecordsDiffer:
-      String(localized: "The SwiftData check did not match the JSON store.", bundle: .main)
+      String(localized: LocalizedStringResource.theSwiftDataCheckDidNotMatchTheJsonStore)
     }
   }
 }
@@ -384,12 +384,12 @@ public enum MacLocalSnipLibraryBootstrap {
   ) -> LocalSnipLibraryOpenResult {
     let detail = (migrationError as? LocalizedError)?.errorDescription
       ?? migrationError.localizedDescription
-    let message = String(localized: "Snip Snap could not finish its storage upgrade. It kept the JSON store active. \(detail)", bundle: .main)
+    let message = String(localized: LocalizedStringResource.snipSnapCouldNotFinishItsStorageUpgradeItKeptTheJsonStoreActive(detail))
     do {
       let recovered = try JSONSnipLibrary.openRecoveringCorruptStore(fileURL: paths.jsonURL)
       let recoveryMessage: String
       if let corruptBackup = recovered.backupURL {
-        recoveryMessage = String(localized: "Snip Snap kept the unreadable JSON as \(corruptBackup.lastPathComponent) and started a new JSON store. \(detail)", bundle: .main)
+        recoveryMessage = String(localized: LocalizedStringResource.snipSnapKeptTheUnreadableJsonAsAndStartedANewJsonStore(corruptBackup.lastPathComponent, detail))
       } else {
         recoveryMessage = message
       }
@@ -403,7 +403,7 @@ public enum MacLocalSnipLibraryBootstrap {
       return LocalSnipLibraryOpenResult(
         library: JSONSnipLibrary.unavailable(fileURL: paths.jsonURL),
         mode: .unavailable,
-        errorMessage: String(localized: "\(message) Snip Snap also could not open the JSON store, so it cannot save new snips.", bundle: .main),
+        errorMessage: String(localized: LocalizedStringResource.snipSnapAlsoCouldNotOpenTheJsonStoreSoItCannotSaveNewSnips(message)),
         backupURL: backupURL
       )
     }
@@ -415,7 +415,7 @@ public enum MacLocalSnipLibraryBootstrap {
     LocalSnipLibraryOpenResult(
       library: SwiftDataSnipLibrary.unavailable(storeURL: paths.swiftDataStoreURL),
       mode: .unavailable,
-      errorMessage: String(localized: "Snip Snap could not open its SwiftData store. It left the Local and JSON stores unchanged, so it cannot save new snips.", bundle: .main)
+      errorMessage: String(localized: LocalizedStringResource.snipSnapCouldNotOpenItsSwiftDataStoreItLeftTheLocalAndJsonStoresUnchangedSoItCannotSaveNewSnips)
     )
   }
 
@@ -426,7 +426,7 @@ public enum MacLocalSnipLibraryBootstrap {
     LocalSnipLibraryOpenResult(
       library: JSONSnipLibrary.unavailable(fileURL: paths.jsonURL),
       mode: .unavailable,
-      errorMessage: String(localized: "Snip Snap could not create its local storage folder, so it cannot save new snips. \(error.localizedDescription)", bundle: .main)
+      errorMessage: String(localized: LocalizedStringResource.snipSnapCouldNotCreateItsLocalStorageFolderSoItCannotSaveNewSnips(error.localizedDescription))
     )
   }
 
@@ -439,7 +439,7 @@ public enum MacLocalSnipLibraryBootstrap {
     return LocalSnipLibraryOpenResult(
       library: SwiftDataSnipLibrary.unavailable(storeURL: paths.swiftDataStoreURL),
       mode: .unavailable,
-      errorMessage: String(localized: "Snip Snap could not open its migrated SwiftData store and could not safely move Local back to staging. It left Local and JSON in place and will not save new snips. \(detail)", bundle: .main)
+      errorMessage: String(localized: LocalizedStringResource.snipSnapCouldNotOpenItsMigratedSwiftDataStoreAndCouldNotSafelyMoveLocalBackToStagingItLeftLocalAndJsonInPlaceAndWillNotSaveNewSnips(detail))
     )
   }
 

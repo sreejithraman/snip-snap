@@ -99,7 +99,7 @@ private struct ShortcutSettingsWindowConfigurator: NSViewRepresentable {
         }
 
         func configureWindow() {
-            window?.title = String(localized: "Keyboard Shortcuts")
+            window?.title = String(localized: .screenKeyboardShortcutsTitle)
             window?.level = .modalPanel
         }
     }
@@ -117,11 +117,11 @@ private struct ShortcutSettingRow: View {
         LabeledContent(title) {
             HStack {
                 if trigger != defaultTrigger {
-                    Button("Use Default", systemImage: "arrow.counterclockwise", action: onUseDefault)
+                    Button(.useDefault, systemImage: "arrow.counterclockwise", action: onUseDefault)
                         .labelStyle(.iconOnly)
                         .buttonStyle(.borderless)
                         .foregroundStyle(SnipSnapColors.textSecondary)
-                        .help("Use Default")
+                        .help(.useDefault)
                 }
                 ShortcutRecorderButton(
                     trigger: trigger,
@@ -170,7 +170,7 @@ private struct ShortcutRecorderButton: NSViewRepresentable {
             font = .monospacedSystemFont(ofSize: 12, weight: .medium)
             target = self
             action = #selector(beginRecording)
-            toolTip = String(localized: "Click, then press a shortcut")
+            toolTip = String(localized: .clickThenPressAShortcut)
         }
 
         required init?(coder: NSCoder) {
@@ -193,7 +193,7 @@ private struct ShortcutRecorderButton: NSViewRepresentable {
 
         @objc private func beginRecording() {
             isRecording = true
-            title = String(localized: "Press shortcut")
+            title = String(localized: .pressShortcut)
             window?.makeFirstResponder(self)
             if keyMonitor == nil {
                 keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {

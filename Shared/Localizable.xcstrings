@@ -1,1044 +1,1105 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
-    "A Local store exists without a valid migration marker. Snip Snap left it in place." : {
-
-    },
-    "A list with that name already exists." : {
-
-    },
-    "Another iCloud Sync task is still running." : {
-
-    },
-    "Captured Selection" : {
-
-    },
-    "Choose how to handle the iCloud encrypted-data reset before turning sync on." : {
-
-    },
-    "Deleting Synced Content…" : {
-
-    },
-    "Local Only" : {
-
-    },
-    "No done snips" : {
-
-    },
-    "No unfinished snips" : {
-
-    },
-    "Nothing captured yet" : {
-
-    },
-    "Old Synced Content Removal Pending" : {
-
-    },
-    "Saved snips and attachments sync through your private iCloud database. Snip Snap’s maintainers cannot inspect private records in CloudKit Console. Apple encrypts synced data in transit and at rest; user fields use encrypted values and files use CKAsset data. Those user fields and attachments are end-to-end encrypted only when Advanced Data Protection is on." : {
-
-    },
-    "Select at least two snips to merge." : {
-
-    },
-    "Setting Up iCloud Sync…" : {
-
-    },
-    "Shared" : {
-
-    },
-    "Snip Snap cannot save changes until its snip store is available." : {
-
-    },
-    "Snip Snap could not copy one of the files." : {
-
-    },
-    "Snip Snap could not keep the shared files." : {
-
-    },
-    "Snip Snap could not open its SwiftData store. It left the Local and JSON stores unchanged, so it cannot save new snips." : {
-
-    },
-    "Snip Snap could not read its saved snips." : {
-
-    },
-    "Snip Snap does not send local-only data to CloudKit." : {
-
-    },
-    "Snip Snap found records it could not copy safely." : {
-
-    },
-    "Snip Snap is checking iCloud before it starts or joins the new synced collection." : {
-
-    },
-    "Snip Snap is fetching iCloud data and preparing a safe merged copy." : {
-
-    },
-    "Snip Snap is finishing iCloud Sync setup." : {
-
-    },
-    "Snip Snap is making a local copy of your synced library. Your iCloud copy will stay in place." : {
-
-    },
-    "Snip Snap is starting a fresh empty synced collection and removing the old data zones." : {
-
-    },
-    "Snip Snap started a fresh empty synced collection, but it could not remove all old iCloud data yet. It will retry the next time it syncs. Your local recovery copy remains." : {
-
-    },
-    "Snip Snap stopped sync and kept this device’s snips and available attachment files as a read-only recovery copy. Choose how to start again." : {
-
-    },
-    "Snip Snap — Quick Entry" : {
-
-    },
-    "Starting a New Synced Collection…" : {
-
-    },
-    "Sync Needs Attention" : {
-
-    },
-    "Synced Content Deleted" : {
-
-    },
-    "Synced content was removed. This device kept a local recovery copy. A small control record remains in iCloud so an old device cannot restore the deleted collection." : {
-
-    },
-    "That action cannot be undone because the same fields changed on another device." : {
-
-    },
-    "That change cannot run with other changes." : {
-
-    },
-    "That choice does not apply to this recovered edit." : {
-
-    },
-    "That list is not available." : {
-
-    },
-    "That recovered edit changed. Refresh the review and try again." : {
-
-    },
-    "That recovered edit is no longer available." : {
-
-    },
-    "That snip no longer exists." : {
-
-    },
-    "The JSON store changed while Snip Snap was copying it." : {
-
-    },
-    "The Local store migration marker is invalid. Snip Snap left the store in place." : {
-
-    },
-    "The SwiftData check did not match the JSON store." : {
-
-    },
-    "The backup or saved snips changed. Review the import again." : {
-
-    },
-    "The iCloud Sync collection is not valid." : {
-
-    },
-    "There is nothing to save." : {
-
-    },
-    "This build does not have access to the shared Snip Snap container." : {
-
-    },
-    "This device is changing its storage choice. Try again when setup finishes." : {
-
-    },
-    "This is a recovery copy. Restore it to an active library before making changes." : {
-
-    },
-    "This snip changed in another window. Copy your edits, reopen it, and try again." : {
-
-    },
-    "This snip store cannot change storage modes." : {
-
-    },
-    "Turning Off iCloud Sync…" : {
-
-    },
-    "iCloud Encrypted Data Was Reset" : {
-
-    },
-    "iCloud Sync On" : {
-
-    },
-    "iCloud Sync does not have an active collection." : {
-
-    },
-    "local file is missing or changed" : {
-
-    },
     "%@ captures the selection" : {
-
-    },
-    "%@, %@" : {
+      "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
-            "state" : "new",
-            "value" : "%1$@, %2$@"
+            "state" : "translated",
+            "value" : "%@ captures the selection"
           }
         }
       }
     },
     "%lld attachments" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld attachments"
+          }
+        }
+      }
     },
     "%lld new" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld new"
+          }
+        }
+      }
     },
     "%lld new lists" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld new lists"
+          }
+        }
+      }
     },
     "%lld recovered edits" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld recovered edits"
+          }
+        }
+      }
     },
     "%lld snips" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld snips"
+          }
+        }
+      }
     },
     "%lld snips deleted" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld snips deleted"
+          }
+        }
+      }
     },
-    "+%lld" : {
-
+    "⌘S save" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "⌘S save"
+          }
+        }
+      }
     },
     "1 attachment" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 attachment"
+          }
+        }
+      }
     },
     "1 new list" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 new list"
+          }
+        }
+      }
     },
     "1 recovered edit" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 recovered edit"
+          }
+        }
+      }
     },
     "1 snip" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 snip"
+          }
+        }
+      }
     },
     "Activities" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Activities"
+          }
+        }
+      }
     },
     "Add Attachment" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add Attachment"
+          }
+        }
+      }
     },
     "Add Attachments" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add Attachments"
+          }
+        }
+      }
     },
     "Add Files" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add Files"
+          }
+        }
+      }
     },
     "Add to %@" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add to %@"
+          }
+        }
+      }
     },
     "All" : {
-
-    },
-    "Allow Accessibility Access?" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "All"
+          }
+        }
+      }
     },
     "Allow Accessibility access to capture the selection." : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow Accessibility access to capture the selection."
+          }
+        }
+      }
+    },
+    "Allow Accessibility Access?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow Accessibility Access?"
+          }
+        }
+      }
     },
     "Already captured" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Already captured"
+          }
+        }
+      }
     },
     "Animals & Nature" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Animals & Nature"
+          }
+        }
+      }
     },
     "Another action already uses that shortcut." : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Another action already uses that shortcut."
+          }
+        }
+      }
     },
     "Appearance" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Appearance"
+          }
+        }
+      }
     },
     "Apple Account Changed" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple Account Changed"
+          }
+        }
+      }
     },
     "Attachments" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attachments"
+          }
+        }
+      }
     },
     "Attachments: %@" : {
-
-    },
-    "Available Offline" : {
-
-    },
-    "Available Offline — Sync Failed" : {
-
-    },
-    "Available Offline — Syncing" : {
-
-    },
-    "Available Offline — Waiting for iCloud" : {
-
-    },
-    "Back" : {
-
-    },
-    "Cancel" : {
-
-    },
-    "Cancel Editing" : {
-
-    },
-    "Capture Screen Area…" : {
-
-    },
-    "Capture Selection" : {
-
-    },
-    "Captured" : {
-
-    },
-    "Change the filter to see other snips." : {
-
-    },
-    "Check for Updates…" : {
-
-    },
-    "Choose Backup" : {
-
-    },
-    "Choose Files…" : {
-
-    },
-    "Choose List Icon" : {
-
-    },
-    "Choose What to Do" : {
-
-    },
-    "Choose a Snip" : {
-
-    },
-    "Choose a backup" : {
-
-    },
-    "Choose a backup folder to include attachments, or a plain JSON file for a text-only backup." : {
-
-    },
-    "Choose a backup folder to include attachments. A plain JSON file can contain text and metadata only." : {
-
-    },
-    "Choose list icon, current: %@" : {
-
-    },
-    "Chronological" : {
-
-    },
-    "Clear" : {
-
-    },
-    "Clear Downloaded Files" : {
-
-    },
-    "Clear History" : {
-
-    },
-    "Clear clipboard history?" : {
-
-    },
-    "Clearing…" : {
-
-    },
-    "Click, then press a shortcut" : {
-
-    },
-    "Clipboard" : {
-
-    },
-    "Clipboard History Was Not Saved" : {
-
-    },
-    "Close" : {
-
-    },
-    "Communication" : {
-
-    },
-    "Continue" : {
-
-    },
-    "Copied" : {
-
-    },
-    "Copied %lld snips" : {
-
-    },
-    "Copied Attachments" : {
-
-    },
-    "Copied Text" : {
-
-    },
-    "Copy" : {
-
-    },
-    "Copy Attachments" : {
-
-    },
-    "Copy Failed" : {
-
-    },
-    "Copy Text" : {
-
-    },
-    "Copy Text Only" : {
-
-    },
-    "Copy and Share" : {
-
-    },
-    "Copying files…" : {
-
-    },
-    "Could Not Save" : {
-
-    },
-    "Create" : {
-
-    },
-    "Current List" : {
-
-    },
-    "Dark" : {
-
-    },
-    "Delete" : {
-
-    },
-    "Delete %@?" : {
-
-    },
-    "Delete List" : {
-
-    },
-    "Delete Synced Content" : {
-
-    },
-    "Delete Synced Content?" : {
-
-    },
-    "Delete Synced Content…" : {
-
-    },
-    "Deleting synced content…" : {
-
-    },
-    "Design & Making" : {
-
-    },
-    "Destination" : {
-
-    },
-    "Developer & Data" : {
-
-    },
-    "Done" : {
-
-    },
-    "Double tap to edit. Touch and hold for actions." : {
-
-    },
-    "Download Failed — Tap to Retry" : {
-
-    },
-    "Download to Preview" : {
-
-    },
-    "Downloaded files can be fetched again when you open them." : {
-
-    },
-    "Downloading…" : {
-
-    },
-    "Edit" : {
-
-    },
-    "Edit Conflicting Fields" : {
-
-    },
-    "Edit List…" : {
-
-    },
-    "Edit Snip" : {
-
-    },
-    "Edit in New Window" : {
-
-    },
-    "Edit list" : {
-
-    },
-    "Export" : {
-
-    },
-    "Export JSON Backup" : {
-
-    },
-    "Export JSON Backup…" : {
-
-    },
-    "Filter: %@" : {
-
-    },
-    "Food & Drink" : {
-
-    },
-    "Forward Delete" : {
-
-    },
-    "Import Backup" : {
-
-    },
-    "Import Backup…" : {
-
-    },
-    "Import this backup?" : {
-
-    },
-    "Inbox" : {
-
-    },
-    "Its snips will move to Inbox." : {
-
-    },
-    "Keep Both" : {
-
-    },
-    "Keep Current" : {
-
-    },
-    "Keep Local Copy" : {
-
-    },
-    "Keep Sync Off" : {
-
-    },
-    "Keyboard Shortcuts" : {
-
-    },
-    "Keyboard Shortcuts…" : {
-
-    },
-    "Left ⇧ ⇧" : {
-
-    },
-    "Library Actions" : {
-
-    },
-    "Light" : {
-
-    },
-    "List" : {
-
-    },
-    "List name" : {
-
-    },
-    "Lists" : {
-
-    },
-    "Loading shared content…" : {
-
-    },
-    "Making a local copy…" : {
-
-    },
-    "Manual" : {
-
-    },
-    "Merge Snips" : {
-
-    },
-    "Money, Shopping & Security" : {
-
-    },
-    "More" : {
-
-    },
-    "More, development build %lld" : {
-
-    },
-    "Move" : {
-
-    },
-    "Move Down" : {
-
-    },
-    "Move Up" : {
-
-    },
-    "Move to" : {
-
-    },
-    "Move to New List…" : {
-
-    },
-    "Name" : {
-
-    },
-    "Needs Attention" : {
-
-    },
-    "Needs Attention (%lld)" : {
-
-    },
-    "New List" : {
-
-    },
-    "New List…" : {
-
-    },
-    "New Snip" : {
-
-    },
-    "New list" : {
-
-    },
-    "New snip" : {
-
-    },
-    "Newest First" : {
-
-    },
-    "No Edits Need Review" : {
-
-    },
-    "No Results" : {
-
-    },
-    "No matches" : {
-
-    },
-    "None" : {
-
-    },
-    "Not Now" : {
-
-    },
-    "OK" : {
-
-    },
-    "Objects" : {
-
-    },
-    "One or more files could not be read." : {
-
-    },
-    "One or more shared items could not be added yet. Snip Snap will try again next time." : {
-
-    },
-    "Open or Hide Clipboard" : {
-
-    },
-    "Open or Hide Snip Snap" : {
-
-    },
-    "Pause" : {
-
-    },
-    "People & Body" : {
-
-    },
-    "Please try again." : {
-
-    },
-    "Press shortcut" : {
-
-    },
-    "Preview" : {
-
-    },
-    "Preview %@" : {
-
-    },
-    "Quick Look %@" : {
-
-    },
-    "Ready to Download" : {
-
-    },
-    "Recent" : {
-
-    },
-    "Recovered" : {
-
-    },
-    "Recovered Edit" : {
-
-    },
-    "Recovered Edit Is Gone" : {
-
-    },
-    "Recovered List Edit" : {
-
-    },
-    "Recovered List Edits" : {
-
-    },
-    "Recovered Snip" : {
-
-    },
-    "Recovered Snips" : {
-
-    },
-    "Remove" : {
-
-    },
-    "Remove %@" : {
-
-    },
-    "Rename" : {
-
-    },
-    "Rename List" : {
-
-    },
-    "Replace" : {
-
-    },
-    "Replace %@" : {
-
-    },
-    "Restore from This Device" : {
-
-    },
-    "Resume" : {
-
-    },
-    "Return" : {
-
-    },
-    "Review Backup" : {
-
-    },
-    "Review recovered edits" : {
-
-    },
-    "Review: %@. Snip Snap will merge these records with your saved snips." : {
-
-    },
-    "Right ⇧ ⇧" : {
-
-    },
-    "Save" : {
-
-    },
-    "Save Snip" : {
-
-    },
-    "Save text here when you want to keep it close." : {
-
-    },
-    "Save to Active List" : {
-
-    },
-    "Save to Snip Snap" : {
-
-    },
-    "Saved" : {
-
-    },
-    "Saving…" : {
-
-    },
-    "Search" : {
-
-    },
-    "Search Snips" : {
-
-    },
-    "Search icons" : {
-
-    },
-    "Select" : {
-
-    },
-    "Select All" : {
-
-    },
-    "Select a saved snip to read or edit it." : {
-
-    },
-    "Select text or an image, then try again." : {
-
-    },
-    "Selected" : {
-
-    },
-    "Send Snip" : {
-
-    },
-    "Setting up iCloud Sync…" : {
-
-    },
-    "Settings" : {
-
-    },
-    "Share" : {
-
-    },
-    "Shared Storage Unavailable" : {
-
-    },
-    "Shortcuts" : {
-
-    },
-    "Show" : {
-
-    },
-    "Shows a Quick Look preview" : {
-
-    },
-    "Signed Out of iCloud" : {
-
-    },
-    "Smileys & Emotion" : {
-
-    },
-    "Snip" : {
-
-    },
-    "Snip Snap" : {
-
-    },
-    "Snip Snap Backup" : {
-
-    },
-    "Snip Snap Needs Attention" : {
-
-    },
-    "Snip Snap closed before it could save the snip." : {
-
-    },
-    "Snip Snap could not clear the downloaded files." : {
-
-    },
-    "Snip Snap could not copy that content." : {
-
-    },
-    "Snip Snap could not copy the selection from this app." : {
-
-    },
-    "Snip Snap could not download that attachment. Please try again." : {
-
-    },
-    "Snip Snap could not finish that choice. Please try again." : {
-
-    },
-    "Snip Snap could not open its local library. Your saved data was not changed." : {
-
-    },
-    "Snip Snap could not prepare the captured images." : {
-
-    },
-    "Snip Snap could not prepare the clipboard image." : {
-
-    },
-    "Snip Snap could not prepare the pasted images." : {
-
-    },
-    "Snip Snap could not preserve the clipboard." : {
-
-    },
-    "Snip Snap could not reach the frontmost app." : {
-
-    },
-    "Snip Snap could not refresh iCloud. You can keep sync on and try again, or turn it off with the copy already on this Mac. That copy may not include recent changes from other devices. Your iCloud data will not be deleted." : {
-
-    },
-    "Snip Snap could not refresh iCloud. You can keep sync on and try again, or turn it off with the copy already on this device. That copy may not include recent changes from other devices. Your iCloud data will not be deleted." : {
-
-    },
-    "Snip Snap could not register its keyboard shortcuts." : {
-
-    },
-    "Snip Snap could not restore the clipboard, so it did not save the capture." : {
-
-    },
-    "Snip Snap could not save clipboard history. Snip Snap may lose new clipboard items when it quits." : {
-
-    },
-    "Snip Snap could not set the clipboard." : {
-
-    },
-    "Snip Snap could not start keyboard shortcut handling." : {
-
-    },
-    "Snip Snap could not start screen capture." : {
-
-    },
-    "Snip Snap kept the prior account’s cache apart. Keep it as a local copy or remove it from this Mac." : {
-
-    },
-    "Snip Snap kept the prior account’s cache apart. Keep it as a local copy or remove it from this device." : {
-
-    },
-    "Snip Snap set the clipboard but could not return to the prior app." : {
-
-    },
-    "Snip Snap timed out while copying the selection." : {
-
-    },
-    "Snip Snap timed out while reading the clipboard. Snip Snap changed nothing." : {
-
-    },
-    "Snip Snap uses Accessibility to detect Shift shortcuts and capture selected content. macOS will ask you to allow access in System Settings." : {
-
-    },
-    "Snip deleted" : {
-
-    },
-    "Snip text" : {
-
-    },
-    "Snips" : {
-
-    },
-    "Some Files Are Unavailable" : {
-
-    },
-    "Sort" : {
-
-    },
-    "Sort: %@" : {
-
-    },
-    "Source" : {
-
-    },
-    "Source app" : {
-
-    },
-    "Space" : {
-
-    },
-    "Start Empty" : {
-
-    },
-    "Starting a new synced collection…" : {
-
-    },
-    "State" : {
-
-    },
-    "Symbol" : {
-
-    },
-    "Symbols" : {
-
-    },
-    "Sync" : {
-
-    },
-    "Sync Now" : {
-
-    },
-    "Sync with iCloud" : {
-
-    },
-    "Syncing…" : {
-
-    },
-    "System" : {
-
-    },
-    "Tab" : {
-
-    },
-    "Text" : {
-
-    },
-    "That shortcut is another action's default." : {
-
-    },
-    "The clipboard changed before Snip Snap could copy." : {
-
-    },
-    "The list will be removed. Its snips will move to Inbox." : {
-
-    },
-    "The shared item is saved on this device. iCloud sync will try again later." : {
-
-    },
-    "The source app is no longer active." : {
-
-    },
-    "These files could not be read: %@" : {
-
-    },
-    "This build cannot access Snip Snap’s shared container." : {
-
-    },
-    "This leaves the current Mac clipboard unchanged." : {
-
-    },
-    "This starts a fresh empty synced collection and removes the old synced snips and attachments from iCloud. This device keeps a local recovery copy. A small control record remains in iCloud to stop old devices from restoring deleted content." : {
-
-    },
-    "Travel & Places" : {
-
-    },
-    "Try a different search." : {
-
-    },
-    "Undo" : {
-
-    },
-    "Unknown app" : {
-
-    },
-    "Use Default" : {
-
-    },
-    "Use Device Copy" : {
-
-    },
-    "Use Edited" : {
-
-    },
-    "Use Mac Copy" : {
-
-    },
-    "Use Recovered" : {
-
-    },
-    "Use This Device’s Copy?" : {
-
-    },
-    "Use This Mac’s Copy?" : {
-
-    },
-    "View Options" : {
-
-    },
-    "Waiting for iCloud" : {
-
-    },
-    "Work & Planning" : {
-
-    },
-    "Your synced cache is still on this Mac. Snip Snap will try again when iCloud is available." : {
-
-    },
-    "Your synced cache is still on this device. Snip Snap will try again when iCloud is available." : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attachments: %@"
+          }
+        }
+      }
     },
     "available" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "available"
+          }
+        }
+      }
+    },
+    "Available Offline" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Available Offline"
+          }
+        }
+      }
+    },
+    "Available Offline — Sync Failed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Available Offline — Sync Failed"
+          }
+        }
+      }
+    },
+    "Available Offline — Syncing" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Available Offline — Syncing"
+          }
+        }
+      }
+    },
+    "Available Offline — Waiting for iCloud" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Available Offline — Waiting for iCloud"
+          }
+        }
+      }
+    },
+    "Back" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Back"
+          }
+        }
+      }
+    },
+    "Cancel" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cancel"
+          }
+        }
+      }
+    },
+    "Cancel Editing" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cancel Editing"
+          }
+        }
+      }
+    },
+    "Capture Screen Area…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Capture Screen Area…"
+          }
+        }
+      }
+    },
+    "Capture Selection" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Capture Selection"
+          }
+        }
+      }
+    },
+    "Captured" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Captured"
+          }
+        }
+      }
+    },
+    "Captured Selection" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Captured Selection"
+          }
+        }
+      }
+    },
+    "Change the filter to see other snips." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Change the filter to see other snips."
+          }
+        }
+      }
+    },
+    "Check for Updates…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Check for Updates…"
+          }
+        }
+      }
+    },
+    "Choose a backup" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose a backup"
+          }
+        }
+      }
+    },
+    "Choose a backup folder to include attachments, or a plain JSON file for a text-only backup." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose a backup folder to include attachments, or a plain JSON file for a text-only backup."
+          }
+        }
+      }
+    },
+    "Choose a backup folder to include attachments. A plain JSON file can contain text and metadata only." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose a backup folder to include attachments. A plain JSON file can contain text and metadata only."
+          }
+        }
+      }
+    },
+    "Choose a Snip" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose a Snip"
+          }
+        }
+      }
+    },
+    "Choose Backup" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose Backup"
+          }
+        }
+      }
+    },
+    "Choose Files…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose Files…"
+          }
+        }
+      }
+    },
+    "Choose List Icon" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose List Icon"
+          }
+        }
+      }
+    },
+    "Choose list icon, current: %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose list icon, current: %@"
+          }
+        }
+      }
+    },
+    "Choose What to Do" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose What to Do"
+          }
+        }
+      }
+    },
+    "Chronological" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chronological"
+          }
+        }
+      }
+    },
+    "Clear" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clear"
+          }
+        }
+      }
+    },
+    "Clear clipboard history?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clear clipboard history?"
+          }
+        }
+      }
+    },
+    "Clear Downloaded Files" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clear Downloaded Files"
+          }
+        }
+      }
+    },
+    "Clear History" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clear History"
+          }
+        }
+      }
+    },
+    "Clearing…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clearing…"
+          }
+        }
+      }
+    },
+    "Click, then press a shortcut" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Click, then press a shortcut"
+          }
+        }
+      }
+    },
+    "Clipboard" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clipboard"
+          }
+        }
+      }
+    },
+    "Clipboard History Was Not Saved" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clipboard History Was Not Saved"
+          }
+        }
+      }
+    },
+    "Close" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Close"
+          }
+        }
+      }
+    },
+    "Communication" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Communication"
+          }
+        }
+      }
+    },
+    "Continue" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Continue"
+          }
+        }
+      }
+    },
+    "Copied" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copied"
+          }
+        }
+      }
+    },
+    "Copied %lld snips" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copied %lld snips"
+          }
+        }
+      }
+    },
+    "Copied Attachments" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copied Attachments"
+          }
+        }
+      }
+    },
+    "Copied Text" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copied Text"
+          }
+        }
+      }
+    },
+    "Copy" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy"
+          }
+        }
+      }
+    },
+    "Copy and Share" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy and Share"
+          }
+        }
+      }
+    },
+    "Copy Attachments" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy Attachments"
+          }
+        }
+      }
+    },
+    "Copy Failed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy Failed"
+          }
+        }
+      }
+    },
+    "Copy Text" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy Text"
+          }
+        }
+      }
+    },
+    "Copy Text Only" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy Text Only"
+          }
+        }
+      }
+    },
+    "Copying files…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copying files…"
+          }
+        }
+      }
+    },
+    "Could Not Save" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Could Not Save"
+          }
+        }
+      }
+    },
+    "Create" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Create"
+          }
+        }
+      }
+    },
+    "Current List" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Current List"
+          }
+        }
+      }
+    },
+    "Dark" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dark"
+          }
+        }
+      }
+    },
+    "Delete" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Delete"
+          }
+        }
+      }
+    },
+    "Delete %@?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Delete %@?"
+          }
+        }
+      }
+    },
+    "Delete List" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Delete List"
+          }
+        }
+      }
+    },
+    "Design & Making" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Design & Making"
+          }
+        }
+      }
+    },
+    "Destination" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Destination"
+          }
+        }
+      }
+    },
+    "Developer & Data" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Developer & Data"
+          }
+        }
+      }
+    },
+    "Done" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Done"
+          }
+        }
+      }
+    },
+    "Double tap to edit. Touch and hold for actions." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Double tap to edit. Touch and hold for actions."
+          }
+        }
+      }
+    },
+    "Download Failed — Tap to Retry" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Download Failed — Tap to Retry"
+          }
+        }
+      }
+    },
+    "Download to Preview" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Download to Preview"
+          }
+        }
+      }
+    },
+    "Downloaded files can be fetched again when you open them." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Downloaded files can be fetched again when you open them."
+          }
+        }
+      }
+    },
+    "Downloading…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Downloading…"
+          }
+        }
+      }
+    },
+    "Edit" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Edit"
+          }
+        }
+      }
+    },
+    "Edit Conflicting Fields" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Edit Conflicting Fields"
+          }
+        }
+      }
+    },
+    "Edit in New Window" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Edit in New Window"
+          }
+        }
+      }
+    },
+    "Edit Snip" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Edit Snip"
+          }
+        }
+      }
+    },
+    "Export" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Export"
+          }
+        }
+      }
     },
     "failed" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "failed"
+          }
+        }
+      }
+    },
+    "Filter: %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Filter: %@"
+          }
+        }
+      }
+    },
+    "Food & Drink" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Food & Drink"
+          }
+        }
+      }
+    },
+    "Forward Delete" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Forward Delete"
+          }
+        }
+      }
     },
     "iCloud Attachments" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iCloud Attachments"
+          }
+        }
+      }
     },
     "iCloud Sync Paused" : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iCloud Sync Paused"
+          }
+        }
+      }
     },
     "icon.accessibility" : {
       "comment" : "Accessible name for a list icon.",
@@ -7628,14 +7689,1446 @@
         }
       }
     },
-    "list" : {
-
+    "Import this backup?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Import this backup?"
+          }
+        }
+      }
+    },
+    "Inbox" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inbox"
+          }
+        }
+      }
+    },
+    "Its snips will move to Inbox." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Its snips will move to Inbox."
+          }
+        }
+      }
+    },
+    "Keep Both" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keep Both"
+          }
+        }
+      }
+    },
+    "Keep Current" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keep Current"
+          }
+        }
+      }
+    },
+    "Keep Local Copy" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keep Local Copy"
+          }
+        }
+      }
+    },
+    "Keep Sync Off" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keep Sync Off"
+          }
+        }
+      }
+    },
+    "Left ⇧ ⇧" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Left ⇧ ⇧"
+          }
+        }
+      }
+    },
+    "Library Actions" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Library Actions"
+          }
+        }
+      }
+    },
+    "Light" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Light"
+          }
+        }
+      }
+    },
+    "List name" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "List name"
+          }
+        }
+      }
+    },
+    "Lists" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lists"
+          }
+        }
+      }
+    },
+    "Loading shared content…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loading shared content…"
+          }
+        }
+      }
     },
     "macOS could not register that shortcut. Another app may already use it." : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS could not register that shortcut. Another app may already use it."
+          }
+        }
+      }
     },
     "macOS or a fixed Snip Snap command uses that shortcut." : {
-
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS or a fixed Snip Snap command uses that shortcut."
+          }
+        }
+      }
+    },
+    "Making a local copy…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Making a local copy…"
+          }
+        }
+      }
+    },
+    "Manual" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Manual"
+          }
+        }
+      }
+    },
+    "Merge Snips" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Merge Snips"
+          }
+        }
+      }
+    },
+    "Money, Shopping & Security" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Money, Shopping & Security"
+          }
+        }
+      }
+    },
+    "More" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "More"
+          }
+        }
+      }
+    },
+    "More, development build %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "More, development build %lld"
+          }
+        }
+      }
+    },
+    "Move" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Move"
+          }
+        }
+      }
+    },
+    "Move Down" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Move Down"
+          }
+        }
+      }
+    },
+    "Move to" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Move to"
+          }
+        }
+      }
+    },
+    "Move to New List…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Move to New List…"
+          }
+        }
+      }
+    },
+    "Move Up" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Move Up"
+          }
+        }
+      }
+    },
+    "Name" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Name"
+          }
+        }
+      }
+    },
+    "Needs Attention" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Needs Attention"
+          }
+        }
+      }
+    },
+    "Needs Attention (%lld)" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Needs Attention (%lld)"
+          }
+        }
+      }
+    },
+    "Newest First" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Newest First"
+          }
+        }
+      }
+    },
+    "No done snips" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No done snips"
+          }
+        }
+      }
+    },
+    "No Edits Need Review" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No Edits Need Review"
+          }
+        }
+      }
+    },
+    "No matches" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No matches"
+          }
+        }
+      }
+    },
+    "No Results" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No Results"
+          }
+        }
+      }
+    },
+    "No unfinished snips" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No unfinished snips"
+          }
+        }
+      }
+    },
+    "None" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "None"
+          }
+        }
+      }
+    },
+    "Not Now" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not Now"
+          }
+        }
+      }
+    },
+    "Nothing captured yet" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nothing captured yet"
+          }
+        }
+      }
+    },
+    "Objects" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Objects"
+          }
+        }
+      }
+    },
+    "OK" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OK"
+          }
+        }
+      }
+    },
+    "One or more files could not be read." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "One or more files could not be read."
+          }
+        }
+      }
+    },
+    "One or more shared items could not be added yet. Snip Snap will try again next time." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "One or more shared items could not be added yet. Snip Snap will try again next time."
+          }
+        }
+      }
+    },
+    "Open or Hide Clipboard" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open or Hide Clipboard"
+          }
+        }
+      }
+    },
+    "Open or Hide Snip Snap" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open or Hide Snip Snap"
+          }
+        }
+      }
+    },
+    "Pause" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pause"
+          }
+        }
+      }
+    },
+    "People & Body" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "People & Body"
+          }
+        }
+      }
+    },
+    "Please try again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Please try again."
+          }
+        }
+      }
+    },
+    "Press shortcut" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Press shortcut"
+          }
+        }
+      }
+    },
+    "Preview" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Preview"
+          }
+        }
+      }
+    },
+    "Preview %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Preview %@"
+          }
+        }
+      }
+    },
+    "Quick Look %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quick Look %@"
+          }
+        }
+      }
+    },
+    "Ready to Download" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ready to Download"
+          }
+        }
+      }
+    },
+    "Recent" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recent"
+          }
+        }
+      }
+    },
+    "Recovered" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recovered"
+          }
+        }
+      }
+    },
+    "Recovered Edit" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recovered Edit"
+          }
+        }
+      }
+    },
+    "Recovered Edit Is Gone" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recovered Edit Is Gone"
+          }
+        }
+      }
+    },
+    "Recovered List Edit" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recovered List Edit"
+          }
+        }
+      }
+    },
+    "Recovered List Edits" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recovered List Edits"
+          }
+        }
+      }
+    },
+    "Recovered Snip" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recovered Snip"
+          }
+        }
+      }
+    },
+    "Recovered Snips" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recovered Snips"
+          }
+        }
+      }
+    },
+    "Remove" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove"
+          }
+        }
+      }
+    },
+    "Remove %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove %@"
+          }
+        }
+      }
+    },
+    "Rename" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rename"
+          }
+        }
+      }
+    },
+    "Rename List" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rename List"
+          }
+        }
+      }
+    },
+    "Replace" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Replace"
+          }
+        }
+      }
+    },
+    "Replace %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Replace %@"
+          }
+        }
+      }
+    },
+    "Restore from This Device" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Restore from This Device"
+          }
+        }
+      }
+    },
+    "Resume" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Resume"
+          }
+        }
+      }
+    },
+    "Return" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Return"
+          }
+        }
+      }
+    },
+    "Review Backup" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Review Backup"
+          }
+        }
+      }
+    },
+    "Review recovered edits" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Review recovered edits"
+          }
+        }
+      }
+    },
+    "Review: %@. Snip Snap will merge these records with your saved snips." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Review: %@. Snip Snap will merge these records with your saved snips."
+          }
+        }
+      }
+    },
+    "Right ⇧ ⇧" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Right ⇧ ⇧"
+          }
+        }
+      }
+    },
+    "Save" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save"
+          }
+        }
+      }
+    },
+    "Save Snip" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save Snip"
+          }
+        }
+      }
+    },
+    "Save text here when you want to keep it close." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save text here when you want to keep it close."
+          }
+        }
+      }
+    },
+    "Save to Active List" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save to Active List"
+          }
+        }
+      }
+    },
+    "Save to Snip Snap" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save to Snip Snap"
+          }
+        }
+      }
+    },
+    "Saved" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saved"
+          }
+        }
+      }
+    },
+    "Saving…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saving…"
+          }
+        }
+      }
+    },
+    "Search" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Search"
+          }
+        }
+      }
+    },
+    "Search icons" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Search icons"
+          }
+        }
+      }
+    },
+    "Search Snips" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Search Snips"
+          }
+        }
+      }
+    },
+    "Select" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select"
+          }
+        }
+      }
+    },
+    "Select a saved snip to read or edit it." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select a saved snip to read or edit it."
+          }
+        }
+      }
+    },
+    "Select All" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select All"
+          }
+        }
+      }
+    },
+    "Select text or an image, then try again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select text or an image, then try again."
+          }
+        }
+      }
+    },
+    "Selected" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Selected"
+          }
+        }
+      }
+    },
+    "Send Snip" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Send Snip"
+          }
+        }
+      }
+    },
+    "Settings" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Settings"
+          }
+        }
+      }
+    },
+    "Share" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Share"
+          }
+        }
+      }
+    },
+    "Shared" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Shared"
+          }
+        }
+      }
+    },
+    "Shared Storage Unavailable" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Shared Storage Unavailable"
+          }
+        }
+      }
+    },
+    "Shortcuts" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Shortcuts"
+          }
+        }
+      }
+    },
+    "Show" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show"
+          }
+        }
+      }
+    },
+    "Shows a Quick Look preview" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Shows a Quick Look preview"
+          }
+        }
+      }
+    },
+    "Signed Out of iCloud" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Signed Out of iCloud"
+          }
+        }
+      }
+    },
+    "Smileys & Emotion" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Smileys & Emotion"
+          }
+        }
+      }
+    },
+    "Snip" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip"
+          }
+        }
+      }
+    },
+    "Snip deleted" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip deleted"
+          }
+        }
+      }
+    },
+    "Snip Snap" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap"
+          }
+        }
+      }
+    },
+    "Snip Snap — Quick Entry" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap — Quick Entry"
+          }
+        }
+      }
+    },
+    "Snip Snap Backup" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap Backup"
+          }
+        }
+      }
+    },
+    "Snip Snap closed before it could save the snip." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap closed before it could save the snip."
+          }
+        }
+      }
+    },
+    "Snip Snap could not clear the downloaded files." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not clear the downloaded files."
+          }
+        }
+      }
+    },
+    "Snip Snap could not copy that content." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not copy that content."
+          }
+        }
+      }
+    },
+    "Snip Snap could not copy the selection from this app." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not copy the selection from this app."
+          }
+        }
+      }
+    },
+    "Snip Snap could not download that attachment. Please try again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not download that attachment. Please try again."
+          }
+        }
+      }
+    },
+    "Snip Snap could not finish that choice. Please try again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not finish that choice. Please try again."
+          }
+        }
+      }
+    },
+    "Snip Snap could not open its local library. Your saved data was not changed." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not open its local library. Your saved data was not changed."
+          }
+        }
+      }
+    },
+    "Snip Snap could not prepare the captured images." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not prepare the captured images."
+          }
+        }
+      }
+    },
+    "Snip Snap could not prepare the clipboard image." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not prepare the clipboard image."
+          }
+        }
+      }
+    },
+    "Snip Snap could not prepare the pasted images." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not prepare the pasted images."
+          }
+        }
+      }
+    },
+    "Snip Snap could not preserve the clipboard." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not preserve the clipboard."
+          }
+        }
+      }
+    },
+    "Snip Snap could not reach the frontmost app." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not reach the frontmost app."
+          }
+        }
+      }
+    },
+    "Snip Snap could not refresh iCloud. You can keep sync on and try again, or turn it off with the copy already on this device. That copy may not include recent changes from other devices. Your iCloud data will not be deleted." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not refresh iCloud. You can keep sync on and try again, or turn it off with the copy already on this device. That copy may not include recent changes from other devices. Your iCloud data will not be deleted."
+          }
+        }
+      }
+    },
+    "Snip Snap could not refresh iCloud. You can keep sync on and try again, or turn it off with the copy already on this Mac. That copy may not include recent changes from other devices. Your iCloud data will not be deleted." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not refresh iCloud. You can keep sync on and try again, or turn it off with the copy already on this Mac. That copy may not include recent changes from other devices. Your iCloud data will not be deleted."
+          }
+        }
+      }
+    },
+    "Snip Snap could not register its keyboard shortcuts." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not register its keyboard shortcuts."
+          }
+        }
+      }
+    },
+    "Snip Snap could not restore the clipboard, so it did not save the capture." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not restore the clipboard, so it did not save the capture."
+          }
+        }
+      }
+    },
+    "Snip Snap could not save clipboard history. Snip Snap may lose new clipboard items when it quits." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not save clipboard history. Snip Snap may lose new clipboard items when it quits."
+          }
+        }
+      }
+    },
+    "Snip Snap could not set the clipboard." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not set the clipboard."
+          }
+        }
+      }
+    },
+    "Snip Snap could not start keyboard shortcut handling." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not start keyboard shortcut handling."
+          }
+        }
+      }
+    },
+    "Snip Snap could not start screen capture." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap could not start screen capture."
+          }
+        }
+      }
+    },
+    "Snip Snap kept the prior account’s cache apart. Keep it as a local copy or remove it from this device." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap kept the prior account’s cache apart. Keep it as a local copy or remove it from this device."
+          }
+        }
+      }
+    },
+    "Snip Snap kept the prior account’s cache apart. Keep it as a local copy or remove it from this Mac." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap kept the prior account’s cache apart. Keep it as a local copy or remove it from this Mac."
+          }
+        }
+      }
+    },
+    "Snip Snap Needs Attention" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap Needs Attention"
+          }
+        }
+      }
+    },
+    "Snip Snap set the clipboard but could not return to the prior app." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap set the clipboard but could not return to the prior app."
+          }
+        }
+      }
+    },
+    "Snip Snap timed out while copying the selection." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap timed out while copying the selection."
+          }
+        }
+      }
+    },
+    "Snip Snap timed out while reading the clipboard. Snip Snap changed nothing." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap timed out while reading the clipboard. Snip Snap changed nothing."
+          }
+        }
+      }
+    },
+    "Snip Snap uses Accessibility to detect Shift shortcuts and capture selected content. macOS will ask you to allow access in System Settings." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap uses Accessibility to detect Shift shortcuts and capture selected content. macOS will ask you to allow access in System Settings."
+          }
+        }
+      }
+    },
+    "Snip text" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip text"
+          }
+        }
+      }
     },
     "snip.completion.done" : {
       "comment" : "Action or state for a snip that is finished.",
@@ -7645,18 +9138,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Done"
-          }
-        }
-      }
-    },
-    "attachment.error.detail" : {
-      "comment" : "A file name followed by the reason that attachment cannot sync.",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@: %2$@"
           }
         }
       }
@@ -7685,17 +9166,896 @@
         }
       }
     },
-    "syncing" : {
-
+    "Snips" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snips"
+          }
+        }
+      }
     },
-    "waiting for iCloud" : {
-
+    "Some Files Are Unavailable" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Some Files Are Unavailable"
+          }
+        }
+      }
     },
-    "⌘ %@" : {
-
+    "Sort" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sort"
+          }
+        }
+      }
     },
-    "⌘S save" : {
-
+    "Sort: %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sort: %@"
+          }
+        }
+      }
+    },
+    "Source" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Source"
+          }
+        }
+      }
+    },
+    "Source app" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Source app"
+          }
+        }
+      }
+    },
+    "Space" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Space"
+          }
+        }
+      }
+    },
+    "Start Empty" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start Empty"
+          }
+        }
+      }
+    },
+    "State" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "State"
+          }
+        }
+      }
+    },
+    "Symbol" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Symbol"
+          }
+        }
+      }
+    },
+    "Symbols" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Symbols"
+          }
+        }
+      }
+    },
+    "Sync" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sync"
+          }
+        }
+      }
+    },
+    "Sync Now" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sync Now"
+          }
+        }
+      }
+    },
+    "Sync with iCloud" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sync with iCloud"
+          }
+        }
+      }
+    },
+    "System" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "System"
+          }
+        }
+      }
+    },
+    "Tab" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tab"
+          }
+        }
+      }
+    },
+    "Text" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text"
+          }
+        }
+      }
+    },
+    "That shortcut is another action's default." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "That shortcut is another action's default."
+          }
+        }
+      }
+    },
+    "The clipboard changed before Snip Snap could copy." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The clipboard changed before Snip Snap could copy."
+          }
+        }
+      }
+    },
+    "The list will be removed. Its snips will move to Inbox." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The list will be removed. Its snips will move to Inbox."
+          }
+        }
+      }
+    },
+    "The shared item is saved on this device. iCloud sync will try again later." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The shared item is saved on this device. iCloud sync will try again later."
+          }
+        }
+      }
+    },
+    "The source app is no longer active." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The source app is no longer active."
+          }
+        }
+      }
+    },
+    "These files could not be read: %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "These files could not be read: %@"
+          }
+        }
+      }
+    },
+    "This build cannot access Snip Snap’s shared container." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This build cannot access Snip Snap’s shared container."
+          }
+        }
+      }
+    },
+    "This leaves the current Mac clipboard unchanged." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This leaves the current Mac clipboard unchanged."
+          }
+        }
+      }
+    },
+    "This starts a fresh empty synced collection and removes the old synced snips and attachments from iCloud. This device keeps a local recovery copy. A small control record remains in iCloud to stop old devices from restoring deleted content." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This starts a fresh empty synced collection and removes the old synced snips and attachments from iCloud. This device keeps a local recovery copy. A small control record remains in iCloud to stop old devices from restoring deleted content."
+          }
+        }
+      }
+    },
+    "Travel & Places" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Travel & Places"
+          }
+        }
+      }
+    },
+    "Try a different search." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Try a different search."
+          }
+        }
+      }
+    },
+    "Undo" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Undo"
+          }
+        }
+      }
+    },
+    "Unknown app" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unknown app"
+          }
+        }
+      }
+    },
+    "Use Default" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use Default"
+          }
+        }
+      }
+    },
+    "Use Device Copy" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use Device Copy"
+          }
+        }
+      }
+    },
+    "Use Edited" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use Edited"
+          }
+        }
+      }
+    },
+    "Use Mac Copy" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use Mac Copy"
+          }
+        }
+      }
+    },
+    "Use Recovered" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use Recovered"
+          }
+        }
+      }
+    },
+    "Use This Device’s Copy?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use This Device’s Copy?"
+          }
+        }
+      }
+    },
+    "Use This Mac’s Copy?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use This Mac’s Copy?"
+          }
+        }
+      }
+    },
+    "View Options" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "View Options"
+          }
+        }
+      }
+    },
+    "Work & Planning" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Work & Planning"
+          }
+        }
+      }
+    },
+    "Your synced cache is still on this device. Snip Snap will try again when iCloud is available." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Your synced cache is still on this device. Snip Snap will try again when iCloud is available."
+          }
+        }
+      }
+    },
+    "Your synced cache is still on this Mac. Snip Snap will try again when iCloud is available." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Your synced cache is still on this Mac. Snip Snap will try again when iCloud is available."
+          }
+        }
+      }
+    },
+    "accessibility.attachment.fileAndState" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@, %2$@"
+          }
+        }
+      }
+    },
+    "attachment.remainingCount" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "+%lld"
+          }
+        }
+      }
+    },
+    "shortcut.commandDoubleShift" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "⌘ %@"
+          }
+        }
+      }
+    },
+    "action.deleteSyncedContent" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Delete Synced Content"
+          }
+        }
+      }
+    },
+    "dialog.deleteSyncedContent.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Delete Synced Content?"
+          }
+        }
+      }
+    },
+    "action.openDeleteSyncedContent" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Delete Synced Content…"
+          }
+        }
+      }
+    },
+    "progress.deletingSyncedContent" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Deleting synced content…"
+          }
+        }
+      }
+    },
+    "sync.status.deletingSyncedContent" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Deleting Synced Content…"
+          }
+        }
+      }
+    },
+    "action.editList" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Edit List…"
+          }
+        }
+      }
+    },
+    "screen.editList.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Edit list"
+          }
+        }
+      }
+    },
+    "dialog.exportBackup.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Export JSON Backup"
+          }
+        }
+      }
+    },
+    "action.exportBackup" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Export JSON Backup…"
+          }
+        }
+      }
+    },
+    "dialog.importBackup.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Import Backup"
+          }
+        }
+      }
+    },
+    "action.importBackup" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Import Backup…"
+          }
+        }
+      }
+    },
+    "screen.keyboardShortcuts.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keyboard Shortcuts"
+          }
+        }
+      }
+    },
+    "action.openKeyboardShortcuts" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keyboard Shortcuts…"
+          }
+        }
+      }
+    },
+    "list.genericName" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "List"
+          }
+        }
+      }
+    },
+    "list.genericNameInSentence" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "list"
+          }
+        }
+      }
+    },
+    "screen.newList.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "New List"
+          }
+        }
+      }
+    },
+    "action.newList" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "New List…"
+          }
+        }
+      }
+    },
+    "field.newList.placeholder" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "New list"
+          }
+        }
+      }
+    },
+    "screen.newSnip.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "New Snip"
+          }
+        }
+      }
+    },
+    "field.newSnip.placeholder" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "New snip"
+          }
+        }
+      }
+    },
+    "sync.status.settingUpICloud" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Setting Up iCloud Sync…"
+          }
+        }
+      }
+    },
+    "progress.settingUpICloud" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Setting up iCloud Sync…"
+          }
+        }
+      }
+    },
+    "sync.status.startingNewCollection" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starting a New Synced Collection…"
+          }
+        }
+      }
+    },
+    "progress.startingNewCollection" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starting a new synced collection…"
+          }
+        }
+      }
+    },
+    "action.syncing" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Syncing…"
+          }
+        }
+      }
+    },
+    "attachment.state.syncing" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "syncing"
+          }
+        }
+      }
+    },
+    "attachment.status.waitingForICloud" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Waiting for iCloud"
+          }
+        }
+      }
+    },
+    "attachment.state.waitingForICloud" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "waiting for iCloud"
+          }
+        }
+      }
+    },
+    "clipboard.item.placeholder" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clipboard item"
+          }
+        }
+      }
+    },
+    "action.editAttachments" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Edit Attachments…"
+          }
+        }
+      }
+    },
+    "attachment.genericName" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attachment"
+          }
+        }
+      }
+    },
+    "composer.addToList.placeholder" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add to %@…"
+          }
+        }
+      }
+    },
+    "fileName.pastedImage" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pasted Image.%@"
+          }
+        }
+      }
+    },
+    "fileName.selectionPNG" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Selection.png"
+          }
+        }
+      }
+    },
+    "fileName.selectionTIFF" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Selection.tiff"
+          }
+        }
+      }
+    },
+    "fileName.snipMarkdownExport" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snip Snap Snip.md"
+          }
+        }
+      }
+    },
+    "recovery.current.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Current"
+          }
+        }
+      }
     }
   },
   "version" : "1.1"

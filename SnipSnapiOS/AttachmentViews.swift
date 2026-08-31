@@ -90,7 +90,7 @@ struct AttachmentEditorSection: View {
     let add: () -> Void
 
     var body: some View {
-        Section("Attachments") {
+        Section(.attachments) {
             if !attachments.isEmpty {
                 LazyVGrid(
                     columns: [GridItem(.adaptive(minimum: 132), spacing: 12)],
@@ -109,14 +109,14 @@ struct AttachmentEditorSection: View {
                 .padding(.vertical, 8)
             }
 
-            Button("Add Files", systemImage: "paperclip", action: add)
+            Button(.addFiles, systemImage: "paperclip", action: add)
                 .disabled(isDisabled)
                 .accessibilityIdentifier("add-attachments")
 
             if isStaging {
                 HStack(spacing: 8) {
                     ProgressView()
-                    Text("Copying files…")
+                    Text(.copyingFiles)
                         .foregroundStyle(.secondary)
                 }
                 .accessibilityIdentifier("copying-attachments")
@@ -151,7 +151,7 @@ private struct AttachmentEditorTile: View {
                     ContentUnavailableView(
                         attachment.fileName,
                         systemImage: "icloud.and.arrow.down",
-                        description: Text("Download to Preview")
+                        description: Text(.downloadToPreview)
                     )
                     .aspectRatio(1, contentMode: .fit)
                 }
@@ -161,16 +161,16 @@ private struct AttachmentEditorTile: View {
             }
 
             HStack(spacing: 8) {
-                Button("Replace", systemImage: "arrow.triangle.2.circlepath", action: replace)
+                Button(.replace, systemImage: "arrow.triangle.2.circlepath", action: replace)
                     .labelStyle(.iconOnly)
                     .disabled(isDisabled)
-                    .accessibilityLabel("Replace \(attachment.fileName)")
+                    .accessibilityLabel(.replace(attachment.fileName))
                     .accessibilityIdentifier("replace-attachment-\(attachment.fileName)")
                 Spacer()
-                Button("Remove", systemImage: "trash", role: .destructive, action: remove)
+                Button(.remove, systemImage: "trash", role: .destructive, action: remove)
                     .labelStyle(.iconOnly)
                     .disabled(isDisabled)
-                    .accessibilityLabel("Remove \(attachment.fileName)")
+                    .accessibilityLabel(.remove(attachment.fileName))
                     .accessibilityIdentifier("remove-attachment-\(attachment.fileName)")
             }
             .buttonStyle(.borderless)
@@ -227,7 +227,8 @@ enum AttachmentDraftStager {
                     else { throw SnipLibraryError.attachmentCopyFailed }
 
                     let fileName = sourceURL.lastPathComponent.isEmpty
-                        ? "Attachment" : sourceURL.lastPathComponent
+                        ? String(localized: .attachmentGenericName)
+                        : sourceURL.lastPathComponent
                     let directory = batchDirectory.appendingPathComponent(
                         UUID().uuidString,
                         isDirectory: true
@@ -313,7 +314,7 @@ struct AttachmentPreviewTile: View {
         }
         .aspectRatio(1, contentMode: .fit)
         .buttonStyle(.plain)
-        .accessibilityLabel("Preview \(item.fileName)")
+        .accessibilityLabel(.preview(item.fileName))
         .accessibilityIdentifier("attachment-preview-\(item.fileName)")
     }
 }

@@ -302,7 +302,7 @@ actor ClipboardHistoryFileStore {
             try encoder.encode(entries).write(to: url, options: .atomic)
             return nil
         } catch {
-            return String(localized: "Snip Snap could not save clipboard history. Snip Snap may lose new clipboard items when it quits.")
+            return String(localized: .snipSnapCouldNotSaveClipboardHistorySnipSnapMayLoseNewClipboardItemsWhenItQuits)
         }
     }
 }

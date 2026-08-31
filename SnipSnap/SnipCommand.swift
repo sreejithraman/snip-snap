@@ -9,17 +9,17 @@ enum SnipCommand {
     var title: String {
         switch self {
         case .copy:
-            String(localized: "Copy")
+            String(localized: .copy)
         case .toggleDone:
             SnipCompletionLanguage.done
         case .edit:
-            String(localized: "Edit")
+            String(localized: .edit)
         case .editInNewWindow:
-            String(localized: "Edit in New Window")
+            String(localized: .editInNewWindow)
         case .merge:
-            String(localized: "Merge Snips")
+            String(localized: .mergeSnips)
         case .delete:
-            String(localized: "Delete")
+            String(localized: .delete)
         }
     }
 

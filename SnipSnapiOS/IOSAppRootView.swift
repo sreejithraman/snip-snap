@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 
 enum IOSBackupImportPickerPolicy {
     static let allowedContentTypes: [UTType] = [.folder, .json]
-    static let message = String(localized: "Choose a backup folder to include attachments. A plain JSON file can contain text and metadata only.")
+    static let message = String(localized: .chooseABackupFolderToIncludeAttachmentsAPlainJsonFileCanContainTextAndMetadataOnly)
 }
 
 @MainActor
@@ -143,11 +143,11 @@ final class IOSShareImportCoordinator {
     private func report(_ result: PassResult) {
         if result.importFailures > 0 {
             model.errorMessage = String(
-                localized: "One or more shared items could not be added yet. Snip Snap will try again next time."
+                localized: .oneOrMoreSharedItemsCouldNotBeAddedYetSnipSnapWillTryAgainNextTime
             )
         } else if result.syncFailed {
             model.errorMessage = String(
-                localized: "The shared item is saved on this device. iCloud sync will try again later."
+                localized: .theSharedItemIsSavedOnThisDeviceICloudSyncWillTryAgainLater
             )
         }
     }
@@ -295,47 +295,47 @@ struct IOSAppRootView: View {
             }
         }
         .alert(
-            "Snip Snap Needs Attention",
+            .snipSnapNeedsAttention,
             isPresented: Binding(
                 get: { model.errorMessage != nil },
                 set: { if !$0 { model.errorMessage = nil } }
             )
         ) {
-            Button("OK") { model.errorMessage = nil }
+            Button(.ok) { model.errorMessage = nil }
         } message: {
-            Text(model.errorMessage ?? String(localized: "Please try again."))
+            Text(model.errorMessage ?? String(localized: .pleaseTryAgain))
         }
         .alert(
-            "Some Files Are Unavailable",
+            .someFilesAreUnavailable,
             isPresented: Binding(
                 get: { copyShare.unavailableFilesNotice != nil },
                 set: { if !$0 { copyShare.cancelUnavailableFilesNotice() } }
             )
         ) {
-            Button("Copy Text Only") { copyShare.copyTextFromNotice(model: model) }
-            Button("Cancel", role: .cancel) { copyShare.cancelUnavailableFilesNotice() }
+            Button(.copyTextOnly) { copyShare.copyTextFromNotice(model: model) }
+            Button(.cancel, role: .cancel) { copyShare.cancelUnavailableFilesNotice() }
         } message: {
             Text(copyShare.unavailableFilesNotice?.message
-                ?? String(localized: "One or more files could not be read."))
+                ?? String(localized: .oneOrMoreFilesCouldNotBeRead))
         }
         .alert(
-            "Copy Failed",
+            .copyFailed,
             isPresented: Binding(
                 get: { copyShare.errorMessage != nil },
                 set: { if !$0 { copyShare.errorMessage = nil } }
             )
         ) {
-            Button("OK") { copyShare.errorMessage = nil }
+            Button(.ok) { copyShare.errorMessage = nil }
         } message: {
-            Text(copyShare.errorMessage ?? String(localized: "Please try again."))
+            Text(copyShare.errorMessage ?? String(localized: .pleaseTryAgain))
         }
         .confirmationDialog(
-            "Choose a backup",
+            .chooseABackup,
             isPresented: $isExplainingBackupImport,
             titleVisibility: .visible
         ) {
-            Button("Choose Backup") { isImportingBackup = true }
-            Button("Cancel", role: .cancel) {}
+            Button(.chooseBackup) { isImportingBackup = true }
+            Button(.cancel, role: .cancel) {}
         } message: {
             Text(IOSBackupImportPickerPolicy.message)
         }
@@ -355,17 +355,19 @@ struct IOSAppRootView: View {
             }
         }
         .confirmationDialog(
-            "Import this backup?",
+            .importThisBackup,
             isPresented: Binding(
                 get: { model.pendingImportPreview != nil },
                 set: { if !$0 { model.cancelBackupImport() } }
             ),
             titleVisibility: .visible
         ) {
-            Button("Import Backup") { Task { await model.confirmBackupImport() } }
-            Button("Cancel", role: .cancel) { model.cancelBackupImport() }
+            Button(.dialogImportBackupTitle) { Task { await model.confirmBackupImport() } }
+            Button(.cancel, role: .cancel) { model.cancelBackupImport() }
         } message: {
-            Text("Review: \(model.importPreviewSummary). Snip Snap will merge these records with your saved snips.")
+            Text(.reviewSnipSnapWillMergeTheseRecordsWithYourSavedSnips(
+                model.importPreviewSummary
+            ))
         }
         .task {
             await cloudLifecycleHooks.launch()
@@ -431,7 +433,7 @@ struct IOSAppRootView: View {
                 }
                 .toolbar {
                     ToolbarItemGroup(placement: .topBarLeading) {
-                        Button("Settings", systemImage: "gearshape") {
+                        Button(.settings, systemImage: "gearshape") {
                             sheet = .settings
                         }
                         .accessibilityIdentifier("settings")
@@ -577,12 +579,12 @@ private struct AppleAccountNoticeBanner: View {
             }
             if model.showsResolutionActions {
                 HStack(spacing: 12) {
-                    Button("Keep Local Copy") {
+                    Button(.keepLocalCopy) {
                         Task { await model.resolve(.keepLocalCopy) }
                     }
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("keep-account-cache")
-                    Button("Remove", role: .destructive) {
+                    Button(.remove, role: .destructive) {
                         Task { await model.resolve(.remove) }
                     }
                     .buttonStyle(.bordered)

@@ -23,8 +23,8 @@ struct WorkflowOptionsMenu: View {
     let model: IOSAppModel
 
     var body: some View {
-        Menu("View Options", systemImage: "line.3.horizontal.decrease.circle") {
-            Section("Show") {
+        Menu(.viewOptions, systemImage: "line.3.horizontal.decrease.circle") {
+            Section(.show) {
                 ForEach(SnipCompletionFilter.allCases, id: \.self) { filter in
                     Button {
                         model.completionFilter = filter
@@ -38,7 +38,7 @@ struct WorkflowOptionsMenu: View {
                     .accessibilityIdentifier("filter-\(filter.rawValue)")
                 }
             }
-            Section("Sort") {
+            Section(.sort) {
                 ForEach(SnipSortMode.allCases, id: \.self) { mode in
                     Button {
                         model.sortMode = mode
@@ -63,7 +63,7 @@ struct SelectionActionsMenu: View {
     let endSelection: () -> Void
 
     var body: some View {
-        Menu("Selected", systemImage: "ellipsis.circle") {
+        Menu(.selected, systemImage: "ellipsis.circle") {
             Button(SnipCompletionLanguage.done, systemImage: "checkmark.circle") {
                 Task {
                     if await model.setSelectionDone(true) { endSelection() }
@@ -78,7 +78,7 @@ struct SelectionActionsMenu: View {
             }
             .accessibilityIdentifier("mark-selection-not-done")
 
-            Menu("Move", systemImage: "folder") {
+            Menu(.move, systemImage: "folder") {
                 ForEach(model.lists.filter { $0.id != model.selectedListID }) { list in
                     Button(list.displayName) {
                         Task {
@@ -92,11 +92,11 @@ struct SelectionActionsMenu: View {
 
             if model.canReorderVisibleSnips {
                 Divider()
-                Button("Move Up", systemImage: "arrow.up") {
+                Button(.moveUp, systemImage: "arrow.up") {
                     Task { _ = await model.moveSelection(by: -1) }
                 }
                 .accessibilityIdentifier("move-selection-up")
-                Button("Move Down", systemImage: "arrow.down") {
+                Button(.moveDown, systemImage: "arrow.down") {
                     Task { _ = await model.moveSelection(by: 1) }
                 }
                 .accessibilityIdentifier("move-selection-down")
@@ -111,7 +111,7 @@ struct SelectionActionsMenu: View {
             )
 
             Divider()
-            Button("Delete", systemImage: "trash", role: .destructive) {
+            Button(.delete, systemImage: "trash", role: .destructive) {
                 Task {
                     if await model.deleteSelection() { endSelection() }
                 }
@@ -125,8 +125,8 @@ struct SelectionActionsMenu: View {
 private extension SnipSortMode {
     var title: String {
         switch self {
-        case .chronological: String(localized: "Newest First")
-        case .manual: String(localized: "Manual")
+        case .chronological: String(localized: .newestFirst)
+        case .manual: String(localized: .manual)
         }
     }
 }

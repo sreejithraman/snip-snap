@@ -12,7 +12,7 @@ enum SnipListIconOptions {
     static let recentsDefaultsKey = "recentSectionIcons"
 
     static let categories = [
-        SnipListIconCategory(title: String(localized: "Smileys & Emotion"), icons: [
+        SnipListIconCategory(title: String(localized: .smileysEmotion), icons: [
             "heart.fill", "star.fill", "sparkles", "flame.fill",
             "hand.thumbsup.fill", "hand.thumbsdown.fill", "hand.wave.fill", "hands.clap.fill",
             "hands.sparkles.fill", "face.smiling", "face.dashed", "eyes",
@@ -25,7 +25,7 @@ enum SnipListIconOptions {
             "quote.bubble.fill", "text.bubble.fill", "exclamationmark.bubble.fill", "questionmark.bubble.fill",
             "checkmark.bubble.fill", "person.crop.circle.badge.checkmark", "person.crop.circle.badge.xmark", "hand.raised.fingers.spread.fill"
         ]),
-        SnipListIconCategory(title: String(localized: "People & Body"), icons: [
+        SnipListIconCategory(title: String(localized: .peopleBody), icons: [
             "person.fill", "person.2.fill", "person.3.fill", "person.crop.circle.fill",
             "person.badge.plus", "person.fill.checkmark", "person.fill.xmark", "person.fill.questionmark",
             "person.2.badge.plus", "person.2.badge.minus", "person.2.gobackward", "person.3.sequence.fill",
@@ -39,7 +39,7 @@ enum SnipListIconOptions {
             "hand.point.right.fill", "hand.tap.fill", "hand.draw.fill", "hand.pinch.fill",
             "hands.and.sparkles.fill", "touchid", "figure.boxing", "hand.palm.facing.fill"
         ]),
-        SnipListIconCategory(title: String(localized: "Animals & Nature"), icons: [
+        SnipListIconCategory(title: String(localized: .animalsNature), icons: [
             "dog.fill", "cat.fill", "hare.fill", "tortoise.fill",
             "lizard.fill", "bird.fill", "fish.fill", "seal.fill",
             "ant.fill", "ladybug.fill", "pawprint.fill", "microbe.fill",
@@ -54,7 +54,7 @@ enum SnipListIconOptions {
             "sunset.fill", "moon.stars.fill", "service.dog.fill", "rosette",
             "cloud.sun.rain.fill", "thermometer.medium"
         ]),
-        SnipListIconCategory(title: String(localized: "Food & Drink"), icons: [
+        SnipListIconCategory(title: String(localized: .foodDrink), icons: [
             "fork.knife", "fork.knife.circle.fill", "cup.and.saucer.fill", "cup.and.heat.waves.fill",
             "mug.fill", "wineglass.fill", "birthday.cake.fill", "takeoutbag.and.cup.and.straw.fill",
             "carrot.fill", "fish", "waterbottle.fill", "popcorn.fill",
@@ -63,7 +63,7 @@ enum SnipListIconOptions {
             "cup.and.saucer", "birthday.cake", "carrot", "popcorn",
             "fish.circle.fill", "leaf.circle", "flame", "drop", "spoon.serving"
         ]),
-        SnipListIconCategory(title: String(localized: "Travel & Places"), icons: [
+        SnipListIconCategory(title: String(localized: .travelPlaces), icons: [
             "car.fill", "bus.fill", "tram.fill", "bicycle",
             "motorcycle.fill", "scooter", "skateboard.fill", "sailboat.fill",
             "airplane", "airplane.departure", "airplane.arrival", "ferry.fill",
@@ -79,7 +79,7 @@ enum SnipListIconOptions {
             "timer", "hourglass", "calendar", "calendar.circle.fill",
             "calendar.badge.clock", "train.side.front.car", "truck.pickup.side.fill"
         ]),
-        SnipListIconCategory(title: String(localized: "Activities"), icons: [
+        SnipListIconCategory(title: String(localized: .activities), icons: [
             "balloon.fill", "ticket.fill", "soccerball", "baseball.fill",
             "basketball.fill", "football.fill", "tennisball.fill", "volleyball.fill",
             "rugbyball.fill", "cricket.ball.fill", "hockey.puck.fill", "skis.fill",
@@ -101,7 +101,7 @@ enum SnipListIconOptions {
             "speaker.slash.fill", "radio.fill", "waveform", "mic.fill",
             "guitars.fill", "pianokeys", "music.quarternote.3"
         ]),
-        SnipListIconCategory(title: String(localized: "Objects"), icons: [
+        SnipListIconCategory(title: String(localized: .objects), icons: [
             "tshirt.fill", "shoe.fill", "hat.cap.fill", "eyeglasses",
             "sunglasses.fill", "handbag.fill", "umbrella.fill", "watch.analog",
             "airtag.fill", "key.fill", "key.card.fill", "iphone",
@@ -125,7 +125,7 @@ enum SnipListIconOptions {
             "ring", "horn.fill", "bell.slash.fill", "battery.0percent",
             "door.left.hand.closed", "window.vertical.closed", "bubbles.and.sparkles.fill", "staroflife.fill"
         ]),
-        SnipListIconCategory(title: String(localized: "Symbols"), icons: [
+        SnipListIconCategory(title: String(localized: .symbols), icons: [
             "checkmark.circle.fill", "xmark.circle.fill", "exclamationmark.triangle.fill", "questionmark.circle.fill",
             "info.circle.fill", "plus.circle.fill", "minus.circle.fill", "multiply.circle.fill",
             "divide.circle.fill", "equal.circle.fill", "infinity.circle.fill", "percent",
@@ -140,7 +140,7 @@ enum SnipListIconOptions {
             "flag.fill", "circle.fill", "square.fill", "diamond.fill",
             "triangle.fill", "arrow.3.trianglepath", "peacesign", "sos.circle.fill", "r.circle.fill"
         ]),
-        SnipListIconCategory(title: String(localized: "Work & Planning"), icons: [
+        SnipListIconCategory(title: String(localized: .workPlanning), icons: [
             "circle.grid.2x2.fill", "tray.fill", "archivebox.fill", "folder.badge.plus",
             "tag.fill", "pin.fill", "checklist", "list.bullet",
             "paperplane.fill", "envelope.fill", "message.fill", "phone.fill",
@@ -152,10 +152,10 @@ enum SnipListIconOptions {
             "point.3.connected.trianglepath.dotted", "rectangle.3.group.fill", "square.grid.3x3.fill", "list.bullet.indent",
             "square.stack.fill", "app.badge.fill", "rectangle.badge.checkmark", "exclamationmark.arrow.triangle.2.circlepath"
         ]),
-        SnipListIconCategory(title: String(localized: "Communication"), icons: [
+        SnipListIconCategory(title: String(localized: .communication), icons: [
             "envelope.open.fill", "phone.arrow.up.right.fill", "video.bubble.left.fill", "megaphone"
         ]),
-        SnipListIconCategory(title: String(localized: "Developer & Data"), icons: [
+        SnipListIconCategory(title: String(localized: .developerData), icons: [
             "terminal.fill", "apple.terminal.fill", "curlybraces", "chevron.left.forwardslash.chevron.right",
             "swift", "command", "memorychip.fill", "cpu.fill",
             "server.rack", "network", "externaldrive.fill", "atom",
@@ -164,7 +164,7 @@ enum SnipListIconOptions {
             "chart.xyaxis.line", "sum", "externaldrive.connected.to.line.below", "gearshape.2.fill",
             "bolt.horizontal.fill"
         ]),
-        SnipListIconCategory(title: String(localized: "Design & Making"), icons: [
+        SnipListIconCategory(title: String(localized: .designMaking), icons: [
             "paintbrush.pointed.fill", "eyedropper", "crop", "pencil.and.ruler.fill",
             "swatchpalette.fill", "circle.lefthalf.filled", "square.on.circle", "circle.on.square",
             "rectangle.on.rectangle", "scribble.variable", "lasso", "wand.and.sparkles",
@@ -173,7 +173,7 @@ enum SnipListIconOptions {
             "square.3.layers.3d", "point.3.filled.connected.trianglepath.dotted", "cursorarrow.click", "selection.pin.in.out",
             "textformat"
         ]),
-        SnipListIconCategory(title: String(localized: "Money, Shopping & Security"), icons: [
+        SnipListIconCategory(title: String(localized: .moneyShoppingSecurity), icons: [
             "dollarsign.circle.fill", "eurosign.circle.fill", "bitcoinsign.circle.fill", "wallet.bifold.fill",
             "basket.fill", "barcode", "qrcode", "scale.3d",
             "plus.forwardslash.minus", "shield.fill", "person.badge.key.fill", "key.viewfinder",

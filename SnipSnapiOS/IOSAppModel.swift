@@ -351,7 +351,7 @@ final class IOSAppModel {
             attachmentTransferStates[attachmentID] = .failed
             switch use {
             case .preview, .open:
-                errorMessage = String(localized: "Snip Snap could not download that attachment. Please try again.")
+                errorMessage = String(localized: .snipSnapCouldNotDownloadThatAttachmentPleaseTryAgain)
             case .copy, .export:
                 break
             }
@@ -375,7 +375,7 @@ final class IOSAppModel {
             apply(await library.snapshot(sortedBy: .chronological))
             await refreshAttachmentTransferStates()
         } catch {
-            errorMessage = String(localized: "Snip Snap could not clear the downloaded files.")
+            errorMessage = String(localized: .snipSnapCouldNotClearTheDownloadedFiles)
         }
     }
 
@@ -581,25 +581,25 @@ final class IOSAppModel {
     var importPreviewSummary: String {
         guard let preview = pendingImportPreview else { return "" }
         var parts = [preview.totalSnipCount == 1
-            ? String(localized: "1 snip")
-            : String(localized: "\(preview.totalSnipCount) snips")]
+            ? String(localized: ._1Snip)
+            : String(localized: .snips(preview.totalSnipCount))]
         if preview.addedSnipCount > 0 {
-            parts.append(String(localized: "\(preview.addedSnipCount) new"))
+            parts.append(String(localized: .new(preview.addedSnipCount)))
         }
         if preview.recoveredSnipCount > 0 {
             parts.append(preview.recoveredSnipCount == 1
-                ? String(localized: "1 recovered edit")
-                : String(localized: "\(preview.recoveredSnipCount) recovered edits"))
+                ? String(localized: ._1RecoveredEdit)
+                : String(localized: .recoveredEdits(preview.recoveredSnipCount)))
         }
         if preview.addedListCount > 0 {
             parts.append(preview.addedListCount == 1
-                ? String(localized: "1 new list")
-                : String(localized: "\(preview.addedListCount) new lists"))
+                ? String(localized: ._1NewList)
+                : String(localized: .newLists(preview.addedListCount)))
         }
         if preview.addedAttachmentCount > 0 {
             parts.append(preview.addedAttachmentCount == 1
-                ? String(localized: "1 attachment")
-                : String(localized: "\(preview.addedAttachmentCount) attachments"))
+                ? String(localized: ._1Attachment)
+                : String(localized: .attachments(preview.addedAttachmentCount)))
         }
         return parts.joined(separator: ", ")
     }

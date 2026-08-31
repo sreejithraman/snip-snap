@@ -29,8 +29,8 @@ struct AppToast: Identifiable, Equatable {
         Self(
             systemImage: "doc.on.doc",
             message: count == 1
-                ? String(localized: "Copied")
-                : String(localized: "Copied \(count) snips")
+                ? String(localized: .copied)
+                : String(localized: .copiedSnips(count))
         )
     }
 
@@ -39,8 +39,8 @@ struct AppToast: Identifiable, Equatable {
             id: id,
             systemImage: "trash",
             message: count == 1
-                ? String(localized: "Snip deleted")
-                : String(localized: "\(count) snips deleted"),
+                ? String(localized: .snipDeleted)
+                : String(localized: .snipsDeleted(count)),
             action: .undoDelete,
             duration: .seconds(6)
         )
@@ -98,7 +98,7 @@ private struct AppToastPresenter: ViewModifier {
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(2)
                 if toast.action != nil {
-                    Button("Undo") {
+                    Button(.undo) {
                         self.toast = nil
                         onAction(toast)
                     }

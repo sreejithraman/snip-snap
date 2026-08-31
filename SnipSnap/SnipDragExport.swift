@@ -47,7 +47,7 @@ private final class SnipMarkdownPromiseDelegate: NSObject,
         _ filePromiseProvider: NSFilePromiseProvider,
         fileNameForType fileType: String
     ) -> String {
-        "Snip Snap Snip.md"
+        String(localized: .fileNameSnipMarkdownExport)
     }
 
     nonisolated func filePromiseProvider(

@@ -125,46 +125,46 @@ public final class SyncedContentSettingsModel {
 
   public var statusTitle: String {
     switch (mode, state) {
-    case (_, .failed): String(localized: "Sync Needs Attention", bundle: .main)
-    case (.localOnly, .enabling): String(localized: "Setting Up iCloud Sync…", bundle: .main)
-    case (.localOnly, _): String(localized: "Local Only", bundle: .main)
-    case (_, .ready): String(localized: "iCloud Sync On", bundle: .main)
-    case (_, .enabling): String(localized: "Setting Up iCloud Sync…", bundle: .main)
-    case (_, .disabling): String(localized: "Turning Off iCloud Sync…", bundle: .main)
-    case (_, .deleting): String(localized: "Deleting Synced Content…", bundle: .main)
-    case (_, .encryptedDataReset): String(localized: "iCloud Encrypted Data Was Reset", bundle: .main)
-    case (_, .resolvingEncryptedDataReset): String(localized: "Starting a New Synced Collection…", bundle: .main)
-    case (_, .removalPending): String(localized: "Old Synced Content Removal Pending", bundle: .main)
-    case (_, .deleted): String(localized: "Synced Content Deleted", bundle: .main)
+    case (_, .failed): String(localized: LocalizedStringResource.syncNeedsAttention)
+    case (.localOnly, .enabling): String(localized: LocalizedStringResource.settingUpICloudSync)
+    case (.localOnly, _): String(localized: LocalizedStringResource.localOnly)
+    case (_, .ready): String(localized: LocalizedStringResource.iCloudSyncOn)
+    case (_, .enabling): String(localized: LocalizedStringResource.settingUpICloudSync)
+    case (_, .disabling): String(localized: LocalizedStringResource.turningOffICloudSync)
+    case (_, .deleting): String(localized: LocalizedStringResource.deletingSyncedContent)
+    case (_, .encryptedDataReset): String(localized: LocalizedStringResource.iCloudEncryptedDataWasReset)
+    case (_, .resolvingEncryptedDataReset): String(localized: LocalizedStringResource.startingANewSyncedCollection)
+    case (_, .removalPending): String(localized: LocalizedStringResource.oldSyncedContentRemovalPending)
+    case (_, .deleted): String(localized: LocalizedStringResource.syncedContentDeleted)
     }
   }
 
   public var detail: String {
     switch (mode, state) {
     case (.localOnly, .failed(let message)):
-      String(localized: "Snip Snap could not finish setting up iCloud Sync. Your local library remains available. \(message)", bundle: .main)
+      String(localized: LocalizedStringResource.snipSnapCouldNotFinishSettingUpICloudSyncYourLocalLibraryRemainsAvailable(message))
     case (_, .failed(let message)):
-      String(localized: "Snip Snap could not finish the iCloud action. Check the current sync status before you retry. \(message)", bundle: .main)
+      String(localized: LocalizedStringResource.snipSnapCouldNotFinishTheICloudActionCheckTheCurrentSyncStatusBeforeYouRetry(message))
     case (.localOnly, .enabling):
-      String(localized: "Snip Snap is fetching iCloud data and preparing a safe merged copy.", bundle: .main)
+      String(localized: LocalizedStringResource.snipSnapIsFetchingICloudDataAndPreparingASafeMergedCopy)
     case (.iCloudSync, .enabling):
-      String(localized: "Snip Snap is finishing iCloud Sync setup.", bundle: .main)
+      String(localized: LocalizedStringResource.snipSnapIsFinishingICloudSyncSetup)
     case (.iCloudSync, .disabling):
-      String(localized: "Snip Snap is making a local copy of your synced library. Your iCloud copy will stay in place.", bundle: .main)
+      String(localized: LocalizedStringResource.snipSnapIsMakingALocalCopyOfYourSyncedLibraryYourICloudCopyWillStayInPlace)
     case (.localOnly, _):
-      String(localized: "Snip Snap does not send local-only data to CloudKit.", bundle: .main)
+      String(localized: LocalizedStringResource.snipSnapDoesNotSendLocalOnlyDataToCloudKit)
     case (_, .ready):
-      String(localized: "Saved snips and attachments sync through your private iCloud database. Snip Snap’s maintainers cannot inspect private records in CloudKit Console. Apple encrypts synced data in transit and at rest; user fields use encrypted values and files use CKAsset data. Those user fields and attachments are end-to-end encrypted only when Advanced Data Protection is on.", bundle: .main)
+      String(localized: LocalizedStringResource.savedSnipsAndAttachmentsSyncThroughYourPrivateICloudDatabaseSnipSnapsMaintainersCannotInspectPrivateRecordsInCloudKitConsoleAppleEncryptsSyncedDataInTransitAndAtRestUserFieldsUseEncryptedValuesAndFilesUseCkassetDataThoseUserFieldsAndAttachmentsAreEndToEndEncryptedOnlyWhenAdvancedDataProtectionIsOn)
     case (_, .deleting):
-      String(localized: "Snip Snap is starting a fresh empty synced collection and removing the old data zones.", bundle: .main)
+      String(localized: LocalizedStringResource.snipSnapIsStartingAFreshEmptySyncedCollectionAndRemovingTheOldDataZones)
     case (_, .encryptedDataReset):
-      String(localized: "Snip Snap stopped sync and kept this device’s snips and available attachment files as a read-only recovery copy. Choose how to start again.", bundle: .main)
+      String(localized: LocalizedStringResource.snipSnapStoppedSyncAndKeptThisDevicesSnipsAndAvailableAttachmentFilesAsAReadOnlyRecoveryCopyChooseHowToStartAgain)
     case (_, .resolvingEncryptedDataReset):
-      String(localized: "Snip Snap is checking iCloud before it starts or joins the new synced collection.", bundle: .main)
+      String(localized: LocalizedStringResource.snipSnapIsCheckingICloudBeforeItStartsOrJoinsTheNewSyncedCollection)
     case (_, .removalPending):
-      String(localized: "Snip Snap started a fresh empty synced collection, but it could not remove all old iCloud data yet. It will retry the next time it syncs. Your local recovery copy remains.", bundle: .main)
+      String(localized: LocalizedStringResource.snipSnapStartedAFreshEmptySyncedCollectionButItCouldNotRemoveAllOldICloudDataYetItWillRetryTheNextTimeItSyncsYourLocalRecoveryCopyRemains)
     case (_, .deleted):
-      String(localized: "Synced content was removed. This device kept a local recovery copy. A small control record remains in iCloud so an old device cannot restore the deleted collection.", bundle: .main)
+      String(localized: LocalizedStringResource.syncedContentWasRemovedThisDeviceKeptALocalRecoveryCopyASmallControlRecordRemainsInICloudSoAnOldDeviceCannotRestoreTheDeletedCollection)
     }
   }
 

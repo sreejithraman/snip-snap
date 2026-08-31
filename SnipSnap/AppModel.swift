@@ -8,7 +8,7 @@ enum MacBackupImportPickerPolicy {
     static let allowedContentTypes: [UTType] = [.folder, .json]
     static let canChooseFiles = true
     static let canChooseDirectories = true
-    static let message = String(localized: "Choose a backup folder to include attachments, or a plain JSON file for a text-only backup.")
+    static let message = String(localized: .chooseABackupFolderToIncludeAttachmentsOrAPlainJsonFileForATextOnlyBackup)
 }
 
 private actor AppModelCommandLock {
@@ -589,7 +589,7 @@ final class AppModel: ObservableObject {
                 try entry.materializeForSnip()
             }.value
         } catch {
-            presentedError = String(localized: "Snip Snap could not prepare the clipboard image.")
+            presentedError = String(localized: .snipSnapCouldNotPrepareTheClipboardImage)
             return false
         }
         defer { materialization.removeTemporaryFiles() }
@@ -676,33 +676,33 @@ final class AppModel: ObservableObject {
     var importPreviewSummary: String {
         guard let preview = pendingImportPreview else { return "" }
         var parts = [preview.totalSnipCount == 1
-            ? String(localized: "1 snip")
-            : String(localized: "\(preview.totalSnipCount) snips")]
+            ? String(localized: ._1Snip)
+            : String(localized: .snips(preview.totalSnipCount))]
         if preview.addedSnipCount > 0 {
-            parts.append(String(localized: "\(preview.addedSnipCount) new"))
+            parts.append(String(localized: .new(preview.addedSnipCount)))
         }
         if preview.recoveredSnipCount > 0 {
             parts.append(preview.recoveredSnipCount == 1
-                ? String(localized: "1 recovered edit")
-                : String(localized: "\(preview.recoveredSnipCount) recovered edits"))
+                ? String(localized: ._1RecoveredEdit)
+                : String(localized: .recoveredEdits(preview.recoveredSnipCount)))
         }
         if preview.addedListCount > 0 {
             parts.append(preview.addedListCount == 1
-                ? String(localized: "1 new list")
-                : String(localized: "\(preview.addedListCount) new lists"))
+                ? String(localized: ._1NewList)
+                : String(localized: .newLists(preview.addedListCount)))
         }
         if preview.addedAttachmentCount > 0 {
             parts.append(preview.addedAttachmentCount == 1
-                ? String(localized: "1 attachment")
-                : String(localized: "\(preview.addedAttachmentCount) attachments"))
+                ? String(localized: ._1Attachment)
+                : String(localized: .attachments(preview.addedAttachmentCount)))
         }
         return parts.joined(separator: ", ")
     }
 
     func beginBackupImport() {
         let panel = NSOpenPanel()
-        panel.title = String(localized: "Import Backup")
-        panel.prompt = String(localized: "Review Backup")
+        panel.title = String(localized: .dialogImportBackupTitle)
+        panel.prompt = String(localized: .reviewBackup)
         panel.message = MacBackupImportPickerPolicy.message
         panel.allowedContentTypes = MacBackupImportPickerPolicy.allowedContentTypes
         panel.allowsMultipleSelection = false

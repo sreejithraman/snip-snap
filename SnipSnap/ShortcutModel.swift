@@ -87,11 +87,11 @@ struct ShortcutKeyChord: Codable, Hashable, Sendable {
         if modifiers & UInt32(cmdKey) != 0 { result += "⌘" }
         let displayedKey: String
         switch Int(keyCode) {
-        case kVK_Space: displayedKey = String(localized: "Space")
-        case kVK_Return, kVK_ANSI_KeypadEnter: displayedKey = String(localized: "Return")
-        case kVK_Tab: displayedKey = String(localized: "Tab")
-        case kVK_Delete: displayedKey = String(localized: "Delete")
-        case kVK_ForwardDelete: displayedKey = String(localized: "Forward Delete")
+        case kVK_Space: displayedKey = String(localized: .space)
+        case kVK_Return, kVK_ANSI_KeypadEnter: displayedKey = String(localized: .`return`)
+        case kVK_Tab: displayedKey = String(localized: .tab)
+        case kVK_Delete: displayedKey = String(localized: .delete)
+        case kVK_ForwardDelete: displayedKey = String(localized: .forwardDelete)
         default: displayedKey = keyLabel
         }
         return result + displayedKey
@@ -178,8 +178,8 @@ enum ShiftSide: String, Codable, Hashable, Sendable {
 
     var displayName: String {
         switch self {
-        case .left: String(localized: "Left ⇧ ⇧")
-        case .right: String(localized: "Right ⇧ ⇧")
+        case .left: String(localized: .left)
+        case .right: String(localized: .right)
         }
     }
 }
@@ -211,7 +211,8 @@ enum ShortcutTrigger: Hashable, Sendable {
     var displayName: String {
         switch self {
         case .doubleShift(let side): side.displayName
-        case .commandDoubleShift(let side): String(localized: "⌘ \(side.displayName)")
+        case .commandDoubleShift(let side):
+            String(localized: .shortcutCommandDoubleShift(side.displayName))
         case .keyChord(let chord): chord.displayName
         }
     }
@@ -373,7 +374,7 @@ enum AppShortcutAction: String, Codable, CaseIterable, Identifiable, Sendable {
     var title: String {
         switch self {
         case .toggleDone: SnipCompletionLanguage.toggle
-        case .merge: String(localized: "Merge Snips")
+        case .merge: String(localized: .mergeSnips)
         }
     }
 
@@ -434,9 +435,9 @@ enum ShortcutSettingsError: Error, Equatable, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .duplicate: String(localized: "Another action already uses that shortcut.")
-        case .defaultForAnotherAction: String(localized: "That shortcut is another action's default.")
-        case .reserved: String(localized: "macOS or a fixed Snip Snap command uses that shortcut.")
+        case .duplicate: String(localized: .anotherActionAlreadyUsesThatShortcut)
+        case .defaultForAnotherAction: String(localized: .thatShortcutIsAnotherActionsDefault)
+        case .reserved: String(localized: .macOSOrAFixedSnipSnapCommandUsesThatShortcut)
         }
     }
 }
@@ -606,9 +607,9 @@ enum GlobalHotKeyAction: UInt32, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .captureSelection: String(localized: "Capture Selection")
-        case .togglePanel: String(localized: "Open or Hide Snip Snap")
-        case .toggleClipboard: String(localized: "Open or Hide Clipboard")
+        case .captureSelection: String(localized: .captureSelection)
+        case .togglePanel: String(localized: .openOrHideSnipSnap)
+        case .toggleClipboard: String(localized: .openOrHideClipboard)
         }
     }
 
@@ -628,9 +629,9 @@ enum GlobalHotKeyError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .eventHandler:
-            String(localized: "Snip Snap could not start keyboard shortcut handling.")
+            String(localized: .snipSnapCouldNotStartKeyboardShortcutHandling)
         case .registration:
-            String(localized: "macOS could not register that shortcut. Another app may already use it.")
+            String(localized: .macOSCouldNotRegisterThatShortcutAnotherAppMayAlreadyUseIt)
         }
     }
 }

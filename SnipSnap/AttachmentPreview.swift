@@ -100,8 +100,8 @@ struct AttachmentPreviewStrip: View {
                     x: AttachmentPreviewMetrics.removeButtonOverflow,
                     y: -AttachmentPreviewMetrics.removeButtonOverflow
                 )
-                .help("Remove \(item.fileName)")
-                .accessibilityLabel("Remove \(item.fileName)")
+                .help(.remove(item.fileName))
+                .accessibilityLabel(.remove(item.fileName))
             }
         }
     }
@@ -127,9 +127,9 @@ private struct AttachmentPreviewTile: View {
             )
         }
         .buttonStyle(.plain)
-        .help("Quick Look \(fileName)")
-        .accessibilityLabel("Preview \(fileName)")
-        .accessibilityHint("Shows a Quick Look preview")
+        .help(.quickLook(fileName))
+        .accessibilityLabel(.preview(fileName))
+        .accessibilityHint(.showsAQuickLookPreview)
         .task(id: thumbnailRequestID) {
             guard let url else {
                 thumbnail = nil

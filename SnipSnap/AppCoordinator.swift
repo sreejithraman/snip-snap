@@ -63,7 +63,7 @@ final class AppCoordinator {
             try manager.register(configuration: shortcutSettings.configuration)
             hotKeys = manager
         } catch {
-            model.presentedError = String(localized: "Snip Snap could not register its keyboard shortcuts.")
+            model.presentedError = String(localized: .snipSnapCouldNotRegisterItsKeyboardShortcuts)
         }
     }
 
@@ -162,7 +162,7 @@ final class AppCoordinator {
 
     func useClipboardEntry(_ entry: ClipboardEntry) {
         guard model.clipboardHistory.restore(entry) else {
-            model.presentedError = String(localized: "Snip Snap could not set the clipboard.")
+            model.presentedError = String(localized: .snipSnapCouldNotSetTheClipboard)
             return
         }
         guard let application = previousExternalApplication,
@@ -174,7 +174,7 @@ final class AppCoordinator {
                 try? await Task.sleep(for: .milliseconds(20))
             }
             guard application.isActive else {
-                model.presentedError = String(localized: "Snip Snap set the clipboard but could not return to the prior app.")
+                model.presentedError = String(localized: .snipSnapSetTheClipboardButCouldNotReturnToThePriorApp)
                 return
             }
             let source = CGEventSource(stateID: .hidSystemState)
@@ -220,7 +220,7 @@ final class AppCoordinator {
             snip: snip,
             onSave: { [weak self] text in
                 guard let self else {
-                    return String(localized: "Snip Snap closed before it could save the snip.")
+                    return String(localized: .snipSnapClosedBeforeItCouldSaveTheSnip)
                 }
                 let result = await self.model.updateResult(
                     id: snipID,
@@ -255,7 +255,7 @@ final class AppCoordinator {
             return
         }
         let requestID = UUID()
-        let name = sourceApplication.localizedName ?? String(localized: "Unknown app")
+        let name = sourceApplication.localizedName ?? String(localized: .unknownApp)
         let clipboardHistory = model.clipboardHistory
         let suppressionToken = clipboardHistory.beginSuppression()
         selectionReader.capture(
@@ -274,7 +274,7 @@ final class AppCoordinator {
                         )
                     }.value
                     guard case .success(let temporaryAttachments) = staging else {
-                        let message = String(localized: "Snip Snap could not prepare the captured images.")
+                        let message = String(localized: .snipSnapCouldNotPrepareTheCapturedImages)
                         self.model.presentedError = message
                         self.hud.show(message: message, symbol: "exclamationmark")
                         return
@@ -293,9 +293,9 @@ final class AppCoordinator {
                     )
                     switch outcome {
                     case .success(.added):
-                        self.hud.show(message: String(localized: "Captured"), symbol: "checkmark")
+                        self.hud.show(message: String(localized: .captured), symbol: "checkmark")
                     case .success(.duplicate):
-                        self.hud.show(message: String(localized: "Already captured"), symbol: "minus")
+                        self.hud.show(message: String(localized: .alreadyCaptured), symbol: "minus")
                     case .failure(let error):
                         self.model.presentedError = error.localizedDescription
                         self.hud.show(
@@ -343,7 +343,7 @@ final class AppCoordinator {
                     .replacingOccurrences(of: ":", with: "-")
                     .replacingOccurrences(of: "\0", with: "")
                 let url = directory.appendingPathComponent(
-                    "\(index + 1)-\(fileName.isEmpty ? "Attachment" : fileName)"
+                    "\(index + 1)-\(fileName.isEmpty ? String(localized: .attachmentGenericName) : fileName)"
                 )
                 try attachment.data.write(to: url, options: .atomic)
                 urls.append(url)

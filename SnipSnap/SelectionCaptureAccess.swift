@@ -209,8 +209,8 @@ private final class LiveSelectionClipboardAccess: SelectionClipboardAccess {
         var remainingBytes = maxTotalImageBytes
         for item in pasteboard.pasteboardItems ?? [] where result.count < maxImageCount {
             let candidates: [(NSPasteboard.PasteboardType, String)] = [
-                (.png, "Selection.png"),
-                (.tiff, "Selection.tiff")
+                (.png, String(localized: .fileNameSelectionPNG)),
+                (.tiff, String(localized: .fileNameSelectionTIFF))
             ]
             guard let (type, name) = candidates.first(where: { item.types.contains($0.0) }),
                   let data = item.data(forType: type),

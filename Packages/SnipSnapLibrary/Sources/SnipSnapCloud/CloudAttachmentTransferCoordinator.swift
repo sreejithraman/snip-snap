@@ -54,14 +54,9 @@ extension CloudAttachmentSetupError: LocalizedError {
     switch self {
     case .unsupportedFiles(let files):
       let details = files.map { file in
-        String(
-          localized: "attachment.error.detail",
-          defaultValue: "\(file.fileName): \(file.reason.errorDescription)",
-          bundle: .main,
-          comment: "A file name followed by the reason that attachment cannot sync."
-        )
+        String(localized: LocalizedStringResource.attachmentErrorDetail(file.fileName, file.reason.errorDescription))
       }.joined(separator: "; ")
-      return String(localized: "These attachments cannot sync. \(details)", bundle: .main)
+      return String(localized: LocalizedStringResource.theseAttachmentsCannotSync(details))
     }
   }
 }
@@ -70,13 +65,13 @@ private extension CloudAttachmentUnsupportedReason {
   var errorDescription: String {
     switch self {
     case .fileTooLarge(let maximumBytes):
-      String(localized: "larger than Snip Snap’s \(formatSnipSnapByteLimit(maximumBytes)) per-file limit", bundle: .main)
+      String(localized: LocalizedStringResource.largerThanSnipSnapsPerFileLimit(formatSnipSnapByteLimit(maximumBytes)))
     case .snipTotalTooLarge(let maximumBytes):
-      String(localized: "part of a snip above Snip Snap’s \(formatSnipSnapByteLimit(maximumBytes)) attachment limit", bundle: .main)
+      String(localized: LocalizedStringResource.partOfASnipAboveSnipSnapsAttachmentLimit(formatSnipSnapByteLimit(maximumBytes)))
     case .contentType(let value):
-      String(localized: "unsupported file type \(value ?? String(localized: "unknown", bundle: .main))", bundle: .main)
+      String(localized: LocalizedStringResource.unsupportedFileType(value ?? String(localized: LocalizedStringResource.unknown)))
     case .missingLocalFile:
-      String(localized: "local file is missing or changed", bundle: .main)
+      String(localized: LocalizedStringResource.localFileIsMissingOrChanged)
     }
   }
 }
@@ -84,9 +79,9 @@ private extension CloudAttachmentUnsupportedReason {
 private func formatSnipSnapByteLimit(_ byteCount: Int64) -> String {
   let mib: Int64 = 1_048_576
   if byteCount.isMultiple(of: mib) {
-    return String(localized: "\(byteCount / mib) MiB", bundle: .main)
+    return String(localized: LocalizedStringResource.miB(Int(byteCount / mib)))
   }
-  return String(localized: "\(byteCount) bytes", bundle: .main)
+  return String(localized: LocalizedStringResource.bytes(Int(byteCount)))
 }
 
 package enum CloudAttachmentUse: Equatable, Sendable {

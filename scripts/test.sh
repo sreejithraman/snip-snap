@@ -33,7 +33,15 @@ trap snip_snap_cleanup_derived_data EXIT
 "$script_dir/ios-target-policy-tests.sh"
 "$script_dir/localization-policy-tests.sh"
 
-swift test --package-path "$repo_dir/Packages/SnipSnapLibrary"
+swift build \
+    --package-path "$repo_dir/Packages/SnipSnapLibrary" \
+    --configuration release
+
+swift test \
+    --package-path "$repo_dir/Packages/SnipSnapLibrary" \
+    --build-system swiftbuild \
+    -Xswiftc -D \
+    -Xswiftc SNIP_SNAP_SWIFTBUILD
 
 if [[ "$run_mac_app_tests" == YES ]]; then
     xcodebuild \
