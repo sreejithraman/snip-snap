@@ -1,4 +1,5 @@
 import XCTest
+import SnipSnapCore
 import Foundation
 @testable import SnipSnap
 

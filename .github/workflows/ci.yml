@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   test:
-    name: Test
+    name: Tests and iOS compile check
     runs-on: macos-26
     timeout-minutes: 20
 
@@ -26,3 +26,6 @@ jobs:
 
       - name: Run tests
         run: ./scripts/test.sh
+
+      - name: Build iPhone and Share extension
+        run: ./scripts/build-matrix.sh --iphone-only

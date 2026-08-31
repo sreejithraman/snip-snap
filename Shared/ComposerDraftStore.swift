@@ -14,27 +14,37 @@ final class ComposerDraftStore {
 
     private let defaults: UserDefaults
     private let textDefaultsKey: String
+    private let temporaryRootDirectory: URL?
     private var textByList: [String: String]
     private var textWriteTask: Task<Void, Never>?
     private var attachmentsByList: [UUID: [URL]] = [:]
     private var temporaryAttachments: Set<URL> = []
     private var inFlightCounts: [URL: Int] = [:]
 
-    init(defaults: UserDefaults = .standard, textDefaultsKey: String) {
+    init(
+        defaults: UserDefaults = .standard,
+        textDefaultsKey: String,
+        temporaryRootDirectory: URL? = nil
+    ) {
         self.defaults = defaults
         self.textDefaultsKey = textDefaultsKey
+        self.temporaryRootDirectory = temporaryRootDirectory
         textByList = defaults.dictionary(forKey: textDefaultsKey) as? [String: String] ?? [:]
     }
 
     deinit {
         textWriteTask?.cancel()
-        for url in temporaryAttachments {
-            try? FileManager.default.removeItem(at: url)
+        if let temporaryRootDirectory {
+            try? FileManager.default.removeItem(at: temporaryRootDirectory)
+        } else {
+            for url in temporaryAttachments {
+                try? FileManager.default.removeItem(at: url)
+            }
         }
     }
 
     func draft(for listID: UUID) -> ComposerDraft {
-        return ComposerDraft(
+        ComposerDraft(
             text: textByList[listID.uuidString] ?? "",
             attachments: attachmentsByList[listID] ?? []
         )
@@ -63,22 +73,6 @@ final class ComposerDraftStore {
 
     func addTemporary(_ url: URL, to listID: UUID) {
         temporaryAttachments.insert(url)
-        add([url], to: listID)
-    }
-
-    func stageScreenCapture() -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Snip Snap Capture \(UUID().uuidString).png")
-        temporaryAttachments.insert(url)
-        return url
-    }
-
-    func finishScreenCapture(_ url: URL, in listID: UUID, succeeded: Bool) {
-        guard succeeded, FileManager.default.fileExists(atPath: url.path) else {
-            try? FileManager.default.removeItem(at: url)
-            temporaryAttachments.remove(url)
-            return
-        }
         add([url], to: listID)
     }
 

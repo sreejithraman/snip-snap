@@ -1,4 +1,5 @@
 import AppKit
+import SnipSnapCore
 import ApplicationServices
 import Carbon.HIToolbox
 import Combine
@@ -78,7 +79,7 @@ final class AppCoordinator {
             try manager.register(configuration: shortcutSettings.configuration)
             hotKeys = manager
         } catch {
-            model.presentedError = "Snip Snap could not register its keyboard shortcuts."
+            model.presentedError = String(localized: "Snip Snap could not register its keyboard shortcuts.")
         }
         if accessibilityPermissions.isSetupCardVisible, let panelWindow {
             showPanel(panelWindow, focusing: nil)
@@ -175,15 +176,25 @@ final class AppCoordinator {
     @discardableResult
     func copyClipboardEntry(_ entry: ClipboardEntry) -> Bool {
         guard model.clipboardHistory.restore(entry) else {
-            model.presentedError = "Snip Snap could not set the clipboard."
+            model.presentedError = String(localized: "Snip Snap could not set the clipboard.")
             return false
         }
         return true
     }
 
     func editSelectionInNewWindow() {
+        Task { await editSelectionInNewWindowNow() }
+    }
+
+    func editSelectionInNewWindowNow() async {
         guard model.selection.count == 1,
               let snip = model.selectedSnips.first else { return }
+        do {
+            _ = try await model.prepareAttachments(snip.attachments, for: .open)
+        } catch {
+            model.presentedError = error.localizedDescription
+            return
+        }
         if let existing = editorWindows[snip.id] {
             existing.show()
             return
@@ -193,7 +204,9 @@ final class AppCoordinator {
         let controller = DetachedEditorWindowController(
             snip: snip,
             onSave: { [weak self] text in
-                guard let self else { return "Snip Snap closed before it could save the snip." }
+                guard let self else {
+                    return String(localized: "Snip Snap closed before it could save the snip.")
+                }
                 let result = await self.model.updateResult(
                     id: snipID,
                     content: text,
@@ -227,7 +240,7 @@ final class AppCoordinator {
             return
         }
         let requestID = UUID()
-        let name = sourceApplication.localizedName ?? "Unknown app"
+        let name = sourceApplication.localizedName ?? String(localized: "Unknown app")
         let clipboardHistory = model.clipboardHistory
         let suppressionToken = clipboardHistory.beginSuppression()
         selectionReader.capture(
@@ -246,7 +259,7 @@ final class AppCoordinator {
                         )
                     }.value
                     guard case .success(let temporaryAttachments) = staging else {
-                        let message = "Snip Snap could not prepare the captured images."
+                        let message = String(localized: "Snip Snap could not prepare the captured images.")
                         self.model.presentedError = message
                         self.hud.show(message: message, symbol: "exclamationmark")
                         return
@@ -265,9 +278,9 @@ final class AppCoordinator {
                     )
                     switch outcome {
                     case .success(.added):
-                        self.hud.show(message: "Captured", symbol: "checkmark")
+                        self.hud.show(message: String(localized: "Captured"), symbol: "checkmark")
                     case .success(.duplicate):
-                        self.hud.show(message: "Already captured", symbol: "minus")
+                        self.hud.show(message: String(localized: "Already captured"), symbol: "minus")
                     case .failure(let error):
                         self.model.presentedError = error.localizedDescription
                         self.hud.show(
@@ -300,7 +313,9 @@ final class AppCoordinator {
         do {
             try installShortcuts(shortcutSettings.configuration)
         } catch {
-            model.presentedError = "Snip Snap could not restart its keyboard shortcuts."
+            model.presentedError = String(
+                localized: "Snip Snap could not restart its keyboard shortcuts."
+            )
         }
     }
 

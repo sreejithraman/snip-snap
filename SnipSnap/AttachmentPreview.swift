@@ -1,4 +1,5 @@
 import AppKit
+import SnipSnapCore
 import SwiftUI
 
 enum AttachmentPreviewMetrics {
@@ -35,13 +36,18 @@ struct AttachmentPreviewArtwork: View {
 
 struct AttachmentPreviewItem: Identifiable {
     enum Source {
-        case file(URL, previewImage: NSImage?, fillsTile: Bool)
+        case file(URL?, previewImage: NSImage?, fillsTile: Bool)
         case image(id: String, image: NSImage)
     }
 
     let id: String
     let fileName: String
     let source: Source
+
+    var url: URL? {
+        guard case let .file(url, _, _) = source else { return nil }
+        return url
+    }
 
     init(url: URL) {
         id = url.standardizedFileURL.absoluteString
@@ -65,22 +71,26 @@ struct AttachmentPreviewItem: Identifiable {
         source = .image(id: id, image: image)
     }
 
-    init(attachment: SnipAttachment, url: URL) {
+    init(attachment: SnipAttachment, url: URL?) {
         id = attachment.id.uuidString
         fileName = attachment.fileName
         source = .file(url, previewImage: nil, fillsTile: true)
+    }
+
+    func thumbnailRequestID(displayScale: CGFloat) -> String {
+        "\(id)|\(url?.standardizedFileURL.path ?? "remote")|\(displayScale)"
     }
 }
 
 struct AttachmentPreviewStrip: View {
     let items: [AttachmentPreviewItem]
-    private let onPreview: ((URL) -> Void)?
-    private let onRemove: ((URL) -> Void)?
+    private let onPreview: ((AttachmentPreviewItem) -> Void)?
+    private let onRemove: ((AttachmentPreviewItem) -> Void)?
 
     init(
         items: [AttachmentPreviewItem],
-        onPreview: @escaping (URL) -> Void,
-        onRemove: ((URL) -> Void)? = nil
+        onPreview: @escaping (AttachmentPreviewItem) -> Void,
+        onRemove: ((AttachmentPreviewItem) -> Void)? = nil
     ) {
         self.items = items
         self.onPreview = onPreview
@@ -120,9 +130,9 @@ struct AttachmentPreviewStrip: View {
                 onPreview: onPreview
             )
 
-            if let onRemove, case let .file(url, _, _) = item.source {
+            if let onRemove, item.url != nil {
                 Button {
-                    onRemove(url)
+                    onRemove(item)
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 8, weight: .bold))
@@ -144,7 +154,7 @@ struct AttachmentPreviewStrip: View {
 
 private struct AttachmentPreviewTile: View {
     let item: AttachmentPreviewItem
-    let onPreview: ((URL) -> Void)?
+    let onPreview: ((AttachmentPreviewItem) -> Void)?
 
     @Environment(\.displayScale) private var displayScale
     @State private var thumbnail: NSImage?
@@ -153,7 +163,7 @@ private struct AttachmentPreviewTile: View {
         switch item.source {
         case let .file(url, previewImage, fillsTile):
             if let onPreview {
-                Button { onPreview(url) } label: {
+                Button { onPreview(item) } label: {
                     previewImageView(preloaded: previewImage, fillsTile: fillsTile)
                         .accessibilityHidden(true)
                     .contentShape(
@@ -168,12 +178,16 @@ private struct AttachmentPreviewTile: View {
                 .accessibilityLabel("Preview \(item.fileName)")
                 .accessibilityHint("Shows a Quick Look preview")
                 .task(id: thumbnailRequestID) {
-                    await loadThumbnail(preloaded: previewImage, url: url)
+                    if let url {
+                        await loadThumbnail(preloaded: previewImage, url: url)
+                    }
                 }
             } else {
                 previewImageView(preloaded: previewImage, fillsTile: fillsTile)
                     .task(id: thumbnailRequestID) {
-                        await loadThumbnail(preloaded: previewImage, url: url)
+                        if let url {
+                            await loadThumbnail(preloaded: previewImage, url: url)
+                        }
                     }
             }
         case let .image(_, image):
@@ -214,7 +228,7 @@ private struct AttachmentPreviewTile: View {
     }
 
     private var thumbnailRequestID: String {
-        "\(item.id)|\(displayScale)"
+        item.thumbnailRequestID(displayScale: displayScale)
     }
 }
 

@@ -86,6 +86,8 @@ struct PanelDragSessionContent {
 
 @MainActor
 struct PanelDragSessionAdapter {
+    let canBegin: () -> Bool
+    let onBlocked: () -> Void
     let makeSession: (PanelDragSourceContext) -> PanelDragSessionContent
     let sourceOperationMask: (NSDraggingContext) -> NSDragOperation
     let onBegan: () -> Void
@@ -95,9 +97,13 @@ struct PanelDragSessionAdapter {
     static func exporting<Export: PanelDragExportPackage>(
         makeExport: @escaping () -> Export,
         previewImage: @escaping (Export, PanelDragSourceContext) -> NSImage,
+        canBegin: @escaping () -> Bool = { true },
+        onBlocked: @escaping () -> Void = {},
         callbacks: PanelDragSessionCallbacks = .none
     ) -> Self {
         Self(
+            canBegin: canBegin,
+            onBlocked: onBlocked,
             makeSession: { context in
                 let export = makeExport()
                 return PanelDragSessionContent(
@@ -359,6 +365,10 @@ final class PanelDragSessionController: NSObject, NSDraggingSource, NSGestureRec
             return
         }
         defer { pendingRegion = nil }
+        guard region.adapter.canBegin() else {
+            region.adapter.onBlocked()
+            return
+        }
         let scale = hostView.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         let colorScheme: ColorScheme = hostView.effectiveAppearance.bestMatch(
             from: [.darkAqua, .aqua]

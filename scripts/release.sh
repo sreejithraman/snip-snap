@@ -4,24 +4,49 @@ set -euo pipefail
 script_dir="${0:A:h}"
 repo_dir="${script_dir:h}"
 release_repo="${SNIP_SNAP_RELEASE_REPO:-sreejithraman/snip-snap}"
-notary_profile="${SNIP_SNAP_NOTARY_PROFILE:-snip-snap-notary}"
+notary_profile="${SNIP_SNAP_NOTARY_PROFILE:-}"
 signing_identity="${SNIP_SNAP_SIGNING_IDENTITY:-}"
+development_team=""
+signing_temp_root=""
+resolved_settings=""
+export_options=""
 
 source "$script_dir/release-policy.sh"
-release_policy_preflight "$repo_dir" "$release_repo"
-version="$RELEASE_VERSION"
-build_number="$RELEASE_BUILD_NUMBER"
+source "$script_dir/signing-policy.sh"
 
 fail() {
     print -u2 "release: $1"
     exit 1
 }
 
-if [[ -z "$signing_identity" ]]; then
+cleanup() {
+    [[ -z "$signing_temp_root" || \
+       "$signing_temp_root" != /private/tmp/snip-snap-release-signing.* ]] || \
+        /bin/rm -rf "$signing_temp_root"
+}
+trap cleanup EXIT
+
+signing_temp_root="$(/usr/bin/mktemp -d /private/tmp/snip-snap-release-signing.XXXXXX)"
+resolved_settings="$signing_temp_root/build-settings.txt"
+export_options="$signing_temp_root/export-options.plist"
+signing_policy_capture_build_settings \
+    "$repo_dir" Release 'generic/platform=macOS' "$resolved_settings" \
+    "$signing_temp_root/DerivedData"
+development_team="$(signing_policy_resolve_setting \
+    "$resolved_settings" DEVELOPMENT_TEAM)"
+
+if [[ -z "$signing_identity" && -n "$development_team" ]]; then
     signing_identity="$(/usr/bin/security find-identity -v -p codesigning | \
-        /usr/bin/awk '/Developer ID Application/ && /\(K6239Y94G5\)/ { print $2; exit }')"
+        /usr/bin/awk -v team="$development_team" \
+        '/Developer ID Application/ && index($0, "(" team ")") { print $2; exit }')"
 fi
-[[ -n "$signing_identity" ]] || fail "install the team Developer ID Application identity"
+typeset -gx SNIP_SNAP_SIGNING_IDENTITY="$signing_identity"
+typeset -gx SNIP_SNAP_NOTARY_PROFILE="$notary_profile"
+signing_policy_preflight release "$resolved_settings" "$repo_dir" || exit 1
+
+release_policy_preflight "$repo_dir" "$release_repo"
+version="$RELEASE_VERSION"
+build_number="$RELEASE_BUILD_NUMBER"
 
 release_root="${SNIP_SNAP_RELEASE_DIR:-$repo_dir/artifacts/release-$version-$build_number}"
 archive_path="$release_root/SnipSnap.xcarchive"
@@ -96,15 +121,17 @@ else
         CODE_SIGN_IDENTITY="$signing_identity" \
         CODE_SIGN_STYLE=Manual \
         CURRENT_PROJECT_VERSION="$build_number" \
-        DEVELOPMENT_TEAM=K6239Y94G5 \
+        DEVELOPMENT_TEAM="$development_team" \
         MARKETING_VERSION="$version" \
         archive
+
+    signing_policy_write_export_options "$export_options" "$development_team"
 
     /usr/bin/xcodebuild \
         -exportArchive \
         -archivePath "$archive_path" \
         -exportPath "$export_path" \
-        -exportOptionsPlist "$script_dir/release-export-options.plist"
+        -exportOptionsPlist "$export_options"
 
     [[ -d "$app_path" ]] || fail "Xcode did not export Snip Snap.app"
     release_policy_verify_app "$app_path"

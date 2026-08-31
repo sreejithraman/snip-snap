@@ -1,0 +1,10 @@
+// Copy this file to Local.xcconfig. The copied file stays out of Git.
+// Leave values blank when you only need unsigned builds or an ad hoc Dev app.
+
+DEVELOPMENT_TEAM =
+
+// Forks may replace these public names without editing the Xcode project.
+// SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER = org.example.snipsnap
+// SNIP_SNAP_APP_GROUP_IDENTIFIER = group.org.example.snipsnap
+// SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER = iCloud.org.example.snipsnap
+// SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS = Config/Local.entitlements

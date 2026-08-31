@@ -1,4 +1,5 @@
 import AppKit
+import SnipSnapCore
 import Foundation
 
 enum SelectionCaptureFailure: Error, Equatable, LocalizedError, Sendable {
@@ -17,27 +18,27 @@ enum SelectionCaptureFailure: Error, Equatable, LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case .accessibilityPermissionRequired:
-            "Allow Accessibility access to capture the selection."
+            String(localized: "Allow Accessibility access to capture the selection.")
         case .sourceUnavailable:
-            "Snip Snap could not reach the frontmost app."
+            String(localized: "Snip Snap could not reach the frontmost app.")
         case .selectionUnavailable:
-            "Snip Snap could not copy the selection from this app."
+            String(localized: "Snip Snap could not copy the selection from this app.")
         case .noSelection:
-            "Select text or an image, then try again."
+            String(localized: "Select text or an image, then try again.")
         case .copyTimedOut:
-            "Snip Snap timed out while copying the selection."
+            String(localized: "Snip Snap timed out while copying the selection.")
         case .clipboardUnavailable:
-            "Snip Snap could not preserve the clipboard."
+            String(localized: "Snip Snap could not preserve the clipboard.")
         case .clipboardSnapshotTimedOut:
-            "Snip Snap timed out while reading the clipboard. Snip Snap changed nothing."
+            String(localized: "Snip Snap timed out while reading the clipboard. Snip Snap changed nothing.")
         case .clipboardChanged:
-            "The clipboard changed before Snip Snap could copy."
+            String(localized: "The clipboard changed before Snip Snap could copy.")
         case .clipboardRestoreFailed:
-            "Snip Snap could not restore the clipboard, so it did not save the capture."
+            String(localized: "Snip Snap could not restore the clipboard, so it did not save the capture.")
         case .sourceChanged:
-            "The source app is no longer active."
+            String(localized: "The source app is no longer active.")
         case .duplicateSelection:
-            "Already captured"
+            String(localized: "Already captured")
         }
     }
 }

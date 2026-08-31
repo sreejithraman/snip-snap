@@ -404,17 +404,25 @@ private struct PanelSlimProminentActionStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(SnipSnapColors.primaryActionLabel(for: colorScheme))
+            .foregroundStyle(
+                isEnabled
+                    ? SnipSnapColors.primaryActionLabel(for: colorScheme)
+                    : SnipSnapColors.disabledPrimaryActionLabel(for: colorScheme)
+            )
             .frame(
                 width: PanelControlMetrics.sendButtonWidth,
                 height: PanelControlMetrics.sendButtonHeight
             )
             .background {
                 Capsule(style: .continuous)
-                    .fill(SnipSnapColors.primaryActionTint(for: colorScheme))
+                    .fill(
+                        isEnabled
+                            ? SnipSnapColors.primaryActionTint(for: colorScheme)
+                            : SnipSnapColors.disabledPrimaryActionTint(for: colorScheme)
+                    )
             }
             .contentShape(Capsule(style: .continuous))
-            .opacity(isEnabled ? (configuration.isPressed ? 0.78 : 1) : 0.28)
+            .opacity(configuration.isPressed && isEnabled ? 0.78 : 1)
     }
 }
 

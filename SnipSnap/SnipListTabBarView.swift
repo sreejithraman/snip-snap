@@ -1,4 +1,5 @@
 import CoreTransferable
+import SnipSnapCore
 import SwiftUI
 
 struct SnipListTabBarView: View {
@@ -50,7 +51,7 @@ struct SnipListTabBarView: View {
             SnipListEditSheet(model: model, list: list)
         }
         .confirmationDialog(
-            "Delete \(listPendingDeletion?.name ?? "list")?",
+            String(localized: "Delete \(listPendingDeletion?.name ?? String(localized: "list"))?"),
             isPresented: listDeletionPresented
         ) {
             Button("Delete List", role: .destructive) {
@@ -262,9 +263,10 @@ struct SnipListTabBarView: View {
     private func tabName(_ tab: TabSelection) -> String {
         switch tab {
         case .clipboard:
-            "Clipboard"
+            String(localized: "Clipboard")
         case .list(let listID):
-            model.lists.first(where: { $0.id == listID })?.name ?? "List"
+            model.lists.first(where: { $0.id == listID })?.displayName
+                ?? String(localized: "List")
         }
     }
 
@@ -297,8 +299,8 @@ struct SnipListTabBarView: View {
         case .list(let listID):
             if let list = model.lists.first(where: { $0.id == listID }) {
                 Image(systemName: list.systemImage)
-                    .accessibilityLabel(list.name)
-                    .help(list.name)
+                    .accessibilityLabel(list.displayName)
+                    .help(list.displayName)
             }
         }
     }

@@ -1,18 +1,26 @@
 import AppKit
+import SnipSnapCore
 import XCTest
 import Foundation
 import UniformTypeIdentifiers
 @testable import SnipSnap
 
 final class SnipListModelsTests: XCTestCase {
-    func testAttachmentPreviewPreservesSnipMetadata() {
+    func testAttachmentPreviewPreservesSnipMetadata() throws {
         let id = UUID()
-        let attachment = SnipAttachment(
-            id: id,
-            fileName: "Original name.txt",
-            relativePath: "stored-name.txt",
-            contentType: "public.plain-text",
-            byteCount: 12
+        let attachment = try JSONDecoder().decode(
+            SnipAttachment.self,
+            from: Data(
+                """
+                {
+                  "id": "\(id.uuidString)",
+                  "fileName": "Original name.txt",
+                  "relativePath": "stored-name.txt",
+                  "contentType": "public.plain-text",
+                  "byteCount": 12
+                }
+                """.utf8
+            )
         )
 
         let item = AttachmentPreviewItem(
@@ -22,6 +30,34 @@ final class SnipListModelsTests: XCTestCase {
 
         XCTAssertEqual(item.id, id.uuidString)
         XCTAssertEqual(item.fileName, "Original name.txt")
+    }
+
+    func testAttachmentPreviewReloadsWhenRemoteFileBecomesAvailable() throws {
+        let id = UUID()
+        let attachment = try JSONDecoder().decode(
+            SnipAttachment.self,
+            from: Data(
+                """
+                {
+                  "id": "\(id.uuidString)",
+                  "fileName": "Remote.txt",
+                  "relativePath": "remote.txt",
+                  "contentType": "public.plain-text",
+                  "byteCount": 12
+                }
+                """.utf8
+            )
+        )
+        let remote = AttachmentPreviewItem(attachment: attachment, url: nil)
+        let local = AttachmentPreviewItem(
+            attachment: attachment,
+            url: URL(fileURLWithPath: "/tmp/remote.txt")
+        )
+
+        XCTAssertNotEqual(
+            remote.thumbnailRequestID(displayScale: 2),
+            local.thumbnailRequestID(displayScale: 2)
+        )
     }
 
     func testReorderTargetUsesEachRowsRealHeight() {
@@ -204,6 +240,23 @@ final class SnipListModelsTests: XCTestCase {
         )
         let privateItem = try XCTUnwrap(writers.last as? NSPasteboardItem)
         XCTAssertNotNil(privateItem.data(forType: SnipDragExportPackage.privateType))
+    }
+
+    func testRemoteOnlyDragPayloadWaitsForPreparationWithoutInventingAFileURL() {
+        let attachmentID = UUID()
+        let payload = SnipDragPayload(
+            ids: [UUID()],
+            text: "Remote attachment",
+            attachmentIDs: [attachmentID]
+        )
+
+        XCTAssertTrue(payload.hasRemoteOnlyAttachments)
+        XCTAssertTrue(payload.attachmentURLs.isEmpty)
+        XCTAssertFalse(
+            SnipDragExportPackage(payload: payload).pasteboardWriters().contains { writer in
+                (writer as? NSURL)?.isFileURL == true
+            }
+        )
     }
 
     func testTextOnlySnipDragOffersPlainTextBeforeItsPrivatePayload() throws {
@@ -419,7 +472,8 @@ final class SnipListModelsTests: XCTestCase {
             origin: .selection,
             source: SnipSource(
                 applicationName: "TextEdit",
-                windowTitle: "Draft"
+                windowTitle: "Draft",
+                url: nil
             )
         )
         let quickEntry = Snip(content: "Typed", origin: .quickEntry)

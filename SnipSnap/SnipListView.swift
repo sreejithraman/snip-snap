@@ -1,4 +1,5 @@
 import AppKit
+import SnipSnapCore
 import SwiftUI
 
 enum PanelFocusTarget: Hashable {
@@ -240,7 +241,7 @@ struct SnipListView: View {
                             }
                         } header: {
                             listSectionHeader(
-                                model.activeList.name,
+                                model.activeList.displayName,
                                 listID: model.activeListID
                             )
                         }
@@ -314,7 +315,7 @@ struct SnipListView: View {
                     model.snips.first(where: { $0.id == snipID }).map { snip in
                         InlineEditSession(
                             snipID: snipID,
-                            attachments: snip.attachments.map(model.attachmentURL)
+                            attachments: snip.attachments.compactMap(model.attachmentURL)
                         )
                     }
                 }
@@ -373,7 +374,7 @@ struct SnipListView: View {
         } else {
             session = InlineEditSession(
                 snipID: snipID,
-                attachments: snip.attachments.map(model.attachmentURL)
+                attachments: snip.attachments.compactMap(model.attachmentURL)
             )
         }
         guard !session.isSaving else { return }
@@ -505,6 +506,14 @@ struct SnipListView: View {
             makeExport: { SnipDragExportPackage(payload: payload) },
             previewImage: { export, context in
                 SnipDragPreview.image(for: export.payload, in: context)
+            },
+            canBegin: { !payload.hasRemoteOnlyAttachments },
+            onBlocked: {
+                Task { @MainActor in
+                    _ = await model.prepareAttachmentsForExternalDrag(
+                        snipIDs: payload.ids
+                    )
+                }
             },
             callbacks: PanelDragSessionCallbacks(
                 onBegan: {
@@ -692,12 +701,14 @@ struct SnipListView: View {
     private func snipCard(_ snip: Snip) -> some View {
         SnipCardRow(
             snip: snip,
+            isRecovered: model.isRecoveredSnip(snip.id),
             isSelected: (contextMenuSelection ?? model.selection).contains(snip.id),
             isEditing: model.editingID == snip.id,
             editAttachments: editAttachmentsBinding(for: snip),
             isSaving: savingBinding(for: snip),
             attachmentURL: model.attachmentURL,
-            onPreviewAttachments: onPreviewAttachments,
+            onPreviewSavedAttachments: previewSavedAttachments,
+            onPreviewLocalAttachments: onPreviewAttachments,
             onRemovePreviewURL: onRemovePreviewURL,
             onSelect: { select(snip.id) },
             onOpen: { edit(snip.id) },
@@ -775,11 +786,28 @@ struct SnipListView: View {
         }
     }
 
+    private func previewSavedAttachments(
+        _ attachments: [SnipAttachment],
+        selected: SnipAttachment
+    ) {
+        Task { @MainActor in
+            do {
+                guard let preview = try await model.prepareAttachmentPreview(
+                    attachments,
+                    selected: selected
+                ) else { return }
+                onPreviewAttachments(preview.urls, preview.selectedURL)
+            } catch {
+                model.presentedError = error.localizedDescription
+            }
+        }
+    }
+
     private func editAttachmentsBinding(for snip: Snip) -> Binding<[URL]> {
         Binding(
             get: {
                 guard let editSession, editSession.snipID == snip.id else {
-                    return snip.attachments.map(model.attachmentURL)
+                    return snip.attachments.compactMap(model.attachmentURL)
                 }
                 return editSession.attachments
             },
@@ -803,7 +831,7 @@ struct SnipListView: View {
                 if let editSession, editSession.snipID == snip.id {
                     attachments = editSession.attachments
                 } else {
-                    attachments = snip.attachments.map(model.attachmentURL)
+                    attachments = snip.attachments.compactMap(model.attachmentURL)
                 }
                 editSession = InlineEditSession(
                     snipID: snip.id,
@@ -830,7 +858,10 @@ struct SnipListView: View {
     private func edit(_ id: UUID) {
         selectExclusively(id)
         focusedTarget = nil
-        model.editingID = id
+        Task { @MainActor in
+            let opened = await model.beginEditing(id)
+            if !opened { focusedTarget = .list }
+        }
     }
 
     private func selectExclusively(_ id: UUID) {
@@ -915,23 +946,23 @@ struct SnipListView: View {
         ) {
             perform(.merge, on: ids)
         }
-        menu.addPanelSubmenu("Move to") { submenu in
+        menu.addPanelSubmenu(String(localized: "Move to")) { submenu in
             for list in model.lists {
-                submenu.addPanelAction(list.name) {
+                submenu.addPanelAction(list.displayName) {
                     model.selection = ids
                     model.moveSelection(to: list.id)
                 }
             }
             submenu.addItem(.separator())
-            submenu.addPanelAction("New List…") {
+            submenu.addPanelAction(String(localized: "New List…")) {
                 moveSelectionToNewList(ids)
             }
         }
-        menu.addPanelAction("Move Up", isEnabled: canReorder(ids)) {
+        menu.addPanelAction(String(localized: "Move Up"), isEnabled: canReorder(ids)) {
             model.selection = ids
             model.moveSelectionUp()
         }
-        menu.addPanelAction("Move Down", isEnabled: canReorder(ids)) {
+        menu.addPanelAction(String(localized: "Move Down"), isEnabled: canReorder(ids)) {
             model.selection = ids
             model.moveSelectionDown()
         }

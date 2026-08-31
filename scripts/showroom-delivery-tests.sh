@@ -11,6 +11,7 @@ export SNIP_SNAP_DEV_SLOT=2
 export SNIP_SNAP_DEV_STATE_DIR="$test_dir/dev-state"
 export SNIP_SNAP_DEV_WORKTREE="$test_dir/worktree"
 export SNIP_SNAP_SHOWROOM_STATE_DIR="$test_dir/showroom-state"
+unset SNIP_SNAP_DERIVED_DATA
 /bin/mkdir -p "$SNIP_SNAP_DEV_WORKTREE"
 /bin/mkdir -p "$SNIP_SNAP_SHOWROOM_STATE_DIR"
 
@@ -99,7 +100,12 @@ abort unless data.fetch("verification").fetch("status") == "failed"
 
 /bin/mkdir -p "$test_dir/bin"
 print -r -- '#!/bin/zsh
-print -r -- "$@" > "$SNIP_SNAP_BUILD_ARGS_FILE"' > "$test_dir/bin/xcodebuild"
+if [[ "$*" == *-showBuildSettings* ]]; then
+    print "    DEVELOPMENT_TEAM ="
+    print "    SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER = world.sree.snipsnap"
+else
+    print -r -- "$@" > "$SNIP_SNAP_BUILD_ARGS_FILE"
+fi' > "$test_dir/bin/xcodebuild"
 /bin/chmod +x "$test_dir/bin/xcodebuild"
 PATH="$test_dir/bin:$PATH" \
     SNIP_SNAP_BUILD_ARGS_FILE="$test_dir/build-args" \

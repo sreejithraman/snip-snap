@@ -1,0 +1,56 @@
+import Foundation
+import SnipSnapCore
+
+enum SnipCompletionLanguage {
+    static let done = String(localized: .snipCompletionDone)
+    static let notDone = String(localized: .snipCompletionNotDone)
+    static let toggle = String(localized: .snipCompletionToggle)
+
+    static func actionTitle(isDone: Bool) -> String {
+        stateTitle(isDone: !isDone)
+    }
+
+    static func stateTitle(isDone: Bool) -> String {
+        isDone ? done : notDone
+    }
+}
+
+extension SnipCompletionFilter {
+    var title: String {
+        switch self {
+        case .all: String(localized: "All")
+        case .done: SnipCompletionLanguage.done
+        case .notDone: SnipCompletionLanguage.notDone
+        }
+    }
+
+    var emptyStateTitle: String {
+        switch self {
+        case .all: String(localized: "Nothing captured yet")
+        case .done: String(localized: "No done snips")
+        case .notDone: String(localized: "No unfinished snips")
+        }
+    }
+}
+
+extension SnipList {
+    var displayName: String {
+        guard id == Self.inboxID, name == "Inbox" else { return name }
+        return String(localized: "Inbox")
+    }
+}
+
+extension Snip {
+    var displaySourceLabel: String {
+        if let source {
+            let label = source.conciseLabel
+            if !label.isEmpty { return label }
+        }
+        return switch origin {
+        case .selection: String(localized: "Captured Selection")
+        case .quickEntry: String(localized: "Snip Snap — Quick Entry")
+        case .clipboard: String(localized: "Clipboard")
+        case .share: String(localized: "Shared")
+        }
+    }
+}

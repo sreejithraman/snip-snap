@@ -9,23 +9,23 @@ enum SnipCommand {
     var title: String {
         switch self {
         case .copy:
-            "Copy"
+            String(localized: "Copy")
         case .toggleDone:
-            "Mark Done"
+            SnipCompletionLanguage.done
         case .edit:
-            "Edit"
+            String(localized: "Edit")
         case .editInNewWindow:
-            "Edit in New Window"
+            String(localized: "Edit in New Window")
         case .merge:
-            "Merge Snips"
+            String(localized: "Merge Snips")
         case .delete:
-            "Delete"
+            String(localized: "Delete")
         }
     }
 
     func title(allSelectedAreDone: Bool) -> String {
-        guard self == .toggleDone, allSelectedAreDone else { return title }
-        return "Mark Not Done"
+        guard self == .toggleDone else { return title }
+        return SnipCompletionLanguage.actionTitle(isDone: allSelectedAreDone)
     }
 
     func isAvailable(for selectionCount: Int) -> Bool {

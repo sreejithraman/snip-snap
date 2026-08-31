@@ -1,13 +1,16 @@
 import SwiftUI
+import SnipSnapCore
 
 struct SnipCardRow: View {
     let snip: Snip
+    let isRecovered: Bool
     let isSelected: Bool
     let isEditing: Bool
     @Binding var editAttachments: [URL]
     @Binding var isSaving: Bool
-    let attachmentURL: (SnipAttachment) -> URL
-    let onPreviewAttachments: ([URL], URL) -> Void
+    let attachmentURL: (SnipAttachment) -> URL?
+    let onPreviewSavedAttachments: ([SnipAttachment], SnipAttachment) -> Void
+    let onPreviewLocalAttachments: ([URL], URL) -> Void
     let onRemovePreviewURL: (URL) -> Void
     let onSelect: () -> Void
     let onOpen: () -> Void
@@ -31,7 +34,7 @@ struct SnipCardRow: View {
             )
         ) {
             Toggle(
-                "Done",
+                SnipCompletionLanguage.done,
                 isOn: Binding(
                     get: { snip.isDone },
                     set: { _ in onToggleDone() }
@@ -42,7 +45,7 @@ struct SnipCardRow: View {
             .tint(SnipSnapColors.controlTint)
             .focusable(false)
             .disabled(isEditing)
-            .help(snip.isDone ? "Mark Not Done" : "Mark Done")
+            .help(SnipCompletionLanguage.actionTitle(isDone: snip.isDone))
         } main: {
             if isEditing {
                 editingBody
@@ -50,6 +53,18 @@ struct SnipCardRow: View {
             } else {
                 draggableBody
                     .transition(.opacity)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if isRecovered && !isEditing {
+                Text("Recovered")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(.thinMaterial, in: Capsule())
+                    .padding(8)
+                    .accessibilityLabel("Recovered Snip")
             }
         }
         .onTapGesture(count: 2, perform: onOpen)
@@ -83,11 +98,11 @@ struct SnipCardRow: View {
             if !snip.attachments.isEmpty {
                 AttachmentPreviewStrip(
                     items: attachmentPreviewItems,
-                    onPreview: { url in
-                        onPreviewAttachments(
-                            snip.attachments.map(attachmentURL),
-                            url
-                        )
+                    onPreview: { item in
+                        guard let attachment = snip.attachments.first(where: {
+                            $0.id.uuidString == item.id
+                        }) else { return }
+                        onPreviewSavedAttachments(snip.attachments, attachment)
                     }
                 )
             }
@@ -113,10 +128,12 @@ struct SnipCardRow: View {
             if !editAttachments.isEmpty {
                 AttachmentPreviewStrip(
                     items: editAttachmentPreviewItems,
-                    onPreview: { url in
-                        onPreviewAttachments(editAttachments, url)
+                    onPreview: { item in
+                        guard let url = item.url else { return }
+                        onPreviewLocalAttachments(editAttachments, url)
                     },
-                    onRemove: { url in
+                    onRemove: { item in
+                        guard let url = item.url else { return }
                         onRemovePreviewURL(url)
                         editAttachments.removeAll { $0 == url }
                     }

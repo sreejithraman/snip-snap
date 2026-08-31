@@ -1,0 +1,7 @@
+#include "Shared.xcconfig"
+
+SNIP_SNAP_BUILD_LANE = local-dev
+CODE_SIGN_ENTITLEMENTS =
+
+// A developer may keep signing and fork-specific names in this ignored file.
+#include? "Local.xcconfig"

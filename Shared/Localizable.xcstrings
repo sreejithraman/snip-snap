@@ -1,0 +1,7705 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "A Local store exists without a valid migration marker. Snip Snap left it in place." : {
+
+    },
+    "A list with that name already exists." : {
+
+    },
+    "Another iCloud Sync task is still running." : {
+
+    },
+    "Captured Selection" : {
+
+    },
+    "Choose how to handle the iCloud encrypted-data reset before turning sync on." : {
+
+    },
+    "Deleting Synced Content…" : {
+
+    },
+    "Local Only" : {
+
+    },
+    "No done snips" : {
+
+    },
+    "No unfinished snips" : {
+
+    },
+    "Nothing captured yet" : {
+
+    },
+    "Old Synced Content Removal Pending" : {
+
+    },
+    "Saved snips and attachments sync through your private iCloud database. Snip Snap’s maintainers cannot inspect private records in CloudKit Console. Apple encrypts synced data in transit and at rest; user fields use encrypted values and files use CKAsset data. Those user fields and attachments are end-to-end encrypted only when Advanced Data Protection is on." : {
+
+    },
+    "Select at least two snips to merge." : {
+
+    },
+    "Setting Up iCloud Sync…" : {
+
+    },
+    "Shared" : {
+
+    },
+    "Snip Snap cannot save changes until its snip store is available." : {
+
+    },
+    "Snip Snap could not copy one of the files." : {
+
+    },
+    "Snip Snap could not keep the shared files." : {
+
+    },
+    "Snip Snap could not open its SwiftData store. It left the Local and JSON stores unchanged, so it cannot save new snips." : {
+
+    },
+    "Snip Snap could not read its saved snips." : {
+
+    },
+    "Snip Snap does not send local-only data to CloudKit." : {
+
+    },
+    "Snip Snap found records it could not copy safely." : {
+
+    },
+    "Snip Snap is checking iCloud before it starts or joins the new synced collection." : {
+
+    },
+    "Snip Snap is fetching iCloud data and preparing a safe merged copy." : {
+
+    },
+    "Snip Snap is finishing iCloud Sync setup." : {
+
+    },
+    "Snip Snap is making a local copy of your synced library. Your iCloud copy will stay in place." : {
+
+    },
+    "Snip Snap is starting a fresh empty synced collection and removing the old data zones." : {
+
+    },
+    "Snip Snap started a fresh empty synced collection, but it could not remove all old iCloud data yet. It will retry the next time it syncs. Your local recovery copy remains." : {
+
+    },
+    "Snip Snap stopped sync and kept this device’s snips and available attachment files as a read-only recovery copy. Choose how to start again." : {
+
+    },
+    "Snip Snap — Quick Entry" : {
+
+    },
+    "Starting a New Synced Collection…" : {
+
+    },
+    "Sync Needs Attention" : {
+
+    },
+    "Synced Content Deleted" : {
+
+    },
+    "Synced content was removed. This device kept a local recovery copy. A small control record remains in iCloud so an old device cannot restore the deleted collection." : {
+
+    },
+    "That action cannot be undone because the same fields changed on another device." : {
+
+    },
+    "That change cannot run with other changes." : {
+
+    },
+    "That choice does not apply to this recovered edit." : {
+
+    },
+    "That list is not available." : {
+
+    },
+    "That recovered edit changed. Refresh the review and try again." : {
+
+    },
+    "That recovered edit is no longer available." : {
+
+    },
+    "That snip no longer exists." : {
+
+    },
+    "The JSON store changed while Snip Snap was copying it." : {
+
+    },
+    "The Local store migration marker is invalid. Snip Snap left the store in place." : {
+
+    },
+    "The SwiftData check did not match the JSON store." : {
+
+    },
+    "The backup or saved snips changed. Review the import again." : {
+
+    },
+    "The iCloud Sync collection is not valid." : {
+
+    },
+    "There is nothing to save." : {
+
+    },
+    "This build does not have access to the shared Snip Snap container." : {
+
+    },
+    "This device is changing its storage choice. Try again when setup finishes." : {
+
+    },
+    "This is a recovery copy. Restore it to an active library before making changes." : {
+
+    },
+    "This snip changed in another window. Copy your edits, reopen it, and try again." : {
+
+    },
+    "This snip store cannot change storage modes." : {
+
+    },
+    "Turning Off iCloud Sync…" : {
+
+    },
+    "iCloud Encrypted Data Was Reset" : {
+
+    },
+    "iCloud Sync On" : {
+
+    },
+    "iCloud Sync does not have an active collection." : {
+
+    },
+    "local file is missing or changed" : {
+
+    },
+    "%@ captures the selection" : {
+
+    },
+    "%@, %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@, %2$@"
+          }
+        }
+      }
+    },
+    "%lld attachments" : {
+
+    },
+    "%lld new" : {
+
+    },
+    "%lld new lists" : {
+
+    },
+    "%lld recovered edits" : {
+
+    },
+    "%lld snips" : {
+
+    },
+    "%lld snips deleted" : {
+
+    },
+    "+%lld" : {
+
+    },
+    "1 attachment" : {
+
+    },
+    "1 new list" : {
+
+    },
+    "1 recovered edit" : {
+
+    },
+    "1 snip" : {
+
+    },
+    "Activities" : {
+
+    },
+    "Add Attachment" : {
+
+    },
+    "Add Attachments" : {
+
+    },
+    "Add Files" : {
+
+    },
+    "Add to %@" : {
+
+    },
+    "All" : {
+
+    },
+    "Allow Accessibility Access?" : {
+
+    },
+    "Allow Accessibility access to capture the selection." : {
+
+    },
+    "Already captured" : {
+
+    },
+    "Animals & Nature" : {
+
+    },
+    "Another action already uses that shortcut." : {
+
+    },
+    "Appearance" : {
+
+    },
+    "Apple Account Changed" : {
+
+    },
+    "Attachments" : {
+
+    },
+    "Attachments: %@" : {
+
+    },
+    "Available Offline" : {
+
+    },
+    "Available Offline — Sync Failed" : {
+
+    },
+    "Available Offline — Syncing" : {
+
+    },
+    "Available Offline — Waiting for iCloud" : {
+
+    },
+    "Back" : {
+
+    },
+    "Cancel" : {
+
+    },
+    "Cancel Editing" : {
+
+    },
+    "Capture Screen Area…" : {
+
+    },
+    "Capture Selection" : {
+
+    },
+    "Captured" : {
+
+    },
+    "Change the filter to see other snips." : {
+
+    },
+    "Check for Updates…" : {
+
+    },
+    "Choose Backup" : {
+
+    },
+    "Choose Files…" : {
+
+    },
+    "Choose List Icon" : {
+
+    },
+    "Choose What to Do" : {
+
+    },
+    "Choose a Snip" : {
+
+    },
+    "Choose a backup" : {
+
+    },
+    "Choose a backup folder to include attachments, or a plain JSON file for a text-only backup." : {
+
+    },
+    "Choose a backup folder to include attachments. A plain JSON file can contain text and metadata only." : {
+
+    },
+    "Choose list icon, current: %@" : {
+
+    },
+    "Chronological" : {
+
+    },
+    "Clear" : {
+
+    },
+    "Clear Downloaded Files" : {
+
+    },
+    "Clear History" : {
+
+    },
+    "Clear clipboard history?" : {
+
+    },
+    "Clearing…" : {
+
+    },
+    "Click, then press a shortcut" : {
+
+    },
+    "Clipboard" : {
+
+    },
+    "Clipboard History Was Not Saved" : {
+
+    },
+    "Close" : {
+
+    },
+    "Communication" : {
+
+    },
+    "Continue" : {
+
+    },
+    "Copied" : {
+
+    },
+    "Copied %lld snips" : {
+
+    },
+    "Copied Attachments" : {
+
+    },
+    "Copied Text" : {
+
+    },
+    "Copy" : {
+
+    },
+    "Copy Attachments" : {
+
+    },
+    "Copy Failed" : {
+
+    },
+    "Copy Text" : {
+
+    },
+    "Copy Text Only" : {
+
+    },
+    "Copy and Share" : {
+
+    },
+    "Copying files…" : {
+
+    },
+    "Could Not Save" : {
+
+    },
+    "Create" : {
+
+    },
+    "Current List" : {
+
+    },
+    "Dark" : {
+
+    },
+    "Delete" : {
+
+    },
+    "Delete %@?" : {
+
+    },
+    "Delete List" : {
+
+    },
+    "Delete Synced Content" : {
+
+    },
+    "Delete Synced Content?" : {
+
+    },
+    "Delete Synced Content…" : {
+
+    },
+    "Deleting synced content…" : {
+
+    },
+    "Design & Making" : {
+
+    },
+    "Destination" : {
+
+    },
+    "Developer & Data" : {
+
+    },
+    "Done" : {
+
+    },
+    "Double tap to edit. Touch and hold for actions." : {
+
+    },
+    "Download Failed — Tap to Retry" : {
+
+    },
+    "Download to Preview" : {
+
+    },
+    "Downloaded files can be fetched again when you open them." : {
+
+    },
+    "Downloading…" : {
+
+    },
+    "Edit" : {
+
+    },
+    "Edit Conflicting Fields" : {
+
+    },
+    "Edit List…" : {
+
+    },
+    "Edit Snip" : {
+
+    },
+    "Edit in New Window" : {
+
+    },
+    "Edit list" : {
+
+    },
+    "Export" : {
+
+    },
+    "Export JSON Backup" : {
+
+    },
+    "Export JSON Backup…" : {
+
+    },
+    "Filter: %@" : {
+
+    },
+    "Food & Drink" : {
+
+    },
+    "Forward Delete" : {
+
+    },
+    "Import Backup" : {
+
+    },
+    "Import Backup…" : {
+
+    },
+    "Import this backup?" : {
+
+    },
+    "Inbox" : {
+
+    },
+    "Its snips will move to Inbox." : {
+
+    },
+    "Keep Both" : {
+
+    },
+    "Keep Current" : {
+
+    },
+    "Keep Local Copy" : {
+
+    },
+    "Keep Sync Off" : {
+
+    },
+    "Keyboard Shortcuts" : {
+
+    },
+    "Keyboard Shortcuts…" : {
+
+    },
+    "Left ⇧ ⇧" : {
+
+    },
+    "Library Actions" : {
+
+    },
+    "Light" : {
+
+    },
+    "List" : {
+
+    },
+    "List name" : {
+
+    },
+    "Lists" : {
+
+    },
+    "Loading shared content…" : {
+
+    },
+    "Making a local copy…" : {
+
+    },
+    "Manual" : {
+
+    },
+    "Merge Snips" : {
+
+    },
+    "Money, Shopping & Security" : {
+
+    },
+    "More" : {
+
+    },
+    "More, development build %lld" : {
+
+    },
+    "Move" : {
+
+    },
+    "Move Down" : {
+
+    },
+    "Move Up" : {
+
+    },
+    "Move to" : {
+
+    },
+    "Move to New List…" : {
+
+    },
+    "Name" : {
+
+    },
+    "Needs Attention" : {
+
+    },
+    "Needs Attention (%lld)" : {
+
+    },
+    "New List" : {
+
+    },
+    "New List…" : {
+
+    },
+    "New Snip" : {
+
+    },
+    "New list" : {
+
+    },
+    "New snip" : {
+
+    },
+    "Newest First" : {
+
+    },
+    "No Edits Need Review" : {
+
+    },
+    "No Results" : {
+
+    },
+    "No matches" : {
+
+    },
+    "None" : {
+
+    },
+    "Not Now" : {
+
+    },
+    "OK" : {
+
+    },
+    "Objects" : {
+
+    },
+    "One or more files could not be read." : {
+
+    },
+    "One or more shared items could not be added yet. Snip Snap will try again next time." : {
+
+    },
+    "Open or Hide Clipboard" : {
+
+    },
+    "Open or Hide Snip Snap" : {
+
+    },
+    "Pause" : {
+
+    },
+    "People & Body" : {
+
+    },
+    "Please try again." : {
+
+    },
+    "Press shortcut" : {
+
+    },
+    "Preview" : {
+
+    },
+    "Preview %@" : {
+
+    },
+    "Quick Look %@" : {
+
+    },
+    "Ready to Download" : {
+
+    },
+    "Recent" : {
+
+    },
+    "Recovered" : {
+
+    },
+    "Recovered Edit" : {
+
+    },
+    "Recovered Edit Is Gone" : {
+
+    },
+    "Recovered List Edit" : {
+
+    },
+    "Recovered List Edits" : {
+
+    },
+    "Recovered Snip" : {
+
+    },
+    "Recovered Snips" : {
+
+    },
+    "Remove" : {
+
+    },
+    "Remove %@" : {
+
+    },
+    "Rename" : {
+
+    },
+    "Rename List" : {
+
+    },
+    "Replace" : {
+
+    },
+    "Replace %@" : {
+
+    },
+    "Restore from This Device" : {
+
+    },
+    "Resume" : {
+
+    },
+    "Return" : {
+
+    },
+    "Review Backup" : {
+
+    },
+    "Review recovered edits" : {
+
+    },
+    "Review: %@. Snip Snap will merge these records with your saved snips." : {
+
+    },
+    "Right ⇧ ⇧" : {
+
+    },
+    "Save" : {
+
+    },
+    "Save Snip" : {
+
+    },
+    "Save text here when you want to keep it close." : {
+
+    },
+    "Save to Active List" : {
+
+    },
+    "Save to Snip Snap" : {
+
+    },
+    "Saved" : {
+
+    },
+    "Saving…" : {
+
+    },
+    "Search" : {
+
+    },
+    "Search Snips" : {
+
+    },
+    "Search icons" : {
+
+    },
+    "Select" : {
+
+    },
+    "Select All" : {
+
+    },
+    "Select a saved snip to read or edit it." : {
+
+    },
+    "Select text or an image, then try again." : {
+
+    },
+    "Selected" : {
+
+    },
+    "Send Snip" : {
+
+    },
+    "Setting up iCloud Sync…" : {
+
+    },
+    "Settings" : {
+
+    },
+    "Share" : {
+
+    },
+    "Shared Storage Unavailable" : {
+
+    },
+    "Shortcuts" : {
+
+    },
+    "Show" : {
+
+    },
+    "Shows a Quick Look preview" : {
+
+    },
+    "Signed Out of iCloud" : {
+
+    },
+    "Smileys & Emotion" : {
+
+    },
+    "Snip" : {
+
+    },
+    "Snip Snap" : {
+
+    },
+    "Snip Snap Backup" : {
+
+    },
+    "Snip Snap Needs Attention" : {
+
+    },
+    "Snip Snap closed before it could save the snip." : {
+
+    },
+    "Snip Snap could not clear the downloaded files." : {
+
+    },
+    "Snip Snap could not copy that content." : {
+
+    },
+    "Snip Snap could not copy the selection from this app." : {
+
+    },
+    "Snip Snap could not download that attachment. Please try again." : {
+
+    },
+    "Snip Snap could not finish that choice. Please try again." : {
+
+    },
+    "Snip Snap could not open its local library. Your saved data was not changed." : {
+
+    },
+    "Snip Snap could not prepare the captured images." : {
+
+    },
+    "Snip Snap could not prepare the clipboard image." : {
+
+    },
+    "Snip Snap could not prepare the pasted images." : {
+
+    },
+    "Snip Snap could not preserve the clipboard." : {
+
+    },
+    "Snip Snap could not reach the frontmost app." : {
+
+    },
+    "Snip Snap could not refresh iCloud. You can keep sync on and try again, or turn it off with the copy already on this Mac. That copy may not include recent changes from other devices. Your iCloud data will not be deleted." : {
+
+    },
+    "Snip Snap could not refresh iCloud. You can keep sync on and try again, or turn it off with the copy already on this device. That copy may not include recent changes from other devices. Your iCloud data will not be deleted." : {
+
+    },
+    "Snip Snap could not register its keyboard shortcuts." : {
+
+    },
+    "Snip Snap could not restart its keyboard shortcuts." : {
+
+    },
+    "Snip Snap could not restore the clipboard, so it did not save the capture." : {
+
+    },
+    "Snip Snap could not save clipboard history. Snip Snap may lose new clipboard items when it quits." : {
+
+    },
+    "Snip Snap could not set the clipboard." : {
+
+    },
+    "Snip Snap could not start keyboard shortcut handling." : {
+
+    },
+    "Snip Snap could not start screen capture." : {
+
+    },
+    "Snip Snap kept the prior account’s cache apart. Keep it as a local copy or remove it from this Mac." : {
+
+    },
+    "Snip Snap kept the prior account’s cache apart. Keep it as a local copy or remove it from this device." : {
+
+    },
+    "Snip Snap set the clipboard but could not return to the prior app." : {
+
+    },
+    "Snip Snap timed out while copying the selection." : {
+
+    },
+    "Snip Snap timed out while reading the clipboard. Snip Snap changed nothing." : {
+
+    },
+    "Snip Snap uses Accessibility to detect Shift shortcuts and capture selected content. macOS will ask you to allow access in System Settings." : {
+
+    },
+    "Snip deleted" : {
+
+    },
+    "Snip text" : {
+
+    },
+    "Snips" : {
+
+    },
+    "Some Files Are Unavailable" : {
+
+    },
+    "Sort" : {
+
+    },
+    "Sort: %@" : {
+
+    },
+    "Source" : {
+
+    },
+    "Source app" : {
+
+    },
+    "Space" : {
+
+    },
+    "Start Empty" : {
+
+    },
+    "Starting a new synced collection…" : {
+
+    },
+    "State" : {
+
+    },
+    "Symbol" : {
+
+    },
+    "Symbols" : {
+
+    },
+    "Sync" : {
+
+    },
+    "Sync Now" : {
+
+    },
+    "Sync with iCloud" : {
+
+    },
+    "Syncing…" : {
+
+    },
+    "System" : {
+
+    },
+    "Tab" : {
+
+    },
+    "Text" : {
+
+    },
+    "That shortcut is another action's default." : {
+
+    },
+    "The clipboard changed before Snip Snap could copy." : {
+
+    },
+    "The list will be removed. Its snips will move to Inbox." : {
+
+    },
+    "The shared item is saved on this device. iCloud sync will try again later." : {
+
+    },
+    "The source app is no longer active." : {
+
+    },
+    "These files could not be read: %@" : {
+
+    },
+    "This build cannot access Snip Snap’s shared container." : {
+
+    },
+    "This leaves the current Mac clipboard unchanged." : {
+
+    },
+    "This starts a fresh empty synced collection and removes the old synced snips and attachments from iCloud. This device keeps a local recovery copy. A small control record remains in iCloud to stop old devices from restoring deleted content." : {
+
+    },
+    "Travel & Places" : {
+
+    },
+    "Try a different search." : {
+
+    },
+    "Undo" : {
+
+    },
+    "Unknown app" : {
+
+    },
+    "Use Default" : {
+
+    },
+    "Use Device Copy" : {
+
+    },
+    "Use Edited" : {
+
+    },
+    "Use Mac Copy" : {
+
+    },
+    "Use Recovered" : {
+
+    },
+    "Use This Device’s Copy?" : {
+
+    },
+    "Use This Mac’s Copy?" : {
+
+    },
+    "View Options" : {
+
+    },
+    "Waiting for iCloud" : {
+
+    },
+    "Work & Planning" : {
+
+    },
+    "Your synced cache is still on this Mac. Snip Snap will try again when iCloud is available." : {
+
+    },
+    "Your synced cache is still on this device. Snip Snap will try again when iCloud is available." : {
+
+    },
+    "available" : {
+
+    },
+    "failed" : {
+
+    },
+    "iCloud Attachments" : {
+
+    },
+    "iCloud Sync Paused" : {
+
+    },
+    "icon.accessibility" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Accessibility"
+          }
+        }
+      }
+    },
+    "icon.accessibility.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Accessibility Fill"
+          }
+        }
+      }
+    },
+    "icon.airplane" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Airplane"
+          }
+        }
+      }
+    },
+    "icon.airplane.arrival" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Airplane Arrival"
+          }
+        }
+      }
+    },
+    "icon.airplane.departure" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Airplane Departure"
+          }
+        }
+      }
+    },
+    "icon.airtag.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Airtag Fill"
+          }
+        }
+      }
+    },
+    "icon.alarm.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alarm Fill"
+          }
+        }
+      }
+    },
+    "icon.american.football.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "American Football Fill"
+          }
+        }
+      }
+    },
+    "icon.ant.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ant Fill"
+          }
+        }
+      }
+    },
+    "icon.antenna.radiowaves.left.and.right" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Antenna Radiowaves Left And Right"
+          }
+        }
+      }
+    },
+    "icon.app.badge.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "App Badge Fill"
+          }
+        }
+      }
+    },
+    "icon.apple.terminal.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple Terminal Fill"
+          }
+        }
+      }
+    },
+    "icon.applewatch" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Applewatch"
+          }
+        }
+      }
+    },
+    "icon.aqi.medium" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aqi Medium"
+          }
+        }
+      }
+    },
+    "icon.archivebox.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Archivebox Fill"
+          }
+        }
+      }
+    },
+    "icon.arrow.3.trianglepath" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrow 3 Trianglepath"
+          }
+        }
+      }
+    },
+    "icon.arrow.clockwise" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrow Clockwise"
+          }
+        }
+      }
+    },
+    "icon.arrow.counterclockwise" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrow Counterclockwise"
+          }
+        }
+      }
+    },
+    "icon.arrow.down" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrow Down"
+          }
+        }
+      }
+    },
+    "icon.arrow.down.left" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrow Down Left"
+          }
+        }
+      }
+    },
+    "icon.arrow.down.right" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrow Down Right"
+          }
+        }
+      }
+    },
+    "icon.arrow.left" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrow Left"
+          }
+        }
+      }
+    },
+    "icon.arrow.left.arrow.right" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrow Left Arrow Right"
+          }
+        }
+      }
+    },
+    "icon.arrow.right" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrow Right"
+          }
+        }
+      }
+    },
+    "icon.arrow.triangle.2.circlepath" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrow Triangle 2 Circlepath"
+          }
+        }
+      }
+    },
+    "icon.arrow.triangle.branch" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrow Triangle Branch"
+          }
+        }
+      }
+    },
+    "icon.arrow.triangle.merge" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrow Triangle Merge"
+          }
+        }
+      }
+    },
+    "icon.arrow.triangle.pull" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrow Triangle Pull"
+          }
+        }
+      }
+    },
+    "icon.arrow.up" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrow Up"
+          }
+        }
+      }
+    },
+    "icon.arrow.up.arrow.down" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrow Up Arrow Down"
+          }
+        }
+      }
+    },
+    "icon.arrow.up.left" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrow Up Left"
+          }
+        }
+      }
+    },
+    "icon.arrow.up.right" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrow Up Right"
+          }
+        }
+      }
+    },
+    "icon.asterisk" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Asterisk"
+          }
+        }
+      }
+    },
+    "icon.at" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "At"
+          }
+        }
+      }
+    },
+    "icon.atom" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Atom"
+          }
+        }
+      }
+    },
+    "icon.backpack.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Backpack Fill"
+          }
+        }
+      }
+    },
+    "icon.backward.end.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Backward End Fill"
+          }
+        }
+      }
+    },
+    "icon.backward.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Backward Fill"
+          }
+        }
+      }
+    },
+    "icon.bag.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bag Fill"
+          }
+        }
+      }
+    },
+    "icon.balloon.2.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Balloon 2 Fill"
+          }
+        }
+      }
+    },
+    "icon.balloon.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Balloon Fill"
+          }
+        }
+      }
+    },
+    "icon.bandage.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bandage Fill"
+          }
+        }
+      }
+    },
+    "icon.banknote.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Banknote Fill"
+          }
+        }
+      }
+    },
+    "icon.barcode" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Barcode"
+          }
+        }
+      }
+    },
+    "icon.baseball.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Baseball Fill"
+          }
+        }
+      }
+    },
+    "icon.basket.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Basket Fill"
+          }
+        }
+      }
+    },
+    "icon.basketball.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Basketball Fill"
+          }
+        }
+      }
+    },
+    "icon.bathtub.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bathtub Fill"
+          }
+        }
+      }
+    },
+    "icon.battery.0percent" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Battery 0percent"
+          }
+        }
+      }
+    },
+    "icon.battery.100percent" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Battery 100percent"
+          }
+        }
+      }
+    },
+    "icon.beach.umbrella.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Beach Umbrella Fill"
+          }
+        }
+      }
+    },
+    "icon.bed.double.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bed Double Fill"
+          }
+        }
+      }
+    },
+    "icon.bell.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bell Fill"
+          }
+        }
+      }
+    },
+    "icon.bell.slash.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bell Slash Fill"
+          }
+        }
+      }
+    },
+    "icon.bicycle" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bicycle"
+          }
+        }
+      }
+    },
+    "icon.binoculars.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Binoculars Fill"
+          }
+        }
+      }
+    },
+    "icon.bird.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bird Fill"
+          }
+        }
+      }
+    },
+    "icon.birthday.cake" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Birthday Cake"
+          }
+        }
+      }
+    },
+    "icon.birthday.cake.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Birthday Cake Fill"
+          }
+        }
+      }
+    },
+    "icon.bitcoinsign.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bitcoinsign Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.bolt.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bolt Fill"
+          }
+        }
+      }
+    },
+    "icon.bolt.heart.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bolt Heart Fill"
+          }
+        }
+      }
+    },
+    "icon.bolt.horizontal.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bolt Horizontal Fill"
+          }
+        }
+      }
+    },
+    "icon.book.closed.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Book Closed Fill"
+          }
+        }
+      }
+    },
+    "icon.book.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Book Fill"
+          }
+        }
+      }
+    },
+    "icon.bookmark.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bookmark Fill"
+          }
+        }
+      }
+    },
+    "icon.books.vertical.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Books Vertical Fill"
+          }
+        }
+      }
+    },
+    "icon.brain.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brain Fill"
+          }
+        }
+      }
+    },
+    "icon.brain.head.profile.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brain Head Profile Fill"
+          }
+        }
+      }
+    },
+    "icon.briefcase.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Briefcase Fill"
+          }
+        }
+      }
+    },
+    "icon.bubble.left.and.bubble.right.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bubble Left And Bubble Right Fill"
+          }
+        }
+      }
+    },
+    "icon.bubble.left.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bubble Left Fill"
+          }
+        }
+      }
+    },
+    "icon.bubble.right.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bubble Right Fill"
+          }
+        }
+      }
+    },
+    "icon.bubbles.and.sparkles.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bubbles And Sparkles Fill"
+          }
+        }
+      }
+    },
+    "icon.building.columns.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Building Columns Fill"
+          }
+        }
+      }
+    },
+    "icon.building.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Building Fill"
+          }
+        }
+      }
+    },
+    "icon.burst.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Burst Fill"
+          }
+        }
+      }
+    },
+    "icon.bus.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bus Fill"
+          }
+        }
+      }
+    },
+    "icon.c.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "C Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.cabinet.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cabinet Fill"
+          }
+        }
+      }
+    },
+    "icon.cable.connector" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cable Connector"
+          }
+        }
+      }
+    },
+    "icon.cablecar.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cablecar Fill"
+          }
+        }
+      }
+    },
+    "icon.calendar" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Calendar"
+          }
+        }
+      }
+    },
+    "icon.calendar.badge.checkmark" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Calendar Badge Checkmark"
+          }
+        }
+      }
+    },
+    "icon.calendar.badge.clock" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Calendar Badge Clock"
+          }
+        }
+      }
+    },
+    "icon.calendar.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Calendar Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.camera.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Camera Fill"
+          }
+        }
+      }
+    },
+    "icon.camera.macro" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Camera Macro"
+          }
+        }
+      }
+    },
+    "icon.camera.macro.circle" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Camera Macro Circle"
+          }
+        }
+      }
+    },
+    "icon.camera.macro.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Camera Macro Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.car.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Car Fill"
+          }
+        }
+      }
+    },
+    "icon.car.side.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Car Side Fill"
+          }
+        }
+      }
+    },
+    "icon.carrot" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Carrot"
+          }
+        }
+      }
+    },
+    "icon.carrot.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Carrot Fill"
+          }
+        }
+      }
+    },
+    "icon.cart.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cart Fill"
+          }
+        }
+      }
+    },
+    "icon.cat.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cat Fill"
+          }
+        }
+      }
+    },
+    "icon.chair.lounge.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chair Lounge Fill"
+          }
+        }
+      }
+    },
+    "icon.chart.bar.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chart Bar Fill"
+          }
+        }
+      }
+    },
+    "icon.chart.bar.xaxis.ascending" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chart Bar Xaxis Ascending"
+          }
+        }
+      }
+    },
+    "icon.chart.dots.scatter" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chart Dots Scatter"
+          }
+        }
+      }
+    },
+    "icon.chart.line.uptrend.xyaxis" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chart Line Uptrend Xyaxis"
+          }
+        }
+      }
+    },
+    "icon.chart.pie.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chart Pie Fill"
+          }
+        }
+      }
+    },
+    "icon.chart.xyaxis.line" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chart Xyaxis Line"
+          }
+        }
+      }
+    },
+    "icon.checklist" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Checklist"
+          }
+        }
+      }
+    },
+    "icon.checkmark.bubble.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Checkmark Bubble Fill"
+          }
+        }
+      }
+    },
+    "icon.checkmark.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Checkmark Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.checkmark.seal.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Checkmark Seal Fill"
+          }
+        }
+      }
+    },
+    "icon.chevron.left.forwardslash.chevron.right" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chevron Left Forwardslash Chevron Right"
+          }
+        }
+      }
+    },
+    "icon.circle.dotted" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Circle Dotted"
+          }
+        }
+      }
+    },
+    "icon.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.circle.grid.2x2.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Circle Grid 2x2 Fill"
+          }
+        }
+      }
+    },
+    "icon.circle.lefthalf.filled" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Circle Lefthalf Filled"
+          }
+        }
+      }
+    },
+    "icon.circle.on.square" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Circle On Square"
+          }
+        }
+      }
+    },
+    "icon.clipboard.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clipboard Fill"
+          }
+        }
+      }
+    },
+    "icon.clock.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clock Fill"
+          }
+        }
+      }
+    },
+    "icon.cloud.bolt.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cloud Bolt Fill"
+          }
+        }
+      }
+    },
+    "icon.cloud.bolt.rain.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cloud Bolt Rain Fill"
+          }
+        }
+      }
+    },
+    "icon.cloud.drizzle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cloud Drizzle Fill"
+          }
+        }
+      }
+    },
+    "icon.cloud.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cloud Fill"
+          }
+        }
+      }
+    },
+    "icon.cloud.fog.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cloud Fog Fill"
+          }
+        }
+      }
+    },
+    "icon.cloud.hail.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cloud Hail Fill"
+          }
+        }
+      }
+    },
+    "icon.cloud.moon.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cloud Moon Fill"
+          }
+        }
+      }
+    },
+    "icon.cloud.rain.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cloud Rain Fill"
+          }
+        }
+      }
+    },
+    "icon.cloud.snow.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cloud Snow Fill"
+          }
+        }
+      }
+    },
+    "icon.cloud.sun.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cloud Sun Fill"
+          }
+        }
+      }
+    },
+    "icon.cloud.sun.rain.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cloud Sun Rain Fill"
+          }
+        }
+      }
+    },
+    "icon.coat.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Coat Fill"
+          }
+        }
+      }
+    },
+    "icon.command" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Command"
+          }
+        }
+      }
+    },
+    "icon.compass.drawing" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Compass Drawing"
+          }
+        }
+      }
+    },
+    "icon.computermouse.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Computermouse Fill"
+          }
+        }
+      }
+    },
+    "icon.cpu.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cpu Fill"
+          }
+        }
+      }
+    },
+    "icon.creditcard.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Creditcard Fill"
+          }
+        }
+      }
+    },
+    "icon.cricket.ball.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cricket Ball Fill"
+          }
+        }
+      }
+    },
+    "icon.crop" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Crop"
+          }
+        }
+      }
+    },
+    "icon.cross.case.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cross Case Fill"
+          }
+        }
+      }
+    },
+    "icon.cross.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cross Fill"
+          }
+        }
+      }
+    },
+    "icon.crown.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Crown Fill"
+          }
+        }
+      }
+    },
+    "icon.cup.and.heat.waves.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cup And Heat Waves Fill"
+          }
+        }
+      }
+    },
+    "icon.cup.and.saucer" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cup And Saucer"
+          }
+        }
+      }
+    },
+    "icon.cup.and.saucer.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cup And Saucer Fill"
+          }
+        }
+      }
+    },
+    "icon.curlybraces" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Curlybraces"
+          }
+        }
+      }
+    },
+    "icon.cursorarrow.click" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cursorarrow Click"
+          }
+        }
+      }
+    },
+    "icon.cylinder.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cylinder Fill"
+          }
+        }
+      }
+    },
+    "icon.desktopcomputer" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Desktopcomputer"
+          }
+        }
+      }
+    },
+    "icon.diamond.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diamond Fill"
+          }
+        }
+      }
+    },
+    "icon.dice.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dice Fill"
+          }
+        }
+      }
+    },
+    "icon.dishwasher.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dishwasher Fill"
+          }
+        }
+      }
+    },
+    "icon.display" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Display"
+          }
+        }
+      }
+    },
+    "icon.divide.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Divide Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.doc.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Doc Fill"
+          }
+        }
+      }
+    },
+    "icon.doc.on.doc.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Doc On Doc Fill"
+          }
+        }
+      }
+    },
+    "icon.doc.richtext.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Doc Richtext Fill"
+          }
+        }
+      }
+    },
+    "icon.doc.text.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Doc Text Fill"
+          }
+        }
+      }
+    },
+    "icon.dog.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dog Fill"
+          }
+        }
+      }
+    },
+    "icon.dollarsign.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dollarsign Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.door.left.hand.closed" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Door Left Hand Closed"
+          }
+        }
+      }
+    },
+    "icon.drop" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Drop"
+          }
+        }
+      }
+    },
+    "icon.drop.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Drop Fill"
+          }
+        }
+      }
+    },
+    "icon.dryer.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dryer Fill"
+          }
+        }
+      }
+    },
+    "icon.dumbbell.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dumbbell Fill"
+          }
+        }
+      }
+    },
+    "icon.ear.badge.waveform" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ear Badge Waveform"
+          }
+        }
+      }
+    },
+    "icon.ear.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ear Fill"
+          }
+        }
+      }
+    },
+    "icon.earpods" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Earpods"
+          }
+        }
+      }
+    },
+    "icon.eject.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eject Fill"
+          }
+        }
+      }
+    },
+    "icon.ellipsis.bubble.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ellipsis Bubble Fill"
+          }
+        }
+      }
+    },
+    "icon.envelope.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envelope Fill"
+          }
+        }
+      }
+    },
+    "icon.envelope.open.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envelope Open Fill"
+          }
+        }
+      }
+    },
+    "icon.equal.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Equal Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.eurosign.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eurosign Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.exclamationmark.arrow.triangle.2.circlepath" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Exclamationmark Arrow Triangle 2 Circlepath"
+          }
+        }
+      }
+    },
+    "icon.exclamationmark.bubble.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Exclamationmark Bubble Fill"
+          }
+        }
+      }
+    },
+    "icon.exclamationmark.triangle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Exclamationmark Triangle Fill"
+          }
+        }
+      }
+    },
+    "icon.externaldrive.connected.to.line.below" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Externaldrive Connected To Line Below"
+          }
+        }
+      }
+    },
+    "icon.externaldrive.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Externaldrive Fill"
+          }
+        }
+      }
+    },
+    "icon.eye.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eye Fill"
+          }
+        }
+      }
+    },
+    "icon.eyedropper" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eyedropper"
+          }
+        }
+      }
+    },
+    "icon.eyeglasses" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eyeglasses"
+          }
+        }
+      }
+    },
+    "icon.eyes" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eyes"
+          }
+        }
+      }
+    },
+    "icon.face.dashed" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Face Dashed"
+          }
+        }
+      }
+    },
+    "icon.face.smiling" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Face Smiling"
+          }
+        }
+      }
+    },
+    "icon.facemask.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Facemask Fill"
+          }
+        }
+      }
+    },
+    "icon.faxmachine.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Faxmachine Fill"
+          }
+        }
+      }
+    },
+    "icon.ferry.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ferry Fill"
+          }
+        }
+      }
+    },
+    "icon.figure.2.and.child.holdinghands" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure 2 And Child Holdinghands"
+          }
+        }
+      }
+    },
+    "icon.figure.american.football" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure American Football"
+          }
+        }
+      }
+    },
+    "icon.figure.and.child.holdinghands" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure And Child Holdinghands"
+          }
+        }
+      }
+    },
+    "icon.figure.archery" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Archery"
+          }
+        }
+      }
+    },
+    "icon.figure.badminton" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Badminton"
+          }
+        }
+      }
+    },
+    "icon.figure.baseball" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Baseball"
+          }
+        }
+      }
+    },
+    "icon.figure.basketball" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Basketball"
+          }
+        }
+      }
+    },
+    "icon.figure.bowling" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Bowling"
+          }
+        }
+      }
+    },
+    "icon.figure.boxing" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Boxing"
+          }
+        }
+      }
+    },
+    "icon.figure.child" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Child"
+          }
+        }
+      }
+    },
+    "icon.figure.climbing" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Climbing"
+          }
+        }
+      }
+    },
+    "icon.figure.cooldown" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Cooldown"
+          }
+        }
+      }
+    },
+    "icon.figure.cricket" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Cricket"
+          }
+        }
+      }
+    },
+    "icon.figure.curling" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Curling"
+          }
+        }
+      }
+    },
+    "icon.figure.dance" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Dance"
+          }
+        }
+      }
+    },
+    "icon.figure.equestrian.sports" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Equestrian Sports"
+          }
+        }
+      }
+    },
+    "icon.figure.fencing" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Fencing"
+          }
+        }
+      }
+    },
+    "icon.figure.field.hockey" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Field Hockey"
+          }
+        }
+      }
+    },
+    "icon.figure.fishing" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Fishing"
+          }
+        }
+      }
+    },
+    "icon.figure.golf" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Golf"
+          }
+        }
+      }
+    },
+    "icon.figure.gymnastics" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Gymnastics"
+          }
+        }
+      }
+    },
+    "icon.figure.handball" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Handball"
+          }
+        }
+      }
+    },
+    "icon.figure.hiking" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Hiking"
+          }
+        }
+      }
+    },
+    "icon.figure.hockey" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Hockey"
+          }
+        }
+      }
+    },
+    "icon.figure.lacrosse" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Lacrosse"
+          }
+        }
+      }
+    },
+    "icon.figure.martial.arts" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Martial Arts"
+          }
+        }
+      }
+    },
+    "icon.figure.mind.and.body" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Mind And Body"
+          }
+        }
+      }
+    },
+    "icon.figure.outdoor.cycle" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Outdoor Cycle"
+          }
+        }
+      }
+    },
+    "icon.figure.pool.swim" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Pool Swim"
+          }
+        }
+      }
+    },
+    "icon.figure.roll" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Roll"
+          }
+        }
+      }
+    },
+    "icon.figure.roll.runningpace" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Roll Runningpace"
+          }
+        }
+      }
+    },
+    "icon.figure.rower" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Rower"
+          }
+        }
+      }
+    },
+    "icon.figure.rugby" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Rugby"
+          }
+        }
+      }
+    },
+    "icon.figure.run" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Run"
+          }
+        }
+      }
+    },
+    "icon.figure.skating" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Skating"
+          }
+        }
+      }
+    },
+    "icon.figure.skiing.downhill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Skiing Downhill"
+          }
+        }
+      }
+    },
+    "icon.figure.snowboarding" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Snowboarding"
+          }
+        }
+      }
+    },
+    "icon.figure.soccer" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Soccer"
+          }
+        }
+      }
+    },
+    "icon.figure.socialdance" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Socialdance"
+          }
+        }
+      }
+    },
+    "icon.figure.softball" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Softball"
+          }
+        }
+      }
+    },
+    "icon.figure.stand" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Stand"
+          }
+        }
+      }
+    },
+    "icon.figure.strengthtraining.traditional" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Strengthtraining Traditional"
+          }
+        }
+      }
+    },
+    "icon.figure.surfing" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Surfing"
+          }
+        }
+      }
+    },
+    "icon.figure.table.tennis" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Table Tennis"
+          }
+        }
+      }
+    },
+    "icon.figure.tennis" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Tennis"
+          }
+        }
+      }
+    },
+    "icon.figure.volleyball" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Volleyball"
+          }
+        }
+      }
+    },
+    "icon.figure.walk" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Walk"
+          }
+        }
+      }
+    },
+    "icon.figure.waterpolo" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Waterpolo"
+          }
+        }
+      }
+    },
+    "icon.figure.wave" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Wave"
+          }
+        }
+      }
+    },
+    "icon.figure.wrestling" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Wrestling"
+          }
+        }
+      }
+    },
+    "icon.figure.yoga" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Figure Yoga"
+          }
+        }
+      }
+    },
+    "icon.film.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Film Fill"
+          }
+        }
+      }
+    },
+    "icon.fire.extinguisher.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fire Extinguisher Fill"
+          }
+        }
+      }
+    },
+    "icon.firewall.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Firewall Fill"
+          }
+        }
+      }
+    },
+    "icon.fireworks" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fireworks"
+          }
+        }
+      }
+    },
+    "icon.fish" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fish"
+          }
+        }
+      }
+    },
+    "icon.fish.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fish Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.fish.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fish Fill"
+          }
+        }
+      }
+    },
+    "icon.flag.checkered" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Flag Checkered"
+          }
+        }
+      }
+    },
+    "icon.flag.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Flag Fill"
+          }
+        }
+      }
+    },
+    "icon.flame" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Flame"
+          }
+        }
+      }
+    },
+    "icon.flame.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Flame Fill"
+          }
+        }
+      }
+    },
+    "icon.flashlight.on.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Flashlight On Fill"
+          }
+        }
+      }
+    },
+    "icon.folder.badge.plus" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Folder Badge Plus"
+          }
+        }
+      }
+    },
+    "icon.folder.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Folder Fill"
+          }
+        }
+      }
+    },
+    "icon.football.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Football Fill"
+          }
+        }
+      }
+    },
+    "icon.fork.knife" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fork Knife"
+          }
+        }
+      }
+    },
+    "icon.fork.knife.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fork Knife Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.forward.end.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Forward End Fill"
+          }
+        }
+      }
+    },
+    "icon.forward.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Forward Fill"
+          }
+        }
+      }
+    },
+    "icon.fossil.shell.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fossil Shell Fill"
+          }
+        }
+      }
+    },
+    "icon.frying.pan.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Frying Pan Fill"
+          }
+        }
+      }
+    },
+    "icon.fuelpump.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fuelpump Fill"
+          }
+        }
+      }
+    },
+    "icon.function" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Function"
+          }
+        }
+      }
+    },
+    "icon.gamecontroller.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gamecontroller Fill"
+          }
+        }
+      }
+    },
+    "icon.gearshape.2.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gearshape 2 Fill"
+          }
+        }
+      }
+    },
+    "icon.gearshape.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gearshape Fill"
+          }
+        }
+      }
+    },
+    "icon.gift.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gift Fill"
+          }
+        }
+      }
+    },
+    "icon.globe.americas.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Globe Americas Fill"
+          }
+        }
+      }
+    },
+    "icon.globe.asia.australia.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Globe Asia Australia Fill"
+          }
+        }
+      }
+    },
+    "icon.globe.europe.africa.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Globe Europe Africa Fill"
+          }
+        }
+      }
+    },
+    "icon.graduationcap.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Graduationcap Fill"
+          }
+        }
+      }
+    },
+    "icon.guitars.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Guitars Fill"
+          }
+        }
+      }
+    },
+    "icon.hammer.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hammer Fill"
+          }
+        }
+      }
+    },
+    "icon.hand.draw.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hand Draw Fill"
+          }
+        }
+      }
+    },
+    "icon.hand.palm.facing.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hand Palm Facing Fill"
+          }
+        }
+      }
+    },
+    "icon.hand.pinch.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hand Pinch Fill"
+          }
+        }
+      }
+    },
+    "icon.hand.point.down.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hand Point Down Fill"
+          }
+        }
+      }
+    },
+    "icon.hand.point.left.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hand Point Left Fill"
+          }
+        }
+      }
+    },
+    "icon.hand.point.right.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hand Point Right Fill"
+          }
+        }
+      }
+    },
+    "icon.hand.point.up.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hand Point Up Fill"
+          }
+        }
+      }
+    },
+    "icon.hand.point.up.left.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hand Point Up Left Fill"
+          }
+        }
+      }
+    },
+    "icon.hand.raised.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hand Raised Fill"
+          }
+        }
+      }
+    },
+    "icon.hand.raised.fingers.spread.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hand Raised Fingers Spread Fill"
+          }
+        }
+      }
+    },
+    "icon.hand.tap.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hand Tap Fill"
+          }
+        }
+      }
+    },
+    "icon.hand.thumbsdown.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hand Thumbsdown Fill"
+          }
+        }
+      }
+    },
+    "icon.hand.thumbsup.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hand Thumbsup Fill"
+          }
+        }
+      }
+    },
+    "icon.hand.wave.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hand Wave Fill"
+          }
+        }
+      }
+    },
+    "icon.handbag.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Handbag Fill"
+          }
+        }
+      }
+    },
+    "icon.hands.and.sparkles.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hands And Sparkles Fill"
+          }
+        }
+      }
+    },
+    "icon.hands.clap.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hands Clap Fill"
+          }
+        }
+      }
+    },
+    "icon.hands.sparkles.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hands Sparkles Fill"
+          }
+        }
+      }
+    },
+    "icon.hare.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hare Fill"
+          }
+        }
+      }
+    },
+    "icon.hat.cap.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hat Cap Fill"
+          }
+        }
+      }
+    },
+    "icon.hat.widebrim.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hat Widebrim Fill"
+          }
+        }
+      }
+    },
+    "icon.headphones" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Headphones"
+          }
+        }
+      }
+    },
+    "icon.heart.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Heart Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.heart.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Heart Fill"
+          }
+        }
+      }
+    },
+    "icon.heart.slash.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Heart Slash Fill"
+          }
+        }
+      }
+    },
+    "icon.heart.text.clipboard.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Heart Text Clipboard Fill"
+          }
+        }
+      }
+    },
+    "icon.helmet.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Helmet Fill"
+          }
+        }
+      }
+    },
+    "icon.hockey.puck.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hockey Puck Fill"
+          }
+        }
+      }
+    },
+    "icon.horn.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Horn Fill"
+          }
+        }
+      }
+    },
+    "icon.hourglass" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hourglass"
+          }
+        }
+      }
+    },
+    "icon.house.and.flag.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "House And Flag Fill"
+          }
+        }
+      }
+    },
+    "icon.house.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "House Fill"
+          }
+        }
+      }
+    },
+    "icon.house.lodge.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "House Lodge Fill"
+          }
+        }
+      }
+    },
+    "icon.humidity.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Humidity Fill"
+          }
+        }
+      }
+    },
+    "icon.hurricane" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hurricane"
+          }
+        }
+      }
+    },
+    "icon.infinity.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Infinity Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.info.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Info Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.ipad" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ipad"
+          }
+        }
+      }
+    },
+    "icon.iphone" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Iphone"
+          }
+        }
+      }
+    },
+    "icon.key.card.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Key Card Fill"
+          }
+        }
+      }
+    },
+    "icon.key.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Key Fill"
+          }
+        }
+      }
+    },
+    "icon.key.viewfinder" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Key Viewfinder"
+          }
+        }
+      }
+    },
+    "icon.keyboard.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keyboard Fill"
+          }
+        }
+      }
+    },
+    "icon.l.joystick.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L Joystick Fill"
+          }
+        }
+      }
+    },
+    "icon.ladybug.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ladybug Fill"
+          }
+        }
+      }
+    },
+    "icon.lamp.table.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lamp Table Fill"
+          }
+        }
+      }
+    },
+    "icon.laptopcomputer" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Laptopcomputer"
+          }
+        }
+      }
+    },
+    "icon.lasso" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lasso"
+          }
+        }
+      }
+    },
+    "icon.leaf.circle" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Leaf Circle"
+          }
+        }
+      }
+    },
+    "icon.leaf.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Leaf Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.leaf.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Leaf Fill"
+          }
+        }
+      }
+    },
+    "icon.lifepreserver.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lifepreserver Fill"
+          }
+        }
+      }
+    },
+    "icon.light.beacon.max.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Light Beacon Max Fill"
+          }
+        }
+      }
+    },
+    "icon.lightbulb.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lightbulb Fill"
+          }
+        }
+      }
+    },
+    "icon.line.3.horizontal.decrease" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Line 3 Horizontal Decrease"
+          }
+        }
+      }
+    },
+    "icon.line.3.horizontal.decrease.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Line 3 Horizontal Decrease Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.link" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Link"
+          }
+        }
+      }
+    },
+    "icon.list.bullet" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "List Bullet"
+          }
+        }
+      }
+    },
+    "icon.list.bullet.indent" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "List Bullet Indent"
+          }
+        }
+      }
+    },
+    "icon.lizard.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lizard Fill"
+          }
+        }
+      }
+    },
+    "icon.location.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Location Fill"
+          }
+        }
+      }
+    },
+    "icon.lock.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lock Fill"
+          }
+        }
+      }
+    },
+    "icon.lock.open.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lock Open Fill"
+          }
+        }
+      }
+    },
+    "icon.lock.shield.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lock Shield Fill"
+          }
+        }
+      }
+    },
+    "icon.lungs.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lungs Fill"
+          }
+        }
+      }
+    },
+    "icon.macwindow" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Macwindow"
+          }
+        }
+      }
+    },
+    "icon.magnifyingglass" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Magnifyingglass"
+          }
+        }
+      }
+    },
+    "icon.map.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Map Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.map.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Map Fill"
+          }
+        }
+      }
+    },
+    "icon.mappin" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mappin"
+          }
+        }
+      }
+    },
+    "icon.mappin.and.ellipse" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mappin And Ellipse"
+          }
+        }
+      }
+    },
+    "icon.medal.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Medal Fill"
+          }
+        }
+      }
+    },
+    "icon.megaphone" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Megaphone"
+          }
+        }
+      }
+    },
+    "icon.memorychip.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Memorychip Fill"
+          }
+        }
+      }
+    },
+    "icon.message.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Message Fill"
+          }
+        }
+      }
+    },
+    "icon.mic.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mic Fill"
+          }
+        }
+      }
+    },
+    "icon.microbe.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Microbe Fill"
+          }
+        }
+      }
+    },
+    "icon.minus.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Minus Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.moon.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Moon Fill"
+          }
+        }
+      }
+    },
+    "icon.moon.stars.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Moon Stars Fill"
+          }
+        }
+      }
+    },
+    "icon.motorcycle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Motorcycle Fill"
+          }
+        }
+      }
+    },
+    "icon.mountain.2.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mountain 2 Fill"
+          }
+        }
+      }
+    },
+    "icon.mouth.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mouth Fill"
+          }
+        }
+      }
+    },
+    "icon.mug" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mug"
+          }
+        }
+      }
+    },
+    "icon.mug.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mug Fill"
+          }
+        }
+      }
+    },
+    "icon.multiply.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Multiply Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.music.note" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Music Note"
+          }
+        }
+      }
+    },
+    "icon.music.note.list" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Music Note List"
+          }
+        }
+      }
+    },
+    "icon.music.quarternote.3" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Music Quarternote 3"
+          }
+        }
+      }
+    },
+    "icon.network" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Network"
+          }
+        }
+      }
+    },
+    "icon.newspaper.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Newspaper Fill"
+          }
+        }
+      }
+    },
+    "icon.nose.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nose Fill"
+          }
+        }
+      }
+    },
+    "icon.nosign" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nosign"
+          }
+        }
+      }
+    },
+    "icon.number" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Number"
+          }
+        }
+      }
+    },
+    "icon.octagon.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Octagon Fill"
+          }
+        }
+      }
+    },
+    "icon.oven.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Oven Fill"
+          }
+        }
+      }
+    },
+    "icon.paintbrush.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paintbrush Fill"
+          }
+        }
+      }
+    },
+    "icon.paintbrush.pointed.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paintbrush Pointed Fill"
+          }
+        }
+      }
+    },
+    "icon.paintpalette.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paintpalette Fill"
+          }
+        }
+      }
+    },
+    "icon.paperclip" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paperclip"
+          }
+        }
+      }
+    },
+    "icon.paperplane.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paperplane Fill"
+          }
+        }
+      }
+    },
+    "icon.parkingsign.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Parkingsign Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.party.popper.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Party Popper Fill"
+          }
+        }
+      }
+    },
+    "icon.pause.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pause Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.pause.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pause Fill"
+          }
+        }
+      }
+    },
+    "icon.pawprint.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pawprint Fill"
+          }
+        }
+      }
+    },
+    "icon.peacesign" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Peacesign"
+          }
+        }
+      }
+    },
+    "icon.pencil" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pencil"
+          }
+        }
+      }
+    },
+    "icon.pencil.and.ruler.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pencil And Ruler Fill"
+          }
+        }
+      }
+    },
+    "icon.percent" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Percent"
+          }
+        }
+      }
+    },
+    "icon.person.2.badge.minus" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Person 2 Badge Minus"
+          }
+        }
+      }
+    },
+    "icon.person.2.badge.plus" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Person 2 Badge Plus"
+          }
+        }
+      }
+    },
+    "icon.person.2.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Person 2 Fill"
+          }
+        }
+      }
+    },
+    "icon.person.2.gobackward" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Person 2 Gobackward"
+          }
+        }
+      }
+    },
+    "icon.person.3.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Person 3 Fill"
+          }
+        }
+      }
+    },
+    "icon.person.3.sequence.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Person 3 Sequence Fill"
+          }
+        }
+      }
+    },
+    "icon.person.badge.key.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Person Badge Key Fill"
+          }
+        }
+      }
+    },
+    "icon.person.badge.plus" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Person Badge Plus"
+          }
+        }
+      }
+    },
+    "icon.person.crop.circle.badge.checkmark" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Person Crop Circle Badge Checkmark"
+          }
+        }
+      }
+    },
+    "icon.person.crop.circle.badge.xmark" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Person Crop Circle Badge Xmark"
+          }
+        }
+      }
+    },
+    "icon.person.crop.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Person Crop Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.person.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Person Fill"
+          }
+        }
+      }
+    },
+    "icon.person.fill.checkmark" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Person Fill Checkmark"
+          }
+        }
+      }
+    },
+    "icon.person.fill.questionmark" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Person Fill Questionmark"
+          }
+        }
+      }
+    },
+    "icon.person.fill.xmark" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Person Fill Xmark"
+          }
+        }
+      }
+    },
+    "icon.person.text.rectangle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Person Text Rectangle Fill"
+          }
+        }
+      }
+    },
+    "icon.phone.arrow.up.right.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Phone Arrow Up Right Fill"
+          }
+        }
+      }
+    },
+    "icon.phone.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Phone Fill"
+          }
+        }
+      }
+    },
+    "icon.photo.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Photo Fill"
+          }
+        }
+      }
+    },
+    "icon.pianokeys" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pianokeys"
+          }
+        }
+      }
+    },
+    "icon.pills.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pills Fill"
+          }
+        }
+      }
+    },
+    "icon.pin.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pin Fill"
+          }
+        }
+      }
+    },
+    "icon.play.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Play Fill"
+          }
+        }
+      }
+    },
+    "icon.play.rectangle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Play Rectangle Fill"
+          }
+        }
+      }
+    },
+    "icon.plus.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Plus Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.plus.forwardslash.minus" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Plus Forwardslash Minus"
+          }
+        }
+      }
+    },
+    "icon.point.3.connected.trianglepath.dotted" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Point 3 Connected Trianglepath Dotted"
+          }
+        }
+      }
+    },
+    "icon.point.3.filled.connected.trianglepath.dotted" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Point 3 Filled Connected Trianglepath Dotted"
+          }
+        }
+      }
+    },
+    "icon.popcorn" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Popcorn"
+          }
+        }
+      }
+    },
+    "icon.popcorn.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Popcorn Fill"
+          }
+        }
+      }
+    },
+    "icon.powerplug.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Powerplug Fill"
+          }
+        }
+      }
+    },
+    "icon.printer.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Printer Fill"
+          }
+        }
+      }
+    },
+    "icon.puzzlepiece.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Puzzlepiece Fill"
+          }
+        }
+      }
+    },
+    "icon.qrcode" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Qrcode"
+          }
+        }
+      }
+    },
+    "icon.questionmark.bubble.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questionmark Bubble Fill"
+          }
+        }
+      }
+    },
+    "icon.questionmark.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questionmark Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.quote.bubble.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quote Bubble Fill"
+          }
+        }
+      }
+    },
+    "icon.r.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "R Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.radio.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Radio Fill"
+          }
+        }
+      }
+    },
+    "icon.rainbow" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rainbow"
+          }
+        }
+      }
+    },
+    "icon.receipt.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Receipt Fill"
+          }
+        }
+      }
+    },
+    "icon.record.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Record Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.rectangle.3.group.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rectangle 3 Group Fill"
+          }
+        }
+      }
+    },
+    "icon.rectangle.badge.checkmark" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rectangle Badge Checkmark"
+          }
+        }
+      }
+    },
+    "icon.rectangle.on.rectangle" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rectangle On Rectangle"
+          }
+        }
+      }
+    },
+    "icon.rectangle.split.3x1.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rectangle Split 3x1 Fill"
+          }
+        }
+      }
+    },
+    "icon.refrigerator.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Refrigerator Fill"
+          }
+        }
+      }
+    },
+    "icon.repeat" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Repeat"
+          }
+        }
+      }
+    },
+    "icon.repeat.1" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Repeat 1"
+          }
+        }
+      }
+    },
+    "icon.ring" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ring"
+          }
+        }
+      }
+    },
+    "icon.road.lanes" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Road Lanes"
+          }
+        }
+      }
+    },
+    "icon.road.lanes.curved.right" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Road Lanes Curved Right"
+          }
+        }
+      }
+    },
+    "icon.rosette" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rosette"
+          }
+        }
+      }
+    },
+    "icon.rugbyball.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rugbyball Fill"
+          }
+        }
+      }
+    },
+    "icon.ruler.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ruler Fill"
+          }
+        }
+      }
+    },
+    "icon.sailboat.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sailboat Fill"
+          }
+        }
+      }
+    },
+    "icon.scale.3d" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scale 3d"
+          }
+        }
+      }
+    },
+    "icon.scissors" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scissors"
+          }
+        }
+      }
+    },
+    "icon.scooter" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scooter"
+          }
+        }
+      }
+    },
+    "icon.scope" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scope"
+          }
+        }
+      }
+    },
+    "icon.screwdriver.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Screwdriver Fill"
+          }
+        }
+      }
+    },
+    "icon.scribble.variable" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scribble Variable"
+          }
+        }
+      }
+    },
+    "icon.scroll.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scroll Fill"
+          }
+        }
+      }
+    },
+    "icon.seal.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Seal Fill"
+          }
+        }
+      }
+    },
+    "icon.selection.pin.in.out" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Selection Pin In Out"
+          }
+        }
+      }
+    },
+    "icon.server.rack" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Server Rack"
+          }
+        }
+      }
+    },
+    "icon.service.dog.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Service Dog Fill"
+          }
+        }
+      }
+    },
+    "icon.shield.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Shield Fill"
+          }
+        }
+      }
+    },
+    "icon.shippingbox.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Shippingbox Fill"
+          }
+        }
+      }
+    },
+    "icon.shoe.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Shoe Fill"
+          }
+        }
+      }
+    },
+    "icon.shower.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Shower Fill"
+          }
+        }
+      }
+    },
+    "icon.shuffle" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Shuffle"
+          }
+        }
+      }
+    },
+    "icon.sidebar.left" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sidebar Left"
+          }
+        }
+      }
+    },
+    "icon.signpost.right.and.left.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Signpost Right And Left Fill"
+          }
+        }
+      }
+    },
+    "icon.signpost.right.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Signpost Right Fill"
+          }
+        }
+      }
+    },
+    "icon.skateboard.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skateboard Fill"
+          }
+        }
+      }
+    },
+    "icon.skis.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skis Fill"
+          }
+        }
+      }
+    },
+    "icon.slider.horizontal.3" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Slider Horizontal 3"
+          }
+        }
+      }
+    },
+    "icon.snowboard.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snowboard Fill"
+          }
+        }
+      }
+    },
+    "icon.snowflake" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snowflake"
+          }
+        }
+      }
+    },
+    "icon.soccerball" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Soccerball"
+          }
+        }
+      }
+    },
+    "icon.sofa.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sofa Fill"
+          }
+        }
+      }
+    },
+    "icon.sos.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sos Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.sparkles" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sparkles"
+          }
+        }
+      }
+    },
+    "icon.speaker.slash.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Speaker Slash Fill"
+          }
+        }
+      }
+    },
+    "icon.speaker.wave.2.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Speaker Wave 2 Fill"
+          }
+        }
+      }
+    },
+    "icon.speaker.wave.3.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Speaker Wave 3 Fill"
+          }
+        }
+      }
+    },
+    "icon.spoon.serving" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spoon Serving"
+          }
+        }
+      }
+    },
+    "icon.square.3.layers.3d" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Square 3 Layers 3d"
+          }
+        }
+      }
+    },
+    "icon.square.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Square Fill"
+          }
+        }
+      }
+    },
+    "icon.square.grid.3x3.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Square Grid 3x3 Fill"
+          }
+        }
+      }
+    },
+    "icon.square.on.circle" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Square On Circle"
+          }
+        }
+      }
+    },
+    "icon.square.stack.3d.up.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Square Stack 3d Up Fill"
+          }
+        }
+      }
+    },
+    "icon.square.stack.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Square Stack Fill"
+          }
+        }
+      }
+    },
+    "icon.star.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Star Fill"
+          }
+        }
+      }
+    },
+    "icon.staroflife.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Staroflife Fill"
+          }
+        }
+      }
+    },
+    "icon.stethoscope" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stethoscope"
+          }
+        }
+      }
+    },
+    "icon.stop.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stop Fill"
+          }
+        }
+      }
+    },
+    "icon.stopwatch.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stopwatch Fill"
+          }
+        }
+      }
+    },
+    "icon.storefront.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Storefront Fill"
+          }
+        }
+      }
+    },
+    "icon.stove.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stove Fill"
+          }
+        }
+      }
+    },
+    "icon.suit.club.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Suit Club Fill"
+          }
+        }
+      }
+    },
+    "icon.suit.diamond.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Suit Diamond Fill"
+          }
+        }
+      }
+    },
+    "icon.suit.heart.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Suit Heart Fill"
+          }
+        }
+      }
+    },
+    "icon.suit.spade.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Suit Spade Fill"
+          }
+        }
+      }
+    },
+    "icon.suitcase.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Suitcase Fill"
+          }
+        }
+      }
+    },
+    "icon.sum" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sum"
+          }
+        }
+      }
+    },
+    "icon.sun.max.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sun Max Fill"
+          }
+        }
+      }
+    },
+    "icon.sunglasses.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sunglasses Fill"
+          }
+        }
+      }
+    },
+    "icon.sunrise.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sunrise Fill"
+          }
+        }
+      }
+    },
+    "icon.sunset.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sunset Fill"
+          }
+        }
+      }
+    },
+    "icon.surfboard.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Surfboard Fill"
+          }
+        }
+      }
+    },
+    "icon.swatchpalette.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Swatchpalette Fill"
+          }
+        }
+      }
+    },
+    "icon.swift" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Swift"
+          }
+        }
+      }
+    },
+    "icon.switch.2" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Switch 2"
+          }
+        }
+      }
+    },
+    "icon.syringe.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Syringe Fill"
+          }
+        }
+      }
+    },
+    "icon.tablecells.badge.ellipsis" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tablecells Badge Ellipsis"
+          }
+        }
+      }
+    },
+    "icon.tablecells.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tablecells Fill"
+          }
+        }
+      }
+    },
+    "icon.tag.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tag Fill"
+          }
+        }
+      }
+    },
+    "icon.takeoutbag.and.cup.and.straw" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Takeoutbag And Cup And Straw"
+          }
+        }
+      }
+    },
+    "icon.takeoutbag.and.cup.and.straw.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Takeoutbag And Cup And Straw Fill"
+          }
+        }
+      }
+    },
+    "icon.tennisball.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tennisball Fill"
+          }
+        }
+      }
+    },
+    "icon.tent.2.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tent 2 Fill"
+          }
+        }
+      }
+    },
+    "icon.tent.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tent Fill"
+          }
+        }
+      }
+    },
+    "icon.terminal.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Terminal Fill"
+          }
+        }
+      }
+    },
+    "icon.text.bubble.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text Bubble Fill"
+          }
+        }
+      }
+    },
+    "icon.textformat" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Textformat"
+          }
+        }
+      }
+    },
+    "icon.theatermasks.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Theatermasks Fill"
+          }
+        }
+      }
+    },
+    "icon.thermometer.medium" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Thermometer Medium"
+          }
+        }
+      }
+    },
+    "icon.thermometer.snowflake" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Thermometer Snowflake"
+          }
+        }
+      }
+    },
+    "icon.thermometer.sun.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Thermometer Sun Fill"
+          }
+        }
+      }
+    },
+    "icon.ticket.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ticket Fill"
+          }
+        }
+      }
+    },
+    "icon.timer" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Timer"
+          }
+        }
+      }
+    },
+    "icon.toilet.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Toilet Fill"
+          }
+        }
+      }
+    },
+    "icon.tornado" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tornado"
+          }
+        }
+      }
+    },
+    "icon.tortoise.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tortoise Fill"
+          }
+        }
+      }
+    },
+    "icon.touchid" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Touchid"
+          }
+        }
+      }
+    },
+    "icon.train.side.front.car" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Train Side Front Car"
+          }
+        }
+      }
+    },
+    "icon.tram.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tram Fill"
+          }
+        }
+      }
+    },
+    "icon.trash.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Trash Fill"
+          }
+        }
+      }
+    },
+    "icon.tray.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tray Fill"
+          }
+        }
+      }
+    },
+    "icon.tree.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tree Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.tree.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tree Fill"
+          }
+        }
+      }
+    },
+    "icon.triangle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Triangle Fill"
+          }
+        }
+      }
+    },
+    "icon.trophy.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Trophy Fill"
+          }
+        }
+      }
+    },
+    "icon.truck.box.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Truck Box Fill"
+          }
+        }
+      }
+    },
+    "icon.truck.pickup.side.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Truck Pickup Side Fill"
+          }
+        }
+      }
+    },
+    "icon.tshirt.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tshirt Fill"
+          }
+        }
+      }
+    },
+    "icon.tv.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tv Fill"
+          }
+        }
+      }
+    },
+    "icon.uiwindow.split.2x1" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uiwindow Split 2x1"
+          }
+        }
+      }
+    },
+    "icon.umbrella.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Umbrella Fill"
+          }
+        }
+      }
+    },
+    "icon.video.bubble.left.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Video Bubble Left Fill"
+          }
+        }
+      }
+    },
+    "icon.video.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Video Fill"
+          }
+        }
+      }
+    },
+    "icon.viewfinder" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Viewfinder"
+          }
+        }
+      }
+    },
+    "icon.volleyball.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Volleyball Fill"
+          }
+        }
+      }
+    },
+    "icon.wallet.bifold.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wallet Bifold Fill"
+          }
+        }
+      }
+    },
+    "icon.wand.and.sparkles" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wand And Sparkles"
+          }
+        }
+      }
+    },
+    "icon.washer.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Washer Fill"
+          }
+        }
+      }
+    },
+    "icon.watch.analog" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Watch Analog"
+          }
+        }
+      }
+    },
+    "icon.water.waves" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Water Waves"
+          }
+        }
+      }
+    },
+    "icon.waterbottle" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Waterbottle"
+          }
+        }
+      }
+    },
+    "icon.waterbottle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Waterbottle Fill"
+          }
+        }
+      }
+    },
+    "icon.waveform" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Waveform"
+          }
+        }
+      }
+    },
+    "icon.wheelchair" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wheelchair"
+          }
+        }
+      }
+    },
+    "icon.wifi" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wifi"
+          }
+        }
+      }
+    },
+    "icon.wind" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wind"
+          }
+        }
+      }
+    },
+    "icon.window.vertical.closed" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Window Vertical Closed"
+          }
+        }
+      }
+    },
+    "icon.wineglass" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wineglass"
+          }
+        }
+      }
+    },
+    "icon.wineglass.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wineglass Fill"
+          }
+        }
+      }
+    },
+    "icon.wrench.and.screwdriver.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wrench And Screwdriver Fill"
+          }
+        }
+      }
+    },
+    "icon.xmark.circle.fill" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Xmark Circle Fill"
+          }
+        }
+      }
+    },
+    "icon.zzz" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zzz"
+          }
+        }
+      }
+    },
+    "list" : {
+
+    },
+    "macOS could not register that shortcut. Another app may already use it." : {
+
+    },
+    "macOS or a fixed Snip Snap command uses that shortcut." : {
+
+    },
+    "snip.completion.done" : {
+      "comment" : "Action or state for a snip that is finished.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Done"
+          }
+        }
+      }
+    },
+    "attachment.error.detail" : {
+      "comment" : "A file name followed by the reason that attachment cannot sync.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@: %2$@"
+          }
+        }
+      }
+    },
+    "snip.completion.notDone" : {
+      "comment" : "Action or state for a snip that is not finished.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not Done"
+          }
+        }
+      }
+    },
+    "snip.completion.toggle" : {
+      "comment" : "Command that toggles a snip's completion state.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Done or Not Done"
+          }
+        }
+      }
+    },
+    "syncing" : {
+
+    },
+    "waiting for iCloud" : {
+
+    },
+    "⌘ %@" : {
+
+    },
+    "⌘S save" : {
+
+    }
+  },
+  "version" : "1.1"
+}

@@ -99,7 +99,7 @@ private struct ShortcutSettingsWindowConfigurator: NSViewRepresentable {
         }
 
         func configureWindow() {
-            window?.title = "Keyboard Shortcuts"
+            window?.title = String(localized: "Keyboard Shortcuts")
             window?.level = .modalPanel
         }
     }
@@ -170,7 +170,7 @@ private struct ShortcutRecorderButton: NSViewRepresentable {
             font = .monospacedSystemFont(ofSize: 12, weight: .medium)
             target = self
             action = #selector(beginRecording)
-            toolTip = "Click, then press a shortcut"
+            toolTip = String(localized: "Click, then press a shortcut")
         }
 
         required init?(coder: NSCoder) {
@@ -193,7 +193,7 @@ private struct ShortcutRecorderButton: NSViewRepresentable {
 
         @objc private func beginRecording() {
             isRecording = true
-            title = "Press shortcut"
+            title = String(localized: "Press shortcut")
             window?.makeFirstResponder(self)
             if keyMonitor == nil {
                 keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {

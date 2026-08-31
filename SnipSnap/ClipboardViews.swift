@@ -171,7 +171,8 @@ struct ClipboardEntryRow: View {
                 if !liveAttachmentPreviewItems.isEmpty {
                     AttachmentPreviewStrip(
                         items: liveAttachmentPreviewItems,
-                        onPreview: { url in
+                        onPreview: { item in
+                            guard let url = item.url else { return }
                             onPreviewAttachments(entry.fileURLs, url)
                         }
                     )

@@ -37,31 +37,31 @@ cleanup() {
 trap cleanup EXIT
 
 manifest="$repo_dir/release.json"
-project="$repo_dir/SnipSnap.xcodeproj/project.pbxproj"
+settings="$repo_dir/Config/Shared.xcconfig"
 new_manifest="$temp_root/release.json"
-new_project="$temp_root/project.pbxproj"
+new_settings="$temp_root/Shared.xcconfig"
 manifest_backup="$temp_root/release.backup.json"
 
 /bin/cp "$manifest" "$new_manifest"
 /bin/cp "$manifest" "$manifest_backup"
-/bin/cp "$project" "$new_project"
+/bin/cp "$settings" "$new_settings"
 /usr/bin/plutil -replace version -string "$requested_version" "$new_manifest"
 /usr/bin/plutil -replace build -integer "$requested_build" "$new_manifest"
 /usr/bin/sed -E -i '' \
-    "s/(MARKETING_VERSION = )[^;]+;/\\1$requested_version;/" \
-    "$new_project"
+    "s/(MARKETING_VERSION = )[^[:space:]]+/\\1$requested_version/" \
+    "$new_settings"
 /usr/bin/sed -E -i '' \
-    "s/(CURRENT_PROJECT_VERSION = )[^;]+;/\\1$requested_build;/" \
-    "$new_project"
+    "s/(CURRENT_PROJECT_VERSION = )[^[:space:]]+/\\1$requested_build/" \
+    "$new_settings"
 
 typeset -g RELEASE_VERSION="$requested_version"
 typeset -g RELEASE_BUILD_NUMBER="$requested_build"
-release_policy_require_project_versions "$new_project"
+release_policy_require_project_versions "$new_settings"
 
 /bin/cp "$new_manifest" "$manifest"
-if ! /bin/cp "$new_project" "$project"; then
+if ! /bin/cp "$new_settings" "$settings"; then
     /bin/cp "$manifest_backup" "$manifest"
-    release_policy_fail "could not update the Xcode project; release.json was restored"
+    release_policy_fail "could not update build settings; release.json was restored"
     exit 1
 fi
 

@@ -1,4 +1,5 @@
 import AppKit
+import SnipSnapCore
 import CryptoKit
 import Foundation
 
@@ -286,7 +287,7 @@ actor ClipboardHistoryFileStore {
             try encoder.encode(entries).write(to: url, options: .atomic)
             return nil
         } catch {
-            return "Snip Snap could not save clipboard history. Snip Snap may lose new clipboard items when it quits."
+            return String(localized: "Snip Snap could not save clipboard history. Snip Snap may lose new clipboard items when it quits.")
         }
     }
 }
@@ -392,9 +393,7 @@ final class ClipboardHistory: ObservableObject {
     init(
         pasteboard: NSPasteboard = .general,
         defaults: UserDefaults = .standard,
-        storeURL: URL = SnipRepository.defaultStoreURL()
-            .deletingLastPathComponent()
-            .appendingPathComponent("clipboard.json")
+        storeURL: URL = AppDataPaths.clipboardHistory()
     ) {
         self.pasteboard = pasteboard
         self.defaults = defaults

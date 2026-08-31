@@ -1,4 +1,5 @@
 import XCTest
+import SnipSnapCore
 import Carbon.HIToolbox
 @testable import SnipSnap
 
@@ -13,6 +14,31 @@ final class ShortcutTests: StoreBackedTestCase {
             "Merge Snips",
         ])
         XCTAssertEqual(AppShortcutAction.toggleDone.rawValue, "toggleDone")
+    }
+
+    func testCompletionCommandsUseSharedDoneLanguage() {
+        XCTAssertEqual(SnipCompletionLanguage.done, "Done")
+        XCTAssertEqual(SnipCompletionLanguage.notDone, "Not Done")
+        XCTAssertEqual(SnipCompletionLanguage.stateTitle(isDone: true), "Done")
+        XCTAssertEqual(SnipCompletionLanguage.stateTitle(isDone: false), "Not Done")
+        XCTAssertEqual(SnipCommand.toggleDone.title(allSelectedAreDone: false), "Done")
+        XCTAssertEqual(SnipCommand.toggleDone.title(allSelectedAreDone: true), "Not Done")
+        XCTAssertEqual(AppShortcutAction.toggleDone.title, "Done or Not Done")
+    }
+
+    func testSharedCatalogCoversEveryListIconAndTheInboxName() {
+        XCTAssertEqual(SnipList.inbox.displayName, String(localized: "Inbox"))
+
+        let icons = Set(SnipListIconOptions.categories.flatMap(\.icons))
+        XCTAssertFalse(icons.isEmpty)
+        for icon in icons {
+            let key = "icon.\(icon)"
+            XCTAssertNotEqual(
+                Bundle.main.localizedString(forKey: key, value: nil, table: nil),
+                key,
+                "Missing catalog entry for \(icon)"
+            )
+        }
     }
 
     func testSnipSnapShortcutDefaultsUseLeftAndRightShiftActions() {

@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0012
+---
+
 # 0001: Keep a local JSON store with an explicit schema version
 
 ## Context

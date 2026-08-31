@@ -14,10 +14,10 @@ enum SnipSnapColors {
 
     // MARK: Controls and interaction
 
-    static let controlTint = Color.primary
-    static let selectionFill = Color.primary.opacity(0.10)
+    static let controlTint = SnipSnapTheme.controlTint
+    static let selectionFill = SnipSnapTheme.selectionFill
     static let selectionEdge = Color.primary.opacity(0.50)
-    static let compactSelectionFill = Color.primary.opacity(0.18)
+    static let compactSelectionFill = SnipSnapTheme.compactSelectionFill
     static let compactSubduedFill = Color.primary.opacity(0.05)
     static let dropTargetFill = Color.primary.opacity(0.08)
     static let dropTargetEdge = Color.primary.opacity(0.48)
@@ -49,22 +49,28 @@ enum SnipSnapColors {
     }
 
     static func primaryActionTint(for colorScheme: ColorScheme) -> Color {
-        // Send needs exact monochrome contrast; the hierarchical primary color
-        // is softer than black and white on macOS.
-        colorScheme == .dark ? .white : .black
+        SnipSnapTheme.primaryActionTint(for: colorScheme)
     }
 
     static func primaryActionLabel(for colorScheme: ColorScheme) -> Color {
-        colorScheme == .dark ? .black : .white
+        SnipSnapTheme.primaryActionLabel(for: colorScheme)
+    }
+
+    static func disabledPrimaryActionTint(for colorScheme: ColorScheme) -> Color {
+        SnipSnapTheme.disabledPrimaryActionTint(for: colorScheme)
+    }
+
+    static func disabledPrimaryActionLabel(for colorScheme: ColorScheme) -> Color {
+        SnipSnapTheme.disabledPrimaryActionLabel(for: colorScheme)
     }
 
     // MARK: Surfaces
 
-    static let standaloneActionFill = Color.primary.opacity(0.08)
-    static let compactActionFill = Color.primary.opacity(0.10)
-    static let glassEdge = Color.primary.opacity(0.10)
-    static let emphasizedGlassEdge = Color.primary.opacity(0.20)
-    static let focusedGlassEdge = Color.primary.opacity(0.32)
+    static let standaloneActionFill = SnipSnapTheme.standaloneActionFill
+    static let compactActionFill = SnipSnapTheme.compactActionFill
+    static let glassEdge = SnipSnapTheme.glassEdge
+    static let emphasizedGlassEdge = SnipSnapTheme.emphasizedGlassEdge
+    static let focusedGlassEdge = SnipSnapTheme.focusedGlassEdge
     static let attachmentFill = Color.primary.opacity(0.055)
     static let attachmentEdge = Color.primary.opacity(0.12)
     static let contentCardEdge = Color(nsColor: .separatorColor)
