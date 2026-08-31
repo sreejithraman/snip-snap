@@ -62,7 +62,7 @@ private struct SnipListIconBrowser: View {
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanQuery.isEmpty else {
             guard !recentIcons.isEmpty else { return SnipListIconOptions.categories }
-            return [SnipListIconCategory(title: "Recent", icons: recentIcons)]
+            return [SnipListIconCategory(title: String(localized: "Recent"), icons: recentIcons)]
                 + SnipListIconOptions.categories
         }
 

@@ -241,7 +241,7 @@ struct SnipListView: View {
                             }
                         } header: {
                             listSectionHeader(
-                                model.activeList.name,
+                                model.activeList.displayName,
                                 listID: model.activeListID
                             )
                         }
@@ -926,23 +926,23 @@ struct SnipListView: View {
         ) {
             perform(.merge, on: ids)
         }
-        menu.addPanelSubmenu("Move to") { submenu in
+        menu.addPanelSubmenu(String(localized: "Move to")) { submenu in
             for list in model.lists {
-                submenu.addPanelAction(list.name) {
+                submenu.addPanelAction(list.displayName) {
                     model.selection = ids
                     model.moveSelection(to: list.id)
                 }
             }
             submenu.addItem(.separator())
-            submenu.addPanelAction("New List…") {
+            submenu.addPanelAction(String(localized: "New List…")) {
                 moveSelectionToNewList(ids)
             }
         }
-        menu.addPanelAction("Move Up", isEnabled: canReorder(ids)) {
+        menu.addPanelAction(String(localized: "Move Up"), isEnabled: canReorder(ids)) {
             model.selection = ids
             model.moveSelectionUp()
         }
-        menu.addPanelAction("Move Down", isEnabled: canReorder(ids)) {
+        menu.addPanelAction(String(localized: "Move Down"), isEnabled: canReorder(ids)) {
             model.selection = ids
             model.moveSelectionDown()
         }

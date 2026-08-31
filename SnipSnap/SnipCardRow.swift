@@ -29,7 +29,7 @@ struct SnipCardRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             Toggle(
-                "Done",
+                SnipCompletionLanguage.done,
                 isOn: Binding(
                     get: { snip.isDone },
                     set: { _ in onToggleDone() }
@@ -43,7 +43,7 @@ struct SnipCardRow: View {
             .padding(.trailing, SnipSnapSpacing.relatedContent)
             .padding(.vertical, SnipSnapSpacing.cardContentInset)
             .disabled(isEditing)
-            .help(snip.isDone ? "Mark Not Done" : "Mark Done")
+            .help(SnipCompletionLanguage.actionTitle(isDone: snip.isDone))
 
             if isEditing {
                 editingBody

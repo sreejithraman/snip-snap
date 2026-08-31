@@ -1,43 +1,23 @@
 import Foundation
 
-public struct SnipLibraryCollectionIdentity: Codable, Equatable, Hashable, Sendable {
-  public let digest: Data
-
-  public init(digest: Data) {
-    self.digest = digest
-  }
-}
-
-public struct SnipDeviceActionState: Equatable, Sendable {
-  public let undoTitle: String
-  public let redoTitle: String
-  public let undoActionIDs: [UUID]
-  public let redoActionIDs: [UUID]
-
-  public var canUndo: Bool { !undoActionIDs.isEmpty }
-  public var canRedo: Bool { !redoActionIDs.isEmpty }
-  public var undoCount: Int { undoActionIDs.count }
-  public var redoCount: Int { redoActionIDs.count }
-
-  public init(
-    undoTitle: String,
-    redoTitle: String,
-    undoActionIDs: [UUID] = [],
-    redoActionIDs: [UUID] = []
-  ) {
-    self.undoTitle = undoTitle
-    self.redoTitle = redoTitle
-    self.undoActionIDs = undoActionIDs
-    self.redoActionIDs = redoActionIDs
-  }
-}
-
 public protocol SnipLibraryUserActions: Sendable {
   func perform(
-    name: String,
     command: SnipLibraryCommand,
     sortedBy sortMode: SnipSortMode
   ) async throws -> SnipLibraryUpdate
+
+  func delete(
+    ids: Set<UUID>,
+    token: UUID,
+    sortedBy sortMode: SnipSortMode
+  ) async throws -> SnipLibraryUpdate
+
+  func restoreDeletion(
+    token: UUID,
+    sortedBy sortMode: SnipSortMode
+  ) async throws -> SnipLibraryUpdate?
+
+  func discardDeletion(token: UUID, sortedBy sortMode: SnipSortMode) async
 
   func previewImport(backupURL: URL) async throws -> SnipImportPreview
 
@@ -46,11 +26,12 @@ public protocol SnipLibraryUserActions: Sendable {
     sortedBy sortMode: SnipSortMode
   ) async throws -> SnipImportResult
 
-  func state(sortedBy sortMode: SnipSortMode) async throws -> SnipDeviceActionState
-  func undo(sortedBy sortMode: SnipSortMode) async throws -> SnipLibraryUpdate?
-  func redo(sortedBy sortMode: SnipSortMode) async throws -> SnipLibraryUpdate?
-  func clear(sortedBy sortMode: SnipSortMode) async throws
 }
+
+public typealias SnipBackupImportPreviewer = @Sendable (
+  _ backupURL: URL,
+  _ target: any SnipLibrary
+) async throws -> SnipImportPreview
 
 public struct SnipLibraryUserActionsRebinder: Sendable {
   private let makeActions: @Sendable (any SnipLibrary) -> any SnipLibraryUserActions
@@ -71,61 +52,130 @@ public struct SnipLibraryUserActionsRebinder: Sendable {
 }
 
 public actor DirectSnipLibraryUserActions: SnipLibraryUserActions {
-  private let library: any SnipLibrary
+  private struct PendingDeletion: Sendable {
+    let token: UUID
+    let snips: [Snip]
+  }
 
-  public init(library: any SnipLibrary) {
+  private let library: any SnipLibrary
+  private let previewBackupImport: SnipBackupImportPreviewer
+  private var pendingDeletion: PendingDeletion?
+  private var mutationInProgress = false
+  private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
+
+  public init(
+    library: any SnipLibrary,
+    previewBackupImport: @escaping SnipBackupImportPreviewer = { _, _ in
+      throw SnipLibraryError.transferUnsupported
+    }
+  ) {
     self.library = library
+    self.previewBackupImport = previewBackupImport
   }
 
   public func perform(
-    name: String,
     command: SnipLibraryCommand,
     sortedBy sortMode: SnipSortMode
   ) async throws -> SnipLibraryUpdate {
-    _ = name
+    await acquireMutation()
+    defer { releaseMutation() }
     let update = try await library.perform(command, sortedBy: sortMode)
-    _ = try? await library.perform(.pruneAttachments(retaining: []), sortedBy: sortMode)
+    await discardPendingDeletion(sortedBy: sortMode)
     return update
   }
 
+  public func delete(
+    ids: Set<UUID>,
+    token: UUID,
+    sortedBy sortMode: SnipSortMode
+  ) async throws -> SnipLibraryUpdate {
+    await acquireMutation()
+    defer { releaseMutation() }
+    let before = try await library.checkedSnapshot(sortedBy: sortMode)
+    let deleted = before.snips.filter { ids.contains($0.id) }
+    let update = try await library.perform(.delete(ids: ids), sortedBy: sortMode)
+    pendingDeletion = deleted.isEmpty ? nil : PendingDeletion(token: token, snips: deleted)
+    await pruneAttachments(
+      retaining: Set(deleted.flatMap(\.attachments).map(\.id)),
+      sortedBy: sortMode
+    )
+    return update
+  }
+
+  public func restoreDeletion(
+    token: UUID,
+    sortedBy sortMode: SnipSortMode
+  ) async throws -> SnipLibraryUpdate? {
+    await acquireMutation()
+    defer { releaseMutation() }
+    guard let pendingDeletion, pendingDeletion.token == token else { return nil }
+    self.pendingDeletion = nil
+    do {
+      let update = try await library.perform(
+        .restore(snips: pendingDeletion.snips),
+        sortedBy: sortMode
+      )
+      await pruneAttachments(retaining: [], sortedBy: sortMode)
+      return update
+    } catch {
+      if self.pendingDeletion == nil {
+        self.pendingDeletion = pendingDeletion
+      }
+      throw error
+    }
+  }
+
+  public func discardDeletion(token: UUID, sortedBy sortMode: SnipSortMode) async {
+    await acquireMutation()
+    defer { releaseMutation() }
+    guard pendingDeletion?.token == token else { return }
+    await discardPendingDeletion(sortedBy: sortMode)
+  }
+
   public func previewImport(backupURL: URL) async throws -> SnipImportPreview {
-    _ = backupURL
-    throw SnipLibraryError.transferUnsupported
+    try await previewBackupImport(backupURL, library)
   }
 
   public func applyImport(
     _ preview: SnipImportPreview,
     sortedBy sortMode: SnipSortMode
   ) async throws -> SnipImportResult {
+    await acquireMutation()
+    defer { releaseMutation() }
     let applied = try await library.applyImport(preview)
-    let result = SnipImportResult(
+    await discardPendingDeletion(sortedBy: sortMode)
+    return SnipImportResult(
       snapshot: try await library.checkedSnapshot(sortedBy: sortMode),
       addedSnipCount: applied.addedSnipCount,
       recoveredSnipCount: applied.recoveredSnipCount
     )
-    _ = try? await library.perform(.pruneAttachments(retaining: []), sortedBy: sortMode)
-    return result
   }
 
-  public func state(sortedBy sortMode: SnipSortMode) async throws -> SnipDeviceActionState {
-    _ = sortMode
-    return SnipDeviceActionState(
-      undoTitle: "Undo",
-      redoTitle: "Redo"
-    )
+  private func acquireMutation() async {
+    guard mutationInProgress else {
+      mutationInProgress = true
+      return
+    }
+    await withCheckedContinuation { mutationWaiters.append($0) }
   }
 
-  public func undo(sortedBy sortMode: SnipSortMode) async throws -> SnipLibraryUpdate? {
-    _ = sortMode
-    return nil
+  private func releaseMutation() {
+    guard !mutationWaiters.isEmpty else {
+      mutationInProgress = false
+      return
+    }
+    mutationWaiters.removeFirst().resume()
   }
 
-  public func redo(sortedBy sortMode: SnipSortMode) async throws -> SnipLibraryUpdate? {
-    _ = sortMode
-    return nil
+  private func discardPendingDeletion(sortedBy sortMode: SnipSortMode) async {
+    pendingDeletion = nil
+    await pruneAttachments(retaining: [], sortedBy: sortMode)
   }
 
-  public func clear(sortedBy sortMode: SnipSortMode) async throws {
-    _ = sortMode
+  private func pruneAttachments(
+    retaining ids: Set<UUID>,
+    sortedBy sortMode: SnipSortMode
+  ) async {
+    _ = try? await library.perform(.pruneAttachments(retaining: ids), sortedBy: sortMode)
   }
 }

@@ -57,7 +57,7 @@ struct ShareExtensionView: View {
                 Section("List") {
                     Picker("Destination", selection: Bindable(model).destinationListID) {
                         ForEach(model.lists) { list in
-                            Label(list.name, systemImage: list.systemImage)
+                            Label(list.displayName, systemImage: list.systemImage)
                                 .tag(list.id)
                         }
                     }

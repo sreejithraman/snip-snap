@@ -63,43 +63,43 @@ public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .emptyContent:
-            "There is nothing to save."
+            String(localized: "There is nothing to save.", bundle: .main)
         case .snipNotFound:
-            "That snip no longer exists."
+            String(localized: "That snip no longer exists.", bundle: .main)
         case .invalidStore:
-            "Snip Snap could not read its saved snips."
+            String(localized: "Snip Snap could not read its saved snips.", bundle: .main)
         case .storeUnavailable:
-            "Snip Snap cannot save changes until its snip store is available."
+            String(localized: "Snip Snap cannot save changes until its snip store is available.", bundle: .main)
         case .requiresMultipleSnips:
-            "Select at least two snips to merge."
+            String(localized: "Select at least two snips to merge.", bundle: .main)
         case .snipChanged:
-            "This snip changed in another window. Copy your edits, reopen it, and try again."
+            String(localized: "This snip changed in another window. Copy your edits, reopen it, and try again.", bundle: .main)
         case .duplicateList:
-            "A list with that name already exists."
+            String(localized: "A list with that name already exists.", bundle: .main)
         case .invalidList:
-            "That list is not available."
+            String(localized: "That list is not available.", bundle: .main)
         case .invalidCommand:
-            "That change cannot run with other changes."
+            String(localized: "That change cannot run with other changes.", bundle: .main)
         case .attachmentCopyFailed:
-            "Snip Snap could not copy one of the files."
+            String(localized: "Snip Snap could not copy one of the files.", bundle: .main)
         case .modeTransitionInProgress:
-            "This device is changing its storage choice. Try again when setup finishes."
+            String(localized: "This device is changing its storage choice. Try again when setup finishes.", bundle: .main)
         case .readOnlyRecovery:
-            "This is a recovery copy. Restore it to an active library before making changes."
+            String(localized: "This is a recovery copy. Restore it to an active library before making changes.", bundle: .main)
         case .transferUnsupported:
-            "This snip store cannot change storage modes."
+            String(localized: "This snip store cannot change storage modes.", bundle: .main)
         case .transferConflict:
-            "Snip Snap found records it could not copy safely."
+            String(localized: "Snip Snap found records it could not copy safely.", bundle: .main)
         case .recoveryNotFound:
-            "That recovered edit is no longer available."
+            String(localized: "That recovered edit is no longer available.", bundle: .main)
         case .recoveryChanged:
-            "That recovered edit changed. Refresh the review and try again."
+            String(localized: "That recovered edit changed. Refresh the review and try again.", bundle: .main)
         case .invalidRecoveryChoice:
-            "That choice does not apply to this recovered edit."
+            String(localized: "That choice does not apply to this recovered edit.", bundle: .main)
         case .importChanged:
-            "The backup or saved snips changed. Review the import again."
+            String(localized: "The backup or saved snips changed. Review the import again.", bundle: .main)
         case .deviceActionChanged:
-            "That action cannot be undone because the same fields changed on another device."
+            String(localized: "That action cannot be undone because the same fields changed on another device.", bundle: .main)
         }
     }
 }

@@ -54,9 +54,14 @@ extension CloudAttachmentSetupError: LocalizedError {
     switch self {
     case .unsupportedFiles(let files):
       let details = files.map { file in
-        "\(file.fileName): \(file.reason.errorDescription)"
+        String(
+          localized: "attachment.error.detail",
+          defaultValue: "\(file.fileName): \(file.reason.errorDescription)",
+          bundle: .main,
+          comment: "A file name followed by the reason that attachment cannot sync."
+        )
       }.joined(separator: "; ")
-      return "These attachments cannot sync. \(details)"
+      return String(localized: "These attachments cannot sync. \(details)", bundle: .main)
     }
   }
 }
@@ -65,21 +70,23 @@ private extension CloudAttachmentUnsupportedReason {
   var errorDescription: String {
     switch self {
     case .fileTooLarge(let maximumBytes):
-      "larger than Snip Snap’s \(formatSnipSnapByteLimit(maximumBytes)) per-file limit"
+      String(localized: "larger than Snip Snap’s \(formatSnipSnapByteLimit(maximumBytes)) per-file limit", bundle: .main)
     case .snipTotalTooLarge(let maximumBytes):
-      "part of a snip above Snip Snap’s \(formatSnipSnapByteLimit(maximumBytes)) attachment limit"
+      String(localized: "part of a snip above Snip Snap’s \(formatSnipSnapByteLimit(maximumBytes)) attachment limit", bundle: .main)
     case .contentType(let value):
-      "unsupported file type \(value ?? "unknown")"
+      String(localized: "unsupported file type \(value ?? String(localized: "unknown", bundle: .main))", bundle: .main)
     case .missingLocalFile:
-      "local file is missing or changed"
+      String(localized: "local file is missing or changed", bundle: .main)
     }
   }
 }
 
 private func formatSnipSnapByteLimit(_ byteCount: Int64) -> String {
   let mib: Int64 = 1_048_576
-  if byteCount.isMultiple(of: mib) { return "\(byteCount / mib) MiB" }
-  return "\(byteCount) bytes"
+  if byteCount.isMultiple(of: mib) {
+    return String(localized: "\(byteCount / mib) MiB", bundle: .main)
+  }
+  return String(localized: "\(byteCount) bytes", bundle: .main)
 }
 
 package enum CloudAttachmentUse: Equatable, Sendable {

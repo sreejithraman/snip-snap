@@ -32,7 +32,7 @@ struct ListSidebarView: View {
             }
             ForEach(model.lists) { list in
                 NavigationLink(value: list.id) {
-                    Label(list.name, systemImage: list.systemImage)
+                    Label(list.displayName, systemImage: list.systemImage)
                 }
                 .tag(list.id)
                 .accessibilityIdentifier("list-\(list.name)")
@@ -85,15 +85,6 @@ struct LibraryActionsMenu: View {
 
     var body: some View {
         Menu("Library Actions", systemImage: "ellipsis.circle") {
-            Button(model.undoTitle, systemImage: "arrow.uturn.backward") {
-                Task { await model.undo() }
-            }
-            .disabled(!model.canUndo)
-            Button(model.redoTitle, systemImage: "arrow.uturn.forward") {
-                Task { await model.redo() }
-            }
-            .disabled(!model.canRedo)
-            Divider()
             Button("Import Backup…", systemImage: "square.and.arrow.down", action: importBackup)
             if model.selectedListID != SnipList.inboxID, let editSelectedList {
                 Divider()
@@ -270,20 +261,30 @@ struct SnipCollectionView: View {
                         }
                         .tag(snip.id)
                         .swipeActions(edge: .leading) {
-                            Button(snip.isDone ? "Mark Not Done" : "Mark Done") {
+                            SemanticSwipeAction(
+                                title: SnipCompletionLanguage.actionTitle(isDone: snip.isDone),
+                                systemImage: snip.isDone ? "circle" : "checkmark",
+                                tint: snip.isDone ? .gray : .green,
+                                role: nil,
+                                accessibilityIdentifier: snip.isDone
+                                    ? "mark-not-done" : "mark-done"
+                            ) {
                                 Task { await model.toggleDone(id: snip.id) }
                             }
-                            .tint(snip.isDone ? .secondary : .green)
-                            .accessibilityIdentifier(snip.isDone ? "mark-not-done" : "mark-done")
                         }
                         .swipeActions(edge: .trailing) {
-                            Button("Delete", role: .destructive) {
+                            SemanticSwipeAction(
+                                title: String(localized: "Delete"),
+                                systemImage: "trash",
+                                tint: .red,
+                                role: .destructive,
+                                accessibilityIdentifier: "delete-snip"
+                            ) {
                                 Task { await model.deleteSnip(id: snip.id) }
                             }
-                            .accessibilityIdentifier("delete-snip")
                         }
                         .contextMenu {
-                            Button(snip.isDone ? "Mark Not Done" : "Mark Done") {
+                            Button(SnipCompletionLanguage.actionTitle(isDone: snip.isDone)) {
                                 Task { await model.toggleDone(id: snip.id) }
                             }
                             Button("Edit") { beginEditing(snip) }
@@ -333,16 +334,6 @@ struct SnipCollectionView: View {
         ))
         .environment(\.editMode, $editMode)
         .toolbar {
-            if layout == .splitView {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(model.undoTitle, systemImage: "arrow.uturn.backward") {
-                        Task { _ = await model.undo() }
-                    }
-                    .disabled(!model.canUndo)
-                    .keyboardShortcut("z", modifiers: .command)
-                    .accessibilityIdentifier("undo-change")
-                }
-            }
             ToolbarItemGroup(placement: .primaryAction) {
                 if isSelecting {
                     SelectionActionsMenu(
@@ -376,7 +367,7 @@ struct SnipCollectionView: View {
 
     private var emptyTitle: String {
         if !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "No Results"
+            return String(localized: "No Results")
         }
         return model.completionFilter.emptyStateTitle
     }
@@ -388,11 +379,11 @@ struct SnipCollectionView: View {
 
     private var emptyDescription: String {
         if !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "Try a different search."
+            return String(localized: "Try a different search.")
         }
         return model.completionFilter == .all
-            ? "Save text here when you want to keep it close."
-            : "Change the filter to see other snips."
+            ? String(localized: "Save text here when you want to keep it close.")
+            : String(localized: "Change the filter to see other snips.")
     }
 
     private var compactEmptyState: some View {
@@ -597,7 +588,7 @@ private struct PhoneAwareSearchModifier: ViewModifier {
             content.searchable(
                 text: $text,
                 placement: .navigationBarDrawer(displayMode: .always),
-                prompt: "Search Snips"
+                prompt: String(localized: "Search Snips")
             )
         } else {
             content
@@ -650,7 +641,9 @@ private struct SnipRow: View {
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
-        .accessibilityValue(snip.isDone ? "Done" : "Not Done")
+        .accessibilityValue(
+            SnipCompletionLanguage.stateTitle(isDone: snip.isDone)
+        )
     }
 
     private var accessibilityLabel: String {
@@ -658,7 +651,7 @@ private struct SnipRow: View {
         let attachments = snip.attachments.map(\.fileName).joined(separator: ", ")
         return [
             text.isEmpty ? nil : text,
-            attachments.isEmpty ? nil : "Attachments: \(attachments)",
+            attachments.isEmpty ? nil : String(localized: "Attachments: \(attachments)"),
         ]
         .compactMap { $0 }
         .joined(separator: ", ")
@@ -797,15 +790,19 @@ struct RecoveredSnipReviewView: View {
             VStack(alignment: .leading, spacing: 12) {
                 if fields.contains(.text) { LabeledContent("Text", value: snip.content) }
                 if fields.contains(.source) {
-                    LabeledContent("Source", value: snip.source?.conciseLabel ?? "None")
+                    LabeledContent("Source", value: snip.source?.conciseLabel ?? String(localized: "None"))
                 }
                 if fields.contains(.done) {
-                    LabeledContent("State", value: snip.isDone ? "Done" : "Not Done")
+                    LabeledContent(
+                        "State",
+                        value: SnipCompletionLanguage.stateTitle(isDone: snip.isDone)
+                    )
                 }
                 if fields.contains(.placement) {
                     LabeledContent(
                         "List",
-                        value: model.lists.first { $0.id == snip.listID }?.name ?? "Inbox"
+                        value: model.lists.first { $0.id == snip.listID }?.displayName
+                            ?? String(localized: "Inbox")
                     )
                 }
             }
@@ -839,11 +836,11 @@ struct RecoveredSnipReviewView: View {
                         sourceField("URL", keyPath: \.url, snip: binding)
                     }
                     if recovery.conflictingFields.contains(.done) {
-                        Toggle("Done", isOn: binding.isDone)
+                        Toggle(SnipCompletionLanguage.done, isOn: binding.isDone)
                     }
                     if recovery.conflictingFields.contains(.placement) {
                         Picker("List", selection: binding.listID) {
-                            ForEach(model.lists) { Text($0.name).tag($0.id) }
+                            ForEach(model.lists) { Text($0.displayName).tag($0.id) }
                         }
                     }
                 }
@@ -1018,7 +1015,8 @@ struct SnipDetailView: View {
                     LabeledContent("Saved", value: snip.createdAt.formatted(date: .abbreviated, time: .shortened))
                     LabeledContent(
                         "List",
-                        value: model.lists.first(where: { $0.id == snip.listID })?.name ?? "Inbox"
+                        value: model.lists.first(where: { $0.id == snip.listID })?.displayName
+                            ?? String(localized: "Inbox")
                     )
                 }
                 .padding(24)
@@ -1090,10 +1088,10 @@ private struct AttachmentStatusThumbnail: View {
 
     private var stateLabel: String {
         switch model.attachmentTransferState(for: attachment.id) {
-        case .waiting: "waiting for iCloud"
-        case .syncing: "syncing"
-        case .failed: "failed"
-        case .available: "available"
+        case .waiting: String(localized: "waiting for iCloud")
+        case .syncing: String(localized: "syncing")
+        case .failed: String(localized: "failed")
+        case .available: String(localized: "available")
         }
     }
 }
@@ -1133,17 +1131,17 @@ private struct SyncedAttachmentTile: View {
     private var statusLabel: String {
         if model.attachmentURL(for: attachment.id) != nil {
             return switch state {
-            case .waiting: "Available Offline — Waiting for iCloud"
-            case .syncing: "Available Offline — Syncing"
-            case .failed: "Available Offline — Sync Failed"
-            case .available: "Available Offline"
+            case .waiting: String(localized: "Available Offline — Waiting for iCloud")
+            case .syncing: String(localized: "Available Offline — Syncing")
+            case .failed: String(localized: "Available Offline — Sync Failed")
+            case .available: String(localized: "Available Offline")
             }
         }
         return switch state {
-        case .waiting: "Waiting for iCloud"
-        case .syncing: "Downloading…"
-        case .failed: "Download Failed — Tap to Retry"
-        case .available: "Ready to Download"
+        case .waiting: String(localized: "Waiting for iCloud")
+        case .syncing: String(localized: "Downloading…")
+        case .failed: String(localized: "Download Failed — Tap to Retry")
+        case .available: String(localized: "Ready to Download")
         }
     }
 }
@@ -1155,7 +1153,7 @@ struct MoveSnipMenu: View {
     var body: some View {
         Menu("Move", systemImage: "folder") {
             ForEach(model.lists.filter { $0.id != snip.listID }) { list in
-                Button(list.name) {
+                Button(list.displayName) {
                     Task { await model.moveSnip(id: snip.id, to: list.id) }
                 }
                 .accessibilityIdentifier("move-to-\(list.name)")

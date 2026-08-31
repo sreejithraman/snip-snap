@@ -29,7 +29,6 @@ fi
 for required_file in \
     SnipSnapiOSApp.swift \
     IOSAppModel.swift \
-    IOSUndoHistory.swift \
     IOSAppRootView.swift \
     LibraryViews.swift \
     WorkflowControls.swift \

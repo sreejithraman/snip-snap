@@ -245,7 +245,7 @@ extension CloudFullSyncPersistenceTests {
     }
   }
 
-  func testConfirmedImportAndItsUndoConvergeAcrossClients() async throws {
+  func testConfirmedImportConvergesAcrossClients() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudFullImportTests-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -287,10 +287,7 @@ extension CloudFullSyncPersistenceTests {
     try await second.fetchRemote()
 
     let preview = try await SnipLibraryImport.preview(source: source, target: firstLibrary)
-    let actions = SnipLibraryDeviceActions(
-      library: firstLibrary,
-      journalURL: root.appendingPathComponent("first-actions.json")
-    )
+    let actions = DirectSnipLibraryUserActions(library: firstLibrary)
     _ = try await actions.applyImport(preview, sortedBy: .manual)
     try await first.sendPending()
     try await second.fetchRemote()
@@ -300,100 +297,6 @@ extension CloudFullSyncPersistenceTests {
       XCTAssertEqual(snapshot.snips.map(\.content), ["from backup"])
     }
 
-    _ = try await actions.undo(sortedBy: .manual)
-    try await first.sendPending()
-    try await second.fetchRemote()
-
-    for library in [firstLibrary, secondLibrary] {
-      let snapshot = await library.snapshot(sortedBy: .manual)
-      XCTAssertTrue(snapshot.snips.isEmpty)
-    }
-  }
-
-  func testDeviceUndoUsesNormalSyncEditsAndConvergesWithUnrelatedRemoteWork() async throws {
-    let root = FileManager.default.temporaryDirectory
-      .appendingPathComponent("CloudFullDeviceUndoTests-\(UUID().uuidString)")
-    defer { try? FileManager.default.removeItem(at: root) }
-    let namespace = makeNamespace()
-    let zone = try XCTUnwrap(namespace.zones.first)
-    let server = FakeCloudServer()
-    let firstLibrary = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("first.store"))
-    let secondLibrary = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("second.store"))
-    let added = try await firstLibrary.perform(
-      .add(
-        content: "base",
-        origin: .quickEntry,
-        source: nil,
-        listID: SnipList.inboxID,
-        attachmentURLs: [],
-        requestID: UUID(),
-        now: Date(timeIntervalSince1970: 10)
-      ),
-      sortedBy: .manual
-    )
-    let snip = try XCTUnwrap(added.snapshot.snips.first)
-    let enrollment: Set<CloudEntityReference> = [
-      CloudEntityReference(kind: .list, domainID: SnipList.inboxID),
-      CloudEntityReference(kind: .snip, domainID: snip.id),
-    ]
-    let firstStore = CloudFullSyncPersistence(
-      library: firstLibrary,
-      namespace: namespace,
-      dataZone: zone
-    )
-    let secondStore = CloudFullSyncPersistence(
-      library: secondLibrary,
-      namespace: namespace,
-      dataZone: zone
-    )
-    try await firstStore.approveEnrollment(references: enrollment)
-    let first = CloudFullSyncCoordinator(
-      store: firstStore,
-      transport: FakeCloudRecordTransport(server: server, namespace: namespace)
-    )
-    let second = CloudFullSyncCoordinator(
-      store: secondStore,
-      transport: FakeCloudRecordTransport(server: server, namespace: namespace)
-    )
-    try await first.sync()
-    try await second.fetchRemote()
-    let actions = SnipLibraryDeviceActions(
-      library: firstLibrary,
-      journalURL: root.appendingPathComponent("first-actions.json")
-    )
-    _ = try await actions.perform(
-      name: "Mark Done",
-      command: .setDone(ids: [snip.id], done: true),
-      sortedBy: .manual
-    )
-    try await first.sendPending()
-    try await second.fetchRemote()
-
-    let secondBeforeEdit = await secondLibrary.snapshot(sortedBy: .manual)
-    let received = try XCTUnwrap(secondBeforeEdit.snips.first)
-    _ = try await secondLibrary.perform(
-      .update(
-        id: received.id,
-        content: "remote text",
-        attachmentURLs: nil,
-        expectedUpdatedAt: received.updatedAt,
-        now: Date(timeIntervalSince1970: 20)
-      ),
-      sortedBy: .manual
-    )
-    try await second.sendPending()
-    try await first.fetchRemote()
-
-    _ = try await actions.undo(sortedBy: .manual)
-    try await first.sendPending()
-    try await second.fetchRemote()
-
-    for library in [firstLibrary, secondLibrary] {
-      let snapshot = await library.snapshot(sortedBy: .manual)
-      let value = try XCTUnwrap(snapshot.snips.first)
-      XCTAssertEqual(value.content, "remote text")
-      XCTAssertFalse(value.isDone)
-    }
   }
 
   func testClosedAppShareReplayEntersTheExistingFullSyncPathExactlyOnce() async throws {

@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 
 enum IOSBackupImportPickerPolicy {
     static let allowedContentTypes: [UTType] = [.folder, .json]
-    static let message = "Choose a backup folder to include attachments. A plain JSON file can contain text and metadata only."
+    static let message = String(localized: "Choose a backup folder to include attachments. A plain JSON file can contain text and metadata only.")
 }
 
 @MainActor
@@ -18,6 +18,7 @@ final class IOSAppGraph {
     init(
         library: any SnipLibrary,
         userActions: (any SnipLibraryUserActions)? = nil,
+        userActionsRebinder: SnipLibraryUserActionsRebinder = .direct,
         recoveryScope: SnipRecoveryScope? = nil,
         shareImports: ShareImportStore?,
         initialSnapshot: SnipLibrarySnapshot,
@@ -27,17 +28,16 @@ final class IOSAppGraph {
         syncOperationFactory: (@MainActor @Sendable (
             IOSAppModel
         ) -> @MainActor @Sendable () async throws -> Void)? = nil,
-        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
-        rebindUserActions: SnipLibraryUserActionsRebinder = .direct
+        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil
     ) {
         let model = IOSAppModel(
             library: library,
             userActions: userActions,
+            userActionsRebinder: userActionsRebinder,
             recoveryScope: recoveryScope,
             initialSnapshot: initialSnapshot,
             startupError: startupError,
-            cloudSyncHandler: cloudSyncHandler,
-            rebindUserActions: rebindUserActions
+            cloudSyncHandler: cloudSyncHandler
         )
         self.model = model
         let noSync: @MainActor @Sendable () async throws -> Void = {}
@@ -142,11 +142,13 @@ final class IOSShareImportCoordinator {
 
     private func report(_ result: PassResult) {
         if result.importFailures > 0 {
-            model.errorMessage =
-                "One or more shared items could not be added yet. Snip Snap will try again next time."
+            model.errorMessage = String(
+                localized: "One or more shared items could not be added yet. Snip Snap will try again next time."
+            )
         } else if result.syncFailed {
-            model.errorMessage =
-                "The shared item is saved on this device. iCloud sync will try again later."
+            model.errorMessage = String(
+                localized: "The shared item is saved on this device. iCloud sync will try again later."
+            )
         }
     }
 }
@@ -170,6 +172,7 @@ struct IOSAppRootView: View {
     init(
         library: any SnipLibrary,
         userActions: (any SnipLibraryUserActions)? = nil,
+        userActionsRebinder: SnipLibraryUserActionsRebinder = .direct,
         recoveryScope: SnipRecoveryScope? = nil,
         shareImports: ShareImportStore? = nil,
         initialSnapshot: SnipLibrarySnapshot? = nil,
@@ -181,8 +184,7 @@ struct IOSAppRootView: View {
         cloudSyncSession: SnipSnapCloudSyncSession? = nil,
         shareImportOperation: (@Sendable () async -> Int)? = nil,
         accountNoticeModel: AppleAccountNoticeModel? = nil,
-        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
-        rebindUserActions: SnipLibraryUserActionsRebinder = .direct
+        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil
     ) {
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         self.seedsCopyShareFixtures = seedsCopyShareFixtures
@@ -204,6 +206,7 @@ struct IOSAppRootView: View {
         let graph = IOSAppGraph(
             library: library,
             userActions: userActions,
+            userActionsRebinder: userActionsRebinder,
             recoveryScope: recoveryScope,
             shareImports: shareImports,
             initialSnapshot: initialSnapshot ?? SnipLibrarySnapshot(snips: [], lists: [.inbox]),
@@ -218,8 +221,7 @@ struct IOSAppRootView: View {
                     )
                 }
             },
-            cloudSyncHandler: cloudSyncHandler,
-            rebindUserActions: rebindUserActions
+            cloudSyncHandler: cloudSyncHandler
         )
         if let cloudSyncSession {
             let reloadActiveLibrary: SyncedContentSettingsModel.DeleteCompletionAction = {
@@ -253,17 +255,6 @@ struct IOSAppRootView: View {
         .background {
             IOSShareSheetPresenter(request: $copyShare.shareRequest)
                 .frame(width: 0, height: 0)
-        }
-        .overlay(alignment: .bottom) {
-            if let status = copyShare.statusMessage {
-                Text(status)
-                    .font(.callout.weight(.semibold))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(.regularMaterial, in: Capsule())
-                    .padding(.bottom, 12)
-                    .accessibilityIdentifier("copy-status")
-            }
         }
 #if DEBUG
         .overlay(alignment: .topLeading) {
@@ -312,7 +303,7 @@ struct IOSAppRootView: View {
         ) {
             Button("OK") { model.errorMessage = nil }
         } message: {
-            Text(model.errorMessage ?? "Please try again.")
+            Text(model.errorMessage ?? String(localized: "Please try again."))
         }
         .alert(
             "Some Files Are Unavailable",
@@ -321,10 +312,11 @@ struct IOSAppRootView: View {
                 set: { if !$0 { copyShare.cancelUnavailableFilesNotice() } }
             )
         ) {
-            Button("Copy Text Only") { copyShare.copyTextFromNotice() }
+            Button("Copy Text Only") { copyShare.copyTextFromNotice(model: model) }
             Button("Cancel", role: .cancel) { copyShare.cancelUnavailableFilesNotice() }
         } message: {
-            Text(copyShare.unavailableFilesNotice?.message ?? "One or more files could not be read.")
+            Text(copyShare.unavailableFilesNotice?.message
+                ?? String(localized: "One or more files could not be read."))
         }
         .alert(
             "Copy Failed",
@@ -335,7 +327,7 @@ struct IOSAppRootView: View {
         ) {
             Button("OK") { copyShare.errorMessage = nil }
         } message: {
-            Text(copyShare.errorMessage ?? "Please try again.")
+            Text(copyShare.errorMessage ?? String(localized: "Please try again."))
         }
         .confirmationDialog(
             "Choose a backup",
@@ -428,6 +420,7 @@ struct IOSAppRootView: View {
                         isCompactComposerFocused = false
                     }
                 )
+                .libraryToast(model: model)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     CompactLibraryControls(
                         model: model,
@@ -464,6 +457,7 @@ struct IOSAppRootView: View {
             } detail: {
                 SnipDetailView(model: model, copyShare: copyShare, sheet: $sheet)
             }
+            .libraryToast(model: model)
         }
     }
 
@@ -612,6 +606,21 @@ private struct AppleAccountNoticeBanner: View {
         model.notice == .paused ? "icloud.slash" : "person.crop.circle.badge.exclamationmark"
     }
 
+}
+
+private extension View {
+    func libraryToast(model: IOSAppModel) -> some View {
+        appToast(
+            Binding(
+                get: { model.toast },
+                set: { model.toast = $0 }
+            ),
+            alignment: .bottom,
+            edge: .bottom,
+            onAction: model.performToastAction,
+            onDismiss: model.dismissToast
+        )
+    }
 }
 
 #Preview("iPad Library") {

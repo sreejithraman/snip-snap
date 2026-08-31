@@ -31,8 +31,8 @@ struct PanelMoreButton: View {
     private var actions: some View {
         Picker("Filter: \(completionFilterTitle)", selection: $model.completionFilter) {
             Text("All").tag(SnipCompletionFilter.all)
-            Text("Done").tag(SnipCompletionFilter.done)
-            Text("Not Done").tag(SnipCompletionFilter.notDone)
+            Text(SnipCompletionLanguage.done).tag(SnipCompletionFilter.done)
+            Text(SnipCompletionLanguage.notDone).tag(SnipCompletionFilter.notDone)
         }
 
         Picker("Sort: \(sortModeTitle)", selection: sortModeBinding) {
@@ -81,8 +81,8 @@ struct PanelMoreButton: View {
     }
 
     private var moreLabel: String {
-        guard let developmentBuild else { return "More" }
-        return "More, development build \(developmentBuild.slot)"
+        guard let developmentBuild else { return String(localized: "More") }
+        return String(localized: "More, development build \(developmentBuild.slot)")
     }
 
     private var appearanceBinding: Binding<AppAppearance> {
@@ -99,9 +99,9 @@ struct PanelMoreButton: View {
     private var sortModeTitle: String {
         switch model.sortMode {
         case .chronological:
-            "Chronological"
+            String(localized: "Chronological")
         case .manual:
-            "Manual"
+            String(localized: "Manual")
         }
     }
 }

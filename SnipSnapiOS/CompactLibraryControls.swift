@@ -399,7 +399,7 @@ private struct CompactListTabBar: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(list.name)
+        .accessibilityLabel(list.displayName)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("list-tab-\(list.id.uuidString)")
         .contextMenu {

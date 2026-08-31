@@ -121,7 +121,7 @@ private struct AppSettingsContent: View {
                         do {
                             try await model.clearDownloadedFiles()
                         } catch {
-                            clearDownloadsError = "Snip Snap could not clear the downloaded files."
+                            clearDownloadsError = String(localized: "Snip Snap could not clear the downloaded files.")
                         }
                         isClearingDownloads = false
                     }
@@ -177,9 +177,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             initialError: store.errorMessage,
             recoveryScope: assembly.recoveryScope,
             userActions: assembly.userActions,
-            rebindUserActions: SnipLibraryUserActionsRebinder {
-                assembly.userActionsFactory.actions(for: $0)
-            }
+            userActionsRebinder: assembly.userActionsRebinder
         )
         let shortcutSettings = ShortcutSettings()
         let cloudServices: SnipSnapCloudAppServices
@@ -419,9 +417,9 @@ final class AppleAccountNoticeModel {
 
     var title: String {
         switch notice {
-        case .paused: "iCloud Sync Paused"
-        case .signedOut: "Signed Out of iCloud"
-        case .accountChanged: "Apple Account Changed"
+        case .paused: String(localized: "iCloud Sync Paused")
+        case .signedOut: String(localized: "Signed Out of iCloud")
+        case .accountChanged: String(localized: "Apple Account Changed")
         case nil: ""
         }
     }
@@ -429,9 +427,9 @@ final class AppleAccountNoticeModel {
     var message: String {
         switch notice {
         case .paused:
-            "Your synced cache is still on this Mac. Snip Snap will try again when iCloud is available."
+            String(localized: "Your synced cache is still on this Mac. Snip Snap will try again when iCloud is available.")
         case .signedOut, .accountChanged:
-            "Snip Snap kept the prior account’s cache apart. Keep it as a local copy or remove it from this Mac."
+            String(localized: "Snip Snap kept the prior account’s cache apart. Keep it as a local copy or remove it from this Mac.")
         case nil:
             ""
         }
@@ -450,7 +448,7 @@ final class AppleAccountNoticeModel {
             notice = try await handler.refreshAppleAccountNotice()
             errorMessage = nil
         } catch {
-            errorMessage = "Snip Snap could not finish that choice. Please try again."
+            errorMessage = String(localized: "Snip Snap could not finish that choice. Please try again.")
         }
     }
 
@@ -560,7 +558,7 @@ extension FocusedValues {
 enum BackupImportCommandRoute: CaseIterable {
     case previewThenConfirm
 
-    var title: String { "Import Backup…" }
+    var title: String { String(localized: "Import Backup…") }
 }
 
 private struct SnipCommands: Commands {
@@ -578,20 +576,6 @@ private struct SnipCommands: Commands {
             Button("Search") { coordinator.focusPanelSearch() }
                 .keyboardShortcut("f", modifiers: .command)
         }
-        if let model {
-            CommandGroup(replacing: .undoRedo) {
-                Button(model.undoTitle) {
-                    model.undo()
-                }
-                .keyboardShortcut("z", modifiers: .command)
-                .disabled(!model.canUndo)
-                Button(model.redoTitle) {
-                    model.redo()
-                }
-                .keyboardShortcut("z", modifiers: [.command, .shift])
-                .disabled(!model.canRedo)
-            }
-        }
         CommandMenu("Snips") {
             Button(BackupImportCommandRoute.previewThenConfirm.title) {
                 model?.beginBackupImport()
@@ -602,7 +586,7 @@ private struct SnipCommands: Commands {
                 .keyboardShortcut("c", modifiers: .command)
                 .disabled(!isAvailable(.copy))
             Divider()
-            Button("Done or Not Done") { perform(.toggleDone) }
+            Button(SnipCompletionLanguage.toggle) { perform(.toggleDone) }
                 .appKeyboardShortcut(coordinator.shortcutSettings.chord(for: .toggleDone))
                 .disabled(!isAvailable(.toggleDone))
             Button(SnipCommand.edit.title) { perform(.edit) }
@@ -640,9 +624,9 @@ private struct SnipCommands: Commands {
 
     private func exportJSONBackup(from model: AppModel) {
         let panel = NSSavePanel()
-        panel.title = "Export JSON Backup"
-        panel.prompt = "Export"
-        panel.nameFieldStringValue = "Snip Snap Backup"
+        panel.title = String(localized: "Export JSON Backup")
+        panel.prompt = String(localized: "Export")
+        panel.nameFieldStringValue = String(localized: "Snip Snap Backup")
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { @MainActor in

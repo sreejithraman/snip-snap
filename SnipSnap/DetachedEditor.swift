@@ -23,7 +23,7 @@ final class DetachedEditorWindowController: NSWindowController, NSWindowDelegate
             backing: .buffered,
             defer: true
         )
-        window.title = "Edit Snip"
+        window.title = String(localized: "Edit Snip")
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 420, height: 280)
         window.center()

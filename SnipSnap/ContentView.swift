@@ -67,6 +67,13 @@ struct ContentView: View {
                     )
             }
         }
+        .appToast(
+            $model.toast,
+            alignment: .top,
+            edge: .top,
+            onAction: model.performToastAction,
+            onDismiss: model.dismissToast
+        )
         .background {
             PanelDragRegion()
         }
@@ -418,7 +425,7 @@ struct ContentView: View {
 
     private var emptyStateTitle: String {
         if !model.query.isEmpty {
-            return "No matches"
+            return String(localized: "No matches")
         }
         return model.completionFilter.emptyStateTitle
     }
@@ -494,7 +501,7 @@ struct ContentView: View {
 
     private var inlineEntryField: some View {
         PanelMultilineTextInput(
-            "Add to \(model.activeList.name)…",
+            "Add to \(model.activeList.displayName)…",
             text: entryText,
             lineRange: PanelComposerMetrics.textLineRange,
             isFocused: focusedTarget == .inlineEntry,
@@ -535,8 +542,8 @@ struct ContentView: View {
         }
         .panelEmbeddedProminentActionControl()
         .disabled(!canSaveInlineEntry)
-        .accessibilityLabel("Add to \(model.activeList.name)")
-        .help("Add to \(model.activeList.name)")
+        .accessibilityLabel("Add to \(model.activeList.displayName)")
+        .help("Add to \(model.activeList.displayName)")
     }
 
     private var isInlineEntryExpanded: Bool {
@@ -684,7 +691,7 @@ struct ContentView: View {
         }
         do { try process.run() } catch {
             completion(false)
-            model.presentedError = "Snip Snap could not start screen capture."
+            model.presentedError = String(localized: "Snip Snap could not start screen capture.")
         }
     }
 
@@ -887,15 +894,19 @@ private struct MacRecoveredSnipReview: View {
             VStack(alignment: .leading, spacing: 10) {
                 if fields.contains(.text) { LabeledContent("Text", value: snip.content) }
                 if fields.contains(.source) {
-                    LabeledContent("Source", value: snip.source?.conciseLabel ?? "None")
+                    LabeledContent("Source", value: snip.source?.conciseLabel ?? String(localized: "None"))
                 }
                 if fields.contains(.done) {
-                    LabeledContent("State", value: snip.isDone ? "Done" : "Not Done")
+                    LabeledContent(
+                        "State",
+                        value: SnipCompletionLanguage.stateTitle(isDone: snip.isDone)
+                    )
                 }
                 if fields.contains(.placement) {
                     LabeledContent(
                         "List",
-                        value: model.lists.first { $0.id == snip.listID }?.name ?? "Inbox"
+                        value: model.lists.first { $0.id == snip.listID }?.displayName
+                            ?? String(localized: "Inbox")
                     )
                 }
             }
@@ -930,11 +941,11 @@ private struct MacRecoveredSnipReview: View {
                         sourceField("URL", keyPath: \.url, snip: binding)
                     }
                     if recovery.conflictingFields.contains(.done) {
-                        Toggle("Done", isOn: binding.isDone)
+                        Toggle(SnipCompletionLanguage.done, isOn: binding.isDone)
                     }
                     if recovery.conflictingFields.contains(.placement) {
                         Picker("List", selection: binding.listID) {
-                            ForEach(model.lists) { Text($0.name).tag($0.id) }
+                            ForEach(model.lists) { Text($0.displayName).tag($0.id) }
                         }
                     }
                 }

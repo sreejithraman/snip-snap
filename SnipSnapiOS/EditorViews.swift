@@ -28,8 +28,8 @@ struct SnipEditorView: View {
 
     private var title: String {
         switch mode {
-        case .create: "New Snip"
-        case .edit: "Edit Snip"
+        case .create: String(localized: "New Snip")
+        case .edit: String(localized: "Edit Snip")
         }
     }
 
@@ -269,8 +269,8 @@ struct ListEditorView: View {
 
     private var title: String {
         switch mode {
-        case .create: "New List"
-        case .edit: "Rename List"
+        case .create: String(localized: "New List")
+        case .edit: String(localized: "Rename List")
         }
     }
 

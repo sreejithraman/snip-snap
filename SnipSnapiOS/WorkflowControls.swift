@@ -1,6 +1,24 @@
 import SnipSnapCore
 import SwiftUI
 
+struct SemanticSwipeAction: View {
+    let title: String
+    let systemImage: String
+    let tint: Color
+    let role: ButtonRole?
+    let accessibilityIdentifier: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(role: role, action: action) {
+            Label(title, systemImage: systemImage)
+                .labelStyle(.titleAndIcon)
+        }
+        .tint(tint)
+        .accessibilityIdentifier(accessibilityIdentifier)
+    }
+}
+
 struct WorkflowOptionsMenu: View {
     let model: IOSAppModel
 
@@ -46,14 +64,14 @@ struct SelectionActionsMenu: View {
 
     var body: some View {
         Menu("Selected", systemImage: "ellipsis.circle") {
-            Button("Mark Done", systemImage: "checkmark.circle") {
+            Button(SnipCompletionLanguage.done, systemImage: "checkmark.circle") {
                 Task {
                     if await model.setSelectionDone(true) { endSelection() }
                 }
             }
             .accessibilityIdentifier("mark-selection-done")
 
-            Button("Mark Not Done", systemImage: "circle") {
+            Button(SnipCompletionLanguage.notDone, systemImage: "circle") {
                 Task {
                     if await model.setSelectionDone(false) { endSelection() }
                 }
@@ -62,7 +80,7 @@ struct SelectionActionsMenu: View {
 
             Menu("Move", systemImage: "folder") {
                 ForEach(model.lists.filter { $0.id != model.selectedListID }) { list in
-                    Button(list.name) {
+                    Button(list.displayName) {
                         Task {
                             if await model.moveSelection(to: list.id) { endSelection() }
                         }
@@ -107,8 +125,8 @@ struct SelectionActionsMenu: View {
 private extension SnipSortMode {
     var title: String {
         switch self {
-        case .chronological: "Newest First"
-        case .manual: "Manual"
+        case .chronological: String(localized: "Newest First")
+        case .manual: String(localized: "Manual")
         }
     }
 }

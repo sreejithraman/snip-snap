@@ -530,8 +530,8 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       loaded.attachments.map { ($0.id, $0.relativePath) },
       uniquingKeysWith: { first, _ in first }
     )
-    // Durable Undo or Redo may be the only reference to an attachment.
-    // SnipLibraryDeviceActions prunes after it reconciles that journal.
+    // A pending delete toast may be the only reference to an attachment.
+    // SnipLibraryUserActions prunes after that brief recovery window ends.
     try? Self.publishShareDestinations(loaded.state.lists, storeURL: storeURL)
   }
 

@@ -1,5 +1,174 @@
 import SwiftUI
 
+struct AppToast: Identifiable, Equatable {
+    enum Action: Equatable {
+        case undoDelete
+    }
+
+    let id: UUID
+    let systemImage: String
+    let message: String
+    let action: Action?
+    let duration: Duration
+
+    init(
+        id: UUID = UUID(),
+        systemImage: String,
+        message: String,
+        action: Action? = nil,
+        duration: Duration = .seconds(4)
+    ) {
+        self.id = id
+        self.systemImage = systemImage
+        self.message = message
+        self.action = action
+        self.duration = duration
+    }
+
+    static func copied(count: Int) -> Self {
+        Self(
+            systemImage: "doc.on.doc",
+            message: count == 1
+                ? String(localized: "Copied")
+                : String(localized: "Copied \(count) snips")
+        )
+    }
+
+    static func deleted(count: Int, id: UUID) -> Self {
+        Self(
+            id: id,
+            systemImage: "trash",
+            message: count == 1
+                ? String(localized: "Snip deleted")
+                : String(localized: "\(count) snips deleted"),
+            action: .undoDelete,
+            duration: .seconds(6)
+        )
+    }
+}
+
+private struct AppToastPresenter: ViewModifier {
+    @Binding var toast: AppToast?
+    let alignment: Alignment
+    let edge: Edge
+    let onAction: (AppToast) -> Void
+    let onDismiss: (AppToast) -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: alignment) {
+                if let toast {
+                    toastView(toast)
+                        .padding(12)
+                        .transition(
+                            reduceMotion
+                                ? .opacity
+                                : .move(edge: edge).combined(with: .opacity)
+                        )
+                        .onHover { isHovering = $0 }
+                }
+            }
+            .animation(.snappy, value: toast?.id)
+            .task(id: timerID) {
+                guard let toast, !isHovering else { return }
+                do {
+                    try await Task.sleep(for: toast.duration)
+                } catch {
+                    return
+                }
+                guard self.toast?.id == toast.id else { return }
+                self.toast = nil
+                onDismiss(toast)
+            }
+    }
+
+    private var timerID: String {
+        "\(toast?.id.uuidString ?? "none")-\(isHovering)"
+    }
+
+    private func toastView(_ toast: AppToast) -> some View {
+        GlassEffectContainer(spacing: 8) {
+            HStack(spacing: 12) {
+                Image(systemName: toast.systemImage)
+                    .foregroundStyle(.secondary)
+                Text(toast.message)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(2)
+                if toast.action != nil {
+                    Button("Undo") {
+                        self.toast = nil
+                        onAction(toast)
+                    }
+                    .buttonStyle(ToastActionButtonStyle())
+                    .controlSize(.small)
+                    .font(.subheadline.weight(.bold))
+                    .accessibilityIdentifier("toast-action")
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .glassEffect(
+                toast.action == nil ? .regular : .regular.interactive(),
+                in: .rect(cornerRadius: 18)
+            )
+        }
+        .frame(maxWidth: 360)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(toast.message)
+        .accessibilityIdentifier("app-toast")
+    }
+}
+
+extension View {
+    func appToast(
+        _ toast: Binding<AppToast?>,
+        alignment: Alignment,
+        edge: Edge,
+        onAction: @escaping (AppToast) -> Void = { _ in },
+        onDismiss: @escaping (AppToast) -> Void = { _ in }
+    ) -> some View {
+        modifier(
+            AppToastPresenter(
+                toast: toast,
+                alignment: alignment,
+                edge: edge,
+                onAction: onAction,
+                onDismiss: onDismiss
+            )
+        )
+    }
+
+}
+
+private struct ToastActionButtonStyle: ButtonStyle {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(
+                isEnabled
+                    ? SnipSnapTheme.primaryActionLabel(for: colorScheme)
+                    : SnipSnapTheme.disabledPrimaryActionLabel(for: colorScheme)
+            )
+            .padding(.horizontal, 14)
+            .frame(minHeight: 32)
+            .background {
+                Capsule(style: .continuous)
+                    .fill(
+                        isEnabled
+                            ? SnipSnapTheme.primaryActionTint(for: colorScheme)
+                            : SnipSnapTheme.disabledPrimaryActionTint(for: colorScheme)
+                    )
+            }
+            .contentShape(Capsule(style: .continuous))
+            .opacity(configuration.isPressed && isEnabled ? 0.78 : 1)
+    }
+}
+
 /// Color roles shared by the Mac and iOS app chrome.
 ///
 /// Platform views own their layout, but both apps read these roles so controls

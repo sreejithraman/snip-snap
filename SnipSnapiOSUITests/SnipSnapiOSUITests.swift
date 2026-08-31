@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 
 @MainActor
@@ -248,7 +249,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         openCopyShareFixture(matching: "Copy text fixture", in: app)
         chooseDetailAction("copy-snip", in: app)
 
-        XCTAssertEqual(copyStatus(in: app).label, "Copied")
+        assertCopyStatus("Copied", in: app)
     }
 
     func testCopiesFileOnlySnipAttachments() {
@@ -258,7 +259,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         openCopyShareFixture(matching: "notes.txt", in: app)
         chooseDetailAction("copy-attachments-snip", in: app)
 
-        XCTAssertEqual(copyStatus(in: app).label, "Copied Attachments")
+        assertCopyStatus("Copied Attachments", in: app)
     }
 
     func testCopiesMixedSnipText() {
@@ -268,7 +269,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         openCopyShareFixture(matching: "Copy mixed fixture", in: app)
         chooseDetailAction("copy-text-snip", in: app)
 
-        XCTAssertEqual(copyStatus(in: app).label, "Copied Text")
+        assertCopyStatus("Copied Text", in: app)
     }
 
     func testSharesMultipleSelectedSnips() {
@@ -334,7 +335,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Copy Text Only"].exists)
         XCTAssertTrue(app.buttons["Cancel"].exists)
         app.buttons["Copy Text Only"].tap()
-        XCTAssertEqual(copyStatus(in: app).label, "Copied Text")
+        assertCopyStatus("Copied Text", in: app)
     }
 
     func testCreatesAndEditsTextSnip() {
@@ -464,7 +465,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(inbox.isSelected)
     }
 
-    func testLibraryActionsExposeUndoRedoAndBackupImport() {
+    func testLibraryActionsExposeBackupImportWithoutHistoryCommands() {
         continueAfterFailure = false
         let app = launchApp()
         var actions = app.buttons["library-actions"]
@@ -488,9 +489,9 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         XCTAssertTrue(actions.waitForExistence(timeout: 3))
         actions.tap()
-        XCTAssertTrue(app.buttons["Undo"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["Redo"].exists)
         XCTAssertTrue(app.buttons["Import Backup…"].exists)
+        XCTAssertFalse(app.buttons["Undo"].exists)
+        XCTAssertFalse(app.buttons["Redo"].exists)
     }
 
     func testCreatesListMovesSnipAndDeletesIt() {
@@ -528,12 +529,93 @@ final class SnipSnapiOSUITests: XCTestCase {
         moveRow.press(forDuration: 1)
         app.buttons["move-snip"].tap()
         app.buttons["move-to-Inbox"].tap()
-        XCTAssertTrue(app.staticTexts["No Snips"].waitForExistence(timeout: 3))
         compactListTab(named: "Inbox", in: app).tap()
         let moved = row(named: "Move this", in: app)
         moved.press(forDuration: 1)
         app.buttons["Delete"].tap()
         XCTAssertTrue(moved.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(app.descendants(matching: .any)["app-toast"].waitForExistence(timeout: 3))
+        app.buttons["toast-action"].tap()
+        XCTAssertTrue(row(named: "Move this", in: app).waitForExistence(timeout: 3))
+    }
+
+    func testDeleteToastUndoRestoresSnip() {
+        continueAfterFailure = false
+        let app = launchApp()
+        createSnip("Undo this", in: app)
+
+        let snip = row(named: "Undo this", in: app)
+        XCTAssertTrue(snip.waitForExistence(timeout: 3))
+        snip.press(forDuration: 1)
+        app.buttons["Delete"].tap()
+
+        XCTAssertTrue(snip.waitForNonExistence(timeout: 3))
+        let toast = app.descendants(matching: .any)["app-toast"]
+        XCTAssertTrue(toast.waitForExistence(timeout: 3))
+        XCTAssertLessThan(toast.frame.width, app.frame.width - 48)
+        XCTAssertLessThanOrEqual(
+            toast.frame.maxY,
+            app.textFields["composer-text"].frame.minY
+        )
+        let actionScreenshot = app.buttons["toast-action"].screenshot()
+        let actionAttachment = XCTAttachment(screenshot: actionScreenshot)
+        actionAttachment.name = "Filled toast action"
+        actionAttachment.lifetime = .keepAlways
+        add(actionAttachment)
+        XCTAssertEqual(app.buttons["toast-action"].label, "Undo")
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Delete toast above compact controls"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        app.buttons["toast-action"].tap()
+        XCTAssertTrue(row(named: "Undo this", in: app).waitForExistence(timeout: 3))
+    }
+
+    func testRowSwipeShowsAVisibleDestructiveDeleteAction() {
+        continueAfterFailure = false
+        let app = launchApp()
+        createSnip("Swipe this", in: app)
+
+        let snip = row(named: "Swipe this", in: app)
+        let start = snip.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5))
+        let end = snip.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.5))
+        start.press(forDuration: 0.1, thenDragTo: end)
+
+        let delete = app.buttons["delete-snip"]
+        XCTAssertTrue(delete.waitForExistence(timeout: 3))
+        let screenshot = delete.screenshot()
+        let attachment = XCTAttachment(screenshot: screenshot)
+        attachment.name = "Revealed row delete action"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        XCTAssertTrue(
+            containsSemanticRedAction(screenshot.image),
+            "The revealed Delete action did not render with its red semantic tint."
+        )
+    }
+
+    func testRowSwipeShowsAVisibleGreenDoneAction() {
+        continueAfterFailure = false
+        let app = launchApp()
+        createSnip("Finish this", in: app)
+
+        let snip = row(named: "Finish this", in: app)
+        let start = snip.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5))
+        let end = snip.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.5))
+        start.press(forDuration: 0.1, thenDragTo: end)
+
+        let markDone = app.buttons["mark-done"]
+        XCTAssertTrue(markDone.waitForExistence(timeout: 3))
+        XCTAssertEqual(markDone.label, "Done")
+        let screenshot = markDone.screenshot()
+        let attachment = XCTAttachment(screenshot: screenshot)
+        attachment.name = "Revealed row mark done action"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        XCTAssertTrue(
+            containsSemanticGreenAction(screenshot.image),
+            "The revealed Done action did not render with its green semantic tint."
+        )
     }
 
     func testLocalAttachmentsPreviewRemoveAndSurviveRelaunch() {
@@ -692,10 +774,12 @@ final class SnipSnapiOSUITests: XCTestCase {
         action.tap()
     }
 
-    private func copyStatus(in app: XCUIApplication) -> XCUIElement {
-        let status = app.staticTexts["copy-status"]
+    private func assertCopyStatus(_ label: String, in app: XCUIApplication) {
+        let status = app.descendants(matching: .any)
+            .matching(identifier: "app-toast")
+            .matching(NSPredicate(format: "label == %@", label))
+            .firstMatch
         XCTAssertTrue(status.waitForExistence(timeout: 3))
-        return status
     }
 
     private func activityView(in app: XCUIApplication) -> XCUIElement {
@@ -824,7 +908,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 10), .completed)
     }
 
-    func testSearchDoneFilterAndUndo() {
+    func testSearchDoneFilter() {
         continueAfterFailure = false
         let app = launchApp()
         createSnip("Alpha plan", in: app)
@@ -870,11 +954,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(collectionRow(named: "Alpha plan", in: app).waitForExistence(timeout: 3))
         XCTAssertFalse(collectionRow(named: "Beta note", in: app).exists)
 
-        app.buttons["undo-change"].tap()
-        XCTAssertTrue(collectionRow(named: "Alpha plan", in: app).waitForNonExistence(timeout: 3))
-        XCTAssertTrue(
-            app.staticTexts["No done snips"].exists || app.staticTexts["No Results"].exists
-        )
     }
 
     func testSelectsManyMovesThemAndChangesManualOrder() {
@@ -1022,4 +1101,46 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
         XCTAssertTrue(app.buttons["new-list"].waitForExistence(timeout: 3))
     }
+}
+
+private func containsSemanticRedAction(_ image: UIImage) -> Bool {
+    semanticColorRatio(in: image) { red, green, blue in
+        red > 180 && green < 120 && blue < 120
+    }.map { $0 > 0.20 } ?? false
+}
+
+private func containsSemanticGreenAction(_ image: UIImage) -> Bool {
+    semanticColorRatio(in: image) { red, green, blue in
+        red < 140 && green > 120 && blue < 160
+    }.map { $0 > 0.20 } ?? false
+}
+
+private func semanticColorRatio(
+    in image: UIImage,
+    matches: (UInt8, UInt8, UInt8) -> Bool
+) -> Double? {
+    guard let cgImage = image.cgImage else { return nil }
+    let width = cgImage.width
+    let height = cgImage.height
+    let bytesPerRow = width * 4
+    var pixels = [UInt8](repeating: 0, count: height * bytesPerRow)
+    guard let context = CGContext(
+        data: &pixels,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: bytesPerRow,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { return nil }
+    context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+    var matchingPixels = 0
+    for offset in stride(from: 0, to: pixels.count, by: 4) {
+        if matches(pixels[offset], pixels[offset + 1], pixels[offset + 2]),
+           pixels[offset + 3] > 245 {
+            matchingPixels += 1
+        }
+    }
+    return Double(matchingPixels) / Double(width * height)
 }

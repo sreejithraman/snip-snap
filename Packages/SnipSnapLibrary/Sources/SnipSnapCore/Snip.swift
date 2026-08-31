@@ -126,22 +126,6 @@ public enum SnipCompletionFilter: String, CaseIterable, Sendable, Hashable {
     case all
     case done
     case notDone
-
-    public var title: String {
-        switch self {
-        case .all: "All"
-        case .done: "Done"
-        case .notDone: "Not Done"
-        }
-    }
-
-    public var emptyStateTitle: String {
-        switch self {
-        case .all: "Nothing captured yet"
-        case .done: "No done snips"
-        case .notDone: "No unfinished snips"
-        }
-    }
 }
 
 public struct SnipSource: Codable, Equatable, Sendable {
@@ -185,19 +169,6 @@ public struct Snip: Identifiable, Codable, Equatable, Sendable {
         set { manualSortKey = .legacy(newValue) }
     }
     public var attachments: [SnipAttachment]
-
-    public var displaySourceLabel: String {
-        if let source {
-            let label = source.conciseLabel
-            if !label.isEmpty { return label }
-        }
-        return switch origin {
-        case .selection: "Captured Selection"
-        case .quickEntry: "Snip Snap — Quick Entry"
-        case .clipboard: "Clipboard"
-        case .share: "Shared"
-        }
-    }
 
     public init(
         id: UUID = UUID(),

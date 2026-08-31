@@ -31,6 +31,7 @@ trap snip_snap_cleanup_derived_data EXIT
 "$script_dir/release-matrix-tests-tests.sh"
 "$script_dir/cloud-dev-transport-contract-tests.sh"
 "$script_dir/ios-target-policy-tests.sh"
+"$script_dir/localization-policy-tests.sh"
 
 swift test --package-path "$repo_dir/Packages/SnipSnapLibrary"
 

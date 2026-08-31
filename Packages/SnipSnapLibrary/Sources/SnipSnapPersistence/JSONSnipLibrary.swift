@@ -115,8 +115,8 @@ public actor JSONSnipLibrary: SnipLibrary {
         } catch {
             throw SnipLibraryError.invalidStore
         }
-        // Durable Undo or Redo may be the only reference to an attachment.
-        // SnipLibraryDeviceActions prunes after it reconciles that journal.
+        // A pending delete toast may be the only reference to an attachment.
+        // SnipLibraryUserActions prunes after that brief recovery window ends.
     }
 
     private init(unavailableAt fileURL: URL) {
@@ -577,7 +577,12 @@ public actor JSONSnipLibrary: SnipLibrary {
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles]
         ) else { return }
-        for directory in directories where !keptDirectories.contains(directory.lastPathComponent) {
+        for directory in directories {
+            let values = try? directory.resourceValues(forKeys: [.isDirectoryKey])
+            guard values?.isDirectory == true,
+                  UUID(uuidString: directory.lastPathComponent) != nil,
+                  !keptDirectories.contains(directory.lastPathComponent)
+            else { continue }
             try? FileManager.default.removeItem(at: directory)
         }
     }

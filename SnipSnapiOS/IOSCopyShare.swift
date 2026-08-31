@@ -291,8 +291,8 @@ struct IOSUnavailableFilesNotice: Identifiable, Equatable {
     var message: String {
         let names = payload.unavailableFileNames.joined(separator: ", ")
         return names.isEmpty
-            ? "One or more files could not be read."
-            : "These files could not be read: \(names)"
+            ? String(localized: "One or more files could not be read.")
+            : String(localized: "These files could not be read: \(names)")
     }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -318,7 +318,6 @@ final class IOSCopyShareCoordinator {
     var unavailableFilesNotice: IOSUnavailableFilesNotice?
     var shareRequest: IOSShareRequest?
     var errorMessage: String?
-    var statusMessage: String?
 
     init(
         pasteboard: any IOSPasteboardWriting = IOSSystemPasteboard(),
@@ -331,17 +330,25 @@ final class IOSCopyShareCoordinator {
     func copy(snips: [Snip], model: IOSAppModel) async {
         let payload = await makePreparedPayload(snips: snips, model: model, use: .copy)
         guard requireAllFiles(in: payload) else { return }
-        write(payload.copyItems, status: "Copied")
+        if write(payload.copyItems) { model.presentToast(.copied(count: snips.count)) }
     }
 
     func copyText(snips: [Snip], model: IOSAppModel) {
-        write(makePayload(snips: snips, model: model).textItems, status: "Copied Text")
+        if write(makePayload(snips: snips, model: model).textItems) {
+            model.presentToast(
+                AppToast(systemImage: "doc.on.doc", message: String(localized: "Copied Text"))
+            )
+        }
     }
 
     func copyAttachments(snips: [Snip], model: IOSAppModel) async {
         let payload = await makePreparedPayload(snips: snips, model: model, use: .copy)
         guard requireAllFiles(in: payload) else { return }
-        write(payload.attachmentItems, status: "Copied Attachments")
+        if write(payload.attachmentItems) {
+            model.presentToast(
+                AppToast(systemImage: "paperclip", message: String(localized: "Copied Attachments"))
+            )
+        }
     }
 
     func share(snips: [Snip], model: IOSAppModel) async {
@@ -350,10 +357,14 @@ final class IOSCopyShareCoordinator {
         shareRequest = IOSShareRequest(items: payload.copyItems)
     }
 
-    func copyTextFromNotice() {
+    func copyTextFromNotice(model: IOSAppModel) {
         guard let notice = unavailableFilesNotice else { return }
         unavailableFilesNotice = nil
-        write(notice.payload.textItems, status: "Copied Text")
+        if write(notice.payload.textItems) {
+            model.presentToast(
+                AppToast(systemImage: "doc.on.doc", message: String(localized: "Copied Text"))
+            )
+        }
     }
 
     func cancelUnavailableFilesNotice() {
@@ -384,13 +395,13 @@ final class IOSCopyShareCoordinator {
         return true
     }
 
-    private func write(_ items: [IOSCopyItem], status: String) {
+    private func write(_ items: [IOSCopyItem]) -> Bool {
         guard pasteboard.write(items) else {
-            errorMessage = "Snip Snap could not copy that content."
-            return
+            errorMessage = String(localized: "Snip Snap could not copy that content.")
+            return false
         }
         errorMessage = nil
-        statusMessage = status
+        return true
     }
 }
 

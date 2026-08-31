@@ -15,7 +15,7 @@ final class SnipSnapPanel: NSPanel {
             backing: .buffered,
             defer: false
         )
-        panel.title = "Snip Snap"
+        panel.title = String(localized: "Snip Snap")
         panel.isMovableByWindowBackground = false
         panel.level = .floating
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient]
