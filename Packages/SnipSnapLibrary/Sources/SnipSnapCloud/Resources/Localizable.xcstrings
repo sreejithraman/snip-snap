@@ -2,37 +2,13 @@
   "sourceLanguage" : "en",
   "strings" : {
     "%lld bytes" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%lld bytes"
-          }
-        }
-      }
+      "extractionState" : "manual"
     },
     "%lld MiB" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%lld MiB"
-          }
-        }
-      }
+      "extractionState" : "manual"
     },
     "Another iCloud Sync task is still running." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Another iCloud Sync task is still running."
-          }
-        }
-      }
+      "extractionState" : "manual"
     },
     "attachment.error.detail" : {
       "comment" : "A file name followed by the reason that attachment cannot sync.",
@@ -47,103 +23,31 @@
       }
     },
     "Choose how to handle the iCloud encrypted-data reset before turning sync on." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Choose how to handle the iCloud encrypted-data reset before turning sync on."
-          }
-        }
-      }
+      "extractionState" : "manual"
     },
     "iCloud Sync does not have an active collection." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "iCloud Sync does not have an active collection."
-          }
-        }
-      }
+      "extractionState" : "manual"
     },
     "larger than Snip Snap’s %@ per-file limit" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "larger than Snip Snap’s %@ per-file limit"
-          }
-        }
-      }
+      "extractionState" : "manual"
     },
     "local file is missing or changed" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "local file is missing or changed"
-          }
-        }
-      }
+      "extractionState" : "manual"
     },
     "part of a snip above Snip Snap’s %@ attachment limit" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "part of a snip above Snip Snap’s %@ attachment limit"
-          }
-        }
-      }
+      "extractionState" : "manual"
     },
     "The iCloud Sync collection is not valid." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The iCloud Sync collection is not valid."
-          }
-        }
-      }
+      "extractionState" : "manual"
     },
     "These attachments cannot sync. %@" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "These attachments cannot sync. %@"
-          }
-        }
-      }
+      "extractionState" : "manual"
     },
     "unknown" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "unknown"
-          }
-        }
-      }
+      "extractionState" : "manual"
     },
     "unsupported file type %@" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "unsupported file type %@"
-          }
-        }
-      }
+      "extractionState" : "manual"
     }
   },
   "version" : "1.1"
