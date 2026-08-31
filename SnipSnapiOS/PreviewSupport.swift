@@ -17,6 +17,10 @@ actor PreviewSnipLibrary: SnipLibrary {
         storedSnapshot
     }
 
+    func checkedSnapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
+        storedSnapshot
+    }
+
     func perform(
         _ command: SnipLibraryCommand,
         sortedBy sortMode: SnipSortMode

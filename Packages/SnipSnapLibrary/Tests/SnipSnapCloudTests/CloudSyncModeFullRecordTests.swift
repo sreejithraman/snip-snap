@@ -1529,7 +1529,7 @@ extension ICloudSyncModeCoordinatorTests {
             rootURL: root,
             crashHook: { point in
                 if point == .afterRetryBasePromotion {
-                    throw FakeCloudError.injectedSendFailure
+                    throw CloudTransportError.sendFailed
                 }
             }
         )
@@ -1600,7 +1600,7 @@ extension ICloudSyncModeCoordinatorTests {
             rootURL: root,
             crashHook: { point in
                 if point == .duringRetryBasePromotionStaging {
-                    throw FakeCloudError.injectedSendFailure
+                    throw CloudTransportError.sendFailed
                 }
             }
         )

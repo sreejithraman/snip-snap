@@ -8,14 +8,6 @@ import XCTest
 
 @MainActor
 final class IOSAppModelTests: XCTestCase {
-    func testCollectionLayoutsUseInlineEditingOutsideTheLegacyDetailRoute() {
-        XCTAssertTrue(SnipCollectionLayout.compactStack.usesInlineRows)
-        XCTAssertTrue(SnipCollectionLayout.inlineList.usesInlineRows)
-        XCTAssertFalse(SnipCollectionLayout.splitView.usesInlineRows)
-        XCTAssertTrue(SnipCollectionLayout.compactStack.showsCompactComposer)
-        XCTAssertFalse(SnipCollectionLayout.inlineList.showsCompactComposer)
-    }
-
     func testReplacingLibraryReloadsVisibleContentAndRecoveryScope() async {
         let old = Snip(content: "Old collection", origin: .quickEntry)
         let recoveredValue = Snip(content: "Recovered copy", origin: .quickEntry)
@@ -495,14 +487,15 @@ final class IOSAppModelTests: XCTestCase {
     func testRootReinitializationKeepsForegroundImportOnRetainedGraph() async throws {
         let library = ModelTestLibrary()
         let firstProbe = ImportCallProbe()
-        let secondProbe = ImportCallProbe()
         let state = RootReinitHarnessState()
+        let session = IOSAppSession(
+            library: library,
+            shareImportOperation: { await firstProbe.run() }
+        )
         let host = UIHostingController(
             rootView: RootReinitHarness(
                 state: state,
-                library: library,
-                firstProbe: firstProbe,
-                secondProbe: secondProbe
+                session: session
             )
         )
         let windowScene = try XCTUnwrap(
@@ -523,8 +516,6 @@ final class IOSAppModelTests: XCTestCase {
 
         let didImportOnForeground = await waitForCalls(2, from: firstProbe)
         XCTAssertTrue(didImportOnForeground)
-        let discardedGraphCalls = await secondProbe.callCount()
-        XCTAssertEqual(discardedGraphCalls, 0)
     }
 
     func testLaunchAndForegroundQueueOneTrailingImportThenALaterForegroundRunsAgain() async {
@@ -627,7 +618,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(syncCalls, 1)
         XCTAssertEqual(
             model.errorMessage,
-            "One or more shared items could not be added yet. Snip Snap will try again next time."
+            "Some shared content could not be added yet. Snip Snap will try again next time."
         )
     }
 
@@ -662,7 +653,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(acceptedLocalSnapshot.snips.map(\.requestID), [requestID])
         XCTAssertEqual(
             model.errorMessage,
-            "The shared item is saved on this device. iCloud sync will try again later."
+            "The shared content is saved on this device. iCloud sync will try again later."
         )
     }
 
@@ -1698,17 +1689,11 @@ private final class RootReinitHarnessState: ObservableObject {
 
 private struct RootReinitHarness: View {
     @ObservedObject var state: RootReinitHarnessState
-    let library: any SnipLibrary
-    let firstProbe: ImportCallProbe
-    let secondProbe: ImportCallProbe
+    let session: IOSAppSession
 
     var body: some View {
-        let probe = state.generation == 0 ? firstProbe : secondProbe
-        IOSAppRootView(
-            library: library,
-            shareImportOperation: { await probe.run() }
-        )
-        .environment(\.scenePhase, state.phase)
+        IOSAppRootView(session: session)
+            .environment(\.scenePhase, state.phase)
     }
 }
 
@@ -1861,6 +1846,10 @@ private actor ModelTestLibrary: SnipLibrary {
     }
 
     func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
+        makeSnapshot(sortMode: sortMode)
+    }
+
+    func checkedSnapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
         makeSnapshot(sortMode: sortMode)
     }
 

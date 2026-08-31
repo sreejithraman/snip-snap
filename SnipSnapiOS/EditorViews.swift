@@ -4,16 +4,11 @@ import SnipSnapCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-enum SnipEditorMode {
-    case create(listID: UUID)
-    case edit(id: UUID)
-}
-
 struct SnipEditorView: View {
     @Environment(\.dismiss) private var dismiss
 
     let model: IOSAppModel
-    let mode: SnipEditorMode
+    let snipID: UUID
     @State private var content = ""
     @State private var attachments: [AttachmentDraft] = []
     @State private var previewURL: URL?
@@ -25,13 +20,6 @@ struct SnipEditorView: View {
     @State private var stagingDirectory = FileManager.default.temporaryDirectory
         .appendingPathComponent("SnipSnapAttachmentDrafts", isDirectory: true)
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
-
-    private var title: String {
-        switch mode {
-        case .create: String(localized: "New Snip")
-        case .edit: String(localized: "Edit Snip")
-        }
-    }
 
     private var isStaging: Bool { stagingTask != nil }
 
@@ -61,7 +49,7 @@ struct SnipEditorView: View {
                 )
             }
             .disabled(isSaving || isStaging)
-            .navigationTitle(title)
+            .navigationTitle("Edit Snip")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -96,18 +84,16 @@ struct SnipEditorView: View {
             .onAppear {
                 guard !didLoad else { return }
                 didLoad = true
-                if case .edit(let id) = mode {
-                    guard let snip = model.snips.first(where: { $0.id == id }) else { return }
-                    content = snip.content
-                    attachments = snip.attachments.map { attachment in
-                        AttachmentDraft(
-                            id: attachment.id,
-                            fileName: attachment.fileName,
-                            byteCount: attachment.byteCount,
-                            url: model.attachmentURL(for: attachment.id),
-                            source: .existing(attachmentID: attachment.id)
-                        )
-                    }
+                guard let snip = model.snips.first(where: { $0.id == snipID }) else { return }
+                content = snip.content
+                attachments = snip.attachments.map { attachment in
+                    AttachmentDraft(
+                        id: attachment.id,
+                        fileName: attachment.fileName,
+                        byteCount: attachment.byteCount,
+                        url: model.attachmentURL(for: attachment.id),
+                        source: .existing(attachmentID: attachment.id)
+                    )
                 }
             }
             .onDisappear {
@@ -145,28 +131,15 @@ struct SnipEditorView: View {
             isPreviewing: previewURL != nil
         ) else { return }
         isSaving = true
-        let succeeded: Bool
-        switch mode {
-        case .create(let listID):
-            succeeded = await model.createSnip(
-                content: content,
-                in: listID,
-                attachmentURLs: attachments.compactMap { attachment in
-                    guard case .added = attachment.source else { return nil }
-                    return attachment.url
-                }
-            )
-        case .edit(let id):
-            guard let snip = model.snips.first(where: { $0.id == id }) else {
-                isSaving = false
-                return
-            }
-            succeeded = await model.editSnip(
-                snip,
-                content: content,
-                attachmentEdits: attachments.compactMap(\.libraryEdit)
-            )
+        guard let snip = model.snips.first(where: { $0.id == snipID }) else {
+            isSaving = false
+            return
         }
+        let succeeded = await model.editSnip(
+            snip,
+            content: content,
+            attachmentEdits: attachments.compactMap(\.libraryEdit)
+        )
         isSaving = false
         if succeeded {
             cleanStagingDirectory()

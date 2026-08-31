@@ -3,30 +3,250 @@ import SnipSnapCore
 import SnipSnapPersistence
 import SwiftUI
 
+private struct IOSLibraryStartup {
+    let library: any SnipLibrary
+    let sourceLibrary: any SnipLibrary
+    let userActions: any SnipLibraryUserActions
+    let userActionsRebinder: SnipLibraryUserActionsRebinder
+    let shareImports: ShareImportStore?
+    let error: String?
+    let uiTestAttachmentURLs: [URL]
+    let seedsCopyShareFixtures: Bool
+    let recoveryScope: SnipRecoveryScope?
+    let syncModeStore: SnipSyncModeStore?
+    let syncModeRootURL: URL
+}
+
+@MainActor
+final class IOSAppSession {
+    let model: IOSAppModel
+    let syncedContentSettings: SyncedContentSettingsModel
+    let accountNoticeModel: AppleAccountNoticeModel?
+
+    private let shareImporter: IOSShareImportCoordinator?
+    private let cloudLifecycleHooks: SnipSnapCloudLifecycleHooks
+
+    init(
+        library: any SnipLibrary,
+        userActions: (any SnipLibraryUserActions)? = nil,
+        userActionsRebinder: SnipLibraryUserActionsRebinder = .direct,
+        recoveryScope: SnipRecoveryScope? = nil,
+        shareImports: ShareImportStore? = nil,
+        initialSnapshot: SnipLibrarySnapshot = SnipLibrarySnapshot(
+            snips: [],
+            lists: [.inbox]
+        ),
+        startupError: String? = nil,
+        syncedContentSettings: SyncedContentSettingsModel = SyncedContentSettingsModel(
+            mode: .localOnly
+        ),
+        cloudSyncSession: SnipSnapCloudSyncSession? = nil,
+        shareImportOperation: (@Sendable () async -> Int)? = nil,
+        accountNoticeModel: AppleAccountNoticeModel? = nil,
+        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil
+    ) {
+        let model = IOSAppModel(
+            library: library,
+            userActions: userActions,
+            userActionsRebinder: userActionsRebinder,
+            recoveryScope: recoveryScope,
+            initialSnapshot: initialSnapshot,
+            startupError: startupError,
+            cloudSyncHandler: cloudSyncHandler
+        )
+        self.model = model
+        self.syncedContentSettings = syncedContentSettings
+        self.accountNoticeModel = accountNoticeModel
+
+        let activeShareImportOperation = shareImportOperation ?? shareImports.map { imports in
+            { @Sendable in
+                if let cloudSyncSession {
+                    guard let active = try? await cloudSyncSession.activeLibrary() else {
+                        return 1
+                    }
+                    return await imports.importPending(into: active.library).failed
+                }
+                return await imports.importPending(into: library).failed
+            }
+        }
+        let syncOperation: @MainActor @Sendable () async throws -> Void = {
+            try await Self.synchronizeCloudSessionOrThrow(
+                cloudSyncSession,
+                model: model,
+                settings: syncedContentSettings
+            )
+        }
+        if let activeShareImportOperation {
+            shareImporter = IOSShareImportCoordinator(
+                model: model,
+                importOperation: activeShareImportOperation,
+                syncOperation: syncOperation
+            )
+        } else {
+            shareImporter = nil
+        }
+
+        if let cloudSyncSession {
+            let reloadActiveLibrary: SyncedContentSettingsModel.DeleteCompletionAction = {
+                let active = try await cloudSyncSession.activeLibrary()
+                await model.replaceLibrary(
+                    active.library,
+                    recoveryScope: active.recoveryScope
+                )
+            }
+            syncedContentSettings.setEnableCompletionAction(reloadActiveLibrary)
+            syncedContentSettings.setDisableCompletionAction(reloadActiveLibrary)
+            syncedContentSettings.setDeleteCompletionAction(reloadActiveLibrary)
+            syncedContentSettings.setEncryptedDataResetCompletionAction(reloadActiveLibrary)
+        }
+        cloudLifecycleHooks = SnipSnapCloudLifecycleHooks {
+            do {
+                try await Self.synchronizeCloudSessionOrThrow(
+                    cloudSyncSession,
+                    model: model,
+                    settings: syncedContentSettings
+                )
+            } catch {
+                model.errorMessage = error.localizedDescription
+            }
+        }
+        accountNoticeModel?.setActiveLibraryChangeAction {
+            guard let cloudSyncSession else { return }
+            let active = try await cloudSyncSession.activeLibrary()
+            await model.replaceLibrary(
+                active.library,
+                recoveryScope: active.recoveryScope
+            )
+        }
+    }
+
+    func launch() async {
+        await cloudLifecycleHooks.launch()
+        if let shareImporter {
+            await shareImporter.importPendingAndReload()
+        } else {
+            await model.load()
+        }
+        await accountNoticeModel?.refresh()
+    }
+
+    func foreground() async {
+        await cloudLifecycleHooks.foreground()
+        await shareImporter?.importPendingAndReload()
+        await accountNoticeModel?.refresh()
+    }
+
+    func backgroundSync() async {
+        await cloudLifecycleHooks.foreground()
+    }
+
+    private static func synchronizeCloudSessionOrThrow(
+        _ session: SnipSnapCloudSyncSession?,
+        model: IOSAppModel,
+        settings: SyncedContentSettingsModel
+    ) async throws {
+        guard let session else { return }
+        let result = try await session.synchronize()
+        switch result {
+        case .noChange:
+            break
+        case .contentUpdated:
+            await model.load()
+        case .libraryReplaced, .oldSyncedContentRemovalPending,
+                .oldSyncedContentRemovalCompleted, .encryptedDataResetRequiresChoice,
+                .syncKeptOff:
+            let active = try await session.activeLibrary()
+            await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+            if case .oldSyncedContentRemovalPending = result {
+                settings.recordRemovalPending(true)
+            } else if case .oldSyncedContentRemovalCompleted = result {
+                settings.recordRemovalPending(false)
+            } else if case .encryptedDataResetRequiresChoice = result {
+                settings.recordEncryptedDataReset()
+            }
+        }
+    }
+}
+
+@MainActor
+final class IOSShareImportCoordinator {
+    private struct PassResult: Sendable {
+        let importFailures: Int
+        let syncFailed: Bool
+    }
+
+    private let model: IOSAppModel
+    private let importOperation: @Sendable () async -> Int
+    private let syncOperation: @MainActor @Sendable () async throws -> Void
+    private var inFlight: Task<PassResult, Never>?
+    private var needsTrailingPass = false
+
+    init(
+        model: IOSAppModel,
+        importOperation: @escaping @Sendable () async -> Int,
+        syncOperation: @escaping @MainActor @Sendable () async throws -> Void = {}
+    ) {
+        self.model = model
+        self.importOperation = importOperation
+        self.syncOperation = syncOperation
+    }
+
+    func importPendingAndReload() async {
+        if let inFlight {
+            needsTrailingPass = true
+            _ = await inFlight.value
+            return
+        }
+        let task = Task { [self] in
+            var importFailures = 0
+            var syncFailed = false
+            repeat {
+                needsTrailingPass = false
+                let result = await runPass()
+                importFailures += result.importFailures
+                syncFailed = syncFailed || result.syncFailed
+            } while needsTrailingPass
+            inFlight = nil
+            return PassResult(importFailures: importFailures, syncFailed: syncFailed)
+        }
+        inFlight = task
+        report(await task.value)
+    }
+
+    private func runPass() async -> PassResult {
+        let failed = await importOperation()
+        await model.load()
+        do {
+            try await syncOperation()
+            return PassResult(importFailures: failed, syncFailed: false)
+        } catch {
+            return PassResult(importFailures: failed, syncFailed: true)
+        }
+    }
+
+    private func report(_ result: PassResult) {
+        if result.importFailures > 0 {
+            model.errorMessage = String(
+                localized: "Some shared content could not be added yet. Snip Snap will try again next time."
+            )
+        } else if result.syncFailed {
+            model.errorMessage = String(
+                localized: "The shared content is saved on this device. iCloud sync will try again later."
+            )
+        }
+    }
+}
+
 @main
 @MainActor
 struct SnipSnapiOSApp: App {
-    private let library: any SnipLibrary
-    private let userActions: any SnipLibraryUserActions
-    private let userActionsRebinder: SnipLibraryUserActionsRebinder
-    private let shareImports: ShareImportStore?
-    private let startupError: String?
+    private let session: IOSAppSession
     private let uiTestAttachmentURLs: [URL]
     private let seedsCopyShareFixtures: Bool
     private let shareProcessToken: String?
-    private let recoveryScope: SnipRecoveryScope?
-    private let syncedContentSettings: SyncedContentSettingsModel
-    private let cloudSyncSession: SnipSnapCloudSyncSession?
-    private let accountNoticeModel: AppleAccountNoticeModel?
-    private let cloudSyncHandler: (any OptionalCloudSyncHandling)?
 
     init() {
         let startup = Self.makeLibrary()
-        library = startup.library
-        userActions = startup.userActions
-        userActionsRebinder = startup.userActionsRebinder
-        shareImports = startup.shareImports
-        startupError = startup.error
         uiTestAttachmentURLs = startup.uiTestAttachmentURLs
         seedsCopyShareFixtures = startup.seedsCopyShareFixtures
 #if DEBUG
@@ -37,7 +257,6 @@ struct SnipSnapiOSApp: App {
 #else
         shareProcessToken = nil
 #endif
-        recoveryScope = startup.recoveryScope
         let cloudServices: SnipSnapCloudAppServices
 #if DEBUG
         if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_ENABLE"] == "1" {
@@ -70,15 +289,13 @@ struct SnipSnapiOSApp: App {
             ) as? String
         )
 #endif
-        syncedContentSettings = cloudServices.syncedContentSettings
-        cloudSyncSession = cloudServices.syncSession
         let productionCloudSyncHandler = Self.makeAccountCacheHandler(
             syncWhenPossible: {
                 guard let session = cloudServices.syncSession else { return }
                 _ = try? await session.synchronize()
             }
         )
-        cloudSyncHandler = productionCloudSyncHandler
+        let accountNoticeModel: AppleAccountNoticeModel?
         if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_ACCOUNT_NOTICE"] == "signedOut" {
             accountNoticeModel = AppleAccountNoticeModel(
                 notice: .signedOut,
@@ -89,6 +306,18 @@ struct SnipSnapiOSApp: App {
         } else {
             accountNoticeModel = nil
         }
+        session = IOSAppSession(
+            library: startup.library,
+            userActions: startup.userActions,
+            userActionsRebinder: startup.userActionsRebinder,
+            recoveryScope: startup.recoveryScope,
+            shareImports: startup.shareImports,
+            startupError: startup.error,
+            syncedContentSettings: cloudServices.syncedContentSettings,
+            cloudSyncSession: cloudServices.syncSession,
+            accountNoticeModel: accountNoticeModel,
+            cloudSyncHandler: productionCloudSyncHandler
+        )
     }
 
     private static func makeAccountCacheHandler(
@@ -109,52 +338,31 @@ struct SnipSnapiOSApp: App {
     var body: some Scene {
         WindowGroup {
             IOSAppRootView(
-                library: library,
-                userActions: userActions,
-                userActionsRebinder: userActionsRebinder,
-                recoveryScope: recoveryScope,
-                shareImports: shareImports,
-                startupError: startupError,
+                session: session,
                 uiTestAttachmentURLs: uiTestAttachmentURLs,
                 seedsCopyShareFixtures: seedsCopyShareFixtures,
-                shareProcessToken: shareProcessToken,
-                syncedContentSettings: syncedContentSettings,
-                cloudSyncSession: cloudSyncSession,
-                accountNoticeModel: accountNoticeModel,
-                cloudSyncHandler: cloudSyncHandler
+                shareProcessToken: shareProcessToken
             )
         }
     }
 
-    private static func makeLibrary() -> (
-        library: any SnipLibrary,
-        sourceLibrary: any SnipLibrary,
-        userActions: any SnipLibraryUserActions,
-        userActionsRebinder: SnipLibraryUserActionsRebinder,
-        shareImports: ShareImportStore?,
-        error: String?,
-        uiTestAttachmentURLs: [URL],
-        seedsCopyShareFixtures: Bool,
-        recoveryScope: SnipRecoveryScope?,
-        syncModeStore: SnipSyncModeStore?,
-        syncModeRootURL: URL
-    ) {
+    private static func makeLibrary() -> IOSLibraryStartup {
         let environment = ProcessInfo.processInfo.environment
 #if DEBUG
         if environment["SNIP_SNAP_UI_TEST_RECOVERY"] == "1" {
             let library = RecoveryUITestSnipLibrary()
-            return (
-                library,
-                library,
-                DirectSnipLibraryUserActions(library: library),
-                .direct,
-                nil,
-                nil,
-                [],
-                false,
-                SnipRecoveryScope("ui-test|account-a|generation-a"),
-                nil,
-                FileManager.default.temporaryDirectory.appendingPathComponent(
+            return IOSLibraryStartup(
+                library: library,
+                sourceLibrary: library,
+                userActions: DirectSnipLibraryUserActions(library: library),
+                userActionsRebinder: .direct,
+                shareImports: nil,
+                error: nil,
+                uiTestAttachmentURLs: [],
+                seedsCopyShareFixtures: false,
+                recoveryScope: SnipRecoveryScope("ui-test|account-a|generation-a"),
+                syncModeStore: nil,
+                syncModeRootURL: FileManager.default.temporaryDirectory.appendingPathComponent(
                     "SnipSnap-Recovery-UI-Test-SyncMode", isDirectory: true
                 )
             )
@@ -163,7 +371,9 @@ struct SnipSnapiOSApp: App {
         let storeURL: URL
         let syncModeRootURL: URL
         let shareImports: ShareImportStore?
+#if DEBUG
         var uiTestShareStoreUnavailable = false
+#endif
 
         if environment["SNIP_SNAP_UI_TESTING"] == "1" {
             let storeName = environment["SNIP_SNAP_UI_TEST_STORE"] ?? UUID().uuidString
@@ -191,9 +401,11 @@ struct SnipSnapiOSApp: App {
         }
 
         do {
+#if DEBUG
             if uiTestShareStoreUnavailable {
                 throw SnipLibraryError.storeUnavailable
             }
+#endif
             let seedsCopyShareFixtures = environment["SNIP_SNAP_UI_TEST_COPY_SHARE"] == "1"
             let fixtureURLs: [URL]
             if environment["SNIP_SNAP_UI_TEST_LIMIT_ATTACHMENTS"] == "1" {
@@ -211,18 +423,18 @@ struct SnipSnapiOSApp: App {
                 syncModeRootURL: syncModeRootURL,
                 initializeSyncModeStore: environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1"
             )
-            return (
-                assembly.library,
-                sourceLibrary,
-                assembly.userActions,
-                assembly.userActionsRebinder,
-                shareImports,
-                nil,
-                fixtureURLs,
-                seedsCopyShareFixtures,
-                assembly.recoveryScope,
-                assembly.syncModeStore,
-                syncModeRootURL
+            return IOSLibraryStartup(
+                library: assembly.library,
+                sourceLibrary: sourceLibrary,
+                userActions: assembly.userActions,
+                userActionsRebinder: assembly.userActionsRebinder,
+                shareImports: shareImports,
+                error: nil,
+                uiTestAttachmentURLs: fixtureURLs,
+                seedsCopyShareFixtures: seedsCopyShareFixtures,
+                recoveryScope: assembly.recoveryScope,
+                syncModeStore: assembly.syncModeStore,
+                syncModeRootURL: syncModeRootURL
             )
         } catch {
             let sourceLibrary = SwiftDataSnipLibrary.unavailable(storeURL: storeURL)
@@ -230,18 +442,18 @@ struct SnipSnapiOSApp: App {
                 library: sourceLibrary,
                 syncModeRootURL: syncModeRootURL
             )
-            return (
-                assembly.library,
-                sourceLibrary,
-                assembly.userActions,
-                assembly.userActionsRebinder,
-                shareImports,
-                String(localized: "Snip Snap could not open its local library. Your saved data was not changed."),
-                [],
-                false,
-                assembly.recoveryScope,
-                assembly.syncModeStore,
-                syncModeRootURL
+            return IOSLibraryStartup(
+                library: assembly.library,
+                sourceLibrary: sourceLibrary,
+                userActions: assembly.userActions,
+                userActionsRebinder: assembly.userActionsRebinder,
+                shareImports: shareImports,
+                error: String(localized: "Snip Snap could not open its local library. Your saved data was not changed."),
+                uiTestAttachmentURLs: [],
+                seedsCopyShareFixtures: false,
+                recoveryScope: assembly.recoveryScope,
+                syncModeStore: assembly.syncModeStore,
+                syncModeRootURL: syncModeRootURL
             )
         }
     }
@@ -376,6 +588,10 @@ private actor RecoveryUITestSnipLibrary: SnipLibrary {
 
     func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
         SnipLibrarySnapshot(snips: Snip.sorted(snips, by: sortMode), lists: lists)
+    }
+
+    func checkedSnapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
+        snapshot(sortedBy: sortMode)
     }
 
     func perform(

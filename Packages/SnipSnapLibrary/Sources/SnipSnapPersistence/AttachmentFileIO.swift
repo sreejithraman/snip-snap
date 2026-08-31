@@ -51,6 +51,19 @@ package enum AttachmentFileIO {
         beforeFinalOpen: beforeFinalOpen
       )
     }
+
+    package func copyRegularFile(
+      relativePath: String,
+      to destinationURL: URL
+    ) throws -> CopiedFile {
+      try AttachmentFileIO.copyRegularFile(
+        fromRootDescriptor: descriptor,
+        relativePath: relativePath,
+        to: destinationURL,
+        expectedByteCount: nil,
+        beforeFinalOpen: {}
+      )
+    }
   }
 
   package struct StagedSnapshot: Sendable {
@@ -59,8 +72,8 @@ package enum AttachmentFileIO {
   }
 
   package struct CopiedFile {
-    let digest: Data
-    let byteCount: Int64
+    package let digest: Data
+    package let byteCount: Int64
   }
 
   package static func copyRegularFile(
@@ -73,6 +86,17 @@ package enum AttachmentFileIO {
       relativePath: sourceURL.lastPathComponent,
       to: destinationURL,
       expectedByteCount: expectedByteCount
+    )
+  }
+
+  package static func copyRegularFile(
+    from sourceURL: URL,
+    to destinationURL: URL
+  ) throws -> CopiedFile {
+    let root = try RootedDirectory(rootURL: sourceURL.deletingLastPathComponent())
+    return try root.copyRegularFile(
+      relativePath: sourceURL.lastPathComponent,
+      to: destinationURL
     )
   }
 
@@ -96,7 +120,7 @@ package enum AttachmentFileIO {
     fromRootDescriptor rootDescriptor: Int32,
     relativePath: String,
     to destinationURL: URL,
-    expectedByteCount: Int64,
+    expectedByteCount: Int64?,
     beforeFinalOpen: () throws -> Void
   ) throws -> CopiedFile {
     let source = try openRegularFileNoFollow(
@@ -105,7 +129,7 @@ package enum AttachmentFileIO {
       beforeFinalOpen: beforeFinalOpen
     )
     defer { close(source.descriptor) }
-    guard source.status.st_size == expectedByteCount else {
+    if let expectedByteCount, source.status.st_size != expectedByteCount {
       throw SnipLibraryError.invalidStore
     }
     let destination = open(
@@ -125,13 +149,15 @@ package enum AttachmentFileIO {
       source: source.descriptor,
       destination: destination
     )
-    guard copied.byteCount == expectedByteCount,
-      fsync(destination) == 0
-    else { throw SnipLibraryError.attachmentCopyFailed }
+    if let expectedByteCount, copied.byteCount != expectedByteCount {
+      throw SnipLibraryError.attachmentCopyFailed
+    }
+    guard fsync(destination) == 0 else { throw SnipLibraryError.attachmentCopyFailed }
     var after = stat()
     guard fstat(source.descriptor, &after) == 0,
       sameFile(before: source.status, after: after),
-      after.st_size == expectedByteCount
+      after.st_size == source.status.st_size,
+      copied.byteCount == Int64(after.st_size)
     else { throw SnipLibraryError.invalidStore }
     shouldRemoveDestination = false
     return CopiedFile(

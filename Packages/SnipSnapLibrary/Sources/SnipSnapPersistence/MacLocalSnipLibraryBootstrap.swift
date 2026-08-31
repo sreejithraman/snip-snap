@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import SnipSnapCore
 
@@ -515,13 +514,7 @@ public enum MacLocalSnipLibraryBootstrap {
   }
 
   private static func hash(fileURL: URL) throws -> Data {
-    let handle = try FileHandle(forReadingFrom: fileURL)
-    defer { try? handle.close() }
-    var hasher = SHA256()
-    while let data = try handle.read(upToCount: 1024 * 1024), !data.isEmpty {
-      hasher.update(data: data)
-    }
-    return Data(hasher.finalize())
+    try AttachmentFileIO.digest(at: fileURL)
   }
 
   private static func makeBackupManifest(

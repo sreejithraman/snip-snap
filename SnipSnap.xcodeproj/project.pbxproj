@@ -113,6 +113,8 @@
 		A1000000000000000000000A /* SnipCompletionLanguage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* SnipCompletionLanguage.swift */; };
 		A1000000000000000000000B /* AppIconDev.icon in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* AppIconDev.icon */; };
 		A1000000000000000000000C /* AppIconDev.icon in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* AppIconDev.icon */; };
+		A1000000000000000000000D /* AppleAccountNoticeModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* AppleAccountNoticeModel.swift */; };
+		A1000000000000000000000E /* AppleAccountNoticeModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* AppleAccountNoticeModel.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -209,6 +211,7 @@
 		A20000000000000000000003 /* SnipCompletionLanguage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipCompletionLanguage.swift; sourceTree = "<group>"; };
 		A20000000000000000000004 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		A20000000000000000000005 /* AppIconDev.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIconDev.icon; sourceTree = "<group>"; };
+		A20000000000000000000006 /* AppleAccountNoticeModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAccountNoticeModel.swift; sourceTree = "<group>"; };
 		200000000000000000000039 /* AttachmentPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentPreview.swift; sourceTree = "<group>"; };
 		20000000000000000000003A /* SnipDragExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipDragExport.swift; sourceTree = "<group>"; };
 		20000000000000000000003B /* PanelFileDrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelFileDrop.swift; sourceTree = "<group>"; };
@@ -443,6 +446,7 @@
 			children = (
 				A20000000000000000000002 /* AppIcon.icon */,
 				A20000000000000000000005 /* AppIconDev.icon */,
+				A20000000000000000000006 /* AppleAccountNoticeModel.swift */,
 				200000000000000000000037 /* ComposerDraftStore.swift */,
 				A20000000000000000000004 /* Localizable.xcstrings */,
 				A20000000000000000000003 /* SnipCompletionLanguage.swift */,
@@ -805,6 +809,7 @@
 				10000000000000000000002D /* PreviewImageCache.swift in Sources */,
 				10000000000000000000002E /* ComposerDraftStore.swift in Sources */,
 				A10000000000000000000005 /* SnipCompletionLanguage.swift in Sources */,
+				A1000000000000000000000D /* AppleAccountNoticeModel.swift in Sources */,
 				A10000000000000000000001 /* SnipSnapTheme.swift in Sources */,
 				10000000000000000000003B /* ComposerDraftStore+ScreenCapture.swift in Sources */,
 			);
@@ -847,6 +852,7 @@
 				E10000000000000000000033 /* CompactLibraryControls.swift in Sources */,
 				E10000000000000000000034 /* ComposerDraftStore.swift in Sources */,
 				A10000000000000000000006 /* SnipCompletionLanguage.swift in Sources */,
+				A1000000000000000000000E /* AppleAccountNoticeModel.swift in Sources */,
 				A10000000000000000000002 /* SnipSnapTheme.swift in Sources */,
 				E10000000000000000000007 /* PreviewSupport.swift in Sources */,
 			);

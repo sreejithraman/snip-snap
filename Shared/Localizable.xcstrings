@@ -263,18 +263,6 @@
     "Attachments: %@" : {
 
     },
-    "Available Offline" : {
-
-    },
-    "Available Offline — Sync Failed" : {
-
-    },
-    "Available Offline — Syncing" : {
-
-    },
-    "Available Offline — Waiting for iCloud" : {
-
-    },
     "Back" : {
 
     },
@@ -309,9 +297,6 @@
 
     },
     "Choose What to Do" : {
-
-    },
-    "Choose a Snip" : {
 
     },
     "Choose a backup" : {
@@ -389,9 +374,6 @@
     "Copy Text Only" : {
 
     },
-    "Copy and Share" : {
-
-    },
     "Copying files…" : {
 
     },
@@ -443,16 +425,10 @@
     "Double tap to edit. Touch and hold for actions." : {
 
     },
-    "Download Failed — Tap to Retry" : {
-
-    },
     "Download to Preview" : {
 
     },
     "Downloaded files can be fetched again when you open them." : {
-
-    },
-    "Downloading…" : {
 
     },
     "Edit" : {
@@ -593,9 +569,6 @@
     "New List…" : {
 
     },
-    "New Snip" : {
-
-    },
     "New list" : {
 
     },
@@ -629,7 +602,7 @@
     "One or more files could not be read." : {
 
     },
-    "One or more shared items could not be added yet. Snip Snap will try again next time." : {
+    "Some shared content could not be added yet. Snip Snap will try again next time." : {
 
     },
     "Open or Hide Clipboard" : {
@@ -657,9 +630,6 @@
 
     },
     "Quick Look %@" : {
-
-    },
-    "Ready to Download" : {
 
     },
     "Recent" : {
@@ -740,9 +710,6 @@
     "Save to Snip Snap" : {
 
     },
-    "Saved" : {
-
-    },
     "Saving…" : {
 
     },
@@ -759,9 +726,6 @@
 
     },
     "Select All" : {
-
-    },
-    "Select a saved snip to read or edit it." : {
 
     },
     "Select text or an image, then try again." : {
@@ -798,9 +762,6 @@
 
     },
     "Smileys & Emotion" : {
-
-    },
-    "Snip" : {
 
     },
     "Snip Snap" : {
@@ -965,7 +926,7 @@
     "The list will be removed. Its snips will move to Inbox." : {
 
     },
-    "The shared item is saved on this device. iCloud sync will try again later." : {
+    "The shared content is saved on this device. iCloud sync will try again later." : {
 
     },
     "The source app is no longer active." : {

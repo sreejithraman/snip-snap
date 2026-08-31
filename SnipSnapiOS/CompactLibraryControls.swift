@@ -9,6 +9,7 @@ struct CompactLibraryControls: View {
 
     let model: IOSAppModel
     let storage: CompactComposerStorage
+    let showsListTabs: Bool
     @Binding var sheet: AppSheet?
 
     @State private var draft = ComposerDraft()
@@ -22,10 +23,12 @@ struct CompactLibraryControls: View {
         model: IOSAppModel,
         storage: CompactComposerStorage,
         isComposerFocused: FocusState<Bool>.Binding,
+        showsListTabs: Bool = true,
         sheet: Binding<AppSheet?>
     ) {
         self.model = model
         self.storage = storage
+        self.showsListTabs = showsListTabs
         _isComposerFocused = isComposerFocused
         _sheet = sheet
     }
@@ -36,11 +39,13 @@ struct CompactLibraryControls: View {
         GlassEffectContainer(spacing: 8) {
             VStack(spacing: 8) {
                 composer
-                CompactListTabBar(
-                    model: model,
-                    sheet: $sheet,
-                    deleteList: deleteList
-                )
+                if showsListTabs {
+                    CompactListTabBar(
+                        model: model,
+                        sheet: $sheet,
+                        deleteList: deleteList
+                    )
+                }
             }
         }
         .padding(.horizontal, 12)

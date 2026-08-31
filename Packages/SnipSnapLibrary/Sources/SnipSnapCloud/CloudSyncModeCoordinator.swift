@@ -693,9 +693,6 @@ package actor ICloudSyncModeCoordinator {
     }
 
     private func isRetryableConnectivity(_ error: Error) -> Bool {
-        if let error = error as? FakeCloudError {
-            return error == .injectedFetchFailure || error == .injectedSendFailure
-        }
         if let error = error as? CloudTransportError {
             return error == .fetchFailed || error == .sendFailed
         }

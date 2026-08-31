@@ -498,10 +498,6 @@ public protocol SnipLibrary: Sendable {
 }
 
 public extension SnipLibrary {
-    func checkedSnapshot(sortedBy sortMode: SnipSortMode) async throws -> SnipLibrarySnapshot {
-        await snapshot(sortedBy: sortMode)
-    }
-
     func transferSnapshot(revision: UInt64) async throws -> SnipLibraryTransferSnapshot {
         throw SnipLibraryError.transferUnsupported
     }

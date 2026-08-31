@@ -1,8 +1,6 @@
 import Foundation
 
 package enum FakeCloudError: Error, Equatable, Sendable {
-    case injectedFetchFailure
-    case injectedSendFailure
     case injectedAssetFailure
     case wrongBatchConfirmation
 }
@@ -358,9 +356,9 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
     private let namespace: CloudSyncNamespace?
     private var committedCursors: [CloudZoneID: Int] = [:]
     private var pending: CloudSyncBatch?
-    private var nextFetchFailure: FakeCloudError?
+    private var nextFetchFailure: CloudTransportError?
     private var nextTerminalFetchFailure: CloudTransportError?
-    private var nextSendFailure: FakeCloudError?
+    private var nextSendFailure: CloudTransportError?
     private var nextAssetFailure: FakeCloudError?
     private var fetchItemFailures: [CloudRecordID: CloudOperationFailure] = [:]
     private var sendItemFailures: [CloudRecordID: CloudOperationFailure] = [:]
@@ -399,11 +397,11 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
         }
     }
 
-    package func failNextFetch() { nextFetchFailure = .injectedFetchFailure }
+    package func failNextFetch() { nextFetchFailure = .fetchFailed }
     package func failNextFetchTerminally(_ error: CloudTransportError = .invalidEngineState) {
         nextTerminalFetchFailure = error
     }
-    package func failNextSend() { nextSendFailure = .injectedSendFailure }
+    package func failNextSend() { nextSendFailure = .sendFailed }
     package func failNextAssetFetch() { nextAssetFailure = .injectedAssetFailure }
 
     package func pauseNextFetch() { shouldPauseNextFetch = true }

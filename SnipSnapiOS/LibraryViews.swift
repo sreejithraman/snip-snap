@@ -139,18 +139,8 @@ private struct CloudLibraryActions: View {
 }
 
 enum SnipCollectionLayout: Equatable {
-    case splitView
     case compactStack
     case inlineList
-
-    var usesInlineRows: Bool {
-        switch self {
-        case .compactStack, .inlineList: true
-        case .splitView: false
-        }
-    }
-
-    var showsCompactComposer: Bool { self == .compactStack }
 }
 
 private struct CompactInlineEditSession {
@@ -163,7 +153,7 @@ struct SnipCollectionView: View {
     let model: IOSAppModel
     let copyShare: IOSCopyShareCoordinator
     @Binding var sheet: AppSheet?
-    var layout = SnipCollectionLayout.splitView
+    let layout: SnipCollectionLayout
     var dismissComposerKeyboard: () -> Void = {}
     @State private var editMode: EditMode = .inactive
     @State private var isSelecting = false
@@ -171,18 +161,6 @@ struct SnipCollectionView: View {
     @State private var previewURLs: [URL] = []
     @State private var selectedPreviewURL: URL?
     @FocusState private var isInlineEditorFocused: Bool
-
-    private var singleSelection: Binding<UUID?> {
-        Binding(
-            get: { model.selectedSnipID },
-            set: { model.selectedSnipID = $0 }
-        )
-    }
-
-    private var listSelection: Binding<UUID?>? {
-        guard !isSelecting, !layout.usesInlineRows else { return nil }
-        return singleSelection
-    }
 
     var body: some View {
         Group {
@@ -198,7 +176,7 @@ struct SnipCollectionView: View {
                     .accessibilityIdentifier("empty-snips")
                 }
             } else {
-                List(selection: listSelection) {
+                List {
                     ForEach(model.pendingRecoveredSnips.filter { recovery in
                         recovery.recovered.listID == model.selectedListID
                             && !model.snips.contains { $0.id == recovery.id }
@@ -239,7 +217,7 @@ struct SnipCollectionView: View {
                                     model.selectedSnipIDs.contains(snip.id) ? .isSelected : []
                                 )
                                 .accessibilityIdentifier("snip-\(snip.id)")
-                            } else if layout.usesInlineRows {
+                            } else {
                                 if inlineEditSession?.original.id == snip.id {
                                     CompactInlineSnipEditor(
                                         snip: snip,
@@ -274,15 +252,6 @@ struct SnipCollectionView: View {
                                     }
                                     .accessibilityIdentifier("snip-\(snip.id)")
                                 }
-                            } else {
-                                NavigationLink(value: snip.id) {
-                                    SnipRow(
-                                        snip: snip,
-                                        model: model,
-                                        isRecovered: model.isRecoveredSnip(snip.id)
-                                    )
-                                }
-                                .accessibilityIdentifier("snip-\(snip.id)")
                             }
                         }
                         .tag(snip.id)
@@ -336,16 +305,13 @@ struct SnipCollectionView: View {
                     .onMove(perform: move)
                     .moveDisabled(!model.canReorderVisibleSnips)
                 }
-                .scrollDismissesKeyboard(
-                    layout == .compactStack ? .interactively : .automatic
-                )
+                .scrollDismissesKeyboard(.interactively)
             }
         }
         .contentShape(Rectangle())
         .simultaneousGesture(
             DragGesture(minimumDistance: 12).onChanged { value in
-                guard layout.showsCompactComposer,
-                      value.translation.height > 8,
+                guard value.translation.height > 8,
                       abs(value.translation.height) > abs(value.translation.width)
                 else { return }
                 dismissComposerKeyboard()
@@ -354,7 +320,7 @@ struct SnipCollectionView: View {
         .quickLookPreview($selectedPreviewURL, in: previewURLs)
         .navigationTitle(model.selectedList.name)
         .modifier(PhoneAwareSearchModifier(
-            isEnabled: !layout.showsCompactComposer,
+            isEnabled: layout != .compactStack,
             text: Binding(
                 get: { model.searchText },
                 set: { model.searchText = $0 }
@@ -378,12 +344,6 @@ struct SnipCollectionView: View {
                 }
                     .disabled(model.visibleSnips.isEmpty)
                     .accessibilityIdentifier("select-snips")
-                if !isSelecting && !layout.showsCompactComposer {
-                    Button("New Snip", systemImage: "square.and.pencil") {
-                        sheet = .newSnip(listID: model.selectedListID)
-                    }
-                    .accessibilityIdentifier("new-snip")
-                }
             }
         }
         .onChange(of: model.selectedListID) {
@@ -446,10 +406,6 @@ struct SnipCollectionView: View {
 
     private func beginEditing(_ snip: Snip) {
         model.selectedSnipID = snip.id
-        guard layout.usesInlineRows else {
-            sheet = .editSnip(id: snip.id)
-            return
-        }
         inlineEditSession = CompactInlineEditSession(
             original: snip,
             text: snip.content
@@ -1026,102 +982,6 @@ struct RecoveredListReviewView: View {
     }
 }
 
-struct SnipDetailView: View {
-    let model: IOSAppModel
-    let copyShare: IOSCopyShareCoordinator
-    @Binding var sheet: AppSheet?
-    @State private var previewURL: URL?
-
-    private var attachmentItems: [AttachmentPreviewItem] {
-        guard let snip = model.selectedSnip else { return [] }
-        return snip.attachments.compactMap { attachment in
-            guard let url = model.attachmentURL(for: attachment.id) else { return nil }
-            return AttachmentPreviewItem(
-                id: attachment.id,
-                fileName: attachment.fileName,
-                byteCount: attachment.byteCount,
-                url: url
-            )
-        }
-    }
-
-    var body: some View {
-        if let snip = model.selectedSnip {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text(snip.content)
-                        .font(.body)
-                        .foregroundStyle(.primary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                    if !snip.attachments.isEmpty {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Attachments")
-                                .font(.headline)
-                            LazyVGrid(
-                                columns: [GridItem(.adaptive(minimum: 144), spacing: 12)],
-                                spacing: 12
-                            ) {
-                                ForEach(snip.attachments) { attachment in
-                                    SyncedAttachmentTile(attachment: attachment, model: model) {
-                                        Task {
-                                            previewURL = await model.prepareAttachment(
-                                                attachment.id,
-                                                for: .preview
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Divider()
-
-                    LabeledContent("Saved", value: snip.createdAt.formatted(date: .abbreviated, time: .shortened))
-                    LabeledContent(
-                        "List",
-                        value: model.lists.first(where: { $0.id == snip.listID })?.displayName
-                            ?? String(localized: "Inbox")
-                    )
-                }
-                .padding(24)
-            }
-            .navigationTitle("Snip")
-            .quickLookPreview($previewURL, in: attachmentItems.map(\.url))
-            .toolbar {
-                ToolbarItemGroup(placement: .primaryAction) {
-                    Menu("Copy and Share", systemImage: "square.and.arrow.up") {
-                        CopyShareActions(
-                            snips: [snip],
-                            model: model,
-                            coordinator: copyShare,
-                            identifierSuffix: "snip"
-                        )
-                    }
-                    .accessibilityIdentifier("copy-share-snip")
-                    MoveSnipMenu(model: model, snip: snip)
-                    Button("Edit", systemImage: "pencil") {
-                        sheet = .editSnip(id: snip.id)
-                    }
-                    .accessibilityIdentifier("edit-snip")
-                    Button("Delete", systemImage: "trash", role: .destructive) {
-                        Task { await model.deleteSnip(id: snip.id) }
-                    }
-                    .accessibilityIdentifier("delete-snip-detail")
-                }
-            }
-        } else {
-            ContentUnavailableView(
-                "Choose a Snip",
-                systemImage: "text.page",
-                description: Text("Select a saved snip to read or edit it.")
-            )
-        }
-    }
-}
-
 private struct AttachmentStatusThumbnail: View {
     let attachment: SnipAttachment
     let model: IOSAppModel
@@ -1159,56 +1019,6 @@ private struct AttachmentStatusThumbnail: View {
         case .syncing: String(localized: "syncing")
         case .failed: String(localized: "failed")
         case .available: String(localized: "available")
-        }
-    }
-}
-
-private struct SyncedAttachmentTile: View {
-    let attachment: SnipAttachment
-    let model: IOSAppModel
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 8) {
-                AttachmentStatusThumbnail(attachment: attachment, model: model)
-                    .frame(maxWidth: .infinity)
-                    .aspectRatio(1, contentMode: .fit)
-                Text(attachment.fileName)
-                    .font(.body.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
-                Text(statusLabel)
-                    .font(.caption)
-                    .foregroundStyle(state == .failed ? .red : .secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(12)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
-        }
-        .buttonStyle(.plain)
-        .disabled(state == .syncing && model.attachmentURL(for: attachment.id) == nil)
-        .accessibilityIdentifier("attachment-preview-\(attachment.fileName)")
-    }
-
-    private var state: SyncedAttachmentTransferState {
-        model.attachmentTransferState(for: attachment.id)
-    }
-
-    private var statusLabel: String {
-        if model.attachmentURL(for: attachment.id) != nil {
-            return switch state {
-            case .waiting: String(localized: "Available Offline — Waiting for iCloud")
-            case .syncing: String(localized: "Available Offline — Syncing")
-            case .failed: String(localized: "Available Offline — Sync Failed")
-            case .available: String(localized: "Available Offline")
-            }
-        }
-        return switch state {
-        case .waiting: String(localized: "Waiting for iCloud")
-        case .syncing: String(localized: "Downloading…")
-        case .failed: String(localized: "Download Failed — Tap to Retry")
-        case .available: String(localized: "Ready to Download")
         }
     }
 }

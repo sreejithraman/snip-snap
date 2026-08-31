@@ -1491,13 +1491,7 @@ extension SwiftDataSnipLibrary {
   }
 
   private static func sha256(of url: URL) throws -> Data {
-    let handle = try FileHandle(forReadingFrom: url)
-    defer { try? handle.close() }
-    var hasher = SHA256()
-    while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
-      hasher.update(data: chunk)
-    }
-    return Data(hasher.finalize())
+    try AttachmentFileIO.digest(at: url)
   }
 
   static func validatedChild(relativePath: String, root: URL) throws -> URL {

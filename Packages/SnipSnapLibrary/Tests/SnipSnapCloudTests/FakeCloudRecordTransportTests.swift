@@ -2,6 +2,34 @@
 import XCTest
 
 final class FakeCloudRecordTransportTests: XCTestCase {
+    func testCloudAssetCopyRejectsSymlinkSourceAndLeavesNoOutput() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CloudAssetSymlinkTests-\(UUID().uuidString)", isDirectory: true)
+        let destinationURL = root.appendingPathComponent("destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let regularURL = root.appendingPathComponent("regular.bin", isDirectory: false)
+        let symlinkURL = root.appendingPathComponent("link.bin", isDirectory: false)
+        try Data("payload".utf8).write(to: regularURL)
+        try FileManager.default.createSymbolicLink(at: symlinkURL, withDestinationURL: regularURL)
+        let destination = try CloudAssetDestination(validating: destinationURL)
+        let recordID = CloudRecordID(
+            zone: CloudZoneID(name: "payload", ownerName: "owner"),
+            name: "asset-record"
+        )
+
+        XCTAssertThrowsError(
+            try CloudAssetFileCopy.copy(
+                recordID: recordID,
+                field: "blob",
+                source: symlinkURL,
+                destination: destination
+            )
+        )
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: destinationURL.path).isEmpty)
+    }
+
     func testRestoredEngineStateContinuesAfterTheLastConfirmedFetch() async throws {
         let server = FakeCloudServer()
         let zone = CloudZoneID(name: "metadata", ownerName: "owner")
@@ -156,7 +184,7 @@ final class FakeCloudRecordTransportTests: XCTestCase {
         do {
             _ = try await writer.send(CloudOutboundBatch(operations: [.save(draft)]))
             XCTFail("Expected the injected send failure.")
-        } catch FakeCloudError.injectedSendFailure {}
+        } catch CloudTransportError.sendFailed {}
         let missingAfterFailure = try await reader.fetchRecord(id, fields: [])
         XCTAssertNil(missingAfterFailure)
 
@@ -166,7 +194,7 @@ final class FakeCloudRecordTransportTests: XCTestCase {
         do {
             _ = try await reader.fetch(scope: .all)
             XCTFail("Expected the injected fetch failure.")
-        } catch FakeCloudError.injectedFetchFailure {}
+        } catch CloudTransportError.fetchFailed {}
 
         let retried = try await reader.fetch(scope: .all)
         XCTAssertEqual(retried.recordSnapshots.map(\.id), [id])

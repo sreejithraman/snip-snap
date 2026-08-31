@@ -395,9 +395,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         let send = app.buttons["composer-send"]
         let newList = app.buttons["new-list"]
 
-        guard composer.waitForExistence(timeout: 5) else {
-            throw XCTSkip("The quick composer is limited to compact layouts.")
-        }
+        XCTAssertTrue(
+            composer.waitForExistence(timeout: 5),
+            "The quick composer must exist on both iPhone and iPad."
+        )
         XCTAssertTrue(newList.exists)
         XCTAssertFalse(send.isEnabled)
 

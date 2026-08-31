@@ -110,6 +110,10 @@ final class AppModelTests: StoreBackedTestCase {
             return makeSnapshot(sortedBy: sortMode)
         }
 
+        func checkedSnapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
+            makeSnapshot(sortedBy: sortMode)
+        }
+
         private func makeSnapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
             SnipLibrarySnapshot(
                 snips: Snip.sorted(snips, by: sortMode),

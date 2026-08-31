@@ -1,6 +1,4 @@
 import SnipSnapCore
-import SnipSnapCloud
-import SnipSnapPersistence
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
@@ -10,154 +8,10 @@ enum IOSBackupImportPickerPolicy {
     static let message = String(localized: "Choose a backup folder to include attachments. A plain JSON file can contain text and metadata only.")
 }
 
-@MainActor
-final class IOSAppGraph {
-    let model: IOSAppModel
-    let shareImporter: IOSShareImportCoordinator?
-
-    init(
-        library: any SnipLibrary,
-        userActions: (any SnipLibraryUserActions)? = nil,
-        userActionsRebinder: SnipLibraryUserActionsRebinder = .direct,
-        recoveryScope: SnipRecoveryScope? = nil,
-        shareImports: ShareImportStore?,
-        initialSnapshot: SnipLibrarySnapshot,
-        startupError: String?,
-        shareImportOperation: (@Sendable () async -> Int)? = nil,
-        syncOperation: (@MainActor @Sendable () async throws -> Void)? = nil,
-        syncOperationFactory: (@MainActor @Sendable (
-            IOSAppModel
-        ) -> @MainActor @Sendable () async throws -> Void)? = nil,
-        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil
-    ) {
-        let model = IOSAppModel(
-            library: library,
-            userActions: userActions,
-            userActionsRebinder: userActionsRebinder,
-            recoveryScope: recoveryScope,
-            initialSnapshot: initialSnapshot,
-            startupError: startupError,
-            cloudSyncHandler: cloudSyncHandler
-        )
-        self.model = model
-        let noSync: @MainActor @Sendable () async throws -> Void = {}
-        let resolvedSyncOperation = syncOperation
-            ?? syncOperationFactory?(model)
-            ?? noSync
-        if let shareImportOperation {
-            shareImporter = IOSShareImportCoordinator(
-                model: model,
-                importOperation: shareImportOperation,
-                syncOperation: resolvedSyncOperation
-            )
-        } else if let shareImports {
-            shareImporter = IOSShareImportCoordinator(
-                library: library,
-                imports: shareImports,
-                model: model,
-                syncOperation: resolvedSyncOperation
-            )
-        } else {
-            shareImporter = nil
-        }
-    }
-}
-
-@MainActor
-final class IOSShareImportCoordinator {
-    private struct PassResult: Sendable {
-        let importFailures: Int
-        let syncFailed: Bool
-    }
-
-    private let model: IOSAppModel
-    private let importOperation: @Sendable () async -> Int
-    private let syncOperation: @MainActor @Sendable () async throws -> Void
-    private var inFlight: Task<PassResult, Never>?
-    private var needsTrailingPass = false
-
-    convenience init(
-        library: any SnipLibrary,
-        imports: ShareImportStore,
-        model: IOSAppModel,
-        syncOperation: @escaping @MainActor @Sendable () async throws -> Void = {}
-    ) {
-        self.init(
-            model: model,
-            importOperation: {
-                await imports.importPending(into: library).failed
-            },
-            syncOperation: syncOperation
-        )
-    }
-
-    init(
-        model: IOSAppModel,
-        importOperation: @escaping @Sendable () async -> Int,
-        syncOperation: @escaping @MainActor @Sendable () async throws -> Void = {}
-    ) {
-        self.model = model
-        self.importOperation = importOperation
-        self.syncOperation = syncOperation
-    }
-
-    func importPendingAndReload() async {
-        if let inFlight {
-            needsTrailingPass = true
-            _ = await inFlight.value
-            return
-        }
-        let task = Task { [self] in
-            var importFailures = 0
-            var syncFailed = false
-            repeat {
-                needsTrailingPass = false
-                let result = await runPass()
-                importFailures += result.importFailures
-                syncFailed = syncFailed || result.syncFailed
-            } while needsTrailingPass
-            // Clear this before completing the task. A later trigger will either mark the
-            // current pass dirty or become the sole owner of a new pass.
-            inFlight = nil
-            return PassResult(importFailures: importFailures, syncFailed: syncFailed)
-        }
-        inFlight = task
-        let result = await task.value
-        report(result)
-    }
-
-    private func runPass() async -> PassResult {
-        let failed = await importOperation()
-        await model.load()
-        // A prior launch can commit the request ledger, then stop before sync. Always ask
-        // the one active sync driver to compare the local rows with its accepted shadow,
-        // even when this pass finds only a duplicate request or no pending directory.
-        do {
-            try await syncOperation()
-            return PassResult(importFailures: failed, syncFailed: false)
-        } catch {
-            return PassResult(importFailures: failed, syncFailed: true)
-        }
-    }
-
-    private func report(_ result: PassResult) {
-        if result.importFailures > 0 {
-            model.errorMessage = String(
-                localized: "One or more shared items could not be added yet. Snip Snap will try again next time."
-            )
-        } else if result.syncFailed {
-            model.errorMessage = String(
-                localized: "The shared item is saved on this device. iCloud sync will try again later."
-            )
-        }
-    }
-}
-
 struct IOSAppRootView: View {
     @Environment(\.scenePhase) private var scenePhase
-    @State private var appGraph: IOSAppGraph
+    private let session: IOSAppSession
     @State private var sheet: AppSheet?
-    @State private var accountNoticeModel: AppleAccountNoticeModel?
     @State private var copyShare = IOSCopyShareCoordinator()
     @State private var compactComposerStorage = CompactComposerStorage()
     @State private var isImportingBackup = false
@@ -166,96 +20,19 @@ struct IOSAppRootView: View {
     private let uiTestAttachmentURLs: [URL]
     private let seedsCopyShareFixtures: Bool
     private let shareProcessToken: String?
-    private let syncedContentSettings: SyncedContentSettingsModel
-    private let cloudLifecycleHooks: SnipSnapCloudLifecycleHooks
-
     init(
-        library: any SnipLibrary,
-        userActions: (any SnipLibraryUserActions)? = nil,
-        userActionsRebinder: SnipLibraryUserActionsRebinder = .direct,
-        recoveryScope: SnipRecoveryScope? = nil,
-        shareImports: ShareImportStore? = nil,
-        initialSnapshot: SnipLibrarySnapshot? = nil,
-        startupError: String? = nil,
+        session: IOSAppSession,
         uiTestAttachmentURLs: [URL] = [],
         seedsCopyShareFixtures: Bool = false,
-        shareProcessToken: String? = nil,
-        syncedContentSettings: SyncedContentSettingsModel? = nil,
-        cloudSyncSession: SnipSnapCloudSyncSession? = nil,
-        shareImportOperation: (@Sendable () async -> Int)? = nil,
-        accountNoticeModel: AppleAccountNoticeModel? = nil,
-        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil
+        shareProcessToken: String? = nil
     ) {
+        self.session = session
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         self.seedsCopyShareFixtures = seedsCopyShareFixtures
         self.shareProcessToken = shareProcessToken
-        let settings = syncedContentSettings
-            ?? SyncedContentSettingsModel(mode: .localOnly)
-        self.syncedContentSettings = settings
-        let activeShareImportOperation = shareImportOperation ?? shareImports.map { imports in
-            { @Sendable in
-                if let cloudSyncSession {
-                    guard let active = try? await cloudSyncSession.activeLibrary() else {
-                        return 1
-                    }
-                    return await imports.importPending(into: active.library).failed
-                }
-                return await imports.importPending(into: library).failed
-            }
-        }
-        let graph = IOSAppGraph(
-            library: library,
-            userActions: userActions,
-            userActionsRebinder: userActionsRebinder,
-            recoveryScope: recoveryScope,
-            shareImports: shareImports,
-            initialSnapshot: initialSnapshot ?? SnipLibrarySnapshot(snips: [], lists: [.inbox]),
-            startupError: startupError,
-            shareImportOperation: activeShareImportOperation,
-            syncOperationFactory: { model in
-                {
-                    try await synchronizeCloudSessionOrThrow(
-                        cloudSyncSession,
-                        model: model,
-                        settings: settings
-                    )
-                }
-            },
-            cloudSyncHandler: cloudSyncHandler
-        )
-        if let cloudSyncSession {
-            let reloadActiveLibrary: SyncedContentSettingsModel.DeleteCompletionAction = {
-                let active = try await cloudSyncSession.activeLibrary()
-                await graph.model.replaceLibrary(
-                    active.library,
-                    recoveryScope: active.recoveryScope
-                )
-            }
-            settings.setEnableCompletionAction(reloadActiveLibrary)
-            settings.setDisableCompletionAction(reloadActiveLibrary)
-            settings.setDeleteCompletionAction(reloadActiveLibrary)
-            settings.setEncryptedDataResetCompletionAction(reloadActiveLibrary)
-        }
-        cloudLifecycleHooks = SnipSnapCloudLifecycleHooks {
-            await synchronizeCloudSession(
-                cloudSyncSession,
-                model: graph.model,
-                settings: settings
-            )
-        }
-        accountNoticeModel?.setActiveLibraryChangeAction {
-            guard let cloudSyncSession else { return }
-            let active = try await cloudSyncSession.activeLibrary()
-            await graph.model.replaceLibrary(
-                active.library,
-                recoveryScope: active.recoveryScope
-            )
-        }
-        _appGraph = State(initialValue: graph)
-        _accountNoticeModel = State(initialValue: accountNoticeModel)
     }
 
-    private var model: IOSAppModel { appGraph.model }
+    private var model: IOSAppModel { session.model }
 
     var body: some View {
         appNavigation
@@ -278,22 +55,22 @@ struct IOSAppRootView: View {
         }
 #endif
         .safeAreaInset(edge: .top, spacing: 0) {
-            if let accountNoticeModel, accountNoticeModel.notice != nil {
+            if let accountNoticeModel = session.accountNoticeModel,
+               accountNoticeModel.notice != nil
+            {
                 AppleAccountNoticeBanner(model: accountNoticeModel)
             }
         }
         .sheet(item: $sheet) { destination in
             switch destination {
-            case .newSnip(let listID):
-                SnipEditorView(model: model, mode: .create(listID: listID))
             case .editSnip(let id):
-                SnipEditorView(model: model, mode: .edit(id: id))
+                SnipEditorView(model: model, snipID: id)
             case .newList:
                 ListEditorView(model: model, mode: .create)
             case .editList(let id):
                 ListEditorView(model: model, mode: .edit(id: id))
             case .settings:
-                SyncedContentSettingsView(model: syncedContentSettings)
+                SyncedContentSettingsView(model: session.syncedContentSettings)
             case .recoveryCenter:
                 RecoveryCenterView(model: model, sheet: $sheet)
             case .recoverSnip(let id):
@@ -376,12 +153,7 @@ struct IOSAppRootView: View {
             Text("Review: \(model.importPreviewSummary). Snip Snap will merge these records with your saved snips.")
         }
         .task {
-            await cloudLifecycleHooks.launch()
-            if let shareImporter = appGraph.shareImporter {
-                await shareImporter.importPendingAndReload()
-            } else {
-                await model.load()
-            }
+            await session.launch()
             if seedsCopyShareFixtures, model.snips.isEmpty {
                 await seedCopyShareFixtures()
             } else if !uiTestAttachmentURLs.isEmpty, model.snips.isEmpty {
@@ -391,22 +163,17 @@ struct IOSAppRootView: View {
                     attachmentURLs: uiTestAttachmentURLs
                 )
             }
-            await accountNoticeModel?.refresh()
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
                 Task {
-                    await cloudLifecycleHooks.foreground()
-                    if let shareImporter = appGraph.shareImporter {
-                        await shareImporter.importPendingAndReload()
-                    }
-                    await accountNoticeModel?.refresh()
+                    await session.foreground()
                 }
             case .background:
                 let lease = IOSBackgroundSyncLease()
                 Task {
-                    await cloudLifecycleHooks.foreground()
+                    await session.backgroundSync()
                     lease.finish()
                 }
             default:
@@ -469,8 +236,20 @@ struct IOSAppRootView: View {
                         model: model,
                         copyShare: copyShare,
                         sheet: $sheet,
-                        layout: .inlineList
+                        layout: .inlineList,
+                        dismissComposerKeyboard: {
+                            isCompactComposerFocused = false
+                        }
                     )
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        CompactLibraryControls(
+                            model: model,
+                            storage: compactComposerStorage,
+                            isComposerFocused: $isCompactComposerFocused,
+                            showsListTabs: false,
+                            sheet: $sheet
+                        )
+                    }
                 }
             }
             .libraryToast(model: model)
@@ -508,51 +287,6 @@ struct IOSAppRootView: View {
         }
     }
 
-}
-
-@MainActor
-private func synchronizeCloudSession(
-    _ session: SnipSnapCloudSyncSession?,
-    model: IOSAppModel,
-    settings: SyncedContentSettingsModel
-) async {
-    do {
-        try await synchronizeCloudSessionOrThrow(
-            session,
-            model: model,
-            settings: settings
-        )
-    } catch {
-        model.errorMessage = error.localizedDescription
-    }
-}
-
-@MainActor
-private func synchronizeCloudSessionOrThrow(
-    _ session: SnipSnapCloudSyncSession?,
-    model: IOSAppModel,
-    settings: SyncedContentSettingsModel
-) async throws {
-    guard let session else { return }
-    let result = try await session.synchronize()
-    switch result {
-    case .noChange:
-        break
-    case .contentUpdated:
-        await model.load()
-    case .libraryReplaced, .oldSyncedContentRemovalPending,
-            .oldSyncedContentRemovalCompleted, .encryptedDataResetRequiresChoice,
-            .syncKeptOff:
-        let active = try await session.activeLibrary()
-        await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
-        if case .oldSyncedContentRemovalPending = result {
-            settings.recordRemovalPending(true)
-        } else if case .oldSyncedContentRemovalCompleted = result {
-            settings.recordRemovalPending(false)
-        } else if case .encryptedDataResetRequiresChoice = result {
-            settings.recordEncryptedDataReset()
-        }
-    }
 }
 
 @MainActor
@@ -641,11 +375,13 @@ private extension View {
 
 #Preview("iPad Library") {
     IOSAppRootView(
-        library: PreviewSnipLibrary.snapshot,
-        initialSnapshot: .preview
+        session: IOSAppSession(
+            library: PreviewSnipLibrary.snapshot,
+            initialSnapshot: .preview
+        )
     )
 }
 
 #Preview("Empty iPhone") {
-    IOSAppRootView(library: PreviewSnipLibrary.empty)
+    IOSAppRootView(session: IOSAppSession(library: PreviewSnipLibrary.empty))
 }
