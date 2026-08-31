@@ -79,6 +79,7 @@ for line in 3 6; do
         "-scheme SnipSnapiOS -configuration Debug -destination $destination" >/dev/null || \
         fail_test "the Share extension process command missed $destination"
     for test_name in \
+        testSharesSnipBackIntoSnipSnap \
         testShareExtensionImportsExactlyOnceWhileMainAppIsOpen \
         testShareExtensionImportsExactlyOnceWhileMainAppIsClosed \
         testShareExtensionDefersExactlyOnceWhileMainStoreIsUnavailable

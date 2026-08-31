@@ -289,6 +289,29 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(activityView(in: app).waitForExistence(timeout: 5))
     }
 
+    func testSharesSnipBackIntoSnipSnap() {
+        continueAfterFailure = false
+        let app = launchApp(withCopyShareFixtures: true)
+
+        openCopyShareFixture(matching: "Copy text fixture", in: app)
+        chooseDetailAction("share-snip", in: app)
+        XCTAssertTrue(activityView(in: app).waitForExistence(timeout: 5))
+
+        let snipSnap = app.cells["Snip Snap"]
+        XCTAssertTrue(snipSnap.waitForExistence(timeout: 5))
+        snipSnap.tap()
+
+        let sharedText = app.textViews["share-text"]
+        XCTAssertTrue(sharedText.waitForExistence(timeout: 5))
+        XCTAssertEqual(sharedText.value as? String, "Copy text fixture")
+        XCTAssertFalse(app.staticTexts["text.txt"].exists)
+        XCTAssertFalse(app.otherElements["share-error"].exists)
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Snip shared back into Snip Snap"
+        proof.lifetime = .keepAlways
+        add(proof)
+    }
+
     func testShareExtensionImportsExactlyOnceWhileMainAppIsOpen() {
         assertShareExtensionImportsExactlyOnce(mainAppState: .open)
     }

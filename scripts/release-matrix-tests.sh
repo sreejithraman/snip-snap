@@ -151,6 +151,7 @@ run_share_process() {
         -derivedDataPath "$derived_data" \
         CODE_SIGNING_ALLOWED=YES \
         DEVELOPMENT_TEAM= \
+        -only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testSharesSnipBackIntoSnipSnap \
         -only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testShareExtensionImportsExactlyOnceWhileMainAppIsOpen \
         -only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testShareExtensionImportsExactlyOnceWhileMainAppIsClosed \
         -only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testShareExtensionDefersExactlyOnceWhileMainStoreIsUnavailable \
