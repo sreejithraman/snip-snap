@@ -51,6 +51,7 @@ signing_policy_capture_build_settings() {
     local derived_data="${5:-}"
     local scheme="${6:-SnipSnap}"
     local xcodebuild_tool="${SNIP_SNAP_XCODEBUILD:-xcodebuild}"
+    local -a shared_arguments
     local command=(
         "$xcodebuild_tool"
         -project "$repo_dir/SnipSnap.xcodeproj"
@@ -59,25 +60,47 @@ signing_policy_capture_build_settings() {
         -destination "$destination"
         -showBuildSettings
     )
+    local share_command
 
     [[ -z "$derived_data" ]] || command+=( -derivedDataPath "$derived_data" )
 
+    shared_arguments=()
     [[ -z "${SNIP_SNAP_DEVELOPMENT_TEAM:-}" ]] || \
-        command+=("DEVELOPMENT_TEAM=$SNIP_SNAP_DEVELOPMENT_TEAM")
+        shared_arguments+=("DEVELOPMENT_TEAM=$SNIP_SNAP_DEVELOPMENT_TEAM")
     [[ -z "${SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER:-}" ]] || \
-        command+=("SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER=$SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER")
+        shared_arguments+=("SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER=$SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER")
     [[ -z "${SNIP_SNAP_APP_GROUP_IDENTIFIER:-}" ]] || \
-        command+=("SNIP_SNAP_APP_GROUP_IDENTIFIER=$SNIP_SNAP_APP_GROUP_IDENTIFIER")
+        shared_arguments+=("SNIP_SNAP_APP_GROUP_IDENTIFIER=$SNIP_SNAP_APP_GROUP_IDENTIFIER")
     [[ -z "${SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER:-}" ]] || \
-        command+=("SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER=$SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER")
+        shared_arguments+=("SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER=$SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER")
     [[ -z "${SNIP_SNAP_CODE_SIGN_ENTITLEMENTS:-}" ]] || \
         command+=("CODE_SIGN_ENTITLEMENTS=$SNIP_SNAP_CODE_SIGN_ENTITLEMENTS")
+    [[ -z "${SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS:-}" ]] || \
+        shared_arguments+=("SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS=$SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS")
+    command+=("${shared_arguments[@]}")
 
     "${command[@]}" > "$output_file" 2> "$output_file.stderr" || {
         /bin/rm -f "$output_file.stderr"
         signing_policy_fail "could not resolve Xcode build settings"
         return 1
     }
+    if [[ "$scheme" == SnipSnapiOS ]]; then
+        share_command=(
+            "$xcodebuild_tool"
+            -project "$repo_dir/SnipSnap.xcodeproj"
+            -target SnipSnapShareExtension
+            -configuration "$configuration"
+            -destination "$destination"
+            -showBuildSettings
+        )
+        # Xcode rejects -derivedDataPath when build settings use -target.
+        share_command+=("${shared_arguments[@]}")
+        "${share_command[@]}" >> "$output_file" 2>> "$output_file.stderr" || {
+            /bin/rm -f "$output_file.stderr"
+            signing_policy_fail "could not resolve Share extension build settings"
+            return 1
+        }
+    fi
     /bin/rm -f "$output_file.stderr"
 }
 
@@ -155,7 +178,7 @@ signing_policy_preflight() {
     }
 
     case "$lane" in
-        cloud|device)
+        cloud|device|testflight)
             required_settings=(
                 DEVELOPMENT_TEAM
                 PRODUCT_BUNDLE_IDENTIFIER
@@ -209,7 +232,7 @@ signing_policy_preflight() {
             missing+=("CODE_SIGN_ENTITLEMENTS file")
         elif ! /usr/bin/plutil -lint "$entitlement_path" >/dev/null 2>&1; then
             missing+=("valid entitlement plist")
-        elif [[ "$lane" == cloud || "$lane" == device ]]; then
+        elif [[ "$lane" == cloud || "$lane" == device || "$lane" == testflight ]]; then
             signing_policy_plist_array_contains \
                 "$entitlement_path" com.apple.security.application-groups \
                 "$app_group_identifier" '$(SNIP_SNAP_APP_GROUP_IDENTIFIER)' || \
@@ -227,11 +250,17 @@ signing_policy_preflight() {
                     "$entitlement_path" \
                     com.apple.developer.icloud-container-environment \
                     Development || missing+=("CloudKit Development environment entitlement")
+            elif [[ "$lane" == testflight ]]; then
+                signing_policy_plist_value_equals \
+                    "$entitlement_path" \
+                    com.apple.developer.icloud-container-environment \
+                    Production || missing+=("CloudKit Production environment entitlement")
             fi
         fi
     fi
 
-    if [[ ( "$lane" == cloud || "$lane" == device ) && "$scheme" == SnipSnapiOS ]]; then
+    if [[ ( "$lane" == cloud || "$lane" == device || "$lane" == testflight ) && \
+          "$scheme" == SnipSnapiOS ]]; then
         local share_app_group_identifier=""
         local share_entitlement_setting=""
         local share_entitlements=""

@@ -69,4 +69,23 @@ assert_rejected_without_value app-group "$app_group_value" \
     "SNIP_SNAP_APP_GROUP_IDENTIFIER = $app_group_value" \
     Fake.xcconfig
 
+for credential_name in AuthKey_FAKE123.p8 distribution.p12 AppStore.mobileprovision; do
+    credential_repo="$(new_repo "credential-${credential_name##*.}")"
+    print 'fake credential bytes' > "$credential_repo/$credential_name"
+    git -C "$credential_repo" add "$credential_name"
+    if "$script_dir/tracked-input-policy.sh" "$credential_repo" >/dev/null 2>&1; then
+        fail_test "$credential_name was accepted"
+    fi
+done
+
+for key_prefix in PRIVATE 'OPENSSH PRIVATE' 'DSA PRIVATE'; do
+    key_name="${key_prefix// /-}"
+    private_key_repo="$(new_repo "private-key-$key_name")"
+    print -- "-----BEGIN $key_prefix" 'KEY-----' > "$private_key_repo/key.txt"
+    git -C "$private_key_repo" add key.txt
+    if "$script_dir/tracked-input-policy.sh" "$private_key_repo" >/dev/null 2>&1; then
+        fail_test "a $key_prefix key block was accepted"
+    fi
+done
+
 print "Tracked-input policy checks passed."

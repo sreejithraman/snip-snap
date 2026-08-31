@@ -7,3 +7,4 @@ DEVELOPMENT_TEAM =
 // SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER = org.example.snipsnap
 // SNIP_SNAP_APP_GROUP_IDENTIFIER = group.org.example.snipsnap
 // SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER = iCloud.org.example.snipsnap
+// SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS = Config/Local.entitlements

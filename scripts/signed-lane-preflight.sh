@@ -13,7 +13,7 @@ temp_root=""
 source "$script_dir/signing-policy.sh"
 
 usage() {
-    print -u2 "Usage: $0 cloud|device|release [--scheme NAME] [--configuration NAME] [--destination DESTINATION] [--settings-file PATH]"
+    print -u2 "Usage: $0 cloud|device|testflight|release [--scheme NAME] [--configuration NAME] [--destination DESTINATION] [--settings-file PATH]"
 }
 
 [[ -n "$lane" ]] || { usage; exit 2; }
@@ -51,7 +51,7 @@ case "$lane" in
     cloud|device)
         configuration="${configuration:-Debug}"
         ;;
-    release)
+    testflight|release)
         configuration="${configuration:-Release}"
         ;;
     *)

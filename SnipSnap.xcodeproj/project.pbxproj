@@ -92,9 +92,11 @@
 		F10000000000000000000005 /* SnipSnapCore in Frameworks */ = {isa = PBXBuildFile; productRef = FD0000000000000000000001 /* SnipSnapCore */; };
 		F10000000000000000000006 /* SnipSnapPersistence in Frameworks */ = {isa = PBXBuildFile; productRef = FD0000000000000000000002 /* SnipSnapPersistence */; };
 		F10000000000000000000007 /* SnipSnapShareExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = F20000000000000000000007 /* SnipSnapShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		F10000000000000000000008 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = F2000000000000000000000A /* PrivacyInfo.xcprivacy */; };
 		E10000000000000000000030 /* IOSCopyShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000030 /* IOSCopyShare.swift */; };
 		E10000000000000000000033 /* CompactLibraryControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000033 /* CompactLibraryControls.swift */; };
 		E10000000000000000000034 /* ComposerDraftStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000037 /* ComposerDraftStore.swift */; };
+		E10000000000000000000035 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000035 /* PrivacyInfo.xcprivacy */; };
 		A10000000000000000000001 /* SnipSnapTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* SnipSnapTheme.swift */; };
 		A10000000000000000000002 /* SnipSnapTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* SnipSnapTheme.swift */; };
 		A10000000000000000000003 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* AppIcon.icon */; };
@@ -240,6 +242,8 @@
 		F20000000000000000000009 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		E20000000000000000000030 /* IOSCopyShare.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSCopyShare.swift; sourceTree = "<group>"; };
 		E20000000000000000000033 /* CompactLibraryControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompactLibraryControls.swift; sourceTree = "<group>"; };
+		E20000000000000000000035 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		F2000000000000000000000A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -437,6 +441,7 @@
 				E20000000000000000000033 /* CompactLibraryControls.swift */,
 				E20000000000000000000007 /* PreviewSupport.swift */,
 				E20000000000000000000008 /* Assets.xcassets */,
+				E20000000000000000000035 /* PrivacyInfo.xcprivacy */,
 				F20000000000000000000008 /* SnipSnapiOS.entitlements */,
 				F20000000000000000000009 /* Info.plist */,
 			);
@@ -466,6 +471,7 @@
 				F20000000000000000000002 /* ShareExtensionModel.swift */,
 				F20000000000000000000003 /* ShareExtensionInputLoader.swift */,
 				F20000000000000000000004 /* ShareExtensionView.swift */,
+				F2000000000000000000000A /* PrivacyInfo.xcprivacy */,
 				F20000000000000000000005 /* Info.plist */,
 				F20000000000000000000006 /* SnipSnapShareExtension.entitlements */,
 			);
@@ -691,6 +697,7 @@
 			files = (
 				A10000000000000000000004 /* AppIcon.icon in Resources */,
 				E10000000000000000000008 /* Assets.xcassets in Resources */,
+				E10000000000000000000035 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -712,6 +719,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F10000000000000000000008 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

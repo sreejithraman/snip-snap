@@ -86,6 +86,11 @@ assert_embedded_share_extension() {
         print -u2 "Build matrix: the iOS app does not contain a built Share extension bundle: $extension_path"
         return 1
     }
+    [[ -f "$app_path/PrivacyInfo.xcprivacy" && \
+       -f "$extension_path/PrivacyInfo.xcprivacy" ]] || {
+        print -u2 "Build matrix: the iOS app or Share extension is missing its privacy manifest."
+        return 1
+    }
     [[ "$app_executable" -nt "$build_marker" && \
        "$extension_executable" -nt "$build_marker" ]] || {
         print -u2 "Build matrix: the iOS app or Share extension was not built in this matrix run."
@@ -106,4 +111,4 @@ build SnipSnapiOS "$ipad_destination" "$derived_data_root/ipad" \
     TARGETED_DEVICE_FAMILY=2
 assert_embedded_share_extension "$derived_data_root/ipad"
 
-print "Unsigned Mac, iPhone, iPad, and embedded Share extension builds passed."
+print "Unsigned Mac, iPhone, iPad, embedded Share extension, and privacy manifest builds passed."

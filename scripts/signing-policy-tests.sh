@@ -71,6 +71,11 @@ production_settings="$test_root/production-settings.txt"
 assert_fails_with_all \
     "signing_policy_preflight cloud '$production_settings' '$test_root' SnipSnap" \
     'CloudKit Development environment entitlement'
+assert_succeeds signing_policy_preflight \
+    testflight "$production_settings" "$test_root" SnipSnapiOS
+assert_fails_with_all \
+    "signing_policy_preflight testflight '$complete' '$test_root' SnipSnapiOS" \
+    'CloudKit Production environment entitlement'
 
 empty_entitlements="$test_root/Empty.entitlements"
 /usr/bin/plutil -create xml1 "$empty_entitlements"
@@ -112,12 +117,26 @@ assert_fails_with_all \
 fake_xcodebuild="$test_root/fake-xcodebuild"
 fake_xcodebuild_args="$test_root/fake-xcodebuild-args"
 print -r -- '#!/bin/zsh
-print -r -- "$@" > "$SNIP_SNAP_FAKE_XCODEBUILD_ARGS"
+print -r -- "$@" >> "$SNIP_SNAP_FAKE_XCODEBUILD_ARGS"
+target=SnipSnapiOS
+for (( index = 1; index <= $#; index++ )); do
+    if [[ "${@[$index]}" == -target ]]; then
+        next=$(( index + 1 ))
+        target="${@[$next]}"
+    fi
+done
+print -r -- "Build settings for action build and target $target:"
 print -r -- "    DEVELOPMENT_TEAM = FAKE123456"
-print -r -- "    PRODUCT_BUNDLE_IDENTIFIER = org.example.snipsnap.ios"
+if [[ "$target" == SnipSnapShareExtension ]]; then
+    print -r -- "    PRODUCT_BUNDLE_IDENTIFIER = org.example.snipsnap.ios.share"
+    print -r -- "    CODE_SIGN_ENTITLEMENTS = SnipSnapShareExtension/SnipSnapShareExtension.entitlements"
+else
+    print -r -- "    PRODUCT_BUNDLE_IDENTIFIER = org.example.snipsnap.ios"
+    print -r -- "    CODE_SIGN_ENTITLEMENTS = $SNIP_SNAP_FAKE_ENTITLEMENTS"
+fi
 print -r -- "    SNIP_SNAP_APP_GROUP_IDENTIFIER = group.org.example.snipsnap"
 print -r -- "    SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER = iCloud.org.example.snipsnap"
-print -r -- "    CODE_SIGN_ENTITLEMENTS = $SNIP_SNAP_FAKE_ENTITLEMENTS"' > \
+print -r -- "    SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER = org.example.snipsnap"' > \
     "$fake_xcodebuild"
 /bin/chmod +x "$fake_xcodebuild"
 SNIP_SNAP_XCODEBUILD="$fake_xcodebuild" \
@@ -130,6 +149,19 @@ SNIP_SNAP_FAKE_ENTITLEMENTS="$entitlements" \
 /usr/bin/grep -F -- '-scheme SnipSnapiOS' "$fake_xcodebuild_args" >/dev/null || \
     fail_test "the signed-lane scheme did not reach xcodebuild"
 
+SNIP_SNAP_XCODEBUILD="$fake_xcodebuild" \
+SNIP_SNAP_FAKE_XCODEBUILD_ARGS="$fake_xcodebuild_args" \
+SNIP_SNAP_FAKE_ENTITLEMENTS="$production_entitlements" \
+SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS="$production_entitlements" \
+    assert_succeeds "$script_dir/signed-lane-preflight.sh" testflight \
+        --scheme SnipSnapiOS \
+        --configuration Release \
+        --destination 'generic/platform=iOS'
+/usr/bin/grep -F -- \
+    "SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS=$production_entitlements" \
+    "$fake_xcodebuild_args" >/dev/null || \
+    fail_test "the TestFlight entitlement input did not reach xcodebuild"
+
 incomplete_cloud="$test_root/incomplete-cloud.txt"
 print '    PRODUCT_BUNDLE_IDENTIFIER = org.example.snipsnap' > "$incomplete_cloud"
 assert_fails_with_all \
@@ -140,6 +172,12 @@ assert_fails_with_all \
     CODE_SIGN_ENTITLEMENTS
 assert_fails_with_all \
     "signing_policy_preflight device '$incomplete_cloud' '$test_root'" \
+    DEVELOPMENT_TEAM \
+    SNIP_SNAP_APP_GROUP_IDENTIFIER \
+    SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER \
+    CODE_SIGN_ENTITLEMENTS
+assert_fails_with_all \
+    "signing_policy_preflight testflight '$incomplete_cloud' '$test_root' SnipSnapiOS" \
     DEVELOPMENT_TEAM \
     SNIP_SNAP_APP_GROUP_IDENTIFIER \
     SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER \

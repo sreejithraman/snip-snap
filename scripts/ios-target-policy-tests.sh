@@ -10,7 +10,9 @@ shared_settings="$repo_dir/Config/Shared.xcconfig"
 ios_settings="$repo_dir/Config/iOSShared.xcconfig"
 ios_entitlements="$ios_source_dir/SnipSnapiOS.entitlements"
 ios_info="$ios_source_dir/Info.plist"
+ios_privacy="$ios_source_dir/PrivacyInfo.xcprivacy"
 share_entitlements="$share_source_dir/SnipSnapShareExtension.entitlements"
+share_privacy="$share_source_dir/PrivacyInfo.xcprivacy"
 
 if ! awk '
     /Begin PBXBuildFile section/ { in_build_files = 1; next }
@@ -34,7 +36,8 @@ for required_file in \
     EditorViews.swift \
     AttachmentViews.swift \
     IOSCopyShare.swift \
-    SnipSnapiOS.entitlements; do
+    SnipSnapiOS.entitlements \
+    PrivacyInfo.xcprivacy; do
     grep -F -- "$required_file" "$project_file" >/dev/null
 done
 
@@ -61,6 +64,7 @@ for required_file in \
     ShareExtensionInputLoader.swift \
     ShareExtensionView.swift \
     SnipSnapShareExtension.entitlements \
+    PrivacyInfo.xcprivacy \
     Info.plist; do
     [[ "$share_group" == *"$required_file"* ]]
 done
@@ -157,8 +161,15 @@ grep -F -- 'target = F50000000000000000000001 /* SnipSnapShareExtension */;' \
 [[ "$(/usr/bin/sed -nE \
     's/^[[:space:]]*SNIP_SNAP_APP_GROUP_IDENTIFIER = (.*)$/\1/p' \
     "$shared_settings")" == group.org.example.snipsnap ]]
-grep -F -- 'CODE_SIGN_ENTITLEMENTS = SnipSnapiOS/SnipSnapiOS.entitlements' \
+grep -F -- 'SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS = SnipSnapiOS/SnipSnapiOS.entitlements' \
     "$ios_settings" >/dev/null
+grep -F -- 'CODE_SIGN_ENTITLEMENTS = $(SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS)' \
+    "$ios_settings" >/dev/null
+if /usr/bin/grep -Eq '^[[:space:]]*(MARKETING_VERSION|CURRENT_PROJECT_VERSION)[[:space:]]*=' \
+    "$ios_settings"; then
+    print -u2 "The iOS settings override the shared release version."
+    exit 1
+fi
 grep -F -- 'INFOPLIST_FILE = SnipSnapiOS/Info.plist' "$ios_settings" >/dev/null
 [[ "$(/usr/bin/plutil -extract 'com\.apple\.security\.application-groups'.0 raw -o - \
     "$ios_entitlements")" == '$(SNIP_SNAP_APP_GROUP_IDENTIFIER)' ]]
@@ -168,5 +179,13 @@ grep -F -- 'INFOPLIST_FILE = SnipSnapiOS/Info.plist' "$ios_settings" >/dev/null
     "$ios_info")" == '$(SNIP_SNAP_APP_GROUP_IDENTIFIER)' ]]
 [[ "$(/usr/bin/plutil -extract SnipSnapAppGroupIdentifier raw -o - \
     "$share_source_dir/Info.plist")" == '$(SNIP_SNAP_APP_GROUP_IDENTIFIER)' ]]
+
+for manifest in "$ios_privacy" "$share_privacy"; do
+    /usr/bin/plutil -lint "$manifest" >/dev/null
+done
+/usr/bin/grep -F 'E10000000000000000000035 /* PrivacyInfo.xcprivacy in Resources */' \
+    "$project_file" >/dev/null
+/usr/bin/grep -F 'F10000000000000000000008 /* PrivacyInfo.xcprivacy in Resources */' \
+    "$project_file" >/dev/null
 
 print "iOS target policy checks passed."

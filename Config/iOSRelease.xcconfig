@@ -5,3 +5,6 @@ SNIP_SNAP_BUILD_LANE = release
 
 // Official release values may come from this ignored file or from CI.
 #include? "Local.xcconfig"
+
+// Keep the app entitlement input separate from the embedded extension.
+CODE_SIGN_ENTITLEMENTS = $(SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS)

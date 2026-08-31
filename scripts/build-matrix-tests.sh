@@ -41,6 +41,10 @@ if [[ "$scheme" == SnipSnapiOS && "${SNIP_SNAP_FAKE_EMBED_EXTENSION:-YES}" != NO
     /bin/mkdir -p "$extension_path"
     if [[ "${SNIP_SNAP_FAKE_EMBED_EXTENSION:-YES}" == YES ]]; then
         : > "$app_path/Snip Snap iOS"
+        if [[ "${SNIP_SNAP_FAKE_PRIVACY_MANIFESTS:-YES}" == YES ]]; then
+            : > "$app_path/PrivacyInfo.xcprivacy"
+            : > "$extension_path/PrivacyInfo.xcprivacy"
+        fi
         : > "$extension_path/Info.plist"
         : > "$extension_path/SnipSnapShareExtension"
     fi
@@ -99,6 +103,18 @@ if failure_output="$(
 fi
 [[ "$failure_output" == *'built Share extension bundle'* ]] || \
     fail_test "the empty extension error did not name the failed check"
+
+if failure_output="$(
+    SNIP_SNAP_XCODEBUILD="$test_root/bin/xcodebuild" \
+    SNIP_SNAP_FAKE_PRIVACY_MANIFESTS=NO \
+    SNIP_SNAP_BUILD_ARGS_FILE="$test_root/missing-privacy-args" \
+    SNIP_SNAP_DERIVED_DATA="$test_root/missing-privacy-derived-data" \
+        "$script_dir/build-matrix.sh" 2>&1
+)"; then
+    fail_test "the matrix accepted app bundles without privacy manifests"
+fi
+[[ "$failure_output" == *'missing its privacy manifest'* ]] || \
+    fail_test "the missing privacy manifest error did not name the failed check"
 
 stale_root="$test_root/stale-derived-data"
 for family in iphone ipad; do

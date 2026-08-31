@@ -22,12 +22,22 @@ paths.each do |path|
   full_path = File.join(repo, path)
   next unless File.file?(full_path)
 
+  if path.match?(/\.(?:p8|p12|mobileprovision)\z/i)
+    violations << [path, 1, "Apple signing credential file"]
+    next
+  end
+
   begin
     contents = File.binread(full_path)
     next if contents.include?("\0")
     contents.force_encoding(Encoding::UTF_8)
     next unless contents.valid_encoding?
   rescue SystemCallError
+    next
+  end
+
+  if contents.match?(/-----BEGIN (?:(?:OPENSSH|DSA|EC|RSA) )?PRIVATE KEY-----/)
+    violations << [path, 1, "private key"]
     next
   end
 

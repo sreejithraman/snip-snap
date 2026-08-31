@@ -9,3 +9,4 @@ artifacts/
 docs/research/
 /Config/Local.xcconfig
 /Config/Local.entitlements
+/Config/TestFlight.entitlements
