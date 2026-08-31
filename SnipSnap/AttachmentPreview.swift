@@ -33,28 +33,65 @@ struct AttachmentPreviewArtwork: View {
     }
 }
 
-struct AttachmentPreviewItem: Identifiable, Hashable {
+struct AttachmentPreviewItem: Identifiable {
+    enum Source {
+        case file(URL, previewImage: NSImage?, fillsTile: Bool)
+        case image(id: String, image: NSImage)
+    }
+
     let id: String
-    let url: URL
     let fileName: String
+    let source: Source
 
     init(url: URL) {
         id = url.standardizedFileURL.absoluteString
-        self.url = url
         fileName = url.lastPathComponent
+        source = .file(url, previewImage: nil, fillsTile: true)
+    }
+
+    init(
+        url: URL,
+        previewImage: NSImage,
+        fillsTile: Bool
+    ) {
+        id = url.standardizedFileURL.absoluteString
+        fileName = url.lastPathComponent
+        source = .file(url, previewImage: previewImage, fillsTile: fillsTile)
+    }
+
+    init(id: String, image: NSImage) {
+        self.id = id
+        fileName = "Clipboard image"
+        source = .image(id: id, image: image)
     }
 
     init(attachment: SnipAttachment, url: URL) {
         id = attachment.id.uuidString
-        self.url = url
         fileName = attachment.fileName
+        source = .file(url, previewImage: nil, fillsTile: true)
     }
 }
 
 struct AttachmentPreviewStrip: View {
     let items: [AttachmentPreviewItem]
-    let onPreview: (URL) -> Void
-    var onRemove: ((AttachmentPreviewItem) -> Void)?
+    private let onPreview: ((URL) -> Void)?
+    private let onRemove: ((URL) -> Void)?
+
+    init(
+        items: [AttachmentPreviewItem],
+        onPreview: @escaping (URL) -> Void,
+        onRemove: ((URL) -> Void)? = nil
+    ) {
+        self.items = items
+        self.onPreview = onPreview
+        self.onRemove = onRemove
+    }
+
+    init(items: [AttachmentPreviewItem]) {
+        self.items = items
+        onPreview = nil
+        onRemove = nil
+    }
 
     var body: some View {
         ScrollView(.horizontal) {
@@ -79,14 +116,13 @@ struct AttachmentPreviewStrip: View {
     private func preview(_ item: AttachmentPreviewItem) -> some View {
         ZStack(alignment: .topTrailing) {
             AttachmentPreviewTile(
-                url: item.url,
-                fileName: item.fileName,
-                onPreview: { onPreview(item.url) }
+                item: item,
+                onPreview: onPreview
             )
 
-            if let onRemove {
+            if let onRemove, case let .file(url, _, _) = item.source {
                 Button {
-                    onRemove(item)
+                    onRemove(url)
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 8, weight: .bold))
@@ -107,61 +143,78 @@ struct AttachmentPreviewStrip: View {
 }
 
 private struct AttachmentPreviewTile: View {
-    let url: URL
-    let fileName: String
-    let onPreview: () -> Void
+    let item: AttachmentPreviewItem
+    let onPreview: ((URL) -> Void)?
 
     @Environment(\.displayScale) private var displayScale
     @State private var thumbnail: NSImage?
 
     var body: some View {
-        Button(action: onPreview) {
-            previewImage
-                .accessibilityHidden(true)
-            .contentShape(
-                RoundedRectangle(
-                    cornerRadius: AttachmentPreviewMetrics.cornerRadius,
-                    style: .continuous
-                )
-            )
-        }
-        .buttonStyle(.plain)
-        .help("Quick Look \(fileName)")
-        .accessibilityLabel("Preview \(fileName)")
-        .accessibilityHint("Shows a Quick Look preview")
-        .task(id: thumbnailRequestID) {
-            thumbnail = await PreviewImageCache.shared.fileThumbnail(
-                url: url,
-                size: CGSize(
-                    width: AttachmentPreviewMetrics.side,
-                    height: AttachmentPreviewMetrics.side
-                ),
-                scale: displayScale
-            )
+        switch item.source {
+        case let .file(url, previewImage, fillsTile):
+            if let onPreview {
+                Button { onPreview(url) } label: {
+                    previewImageView(preloaded: previewImage, fillsTile: fillsTile)
+                        .accessibilityHidden(true)
+                    .contentShape(
+                        RoundedRectangle(
+                            cornerRadius: AttachmentPreviewMetrics.cornerRadius,
+                            style: .continuous
+                        )
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("Quick Look \(item.fileName)")
+                .accessibilityLabel("Preview \(item.fileName)")
+                .accessibilityHint("Shows a Quick Look preview")
+                .task(id: thumbnailRequestID) {
+                    await loadThumbnail(preloaded: previewImage, url: url)
+                }
+            } else {
+                previewImageView(preloaded: previewImage, fillsTile: fillsTile)
+                    .task(id: thumbnailRequestID) {
+                        await loadThumbnail(preloaded: previewImage, url: url)
+                    }
+            }
+        case let .image(_, image):
+            AttachmentPreviewArtwork(image: image, fillsTile: true)
+                .accessibilityLabel(item.fileName)
         }
     }
 
-    @ViewBuilder
-    private var previewImage: some View {
-        if let thumbnail {
-            AttachmentPreviewArtwork(image: thumbnail, fillsTile: true)
-        } else {
-            Color.clear
-            .frame(
+    private func loadThumbnail(preloaded: NSImage?, url: URL) async {
+        guard preloaded == nil else { return }
+        thumbnail = await PreviewImageCache.shared.fileThumbnail(
+            url: url,
+            size: CGSize(
                 width: AttachmentPreviewMetrics.side,
                 height: AttachmentPreviewMetrics.side
-            )
-            .attachmentPreviewSurface()
-            .overlay {
-                Image(systemName: "doc")
-                    .font(.system(size: 24))
-                    .foregroundStyle(SnipSnapColors.textSecondary)
-            }
+            ),
+            scale: displayScale
+        )
+    }
+
+    @ViewBuilder
+    private func previewImageView(preloaded: NSImage?, fillsTile: Bool) -> some View {
+        if let image = preloaded ?? thumbnail {
+            AttachmentPreviewArtwork(image: image, fillsTile: fillsTile)
+        } else {
+            Color.clear
+                .frame(
+                    width: AttachmentPreviewMetrics.side,
+                    height: AttachmentPreviewMetrics.side
+                )
+                .attachmentPreviewSurface()
+                .overlay {
+                    Image(systemName: "doc")
+                        .font(.system(size: 24))
+                        .foregroundStyle(SnipSnapColors.textSecondary)
+                }
         }
     }
 
     private var thumbnailRequestID: String {
-        "\(url.standardizedFileURL.path)|\(displayScale)"
+        "\(item.id)|\(displayScale)"
     }
 }
 

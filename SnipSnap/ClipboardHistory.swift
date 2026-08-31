@@ -1,21 +1,6 @@
 import AppKit
-import CoreTransferable
 import CryptoKit
 import Foundation
-import UniformTypeIdentifiers
-
-extension UTType {
-    static let snipSnapClipboardEntry = UTType(exportedAs: "world.sree.snipsnap.clipboard-entry", conformingTo: .json)
-}
-
-struct ClipboardDragPayload: Codable, Equatable, Sendable, Transferable {
-    let entryID: UUID
-
-    static var transferRepresentation: some TransferRepresentation {
-        CodableRepresentation(contentType: .snipSnapClipboardEntry)
-            .visibility(.ownProcess)
-    }
-}
 
 struct ClipboardRepresentation: Codable, Equatable, Sendable {
     let type: String

@@ -86,7 +86,7 @@ final class PanelTests: StoreBackedTestCase {
         let rootView = ContentView(
             coordinator: AppCoordinator(model: model, shortcutSettings: settings),
             fileDropController: PanelFileDropController(),
-            snipDragSourceController: SnipDragSourceController()
+            dragSessionController: PanelDragSessionController()
         )
         .environmentObject(model)
         .environmentObject(settings)
@@ -224,7 +224,7 @@ final class PanelTests: StoreBackedTestCase {
         let hostingView = PanelFileDropHostingView(
             rootView: EmptyView(),
             controller: PanelFileDropController(),
-            snipDragSourceController: SnipDragSourceController()
+            dragSessionController: PanelDragSessionController()
         )
 
         XCTAssertTrue(hostingView.sizingOptions.isEmpty)
@@ -1117,7 +1117,7 @@ final class PanelTests: StoreBackedTestCase {
 
     @MainActor
     func testSnipDragDoesNotRunAlongsideAnotherDragGesture() throws {
-        let controller = SnipDragSourceController()
+        let controller = PanelDragSessionController()
         let hostView = NSView()
         controller.attach(to: hostView)
         let snipPan = try XCTUnwrap(
@@ -1136,6 +1136,81 @@ final class PanelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testRemovingMatchingDragRegionClearsPendingSession() throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 300),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let host = try XCTUnwrap(window.contentView)
+        let controller = PanelDragSessionController()
+        controller.attach(to: host)
+        let id = UUID()
+        let row = snipDragRegionView(
+            controller: controller,
+            id: id,
+            text: "Pending"
+        )
+        row.frame = NSRect(x: 20, y: 20, width: 200, height: 60)
+        host.addSubview(row)
+        let recognizer = try XCTUnwrap(
+            host.gestureRecognizers.first { $0 is NSPanGestureRecognizer }
+        )
+        let event = try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: .leftMouseDown,
+                location: NSPoint(x: 50, y: 50),
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: window.windowNumber,
+                context: nil,
+                eventNumber: 1,
+                clickCount: 1,
+                pressure: 1
+            )
+        )
+
+        XCTAssertTrue(
+            controller.gestureRecognizer(
+                recognizer,
+                shouldAttemptToRecognizeWith: event
+            )
+        )
+        XCTAssertTrue(controller.hasPendingRegionForTesting)
+
+        row.removeFromController()
+
+        XCTAssertFalse(controller.hasPendingRegionForTesting)
+    }
+
+    @MainActor
+    func testClippedDragRegionCannotStartOutsideItsVisibleRect() throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 100),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let host = try XCTUnwrap(window.contentView)
+        let clipView = NSClipView(frame: host.bounds)
+        let documentView = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 300))
+        let controller = PanelDragSessionController()
+        let row = snipDragRegionView(
+            controller: controller,
+            id: UUID(),
+            text: "Clipped"
+        )
+        row.frame = NSRect(x: 0, y: 0, width: 300, height: 300)
+        documentView.addSubview(row)
+        clipView.documentView = documentView
+        host.addSubview(clipView)
+
+        XCTAssertNotNil(controller.inspection(atWindowPoint: NSPoint(x: 150, y: 50)))
+        XCTAssertNil(controller.inspection(atWindowPoint: NSPoint(x: 150, y: 150)))
+    }
+
+    @MainActor
     func testStickyHeaderBlocksTheSnipHiddenBelowIt() throws {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 300, height: 300),
@@ -1144,24 +1219,65 @@ final class PanelTests: StoreBackedTestCase {
             defer: false
         )
         let host = try XCTUnwrap(window.contentView)
-        let snipView = NSView(frame: NSRect(x: 0, y: 180, width: 300, height: 100))
-        let headerView = NSView(frame: NSRect(x: 0, y: 240, width: 300, height: 40))
+        let controller = PanelDragSessionController()
+        let snipView = snipDragRegionView(
+            controller: controller,
+            id: UUID(),
+            text: "Hidden snip"
+        )
+        snipView.frame = NSRect(x: 0, y: 180, width: 300, height: 100)
+        let headerView = PanelDragBlockingRegionView(controller: controller, id: UUID())
+        headerView.frame = NSRect(x: 0, y: 240, width: 300, height: 40)
         host.addSubview(snipView)
         host.addSubview(headerView)
-        let controller = SnipDragSourceController()
-        let payload = SnipDragPayload(ids: [UUID()], text: "Hidden snip")
-        controller.updateRegion(
-            id: UUID(),
-            view: snipView,
-            payload: payload,
-            onBegan: {},
-            onMoved: { _ in },
-            onEnded: { _, _ in }
-        )
-        controller.updateBlockingView(id: UUID(), view: headerView)
 
-        XCTAssertNil(controller.payload(atWindowPoint: NSPoint(x: 150, y: 260)))
-        XCTAssertEqual(controller.payload(atWindowPoint: NSPoint(x: 150, y: 220)), payload)
+        XCTAssertNil(controller.inspection(atWindowPoint: NSPoint(x: 150, y: 260)))
+        XCTAssertNotNil(controller.inspection(atWindowPoint: NSPoint(x: 150, y: 220)))
+    }
+
+    @MainActor
+    func testStickyHeaderBlocksTheClipboardEntryHiddenBelowIt() throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 300),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let host = try XCTUnwrap(window.contentView)
+        let controller = PanelDragSessionController()
+        let entry = ClipboardEntry(
+            sourceApplication: "Tests",
+            items: [
+                ClipboardPayloadItem(
+                    representations: [
+                        ClipboardRepresentation(
+                            type: NSPasteboard.PasteboardType.string.rawValue,
+                            data: Data("Hidden clipboard entry".utf8)
+                        )
+                    ]
+                )
+            ]
+        )
+        let entryView = PanelDragSourceRegionView(
+            controller: controller,
+            regionID: .clipboardEntry(entry.id),
+            adapter: .exporting(
+                makeExport: {
+                    ClipboardEntryDragExportPackage(
+                        entry: entry
+                    )
+                },
+                previewImage: { _, context in NSImage(size: context.sourceFrame.size) }
+            )
+        )
+        entryView.frame = NSRect(x: 0, y: 180, width: 300, height: 100)
+        let headerView = PanelDragBlockingRegionView(controller: controller, id: UUID())
+        headerView.frame = NSRect(x: 0, y: 240, width: 300, height: 40)
+        host.addSubview(entryView)
+        host.addSubview(headerView)
+
+        XCTAssertNil(controller.inspection(atWindowPoint: NSPoint(x: 150, y: 260)))
+        XCTAssertNotNil(controller.inspection(atWindowPoint: NSPoint(x: 150, y: 220)))
     }
 
     @MainActor
@@ -1173,26 +1289,22 @@ final class PanelTests: StoreBackedTestCase {
             defer: false
         )
         let host = try XCTUnwrap(window.contentView)
-        let snipView = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 100))
-        let tabBarView = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 40))
+        let controller = PanelDragSessionController()
+        let snipView = snipDragRegionView(
+            controller: controller,
+            id: UUID(),
+            text: "Hidden snip"
+        )
+        snipView.frame = NSRect(x: 0, y: 0, width: 300, height: 100)
+        let tabBarView = PanelDragBlockingRegionView(controller: controller, id: UUID())
+        tabBarView.frame = NSRect(x: 0, y: 0, width: 300, height: 40)
         host.addSubview(snipView)
         host.addSubview(tabBarView)
-        let controller = SnipDragSourceController()
-        let payload = SnipDragPayload(ids: [UUID()], text: "Hidden snip")
-        controller.updateRegion(
-            id: UUID(),
-            view: snipView,
-            payload: payload,
-            onBegan: {},
-            onMoved: { _ in },
-            onEnded: { _, _ in }
-        )
-        controller.updateBlockingView(id: UUID(), view: tabBarView)
 
-        XCTAssertNil(controller.payload(atWindowPoint: NSPoint(x: 5, y: 20)))
-        XCTAssertNil(controller.payload(atWindowPoint: NSPoint(x: 150, y: 20)))
-        XCTAssertNil(controller.payload(atWindowPoint: NSPoint(x: 295, y: 20)))
-        XCTAssertEqual(controller.payload(atWindowPoint: NSPoint(x: 150, y: 60)), payload)
+        XCTAssertNil(controller.inspection(atWindowPoint: NSPoint(x: 5, y: 20)))
+        XCTAssertNil(controller.inspection(atWindowPoint: NSPoint(x: 150, y: 20)))
+        XCTAssertNil(controller.inspection(atWindowPoint: NSPoint(x: 295, y: 20)))
+        XCTAssertNotNil(controller.inspection(atWindowPoint: NSPoint(x: 150, y: 60)))
     }
 
     @MainActor
@@ -1204,24 +1316,20 @@ final class PanelTests: StoreBackedTestCase {
             defer: false
         )
         let host = try XCTUnwrap(window.contentView)
-        let snipView = NSView(frame: host.bounds)
+        let controller = PanelDragSessionController()
+        let snipView = snipDragRegionView(
+            controller: controller,
+            id: UUID(),
+            text: "Hidden snip"
+        )
+        snipView.frame = host.bounds
         let resizeView = PanelResizeView(frame: host.bounds)
         host.addSubview(snipView)
         host.addSubview(resizeView)
-        let controller = SnipDragSourceController()
         controller.attach(to: host)
-        let payload = SnipDragPayload(ids: [UUID()], text: "Hidden snip")
-        controller.updateRegion(
-            id: UUID(),
-            view: snipView,
-            payload: payload,
-            onBegan: {},
-            onMoved: { _ in },
-            onEnded: { _, _ in }
-        )
 
-        XCTAssertNil(controller.payload(atWindowPoint: NSPoint(x: 2, y: 150)))
-        XCTAssertEqual(controller.payload(atWindowPoint: NSPoint(x: 150, y: 150)), payload)
+        XCTAssertNil(controller.inspection(atWindowPoint: NSPoint(x: 2, y: 150)))
+        XCTAssertNotNil(controller.inspection(atWindowPoint: NSPoint(x: 150, y: 150)))
     }
 
     func testListBottomPaddingKeepsTheComposerHeightScrollable() {
@@ -1439,6 +1547,23 @@ final class PanelTests: StoreBackedTestCase {
         card.rightMouseDown(with: try mouseEvent(.rightMouseDown, at: location, in: window))
 
         XCTAssertEqual(menuBuildCount, 1)
+    }
+
+    @MainActor
+    private func snipDragRegionView(
+        controller: PanelDragSessionController,
+        id: UUID,
+        text: String
+    ) -> PanelDragSourceRegionView {
+        let payload = SnipDragPayload(ids: [UUID()], text: text)
+        return PanelDragSourceRegionView(
+            controller: controller,
+            regionID: .snip(id),
+            adapter: .exporting(
+                makeExport: { SnipDragExportPackage(payload: payload) },
+                previewImage: { _, context in NSImage(size: context.sourceFrame.size) }
+            )
+        )
     }
 
     @MainActor

@@ -172,41 +172,13 @@ final class AppCoordinator {
         previousExternalApplication = nil
     }
 
-    func useClipboardEntry(_ entry: ClipboardEntry) {
+    @discardableResult
+    func copyClipboardEntry(_ entry: ClipboardEntry) -> Bool {
         guard model.clipboardHistory.restore(entry) else {
             model.presentedError = "Snip Snap could not set the clipboard."
-            return
+            return false
         }
-        guard let application = previousExternalApplication,
-              focusedElementAcceptsText(in: application) else { return }
-        application.activate(options: [])
-        Task { @MainActor [weak self, weak application] in
-            guard let self, let application else { return }
-            for _ in 0..<50 where !application.isActive {
-                try? await Task.sleep(for: .milliseconds(20))
-            }
-            guard application.isActive else {
-                model.presentedError = "Snip Snap set the clipboard but could not return to the prior app."
-                return
-            }
-            let source = CGEventSource(stateID: .hidSystemState)
-            let down = CGEvent(
-                keyboardEventSource: source,
-                virtualKey: CGKeyCode(kVK_ANSI_V),
-                keyDown: true
-            )
-            down?.flags = .maskCommand
-            let up = CGEvent(
-                keyboardEventSource: source,
-                virtualKey: CGKeyCode(kVK_ANSI_V),
-                keyDown: false
-            )
-            up?.flags = .maskCommand
-            down?.postToPid(application.processIdentifier)
-            up?.postToPid(application.processIdentifier)
-            panelWindow?.orderOut(nil)
-            previousExternalApplication = nil
-        }
+        return true
     }
 
     func editSelectionInNewWindow() {

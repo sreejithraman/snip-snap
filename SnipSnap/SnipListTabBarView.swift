@@ -15,7 +15,7 @@ struct SnipListTabBarView: View {
     }
 
     @ObservedObject var model: AppModel
-    let snipDragSourceController: SnipDragSourceController
+    let dragSessionController: PanelDragSessionController
     let createList: () -> Void
     @State private var dragBlockingID = UUID()
     @State private var dropTargetTab: TabSelection?
@@ -40,8 +40,8 @@ struct SnipListTabBarView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            SnipDragBlockingRegion(
-                controller: snipDragSourceController,
+            PanelDragBlockingRegion(
+                controller: dragSessionController,
                 id: dragBlockingID
             )
         }
@@ -186,9 +186,6 @@ struct SnipListTabBarView: View {
                     selectionAfterMove: selectionBeforeMove
                 )
             }
-        case .clipboard(let payload):
-            guard let entry = model.clipboardHistory.entry(id: payload.entryID) else { return }
-            Task { _ = await model.saveClipboardEntry(entry, listID: listID) }
         }
     }
 
@@ -309,14 +306,10 @@ struct SnipListTabBarView: View {
 
 enum PanelDropPayload: Transferable, Sendable {
     case snip(SnipDragPayload)
-    case clipboard(ClipboardDragPayload)
 
     static var transferRepresentation: some TransferRepresentation {
         ProxyRepresentation { (payload: SnipDragPayload) in
             PanelDropPayload.snip(payload)
-        }
-        ProxyRepresentation { (payload: ClipboardDragPayload) in
-            PanelDropPayload.clipboard(payload)
         }
     }
 }

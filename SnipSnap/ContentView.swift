@@ -20,7 +20,7 @@ struct ContentView: View {
     let coordinator: AppCoordinator
     @ObservedObject private var accessibilityPermissions: AccessibilityPermissionController
     @ObservedObject private var fileDropController: PanelFileDropController
-    private let snipDragSourceController: SnipDragSourceController
+    private let dragSessionController: PanelDragSessionController
 
     @State private var entryDraft = ComposerDraft()
     @State private var entryDraftListID = SnipList.inboxID
@@ -42,13 +42,13 @@ struct ContentView: View {
     init(
         coordinator: AppCoordinator,
         fileDropController: PanelFileDropController,
-        snipDragSourceController: SnipDragSourceController
+        dragSessionController: PanelDragSessionController
     ) {
         self.coordinator = coordinator
-        self.snipDragSourceController = snipDragSourceController
         _accessibilityPermissions = ObservedObject(
             wrappedValue: coordinator.accessibilityPermissions
         )
+        self.dragSessionController = dragSessionController
         _fileDropController = ObservedObject(wrappedValue: fileDropController)
     }
 
@@ -124,7 +124,7 @@ struct ContentView: View {
 
             SnipListTabBarView(
                 model: model,
-                snipDragSourceController: snipDragSourceController
+                dragSessionController: dragSessionController
             ) {
                 movesSelectionToNewList = false
                 showingNewList = true
@@ -206,8 +206,8 @@ struct ContentView: View {
                     .background {
                         ZStack {
                             PanelDragRegion()
-                            SnipDragBlockingRegion(
-                                controller: snipDragSourceController,
+                            PanelDragBlockingRegion(
+                                controller: dragSessionController,
                                 id: inlineEntryDragBlockingID
                             )
                         }
@@ -289,7 +289,9 @@ struct ContentView: View {
             ClipboardListView(
                 model: model,
                 coordinator: coordinator,
-                showingClearConfirmation: $showingClearClipboard
+                dragSessionController: dragSessionController,
+                showingClearConfirmation: $showingClearClipboard,
+                onPreviewAttachments: openAttachmentPreview
             )
         } else {
             if model.filteredSnips.isEmpty {
@@ -317,7 +319,7 @@ struct ContentView: View {
         SnipListView(
             model: model,
             coordinator: coordinator,
-            snipDragSourceController: snipDragSourceController,
+            dragSessionController: dragSessionController,
             fileDropController: fileDropController,
             state: listState,
             focusedTarget: $focusedTarget,
@@ -389,9 +391,9 @@ struct ContentView: View {
                         onPreview: { url in
                             openAttachmentPreview(entryDraft.attachments, selectedURL: url)
                         },
-                        onRemove: { item in
-                            removePreviewURL(item.url)
-                            model.removeDraftAttachment(item.url, from: model.activeListID)
+                        onRemove: { url in
+                            removePreviewURL(url)
+                            model.removeDraftAttachment(url, from: model.activeListID)
                             entryDraft = model.composerDraft(for: model.activeListID)
                         }
                     )
@@ -674,14 +676,14 @@ private struct AccessibilitySetupCard: View {
 
     var body: some View {
         let presentation = controller.setupCardState.presentation
-        HStack(alignment: .top, spacing: SnipSnapSpacing.cardContentInset) {
+        PanelContentCard {
             Image(systemName: "accessibility")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(SnipSnapColors.textSecondary)
                 .frame(width: 32, height: 32)
                 .background(SnipSnapColors.compactSubduedFill, in: Circle())
                 .accessibilityHidden(true)
-
+        } main: {
             VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
                 Text(presentation.title)
                     .font(.subheadline.weight(.semibold))
@@ -707,8 +709,6 @@ private struct AccessibilitySetupCard: View {
                 .controlSize(.small)
             }
         }
-        .padding(SnipSnapSpacing.cardContentInset)
-        .panelContentCardSurface()
         .accessibilityElement(children: .contain)
     }
 

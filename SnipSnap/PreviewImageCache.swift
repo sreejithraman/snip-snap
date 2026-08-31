@@ -31,11 +31,12 @@ final class PreviewImageCache {
 
     func clipboardImage(
         id: UUID,
+        variant: Int = 0,
         data: Data,
         size: CGSize,
         scale: CGFloat
     ) async -> NSImage? {
-        let key = "clipboard-\(id.uuidString)-\(Self.pixelLength(size, scale: scale))"
+        let key = "clipboard-\(id.uuidString)-\(variant)-\(Self.pixelLength(size, scale: scale))"
         return await cachedImage(for: key) {
             Task.detached(priority: .userInitiated) {
                 Self.imageThumbnail(data: data, size: size, scale: scale)

@@ -47,7 +47,6 @@ enum PanelShapeMetrics {
     static let paneCornerRadius: CGFloat = 20
     static let listHeaderCornerRadius = paneCornerRadius
     static let expandedInputCornerRadius: CGFloat = 14
-    static let contentCardCornerRadius: CGFloat = 14
 }
 
 enum PanelListMetrics {
@@ -378,18 +377,6 @@ extension View {
         modifier(PanelListHeaderGlassModifier(isElevated: isElevated))
     }
 
-    func panelContentCardSurface(
-        isSelected: Bool = false,
-        isDone: Bool = false
-    ) -> some View {
-        modifier(
-            PanelContentCardSurfaceModifier(
-                isSelected: isSelected,
-                isDone: isDone
-            )
-        )
-    }
-
     func panelCompactStateSurface(
         isEmphasized: Bool,
         isSubdued: Bool = false
@@ -539,41 +526,5 @@ private struct PanelGlassSurfaceModifier<S: InsettableShape>: ViewModifier {
                         .allowsHitTesting(false)
                 }
             }
-    }
-}
-
-private struct PanelContentCardSurfaceModifier: ViewModifier {
-    let isSelected: Bool
-    let isDone: Bool
-
-    func body(content: Content) -> some View {
-        let shape = RoundedRectangle(
-            cornerRadius: PanelShapeMetrics.contentCardCornerRadius,
-            style: .continuous
-        )
-        let edge = isSelected ? PanelEdgeStyle.selected : .content
-        content
-            .background {
-                shape
-                    .fill(.regularMaterial)
-                    .overlay {
-                        if isSelected {
-                            shape.fill(SnipSnapColors.selectionFill)
-                        }
-                    }
-                    .overlay {
-                        shape.strokeBorder(
-                            edge.color,
-                            lineWidth: edge.width
-                        )
-                    }
-                    .shadow(
-                        color: SnipSnapColors.contentCardShadow(isSelected: isSelected),
-                        radius: isSelected ? 8 : 7,
-                        y: 3
-                    )
-            }
-            .contentShape(shape)
-            .opacity(isDone ? SnipSnapColors.doneCardOpacity : 1)
     }
 }

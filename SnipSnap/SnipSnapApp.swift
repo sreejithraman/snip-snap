@@ -68,7 +68,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     let shortcutSettings: ShortcutSettings
     let coordinator: AppCoordinator
     let fileDropController: PanelFileDropController
-    let snipDragSourceController: SnipDragSourceController
+    let dragSessionController: PanelDragSessionController
     let updaterController: SPUStandardUpdaterController
     let updateChecksEnabled: Bool
     private var mainPanel: SnipSnapPanel?
@@ -79,11 +79,11 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let model = AppModel()
         let shortcutSettings = ShortcutSettings()
         let fileDropController = PanelFileDropController()
-        let snipDragSourceController = SnipDragSourceController()
+        let dragSessionController = PanelDragSessionController()
         self.model = model
         self.shortcutSettings = shortcutSettings
         self.fileDropController = fileDropController
-        self.snipDragSourceController = snipDragSourceController
+        self.dragSessionController = dragSessionController
         updateChecksEnabled = isReleaseApp &&
             ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
         updaterController = SPUStandardUpdaterController(
@@ -102,14 +102,14 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let rootView = ContentView(
                 coordinator: coordinator,
                 fileDropController: fileDropController,
-                snipDragSourceController: snipDragSourceController
+                dragSessionController: dragSessionController
             )
                 .environmentObject(model)
                 .environmentObject(shortcutSettings)
         let hostingView = PanelFileDropHostingView(
             rootView: rootView,
             controller: fileDropController,
-            snipDragSourceController: snipDragSourceController
+            dragSessionController: dragSessionController
         )
         let hostingController = NSViewController()
         hostingController.view = hostingView

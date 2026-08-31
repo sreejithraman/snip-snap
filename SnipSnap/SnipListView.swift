@@ -150,7 +150,7 @@ final class SnipListState: ObservableObject {
 struct SnipListView: View {
     @ObservedObject var model: AppModel
     let coordinator: AppCoordinator
-    let snipDragSourceController: SnipDragSourceController
+    let dragSessionController: PanelDragSessionController
     let fileDropController: PanelFileDropController
     @ObservedObject var state: SnipListState
     @FocusState.Binding var focusedTarget: PanelFocusTarget?
@@ -427,8 +427,8 @@ struct SnipListView: View {
     private func listSectionHeader(_ title: String, listID: UUID) -> some View {
         PanelListSectionHeader(title, hasScrolledFromTop: hasScrolledFromTop)
             .background {
-                SnipDragBlockingRegion(
-                    controller: snipDragSourceController,
+                PanelDragBlockingRegion(
+                    controller: dragSessionController,
                     id: listID
                 )
             }
@@ -445,29 +445,14 @@ struct SnipListView: View {
                 .opacity(isShowingDragGap(for: snip.id) ? 0 : 1)
                 .background {
                     if model.editingID != snip.id {
-                        SnipDragSourceRegion(
-                            controller: snipDragSourceController,
-                            id: snip.id,
-                            payload: payload,
-                            onBegan: {
-                                beginDrag(payload, orderedIDs: snips.map(\.id))
-                            },
-                            onMoved: { point in
-                                updateDrag(
-                                    at: point,
-                                    listID: listID,
-                                    snips: snips
-                                )
-                            },
-                            onEnded: { outcome, point in
-                                endDrag(
-                                    payload,
-                                    outcome: outcome,
-                                    at: point,
-                                    listID: listID,
-                                    snips: snips
-                                )
-                            }
+                        PanelDragSourceRegion(
+                            controller: dragSessionController,
+                            regionID: .snip(snip.id),
+                            adapter: snipDragAdapter(
+                                payload: payload,
+                                listID: listID,
+                                snips: snips
+                            )
                         )
                     }
                 }
@@ -485,8 +470,12 @@ struct SnipListView: View {
     }
 
     private func clipboardEntryRow(_ entry: ClipboardEntry) -> some View {
-        ClipboardEntryRow(entry: entry) {
-            coordinator.useClipboardEntry(entry)
+        ClipboardEntryRow(
+            entry: entry,
+            dragSessionController: dragSessionController,
+            onPreviewAttachments: onPreviewAttachments
+        ) {
+            coordinator.copyClipboardEntry(entry)
         } save: {
             Task { _ = await model.saveClipboardEntry(entry) }
         }
@@ -505,6 +494,36 @@ struct SnipListView: View {
         activeDragOriginalOrder = orderedIDs
         activeDragRowFrames = reorderGeometry.rowFrames
         activeDragScrollOffsetY = reorderGeometry.scrollOffsetY
+    }
+
+    private func snipDragAdapter(
+        payload: SnipDragPayload,
+        listID: UUID,
+        snips: [Snip]
+    ) -> PanelDragSessionAdapter {
+        .exporting(
+            makeExport: { SnipDragExportPackage(payload: payload) },
+            previewImage: { export, context in
+                SnipDragPreview.image(for: export.payload, in: context)
+            },
+            callbacks: PanelDragSessionCallbacks(
+                onBegan: {
+                    beginDrag(payload, orderedIDs: snips.map(\.id))
+                },
+                onMoved: { point in
+                    updateDrag(at: point, listID: listID, snips: snips)
+                },
+                onEnded: { outcome, point in
+                    endDrag(
+                        payload,
+                        outcome: outcome,
+                        at: point,
+                        listID: listID,
+                        snips: snips
+                    )
+                }
+            )
+        )
     }
 
     private func updateDrag(
@@ -589,7 +608,7 @@ struct SnipListView: View {
 
     private func endDrag(
         _ payload: SnipDragPayload,
-        outcome: SnipDragOutcome,
+        outcome: PanelDragSessionOutcome,
         at location: CGPoint,
         listID: UUID,
         snips: [Snip]

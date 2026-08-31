@@ -5,6 +5,25 @@ import UniformTypeIdentifiers
 @testable import SnipSnap
 
 final class SnipListModelsTests: XCTestCase {
+    func testAttachmentPreviewPreservesSnipMetadata() {
+        let id = UUID()
+        let attachment = SnipAttachment(
+            id: id,
+            fileName: "Original name.txt",
+            relativePath: "stored-name.txt",
+            contentType: "public.plain-text",
+            byteCount: 12
+        )
+
+        let item = AttachmentPreviewItem(
+            attachment: attachment,
+            url: URL(fileURLWithPath: "/tmp/stored-name.txt")
+        )
+
+        XCTAssertEqual(item.id, id.uuidString)
+        XCTAssertEqual(item.fileName, "Original name.txt")
+    }
+
     func testReorderTargetUsesEachRowsRealHeight() {
         let ids = (0..<3).map { _ in UUID() }
         let frames = [
@@ -110,11 +129,17 @@ final class SnipListModelsTests: XCTestCase {
         )
 
         let package = SnipDragExportPackage(payload: payload)
-        let snips = package.draggingItems(
-            at: NSPoint(x: 100, y: 100),
+        let sourceFrame = NSRect(x: 100, y: 100, width: 280, height: 100)
+        let context = PanelDragSourceContext(
             scale: 2,
-            colorScheme: .light
+            colorScheme: .light,
+            sourceFrame: sourceFrame
         )
+        let snips = PanelDragSessionContent(
+            retaining: package,
+            context: context,
+            previewImage: NSImage(size: sourceFrame.size)
+        ).draggingItems
 
         XCTAssertEqual(snips.count, 3)
         XCTAssertGreaterThan(snips[0].draggingFrame.width, 0)
@@ -122,6 +147,17 @@ final class SnipListModelsTests: XCTestCase {
         XCTAssertEqual(snips[1].imageComponentsProvider?().count, 0)
         XCTAssertEqual(snips[2].draggingFrame.size, NSSize(width: 1, height: 1))
         XCTAssertEqual(snips[2].imageComponentsProvider?().count, 0)
+    }
+
+    func testSnipDragMovesInsideTheAppAndCopiesOutsideIt() {
+        XCTAssertEqual(
+            SnipDragExportPackage.sourceOperationMask(for: .withinApplication),
+            .move
+        )
+        XCTAssertEqual(
+            SnipDragExportPackage.sourceOperationMask(for: .outsideApplication),
+            .copy
+        )
     }
 
     @MainActor
@@ -132,12 +168,17 @@ final class SnipListModelsTests: XCTestCase {
         )
         let sourceFrame = NSRect(x: 18, y: 42, width: 316, height: 94)
 
-        let snips = SnipDragExportPackage(payload: payload).draggingItems(
-            at: sourceFrame.origin,
+        let package = SnipDragExportPackage(payload: payload)
+        let context = PanelDragSourceContext(
             scale: 2,
             colorScheme: .light,
             sourceFrame: sourceFrame
         )
+        let snips = PanelDragSessionContent(
+            retaining: package,
+            context: context,
+            previewImage: NSImage(size: sourceFrame.size)
+        ).draggingItems
 
         XCTAssertEqual(snips.first?.draggingFrame, sourceFrame)
     }
