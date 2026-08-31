@@ -209,6 +209,10 @@ has no separate Snip Snap login, so it needs no demo account.
 - The iOS app and Share extension each contain their own privacy manifest.
 - `Config/iOSShared.xcconfig` inherits the one version and build from
   `Config/Shared.xcconfig` instead of overriding it.
+- `scripts/cloud-dev.sh` gives signed development builds separate bundle IDs,
+  a separate App Group, the Development CloudKit environment, a clear name,
+  and an orange-scissors icon. Cloud Dev and TestFlight can stay installed at the
+  same time without sharing local data.
 - `docs/testflight-beta-metadata.md` keeps public beta copy repeatable without
   storing private contact details.
 

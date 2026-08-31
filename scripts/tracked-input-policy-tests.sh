@@ -25,6 +25,7 @@ safe_repo="$(new_repo safe)"
 print -r -- 'DEVELOPMENT_TEAM = FAKE123456' > "$safe_repo/fake-settings.xcconfig"
 print -r -- 'PRODUCT_BUNDLE_IDENTIFIER = org.example.open-source-app' >> "$safe_repo/fake-settings.xcconfig"
 print -r -- 'SNIP_SNAP_APP_GROUP_IDENTIFIER = group.org.example.snipsnap' >> "$safe_repo/fake-settings.xcconfig"
+print -r -- 'SNIP_SNAP_CLOUD_DEV_APP_GROUP_IDENTIFIER = group.org.example.snipsnap.clouddev' >> "$safe_repo/fake-settings.xcconfig"
 print -r -- 'SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER = iCloud.org.example.open-source-app' >> "$safe_repo/fake-settings.xcconfig"
 print -r -- '/private/tmp/open-source-build' >> "$safe_repo/fake-settings.xcconfig"
 print -r -- '<string>$(SNIP_SNAP_APP_GROUP_IDENTIFIER)</string>' > \

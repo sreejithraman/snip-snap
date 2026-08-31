@@ -111,6 +111,8 @@
 		A10000000000000000000008 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* Localizable.xcstrings */; };
 		A10000000000000000000009 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* Localizable.xcstrings */; };
 		A1000000000000000000000A /* SnipCompletionLanguage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* SnipCompletionLanguage.swift */; };
+		A1000000000000000000000B /* AppIconDev.icon in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* AppIconDev.icon */; };
+		A1000000000000000000000C /* AppIconDev.icon in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* AppIconDev.icon */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -206,6 +208,7 @@
 		A20000000000000000000002 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		A20000000000000000000003 /* SnipCompletionLanguage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipCompletionLanguage.swift; sourceTree = "<group>"; };
 		A20000000000000000000004 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
+		A20000000000000000000005 /* AppIconDev.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIconDev.icon; sourceTree = "<group>"; };
 		200000000000000000000039 /* AttachmentPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentPreview.swift; sourceTree = "<group>"; };
 		20000000000000000000003A /* SnipDragExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipDragExport.swift; sourceTree = "<group>"; };
 		20000000000000000000003B /* PanelFileDrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelFileDrop.swift; sourceTree = "<group>"; };
@@ -439,6 +442,7 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000002 /* AppIcon.icon */,
+				A20000000000000000000005 /* AppIconDev.icon */,
 				200000000000000000000037 /* ComposerDraftStore.swift */,
 				A20000000000000000000004 /* Localizable.xcstrings */,
 				A20000000000000000000003 /* SnipCompletionLanguage.swift */,
@@ -702,6 +706,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000000000000000000003 /* AppIcon.icon in Resources */,
+				A1000000000000000000000B /* AppIconDev.icon in Resources */,
 				A10000000000000000000007 /* Localizable.xcstrings in Resources */,
 				100000000000000000000008 /* Assets.xcassets in Resources */,
 			);
@@ -719,6 +724,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000000000000000000004 /* AppIcon.icon in Resources */,
+				A1000000000000000000000C /* AppIconDev.icon in Resources */,
 				A10000000000000000000008 /* Localizable.xcstrings in Resources */,
 				E10000000000000000000008 /* Assets.xcassets in Resources */,
 				E10000000000000000000035 /* PrivacyInfo.xcprivacy in Resources */,

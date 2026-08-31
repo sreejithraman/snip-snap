@@ -123,6 +123,27 @@ entitlement file must include the App Group and CloudKit capabilities tied to
 those settings. Do not put a team ID, profile name, device ID, certificate, or
 local path in a tracked file.
 
+Cloud Dev uses a separate installed-app identity. By default, the build adds
+`.clouddev` to the configured bundle root and App Group. For example:
+
+```text
+App:             <bundle root>.clouddev.ios
+Share extension: <bundle root>.clouddev.ios.share
+App Group:       <App Group>.clouddev
+CloudKit:        <the same container>, Development environment
+```
+
+Register the two Cloud Dev App IDs and the Cloud Dev App Group with the team.
+Give both targets the Cloud Dev App Group. Give only the main app the existing
+CloudKit container. If the registered names differ, set
+`SNIP_SNAP_CLOUD_DEV_PRODUCT_BUNDLE_IDENTIFIER` and
+`SNIP_SNAP_CLOUD_DEV_APP_GROUP_IDENTIFIER` in ignored `Local.xcconfig` or the
+protected CI job.
+
+The separate bundle IDs let Cloud Dev and TestFlight stay installed together.
+The separate App Groups keep their device data apart. The shared CloudKit
+container still keeps Development data apart from Production data.
+
 For a Mac Cloud Dev build, run the preflight and build with the same scheme,
 configuration, and destination:
 
@@ -140,26 +161,27 @@ xcodebuild \
   build
 ```
 
-For a signed iPhone or iPad device build, use the iOS scheme. A generic device
-build checks signing without storing a device ID:
+For a signed Cloud Dev iPhone or iPad build, use the guarded command. A generic
+device build checks signing without storing a device ID:
 
 ```sh
-./scripts/signed-lane-preflight.sh device \
-  --scheme SnipSnapiOS \
-  --configuration Debug \
-  --destination 'generic/platform=iOS'
-xcodebuild \
-  -project SnipSnap.xcodeproj \
-  -scheme SnipSnapiOS \
-  -configuration Debug \
-  -destination 'generic/platform=iOS' \
-  -derivedDataPath /tmp/snip-snap-device \
-  build
+./scripts/cloud-dev.sh build
 ```
 
-The preflight lists missing setting names but does not print their values.
-The iOS build embeds the Share extension. Confirm the signed device build in
-Xcode before installing it on a registered device.
+The command runs the Development-environment preflight, selects the fixed Cloud
+Dev IDs, uses the orange-scissors `AppIconDev`, and labels the app **Snip Snap
+Dev**. It embeds the matching Share extension. TestFlight keeps the plain
+icon, production IDs, production App Group, and Production CloudKit data.
+
+To check one registered phone without saving its ID in Git, pass Xcode's local
+destination at run time:
+
+```sh
+./scripts/cloud-dev.sh build --destination 'id=<your local device ID>'
+```
+
+Confirm the signed build in Xcode before installing it. The preflight lists
+missing setting names but does not print their values.
 
 Maintainers with valid Cloud Dev signing and container access can run the
 small fake-versus-real transport contract:

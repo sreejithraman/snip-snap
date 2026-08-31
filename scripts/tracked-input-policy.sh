@@ -49,7 +49,11 @@ paths.each do |path|
     build_input = path.end_with?(".xcconfig", ".entitlements", ".plist") ||
       path.end_with?("project.pbxproj")
     app_group_values = line.scan(/\bgroup\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+\b/)
-    if build_input && app_group_values.any? { |value| value != "group.org.example.snipsnap" }
+    public_app_groups = [
+      "group.org.example.snipsnap",
+      "group.org.example.snipsnap.clouddev"
+    ]
+    if build_input && app_group_values.any? { |value| !public_app_groups.include?(value) }
       rules << "non-placeholder App Group ID"
     end
 
