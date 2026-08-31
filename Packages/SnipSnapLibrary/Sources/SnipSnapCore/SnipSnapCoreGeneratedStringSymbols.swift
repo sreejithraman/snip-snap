@@ -1,4 +1,4 @@
-#if !SNIP_SNAP_SWIFTBUILD && (!Xcode || DEBUG)
+#if !SNIP_SNAP_SWIFTBUILD && (!Xcode || (os(macOS) && DEBUG))
 
 // 
 // GeneratedStringSymbols_Localizable.swift

@@ -44,7 +44,7 @@ for checked_catalog in "$catalog" "${package_catalogs[@]}"; do
         if [[ "${module_dir:t}" == SnipSnapCloud ]]; then
             symbol_guard='#if !SNIP_SNAP_SWIFTBUILD && !Xcode'
         else
-            symbol_guard='#if !SNIP_SNAP_SWIFTBUILD && (!Xcode || DEBUG)'
+            symbol_guard='#if !SNIP_SNAP_SWIFTBUILD && (!Xcode || (os(macOS) && DEBUG))'
         fi
         {
             print "$symbol_guard"
