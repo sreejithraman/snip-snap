@@ -80,6 +80,25 @@ SNIP_SNAP_DERIVED_DATA="$test_root/derived-data" \
 [[ "$(/usr/bin/grep -Fc -- 'CODE_SIGNING_ALLOWED=NO' "$args_file")" == 3 ]] || \
     fail_test "one or more matrix builds allowed signing"
 
+iphone_only_args_file="$test_root/iphone-only-build-args"
+SNIP_SNAP_XCODEBUILD="$test_root/bin/xcodebuild" \
+SNIP_SNAP_BUILD_ARGS_FILE="$iphone_only_args_file" \
+SNIP_SNAP_DERIVED_DATA="$test_root/iphone-only-derived-data" \
+    "$script_dir/build-matrix.sh" \
+        --iphone-only \
+        --iphone-destination 'platform=iOS Simulator,name=CI iPhone' >/dev/null
+
+[[ "$(/usr/bin/wc -l < "$iphone_only_args_file" | /usr/bin/tr -d ' ')" == 1 ]] || \
+    fail_test "the iPhone-only check did not run exactly one build"
+/usr/bin/grep -F -- \
+    '-scheme SnipSnapiOS -configuration Debug -destination platform=iOS Simulator,name=CI iPhone' \
+    "$iphone_only_args_file" >/dev/null || \
+    fail_test "the iPhone-only check did not build the iOS app"
+/usr/bin/grep -F -- 'TARGETED_DEVICE_FAMILY=1' "$iphone_only_args_file" >/dev/null || \
+    fail_test "the iPhone-only check did not select the phone family"
+/usr/bin/grep -F -- 'CODE_SIGNING_ALLOWED=NO' "$iphone_only_args_file" >/dev/null || \
+    fail_test "the iPhone-only check allowed signing"
+
 if failure_output="$(
     SNIP_SNAP_XCODEBUILD="$test_root/bin/xcodebuild" \
     SNIP_SNAP_FAKE_EMBED_EXTENSION=NO \
