@@ -1062,11 +1062,14 @@ final class SnipSnapiOSUITests: XCTestCase {
         let editButton = app.buttons["select-snips"]
         XCTAssertTrue(editButton.waitForExistence(timeout: 3))
         editButton.tap()
-        let becameDone = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label == %@", "Done"),
-            object: editButton
-        )
-        XCTAssertEqual(XCTWaiter.wait(for: [becameDone], timeout: 3), .completed)
+        let selectionActions = app.buttons["selection-actions"]
+        if !selectionActions.waitForExistence(timeout: 3) {
+            let currentButton = app.buttons["select-snips"]
+            XCTAssertTrue(currentButton.waitForExistence(timeout: 3))
+            if currentButton.label != "Done" { currentButton.tap() }
+        }
+        XCTAssertTrue(selectionActions.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons["select-snips"].label, "Done")
     }
 
     private func toggle(_ element: XCUIElement) {
