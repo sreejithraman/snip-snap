@@ -161,13 +161,25 @@ struct ClipboardEntryRow: View {
     }
 
     var body: some View {
-        ClipboardEntryCard(
-            entry: entry,
-            attachmentPreviewItems: liveAttachmentPreviewItems,
-            isCopied: isShowingCopyConfirmation,
-            copy: performCopy,
-            onPreviewAttachments: onPreviewAttachments
-        )
+        PanelContentCard(alignment: .top) {
+            ClipboardEntryCopyButton(
+                isCopied: isShowingCopyConfirmation,
+                action: performCopy
+            )
+        } main: {
+            PanelContentCardMain {
+                if !liveAttachmentPreviewItems.isEmpty {
+                    AttachmentPreviewStrip(
+                        items: liveAttachmentPreviewItems,
+                        onPreview: { url in
+                            onPreviewAttachments(entry.fileURLs, url)
+                        }
+                    )
+                }
+            } content: {
+                ClipboardEntryCardContent(entry: entry)
+            }
+        }
         .background {
             PanelDragSourceRegion(
                 controller: dragSessionController,
@@ -201,14 +213,17 @@ struct ClipboardEntryRow: View {
         colorScheme: ColorScheme,
         size: NSSize
     ) -> NSImage {
+        let attachmentPreviewItems = dragAttachmentPreviewItems(scale: scale)
         let renderer = ImageRenderer(
-            content: ClipboardEntryCard(
-                entry: entry,
-                attachmentPreviewItems: dragAttachmentPreviewItems(scale: scale),
-                isCopied: false,
-                copy: {},
-                onPreviewAttachments: { _, _ in }
-            )
+            content: PanelContentCard(alignment: .top) {
+                PanelContentCardMain {
+                    if !attachmentPreviewItems.isEmpty {
+                        AttachmentPreviewStrip(items: attachmentPreviewItems)
+                    }
+                } content: {
+                    ClipboardEntryCardContent(entry: entry)
+                }
+            }
             .frame(width: size.width, height: size.height, alignment: .leading)
             .environment(\.colorScheme, colorScheme)
         )
@@ -287,40 +302,19 @@ private enum ClipboardEntryCardMetrics {
     )
     static let previewLimit = 3
     static let actionSide: CGFloat = 24
+    static let actionCornerRadius: CGFloat = 8
 }
 
-private struct ClipboardEntryCard: View {
+private struct ClipboardEntryCardContent: View {
     let entry: ClipboardEntry
-    let attachmentPreviewItems: [AttachmentPreviewItem]
-    let isCopied: Bool
-    let copy: () -> Void
-    let onPreviewAttachments: ([URL], URL) -> Void
 
     var body: some View {
-        PanelContentCard(alignment: .top) {
-            ClipboardEntryCopyButton(
-                isCopied: isCopied,
-                action: copy
+        VStack(alignment: .leading, spacing: 2) {
+            SnipCardText(
+                text: entry.text.isEmpty ? "Clipboard item" : entry.text,
+                isDone: false
             )
-        } main: {
-            PanelContentCardMain {
-                if !attachmentPreviewItems.isEmpty {
-                    AttachmentPreviewStrip(
-                        items: attachmentPreviewItems,
-                        onPreview: { url in
-                            onPreviewAttachments(entry.fileURLs, url)
-                        }
-                    )
-                }
-            } content: {
-                VStack(alignment: .leading, spacing: 2) {
-                    SnipCardText(
-                        text: entry.text.isEmpty ? "Clipboard item" : entry.text,
-                        isDone: false
-                    )
-                    sourceApplication
-                }
-            }
+            sourceApplication
         }
     }
 
@@ -337,48 +331,31 @@ private struct ClipboardEntryCard: View {
 private struct ClipboardEntryCopyButton: View {
     let isCopied: Bool
     let action: () -> Void
-    @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
             Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 9, weight: .medium))
                 .symbolRenderingMode(.monochrome)
                 .frame(
                     width: ClipboardEntryCardMetrics.actionSide,
                     height: ClipboardEntryCardMetrics.actionSide
                 )
+                .foregroundStyle(SnipSnapColors.textPrimary)
+                .background {
+                    shape.fill(SnipSnapColors.compactActionFill)
+                }
+                .contentShape(shape)
         }
-        .buttonStyle(ClipboardEntryCopyButtonStyle(isHovered: isHovered))
-        .onHover { isHovered = $0 }
+        .buttonStyle(.plain)
         .help(isCopied ? "Copied" : "Copy")
         .accessibilityLabel(isCopied ? "Copied" : "Copy")
     }
-}
 
-private struct ClipboardEntryCopyButtonStyle: ButtonStyle {
-    let isHovered: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 7, style: .continuous)
-        let edge = PanelEdgeStyle.media
-        configuration.label
-            .foregroundStyle(SnipSnapColors.textPrimary)
-            .background {
-                shape
-                    .fill(.regularMaterial)
-                    .overlay {
-                        shape.fill(
-                            Color.primary.opacity(
-                                configuration.isPressed ? 0.14 : isHovered ? 0.08 : 0.035
-                            )
-                        )
-                    }
-            }
-            .overlay {
-                shape.stroke(edge.color, lineWidth: edge.width)
-            }
-            .contentShape(shape)
-            .opacity(configuration.isPressed ? 0.78 : 1)
+    private var shape: RoundedRectangle {
+        RoundedRectangle(
+            cornerRadius: ClipboardEntryCardMetrics.actionCornerRadius,
+            style: .continuous
+        )
     }
 }
