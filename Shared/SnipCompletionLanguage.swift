@@ -2,21 +2,9 @@ import Foundation
 import SnipSnapCore
 
 enum SnipCompletionLanguage {
-    static let done = String(
-        localized: "snip.completion.done",
-        defaultValue: "Done",
-        comment: "Action or state for a snip that is finished."
-    )
-    static let notDone = String(
-        localized: "snip.completion.notDone",
-        defaultValue: "Not Done",
-        comment: "Action or state for a snip that is not finished."
-    )
-    static let toggle = String(
-        localized: "snip.completion.toggle",
-        defaultValue: "Done or Not Done",
-        comment: "Command that toggles a snip's completion state."
-    )
+    static let done = String(localized: .snipCompletionDone)
+    static let notDone = String(localized: .snipCompletionNotDone)
+    static let toggle = String(localized: .snipCompletionToggle)
 
     static func actionTitle(isDone: Bool) -> String {
         stateTitle(isDone: !isDone)

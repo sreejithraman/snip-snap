@@ -460,7 +460,7 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testDeleteToastRestoresTheFullSelection() async throws {
+    func testDeleteToastRestoresSnipsWithoutKeepingSelectionHistory() async throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let addedFirst = try await repository.add(content: "First", origin: .quickEntry)
         let addedSecond = try await repository.add(content: "Second", origin: .quickEntry)
@@ -478,7 +478,7 @@ final class AppModelTests: StoreBackedTestCase {
         let toast = try XCTUnwrap(model.toast)
         await model.performToastActionNow(toast)
         XCTAssertEqual(Set(model.snips.map(\.id)), [first.id, second.id])
-        XCTAssertEqual(model.selection, [first.id, second.id])
+        XCTAssertTrue(model.selection.isEmpty)
         XCTAssertNil(model.toast)
     }
 
@@ -1367,7 +1367,7 @@ final class AppModelTests: StoreBackedTestCase {
         let added = try await backup.add(content: "From backup", origin: .quickEntry)
         let importedID = try XCTUnwrap(added?.id)
         let target = try JSONSnipLibrary(fileURL: targetURL)
-        let actions = DirectSnipLibraryUserActions(library: target)
+        let actions = userActions(for: target)
         let model = AppModel(
             library: target,
             defaults: defaults(),
@@ -1421,7 +1421,7 @@ final class AppModelTests: StoreBackedTestCase {
         let model = AppModel(
             library: target,
             defaults: defaults(),
-            userActions: DirectSnipLibraryUserActions(library: target)
+            userActions: userActions(for: target)
         )
         await model.reload()
 
@@ -1461,7 +1461,12 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     private func userActions(for library: any SnipLibrary) -> DirectSnipLibraryUserActions {
-        DirectSnipLibraryUserActions(library: library)
+        DirectSnipLibraryUserActions(
+            library: library,
+            previewBackupImport: { backupURL, target in
+                try await SnipLibraryImport.preview(backupURL: backupURL, target: target)
+            }
+        )
     }
 }
 

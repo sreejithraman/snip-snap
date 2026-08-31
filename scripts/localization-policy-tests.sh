@@ -8,6 +8,17 @@ project_file="$repo_dir/SnipSnap.xcodeproj/project.pbxproj"
 policy_dir="$(mktemp -d)"
 trap 'rm -rf "$policy_dir"' EXIT
 
+[[ "$(/usr/bin/plutil -extract version raw "$catalog")" == "1.1" ]] || {
+    print -u2 "Localizable.xcstrings must use the Xcode 26 format for generated symbols."
+    exit 1
+}
+
+/usr/bin/grep -Fq 'STRING_CATALOG_GENERATE_SYMBOLS = YES' \
+    "$repo_dir/Config/Shared.xcconfig" || {
+    print -u2 "Shipping targets must generate typed string-catalog symbols."
+    exit 1
+}
+
 xcrun xcstringstool print "$catalog" | /usr/bin/sort -u > "$policy_dir/catalog-keys"
 
 /usr/bin/find \

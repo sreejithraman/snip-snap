@@ -1508,7 +1508,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: testRoot.path))
     }
 
-    func testDeleteShowsToastAndUndoRestoresTheSnip() async throws {
+    func testDeleteToastRestoresTheSnipWithoutKeepingSelectionHistory() async throws {
         let library = ModelTestLibrary()
         let model = makeModel(library: library)
         await model.load()
@@ -1526,7 +1526,7 @@ final class IOSAppModelTests: XCTestCase {
         await model.performToastActionNow(toast)
 
         XCTAssertTrue(model.snips.contains { $0.id == id })
-        XCTAssertEqual(model.selectedSnipIDs, [id])
+        XCTAssertTrue(model.selectedSnipIDs.isEmpty)
         XCTAssertNil(model.toast)
     }
 
