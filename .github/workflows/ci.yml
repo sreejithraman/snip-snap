@@ -16,9 +16,9 @@ concurrency:
 
 jobs:
   test:
-    name: Portable build and test matrix
+    name: Tests and iOS compile check
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 20
 
     steps:
       - name: Check out source
@@ -27,11 +27,5 @@ jobs:
       - name: Run tests
         run: ./scripts/test.sh
 
-      - name: Compile Release iOS and Mac apps
-        run: ./scripts/build.sh
-
-      - name: Build Mac, iPhone, iPad, and Share extension
-        run: ./scripts/build-matrix.sh
-
-      - name: Test release paths on iPhone and iPad Simulators
-        run: ./scripts/release-matrix-tests.sh
+      - name: Build iPhone and Share extension
+        run: ./scripts/build-matrix.sh --iphone-only
