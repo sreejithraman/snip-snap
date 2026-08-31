@@ -676,14 +676,14 @@ private struct AccessibilitySetupCard: View {
 
     var body: some View {
         let presentation = controller.setupCardState.presentation
-        HStack(alignment: .top, spacing: SnipSnapSpacing.cardContentInset) {
+        PanelContentCard {
             Image(systemName: "accessibility")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(SnipSnapColors.textSecondary)
                 .frame(width: 32, height: 32)
                 .background(SnipSnapColors.compactSubduedFill, in: Circle())
                 .accessibilityHidden(true)
-
+        } main: {
             VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
                 Text(presentation.title)
                     .font(.subheadline.weight(.semibold))
@@ -709,8 +709,6 @@ private struct AccessibilitySetupCard: View {
                 .controlSize(.small)
             }
         }
-        .padding(SnipSnapSpacing.cardContentInset)
-        .panelContentCardSurface()
         .accessibilityElement(children: .contain)
     }
 
