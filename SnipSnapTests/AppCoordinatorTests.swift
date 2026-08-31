@@ -147,7 +147,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
         coordinator.accessibilityPermissions.performMenuAction()
 
-        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(requestCount, 2)
         XCTAssertEqual(openSettingsCount, 1)
     }
 
@@ -189,6 +189,30 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         coordinator.start()
 
         XCTAssertTrue(coordinator.accessibilityPermissions.isSetupCardVisible)
+    }
+
+    @MainActor
+    func testRepairActionRequestsAccessAgainForCurrentUntrustedApp() throws {
+        let suiteName = "Snip SnapAccessibilityRepairTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(
+            true,
+            forKey: AccessibilityPermissionController.didRequestAccessDefaultsKey
+        )
+        var requestCount = 0
+        var openSettingsCount = 0
+        let controller = AccessibilityPermissionController(
+            defaults: defaults,
+            isTrusted: { false },
+            requestTrust: { requestCount += 1 },
+            openSettings: { openSettingsCount += 1 }
+        )
+
+        controller.performPrimaryAction()
+
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(openSettingsCount, 1)
     }
 
     @MainActor
