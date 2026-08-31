@@ -53,8 +53,6 @@ enum PanelListMetrics {
     static let horizontalContentInset = SnipSnapSpacing.paneContentInset
     static let rowSpacing = SnipSnapSpacing.relatedContent
     static let listSpacing = SnipSnapSpacing.paneContentInset
-    /// Lets isolated header glass sample past its visible edge without changing layout.
-    static let headerGlassSamplingInset = SnipSnapSpacing.paneContentInset
     static let verticalContentInset: CGFloat = 12
     static let compactVerticalContentInset: CGFloat = 10
 
@@ -107,22 +105,40 @@ enum PanelComposerLayout {
     }
 }
 
+enum PinnedListHeaderSurface {
+    static func isVisible(hasScrolledFromTop: Bool, headerMinY: CGFloat) -> Bool {
+        hasScrolledFromTop
+            && headerMinY <= PanelGeometryChange.minimumMeaningfulChange
+    }
+}
+
 struct PanelListHeader<Actions: View>: View {
     let title: String
-    let isGlassElevated: Bool
+    let hasScrolledFromTop: Bool
     private let actions: Actions
+
+    private var backgroundShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            topLeadingRadius: PanelShapeMetrics.listHeaderCornerRadius,
+            bottomLeadingRadius: 0,
+            bottomTrailingRadius: 0,
+            topTrailingRadius: PanelShapeMetrics.listHeaderCornerRadius,
+            style: .continuous
+        )
+    }
 
     init(
         _ title: String,
-        isGlassElevated: Bool,
+        hasScrolledFromTop: Bool,
         @ViewBuilder actions: () -> Actions
     ) {
         self.title = title
-        self.isGlassElevated = isGlassElevated
+        self.hasScrolledFromTop = hasScrolledFromTop
         self.actions = actions()
     }
 
     var body: some View {
+        let showsPinnedSurface = hasScrolledFromTop
         HStack(spacing: SnipSnapSpacing.relatedContent) {
             Text(title)
                 .font(.headline)
@@ -141,60 +157,30 @@ struct PanelListHeader<Actions: View>: View {
             alignment: .leading
         )
         .background {
+            backgroundShape
+                .fill(.clear)
+                .glassEffect(
+                    .clear.tint(SnipSnapColors.elevatedListHeaderGlassTint),
+                    in: backgroundShape
+                )
+                .visualEffect { content, proxy in
+                    content.opacity(
+                        PinnedListHeaderSurface.isVisible(
+                            hasScrolledFromTop: showsPinnedSurface,
+                            headerMinY: proxy.frame(
+                                in: .scrollView(axis: .vertical)
+                            ).minY
+                        ) ? 1 : 0
+                    )
+                }
+                .allowsHitTesting(false)
             PanelDragRegion()
         }
-        .panelListHeaderGlass(isElevated: isGlassElevated)
     }
 }
 
 extension PanelListHeader where Actions == EmptyView {
-    init(_ title: String, isGlassElevated: Bool) {
-        self.init(title, isGlassElevated: isGlassElevated) { EmptyView() }
-    }
-}
-
-struct PanelListSectionHeader<Actions: View>: View {
-    let title: String
-    let hasScrolledFromTop: Bool
-    private let actions: Actions
-
-    @State private var isPinned = false
-
-    init(
-        _ title: String,
-        hasScrolledFromTop: Bool,
-        @ViewBuilder actions: () -> Actions
-    ) {
-        self.title = title
-        self.hasScrolledFromTop = hasScrolledFromTop
-        self.actions = actions()
-    }
-
-    var body: some View {
-        PanelListHeader(
-            title,
-            isGlassElevated: PinnedListHeaderGlass.isVisible(
-                isPinned: isPinned,
-                hasScrolled: hasScrolledFromTop
-            )
-        ) {
-            actions
-        }
-        .onGeometryChange(for: Bool.self) { proxy in
-            PinnedListHeaderGlass.isPinned(
-                frame: proxy.frame(in: .scrollView(axis: .vertical))
-            )
-        } action: { isPinned in
-            self.isPinned = isPinned
-        }
-    }
-}
-
-extension PanelListSectionHeader where Actions == EmptyView {
-    init(
-        _ title: String,
-        hasScrolledFromTop: Bool
-    ) {
+    init(_ title: String, hasScrolledFromTop: Bool) {
         self.init(title, hasScrolledFromTop: hasScrolledFromTop) { EmptyView() }
     }
 }
@@ -373,10 +359,6 @@ extension View {
         }
     }
 
-    func panelListHeaderGlass(isElevated: Bool) -> some View {
-        modifier(PanelListHeaderGlassModifier(isElevated: isElevated))
-    }
-
     func panelCompactStateSurface(
         isEmphasized: Bool,
         isSubdued: Bool = false
@@ -434,42 +416,6 @@ private struct PanelCompactStateSurfaceModifier: ViewModifier {
                                 : .clear
                     )
             }
-    }
-}
-
-private struct PanelListHeaderGlassModifier: ViewModifier {
-    let isElevated: Bool
-
-    private var shape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(
-            topLeadingRadius: PanelShapeMetrics.listHeaderCornerRadius,
-            bottomLeadingRadius: 0,
-            bottomTrailingRadius: 0,
-            topTrailingRadius: PanelShapeMetrics.listHeaderCornerRadius,
-            style: .continuous
-        )
-    }
-
-    func body(content: Content) -> some View {
-        let edge = PanelGlassEdgeState.standard.style
-        GlassEffectContainer(spacing: 0) {
-            content
-                .glassEffect(
-                    isElevated
-                        ? .clear.tint(SnipSnapColors.elevatedListHeaderGlassTint)
-                        : .identity,
-                    in: shape
-                )
-                .overlay(alignment: .bottom) {
-                    Rectangle()
-                        .fill(edge.color)
-                        .frame(height: edge.width)
-                        .opacity(isElevated ? 1 : 0)
-                        .allowsHitTesting(false)
-                }
-                .padding(PanelListMetrics.headerGlassSamplingInset)
-        }
-        .padding(-PanelListMetrics.headerGlassSamplingInset)
     }
 }
 

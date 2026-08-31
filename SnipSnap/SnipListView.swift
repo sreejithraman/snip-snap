@@ -266,10 +266,8 @@ struct SnipListView: View {
             }
             .scrollEdgeEffectStyle(.soft, for: .bottom)
             .onScrollGeometryChange(for: Bool.self) { geometry in
-                PinnedListHeaderGlass.hasScrolled(
-                    visibleOriginY: geometry.contentOffset.y
-                        + geometry.contentInsets.top
-                )
+                geometry.contentOffset.y + geometry.contentInsets.top
+                    > PanelGeometryChange.minimumMeaningfulChange
             } action: { _, hasScrolled in
                 hasScrolledFromTop = hasScrolled
             }
@@ -425,7 +423,7 @@ struct SnipListView: View {
     }
 
     private func listSectionHeader(_ title: String, listID: UUID) -> some View {
-        PanelListSectionHeader(title, hasScrolledFromTop: hasScrolledFromTop)
+        PanelListHeader(title, hasScrolledFromTop: hasScrolledFromTop)
             .background {
                 PanelDragBlockingRegion(
                     controller: dragSessionController,
