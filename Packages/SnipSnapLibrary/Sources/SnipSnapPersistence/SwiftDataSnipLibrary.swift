@@ -465,7 +465,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
         let destinationDirectory = destination.deletingLastPathComponent()
         try DurableFile.createDirectory(destinationDirectory)
         createdDirectories.append(destinationDirectory)
-        try FileManager.default.copyItem(at: sourceURL, to: destination)
+        _ = try AttachmentFileIO.copyRegularFile(from: sourceURL, to: destination)
         try DurableFile.syncFile(destination)
         try DurableFile.syncDirectory(destinationDirectory)
         let values = try destination.resourceValues(forKeys: [.fileSizeKey])

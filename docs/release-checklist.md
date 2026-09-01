@@ -8,12 +8,13 @@
 1. [ ] Confirm the Apple agreements and App Store Connect roles are current.
 2. [ ] Confirm the main app and Share extension App IDs use the same App Group.
 3. [ ] Confirm only the main app uses the production CloudKit container.
-4. [ ] Deploy the tested CloudKit schema to production.
-5. [ ] Record the export-compliance answer without guessing it.
-6. [ ] Review both privacy manifests against the final archive and linked code.
-7. [ ] Run `scripts/testflight.sh archive` from the checked release commit.
-8. [ ] Save the archive, dSYMs, commit, version, build, and upload result.
-9. [ ] Add the processed build to the internal TestFlight group with clear What to Test notes.
+4. [ ] Confirm the main app has Push Notifications enabled and the signed archive has the production push entitlement.
+5. [ ] Deploy the tested CloudKit schema to production.
+6. [ ] Record the export-compliance answer without guessing it.
+7. [ ] Review both privacy manifests against the final archive and linked code.
+8. [ ] Run `scripts/testflight.sh archive` from the checked release commit.
+9. [ ] Save the archive, dSYMs, commit, version, build, and upload result.
+10. [ ] Add the processed build to the internal TestFlight group with clear What to Test notes.
 
 # Physical iPhone release check
 

@@ -111,7 +111,7 @@ public struct ShareImportStagingArea: Sendable {
     let destinationURL = fileDirectory.appendingPathComponent(fileName, isDirectory: false)
     do {
       try DurableFile.createDirectory(fileDirectory)
-      try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+      _ = try AttachmentFileIO.copyRegularFile(from: sourceURL, to: destinationURL)
       let values = try destinationURL.resourceValues(
         forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
       )
@@ -449,6 +449,7 @@ package enum DurableFile {
       cursor = parent
     }
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    try applyDataProtection(to: url)
     for directory in missing.reversed() {
       try syncDirectory(directory)
       try syncDirectory(directory.deletingLastPathComponent())
@@ -458,6 +459,7 @@ package enum DurableFile {
   package static func write(_ data: Data, to url: URL) throws {
     try createDirectory(url.deletingLastPathComponent())
     try data.write(to: url, options: .atomic)
+    try applyDataProtection(to: url)
     try syncFile(url)
     try syncDirectory(url.deletingLastPathComponent())
   }
@@ -478,6 +480,23 @@ package enum DurableFile {
     guard Darwin.fsync(descriptor) == 0 else {
       throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
+  }
+
+  /// Keeps re-creatable files out of device backups.
+  package static func excludeFromBackup(_ url: URL) throws {
+    var url = url
+    var values = URLResourceValues()
+    values.isExcludedFromBackup = true
+    try url.setResourceValues(values)
+  }
+
+  package static func applyDataProtection(to url: URL) throws {
+#if os(iOS)
+    try FileManager.default.setAttributes(
+      [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+      ofItemAtPath: url.path
+    )
+#endif
   }
 }
 

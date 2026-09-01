@@ -259,6 +259,7 @@ final class IOSAppModel {
                 sortedBy: sortMode
             ) else { return false }
             apply(state)
+            scheduleCloudSync()
             return true
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -511,6 +512,7 @@ final class IOSAppModel {
             if toast?.id == token { toast = nil }
             recoverySnapshot = await session.refreshRecovery()
             await refreshAttachmentTransferStates()
+            scheduleCloudSync()
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
@@ -532,6 +534,7 @@ final class IOSAppModel {
             toast = .deleted(count: count, id: token)
             recoverySnapshot = await session.refreshRecovery()
             await refreshAttachmentTransferStates()
+            scheduleCloudSync()
             return true
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -553,6 +556,7 @@ final class IOSAppModel {
             recoverySnapshot = await session.refreshRecovery()
             await refreshAttachmentTransferStates()
             afterSuccess(update.outcome)
+            scheduleCloudSync()
             return true
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -666,6 +670,11 @@ final class IOSAppModel {
         _ operation: @MainActor @Sendable () async -> Result
     ) async -> Result {
         await session.withExclusiveAccess { _ in await operation() }
+    }
+
+    private func scheduleCloudSync() {
+        guard let cloudSyncHandler else { return }
+        Task { await cloudSyncHandler.scheduleSyncAfterLocalChange() }
     }
 
 }

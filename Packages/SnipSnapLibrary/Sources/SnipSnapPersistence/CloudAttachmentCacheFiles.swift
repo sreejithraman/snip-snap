@@ -12,6 +12,7 @@ struct CloudAttachmentCacheFiles {
       .appendingPathComponent("CloudDownloads", isDirectory: true)
       .appendingPathComponent(Self.namespaceDigest(namespaceKey), isDirectory: true)
     try DurableFile.createDirectory(root)
+    try DurableFile.excludeFromBackup(root)
     return root
   }
 
@@ -20,6 +21,7 @@ struct CloudAttachmentCacheFiles {
       .appendingPathComponent("CloudAttachmentUploads", isDirectory: true)
       .appendingPathComponent(Self.namespaceDigest(namespaceKey), isDirectory: true)
     try DurableFile.createDirectory(root)
+    try DurableFile.excludeFromBackup(root)
     return root
   }
 
@@ -52,7 +54,7 @@ struct CloudAttachmentCacheFiles {
       try FileManager.default.removeItem(at: destination)
     }
     do {
-      try FileManager.default.copyItem(at: sourceURL, to: destination)
+      _ = try AttachmentFileIO.copyRegularFile(from: sourceURL, to: destination)
       try DurableFile.syncFile(destination)
       try DurableFile.syncDirectory(directory)
       try DurableFile.syncDirectory(root)
@@ -77,6 +79,8 @@ struct CloudAttachmentCacheFiles {
     try DurableFile.createDirectory(destination.deletingLastPathComponent())
     try FileManager.default.moveItem(at: stagedURL, to: destination)
     do {
+      // A move can reset the resource value inherited from CloudDownloads.
+      try DurableFile.excludeFromBackup(destination)
       try DurableFile.syncFile(destination)
       try DurableFile.syncDirectory(destination.deletingLastPathComponent())
       try DurableFile.syncDirectory(filesRoot)

@@ -248,6 +248,10 @@ final class CloudAttachmentStorageTests: XCTestCase {
     let initial = try await library.cloudAttachmentStorageSnapshot(namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"))
     let queued = try XCTUnwrap(initial.publications.first?.sourceURL)
     let uploadRoot = queued.deletingLastPathComponent().deletingLastPathComponent()
+    XCTAssertEqual(
+      try uploadRoot.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup,
+      true
+    )
     let orphan = uploadRoot.appendingPathComponent("orphan/payload")
     try FileManager.default.createDirectory(
       at: orphan.deletingLastPathComponent(),
@@ -494,6 +498,10 @@ final class CloudAttachmentStorageTests: XCTestCase {
       now: .distantPast
     )
     XCTAssertTrue(cached.path.contains("CloudDownloads"))
+    XCTAssertEqual(
+      try cached.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup,
+      true
+    )
 
     try await library.quarantineCloudNamespaceState(namespaceKey: namespace)
 

@@ -159,6 +159,7 @@ package enum AttachmentFileIO {
       after.st_size == source.status.st_size,
       copied.byteCount == Int64(after.st_size)
     else { throw SnipLibraryError.invalidStore }
+    try DurableFile.applyDataProtection(to: destinationURL)
     shouldRemoveDestination = false
     return CopiedFile(
       digest: copied.digest,

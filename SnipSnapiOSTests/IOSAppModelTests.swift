@@ -59,6 +59,28 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertNil(session.model.errorMessage)
     }
 
+    func testAutomaticCloudChangeReloadsTheVisibleLibrary() async {
+        let snip = Snip(content: "Before", origin: .quickEntry)
+        let library = ModelTestLibrary(snips: [snip])
+        let automatic = AsyncStream.makeStream(of: SnipSnapCloudSyncResult.self)
+        let cloudSession = IOSCloudSyncSessionProbe(
+            result: .noChange,
+            activeLibrary: library,
+            automaticSyncResults: automatic.stream
+        )
+        let session = IOSAppSession(library: library, cloudSyncSession: cloudSession)
+        await session.model.load()
+
+        await library.replaceText("After", for: snip.id)
+        automatic.continuation.yield(.contentUpdated)
+        for _ in 0..<20 {
+            if session.model.snips.first?.content == "After" { break }
+            await Task.yield()
+        }
+
+        XCTAssertEqual(session.model.snips.first?.content, "After")
+    }
+
     func testIOSDelayedCancelDoesNotClearNewerBackupPreview() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("IOSImportCancelTests-\(UUID().uuidString)", isDirectory: true)
@@ -660,6 +682,21 @@ final class IOSAppModelTests: XCTestCase {
         let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
 
         await model.syncWhenPossible()
+
+        let syncCount = await handler.syncCount()
+        XCTAssertEqual(syncCount, 1)
+    }
+
+    func testSavingASnipSchedulesCloudSync() async {
+        let handler = IOSCloudSyncHandlerProbe(states: [:])
+        let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
+
+        let created = await model.createSnip(content: "Saved", in: SnipList.inboxID)
+        XCTAssertTrue(created)
+        for _ in 0..<20 {
+            if await handler.syncCount() > 0 { break }
+            await Task.yield()
+        }
 
         let syncCount = await handler.syncCount()
         XCTAssertEqual(syncCount, 1)
@@ -1842,15 +1879,18 @@ private actor IOSCloudSyncSessionProbe: IOSCloudSyncSessionHandling {
     private let library: any SnipLibrary
     private let syncError: Failure?
     private var synchronizeCallCount = 0
+    nonisolated let automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult>
 
     init(
         result: SnipSnapCloudSyncResult,
         activeLibrary: any SnipLibrary,
-        syncError: Failure? = nil
+        syncError: Failure? = nil,
+        automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> = AsyncStream { $0.finish() }
     ) {
         self.result = result
         library = activeLibrary
         self.syncError = syncError
+        self.automaticSyncResults = automaticSyncResults
     }
 
     func synchronize() async throws -> SnipSnapCloudSyncResult {

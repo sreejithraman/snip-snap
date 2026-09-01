@@ -42,6 +42,7 @@ final class AppModel: ObservableObject {
 
     private let session: SavedSnipsSession
     private let attachmentPreparation: AttachmentPreparationCoordinator
+    private var cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private let defaults: UserDefaults
     private let composerDrafts: ComposerDraftStore
     let clipboardHistory: ClipboardHistory
@@ -115,11 +116,13 @@ final class AppModel: ObservableObject {
         attachmentPreparation = AttachmentPreparationCoordinator(
             cloudSyncHandler: cloudSyncHandler
         )
+        self.cloudSyncHandler = cloudSyncHandler
         presentedError = initialError
         Task { await reload() }
     }
 
     func setCloudSyncHandler(_ handler: (any OptionalCloudSyncHandling)?) {
+        cloudSyncHandler = handler
         attachmentPreparation.setCloudSyncHandler(handler)
     }
 
@@ -239,6 +242,7 @@ final class AppModel: ObservableObject {
                     sortedBy: sortMode
                 ) else { return false }
                 apply(state)
+                scheduleCloudSync()
                 return true
             } catch {
                 presentedError = error.localizedDescription
@@ -565,6 +569,7 @@ final class AppModel: ObservableObject {
                 apply(update.snapshot)
                 selection = []
                 toast = .deleted(count: snipsToDelete.count, id: token)
+                scheduleCloudSync()
             } catch {
                 presentedError = error.localizedDescription
             }
@@ -599,6 +604,7 @@ final class AppModel: ObservableObject {
                 ) else { return }
                 apply(update.snapshot)
                 if toast?.id == token { toast = nil }
+                scheduleCloudSync()
             } catch {
                 presentedError = error.localizedDescription
             }
@@ -665,6 +671,7 @@ final class AppModel: ObservableObject {
                 pendingImportPreview = nil
                 apply(result.snapshot)
                 recoverySnapshot = recovery
+                scheduleCloudSync()
             } catch {
                 pendingImportPreviewID = nil
                 pendingImportPreview = nil
@@ -935,6 +942,7 @@ final class AppModel: ObservableObject {
             let (update, value) = try await mutation()
             clearPendingDeletionToast()
             apply(update.snapshot)
+            scheduleCloudSync()
             return .success(value)
         } catch {
             return .failure(error)
@@ -964,6 +972,7 @@ final class AppModel: ObservableObject {
                 apply(update.snapshot)
                 if let afterSortMode { setSortMode(afterSortMode) }
                 if let afterSelection { selection = afterSelection(update.outcome) }
+                scheduleCloudSync()
                 return .success(update.outcome)
             } catch {
                 return .failure(error)
@@ -980,5 +989,10 @@ final class AppModel: ObservableObject {
     private func clearPendingDeletionToast() {
         guard let toast, toast.action == .undoDelete else { return }
         self.toast = nil
+    }
+
+    private func scheduleCloudSync() {
+        guard let cloudSyncHandler else { return }
+        Task { await cloudSyncHandler.scheduleSyncAfterLocalChange() }
     }
 }

@@ -2,6 +2,7 @@ import AppKit
 import SnipSnapCore
 import SwiftUI
 
+
 enum PanelFocusTarget: Hashable {
     case list
     case search
@@ -60,6 +61,7 @@ final class SnipListState: ObservableObject {
 }
 
 struct SnipListView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var model: AppModel
     let coordinator: AppCoordinator
     let dragSessionController: PanelDragSessionController
@@ -188,7 +190,7 @@ struct SnipListView: View {
             }
             .onChange(of: model.sortMode) {
                 if let selectedID = orderedSnipIDs.first(where: model.selection.contains) {
-                    withAnimation(.snappy(duration: 0.18)) {
+                    animateIfAllowed(.snappy(duration: 0.18)) {
                         proxy.scrollTo(selectedID, anchor: .center)
                     }
                 }
@@ -232,7 +234,7 @@ struct SnipListView: View {
                       snapshot.orderedVisibleIDs.contains(editingID) else { return }
                 Task { @MainActor in
                     await Task.yield()
-                    withAnimation(.snappy(duration: 0.18)) {
+                    animateIfAllowed(.snappy(duration: 0.18)) {
                         proxy.scrollTo(editingID, anchor: .center)
                     }
                     try? await Task.sleep(for: .milliseconds(220))
@@ -302,7 +304,7 @@ struct SnipListView: View {
     ) {
         Task { @MainActor in
             await Task.yield()
-            withAnimation(.snappy(duration: 0.18)) {
+            animateIfAllowed(.snappy(duration: 0.18)) {
                 switch destination {
                 case .scrollViewTop:
                     proxy.scrollTo(SnipListScrollTarget.top, anchor: .top)
@@ -489,7 +491,7 @@ struct SnipListView: View {
             target: target
         ) else { return }
         guard pendingOrderByList[listID] != reorderedIDs else { return }
-        withAnimation(.easeOut(duration: 0.12)) {
+        animateIfAllowed(.easeOut(duration: 0.12)) {
             pendingOrderByList[listID] = reorderedIDs
         }
     }
@@ -556,7 +558,7 @@ struct SnipListView: View {
     }
 
     private func clearDrag(listID: UUID) {
-        withAnimation(.snappy(duration: 0.12)) {
+        animateIfAllowed(.snappy(duration: 0.12)) {
             pendingOrderByList[listID] = nil
             activeDragPayload = nil
             activeDragOriginalOrder = []
@@ -564,6 +566,17 @@ struct SnipListView: View {
             activeDragRowFrames = [:]
             activeDropTarget = nil
             isCommittingDrop = false
+        }
+    }
+
+    private func animateIfAllowed(
+        _ animation: Animation,
+        changes: () -> Void
+    ) {
+        if reduceMotion {
+            changes()
+        } else {
+            withAnimation(animation, changes)
         }
     }
 

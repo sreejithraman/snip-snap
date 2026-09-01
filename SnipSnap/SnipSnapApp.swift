@@ -154,7 +154,8 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     let updateChecksEnabled: Bool
     let accountNoticeModel: AppleAccountNoticeModel?
     let cloudSyncHandler: (any OptionalCloudSyncHandling)?
-    private var cloudSyncActivity: NSBackgroundActivityScheduler?
+    private var cloudAccountObserver: NSObjectProtocol?
+    private var automaticSyncTask: Task<Void, Never>?
     private var mainPanel: SnipSnapPanel?
     private var isFlushingBeforeTermination = false
 
@@ -268,7 +269,10 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         }
         cloudLifecycleHooks = SnipSnapCloudLifecycleHooks(syncWhenPossible: syncAction)
         let productionCloudSyncHandler = Self.makeAccountCacheHandler(
-            syncWhenPossible: syncAction
+            syncWhenPossible: syncAction,
+            scheduleSyncAfterLocalChange: {
+                await cloudServices.syncSession?.scheduleAutomaticSync()
+            }
         )
         cloudSyncHandler = productionCloudSyncHandler
         model.setCloudSyncHandler(productionCloudSyncHandler)
@@ -343,7 +347,26 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             await cloudLifecycleHooks.launch()
             await accountNoticeModel?.refresh()
         }
-        scheduleBackgroundSync()
+        if let cloudSyncSession {
+            let results = cloudSyncSession.automaticSyncResults
+            automaticSyncTask = Task { @MainActor [weak self] in
+                for await result in results {
+                    guard let self, !Task.isCancelled else { return }
+                    await self.handleAutomaticSyncResult(result)
+                }
+            }
+        }
+        cloudAccountObserver = NotificationCenter.default.addObserver(
+            forName: SnipSnapCloudNotifications.accountChanged,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.cloudLifecycleHooks.foreground()
+                await self.accountNoticeModel?.refresh()
+            }
+        }
         if !panel.restoredSavedFrame {
             panel.center()
         }
@@ -363,8 +386,27 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func handleAutomaticSyncResult(_ result: SnipSnapCloudSyncResult) async {
+        switch result {
+        case .contentUpdated:
+            await model.reload()
+        case .encryptedDataResetRequiresChoice:
+            if let active = try? await cloudSyncSession?.activeLibrary() {
+                await model.replaceLibrary(
+                    active.library,
+                    recoveryScope: active.recoveryScope
+                )
+            }
+            syncedContentSettings.recordEncryptedDataReset()
+        default:
+            break
+        }
+        syncedContentSettings.recordSyncCompleted()
+    }
+
     private static func makeAccountCacheHandler(
-        syncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction
+        syncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
+        scheduleSyncAfterLocalChange: @escaping AppleAccountCacheCoordinatorHandler.ScheduleAction
     ) -> AppleAccountCacheCoordinatorHandler? {
         guard let containerIdentifier = Bundle.main.object(
             forInfoDictionaryKey: "SnipSnapCloudKitContainerIdentifier"
@@ -375,7 +417,8 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         return AppleAccountCacheCoordinatorHandler(
             syncRootURL: syncRootURL,
             containerIdentifier: containerIdentifier,
-            syncWhenPossible: syncWhenPossible
+            syncWhenPossible: syncWhenPossible,
+            scheduleSyncAfterLocalChange: scheduleSyncAfterLocalChange
         )
     }
 
@@ -386,7 +429,12 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isFlushingBeforeTermination else { return .terminateLater }
         isFlushingBeforeTermination = true
-        cloudSyncActivity?.invalidate()
+        if let cloudAccountObserver {
+            NotificationCenter.default.removeObserver(cloudAccountObserver)
+            self.cloudAccountObserver = nil
+        }
+        automaticSyncTask?.cancel()
+        automaticSyncTask = nil
         coordinator.savePanelWindowFrame(using: AppWindowDefaults.frameAutosaveName)
         Task { @MainActor [model] in
             model.flushComposerDrafts()
@@ -396,24 +444,6 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         return .terminateLater
     }
 
-    private func scheduleBackgroundSync() {
-        guard cloudSyncSession != nil else { return }
-        let activity = NSBackgroundActivityScheduler(
-            identifier: (Bundle.main.bundleIdentifier ?? "org.example.snipsnap")
-                + ".optional-cloud-sync"
-        )
-        activity.repeats = true
-        activity.interval = 15 * 60
-        activity.tolerance = 5 * 60
-        activity.qualityOfService = .utility
-        activity.schedule { [self] completion in
-            Task { @MainActor [cloudLifecycleHooks = self.cloudLifecycleHooks] in
-                await cloudLifecycleHooks.launch()
-                completion(.finished)
-            }
-        }
-        cloudSyncActivity = activity
-    }
 }
 
 extension AppleAccountNoticeModel {

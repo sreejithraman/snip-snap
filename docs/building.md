@@ -117,15 +117,21 @@ DEVELOPMENT_TEAM = <your team>
 SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER = <your registered bundle root>
 SNIP_SNAP_APP_GROUP_IDENTIFIER = <your registered App Group>
 SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER = <your registered iCloud container>
-CODE_SIGN_ENTITLEMENTS = Config/Local.entitlements
-SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS = Config/Local.entitlements
+CODE_SIGN_ENTITLEMENTS = Config/LocalMac.entitlements
+SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS = Config/LocalIOS.entitlements
 ```
 
-`Config/Local.xcconfig` and `Config/Local.entitlements` stay out of Git. The
-entitlement file must include the App Group and CloudKit capabilities tied to
-those settings and select the Development CloudKit environment. Do not reuse
-it for an official Mac release. Do not put a team ID, profile name, device ID,
-certificate, or local path in a tracked file.
+Copy the public Dev templates, then keep the copies out of Git:
+
+```sh
+cp Config/CloudDev.macOS.example.entitlements Config/LocalMac.entitlements
+cp Config/CloudDev.iOS.example.entitlements Config/LocalIOS.entitlements
+```
+
+The two files use each platform's push entitlement key. They also include the
+App Group and CloudKit capabilities and select the Development CloudKit
+environment. Do not reuse them for an official release. Do not put a team ID,
+profile name, device ID, certificate, or local path in a tracked file.
 
 Cloud Dev uses a separate installed-app identity. By default, the build adds
 `.dev` to the resolved iOS app identifier and configured App Group. For example:
@@ -228,6 +234,7 @@ Then provide the release credentials:
 ```sh
 export SNIP_SNAP_SIGNING_IDENTITY='YOUR_SIGNING_IDENTITY'
 export SNIP_SNAP_NOTARY_PROFILE='YOUR_NOTARY_PROFILE'
+export SNIP_SNAP_MAC_PROVISIONING_PROFILE_SPECIFIER='YOUR_DEVELOPER_ID_PROFILE_NAME'
 ./scripts/release.sh
 ```
 
@@ -235,6 +242,9 @@ The identity can come from the local Keychain instead of the first variable;
 the release command finds the matching Developer ID identity for the selected
 team. The notary profile name points to credentials stored by `notarytool` in
 the Keychain. CI can pass the same named inputs through its secret store.
+The provisioning profile must be a Developer ID profile for the Mac App ID.
+It must grant the production CloudKit container and production push. Xcode
+embeds it in the app, and the release check reads it back before notarization.
 
 The release command creates its export options in a private temporary folder.
 No personalized entitlement file, export file, certificate name, profile, or
@@ -252,7 +262,8 @@ cp Config/TestFlight.example.entitlements Config/TestFlight.entitlements
 The copied file stays out of Git. Its names come from `Local.xcconfig` or the
 same run-only `SNIP_SNAP_*` inputs used by protected CI. It selects CloudKit
 Production for the main app. The Share extension keeps its App Group-only
-entitlement.
+entitlement. The main App ID must also have Push Notifications enabled, and its
+current distribution profile must grant the production push entitlement.
 
 Check the signed settings without uploading:
 

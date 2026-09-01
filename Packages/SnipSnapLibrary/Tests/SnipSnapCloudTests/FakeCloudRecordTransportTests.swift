@@ -133,6 +133,11 @@ final class FakeCloudRecordTransportTests: XCTestCase {
         XCTAssertEqual(receipt.byteCount, 12 * 1_048_576)
         XCTAssertEqual((attributes[.size] as? NSNumber)?.int64Value, receipt.byteCount)
         XCTAssertEqual(receipt.sha256.count, 32)
+        XCTAssertEqual(
+            try receipt.fileURL.resourceValues(forKeys: [.isExcludedFromBackupKey])
+                .isExcludedFromBackup,
+            true
+        )
     }
 
     func testFetchKeepsSuccessfulItemsFailuresAndZoneDeletionTogether() async throws {

@@ -1865,7 +1865,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
     XCTAssertFalse(FileManager.default.fileExists(atPath: interrupted.path))
     for use in [
-      CloudAttachmentUse.preview,
+      SyncedAttachmentUse.preview,
       .open,
       .copy,
       .export,

@@ -11,15 +11,9 @@ struct SyncedContentSettingsView: View {
         NavigationStack {
             Form {
                 Section("Sync") {
-                    HStack {
-                        Text("Sync with iCloud")
-                        Spacer()
-                        Toggle("Sync with iCloud", isOn: syncEnabled)
-                            .labelsHidden()
-                            .disabled(!canChangeSync)
-                            .accessibilityIdentifier("icloud-sync-toggle")
-                            .accessibilityLabel("Sync with iCloud")
-                    }
+                    Toggle("Sync with iCloud", isOn: syncEnabled)
+                        .disabled(!canChangeSync)
+                        .accessibilityIdentifier("icloud-sync-toggle")
                     Label(model.statusTitle, systemImage: statusImage)
                         .accessibilityIdentifier("sync-status")
                     Text(model.detail)

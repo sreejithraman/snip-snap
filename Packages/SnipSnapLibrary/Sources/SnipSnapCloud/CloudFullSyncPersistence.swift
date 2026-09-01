@@ -4,6 +4,7 @@ import SnipSnapPersistence
 
 package protocol CloudFullSyncStore: Sendable {
   func loadEngineState() async throws -> CloudEngineStateEnvelope?
+  func saveEngineState(_ state: CloudEngineStateEnvelope) async throws
   func stagedBatches() async throws -> [CloudFullBatchCommit]
   func stage(_ batch: CloudSyncBatch, outbound: CloudOutboundBatch?) async throws
   func applyStaged(_ id: UUID) async throws
@@ -52,6 +53,52 @@ package actor CloudFullSyncCoordinator {
     try await run(fetch: false, send: true, beforeSend: beforeSend)
   }
 
+  package func prepareAutomaticSync() async throws {
+    guard !syncing else { throw CloudTransportError.syncAlreadyRunning }
+    syncing = true
+    do {
+      try await recover()
+      if !started {
+        let state = try await store.loadEngineState()
+        try await transport.start(state: state)
+        started = true
+      }
+      if let scheduler = transport as? any CloudAutomaticSyncScheduling {
+        let outbound = try await store.pendingChanges()
+        if !outbound.operations.isEmpty || !outbound.zonesToSave.isEmpty {
+          try await scheduler.scheduleAutomaticSync(outbound)
+        }
+      }
+      syncing = false
+      await transport.drainAutomaticSyncEvents()
+    } catch {
+      syncing = false
+      await transport.drainAutomaticSyncEvents()
+      throw error
+    }
+  }
+
+  package func applyAutomatically(
+    _ batch: CloudSyncBatch,
+    outbound: CloudOutboundBatch?,
+    beforeApply: @escaping @Sendable () async throws -> Void
+  ) async throws {
+    guard !syncing else { throw CloudTransportError.syncAlreadyRunning }
+    syncing = true
+    do {
+      try await beforeApply()
+      try await recover(excluding: batch.id)
+      try await commit(batch, outbound: outbound)
+      try await schedulePendingChanges()
+      syncing = false
+      await transport.drainAutomaticSyncEvents()
+    } catch {
+      syncing = false
+      await transport.drainAutomaticSyncEvents()
+      throw error
+    }
+  }
+
   private func run(
     fetch: Bool,
     send: Bool,
@@ -60,33 +107,48 @@ package actor CloudFullSyncCoordinator {
   ) async throws {
     guard !syncing else { throw CloudTransportError.syncAlreadyRunning }
     syncing = true
-    defer { syncing = false }
-    try await recover()
-    var needsBootstrapFetch = false
-    if !started {
-      let state = try await store.loadEngineState()
-      try await transport.start(state: state)
-      started = true
-      needsBootstrapFetch = state == nil
-    }
-    if fetch || (send && needsBootstrapFetch) {
-      let fetched = try await transport.fetch(scope: fetch ? fetchScope : .all)
-      try await beforeFetchApply()
-      try await commit(.fetched(fetched), outbound: nil)
-    }
-    if send {
-      let outbound = try await store.pendingChanges()
-      if !outbound.operations.isEmpty || !outbound.zonesToSave.isEmpty {
-        try await beforeSend(outbound)
-        try await commit(.sent(transport.send(outbound)), outbound: outbound)
+    do {
+      try await recover()
+      var needsBootstrapFetch = false
+      if !started {
+        let state = try await store.loadEngineState()
+        try await transport.start(state: state)
+        started = true
+        needsBootstrapFetch = state == nil
       }
+      if fetch || (send && needsBootstrapFetch) {
+        let fetched = try await transport.fetch(scope: fetch ? fetchScope : .all)
+        try await beforeFetchApply()
+        try await commit(.fetched(fetched), outbound: nil)
+      }
+      if send {
+        let outbound = try await store.pendingChanges()
+        if !outbound.operations.isEmpty || !outbound.zonesToSave.isEmpty {
+          try await beforeSend(outbound)
+          try await commit(.sent(transport.send(outbound)), outbound: outbound)
+        }
+      }
+      syncing = false
+      await transport.drainAutomaticSyncEvents()
+    } catch {
+      syncing = false
+      await transport.drainAutomaticSyncEvents()
+      throw error
     }
   }
 
-  private func recover() async throws {
-    for batch in try await store.stagedBatches() {
+  private func recover(excluding excludedBatchID: UUID? = nil) async throws {
+    for batch in try await store.stagedBatches() where batch.batchID != excludedBatchID {
       try await store.applyStaged(batch.batchID)
       try await transport.confirmApplied(batch.batchID)
+    }
+    var recovered: Set<UUID> = []
+    while let pending = await transport.pendingBatch(),
+      pending.batch.id != excludedBatchID,
+      recovered.insert(pending.batch.id).inserted
+    {
+      try await commit(pending.batch, outbound: pending.outbound)
+      await transport.drainAutomaticSyncEvents()
     }
   }
 
@@ -94,6 +156,17 @@ package actor CloudFullSyncCoordinator {
     try await store.stage(batch, outbound: outbound)
     try await store.applyStaged(batch.id)
     try await transport.confirmApplied(batch.id)
+  }
+
+  package func persistEngineState(_ state: CloudEngineStateEnvelope) async throws {
+    try await store.saveEngineState(state)
+  }
+
+  private func schedulePendingChanges() async throws {
+    guard let scheduler = transport as? any CloudAutomaticSyncScheduling else { return }
+    let outbound = try await store.pendingChanges()
+    guard !outbound.operations.isEmpty || !outbound.zonesToSave.isEmpty else { return }
+    try await scheduler.scheduleAutomaticSync(outbound)
   }
 }
 
@@ -151,6 +224,16 @@ extension CloudFullSyncPersistence {
     let value = try JSONDecoder().decode(CloudEngineStateEnvelope.self, from: stored)
     guard value.namespace == namespace else { throw CloudTransportError.stateNamespaceMismatch }
     return value
+  }
+
+  package func saveEngineState(_ state: CloudEngineStateEnvelope) async throws {
+    guard state.namespace == namespace else {
+      throw CloudTransportError.stateNamespaceMismatch
+    }
+    try await library.saveCloudEngineState(
+      namespaceKey: namespaceKey,
+      envelopeData: JSONEncoder().encode(state)
+    )
   }
 
   package func stagedBatches() async throws -> [CloudFullBatchCommit] {

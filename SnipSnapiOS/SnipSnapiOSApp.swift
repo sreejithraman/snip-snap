@@ -57,9 +57,12 @@ struct SnipSnapiOSApp: App {
         )
 #endif
         let syncActionBridge = IOSCloudSyncActionBridge()
-        let productionCloudSyncHandler = Self.makeAccountCacheHandler {
-            await syncActionBridge.syncWhenPossible()
-        }
+        let productionCloudSyncHandler = Self.makeAccountCacheHandler(
+            syncWhenPossible: { await syncActionBridge.syncWhenPossible() },
+            scheduleSyncAfterLocalChange: {
+                await syncActionBridge.scheduleSyncAfterLocalChange()
+            }
+        )
         let accountNoticeModel: AppleAccountNoticeModel?
 #if DEBUG
         let uiTestAccountNoticeModel =
@@ -95,7 +98,8 @@ struct SnipSnapiOSApp: App {
     }
 
     private static func makeAccountCacheHandler(
-        syncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction
+        syncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
+        scheduleSyncAfterLocalChange: @escaping AppleAccountCacheCoordinatorHandler.ScheduleAction
     ) -> AppleAccountCacheCoordinatorHandler? {
         guard let sharedRootURL = SnipSnapAppGroupContainer.resolve()?.url,
               let containerIdentifier = Bundle.main.object(
@@ -105,7 +109,8 @@ struct SnipSnapiOSApp: App {
         return AppleAccountCacheCoordinatorHandler(
             syncRootURL: sharedRootURL.appendingPathComponent("SyncMode", isDirectory: true),
             containerIdentifier: containerIdentifier,
-            syncWhenPossible: syncWhenPossible
+            syncWhenPossible: syncWhenPossible,
+            scheduleSyncAfterLocalChange: scheduleSyncAfterLocalChange
         )
     }
 

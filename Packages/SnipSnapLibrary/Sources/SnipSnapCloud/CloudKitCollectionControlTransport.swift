@@ -10,7 +10,8 @@ package enum CloudKitRetryPolicy {
   package static func isTransient(_ code: CKError.Code) -> Bool {
     switch code {
     case .networkFailure, .networkUnavailable, .requestRateLimited,
-         .serviceUnavailable, .zoneBusy, .serverResponseLost:
+         .serviceUnavailable, .zoneBusy, .serverResponseLost,
+         .accountTemporarilyUnavailable:
       true
     default:
       false
@@ -99,27 +100,19 @@ package actor CloudKitCollectionControlTransport: CloudCollectionControlTranspor
       return try CloudCollectionControlCodec.decode(record, expectedID: controlID)
     } catch let error as CKError where Self.isMissingControl(error.code) {
       return nil
-    } catch let error as CloudCollectionError {
-      throw error
-    } catch {
-      throw error
     }
   }
 
   package func createZones(_ zones: Set<CloudZoneID>) async throws {
     let allZones = zones.union([controlID.zone])
-    do {
-      let result = try await database.modifyRecordZones(
-        saving: allZones.map {
-          CKRecordZone(zoneID: CloudKitRecordMapper.zoneID(for: $0))
-        },
-        deleting: []
-      )
-      for value in result.saveResults.values {
-        _ = try value.get()
-      }
-    } catch {
-      throw error
+    let result = try await database.modifyRecordZones(
+      saving: allZones.map {
+        CKRecordZone(zoneID: CloudKitRecordMapper.zoneID(for: $0))
+      },
+      deleting: []
+    )
+    for value in result.saveResults.values {
+      _ = try value.get()
     }
   }
 
@@ -151,10 +144,6 @@ package actor CloudKitCollectionControlTransport: CloudCollectionControlTranspor
       }
     } catch let error as CKError {
       return try conflictOrThrow(error)
-    } catch let error as CloudCollectionError {
-      throw error
-    } catch {
-      throw error
     }
   }
 
@@ -174,8 +163,6 @@ package actor CloudKitCollectionControlTransport: CloudCollectionControlTranspor
       }
     } catch let error as CKError where error.code == .zoneNotFound {
       return
-    } catch {
-      throw error
     }
   }
 

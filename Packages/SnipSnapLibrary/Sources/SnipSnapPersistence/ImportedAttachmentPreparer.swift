@@ -57,7 +57,7 @@ package enum ImportedAttachmentPreparer {
           at: destination.deletingLastPathComponent(),
           withIntermediateDirectories: true
         )
-        try FileManager.default.copyItem(at: sourceURL, to: destination)
+        _ = try AttachmentFileIO.copyRegularFile(from: sourceURL, to: destination)
         createdFiles.append(destination)
         let values = try destination.resourceValues(forKeys: [.fileSizeKey])
         guard Int64(values.fileSize ?? -1) == attachment.byteCount else {

@@ -153,10 +153,10 @@ public enum MacLocalSnipLibraryBootstrap {
         try validateMarker(at: paths.markerURL, paths: paths)
       } catch {
         let backupURL = try? makeRawBackupIfPresent(paths: paths, fileManager: fileManager)
-        return jsonFallback(
+        return unavailableAfterInvalidFinalStore(
           paths: paths,
           backupURL: backupURL ?? nil,
-          migrationError: error
+          error: error
         )
       }
       guard fileManager.fileExists(atPath: paths.swiftDataStoreURL.path) else {
@@ -415,6 +415,20 @@ public enum MacLocalSnipLibraryBootstrap {
       library: SwiftDataSnipLibrary.unavailable(storeURL: paths.swiftDataStoreURL),
       mode: .unavailable,
       errorMessage: String(localized: "Snip Snap could not open its SwiftData store. It left the Local and JSON stores unchanged, so it cannot save new snips.", bundle: .main)
+    )
+  }
+
+  private static func unavailableAfterInvalidFinalStore(
+    paths: LocalSnipStorePaths,
+    backupURL: URL?,
+    error: Error
+  ) -> LocalSnipLibraryOpenResult {
+    let detail = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+    return LocalSnipLibraryOpenResult(
+      library: SwiftDataSnipLibrary.unavailable(storeURL: paths.swiftDataStoreURL),
+      mode: .unavailable,
+      errorMessage: String(localized: "Snip Snap could not verify its SwiftData store. It left the Local and JSON stores unchanged, so it cannot save new snips. \(detail)", bundle: .main),
+      backupURL: backupURL
     )
   }
 

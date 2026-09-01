@@ -212,6 +212,16 @@ print 'CDHash=different-x86_64-hash' >> "$second_app/identity-x86_64"
 assert_fails release_policy_require_matching_apps "$first_app" "$second_app"
 unset SNIP_SNAP_CODESIGN
 
+verified_app="$test_root/verified/Snip Snap.app"
+/bin/mkdir -p "$verified_app/Contents/Resources"
+print '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>0.1.0</string><key>CFBundleVersion</key><string>1</string></dict></plist>' > \
+    "$verified_app/Contents/Info.plist"
+print '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>NSPrivacyTracking</key><false/></dict></plist>' > \
+    "$verified_app/Contents/Resources/PrivacyInfo.xcprivacy"
+assert_succeeds release_policy_verify_app "$verified_app"
+/bin/rm "$verified_app/Contents/Resources/PrivacyInfo.xcprivacy"
+assert_fails release_policy_verify_app "$verified_app"
+
 archive="$test_root/Snip-Snap-0.1.0.zip"
 checksum="$archive.sha256"
 print -n 'release bytes' > "$archive"

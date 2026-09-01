@@ -35,7 +35,7 @@ extension SwiftDataSnipLibrary {
         if !FileManager.default.fileExists(atPath: destination.path) {
           try DurableFile.createDirectory(directory)
           createdDirectories.append(directory)
-          try FileManager.default.copyItem(at: source, to: destination)
+          _ = try AttachmentFileIO.copyRegularFile(from: source, to: destination)
           try DurableFile.syncFile(destination)
           try DurableFile.syncDirectory(directory)
         } else if try Data(contentsOf: destination) != Data(contentsOf: source) {

@@ -202,6 +202,7 @@ signing_policy_preflight() {
             required_environment=(
                 SNIP_SNAP_SIGNING_IDENTITY
                 SNIP_SNAP_NOTARY_PROFILE
+                SNIP_SNAP_MAC_PROVISIONING_PROFILE_SPECIFIER
             )
             ;;
         *)
@@ -265,6 +266,21 @@ signing_policy_preflight() {
                     com.apple.developer.icloud-container-environment \
                     Production || missing+=("CloudKit Production environment entitlement")
             fi
+            if [[ "$scheme" == SnipSnapiOS ]]; then
+                local expected_push_environment=development
+                [[ "$lane" == testflight ]] && expected_push_environment=production
+                signing_policy_plist_value_equals \
+                    "$entitlement_path" aps-environment \
+                    "$expected_push_environment" || \
+                    missing+=("Apple Push Notification environment entitlement")
+            elif [[ "$scheme" == SnipSnap ]]; then
+                local expected_push_environment=development
+                [[ "$lane" == release ]] && expected_push_environment=production
+                signing_policy_plist_value_equals \
+                    "$entitlement_path" com.apple.developer.aps-environment \
+                    "$expected_push_environment" || \
+                    missing+=("Apple Push Notification environment entitlement")
+            fi
         fi
     fi
 
@@ -327,9 +343,21 @@ signing_policy_preflight() {
 signing_policy_verify_production_cloudkit_app() {
     local app_path="$1"
     local cloudkit_container_identifier="$2"
+    local development_team="$3"
+    local bundle_identifier="$4"
     local codesign_tool="${SNIP_SNAP_CODESIGN:-/usr/bin/codesign}"
+    local security_tool="${SNIP_SNAP_SECURITY:-/usr/bin/security}"
     local temp_root=""
     local entitlements=""
+    local profile="$app_path/Contents/embedded.provisionprofile"
+    local profile_plist=""
+    local profile_entitlements=""
+    local expiration=""
+    local application_identifier=""
+    local prefix_count=""
+    local prefix=""
+    local prefix_index
+    local app_identifier_matches=false
     local item
     local -a missing
 
@@ -341,6 +369,10 @@ signing_policy_verify_production_cloudkit_app() {
         signing_policy_fail "CloudKit container identifier is missing"
         return 1
     }
+    [[ -f "$profile" ]] || {
+        signing_policy_fail "signed app has no embedded Developer ID provisioning profile"
+        return 1
+    }
     "$codesign_tool" --verify --deep --strict "$app_path" >/dev/null 2>&1 || {
         signing_policy_fail "signed app verification failed"
         return 1
@@ -348,12 +380,21 @@ signing_policy_verify_production_cloudkit_app() {
 
     temp_root="$(/usr/bin/mktemp -d /private/tmp/snip-snap-mac-cloudkit.XXXXXX)"
     entitlements="$temp_root/entitlements.plist"
+    profile_plist="$temp_root/profile.plist"
+    profile_entitlements="$temp_root/profile-entitlements.plist"
     if ! "$codesign_tool" -d --entitlements :- "$app_path" \
         > "$entitlements" 2>/dev/null; then
         /bin/rm -rf "$temp_root"
         signing_policy_fail "could not inspect signed app entitlements"
         return 1
     fi
+    if ! "$security_tool" cms -D -i "$profile" > "$profile_plist" 2>/dev/null; then
+        /bin/rm -rf "$temp_root"
+        signing_policy_fail "could not inspect embedded Developer ID provisioning profile"
+        return 1
+    fi
+    /usr/bin/plutil -extract Entitlements xml1 -o "$profile_entitlements" \
+        "$profile_plist" 2>/dev/null || missing+=("profile entitlements")
 
     /usr/bin/plutil -lint "$entitlements" >/dev/null 2>&1 || \
         missing+=("valid signed app entitlements")
@@ -366,6 +407,46 @@ signing_policy_verify_production_cloudkit_app() {
     signing_policy_plist_value_equals \
         "$entitlements" com.apple.developer.icloud-container-environment Production || \
         missing+=("signed CloudKit Production environment")
+    signing_policy_plist_value_equals \
+        "$entitlements" com.apple.developer.aps-environment production || \
+        missing+=("signed Apple Push Notification production environment")
+    signing_policy_plist_array_contains \
+        "$profile_plist" TeamIdentifier "$development_team" || \
+        missing+=("profile team identifier")
+    application_identifier="$(/usr/bin/plutil -extract \
+        'com\.apple\.application-identifier' raw -o - "$profile_entitlements" 2>/dev/null)"
+    prefix_count="$(/usr/bin/plutil -extract ApplicationIdentifierPrefix raw -o - \
+        "$profile_plist" 2>/dev/null)"
+    if [[ "$prefix_count" == <-> ]]; then
+        for (( prefix_index = 0; prefix_index < prefix_count; prefix_index++ )); do
+            prefix="$(/usr/bin/plutil -extract \
+                "ApplicationIdentifierPrefix.$prefix_index" raw -o - \
+                "$profile_plist" 2>/dev/null)" || continue
+            if [[ "$application_identifier" == "$prefix.$bundle_identifier" ]]; then
+                app_identifier_matches=true
+                break
+            fi
+        done
+    fi
+    $app_identifier_matches || missing+=("profile application identifier")
+    signing_policy_plist_array_contains \
+        "$profile_entitlements" com.apple.developer.icloud-container-identifiers \
+        "$cloudkit_container_identifier" || missing+=("profile CloudKit container")
+    signing_policy_plist_array_contains \
+        "$profile_entitlements" com.apple.developer.icloud-services CloudKit || \
+        missing+=("profile CloudKit service")
+    signing_policy_plist_value_equals \
+        "$profile_entitlements" com.apple.developer.icloud-container-environment \
+        Production || missing+=("profile CloudKit Production environment")
+    signing_policy_plist_value_equals \
+        "$profile_entitlements" com.apple.developer.aps-environment production || \
+        missing+=("profile Apple Push Notification production environment")
+    expiration="$(/usr/bin/plutil -extract ExpirationDate raw -o - "$profile_plist" 2>/dev/null)" || \
+        missing+=("profile expiration date")
+    if [[ -n "$expiration" ]] && ! /usr/bin/ruby -rtime -e \
+        'exit(Time.parse(ARGV[0]) > Time.now ? 0 : 1)' "$expiration"; then
+        missing+=("unexpired provisioning profile")
+    fi
     /bin/rm -rf "$temp_root"
 
     if (( ${#missing} )); then
@@ -380,6 +461,9 @@ signing_policy_verify_production_cloudkit_app() {
 signing_policy_write_export_options() {
     local output_file="$1"
     local development_team="$2"
+    local bundle_identifier="${3:-}"
+    local profile_specifier="${4:-}"
+    local escaped_bundle_identifier="${bundle_identifier//./\\.}"
 
     [[ -n "$development_team" ]] || {
         signing_policy_fail "cannot create release export options without DEVELOPMENT_TEAM"
@@ -392,4 +476,10 @@ signing_policy_write_export_options() {
     /usr/bin/plutil -insert signingStyle -string manual "$output_file"
     /usr/bin/plutil -insert stripSwiftSymbols -bool YES "$output_file"
     /usr/bin/plutil -insert teamID -string "$development_team" "$output_file"
+    if [[ -n "$bundle_identifier" && -n "$profile_specifier" ]]; then
+        /usr/bin/plutil -insert provisioningProfiles -json '{}' "$output_file"
+        /usr/bin/plutil -insert \
+            "provisioningProfiles.$escaped_bundle_identifier" \
+            -string "$profile_specifier" "$output_file"
+    fi
 }

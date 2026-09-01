@@ -310,7 +310,7 @@ final class MacLocalSnipLibraryMigrationTests: XCTestCase {
     XCTAssertNotNil(result.backupURL)
   }
 
-  func testUnmarkedFinalLocalDirectoryIsNeverDeletedOrReplaced() throws {
+  func testUnmarkedFinalLocalDirectoryIsNeverDeletedOrReplaced() async throws {
     let fixture = try makeVersionSixFixture()
     let paths = LocalSnipStorePaths(jsonURL: fixture.jsonURL)
     try FileManager.default.createDirectory(at: paths.localDirectory, withIntermediateDirectories: false)
@@ -319,11 +319,28 @@ final class MacLocalSnipLibraryMigrationTests: XCTestCase {
 
     let result = MacLocalSnipLibraryBootstrap.open(jsonURL: fixture.jsonURL)
 
-    XCTAssertEqual(result.mode, .jsonFallback)
+    XCTAssertEqual(result.mode, .unavailable)
     XCTAssertTrue(result.errorMessage?.contains("without a valid migration marker") == true)
     XCTAssertEqual(try Data(contentsOf: sentinel), Data("keep".utf8))
     XCTAssertFalse(FileManager.default.fileExists(atPath: paths.markerURL.path))
     XCTAssertFalse(FileManager.default.fileExists(atPath: paths.swiftDataStoreURL.path))
+    do {
+      _ = try await result.library.perform(
+        .add(
+          content: "must not write stale JSON",
+          origin: .quickEntry,
+          source: nil,
+          listID: SnipList.inbox.id,
+          attachmentURLs: [],
+          requestID: UUID(),
+          now: .distantPast
+        ),
+        sortedBy: .manual
+      )
+      XCTFail("An unverified final store must fail closed")
+    } catch {
+      XCTAssertEqual(error as? SnipLibraryError, .storeUnavailable)
+    }
   }
 
   func testRetryCleansOnlyKnownIncompleteWorkNames() throws {

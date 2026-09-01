@@ -20,10 +20,10 @@ struct PanelMoreButton: View {
                     width: PanelControlMetrics.floatingIconLength,
                     height: PanelControlMetrics.floatingIconLength
                 )
-                .panelStandaloneActionControl()
         }
         .menuIndicator(.hidden)
-        .buttonStyle(.plain)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
         .help(moreLabel)
         .accessibilityLabel(moreLabel)
     }

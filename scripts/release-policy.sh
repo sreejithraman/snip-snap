@@ -365,11 +365,20 @@ release_policy_require_new_notary_build() {
 release_policy_verify_app() {
     local app_path="$1"
     local plist="$app_path/Contents/Info.plist"
+    local privacy_manifest="$app_path/Contents/Resources/PrivacyInfo.xcprivacy"
     local app_version
     local app_build
 
     [[ -f "$plist" ]] || {
         release_policy_fail "missing app Info.plist"
+        return 1
+    }
+    [[ -f "$privacy_manifest" ]] || {
+        release_policy_fail "missing Mac privacy manifest"
+        return 1
+    }
+    /usr/bin/plutil -lint "$privacy_manifest" >/dev/null 2>&1 || {
+        release_policy_fail "invalid Mac privacy manifest"
         return 1
     }
     app_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" || {

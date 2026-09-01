@@ -1234,7 +1234,7 @@ private actor AttachmentTransferProbe: CloudAttachmentTransferring {
     }
 
     private let preparedURL: URL
-    private var recordedUses: [CloudAttachmentUse] = []
+    private var recordedUses: [SyncedAttachmentUse] = []
     private var recordedClearCount = 0
     private var recordedConfiguration: Configuration?
 
@@ -1242,7 +1242,7 @@ private actor AttachmentTransferProbe: CloudAttachmentTransferring {
         self.preparedURL = preparedURL
     }
 
-    func prepare(attachmentID: UUID, for use: CloudAttachmentUse) -> URL {
+    func prepare(attachmentID: UUID, for use: SyncedAttachmentUse) -> URL {
         _ = attachmentID
         recordedUses.append(use)
         return preparedURL
@@ -1256,7 +1256,7 @@ private actor AttachmentTransferProbe: CloudAttachmentTransferring {
     func recordConfiguration(namespace: CloudSyncNamespace, payloadZone: CloudZoneID) {
         recordedConfiguration = Configuration(namespace: namespace, payloadZone: payloadZone)
     }
-    func uses() -> [CloudAttachmentUse] { recordedUses }
+    func uses() -> [SyncedAttachmentUse] { recordedUses }
     func clearCount() -> Int { recordedClearCount }
     func configuration() -> Configuration? { recordedConfiguration }
 }

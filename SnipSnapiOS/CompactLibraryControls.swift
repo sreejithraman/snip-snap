@@ -5,8 +5,6 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct CompactLibraryControls: View {
-    @Environment(\.colorScheme) private var colorScheme
-
     let model: IOSAppModel
     let storage: CompactComposerStorage
     let showsListTabs: Bool
@@ -83,15 +81,9 @@ struct CompactLibraryControls: View {
                 Image(systemName: isStaging ? "hourglass" : "plus")
                     .font(.title3.weight(.medium))
                     .frame(width: 52, height: 52)
-                    .glassEffect(.regular.interactive(), in: Circle())
-                    .overlay {
-                        Circle().strokeBorder(
-                            SnipSnapTheme.glassEdge,
-                            lineWidth: 0.5
-                        )
-                    }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
             .disabled(storage.isSaving || isStaging)
             .accessibilityLabel("Add Attachments")
             .accessibilityIdentifier("composer-add-attachments")
@@ -118,21 +110,10 @@ struct CompactLibraryControls: View {
                     } label: {
                         Image(systemName: "arrow.up")
                             .font(.body.weight(.bold))
-                            .foregroundStyle(
-                                canSend
-                                    ? SnipSnapTheme.primaryActionLabel(for: colorScheme)
-                                    : SnipSnapTheme.disabledPrimaryActionLabel(for: colorScheme)
-                            )
                             .frame(width: 46, height: 36)
-                            .background {
-                                Capsule(style: .continuous).fill(
-                                    canSend
-                                        ? SnipSnapTheme.primaryActionTint(for: colorScheme)
-                                        : SnipSnapTheme.disabledPrimaryActionTint(for: colorScheme)
-                                )
-                            }
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.glassProminent)
+                    .buttonBorderShape(.capsule)
                     .disabled(!canSend)
                     .padding(.trailing, 6)
                     .padding(.vertical, 6)
@@ -309,6 +290,8 @@ final class CompactComposerStorage {
 }
 
 private struct CompactListTabBar: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     let model: IOSAppModel
     @Binding var sheet: AppSheet?
     let deleteList: (UUID) async -> Void
@@ -374,8 +357,8 @@ private struct CompactListTabBar: View {
                 .font(.body.weight(.semibold))
                 .frame(width: 56, height: 56)
         }
-        .buttonStyle(.plain)
-        .glassEffect(.regular.interactive(), in: Circle())
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
         .accessibilityLabel("New List")
         .accessibilityIdentifier("new-list")
     }
@@ -416,8 +399,12 @@ private struct CompactListTabBar: View {
     private func scrollToSelection(using proxy: ScrollViewProxy) {
         Task { @MainActor in
             await Task.yield()
-            withAnimation(.easeOut(duration: 0.16)) {
+            if reduceMotion {
                 proxy.scrollTo(model.selectedListID, anchor: .center)
+            } else {
+                withAnimation(.easeOut(duration: 0.16)) {
+                    proxy.scrollTo(model.selectedListID, anchor: .center)
+                }
             }
         }
     }
@@ -445,9 +432,11 @@ private struct CompactDraftAttachment: View {
                     .foregroundStyle(.primary)
                     .frame(width: 22, height: 22)
                     .background(.thickMaterial, in: Circle())
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .offset(x: 5, y: -5)
+            .offset(x: 16, y: -16)
             .accessibilityLabel("Remove \(url.lastPathComponent)")
             .accessibilityIdentifier("composer-remove-attachment-\(url.lastPathComponent)")
         }

@@ -489,10 +489,10 @@ struct ContentView: View {
                     width: PanelControlMetrics.floatingIconLength,
                     height: PanelControlMetrics.floatingIconLength
                 )
-                .panelStandaloneActionControl(edge: .emphasized)
         }
         .menuIndicator(.hidden)
-        .buttonStyle(.plain)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
         .help("Add Attachment")
         .accessibilityLabel("Add Attachment")
     }

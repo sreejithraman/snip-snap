@@ -3,6 +3,10 @@ import Foundation
 import SnipSnapCore
 import SnipSnapPersistence
 
+public enum SnipSnapCloudNotifications {
+    public static let accountChanged = Notification.Name.CKAccountChanged
+}
+
 /// The Apple Account facts needed by sync policy. Sync generation stays in the namespace seam.
 package enum ICloudAccountState: Equatable, Sendable {
     case available(accountLineage: String)
@@ -31,6 +35,7 @@ package struct FixedICloudAccountStateSource: ICloudAccountStateSource {
 /// Narrow production-capable action seam for platform notice models.
 public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
     public typealias SyncAction = @MainActor @Sendable () async -> Void
+    public typealias ScheduleAction = @MainActor @Sendable () async -> Void
     package typealias AttachmentCoordinatorFactory = @Sendable (
         SwiftDataSnipLibrary,
         CloudSyncNamespace,
@@ -63,12 +68,14 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
     private var attachmentDescriptor: CloudCollectionDescriptor?
     private let productionConfiguration: ProductionConfiguration?
     private let syncAction: SyncAction?
+    private let scheduleAction: ScheduleAction?
 
     package init(
         coordinator: ICloudSyncModeCoordinator,
         attachmentCoordinator: (any CloudAttachmentTransferring)? = nil,
         activeDescriptor: CloudCollectionDescriptor? = nil,
-        syncWhenPossible: SyncAction? = nil
+        syncWhenPossible: SyncAction? = nil,
+        scheduleSyncAfterLocalChange: ScheduleAction? = nil
     ) {
         self.coordinator = coordinator
         self.attachmentCoordinator = attachmentCoordinator
@@ -77,6 +84,7 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         attachmentDescriptor = activeDescriptor
         productionConfiguration = nil
         syncAction = syncWhenPossible
+        scheduleAction = scheduleSyncAfterLocalChange
     }
 
     package init(
@@ -99,13 +107,15 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
             )
         )
         syncAction = nil
+        scheduleAction = nil
     }
 
     /// Opens the account seam without constructing CloudKit until an account action runs.
     public init?(
         syncRootURL: URL,
         containerIdentifier: String,
-        syncWhenPossible: @escaping SyncAction
+        syncWhenPossible: @escaping SyncAction,
+        scheduleSyncAfterLocalChange: @escaping ScheduleAction = {}
     ) {
         let identifier = containerIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !identifier.isEmpty,
@@ -121,6 +131,7 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
             backend: .cloudKit(containerIdentifier: identifier)
         )
         syncAction = syncWhenPossible
+        scheduleAction = scheduleSyncAfterLocalChange
     }
 
     public func refreshAppleAccountNotice() async throws -> AppleAccountNotice? {
@@ -174,6 +185,14 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         }
     }
 
+    public func scheduleSyncAfterLocalChange() async {
+        if let scheduleAction {
+            await scheduleAction()
+            return
+        }
+        await syncWhenPossible()
+    }
+
     public func isCloudSyncActive() async throws -> Bool {
         guard let productionConfiguration else { return coordinator != nil }
         let persistence = try SwiftDataSyncModePersistence(
@@ -199,13 +218,7 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         _ id: UUID,
         for use: SyncedAttachmentUse
     ) async throws -> URL {
-        let mapped: CloudAttachmentUse = switch use {
-        case .preview: .preview
-        case .open: .open
-        case .copy: .copy
-        case .export: .export
-        }
-        return try await requireAttachmentCoordinator().prepare(attachmentID: id, for: mapped)
+        try await requireAttachmentCoordinator().prepare(attachmentID: id, for: use)
     }
 
     public func clearDownloadedFiles() async throws {
@@ -364,14 +377,14 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
     }
 }
 
-private actor CloudKitICloudAccountStateSource: ICloudAccountStateSource {
+package actor CloudKitICloudAccountStateSource: ICloudAccountStateSource {
     private let container: CKContainer
 
-    init(container: CKContainer) {
+    package init(container: CKContainer) {
         self.container = container
     }
 
-    func currentAccountState() async -> ICloudAccountState {
+    package func currentAccountState() async -> ICloudAccountState {
         do {
             switch try await container.accountStatus() {
             case .available:

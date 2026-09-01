@@ -68,6 +68,8 @@ write_entitlements "$share/fake-entitlements.plist" org.example.snipsnap.ios.sha
     -json '["CloudKit"]' "$app/fake-entitlements.plist"
 /usr/bin/plutil -insert 'com\.apple\.developer\.icloud-container-environment' \
     -string Production "$app/fake-entitlements.plist"
+/usr/bin/plutil -insert aps-environment \
+    -string production "$app/fake-entitlements.plist"
 /bin/cp "$script_dir/../SnipSnapiOS/PrivacyInfo.xcprivacy" \
     "$app/PrivacyInfo.xcprivacy"
 /bin/cp "$script_dir/../SnipSnapShareExtension/PrivacyInfo.xcprivacy" \
@@ -106,6 +108,12 @@ assert_fails_with 'app export compliance declaration' verify_archive
 assert_fails_with 'signed CloudKit Production environment' verify_archive
 /usr/bin/plutil -replace 'com\.apple\.developer\.icloud-container-environment' \
     -string Production "$app/fake-entitlements.plist"
+
+/usr/bin/plutil -replace aps-environment \
+    -string development "$app/fake-entitlements.plist"
+assert_fails_with 'signed Apple Push Notification production environment' verify_archive
+/usr/bin/plutil -replace aps-environment \
+    -string production "$app/fake-entitlements.plist"
 
 /usr/bin/plutil -insert 'com\.apple\.developer\.icloud-services' \
     -json '["CloudKit"]' "$share/fake-entitlements.plist"

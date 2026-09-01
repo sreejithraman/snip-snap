@@ -40,6 +40,8 @@ public enum SnipSnapCloudAppAssembly {
     let namespace = startupState.namespace
     let container = CKContainer(identifier: identifier)
     let database = container.privateCloudDatabase
+    let accountStateSource = CloudKitICloudAccountStateSource(container: container)
+    let automaticResults = AsyncStream.makeStream(of: SnipSnapCloudSyncResult.self)
     let lifecycle = SnipSnapICloudSyncLifecycle(
       rootURL: rootURL,
       sourceLibrary: sourceLibrary,
@@ -49,6 +51,7 @@ public enum SnipSnapCloudAppAssembly {
       accountLineageProvider: {
         try await container.userRecordID().recordName
       },
+      accountStateSource: accountStateSource,
       ownerName: CKCurrentUserDefaultName,
       controlTransport: CloudKitCollectionControlTransport(
         database: database,
@@ -65,10 +68,14 @@ public enum SnipSnapCloudAppAssembly {
         CloudCollectionDescriptor.fresh(ownerName: CKCurrentUserDefaultName)
       },
       reservedZones: [CloudCollectionAssembly.productionControlID.zone],
-      operationGate: CloudCollectionAssembly.productionOperationGate
+      operationGate: CloudCollectionAssembly.productionOperationGate,
+      automaticResultHandler: { result in
+        automaticResults.continuation.yield(result)
+      }
     )
     let session = SnipSnapCloudSyncSession(
       synchronize: { try await lifecycle.synchronize() },
+      scheduleAutomaticSync: { try await lifecycle.scheduleAutomaticSync() },
       enable: { try await lifecycle.enableICloudSync() },
       cancelEnable: { try await lifecycle.cancelPendingEnable() },
       disable: { choice in try await lifecycle.disableICloudSync(choice) },
@@ -76,7 +83,8 @@ public enum SnipSnapCloudAppAssembly {
       activeLibrary: { try await lifecycle.activeLibrary() },
       resolveEncryptedDataReset: { choice in
         try await lifecycle.resolveEncryptedDataReset(choice)
-      }
+      },
+      automaticSyncResults: automaticResults.stream
     )
     if settingsStartup.mode == .iCloudSync {
       return SnipSnapCloudAppServices(

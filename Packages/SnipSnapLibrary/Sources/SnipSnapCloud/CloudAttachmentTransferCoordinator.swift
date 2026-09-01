@@ -88,15 +88,8 @@ private func formatSnipSnapByteLimit(_ byteCount: Int64) -> String {
   return String(localized: "\(byteCount) bytes", bundle: .main)
 }
 
-package enum CloudAttachmentUse: Equatable, Sendable {
-  case preview
-  case open
-  case copy
-  case export
-}
-
 package protocol CloudAttachmentTransferring: Sendable {
-  func prepare(attachmentID: UUID, for use: CloudAttachmentUse) async throws -> URL
+  func prepare(attachmentID: UUID, for use: SyncedAttachmentUse) async throws -> URL
   func clearDownloads() async throws
   func transferStates() async throws -> [UUID: CloudAttachmentTransferState]
 }
@@ -209,7 +202,7 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
   }
 
   /// All attachment actions use one verified local file, whether it was saved here or downloaded.
-  package func prepare(attachmentID: UUID, for use: CloudAttachmentUse) async throws -> URL {
+  package func prepare(attachmentID: UUID, for use: SyncedAttachmentUse) async throws -> URL {
     _ = use
     return try await download(attachmentID: attachmentID)
   }

@@ -20,7 +20,6 @@ struct SnipCollectionView: View {
     let layout: SnipCollectionLayout
     var dismissComposerKeyboard: () -> Void = {}
     @State private var editMode: EditMode = .inactive
-    @State private var isSelecting = false
     @State private var inlineEditSession: CompactInlineEditSession?
     @State private var previewURLs: [URL] = []
     @State private var selectedPreviewURL: URL?
@@ -40,7 +39,7 @@ struct SnipCollectionView: View {
                     .accessibilityIdentifier("empty-snips")
                 }
             } else {
-                List {
+                List(selection: selectedSnipIDs) {
                     ForEach(model.recoverySnapshot.pendingSnips.filter { recovery in
                         recovery.recovered.listID == model.selectedListID
                             && !model.snips.contains { $0.id == recovery.id }
@@ -56,30 +55,13 @@ struct SnipCollectionView: View {
                     ForEach(model.visibleSnips) { snip in
                         Group {
                             if isSelecting {
-                                Button {
-                                    toggleSelection(snip.id)
-                                } label: {
-                                    HStack(alignment: .top, spacing: 12) {
-                                        Image(systemName: model.selectedSnipIDs.contains(snip.id)
-                                            ? "checkmark.circle.fill" : "circle")
-                                            .foregroundStyle(
-                                                model.selectedSnipIDs.contains(snip.id)
-                                                    ? SnipSnapTheme.controlTint : Color.secondary
-                                            )
-                                            .accessibilityHidden(true)
-                                        SnipRow(
-                                            snip: snip,
-                                            model: model,
-                                            isRecovered: model.isRecoveredSnip(snip.id),
-                                            showsStatusIcon: false
-                                        )
-                                    }
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityAddTraits(
-                                    model.selectedSnipIDs.contains(snip.id) ? .isSelected : []
+                                SnipRow(
+                                    snip: snip,
+                                    model: model,
+                                    isRecovered: model.isRecoveredSnip(snip.id),
+                                    showsStatusIcon: false
                                 )
+                                .contentShape(Rectangle())
                                 .accessibilityIdentifier("snip-\(snip.id)")
                             } else {
                                 if inlineEditSession?.original.id == snip.id {
@@ -203,9 +185,7 @@ struct SnipCollectionView: View {
                 } else {
                     WorkflowOptionsMenu(model: model)
                 }
-                Button(isSelecting ? "Done" : "Edit") {
-                    setSelecting(!isSelecting)
-                }
+                EditButton()
                     .disabled(model.visibleSnips.isEmpty)
                     .accessibilityIdentifier("select-snips")
             }
@@ -213,7 +193,14 @@ struct SnipCollectionView: View {
         .onChange(of: model.selectedListID) {
             cancelInlineEdit()
             guard isSelecting else { return }
-            setSelecting(false)
+            endSelection()
+        }
+        .onChange(of: editMode) { _, mode in
+            model.selectedSnipIDs = []
+            if mode.isEditing {
+                cancelInlineEdit()
+                model.selectedSnipID = nil
+            }
         }
     }
 
@@ -326,29 +313,23 @@ struct SnipCollectionView: View {
     }
 
     private func endSelection() {
-        setSelecting(false)
-    }
-
-    private func toggleSelection(_ id: UUID) {
-        if model.selectedSnipIDs.contains(id) {
-            model.selectedSnipIDs.remove(id)
-        } else {
-            model.selectedSnipIDs.insert(id)
-        }
-    }
-
-    private func setSelecting(_ selecting: Bool) {
-        if selecting { cancelInlineEdit() }
-        isSelecting = selecting
-        editMode = selecting ? .active : .inactive
+        editMode = .inactive
         model.selectedSnipIDs = []
-        if selecting { model.selectedSnipID = nil }
+    }
+
+    private var isSelecting: Bool {
+        editMode.isEditing
+    }
+
+    private var selectedSnipIDs: Binding<Set<UUID>> {
+        Binding(
+            get: { model.selectedSnipIDs },
+            set: { model.selectedSnipIDs = $0 }
+        )
     }
 }
 
 private struct CompactInlineSnipEditor: View {
-    @Environment(\.colorScheme) private var colorScheme
-
     let snip: Snip
     let model: IOSAppModel
     @Binding var text: String
@@ -402,12 +383,9 @@ private struct CompactInlineSnipEditor: View {
                         Image(systemName: "xmark")
                             .font(.body.weight(.semibold))
                             .frame(width: 44, height: 36)
-                            .background(
-                                SnipSnapTheme.standaloneActionFill,
-                                in: Capsule(style: .continuous)
-                            )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.capsule)
                     .disabled(isSaving)
                     .accessibilityLabel("Cancel Editing")
                     .accessibilityIdentifier("inline-snip-cancel")
@@ -415,21 +393,10 @@ private struct CompactInlineSnipEditor: View {
                     Button(action: save) {
                         Image(systemName: "checkmark")
                             .font(.body.weight(.bold))
-                            .foregroundStyle(
-                                canSave
-                                    ? SnipSnapTheme.primaryActionLabel(for: colorScheme)
-                                    : SnipSnapTheme.disabledPrimaryActionLabel(for: colorScheme)
-                            )
                             .frame(width: 46, height: 36)
-                            .background {
-                                Capsule(style: .continuous).fill(
-                                    canSave
-                                        ? SnipSnapTheme.primaryActionTint(for: colorScheme)
-                                        : SnipSnapTheme.disabledPrimaryActionTint(for: colorScheme)
-                                )
-                            }
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.glassProminent)
+                    .buttonBorderShape(.capsule)
                     .disabled(!canSave)
                     .accessibilityLabel("Save Snip")
                     .accessibilityIdentifier("inline-snip-save")

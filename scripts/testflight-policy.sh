@@ -240,6 +240,9 @@ testflight_policy_verify_archive() {
         "$app_entitlements" com.apple.developer.icloud-container-environment Production || \
         missing+=("signed CloudKit Production environment")
     signing_policy_plist_value_equals \
+        "$app_entitlements" aps-environment production || \
+        missing+=("signed Apple Push Notification production environment")
+    signing_policy_plist_value_equals \
         "$app_entitlements" com.apple.developer.team-identifier "$development_team" || \
         missing+=("signed app team")
     signing_policy_plist_value_equals \

@@ -7,7 +7,8 @@ DEVELOPMENT_TEAM =
 // SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER = org.example.snipsnap
 // SNIP_SNAP_APP_GROUP_IDENTIFIER = group.org.example.snipsnap
 // SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER = iCloud.org.example.snipsnap
-// SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS = Config/Local.entitlements
+// CODE_SIGN_ENTITLEMENTS = Config/LocalMac.entitlements
+// SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS = Config/LocalIOS.entitlements
 
 // The signed Dev lane adds .dev to the iOS app and App Group identifiers.
 // Override them only when your registered development identifiers differ.

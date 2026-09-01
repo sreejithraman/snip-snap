@@ -68,7 +68,8 @@ paths.each do |path|
     rules << "Apple team ID" if team_context && team_values.any? { |value| !clear_fake_value?(value) }
 
     profile_value = line[/\bPROVISIONING_PROFILE(?:_SPECIFIER)?\s*=\s*["']?([^;"'\s#]+)/, 1]
-    rules << "provisioning profile" if profile_value && !clear_fake_value?(profile_value)
+    rules << "provisioning profile" if
+      profile_value && !profile_value.start_with?("$") && !clear_fake_value?(profile_value)
 
     identity_value = line[/\bSNIP_SNAP_SIGNING_IDENTITY\s*=\s*["']?([^;"'\s#]+)/, 1]
     code_sign_value = line[/\bCODE_SIGN_IDENTITY\s*=\s*["']?([^;"'#]+)/, 1]&.strip

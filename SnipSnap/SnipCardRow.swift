@@ -2,6 +2,7 @@ import SwiftUI
 import SnipSnapCore
 
 struct SnipCardRow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let snip: Snip
     let isRecovered: Bool
     let isSelected: Bool
@@ -49,7 +50,9 @@ struct SnipCardRow: View {
         } main: {
             if isEditing {
                 editingBody
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .transition(
+                        reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom))
+                    )
             } else {
                 draggableBody
                     .transition(.opacity)
@@ -69,7 +72,7 @@ struct SnipCardRow: View {
         }
         .onTapGesture(count: 2, perform: onOpen)
         .onTapGesture(count: 1, perform: onSelect)
-        .animation(.snappy(duration: 0.18), value: isEditing)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.18), value: isEditing)
         .onChange(of: isEditing, initial: true) { _, editing in
             guard editing else {
                 editSessionID = UUID()
@@ -233,10 +236,10 @@ struct SnipCardRow: View {
                 Button("Capture Screen Area…", action: captureScreenAreaIntoEdit)
             } label: {
                 editActionIcon("plus")
-                    .panelEmbeddedActionControl()
             }
             .menuIndicator(.hidden)
-            .buttonStyle(.plain)
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
             .disabled(isSaving)
             .help("Add Attachment")
             .accessibilityLabel("Add Attachment")
@@ -245,9 +248,9 @@ struct SnipCardRow: View {
 
             Button(action: cancelEdit) {
                 editActionIcon("xmark")
-                    .panelEmbeddedActionControl()
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
             .keyboardShortcut(.cancelAction)
             .help("Cancel Editing")
             .accessibilityLabel("Cancel Editing")

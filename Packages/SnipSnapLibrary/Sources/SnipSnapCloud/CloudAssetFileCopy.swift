@@ -20,6 +20,7 @@ package enum CloudAssetFileCopy {
                 from: source,
                 to: finalURL
             )
+            try DurableFile.excludeFromBackup(finalURL)
             return CloudAssetReceipt(
                 recordID: recordID,
                 field: field,

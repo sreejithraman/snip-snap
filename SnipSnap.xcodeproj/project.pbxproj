@@ -67,6 +67,7 @@
 		B10000000000000000000003 /* ClipboardEntryDragExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* ClipboardEntryDragExport.swift */; };
 		B10000000000000000000004 /* ClipboardEntryDragExportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* ClipboardEntryDragExportTests.swift */; };
 		B10000000000000000000005 /* PanelDragSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* PanelDragSession.swift */; };
+		B10000000000000000000006 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* PrivacyInfo.xcprivacy */; };
 		2230FA4B303C74F2008B20D5 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 2230FA4A303C74F2008B20D5 /* Sparkle */; };
 		D00000000000000000000020 /* SnipSnapCore in Frameworks */ = {isa = PBXBuildFile; productRef = D00000000000000000000010 /* SnipSnapCore */; };
 		D00000000000000000000021 /* SnipSnapPersistence in Frameworks */ = {isa = PBXBuildFile; productRef = D00000000000000000000011 /* SnipSnapPersistence */; };
@@ -239,6 +240,7 @@
 		B20000000000000000000003 /* ClipboardEntryDragExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardEntryDragExport.swift; sourceTree = "<group>"; };
 		B20000000000000000000004 /* ClipboardEntryDragExportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardEntryDragExportTests.swift; sourceTree = "<group>"; };
 		B20000000000000000000005 /* PanelDragSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelDragSession.swift; sourceTree = "<group>"; };
+		B20000000000000000000006 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		D00000000000000000000001 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
 		D00000000000000000000002 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
 		D00000000000000000000003 /* Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Shared.xcconfig; sourceTree = "<group>"; };
@@ -405,6 +407,7 @@
 				200000000000000000000036 /* PreviewImageCache.swift */,
 				200000000000000000000044 /* ComposerDraftStore+ScreenCapture.swift */,
 				20000000000000000000002F /* Info.plist */,
+				B20000000000000000000006 /* PrivacyInfo.xcprivacy */,
 				200000000000000000000010 /* Assets.xcassets */,
 			);
 			path = SnipSnap;
@@ -734,6 +737,7 @@
 				A1000000000000000000000B /* AppIconDev.icon in Resources */,
 				A10000000000000000000007 /* Localizable.xcstrings in Resources */,
 				100000000000000000000008 /* Assets.xcassets in Resources */,
+				B10000000000000000000006 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

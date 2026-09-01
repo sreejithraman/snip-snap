@@ -177,8 +177,13 @@ package enum CloudCollectionSendResult: Equatable, Sendable {
 }
 
 package protocol CloudCollectionSyncDriver: Sendable {
+  func prepareAutomaticSync(_ context: CloudCollectionSyncContext) async throws
   func fetch(_ context: CloudCollectionSyncContext) async throws -> CloudCollectionFetchResult
   func send(_ context: CloudCollectionSyncContext) async throws -> CloudCollectionSendResult
+}
+
+package extension CloudCollectionSyncDriver {
+  func prepareAutomaticSync(_ context: CloudCollectionSyncContext) async throws {}
 }
 
 package enum CloudCollectionStatus: Equatable, Sendable {
@@ -392,6 +397,13 @@ package actor CloudCollectionCoordinator {
       }
       return .oldSyncedContentRemovalPending(namespace)
     }
+  }
+
+  package func prepareAutomaticSync(_ descriptor: CloudCollectionDescriptor) async throws {
+    try beginOperation()
+    defer { finishOperation() }
+    try validate(descriptor)
+    try await syncDriver.prepareAutomaticSync(context(descriptor))
   }
 
   /// Fetches the control record before work and again immediately before the only send.

@@ -25,35 +25,43 @@ struct WorkflowOptionsMenu: View {
     var body: some View {
         Menu("View Options", systemImage: "line.3.horizontal.decrease.circle") {
             Section("Show") {
-                ForEach(SnipCompletionFilter.allCases, id: \.self) { filter in
-                    Button {
-                        model.completionFilter = filter
-                    } label: {
-                        if model.completionFilter == filter {
-                            Label(filter.title, systemImage: "checkmark")
-                        } else {
-                            Text(filter.title)
-                        }
+                Picker("Show", selection: completionFilter) {
+                    ForEach(SnipCompletionFilter.allCases, id: \.self) { filter in
+                        Text(filter.title)
+                            .tag(filter)
+                            .accessibilityIdentifier("filter-\(filter.rawValue)")
                     }
-                    .accessibilityIdentifier("filter-\(filter.rawValue)")
                 }
+                .labelsHidden()
+                .pickerStyle(.inline)
             }
             Section("Sort") {
-                ForEach(SnipSortMode.allCases, id: \.self) { mode in
-                    Button {
-                        model.sortMode = mode
-                    } label: {
-                        if model.sortMode == mode {
-                            Label(mode.title, systemImage: "checkmark")
-                        } else {
-                            Text(mode.title)
-                        }
+                Picker("Sort", selection: sortMode) {
+                    ForEach(SnipSortMode.allCases, id: \.self) { mode in
+                        Text(mode.title)
+                            .tag(mode)
+                            .accessibilityIdentifier("sort-\(mode.rawValue)")
                     }
-                    .accessibilityIdentifier("sort-\(mode.rawValue)")
                 }
+                .labelsHidden()
+                .pickerStyle(.inline)
             }
         }
         .accessibilityIdentifier("workflow-options")
+    }
+
+    private var completionFilter: Binding<SnipCompletionFilter> {
+        Binding(
+            get: { model.completionFilter },
+            set: { model.completionFilter = $0 }
+        )
+    }
+
+    private var sortMode: Binding<SnipSortMode> {
+        Binding(
+            get: { model.sortMode },
+            set: { model.sortMode = $0 }
+        )
     }
 }
 

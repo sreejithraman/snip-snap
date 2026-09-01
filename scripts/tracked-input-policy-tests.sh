@@ -29,6 +29,8 @@ print -r -- 'SNIP_SNAP_DEV_APP_GROUP_IDENTIFIER = group.org.example.snipsnap.dev
 print -r -- 'SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER =' >> "$safe_repo/fake-settings.xcconfig"
 print -r -- 'SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER = iCloud.org.example.snipsnap' >> "$safe_repo/fake-settings.xcconfig"
 print -r -- '/private/tmp/open-source-build' >> "$safe_repo/fake-settings.xcconfig"
+print -r -- 'PROVISIONING_PROFILE_SPECIFIER="$profile_specifier"' >> \
+    "$safe_repo/fake-settings.xcconfig"
 print -r -- '<string>$(SNIP_SNAP_APP_GROUP_IDENTIFIER)</string>' > \
     "$safe_repo/fake.entitlements"
 git -C "$safe_repo" add fake-settings.xcconfig fake.entitlements

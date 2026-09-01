@@ -47,6 +47,8 @@ Snip Snap needs:
 - One registered production App Group assigned to both App IDs.
 - One iCloud container assigned to the main iOS App ID, with iCloud and CloudKit
   enabled.
+- Push Notifications enabled on the main iOS App ID so CloudKit can wake the
+  app for background changes.
 - No CloudKit entitlement on the Share extension. It writes to the shared App
   Group inbox and lets the main app perform cloud work.
 
@@ -190,7 +192,8 @@ has no separate Snip Snap login, so it needs no demo account.
   `SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER`.
 - Both targets carry the shared App Group entitlement. The Share extension has
   no CloudKit entitlement.
-- Ignored `Config/Local.xcconfig` and `Config/Local.entitlements` inputs exist on
+- Ignored `Config/Local.xcconfig`, `Config/LocalMac.entitlements`, and
+  `Config/LocalIOS.entitlements` inputs exist on
   the current maintainer machine and contain a team, production-name overrides,
   App Group, CloudKit container, and CloudKit capability values. The values stay
   out of Git.
@@ -223,7 +226,9 @@ has no separate Snip Snap login, so it needs no demo account.
 
 1. **Apple-side production registration has not been proved in the repo.** Check
    the two explicit App IDs, shared production App Group, assigned iCloud
-   container, current agreements, and App Store Connect record.
+   container, main-app Push Notifications capability, current agreements, and
+   App Store Connect record. Refresh the main app's provisioning profiles after
+   changing a capability.
 2. **App Store Connect setup still needs a portal check.** Confirm that
    `https://sree.world/snip-snap/privacy` is set as the privacy-policy URL and
    that the export-compliance answer matches the recorded code audit.
@@ -252,6 +257,8 @@ has no separate Snip Snap login, so it needs no demo account.
      them with distribution signing.
    - Both signed executables contain the same production App Group.
    - Only the main app contains CloudKit, and its environment is production.
+   - The main app has the production push entitlement; the Share extension does
+     not.
    - The version and build match the checked release values.
    - Privacy manifests and dSYMs are present.
 6. In Organizer, choose **Distribute App**, **TestFlight & App Store**, automatic

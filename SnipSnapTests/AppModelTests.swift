@@ -969,6 +969,28 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testSavingASnipSchedulesCloudSync() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let handler = MacOptionalCloudSyncHandlerProbe()
+        let model = AppModel(
+            library: repository,
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        await model.reload()
+
+        let added = await model.add(content: "Saved", origin: .quickEntry)
+        XCTAssertTrue(added)
+        for _ in 0..<20 {
+            if await handler.syncCount() > 0 { break }
+            await Task.yield()
+        }
+
+        let syncCount = await handler.syncCount()
+        XCTAssertEqual(syncCount, 1)
+    }
+
+    @MainActor
     func testPreparingInvalidCachedPathsDownloadsReadableRegularFiles() async throws {
         let store = try storeURL()
         let root = store.deletingLastPathComponent()
@@ -1656,6 +1678,7 @@ private actor MacOptionalCloudSyncHandlerProbe: OptionalCloudSyncHandling {
     private var failuresRemaining: Int
     private let clearURLs: [URL]
     private var clears = 0
+    private var syncCalls = 0
 
     init(
         urls: [UUID: URL] = [:],
@@ -1669,7 +1692,8 @@ private actor MacOptionalCloudSyncHandlerProbe: OptionalCloudSyncHandling {
 
     func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
     func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
-    func syncWhenPossible() async {}
+    func syncWhenPossible() async { syncCalls += 1 }
+    func syncCount() -> Int { syncCalls }
     func isCloudSyncActive() async throws -> Bool { true }
     func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { [:] }
 

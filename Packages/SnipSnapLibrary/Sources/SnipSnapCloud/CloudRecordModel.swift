@@ -481,10 +481,43 @@ package protocol CloudRecordTransport: Sendable {
     func fetch(scope: CloudFetchScope) async throws -> CloudFetchedBatch
     func send(_ batch: CloudOutboundBatch) async throws -> CloudSentBatch
     func confirmApplied(_ batchID: UUID) async throws
+    func pendingBatch() async -> CloudPendingBatch?
+    func drainAutomaticSyncEvents() async
     func fetchRecord(_ id: CloudRecordID, fields: Set<String>) async throws -> CloudRecordSnapshot?
     func fetchAsset(
         _ id: CloudRecordID,
         field: String,
         destination: CloudAssetDestination
     ) async throws -> CloudAssetReceipt?
+}
+
+package struct CloudPendingBatch: Sendable {
+    package let batch: CloudSyncBatch
+    package let outbound: CloudOutboundBatch?
+}
+
+package extension CloudRecordTransport {
+    func pendingBatch() async -> CloudPendingBatch? { nil }
+    func drainAutomaticSyncEvents() async {}
+}
+
+package protocol CloudAutomaticSyncConfiguring: Sendable {
+    typealias BatchHandler = @Sendable (
+        CloudSyncBatch,
+        CloudOutboundBatch?
+    ) async throws -> Void
+    typealias AccountChangeHandler = @Sendable () async -> Void
+    typealias RecordSendGate = @Sendable () async throws -> Void
+    typealias EngineStateHandler = @Sendable (CloudEngineStateEnvelope) async throws -> Void
+
+    func configureAutomaticSync(
+        batchHandler: @escaping BatchHandler,
+        accountChangeHandler: @escaping AccountChangeHandler,
+        recordSendGate: @escaping RecordSendGate,
+        engineStateHandler: @escaping EngineStateHandler
+    ) async
+}
+
+package protocol CloudAutomaticSyncScheduling: Sendable {
+    func scheduleAutomaticSync(_ batch: CloudOutboundBatch) async throws
 }

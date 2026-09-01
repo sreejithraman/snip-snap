@@ -1599,11 +1599,6 @@ final class PanelTests: StoreBackedTestCase {
         )
     }
 
-    func testPrimaryActionTintUsesExactThemeContrast() {
-        XCTAssertEqual(SnipSnapColors.primaryActionTint(for: .light), .black)
-        XCTAssertEqual(SnipSnapColors.primaryActionTint(for: .dark), .white)
-    }
-
     func testElevatedListHeaderTintUsesTheInversePrimaryAsset() {
         XCTAssertEqual(
             SnipSnapColors.elevatedListHeaderGlassTint,

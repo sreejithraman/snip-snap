@@ -1,10 +1,12 @@
+import SnipSnapCloud
 import SnipSnapCore
+import Foundation
 import SwiftUI
-import UIKit
 import UniformTypeIdentifiers
 
 struct IOSAppRootView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     private let session: IOSAppSession
     @State private var sheet: AppSheet?
     @State private var copyShare = IOSCopyShareCoordinator()
@@ -159,19 +161,22 @@ struct IOSAppRootView: View {
                 )
             }
         }
+        .task {
+            for await _ in NotificationCenter.default.notifications(
+                named: SnipSnapCloudNotifications.accountChanged
+            ) {
+                await session.foreground()
+            }
+        }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
                 Task {
                     await session.foreground()
                 }
-            case .background:
-                let lease = IOSBackgroundSyncLease()
-                Task {
-                    await session.backgroundSync()
-                    lease.finish()
-                }
-            default:
+            case .background, .inactive:
+                break
+            @unknown default:
                 break
             }
         }
@@ -179,7 +184,7 @@ struct IOSAppRootView: View {
 
     @ViewBuilder
     private var appNavigation: some View {
-        if UIDevice.current.userInterfaceIdiom == .phone {
+        if horizontalSizeClass == .compact {
             NavigationStack {
                 SnipCollectionView(
                     model: model,
@@ -282,23 +287,6 @@ struct IOSAppRootView: View {
         }
     }
 
-}
-
-@MainActor
-private final class IOSBackgroundSyncLease {
-    private var identifier = UIBackgroundTaskIdentifier.invalid
-
-    init() {
-        identifier = UIApplication.shared.beginBackgroundTask { [weak self] in
-            self?.finish()
-        }
-    }
-
-    func finish() {
-        guard identifier != .invalid else { return }
-        UIApplication.shared.endBackgroundTask(identifier)
-        identifier = .invalid
-    }
 }
 
 private struct AppleAccountNoticeBanner: View {

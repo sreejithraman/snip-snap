@@ -1,11 +1,21 @@
+import Foundation
 import SnipSnapCloud
 import SnipSnapCore
 import SnipSnapPersistence
-import SwiftUI
 
 protocol IOSCloudSyncSessionHandling: Sendable {
     func synchronize() async throws -> SnipSnapCloudSyncResult
+    func scheduleAutomaticSync() async
     func iosActiveLibrary() async throws -> (library: any SnipLibrary, recoveryScope: SnipRecoveryScope?)
+    var automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> { get }
+}
+
+extension IOSCloudSyncSessionHandling {
+    func scheduleAutomaticSync() async {}
+
+    var automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> {
+        AsyncStream { $0.finish() }
+    }
 }
 
 extension SnipSnapCloudSyncSession: IOSCloudSyncSessionHandling {
@@ -40,6 +50,7 @@ final class IOSAppSession {
     private let shareImporter: IOSShareImportCoordinator?
     private let cloudLifecycleHooks: SnipSnapCloudLifecycleHooks
     private let cloudSyncSession: (any IOSCloudSyncSessionHandling)?
+    private var automaticSyncTask: Task<Void, Never>?
 
     init(
         library: any SnipLibrary,
@@ -130,6 +141,15 @@ final class IOSAppSession {
                 recoveryScope: active.recoveryScope
             )
         }
+        if let cloudSyncSession {
+            let results = cloudSyncSession.automaticSyncResults
+            automaticSyncTask = Task { [weak self] in
+                for await result in results {
+                    guard let self, !Task.isCancelled else { return }
+                    await self.handleAutomaticSyncResult(result)
+                }
+            }
+        }
     }
 
     func launch() async {
@@ -148,16 +168,36 @@ final class IOSAppSession {
         await accountNoticeModel?.refresh()
     }
 
-    func backgroundSync() async {
-        await cloudLifecycleHooks.foreground()
-    }
-
     func syncWhenPossible() async {
         try? await Self.synchronizeCloudSessionOrThrow(
             cloudSyncSession,
             model: model,
             settings: syncedContentSettings
         )
+    }
+
+    func scheduleSyncAfterLocalChange() async {
+        await cloudSyncSession?.scheduleAutomaticSync()
+    }
+
+    private func handleAutomaticSyncResult(_ result: SnipSnapCloudSyncResult) async {
+        switch result {
+        case .contentUpdated:
+            await model.load()
+        case .encryptedDataResetRequiresChoice:
+            if let cloudSyncSession,
+               let active = try? await cloudSyncSession.iosActiveLibrary()
+            {
+                await model.replaceLibrary(
+                    active.library,
+                    recoveryScope: active.recoveryScope
+                )
+            }
+            syncedContentSettings.recordEncryptedDataReset()
+        default:
+            break
+        }
+        syncedContentSettings.recordSyncCompleted()
     }
 
     private static func synchronizeCloudSessionOrThrow(
@@ -207,6 +247,10 @@ final class IOSCloudSyncActionBridge {
 
     func syncWhenPossible() async {
         await session?.syncWhenPossible()
+    }
+
+    func scheduleSyncAfterLocalChange() async {
+        await session?.scheduleSyncAfterLocalChange()
     }
 }
 

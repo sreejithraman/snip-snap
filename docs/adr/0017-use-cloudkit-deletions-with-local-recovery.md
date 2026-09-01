@@ -4,4 +4,4 @@ Snip Snap will delete CloudKit records normally instead of keeping permanent app
 
 ## Consequences
 
-The adapter must treat the remote collection as authoritative during bootstrap and must not rebuild stale records as new records with their old identities. SwiftData History must retain each deleted record's stable CloudKit ID until the sync consumer advances. Durable fake-client tests must cover state loss and both orders of delete versus offline edit on Mac and Simulator.
+The adapter must treat the remote collection as authoritative during bootstrap and must not rebuild stale records as new records with their old identities. A durable pending-delete row must retain each deleted record's stable CloudKit ID until CloudKit accepts the delete. Accepted shadow rows must keep the last server version needed for conflict recovery. SwiftData History may help detect local changes later, but it cannot replace those sync records. Durable fake-client tests must cover state loss and both orders of delete versus offline edit on Mac and Simulator.

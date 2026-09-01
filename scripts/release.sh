@@ -12,6 +12,8 @@ resolved_settings=""
 export_options=""
 mac_release_entitlements="${SNIP_SNAP_MAC_RELEASE_ENTITLEMENTS:-$repo_dir/Config/MacRelease.entitlements}"
 cloudkit_container_identifier=""
+product_bundle_identifier=""
+provisioning_profile_specifier="${SNIP_SNAP_MAC_PROVISIONING_PROFILE_SPECIFIER:-}"
 
 source "$script_dir/release-policy.sh"
 source "$script_dir/signing-policy.sh"
@@ -24,9 +26,11 @@ fail() {
 verify_release_cloudkit() {
     local archive_app_path="$archive_path/Products/Applications/Snip Snap.app"
     signing_policy_verify_production_cloudkit_app \
-        "$archive_app_path" "$cloudkit_container_identifier"
+        "$archive_app_path" "$cloudkit_container_identifier" \
+        "$development_team" "$product_bundle_identifier"
     signing_policy_verify_production_cloudkit_app \
-        "$app_path" "$cloudkit_container_identifier"
+        "$app_path" "$cloudkit_container_identifier" \
+        "$development_team" "$product_bundle_identifier"
 }
 
 cleanup() {
@@ -51,6 +55,8 @@ development_team="$(signing_policy_resolve_setting \
     "$resolved_settings" DEVELOPMENT_TEAM)"
 cloudkit_container_identifier="$(signing_policy_resolve_setting \
     "$resolved_settings" SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER)"
+product_bundle_identifier="$(signing_policy_resolve_setting \
+    "$resolved_settings" PRODUCT_BUNDLE_IDENTIFIER)"
 
 if [[ -z "$signing_identity" && -n "$development_team" ]]; then
     signing_identity="$(/usr/bin/security find-identity -v -p codesigning | \
@@ -141,11 +147,14 @@ else
         CURRENT_PROJECT_VERSION="$build_number" \
         DEVELOPMENT_TEAM="$development_team" \
         MARKETING_VERSION="$version" \
+        PROVISIONING_PROFILE_SPECIFIER="$provisioning_profile_specifier" \
         CODE_SIGN_ENTITLEMENTS="$mac_release_entitlements" \
         SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER="$cloudkit_container_identifier" \
         archive
 
-    signing_policy_write_export_options "$export_options" "$development_team"
+    signing_policy_write_export_options \
+        "$export_options" "$development_team" \
+        "$product_bundle_identifier" "$provisioning_profile_specifier"
 
     /usr/bin/xcodebuild \
         -exportArchive \

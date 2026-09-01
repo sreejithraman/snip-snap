@@ -21,8 +21,6 @@ enum SnipSnapColors {
     static let compactSubduedFill = Color.primary.opacity(0.05)
     static let dropTargetFill = Color.primary.opacity(0.08)
     static let dropTargetEdge = Color.primary.opacity(0.48)
-    static let insertionEdge = Color.primary.opacity(0.20)
-
     static func developmentBadge(tone: DevelopmentBadgeTone) -> Color {
         switch tone {
         case .red: Color(nsColor: .systemRed)
@@ -48,25 +46,8 @@ enum SnipSnapColors {
         tone == .white ? .black.opacity(0.30) : .white.opacity(0.75)
     }
 
-    static func primaryActionTint(for colorScheme: ColorScheme) -> Color {
-        SnipSnapTheme.primaryActionTint(for: colorScheme)
-    }
-
-    static func primaryActionLabel(for colorScheme: ColorScheme) -> Color {
-        SnipSnapTheme.primaryActionLabel(for: colorScheme)
-    }
-
-    static func disabledPrimaryActionTint(for colorScheme: ColorScheme) -> Color {
-        SnipSnapTheme.disabledPrimaryActionTint(for: colorScheme)
-    }
-
-    static func disabledPrimaryActionLabel(for colorScheme: ColorScheme) -> Color {
-        SnipSnapTheme.disabledPrimaryActionLabel(for: colorScheme)
-    }
-
     // MARK: Surfaces
 
-    static let standaloneActionFill = SnipSnapTheme.standaloneActionFill
     static let compactActionFill = SnipSnapTheme.compactActionFill
     static let glassEdge = SnipSnapTheme.glassEdge
     static let emphasizedGlassEdge = SnipSnapTheme.emphasizedGlassEdge

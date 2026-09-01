@@ -21,6 +21,23 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertEqual(count, 2)
   }
 
+  @MainActor
+  func testLifecycleHooksRunOneTrailingSyncWhenTriggeredDuringSync() async {
+    let calls = PausingLifecycleCallCounter()
+    let hooks = SnipSnapCloudLifecycleHooks {
+      await calls.run()
+    }
+
+    let first = Task { await hooks.launch() }
+    await calls.waitUntilFirstCallStarts()
+    await hooks.foreground()
+    await calls.releaseFirstCall()
+    await first.value
+
+    let count = await calls.value()
+    XCTAssertEqual(count, 2)
+  }
+
   func testFreshDescriptorsUseRandomGenerationsAndDistinctZoneNames() {
     let first = CloudCollectionDescriptor.fresh(ownerName: "owner")
     let second = CloudCollectionDescriptor.fresh(ownerName: "owner")
@@ -481,6 +498,8 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
   func testCloudKitRetryPolicySeparatesTransientAndPermanentSetupFailures() {
     XCTAssertTrue(CloudKitRetryPolicy.isTransient(.networkUnavailable))
     XCTAssertTrue(CloudKitRetryPolicy.isTransient(.serviceUnavailable))
+    XCTAssertTrue(CloudKitRetryPolicy.isTransient(.serverResponseLost))
+    XCTAssertTrue(CloudKitRetryPolicy.isTransient(.accountTemporarilyUnavailable))
     XCTAssertFalse(CloudKitRetryPolicy.isTransient(.notAuthenticated))
     XCTAssertFalse(CloudKitRetryPolicy.isTransient(.permissionFailure))
     XCTAssertFalse(CloudKitRetryPolicy.isTransient(.quotaExceeded))
@@ -2141,6 +2160,156 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertEqual(choiceResult, .libraryReplaced)
   }
 
+  func testModeLifecycleIsolatesCloudStoreBeforeSyncWhenAppleAccountChanges() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudAccountLifecycleGate-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let active = descriptor(
+      generation: "91919191-9191-9191-9191-919191919191",
+      metadata: "account-gate-metadata",
+      payload: "account-gate-payload"
+    )
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+    try await persistence.activateEmptyCollection(namespace: binding(active))
+    let source = try JSONSnipLibrary(
+      fileURL: root.appendingPathComponent("source.json", isDirectory: false)
+    )
+    let server = FakeCloudServer()
+    let control = FakeCloudControlTransport(server: server)
+    await control.seedControl(active)
+    let lifecycle = SnipSnapICloudSyncLifecycle(
+      rootURL: root,
+      sourceLibrary: source,
+      syncModeStore: SnipSyncModeStore(persistence),
+      cloudScope: "private",
+      accountLineage: "account-a",
+      accountStateSource: FixedICloudAccountStateSource(
+        state: .available(accountLineage: "account-b")
+      ),
+      ownerName: "owner",
+      controlTransport: control,
+      makeRecordTransport: { context in
+        FakeCloudRecordTransport(server: server, namespace: context.namespace)
+      },
+      makeDescriptor: { active }
+    )
+
+    do {
+      _ = try await lifecycle.synchronize()
+      XCTFail("Sync must stop before CloudKit work for a different Apple Account")
+    } catch {
+      XCTAssertEqual(error as? CloudCollectionError, .syncNeedsAttention)
+    }
+
+    let storage = try await persistence.snapshot()
+    XCTAssertEqual(storage.activeStore.kind, .localOnly)
+    XCTAssertEqual(storage.accountIsolation?.reason, .accountChanged)
+    XCTAssertEqual(storage.accountIsolation?.namespace.accountLineage, "account-a")
+  }
+
+  func testEnableDoesNotBindACollectionAfterTheAppleAccountChangesDuringBootstrap() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudEnableAccountRace-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let fresh = descriptor(
+      generation: "92929292-9292-9292-9292-929292929292",
+      metadata: "enable-account-race-metadata",
+      payload: "enable-account-race-payload"
+    )
+    let source = try JSONSnipLibrary(
+      fileURL: root.appendingPathComponent("source.json", isDirectory: false)
+    )
+    let account = MutableCollectionAccountStateSource("account-a")
+    let server = FakeCloudServer()
+    let control = FakeCloudControlTransport(server: server)
+    await control.pauseNextControlSave()
+    let lifecycle = SnipSnapICloudSyncLifecycle(
+      rootURL: root,
+      sourceLibrary: source,
+      syncModeStore: nil,
+      cloudScope: "private",
+      accountLineage: "account-a",
+      accountLineageProvider: { "account-a" },
+      accountStateSource: account,
+      ownerName: "owner",
+      controlTransport: control,
+      makeRecordTransport: { context in
+        FakeCloudRecordTransport(server: server, namespace: context.namespace)
+      },
+      makeDescriptor: { fresh }
+    )
+
+    let enable = Task { try await lifecycle.enableICloudSync() }
+    await control.waitUntilControlSavePauses()
+    await account.setLineage("account-b")
+    await control.resumeControlSave()
+
+    do {
+      _ = try await enable.value
+      XCTFail("Enable must stop when the Apple Account changes")
+    } catch {
+      XCTAssertEqual(error as? CloudCollectionError, .syncNeedsAttention)
+    }
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+    let storage = try await persistence.snapshot()
+    XCTAssertEqual(storage.activeStore.kind, .localOnly)
+    XCTAssertNil(storage.activeStore.namespace)
+  }
+
+  func testDeleteDoesNotAdoptACollectionAfterTheAppleAccountChanges() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudDeleteAccountRace-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let active = descriptor(
+      generation: "93939393-9393-9393-9393-939393939393",
+      metadata: "delete-account-race-metadata",
+      payload: "delete-account-race-payload"
+    )
+    let replacement = descriptor(
+      generation: "94949494-9494-9494-9494-949494949494",
+      metadata: "delete-account-race-new-metadata",
+      payload: "delete-account-race-new-payload"
+    )
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+    try await persistence.activateEmptyCollection(namespace: binding(active))
+    let source = try JSONSnipLibrary(
+      fileURL: root.appendingPathComponent("source.json", isDirectory: false)
+    )
+    let account = MutableCollectionAccountStateSource("account-a")
+    let server = FakeCloudServer()
+    let control = FakeCloudControlTransport(server: server)
+    await control.seedControl(active)
+    await control.pauseNextControlSave()
+    let lifecycle = SnipSnapICloudSyncLifecycle(
+      rootURL: root,
+      sourceLibrary: source,
+      syncModeStore: SnipSyncModeStore(persistence),
+      cloudScope: "private",
+      accountLineage: "account-a",
+      accountStateSource: account,
+      ownerName: "owner",
+      controlTransport: control,
+      makeRecordTransport: { context in
+        FakeCloudRecordTransport(server: server, namespace: context.namespace)
+      },
+      makeDescriptor: { replacement }
+    )
+
+    let deletion = Task { try await lifecycle.deleteSyncedContent() }
+    await control.waitUntilControlSavePauses()
+    await account.setLineage("account-b")
+    await control.resumeControlSave()
+
+    do {
+      _ = try await deletion.value
+      XCTFail("Delete must stop when the Apple Account changes")
+    } catch {
+      XCTAssertEqual(error as? CloudCollectionError, .syncNeedsAttention)
+    }
+    let storage = try await persistence.snapshot()
+    XCTAssertEqual(storage.activeStore.namespace, binding(active))
+  }
+
   func testModeLifecycleCanEnableAgainAfterKeepingResetSyncOff() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("EncryptedResetLifecycleEnable-\(UUID().uuidString)")
@@ -2400,9 +2569,44 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
   }
 }
 
+private actor MutableCollectionAccountStateSource: ICloudAccountStateSource {
+  private var lineage: String
+
+  init(_ lineage: String) { self.lineage = lineage }
+
+  func currentAccountState() -> ICloudAccountState {
+    .available(accountLineage: lineage)
+  }
+
+  func setLineage(_ lineage: String) { self.lineage = lineage }
+}
+
 private actor LifecycleCallCounter {
   private var count = 0
   func record() { count += 1 }
+  func value() -> Int { count }
+}
+
+private actor PausingLifecycleCallCounter {
+  private var count = 0
+  private var startWaiters: [CheckedContinuation<Void, Never>] = []
+  private var firstRelease: CheckedContinuation<Void, Never>?
+
+  func run() async {
+    count += 1
+    if count == 1 {
+      for waiter in startWaiters { waiter.resume() }
+      startWaiters = []
+      await withCheckedContinuation { firstRelease = $0 }
+    }
+  }
+
+  func waitUntilFirstCallStarts() async {
+    if count > 0 { return }
+    await withCheckedContinuation { startWaiters.append($0) }
+  }
+
+  func releaseFirstCall() { firstRelease?.resume() }
   func value() -> Int { count }
 }
 

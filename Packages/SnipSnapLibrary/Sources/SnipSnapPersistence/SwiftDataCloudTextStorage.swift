@@ -73,6 +73,23 @@ extension SwiftDataSnipLibrary {
     )
   }
 
+  package func saveCloudEngineState(
+    namespaceKey: CloudSyncNamespaceKey,
+    envelopeData: Data
+  ) throws {
+    let namespaceKey = namespaceKey.rawValue
+    guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    try Self.replaceCloudEngineState(
+      namespaceKey: namespaceKey,
+      envelopeData: envelopeData,
+      context: context
+    )
+    try context.save()
+  }
+
   package func stageCloudTextBatch(
     namespaceKey: CloudSyncNamespaceKey,
     batchID: UUID,

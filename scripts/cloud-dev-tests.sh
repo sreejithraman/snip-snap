@@ -15,6 +15,7 @@ fail_test() {
 
 entitlements="$test_root/Development.entitlements"
 /usr/bin/plutil -create xml1 "$entitlements"
+/usr/bin/plutil -insert aps-environment -string development "$entitlements"
 /usr/bin/plutil -insert 'com\.apple\.security\.application-groups' \
     -json '["$(SNIP_SNAP_APP_GROUP_IDENTIFIER)"]' "$entitlements"
 /usr/bin/plutil -insert 'com\.apple\.developer\.icloud-container-identifiers' \
