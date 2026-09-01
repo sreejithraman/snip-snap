@@ -255,13 +255,26 @@ fake_security="$test_root/fake-security"
 print -r -- '#!/bin/zsh
 /bin/cat "$SNIP_SNAP_FAKE_PROFILE"' > "$fake_security"
 /bin/chmod +x "$fake_security"
+verify_profile_command="SNIP_SNAP_SECURITY='$fake_security' SNIP_SNAP_FAKE_PROFILE='$signed_profile' SNIP_SNAP_CODESIGN='$fake_codesign' SNIP_SNAP_FAKE_SIGNED_ENTITLEMENTS='$signed_entitlements' signing_policy_verify_production_cloudkit_app '$signed_app' iCloud.org.example.snipsnap FAKE123456 org.example.snipsnap"
 SNIP_SNAP_CODESIGN="$fake_codesign" \
 SNIP_SNAP_SECURITY="$fake_security" \
 SNIP_SNAP_FAKE_SIGNED_ENTITLEMENTS="$signed_entitlements" \
 SNIP_SNAP_FAKE_PROFILE="$signed_profile" \
     assert_succeeds signing_policy_verify_production_cloudkit_app \
         "$signed_app" iCloud.org.example.snipsnap FAKE123456 org.example.snipsnap
-verify_profile_command="SNIP_SNAP_SECURITY='$fake_security' SNIP_SNAP_FAKE_PROFILE='$signed_profile' SNIP_SNAP_CODESIGN='$fake_codesign' SNIP_SNAP_FAKE_SIGNED_ENTITLEMENTS='$signed_entitlements' signing_policy_verify_production_cloudkit_app '$signed_app' iCloud.org.example.snipsnap FAKE123456 org.example.snipsnap"
+/usr/bin/plutil -replace 'Entitlements.com\.apple\.developer\.icloud-services' \
+    -string '*' "$signed_profile"
+SNIP_SNAP_CODESIGN="$fake_codesign" \
+SNIP_SNAP_SECURITY="$fake_security" \
+SNIP_SNAP_FAKE_SIGNED_ENTITLEMENTS="$signed_entitlements" \
+SNIP_SNAP_FAKE_PROFILE="$signed_profile" \
+    assert_succeeds signing_policy_verify_production_cloudkit_app \
+        "$signed_app" iCloud.org.example.snipsnap FAKE123456 org.example.snipsnap
+/usr/bin/plutil -replace 'Entitlements.com\.apple\.developer\.icloud-services' \
+    -string CloudDocuments "$signed_profile"
+assert_fails_with_all "$verify_profile_command" 'profile CloudKit service'
+/usr/bin/plutil -replace 'Entitlements.com\.apple\.developer\.icloud-services' \
+    -json '["CloudKit"]' "$signed_profile"
 /bin/rm "$signed_app/Contents/embedded.provisionprofile"
 assert_fails_with_all "$verify_profile_command" 'embedded Developer ID provisioning profile'
 print 'fake profile' > "$signed_app/Contents/embedded.provisionprofile"

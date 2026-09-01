@@ -142,6 +142,18 @@ signing_policy_plist_array_contains() {
     return 1
 }
 
+signing_policy_profile_allows_cloudkit() {
+    local file="$1"
+    local key='com.apple.developer.icloud-services'
+    local escaped_key="${key//./\\.}"
+    local value
+
+    value="$(/usr/bin/plutil -extract "$escaped_key" raw -o - "$file" 2>/dev/null)" || \
+        return 1
+    [[ "$value" == '*' ]] || \
+        signing_policy_plist_array_contains "$file" "$key" CloudKit
+}
+
 signing_policy_plist_has_key() {
     local file="$1"
     local key="$2"
@@ -432,8 +444,7 @@ signing_policy_verify_production_cloudkit_app() {
     signing_policy_plist_array_contains \
         "$profile_entitlements" com.apple.developer.icloud-container-identifiers \
         "$cloudkit_container_identifier" || missing+=("profile CloudKit container")
-    signing_policy_plist_array_contains \
-        "$profile_entitlements" com.apple.developer.icloud-services CloudKit || \
+    signing_policy_profile_allows_cloudkit "$profile_entitlements" || \
         missing+=("profile CloudKit service")
     signing_policy_plist_value_equals \
         "$profile_entitlements" com.apple.developer.icloud-container-environment \
