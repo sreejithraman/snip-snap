@@ -12,26 +12,20 @@ final class CloudFullRecordPersistenceTests: XCTestCase {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
     let store = try SwiftDataSnipLibrary(storeURL: location.store)
-    let namespace = "private|account-a|generation-a"
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-a")
     let snipID = UUID()
     let firstID = identity("s-first")
     let first = entity(.snip, snipID, firstID)
 
-    let accepted = try await store.acceptCloudEntity(namespaceKey: namespace, value: first)
-    XCTAssertEqual(accepted, .accepted(releasedSnipIDs: []))
-    let duplicateDomain = try await store.acceptCloudEntity(
+    try await store.testAcceptCloudEntity(namespaceKey: namespace, value: first)
+    try await store.testAcceptCloudEntity(
       namespaceKey: namespace,
       value: entity(.snip, snipID, identity("s-second"))
     )
-    XCTAssertEqual(duplicateDomain, .duplicateDomain(existing: firstID))
     let otherID = UUID()
-    let duplicateIdentity = try await store.acceptCloudEntity(
+    try await store.testAcceptCloudEntity(
       namespaceKey: namespace,
       value: entity(.snip, otherID, firstID)
-    )
-    XCTAssertEqual(
-      duplicateIdentity,
-      .duplicateIdentity(existing: CloudEntityReference(kind: .snip, domainID: snipID))
     )
 
     let snapshot = try await store.cloudFullStorageSnapshot(namespaceKey: namespace)
@@ -43,16 +37,15 @@ final class CloudFullRecordPersistenceTests: XCTestCase {
   func testDefersSnipUntilItsListArrivesAndReleasesOnceAcrossReopen() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
-    let namespace = "private|account-a|generation-a"
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-a")
     let listID = UUID()
     let snipID = UUID()
     do {
       let store = try SwiftDataSnipLibrary(storeURL: location.store)
-      let result = try await store.acceptCloudEntity(
+      try await store.testAcceptCloudEntity(
         namespaceKey: namespace,
         value: entity(.snip, snipID, identity("s-\(snipID)"), dependencyListID: listID)
       )
-      XCTAssertEqual(result, .accepted(releasedSnipIDs: []))
       let pending = try await store.cloudFullStorageSnapshot(namespaceKey: namespace)
       XCTAssertTrue(pending.readyEntities.isEmpty)
       XCTAssertEqual(pending.deferredEntities.map(\.reference.domainID), [snipID])
@@ -61,10 +54,8 @@ final class CloudFullRecordPersistenceTests: XCTestCase {
     do {
       let store = try SwiftDataSnipLibrary(storeURL: location.store)
       let list = entity(.list, listID, identity("l-\(listID)"))
-      let firstList = try await store.acceptCloudEntity(namespaceKey: namespace, value: list)
-      XCTAssertEqual(firstList, .accepted(releasedSnipIDs: [snipID]))
-      let duplicateList = try await store.acceptCloudEntity(namespaceKey: namespace, value: list)
-      XCTAssertEqual(duplicateList, .accepted(releasedSnipIDs: []))
+      try await store.testAcceptCloudEntity(namespaceKey: namespace, value: list)
+      try await store.testAcceptCloudEntity(namespaceKey: namespace, value: list)
       let ready = try await store.cloudFullStorageSnapshot(namespaceKey: namespace)
       XCTAssertTrue(ready.deferredEntities.isEmpty)
       XCTAssertEqual(Set(ready.readyEntities.map(\.reference.domainID)), [listID, snipID])
@@ -74,25 +65,25 @@ final class CloudFullRecordPersistenceTests: XCTestCase {
   func testConflictReplayIsIdempotentButPayloadChangeIsRejected() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
-    let namespace = "private|account-a|generation-a"
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-a")
     let reference = CloudEntityReference(kind: .list, domainID: UUID())
     let payload = Data("conflict".utf8)
     let store = try SwiftDataSnipLibrary(storeURL: location.store)
 
-    try await store.storeCloudConflict(
+    try await store.testStoreCloudConflict(
       namespaceKey: namespace,
       key: "stable-key",
       reference: reference,
       payload: payload
     )
-    try await store.storeCloudConflict(
+    try await store.testStoreCloudConflict(
       namespaceKey: namespace,
       key: "stable-key",
       reference: reference,
       payload: payload
     )
     do {
-      try await store.storeCloudConflict(
+      try await store.testStoreCloudConflict(
         namespaceKey: namespace,
         key: "stable-key",
         reference: reference,
@@ -119,7 +110,7 @@ final class CloudFullRecordPersistenceTests: XCTestCase {
   func testAcceptedEntityAndConflictCommitTogetherOrNotAtAll() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
-    let namespace = "private|account-a|generation-a"
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-a")
     let snipID = UUID()
     let value = entity(.snip, snipID, identity("s-atomic"))
     let conflict = CloudConflictInput(
@@ -133,7 +124,7 @@ final class CloudFullRecordPersistenceTests: XCTestCase {
       afterMutationBeforeSave: { throw Crash.expected }
     )
     do {
-      _ = try await failing.acceptCloudEntity(
+      try await failing.testAcceptCloudEntity(
         namespaceKey: namespace,
         value: value,
         conflict: conflict
@@ -148,12 +139,11 @@ final class CloudFullRecordPersistenceTests: XCTestCase {
     XCTAssertTrue(empty.readyEntities.isEmpty)
     XCTAssertTrue(empty.conflicts.isEmpty)
 
-    let result = try await reopened.acceptCloudEntity(
+    try await reopened.testAcceptCloudEntity(
       namespaceKey: namespace,
       value: value,
       conflict: conflict
     )
-    XCTAssertEqual(result, .accepted(releasedSnipIDs: []))
     let committed = try await reopened.cloudFullStorageSnapshot(namespaceKey: namespace)
     XCTAssertEqual(committed.readyEntities.map(\.reference), [value.reference])
     XCTAssertEqual(committed.conflicts.map(\.key), [conflict.key])
@@ -163,16 +153,16 @@ final class CloudFullRecordPersistenceTests: XCTestCase {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
     let store = try SwiftDataSnipLibrary(storeURL: location.store)
-    let namespace = "private|account-a|generation-a"
-    let otherAccount = "private|account-b|generation-a"
-    let otherGeneration = "private|account-a|generation-b"
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-a")
+    let otherAccount = CloudSyncNamespaceKey(rawValue: "private|account-b|generation-a")
+    let otherGeneration = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-b")
     let list = CloudEntityReference(kind: .list, domainID: UUID())
     let snip = CloudEntityReference(kind: .snip, domainID: UUID())
-    _ = try await store.acceptCloudEntity(
+    try await store.testAcceptCloudEntity(
       namespaceKey: namespace,
       value: entity(.list, list.domainID, identity("l-list"))
     )
-    _ = try await store.acceptCloudEntity(
+    try await store.testAcceptCloudEntity(
       namespaceKey: namespace,
       value: entity(.snip, snip.domainID, identity("s-snip"), dependencyListID: list.domainID)
     )
@@ -191,12 +181,12 @@ final class CloudFullRecordPersistenceTests: XCTestCase {
       payload: Data("base".utf8)
     )
 
-    let exact = try await store.dormantCloudBase(namespaceKey: namespace, reference: snip)
-    let wrongAccount = try await store.dormantCloudBase(
+    let exact = try await store.testDormantCloudBase(namespaceKey: namespace, reference: snip)
+    let wrongAccount = try await store.testDormantCloudBase(
       namespaceKey: otherAccount,
       reference: snip
     )
-    let wrongGeneration = try await store.dormantCloudBase(
+    let wrongGeneration = try await store.testDormantCloudBase(
       namespaceKey: otherGeneration,
       reference: snip
     )
@@ -209,7 +199,7 @@ final class CloudFullRecordPersistenceTests: XCTestCase {
       SnipLibraryTransferPlanner.digest(snapshot: transferAfterDormant)
     )
 
-    let localNamespace = "private|account-a|generation-local-seed"
+    let localNamespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-local-seed")
     let localList = CloudEntityReference(kind: .list, domainID: UUID())
     let localSnip = CloudEntityReference(kind: .snip, domainID: UUID())
     try await store.setCloudEnrollment(
@@ -256,8 +246,8 @@ final class CloudFullRecordPersistenceTests: XCTestCase {
       storeURL: targetLocation.store,
       afterMutationBeforeSave: { throw Crash.expected }
     )
-    let namespace = "private|account-a|generation-a"
-    let otherNamespace = "private|account-b|generation-b"
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-a")
+    let otherNamespace = CloudSyncNamespaceKey(rawValue: "private|account-b|generation-b")
     let first = CloudEntityReference(kind: .snip, domainID: UUID())
     let second = CloudEntityReference(kind: .list, domainID: UUID())
     try await source.storeDormantCloudBase(
@@ -313,7 +303,10 @@ final class CloudFullRecordPersistenceTests: XCTestCase {
       ["copied with bases"]
     )
     let bases = try await failed.dormantCloudBases()
-    XCTAssertEqual(bases.map(\.namespaceKey), [namespace, otherNamespace])
+    XCTAssertEqual(
+      bases.map(\.namespaceKey),
+      [namespace.rawValue, otherNamespace.rawValue]
+    )
     XCTAssertEqual(
       bases.map(\.payload),
       [Data("first-base".utf8), Data("second-base".utf8)]

@@ -4,6 +4,7 @@ set -euo pipefail
 script_dir="${0:A:h}"
 repo_dir="${script_dir:h}"
 run_mac_app_tests=YES
+ios_test_destination="${SNIP_SNAP_IOS_TEST_DESTINATION:-platform=iOS Simulator,name=iPhone 17 Pro,OS=latest}"
 
 if (( $# )); then
     [[ "$#" == 1 && "$1" == --without-mac-app-tests ]] || {
@@ -37,14 +38,28 @@ trap snip_snap_cleanup_derived_data EXIT
 swift test --package-path "$repo_dir/Packages/SnipSnapLibrary"
 
 if [[ "$run_mac_app_tests" == YES ]]; then
-    xcodebuild \
+    mac_derived_data="$derived_data/mac"
+    mac_store_path="$derived_data/mac-test-store/snips.json"
+    SNIP_SNAP_STORE_PATH="$mac_store_path" xcodebuild \
         -project "$repo_dir/SnipSnap.xcodeproj" \
         -scheme SnipSnap \
         -configuration Debug \
         -destination 'platform=macOS' \
-        -derivedDataPath "$derived_data" \
+        -derivedDataPath "$mac_derived_data" \
         CODE_SIGNING_ALLOWED=NO \
+        SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER= \
         test
 else
     print "Public policy and package tests passed; the iOS release gate omits Mac app-host tests."
 fi
+
+xcodebuild \
+    -project "$repo_dir/SnipSnap.xcodeproj" \
+    -scheme SnipSnapiOS \
+    -configuration Debug \
+    -destination "$ios_test_destination" \
+    -derivedDataPath "$derived_data/ios" \
+    CODE_SIGNING_ALLOWED=NO \
+    SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER= \
+    -only-testing:SnipSnapiOSTests \
+    test

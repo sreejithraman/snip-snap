@@ -21,7 +21,7 @@ extension SwiftDataSyncModePersistence {
     return SyncModeActiveMutationLease(persistence: self, storeID: storeID)
   }
 
-  package func reserveActiveMutation(storeID: UUID? = nil) throws -> SyncModeWriteReservation {
+  func reserveActiveMutation(storeID: UUID? = nil) throws -> SyncModeWriteReservation {
     guard !writeAdmissionInProgress, manifest.writeReservation == nil,
       manifest.transition == nil
     else { throw SyncModePersistenceError.transitionInProgress }
@@ -42,7 +42,7 @@ extension SwiftDataSyncModePersistence {
     return reservation
   }
 
-  package func finishActiveMutation(_ reservation: SyncModeWriteReservation) throws {
+  func finishActiveMutation(_ reservation: SyncModeWriteReservation) throws {
     guard manifest.writeReservation == reservation else {
       throw SyncModePersistenceError.transitionInProgress
     }

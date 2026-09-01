@@ -1,5 +1,6 @@
 # Maintainer release gate
 
+- [ ] Confirm the signed Mac archive uses the production CloudKit container and environment.
 - [ ] Run the maintainer-only signed Cloud Dev fake-versus-real transport contract.
 
 # TestFlight gate

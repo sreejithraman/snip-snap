@@ -135,7 +135,7 @@ extension SwiftDataSyncModePersistence {
       CloudEntityReference(kind: .snip, domainID: $0.id)
     })
     try await target.setCloudEnrollment(
-      namespaceKey: Self.namespaceKey(namespace),
+      namespaceKey: namespace.namespaceKey,
       references: references,
       localDependencies: Dictionary(uniqueKeysWithValues: snapshot.snips.map {
         ($0.id, $0.listID)
@@ -161,7 +161,9 @@ extension SwiftDataSyncModePersistence {
     return token
   }
 
-  package func finalSnapshot(using token: SyncModeFreezeToken) async throws -> SnipLibraryTransferSnapshot {
+  package func finalSnapshot(
+    using token: SyncModeFreezeToken
+  ) async throws -> SnipLibraryTransferSnapshot {
     var next = manifest
     guard var transition = next.transition, transition.phase == .sourceFrozen,
       transition.freezeToken == token, !transition.freezeSnapshotTaken,
@@ -263,7 +265,7 @@ extension SwiftDataSyncModePersistence {
       transition.freezeToken == token, transition.freezeSnapshotTaken,
       source.revision == token.revision,
       plan.transitionID == transition.id,
-      plan.namespaceKey == transition.namespace.map(Self.namespaceKey),
+      plan.namespaceKey == transition.namespace?.namespaceKey.rawValue,
       plan.targetRevision == store(id: transition.candidateStoreID)?.revision,
       try plan.hasValidDigest()
     else { throw SyncModePersistenceError.invalidFreezeToken }
@@ -334,7 +336,7 @@ extension SwiftDataSyncModePersistence {
     else { return }
     let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
     if let receipt = try await candidate.cloudFullReenableReceipt(
-      namespaceKey: transition.namespace.map(Self.namespaceKey) ?? "",
+      namespaceKey: transition.namespace?.namespaceKey ?? CloudSyncNamespaceKey(rawValue: ""),
       transitionID: transition.id
     ) {
       guard receipt == intent.planDigest else {
@@ -549,10 +551,6 @@ extension SwiftDataSyncModePersistence {
     return valuesByCandidate.values.sorted {
       $0.candidateSnipID.uuidString < $1.candidateSnipID.uuidString
     }
-  }
-
-  static func namespaceKey(_ value: ICloudSyncNamespaceBinding) -> String {
-    SnipRecoveryScopeFactory.namespaceKey(value)
   }
 
 }

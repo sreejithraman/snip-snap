@@ -1,4 +1,5 @@
 import SnipSnapCore
+import SnipSnapCloud
 import SnipSnapPersistence
 import SwiftUI
 import UIKit
@@ -8,6 +9,155 @@ import XCTest
 
 @MainActor
 final class IOSAppModelTests: XCTestCase {
+    func testManualSyncUsesTheSameLibraryReplacementAndStatusPathAsLifecycleSync() async {
+        let oldLibrary = ModelTestLibrary(
+            snips: [Snip(content: "Old collection", origin: .quickEntry)]
+        )
+        let newLibrary = ModelTestLibrary(
+            snips: [Snip(content: "New collection", origin: .quickEntry)]
+        )
+        let cloudSession = IOSCloudSyncSessionProbe(
+            result: .libraryReplaced,
+            activeLibrary: newLibrary
+        )
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+        let session = IOSAppSession(
+            library: oldLibrary,
+            syncedContentSettings: settings,
+            cloudSyncSession: cloudSession
+        )
+        await session.model.load()
+
+        await session.syncWhenPossible()
+
+        XCTAssertEqual(session.model.snips.map(\.content), ["New collection"])
+        XCTAssertEqual(settings.mode, .iCloudSync)
+        XCTAssertEqual(settings.state, .ready)
+        let syncCount = await cloudSession.syncCount()
+        XCTAssertEqual(syncCount, 1)
+    }
+
+    func testManualSyncRecordsFailureInSettingsWithoutShowingGeneralError() async {
+        let cloudSession = IOSCloudSyncSessionProbe(
+            result: .noChange,
+            activeLibrary: ModelTestLibrary(),
+            syncError: IOSCloudSyncSessionProbe.Failure.offline
+        )
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+        let session = IOSAppSession(
+            library: ModelTestLibrary(),
+            syncedContentSettings: settings,
+            cloudSyncSession: cloudSession
+        )
+
+        await session.syncWhenPossible()
+
+        guard case .failed(let message) = settings.state else {
+            return XCTFail("Expected sync status failure")
+        }
+        XCTAssertTrue(message.contains("offline"))
+        XCTAssertNil(session.model.errorMessage)
+    }
+
+    func testIOSDelayedCancelDoesNotClearNewerBackupPreview() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("IOSImportCancelTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let firstURL = root.appendingPathComponent("First.json")
+        let secondURL = root.appendingPathComponent("Second.json")
+        let target = try JSONSnipLibrary(fileURL: root.appendingPathComponent("Target.json"))
+        let firstBackup = try JSONSnipLibrary(fileURL: firstURL)
+        let secondBackup = try JSONSnipLibrary(fileURL: secondURL)
+        _ = try await firstBackup.perform(
+            .add(
+                content: "First",
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inboxID,
+                attachmentURLs: [],
+                requestID: UUID(),
+                now: Date()
+            ),
+            sortedBy: .chronological
+        )
+        _ = try await secondBackup.perform(
+            .add(
+                content: "Second",
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inboxID,
+                attachmentURLs: [],
+                requestID: UUID(),
+                now: Date()
+            ),
+            sortedBy: .chronological
+        )
+        let actions = DirectSnipLibraryUserActions(
+            library: target,
+            previewBackupImport: { url, library in
+                try await SnipLibraryImport.preview(backupURL: url, target: library)
+            }
+        )
+        let session = SavedSnipsSession(library: target, userActions: actions)
+
+        let first = try await session.previewImport(from: firstURL)
+        let second = try await session.previewImport(from: secondURL)
+        await session.cancelImport(id: first.id)
+        let applied = try await session.applyPendingImport(
+            id: second.id,
+            sortedBy: .chronological
+        )
+
+        XCTAssertEqual(applied?.0.snapshot.snips.map(\.content), ["Second"])
+    }
+
+    func testSavedSnipsSessionRebindsCommandsAndRecoveryTogether() async throws {
+        let oldLibrary = ModelTestLibrary(
+            snips: [Snip(content: "Old", origin: .quickEntry)]
+        )
+        let recoveredValue = Snip(content: "Recovered", origin: .quickEntry)
+        let recovered = RecoveredSnip(
+            id: recoveredValue.id,
+            currentSnipID: recoveredValue.id,
+            recovered: recoveredValue,
+            conflictingFields: [],
+            state: .promoted
+        )
+        let newLibrary = ModelTestLibrary(
+            recovery: SnipRecoverySnapshot(promotedSnips: [recovered])
+        )
+        let session = SavedSnipsSession(library: oldLibrary)
+
+        let state = await session.withExclusiveAccess { session in
+            await session.replaceLibrary(
+                newLibrary,
+                recoveryScope: SnipRecoveryScope("new-scope"),
+                sortedBy: .chronological
+            )
+        }
+        _ = try await session.withExclusiveAccess { session in
+            try await session.performUserCommand(
+                .add(
+                    content: "New",
+                    origin: .quickEntry,
+                    source: nil,
+                    listID: SnipList.inboxID,
+                    attachmentURLs: [],
+                    requestID: UUID(),
+                    now: Date()
+                ),
+                sortedBy: .chronological
+            )
+        }
+
+        let oldSnapshot = await oldLibrary.snapshot(sortedBy: .chronological)
+        let newSnapshot = await newLibrary.snapshot(sortedBy: .chronological)
+        XCTAssertTrue(state.library.snips.isEmpty)
+        XCTAssertEqual(state.recovery.promotedSnips, [recovered])
+        XCTAssertEqual(oldSnapshot.snips.count, 1)
+        XCTAssertEqual(newSnapshot.snips.map(\.content), ["New"])
+    }
+
     func testReplacingLibraryReloadsVisibleContentAndRecoveryScope() async {
         let old = Snip(content: "Old collection", origin: .quickEntry)
         let recoveredValue = Snip(content: "Recovered copy", origin: .quickEntry)
@@ -144,7 +294,10 @@ final class IOSAppModelTests: XCTestCase {
         )
         let model = IOSAppModel(library: oldLibrary)
         await model.load()
-        let settings = SyncedContentSettingsModel(mode: .localOnly, enableAction: {})
+        let settings = SyncedContentSettingsModel(
+            mode: .localOnly,
+            enableAction: { .enabled }
+        )
         settings.setEnableCompletionAction {
             await model.replaceLibrary(cloudLibrary, recoveryScope: nil)
         }
@@ -270,7 +423,7 @@ final class IOSAppModelTests: XCTestCase {
         await model.load()
 
         XCTAssertEqual(model.attachmentURL(for: id), local)
-        XCTAssertFalse(model.hasCloudSync)
+        XCTAssertFalse(model.isCloudSyncActive)
         let prepared = await model.prepareAttachment(id, for: .preview)
         XCTAssertEqual(prepared, local)
         let prepareCount = await handler.prepareCount()
@@ -288,7 +441,35 @@ final class IOSAppModelTests: XCTestCase {
 
         XCTAssertEqual(model.attachmentURL(for: id), local)
         XCTAssertEqual(model.attachmentTransferState(for: id), .available)
-        XCTAssertFalse(model.hasCloudSync)
+        XCTAssertFalse(model.isCloudSyncActive)
+    }
+
+    func testReplacingLibraryRefreshesCloudModeInBothDirections() async {
+        let id = UUID()
+        let localURL = URL(fileURLWithPath: "/tmp/rebound-local.txt")
+        let handler = MutableIOSCloudSyncHandler(active: false, states: [:])
+        let model = IOSAppModel(
+            library: ModelTestLibrary(attachmentURLs: [id: localURL]),
+            cloudSyncHandler: handler
+        )
+        await model.load()
+        XCTAssertEqual(model.attachmentURL(for: id), localURL)
+
+        await handler.set(active: true, states: [id: .waiting])
+        await model.replaceLibrary(
+            ModelTestLibrary(attachmentURLs: [id: localURL]),
+            recoveryScope: nil
+        )
+        XCTAssertTrue(model.isCloudSyncActive)
+        XCTAssertNil(model.attachmentURL(for: id))
+
+        await handler.set(active: false, states: [:])
+        await model.replaceLibrary(
+            ModelTestLibrary(attachmentURLs: [id: localURL]),
+            recoveryScope: nil
+        )
+        XCTAssertFalse(model.isCloudSyncActive)
+        XCTAssertEqual(model.attachmentURL(for: id), localURL)
     }
 
     func testNewOfflineAttachmentStaysUsableUntilSyncPublishesIt() async {
@@ -331,7 +512,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(model.attachmentURL(for: id), verified)
     }
 
-    func testUnknownCloudModeNeverExposesAnUnverifiedLocalURL() async {
+    func testUnknownICloudSyncModeNeverExposesAnUnverifiedLocalURL() async {
         let id = UUID()
         let local = URL(fileURLWithPath: "/tmp/unknown-cloud-mode.txt")
         let verified = URL(fileURLWithPath: "/tmp/verified-after-mode-failure.txt")
@@ -1090,30 +1271,6 @@ final class IOSAppModelTests: XCTestCase {
                 isPreviewing: false
             )
         )
-        XCTAssertFalse(
-            AttachmentDraftLifecycle.shouldClean(
-                isSaving: false,
-                isStaging: false,
-                isImporting: true,
-                isPreviewing: false
-            )
-        )
-        XCTAssertFalse(
-            AttachmentDraftLifecycle.shouldClean(
-                isSaving: false,
-                isStaging: false,
-                isImporting: false,
-                isPreviewing: true
-            )
-        )
-        XCTAssertTrue(
-            AttachmentDraftLifecycle.shouldClean(
-                isSaving: false,
-                isStaging: false,
-                isImporting: false,
-                isPreviewing: false
-            )
-        )
     }
 
     func testTextSnipFlowCreatesEditsMovesAndDeletes() async throws {
@@ -1225,13 +1382,6 @@ final class IOSAppModelTests: XCTestCase {
     }
 
     func testIOSBackupPickerAndModelImportAnAttachmentBackupFolder() async throws {
-        XCTAssertEqual(
-            IOSBackupImportPickerPolicy.allowedContentTypes,
-            [.folder, .json]
-        )
-        XCTAssertTrue(IOSBackupImportPickerPolicy.message.contains("folder"))
-        XCTAssertTrue(IOSBackupImportPickerPolicy.message.contains("attachments"))
-
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("IOSFolderImportTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1289,7 +1439,7 @@ final class IOSAppModelTests: XCTestCase {
         await model.previewBackupImport(from: backupURL)
 
         XCTAssertEqual(model.pendingImportPreview?.addedListCount, 1)
-        XCTAssertEqual(model.importPreviewSummary, "0 snips, 1 new list")
+        XCTAssertEqual(model.pendingImportPreview?.localizedSummary, "0 snips, 1 new list")
     }
 
     func testListFlowKeepsInboxAsFallback() async throws {
@@ -1344,8 +1494,8 @@ final class IOSAppModelTests: XCTestCase {
         )
 
         await model.load()
-        XCTAssertEqual(model.needsAttentionCount, 1)
-        XCTAssertEqual(model.pendingRecoveredSnips, [recovered])
+        XCTAssertEqual(model.recoverySnapshot.needsAttentionCount, 1)
+        XCTAssertEqual(model.recoverySnapshot.pendingSnips, [recovered])
         await library.replaceText("Changed while open", for: current.id)
         await model.load()
         XCTAssertEqual(model.currentSnip(for: recovered)?.content, "Changed while open")
@@ -1354,7 +1504,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertTrue(resolved)
         let choices = await library.resolutionChoices()
         XCTAssertEqual(choices, [.keepCurrent])
-        XCTAssertEqual(model.needsAttentionCount, 0)
+        XCTAssertEqual(model.recoverySnapshot.needsAttentionCount, 0)
     }
 
     func testShippedAssemblyReadsExactCloudScopeAndFailsClosed() throws {
@@ -1678,6 +1828,73 @@ private actor IOSCloudSyncHandlerProbe: OptionalCloudSyncHandling {
         case .failure(let error): prepareContinuation?.resume(throwing: error)
         }
         prepareContinuation = nil
+    }
+}
+
+private actor IOSCloudSyncSessionProbe: IOSCloudSyncSessionHandling {
+    enum Failure: LocalizedError {
+        case offline
+
+        var errorDescription: String? { "iCloud is offline." }
+    }
+
+    private let result: SnipSnapCloudSyncResult
+    private let library: any SnipLibrary
+    private let syncError: Failure?
+    private var synchronizeCallCount = 0
+
+    init(
+        result: SnipSnapCloudSyncResult,
+        activeLibrary: any SnipLibrary,
+        syncError: Failure? = nil
+    ) {
+        self.result = result
+        library = activeLibrary
+        self.syncError = syncError
+    }
+
+    func synchronize() async throws -> SnipSnapCloudSyncResult {
+        synchronizeCallCount += 1
+        if let syncError { throw syncError }
+        return result
+    }
+
+    func iosActiveLibrary()
+        -> (library: any SnipLibrary, recoveryScope: SnipRecoveryScope?)
+    {
+        (library, nil)
+    }
+
+    func syncCount() -> Int { synchronizeCallCount }
+}
+
+private actor MutableIOSCloudSyncHandler: OptionalCloudSyncHandling {
+    private var active: Bool
+    private var states: [UUID: SyncedAttachmentTransferState]
+
+    init(active: Bool, states: [UUID: SyncedAttachmentTransferState]) {
+        self.active = active
+        self.states = states
+    }
+
+    func set(active: Bool, states: [UUID: SyncedAttachmentTransferState]) {
+        self.active = active
+        self.states = states
+    }
+
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
+    func syncWhenPossible() async {}
+    func isCloudSyncActive() async throws -> Bool { active }
+    func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] {
+        states
+    }
+    func clearDownloadedFiles() async throws {}
+    func prepareSyncedAttachment(
+        _ id: UUID,
+        for use: SyncedAttachmentUse
+    ) async throws -> URL {
+        throw SnipLibraryError.attachmentCopyFailed
     }
 }
 

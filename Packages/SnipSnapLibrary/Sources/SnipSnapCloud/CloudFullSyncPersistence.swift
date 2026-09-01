@@ -117,7 +117,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   let dataZone: CloudZoneID
   let payloadZone: CloudZoneID?
   let attachmentPolicy: CloudAttachmentCompatibilityPolicy
-  let namespaceKey: String
+  let namespaceKey: CloudSyncNamespaceKey
   let now: @Sendable () -> Date
   let afterCommitHook: ApplyHook
   private var observedEncryptedDataReset = false
@@ -140,7 +140,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     self.attachmentPolicy = attachmentPolicy
     self.now = now
     self.afterCommitHook = afterCommitHook
-    namespaceKey = namespace.canonicalKey
+    namespaceKey = namespace.namespaceKey
   }
 }
 

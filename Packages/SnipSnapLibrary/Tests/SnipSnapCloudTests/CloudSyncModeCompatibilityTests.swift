@@ -1,5 +1,5 @@
 import SnipSnapCore
-import SnipSnapPersistence
+@testable import SnipSnapPersistence
 @testable import SnipSnapCloud
 import XCTest
 
@@ -95,7 +95,7 @@ extension ICloudSyncModeCoordinatorTests {
         _ = try await managed.perform(.delete(ids: [snipID]), sortedBy: .chronological)
         let modeBefore = try await persistence.snapshot()
         let before = try await rawLibrary.cloudTextSyncSnapshot(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         XCTAssertEqual(before.namespaceState.phase, .seeding)
         XCTAssertEqual(before.namespaceState.approvedSnipIDs, [snipID])
@@ -104,7 +104,7 @@ extension ICloudSyncModeCoordinatorTests {
         let secondStatus = try await coordinator.status()
         let modeAfter = try await persistence.snapshot()
         let after = try await rawLibrary.cloudTextSyncSnapshot(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         XCTAssertEqual(firstStatus.state, .needsAttention)
         XCTAssertEqual(secondStatus, firstStatus)

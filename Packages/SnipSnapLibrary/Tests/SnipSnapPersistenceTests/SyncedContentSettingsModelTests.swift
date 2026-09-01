@@ -116,7 +116,10 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     let calls = DeleteEventRecorder()
     let model = SyncedContentSettingsModel(
       mode: .localOnly,
-      enableAction: { await calls.record("enable") }
+      enableAction: {
+        await calls.record("enable")
+        return .enabled
+      }
     )
     model.setEnableCompletionAction {
       XCTAssertEqual(model.mode, .localOnly)
@@ -128,6 +131,55 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     let events = await calls.values()
     XCTAssertEqual(events, ["enable", "replace-library"])
     XCTAssertEqual(model.mode, .iCloudSync)
+    XCTAssertEqual(model.state, .ready)
+  }
+
+  @MainActor
+  func testOfflineEnableStaysLocalAndSettingUpUntilLifecycleCompletes() async {
+    let calls = DeleteEventRecorder()
+    let model = SyncedContentSettingsModel(
+      mode: .localOnly,
+      enableAction: { .settingUp },
+      cancelEnableAction: { await calls.record("cancel") }
+    )
+
+    await model.enableICloudSync()
+
+    XCTAssertEqual(model.mode, .localOnly)
+    XCTAssertEqual(model.state, .enabling)
+    XCTAssertEqual(model.statusTitle, "Setting Up iCloud Sync…")
+    XCTAssertTrue(model.canCancelEnable)
+
+    await model.cancelICloudSyncSetup()
+
+    let cancelEvents = await calls.values()
+    XCTAssertEqual(cancelEvents, ["cancel"])
+    XCTAssertEqual(model.mode, .localOnly)
+    XCTAssertEqual(model.state, .ready)
+    XCTAssertFalse(model.canCancelEnable)
+
+    await model.enableICloudSync()
+
+    model.recordEnableCompleted()
+
+    XCTAssertEqual(model.mode, .iCloudSync)
+    XCTAssertEqual(model.state, .ready)
+  }
+
+  @MainActor
+  func testRoutineSyncUsesSettingsStatusForProgressAndFailure() {
+    let model = SyncedContentSettingsModel(mode: .iCloudSync)
+
+    model.recordSyncStarted()
+    XCTAssertEqual(model.state, .syncing)
+    XCTAssertEqual(model.statusTitle, "Syncing with iCloud…")
+
+    model.recordSyncFailure("iCloud is unavailable.")
+    XCTAssertEqual(model.state, .failed("iCloud is unavailable."))
+    XCTAssertTrue(model.detail.contains("iCloud is unavailable"))
+
+    model.recordSyncStarted()
+    model.recordSyncCompleted()
     XCTAssertEqual(model.state, .ready)
   }
 
@@ -245,7 +297,10 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     let calls = DeleteEventRecorder()
     let model = SyncedContentSettingsModel(
       mode: .iCloudSync,
-      enableAction: { await calls.record("enable") },
+      enableAction: {
+        await calls.record("enable")
+        return .enabled
+      },
       encryptedDataResetAction: { choice in
         XCTAssertEqual(choice, .keepSyncOff)
         return .resolved

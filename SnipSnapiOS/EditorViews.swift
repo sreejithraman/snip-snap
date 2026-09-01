@@ -97,7 +97,7 @@ struct SnipEditorView: View {
                 }
             }
             .onDisappear {
-                if AttachmentDraftLifecycle.shouldClean(
+                if AttachmentDraftLifecycle.allowsSaving(
                     isSaving: isSaving,
                     isStaging: isStaging,
                     isImporting: isImporting,

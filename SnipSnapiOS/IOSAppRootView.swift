@@ -3,11 +3,6 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-enum IOSBackupImportPickerPolicy {
-    static let allowedContentTypes: [UTType] = [.folder, .json]
-    static let message = String(localized: "Choose a backup folder to include attachments. A plain JSON file can contain text and metadata only.")
-}
-
 struct IOSAppRootView: View {
     @Environment(\.scenePhase) private var scenePhase
     private let session: IOSAppSession
@@ -72,7 +67,7 @@ struct IOSAppRootView: View {
             case .settings:
                 SyncedContentSettingsView(model: session.syncedContentSettings)
             case .recoveryCenter:
-                RecoveryCenterView(model: model, sheet: $sheet)
+                RecoveryCenterView(model: model)
             case .recoverSnip(let id):
                 RecoveredSnipReviewView(model: model, recoveryID: id)
             case .recoverList(let id):
@@ -122,11 +117,11 @@ struct IOSAppRootView: View {
             Button("Choose Backup") { isImportingBackup = true }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(IOSBackupImportPickerPolicy.message)
+            Text("Choose a backup folder to include attachments. A plain JSON file can contain text and metadata only.")
         }
         .fileImporter(
             isPresented: $isImportingBackup,
-            allowedContentTypes: IOSBackupImportPickerPolicy.allowedContentTypes,
+            allowedContentTypes: [.folder, .json],
             allowsMultipleSelection: false
         ) { result in
             switch result {
@@ -150,7 +145,7 @@ struct IOSAppRootView: View {
             Button("Import Backup") { Task { await model.confirmBackupImport() } }
             Button("Cancel", role: .cancel) { model.cancelBackupImport() }
         } message: {
-            Text("Review: \(model.importPreviewSummary). Snip Snap will merge these records with your saved snips.")
+            Text("Review: \(model.pendingImportPreview?.localizedSummary ?? ""). Snip Snap will merge these records with your saved snips.")
         }
         .task {
             await session.launch()
@@ -214,7 +209,7 @@ struct IOSAppRootView: View {
                             model: model,
                             importBackup: { isExplainingBackupImport = true },
                             includesCloudActions: true,
-                            reviewRecoveredEdits: model.needsAttentionCount > 0
+                            reviewRecoveredEdits: model.recoverySnapshot.needsAttentionCount > 0
                                 ? { sheet = .recoveryCenter }
                                 : nil,
                             editSelectedList: model.selectedListID == SnipList.inboxID
@@ -312,7 +307,7 @@ private struct AppleAccountNoticeBanner: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: iconName)
+                Image(systemName: model.systemImage)
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
@@ -350,10 +345,6 @@ private struct AppleAccountNoticeBanner: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.regularMaterial)
         .overlay(alignment: .bottom) { Divider() }
-    }
-
-    private var iconName: String {
-        model.notice == .paused ? "icloud.slash" : "person.crop.circle.badge.exclamationmark"
     }
 
 }

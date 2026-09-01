@@ -1,6 +1,23 @@
 import CloudKit
 import Foundation
 
+package enum CloudKitRetryPolicy {
+  package static func isTransient(_ error: Error) -> Bool {
+    guard let error = error as? CKError else { return false }
+    return isTransient(error.code)
+  }
+
+  package static func isTransient(_ code: CKError.Code) -> Bool {
+    switch code {
+    case .networkFailure, .networkUnavailable, .requestRateLimited,
+         .serviceUnavailable, .zoneBusy, .serverResponseLost:
+      true
+    default:
+      false
+    }
+  }
+}
+
 package enum CloudCollectionControlCodec {
   package static let recordType = "SnipSnapCollectionControl"
   package static let schemaVersion: Int64 = 1
@@ -85,7 +102,7 @@ package actor CloudKitCollectionControlTransport: CloudCollectionControlTranspor
     } catch let error as CloudCollectionError {
       throw error
     } catch {
-      throw CloudTransportError.fetchFailed
+      throw error
     }
   }
 
@@ -102,7 +119,7 @@ package actor CloudKitCollectionControlTransport: CloudCollectionControlTranspor
         _ = try value.get()
       }
     } catch {
-      throw CloudTransportError.sendFailed
+      throw error
     }
   }
 
@@ -137,7 +154,7 @@ package actor CloudKitCollectionControlTransport: CloudCollectionControlTranspor
     } catch let error as CloudCollectionError {
       throw error
     } catch {
-      throw CloudTransportError.sendFailed
+      throw error
     }
   }
 
@@ -158,7 +175,7 @@ package actor CloudKitCollectionControlTransport: CloudCollectionControlTranspor
     } catch let error as CKError where error.code == .zoneNotFound {
       return
     } catch {
-      throw CloudTransportError.sendFailed
+      throw error
     }
   }
 
@@ -167,7 +184,7 @@ package actor CloudKitCollectionControlTransport: CloudCollectionControlTranspor
   ) throws -> CloudCollectionControlSaveResult {
     guard error.code == .serverRecordChanged,
       let server = error.serverRecord
-    else { throw CloudTransportError.sendFailed }
+    else { throw error }
     return .conflict(
       try CloudCollectionControlCodec.decode(server, expectedID: controlID)
     )

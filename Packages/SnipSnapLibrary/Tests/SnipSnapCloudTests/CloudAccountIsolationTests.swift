@@ -1,5 +1,5 @@
 import SnipSnapCore
-import SnipSnapPersistence
+@testable import SnipSnapPersistence
 @testable import SnipSnapCloud
 import XCTest
 

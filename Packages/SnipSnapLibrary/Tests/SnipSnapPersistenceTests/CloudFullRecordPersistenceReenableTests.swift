@@ -10,10 +10,10 @@ extension CloudFullRecordPersistenceTests {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
     let store = try SwiftDataSnipLibrary(storeURL: location.store)
-    let namespace = "private|account-a|generation-reenable"
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-reenable")
     let transitionID = UUID()
     let listID = UUID()
-    _ = try await store.acceptCloudEntity(
+    try await store.testAcceptCloudEntity(
       namespaceKey: namespace,
       value: entity(.list, listID, identity("l-\(listID.uuidString.lowercased())"))
     )
@@ -27,7 +27,7 @@ extension CloudFullRecordPersistenceTests {
       payload: Data("conflict".utf8)
     )
     let recovery = CloudFullRecoveryInput(
-      namespaceKey: namespace,
+      namespaceKey: namespace.rawValue,
       batchID: SnipLibraryTransferPlanner.derivedUUID(
         transitionID: transitionID,
         sourceID: listID
@@ -38,7 +38,7 @@ extension CloudFullRecordPersistenceTests {
     )
     let plan = try CloudFullReenableApplyPlan(
       transitionID: transitionID,
-      namespaceKey: namespace,
+      namespaceKey: namespace.rawValue,
       targetRevision: target.revision,
       targetDigest: SnipLibraryTransferPlanner.digest(snapshot: target),
       snips: target.snips,
@@ -91,7 +91,7 @@ extension CloudFullRecordPersistenceTests {
 
     let mismatchedReplay = try CloudFullReenableApplyPlan(
       transitionID: transitionID,
-      namespaceKey: namespace,
+      namespaceKey: namespace.rawValue,
       targetRevision: target.revision,
       targetDigest: SnipLibraryTransferPlanner.digest(snapshot: target),
       snips: target.snips,
@@ -123,11 +123,11 @@ extension CloudFullRecordPersistenceTests {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
     let store = try SwiftDataSnipLibrary(storeURL: location.store)
-    let namespace = "private|account-a|generation-stale"
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-stale")
     let transitionID = UUID()
     let listID = UUID()
     let first = entity(.list, listID, identity("l-stale"))
-    _ = try await store.acceptCloudEntity(namespaceKey: namespace, value: first)
+    try await store.testAcceptCloudEntity(namespaceKey: namespace, value: first)
     let before = try await store.cloudFullStorageSnapshot(namespaceKey: namespace)
     let accepted = try XCTUnwrap(before.readyEntities.first)
     let target = try await store.transferSnapshot(revision: 3)
@@ -139,7 +139,7 @@ extension CloudFullRecordPersistenceTests {
     )
     let plan = try CloudFullReenableApplyPlan(
       transitionID: transitionID,
-      namespaceKey: namespace,
+      namespaceKey: namespace.rawValue,
       targetRevision: 3,
       targetDigest: SnipLibraryTransferPlanner.digest(snapshot: target),
       snips: target.snips,
@@ -161,7 +161,7 @@ extension CloudFullRecordPersistenceTests {
       systemFields: Data("changed-system".utf8),
       dependencyListID: first.dependencyListID
     )
-    _ = try await store.acceptCloudEntity(namespaceKey: namespace, value: changed)
+    try await store.testAcceptCloudEntity(namespaceKey: namespace, value: changed)
 
     do {
       _ = try await store.applyCloudFullReenablePlan(plan, currentRevision: 3)
@@ -185,14 +185,16 @@ extension CloudFullRecordPersistenceTests {
       let location = temporaryStore()
       defer { try? FileManager.default.removeItem(at: location.root) }
       let store = try SwiftDataSnipLibrary(storeURL: location.store)
-      let namespace = "private|account-a|generation-exact-cas-\(change)"
+      let namespace = CloudSyncNamespaceKey(
+        rawValue: "private|account-a|generation-exact-cas-\(change)"
+      )
       let first = entity(.list, UUID(), identity("l-first"))
-      _ = try await store.acceptCloudEntity(namespaceKey: namespace, value: first)
+      try await store.testAcceptCloudEntity(namespaceKey: namespace, value: first)
       let before = try await store.cloudFullStorageSnapshot(namespaceKey: namespace)
       let target = try await store.transferSnapshot(revision: 1)
       let plan = try CloudFullReenableApplyPlan(
         transitionID: UUID(),
-        namespaceKey: namespace,
+        namespaceKey: namespace.rawValue,
         expectedNamespaceRevision: before.namespaceState.revision,
         targetRevision: 1,
         targetDigest: SnipLibraryTransferPlanner.digest(snapshot: target),
@@ -206,7 +208,7 @@ extension CloudFullRecordPersistenceTests {
         result: SnipLibraryTransferResult(approvedSnipIDs: [], recoveredSourceSnipIDs: [])
       )
       if change == "added-row" {
-        _ = try await store.acceptCloudEntity(
+        try await store.testAcceptCloudEntity(
           namespaceKey: namespace,
           value: entity(.list, UUID(), identity("l-added"))
         )
@@ -289,7 +291,7 @@ extension CloudFullRecordPersistenceTests {
     let storedURL = try XCTUnwrap(after.attachmentURLs[attachment.id])
     XCTAssertEqual(try Data(contentsOf: storedURL), originalBytes)
     let receipt = try await store.cloudFullReenableReceipt(
-      namespaceKey: plan.namespaceKey,
+      namespaceKey: CloudSyncNamespaceKey(rawValue: plan.namespaceKey),
       transitionID: transitionID
     )
     XCTAssertNil(receipt)

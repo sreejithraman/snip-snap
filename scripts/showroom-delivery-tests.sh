@@ -40,6 +40,27 @@ fi
 /usr/bin/grep -F -- \
     'delivery = ["scripts/run.sh"]' \
     "$script_dir/../.showroom.toml" >/dev/null
+ios_description="$(zsh "$script_dir/showroom-ios-delivery.sh" describe --json)"
+print -r -- "$ios_description" | /usr/bin/ruby -rjson -e '
+data = JSON.parse(STDIN.read)
+abort unless data.fetch("protocol_version") == 1
+device = data.fetch("surfaces").fetch("device")
+abort unless device.fetch("start") == ["device-start"]
+abort unless device.fetch("verify") == ["device-verify"]
+'
+/usr/bin/grep -F -- \
+    'delivery = ["scripts/showroom-ios-delivery.sh"]' \
+    "$script_dir/../.showroom.toml" >/dev/null
+zsh "$script_dir/showroom-ios-delivery.sh" \
+    device-verify \
+    --result-json "$test_dir/ios-device-result.json"
+/usr/bin/ruby -rjson -e '
+data = JSON.parse(File.read(ARGV.fetch(0)))
+abort unless data.fetch("surface") == "device"
+abort unless data.fetch("operation") == "verify"
+abort unless data.fetch("verification").fetch("status") == "blocked"
+abort unless data.fetch("location").fetch("command") == ["scripts/cloud-dev.sh", "build"]
+' "$test_dir/ios-device-result.json"
 
 "$script_dir/run.sh" \
     device-verify \

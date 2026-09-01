@@ -36,8 +36,9 @@ extension SwiftDataSnipLibrary {
   }
 
   package func cloudFullRecoveryEvents(
-    namespaceKey: String
+    namespaceKey: CloudSyncNamespaceKey
   ) throws -> [CloudFullRecoveryInput] {
+    let namespaceKey = namespaceKey.rawValue
     guard let container else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
@@ -58,7 +59,10 @@ extension SwiftDataSnipLibrary {
       .sorted { $0.batchID.uuidString < $1.batchID.uuidString }
   }
 
-  package func stagedCloudFullBatches(namespaceKey: String) throws -> [CloudFullBatchCommit] {
+  package func stagedCloudFullBatches(
+    namespaceKey: CloudSyncNamespaceKey
+  ) throws -> [CloudFullBatchCommit] {
+    let namespaceKey = namespaceKey.rawValue
     guard let container else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
@@ -144,7 +148,10 @@ extension SwiftDataSnipLibrary {
     try context.save()
   }
 
-  package func cloudFullStorageSnapshot(namespaceKey: String) throws -> CloudFullStorageSnapshot {
+  package func cloudFullStorageSnapshot(
+    namespaceKey: CloudSyncNamespaceKey
+  ) throws -> CloudFullStorageSnapshot {
+    let namespaceKey = namespaceKey.rawValue
     guard let container else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
@@ -199,9 +206,10 @@ extension SwiftDataSnipLibrary {
   }
 
   package func stageCloudPendingDeletes(
-    namespaceKey: String,
+    namespaceKey: CloudSyncNamespaceKey,
     values: [CloudPendingDelete]
   ) throws {
+    let namespaceKey = namespaceKey.rawValue
     guard values.allSatisfy({ $0.storageVersion == 1 }) else {
       throw CloudFullStorageError.invalidBatchReplay
     }
@@ -241,9 +249,10 @@ extension SwiftDataSnipLibrary {
   }
 
   package func clearCloudFullRecoveryEvents(
-    namespaceKey: String,
+    namespaceKey: CloudSyncNamespaceKey,
     keys: Set<String>
   ) throws {
+    let namespaceKey = namespaceKey.rawValue
     guard let container else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
@@ -267,163 +276,12 @@ extension SwiftDataSnipLibrary {
     )
   }
 
-  package func acceptCloudEntity(
-    namespaceKey: String,
-    value: CloudAcceptedEntityInput,
-    conflict: CloudConflictInput? = nil
-  ) throws -> CloudEntityAcceptance {
-    guard let container else { throw SnipLibraryError.storeUnavailable }
-    let lock = try SnipStoreFileLock(url: lockURL)
-    defer { withExtendedLifetime(lock) {} }
-    let context = Self.makeContext(container: container)
-    let records = try context.fetch(FetchDescriptor<StoredCloudEntityRecord>())
-      .filter { $0.namespaceKey == namespaceKey }
-    let domainKey = StoredCloudEntityRecord.domainKey(
-      namespaceKey: namespaceKey,
-      reference: value.reference
-    )
-    let identityKey = StoredCloudEntityRecord.identityKey(
-      namespaceKey: namespaceKey,
-      identity: value.identity
-    )
-    if let sameDomain = records.first(where: { $0.id == domainKey }),
-      sameDomain.identityID != identityKey
-    {
-      try Self.insertQuarantineIfNeeded(
-        CloudQuarantineInput(
-          key: "domain|\(value.reference.kind.rawValue)|\(value.reference.domainID.uuidString.lowercased())|\(value.identity.key)",
-          reference: value.reference,
-          identity: value.identity,
-          payload: try JSONEncoder().encode(value)
-        ),
-        namespaceKey: namespaceKey,
-        context: context
-      )
-      try afterMutationBeforeSave()
-      try context.save()
-      return .duplicateDomain(existing: sameDomain.identity)
-    }
-    if let sameIdentity = records.first(where: { $0.identityID == identityKey }),
-      sameIdentity.id != domainKey
-    {
-      guard let reference = sameIdentity.reference else { throw SnipLibraryError.invalidStore }
-      try Self.insertQuarantineIfNeeded(
-        CloudQuarantineInput(
-          key: "identity|\(value.identity.key)|\(value.reference.kind.rawValue)|\(value.reference.domainID.uuidString.lowercased())",
-          reference: value.reference,
-          identity: value.identity,
-          payload: try JSONEncoder().encode(value)
-        ),
-        namespaceKey: namespaceKey,
-        context: context
-      )
-      try afterMutationBeforeSave()
-      try context.save()
-      return .duplicateIdentity(existing: reference)
-    }
-
-    if value.reference.kind == .snip, value.dependencyListID == nil {
-      throw CloudFullStorageError.missingListDependency
-    }
-    if let conflict {
-      guard conflict.reference == value.reference else {
-        throw CloudFullStorageError.invalidConflictReplay
-      }
-      try Self.insertConflictIfNeeded(
-        conflict,
-        namespaceKey: namespaceKey,
-        context: context
-      )
-    }
-
-    var knownListIDs = Set(records.compactMap { record -> UUID? in
-      guard record.kind == CloudEntityKind.list.rawValue, !record.isDeferred else { return nil }
-      return record.domainID
-    })
-    knownListIDs.insert(SnipList.inbox.id)
-    let deferred = value.reference.kind == .snip
-      && value.dependencyListID.map { !knownListIDs.contains($0) } == true
-    if let current = records.first(where: { $0.id == domainKey }) {
-      if !current.matches(value, isDeferred: deferred) {
-        current.replace(with: value, isDeferred: deferred)
-      }
-    } else {
-      context.insert(
-        StoredCloudEntityRecord(
-          namespaceKey: namespaceKey,
-          value: value,
-          isDeferred: deferred
-        )
-      )
-    }
-
-    var released: Set<UUID> = []
-    if value.reference.kind == .list {
-      for record in records where record.isDeferred && record.dependencyListID == value.reference.domainID {
-        record.isDeferred = false
-        released.insert(record.domainID)
-      }
-    }
-    try afterMutationBeforeSave()
-    try context.save()
-    return .accepted(releasedSnipIDs: released)
-  }
-
-  package func storeCloudConflict(
-    namespaceKey: String,
-    key: String,
-    reference: CloudEntityReference,
-    payload: Data
-  ) throws {
-    guard let container else { throw SnipLibraryError.storeUnavailable }
-    let lock = try SnipStoreFileLock(url: lockURL)
-    defer { withExtendedLifetime(lock) {} }
-    let context = Self.makeContext(container: container)
-    try Self.insertConflictIfNeeded(
-      CloudConflictInput(
-        key: key,
-        reference: reference,
-        format: reference.kind == .snip ? .snipMergeV1 : .listMergeV1,
-        payload: payload
-      ),
-      namespaceKey: namespaceKey,
-      context: context
-    )
-    try afterMutationBeforeSave()
-    try context.save()
-  }
-
-  package func storeCloudConflict(
-    scope: SnipRecoveryScope,
-    key: String,
-    reference: CloudEntityReference,
-    payload: Data,
-    recovery: SnipRecoveryRecord
-  ) throws {
-    guard let container else { throw SnipLibraryError.storeUnavailable }
-    let lock = try SnipStoreFileLock(url: lockURL)
-    defer { withExtendedLifetime(lock) {} }
-    let context = Self.makeContext(container: container)
-    try Self.insertConflictIfNeeded(
-      CloudConflictInput(
-        key: key,
-        reference: reference,
-        format: reference.kind == .snip ? .snipMergeV1 : .listMergeV1,
-        payload: payload,
-        recovery: recovery
-      ),
-      namespaceKey: scope.rawValue,
-      context: context
-    )
-    try afterMutationBeforeSave()
-    try context.save()
-  }
-
   package func setCloudEnrollment(
-    namespaceKey: String,
+    namespaceKey: CloudSyncNamespaceKey,
     references: Set<CloudEntityReference>,
     localDependencies: [UUID: UUID] = [:]
   ) throws {
+    let namespaceKey = namespaceKey.rawValue
     guard let container else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
@@ -467,15 +325,16 @@ extension SwiftDataSnipLibrary {
   }
 
   package func storeDormantCloudBase(
-    namespaceKey: String,
+    namespaceKey: CloudSyncNamespaceKey,
     reference: CloudEntityReference,
     identity: CloudTextStorageIdentity,
     payload: Data
   ) throws {
+    let rawNamespaceKey = namespaceKey.rawValue
     try storeDormantCloudBases(
       namespaceKey: namespaceKey,
       bases: [CloudDormantBase(
-        namespaceKey: namespaceKey,
+        namespaceKey: rawNamespaceKey,
         reference: reference,
         identity: identity,
         payload: payload
@@ -484,10 +343,11 @@ extension SwiftDataSnipLibrary {
   }
 
   package func storeDormantCloudBases(
-    namespaceKey: String,
+    namespaceKey: CloudSyncNamespaceKey,
     bases: [CloudDormantBase],
     afterStagingFirst: @Sendable () throws -> Void = {}
   ) throws {
+    let namespaceKey = namespaceKey.rawValue
     guard bases.allSatisfy({ $0.namespaceKey == namespaceKey }) else {
       throw CloudFullStorageError.invalidBatchReplay
     }
@@ -554,30 +414,6 @@ extension SwiftDataSnipLibrary {
       context.rollback()
       throw error
     }
-  }
-
-  package func dormantCloudBase(
-    namespaceKey: String,
-    reference: CloudEntityReference
-  ) throws -> CloudDormantBase? {
-    guard let container else { throw SnipLibraryError.storeUnavailable }
-    let lock = try SnipStoreFileLock(url: lockURL)
-    defer { withExtendedLifetime(lock) {} }
-    let context = Self.makeContext(container: container)
-    let id = StoredCloudDormantBaseRecord.key(namespaceKey: namespaceKey, reference: reference)
-    guard let record = try context.fetch(FetchDescriptor<StoredCloudDormantBaseRecord>())
-      .first(where: { $0.id == id })
-    else { return nil }
-    return CloudDormantBase(
-      namespaceKey: namespaceKey,
-      reference: reference,
-      identity: CloudTextStorageIdentity(
-        zoneName: record.zoneName,
-        ownerName: record.ownerName,
-        recordName: record.recordName
-      ),
-      payload: record.payload
-    )
   }
 
   package func dormantCloudBases() throws -> [CloudDormantBase] {

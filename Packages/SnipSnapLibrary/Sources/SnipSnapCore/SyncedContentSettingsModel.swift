@@ -9,6 +9,7 @@ public enum SyncedContentMode: Equatable, Sendable {
 public enum SyncedContentSettingsState: Equatable, Sendable {
   case ready
   case enabling
+  case syncing
   case disabling
   case deleting
   case encryptedDataReset
@@ -16,6 +17,11 @@ public enum SyncedContentSettingsState: Equatable, Sendable {
   case removalPending
   case deleted
   case failed(String)
+}
+
+public enum SyncedContentEnableOutcome: Equatable, Sendable {
+  case enabled
+  case settingUp
 }
 
 public enum SyncedContentDisableChoice: Equatable, Sendable {
@@ -42,7 +48,8 @@ public enum SyncedContentDeleteOutcome: Equatable, Sendable {
 @MainActor
 @Observable
 public final class SyncedContentSettingsModel {
-  public typealias EnableAction = @Sendable () async throws -> Void
+  public typealias EnableAction = @Sendable () async throws -> SyncedContentEnableOutcome
+  public typealias CancelEnableAction = @Sendable () async throws -> Void
   public typealias DisableAction = @Sendable (SyncedContentDisableChoice) async throws -> Void
   public typealias DeleteAction = @Sendable () async throws -> SyncedContentDeleteOutcome
   public typealias DeleteCompletionAction = @MainActor @Sendable () async throws -> Void
@@ -54,6 +61,7 @@ public final class SyncedContentSettingsModel {
   public private(set) var mode: SyncedContentMode
   public private(set) var state: SyncedContentSettingsState
   private let enableAction: EnableAction?
+  private let cancelEnableAction: CancelEnableAction?
   private let disableAction: DisableAction?
   private let deleteAction: DeleteAction?
   private let encryptedDataResetAction: EncryptedDataResetAction?
@@ -66,12 +74,14 @@ public final class SyncedContentSettingsModel {
     mode: SyncedContentMode,
     initialState: SyncedContentSettingsState = .ready,
     enableAction: EnableAction? = nil,
+    cancelEnableAction: CancelEnableAction? = nil,
     disableAction: DisableAction? = nil,
     deleteAction: DeleteAction? = nil,
     encryptedDataResetAction: EncryptedDataResetAction? = nil
   ) {
     self.mode = mode
     self.enableAction = enableAction
+    self.cancelEnableAction = cancelEnableAction
     self.disableAction = disableAction
     self.deleteAction = deleteAction
     self.encryptedDataResetAction = encryptedDataResetAction
@@ -100,7 +110,7 @@ public final class SyncedContentSettingsModel {
     guard mode == .iCloudSync, deleteAction != nil else { return false }
     return switch state {
     case .ready, .failed: true
-    case .enabling, .disabling, .deleting, .encryptedDataReset, .resolvingEncryptedDataReset,
+    case .enabling, .syncing, .disabling, .deleting, .encryptedDataReset, .resolvingEncryptedDataReset,
          .removalPending, .deleted: false
     }
   }
@@ -109,16 +119,20 @@ public final class SyncedContentSettingsModel {
     guard mode == .localOnly, enableAction != nil else { return false }
     return switch state {
     case .ready, .failed: true
-    case .enabling, .disabling, .deleting, .encryptedDataReset,
+    case .enabling, .syncing, .disabling, .deleting, .encryptedDataReset,
          .resolvingEncryptedDataReset, .removalPending, .deleted: false
     }
+  }
+
+  public var canCancelEnable: Bool {
+    mode == .localOnly && state == .enabling && cancelEnableAction != nil
   }
 
   public var canDisable: Bool {
     guard mode == .iCloudSync, disableAction != nil else { return false }
     return switch state {
     case .ready, .failed, .deleted: true
-    case .enabling, .disabling, .deleting, .encryptedDataReset,
+    case .enabling, .syncing, .disabling, .deleting, .encryptedDataReset,
          .resolvingEncryptedDataReset, .removalPending: false
     }
   }
@@ -130,6 +144,7 @@ public final class SyncedContentSettingsModel {
     case (.localOnly, _): String(localized: "Local Only", bundle: .main)
     case (_, .ready): String(localized: "iCloud Sync On", bundle: .main)
     case (_, .enabling): String(localized: "Setting Up iCloud Sync…", bundle: .main)
+    case (_, .syncing): String(localized: "Syncing with iCloud…", bundle: .main)
     case (_, .disabling): String(localized: "Turning Off iCloud Sync…", bundle: .main)
     case (_, .deleting): String(localized: "Deleting Synced Content…", bundle: .main)
     case (_, .encryptedDataReset): String(localized: "iCloud Encrypted Data Was Reset", bundle: .main)
@@ -149,6 +164,8 @@ public final class SyncedContentSettingsModel {
       String(localized: "Snip Snap is fetching iCloud data and preparing a safe merged copy.", bundle: .main)
     case (.iCloudSync, .enabling):
       String(localized: "Snip Snap is finishing iCloud Sync setup.", bundle: .main)
+    case (.iCloudSync, .syncing):
+      String(localized: "Snip Snap is checking iCloud for changes.", bundle: .main)
     case (.iCloudSync, .disabling):
       String(localized: "Snip Snap is making a local copy of your synced library. Your iCloud copy will stay in place.", bundle: .main)
     case (.localOnly, _):
@@ -172,10 +189,15 @@ public final class SyncedContentSettingsModel {
     guard canEnable, let enableAction else { return }
     state = .enabling
     do {
-      try await enableAction()
-      try await enableCompletionAction?()
-      mode = .iCloudSync
-      state = .ready
+      switch try await enableAction() {
+      case .enabled:
+        try await enableCompletionAction?()
+        mode = .iCloudSync
+        state = .ready
+      case .settingUp:
+        mode = .localOnly
+        state = .enabling
+      }
     } catch {
       state = .failed(error.localizedDescription)
     }
@@ -194,9 +216,56 @@ public final class SyncedContentSettingsModel {
     }
   }
 
+  public func cancelICloudSyncSetup() async {
+    guard canCancelEnable, let cancelEnableAction else { return }
+    do {
+      try await cancelEnableAction()
+      mode = .localOnly
+      state = .ready
+    } catch {
+      state = .failed(error.localizedDescription)
+    }
+  }
+
   public func recordRemovalPending(_ pending: Bool) {
     guard mode == .iCloudSync else { return }
     state = pending ? .removalPending : .deleted
+  }
+
+  public func recordSyncStarted() {
+    guard mode == .iCloudSync else { return }
+    switch state {
+    case .ready, .failed:
+      state = .syncing
+    case .enabling, .syncing, .disabling, .deleting, .encryptedDataReset,
+         .resolvingEncryptedDataReset, .removalPending, .deleted:
+      break
+    }
+  }
+
+  public func recordSyncCompleted() {
+    guard mode == .iCloudSync else { return }
+    if case .syncing = state { state = .ready }
+  }
+
+  public func recordSyncFailure(_ message: String) {
+    switch (mode, state) {
+    case (.iCloudSync, .ready), (.iCloudSync, .syncing), (.iCloudSync, .failed),
+         (.localOnly, .enabling):
+      state = .failed(message)
+    default:
+      break
+    }
+  }
+
+  public func recordEnableSettingUp() {
+    mode = .localOnly
+    state = .enabling
+  }
+
+  public func recordEnableCompleted() {
+    mode = .iCloudSync
+    state = .ready
   }
 
   public func recordEncryptedDataReset() {

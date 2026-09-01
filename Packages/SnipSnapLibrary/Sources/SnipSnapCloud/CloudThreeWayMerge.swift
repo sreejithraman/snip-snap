@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import SnipSnapCore
+import SnipSnapPersistence
 
 package struct CloudSnipMergeFields: Codable, Equatable, Sendable {
   package var id: UUID
@@ -118,13 +119,13 @@ package enum CloudMergeError: Error, Codable, Equatable, Sendable {
 
 package enum CloudConflictKey {
   package static func make(
-    namespaceKey: String,
+    namespaceKey: CloudSyncNamespaceKey,
     recordID: CloudRecordID,
     ancestorSystemFields: Data,
     serverSystemFields: Data
   ) -> String {
     var bytes = Data("snipsnap-conflict-v1".utf8)
-    append(namespaceKey, to: &bytes)
+    append(namespaceKey.rawValue, to: &bytes)
     append(recordID.zone.ownerName, to: &bytes)
     append(recordID.zone.name, to: &bytes)
     append(recordID.name, to: &bytes)

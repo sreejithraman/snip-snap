@@ -7,7 +7,40 @@ import XCTest
 final class SnipRecoveryPersistenceTests: XCTestCase {
   private enum Crash: Error { case expected }
 
-  func testAppAssemblyDiscoversTransitionCloudNamespaceFromValidatedManifest() async throws {
+  func testSyncModeJournalPersistsAndRecoversAFrozenTransition() async throws {
+    let location = temporaryStore()
+    defer { try? FileManager.default.removeItem(at: location.root) }
+    let syncModeRoot = location.root.appendingPathComponent("SyncMode", isDirectory: true)
+    let namespace = ICloudSyncNamespaceBinding(
+      scope: "private",
+      accountLineage: "account-a",
+      generation: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
+      zones: [ICloudSyncZoneBinding(name: "SnipSnap", ownerName: "owner-a")]
+    )
+    let persistence = try SwiftDataSyncModePersistence(rootURL: syncModeRoot)
+
+    _ = try await persistence.beginTransition(to: .iCloudSync, namespace: namespace)
+    try await persistence.recordPreparationComplete()
+    let token = try await persistence.freezeSource()
+    _ = try await persistence.finalSnapshot(using: token)
+
+    let frozen = try await persistence.snapshot().transition
+    XCTAssertEqual(frozen?.phase, .sourceFrozen)
+    XCTAssertEqual(frozen?.freezeToken, token)
+    XCTAssertEqual(frozen?.freezeSnapshotTaken, true)
+
+    let reopened = try SwiftDataSyncModePersistence(rootURL: syncModeRoot)
+    let recovered = try await reopened.snapshot().transition
+    XCTAssertEqual(recovered?.phase, .candidateReady)
+    XCTAssertNil(recovered?.freezeToken)
+    XCTAssertEqual(recovered?.freezeSnapshotTaken, false)
+
+    try await reopened.recordPreparationComplete()
+    let resumed = try await reopened.snapshot().transition
+    XCTAssertEqual(resumed?.phase, .remoteFetched)
+  }
+
+  func testAppAssemblyKeepsPendingCloudTransitionOutOfActiveRecoveryScope() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
     let syncModeRoot = location.root.appendingPathComponent("SyncMode", isDirectory: true)
@@ -26,9 +59,10 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
       syncModeRootURL: syncModeRoot
     )
 
+    XCTAssertNil(assembly.recoveryScope)
     XCTAssertEqual(
-      assembly.recoveryScope?.rawValue,
-      SwiftDataSyncModePersistence.namespaceKey(namespace)
+      SyncModeActivationManifestReader.iCloudStartupState(atSyncModeRootURL: syncModeRoot),
+      .settingUp(namespace)
     )
   }
 
@@ -124,11 +158,11 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
       activeCloudNamespace: namespace
     )
     let scope = try XCTUnwrap(cloudAssembly.recoveryScope)
-    XCTAssertEqual(scope.rawValue, SwiftDataSyncModePersistence.namespaceKey(namespace))
+    XCTAssertEqual(scope.rawValue, namespace.namespaceKey.rawValue)
 
     _ = try await store.perform(.restore(snips: [current]), sortedBy: .manual)
-    try await store.storeCloudConflict(
-      scope: scope,
+    try await store.testStoreCloudConflict(
+      namespaceKey: CloudSyncNamespaceKey(rawValue: scope.rawValue),
       key: "app-assembly",
       reference: CloudEntityReference(kind: .snip, domainID: current.id),
       payload: Data("wire".utf8),
@@ -191,8 +225,8 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
         listSnapshot.lists.first { $0.name == otherList.name }
       )
       _ = try await store.perform(.restore(snips: [current]), sortedBy: .manual)
-      try await store.storeCloudConflict(
-        scope: scope,
+      try await store.testStoreCloudConflict(
+        namespaceKey: CloudSyncNamespaceKey(rawValue: scope.rawValue),
         key: "snip-text",
         reference: CloudEntityReference(kind: .snip, domainID: current.id),
         payload: Data("wire".utf8),
@@ -218,7 +252,7 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
     XCTAssertEqual(snip.source?.applicationName, "Server app")
     let recoveryAfterResolution = try await reopened.recoverySnapshot(in: scope)
     let cloudAfterResolution = try await reopened.cloudFullStorageSnapshot(
-      namespaceKey: scope.rawValue
+      namespaceKey: CloudSyncNamespaceKey(rawValue: scope.rawValue)
     )
     XCTAssertTrue(recoveryAfterResolution.pendingSnips.isEmpty)
     XCTAssertTrue(cloudAfterResolution.conflicts.isEmpty)
@@ -245,8 +279,8 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
     )
     let store = try SwiftDataSnipLibrary(storeURL: location.store)
     _ = try await store.perform(.restore(snips: [current]), sortedBy: .manual)
-    try await store.storeCloudConflict(
-      scope: scope,
+    try await store.testStoreCloudConflict(
+      namespaceKey: CloudSyncNamespaceKey(rawValue: scope.rawValue),
       key: "keep-both",
       reference: CloudEntityReference(kind: .snip, domainID: current.id),
       payload: Data("wire".utf8),
@@ -298,8 +332,8 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
         .restore(snips: [current, recovered]),
         sortedBy: .manual
       )
-      try await store.storeCloudConflict(
-        scope: scope,
+      try await store.testStoreCloudConflict(
+        namespaceKey: CloudSyncNamespaceKey(rawValue: scope.rawValue),
         key: "reenable-\(String(describing: choice))",
         reference: CloudEntityReference(kind: .snip, domainID: current.id),
         payload: Data("wire".utf8),
@@ -309,7 +343,7 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
       _ = try await store.resolveRecovery(item.id, in: scope, choice: choice)
       let library = await store.snapshot(sortedBy: .manual)
       let review = try await store.recoverySnapshot(in: scope)
-      let conflicts = try await store.cloudFullStorageSnapshot(namespaceKey: scope.rawValue)
+      let conflicts = try await store.cloudFullStorageSnapshot(namespaceKey: CloudSyncNamespaceKey(rawValue: scope.rawValue))
       XCTAssertTrue(review.pendingSnips.isEmpty)
       XCTAssertTrue(conflicts.conflicts.isEmpty)
 
@@ -351,8 +385,8 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
       recovered: recoveredList,
       conflictingFields: [.name]
     )
-    try await store.storeCloudConflict(
-      scope: scope,
+    try await store.testStoreCloudConflict(
+      namespaceKey: CloudSyncNamespaceKey(rawValue: scope.rawValue),
       key: "list-name",
       reference: CloudEntityReference(kind: .list, domainID: current.id),
       payload: Data("wire".utf8),
@@ -386,8 +420,8 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
     do {
       let store = try SwiftDataSnipLibrary(storeURL: location.store)
       _ = try await store.perform(.restore(snips: [current]), sortedBy: .manual)
-      try await store.storeCloudConflict(
-        scope: scope,
+      try await store.testStoreCloudConflict(
+        namespaceKey: CloudSyncNamespaceKey(rawValue: scope.rawValue),
         key: "atomic",
         reference: CloudEntityReference(kind: .snip, domainID: current.id),
         payload: Data("wire".utf8),
@@ -409,7 +443,7 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
     let reopened = try SwiftDataSnipLibrary(storeURL: location.store)
     let localAfterFailure = await reopened.snapshot(sortedBy: .manual)
     let recoveryAfterFailure = try await reopened.recoverySnapshot(in: scope)
-    let cloudAfterFailure = try await reopened.cloudFullStorageSnapshot(namespaceKey: scope.rawValue)
+    let cloudAfterFailure = try await reopened.cloudFullStorageSnapshot(namespaceKey: CloudSyncNamespaceKey(rawValue: scope.rawValue))
     XCTAssertEqual(localAfterFailure.snips.first?.content, "Current")
     XCTAssertEqual(recoveryAfterFailure.pendingSnips, [item])
     XCTAssertEqual(cloudAfterFailure.conflicts.map(\.key), ["atomic"])
@@ -437,15 +471,15 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
     )
     let store = try SwiftDataSnipLibrary(storeURL: location.store)
     _ = try await store.perform(.restore(snips: [current]), sortedBy: .manual)
-    try await store.storeCloudConflict(
-      scope: firstScope,
+    try await store.testStoreCloudConflict(
+      namespaceKey: CloudSyncNamespaceKey(rawValue: firstScope.rawValue),
       key: "first",
       reference: CloudEntityReference(kind: .snip, domainID: current.id),
       payload: Data("first".utf8),
       recovery: .snip(first)
     )
-    try await store.storeCloudConflict(
-      scope: secondScope,
+    try await store.testStoreCloudConflict(
+      namespaceKey: CloudSyncNamespaceKey(rawValue: secondScope.rawValue),
       key: "second",
       reference: CloudEntityReference(kind: .snip, domainID: current.id),
       payload: Data("second".utf8),
@@ -462,7 +496,7 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
     }
     let firstAfterMissing = try await store.recoverySnapshot(in: firstScope)
     let cloudAfterMissing = try await store.cloudFullStorageSnapshot(
-      namespaceKey: firstScope.rawValue
+      namespaceKey: CloudSyncNamespaceKey(rawValue: firstScope.rawValue)
     )
     XCTAssertEqual(firstAfterMissing.pendingSnips, [first])
     XCTAssertEqual(cloudAfterMissing.conflicts.map(\.key), ["first"])

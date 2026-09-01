@@ -30,6 +30,19 @@ final class AppleAccountNoticeModel {
         notice == .signedOut || notice == .accountChanged
     }
 
+    var title: String {
+        switch notice {
+        case .paused: String(localized: "iCloud Sync Paused")
+        case .signedOut: String(localized: "Signed Out of iCloud")
+        case .accountChanged: String(localized: "Apple Account Changed")
+        case nil: ""
+        }
+    }
+
+    var systemImage: String {
+        notice == .paused ? "icloud.slash" : "person.crop.circle.badge.exclamationmark"
+    }
+
     func resolve(_ choice: AppleAccountCacheChoice) async {
         guard let handler, notice != nil, !isResolving else { return }
         isResolving = true

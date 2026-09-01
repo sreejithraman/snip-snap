@@ -165,11 +165,16 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let library = store.library
         let syncModeRootURL = libraryStoreURL.deletingLastPathComponent()
             .appendingPathComponent("SyncMode", isDirectory: true)
+#if DEBUG
+        let initializeSyncModeStore =
+            ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1"
+#else
+        let initializeSyncModeStore = false
+#endif
         let assembly = SnipLibraryAssembly(
             library: library,
             syncModeRootURL: syncModeRootURL,
-            initializeSyncModeStore:
-                ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1"
+            initializeSyncModeStore: initializeSyncModeStore
         )
         let model = AppModel(
             library: assembly.library,
@@ -221,8 +226,14 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         self.dragSessionController = dragSessionController
         updateChecksEnabled = isReleaseApp &&
             ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
+        let reloadActiveLibrary: SyncedContentSettingsModel.DeleteCompletionAction = {
+            guard let session = cloudServices.syncSession else { return }
+            let active = try await session.activeLibrary()
+            await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+        }
         let syncAction: SnipSnapCloudLifecycleHooks.SyncAction = {
             guard let session = cloudServices.syncSession else { return }
+            cloudServices.syncedContentSettings.recordSyncStarted()
             do {
                 switch try await session.synchronize() {
                 case .noChange:
@@ -230,26 +241,29 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 case .contentUpdated:
                     await model.reload()
                 case .libraryReplaced:
-                    let active = try await session.activeLibrary()
-                    await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+                    try await reloadActiveLibrary()
+                case .iCloudSyncSettingUp:
+                    cloudServices.syncedContentSettings.recordEnableSettingUp()
+                case .iCloudSyncEnabled:
+                    try await reloadActiveLibrary()
+                    cloudServices.syncedContentSettings.recordEnableCompleted()
                 case .oldSyncedContentRemovalPending:
-                    let active = try await session.activeLibrary()
-                    await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+                    try await reloadActiveLibrary()
                     cloudServices.syncedContentSettings.recordRemovalPending(true)
                 case .oldSyncedContentRemovalCompleted:
-                    let active = try await session.activeLibrary()
-                    await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+                    try await reloadActiveLibrary()
                     cloudServices.syncedContentSettings.recordRemovalPending(false)
                 case .encryptedDataResetRequiresChoice:
-                    let active = try await session.activeLibrary()
-                    await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+                    try await reloadActiveLibrary()
                     cloudServices.syncedContentSettings.recordEncryptedDataReset()
                 case .syncKeptOff:
-                    let active = try await session.activeLibrary()
-                    await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+                    try await reloadActiveLibrary()
                 }
+                cloudServices.syncedContentSettings.recordSyncCompleted()
             } catch {
-                model.presentedError = error.localizedDescription
+                cloudServices.syncedContentSettings.recordSyncFailure(
+                    error.localizedDescription
+                )
             }
         }
         cloudLifecycleHooks = SnipSnapCloudLifecycleHooks(syncWhenPossible: syncAction)
@@ -258,22 +272,23 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         )
         cloudSyncHandler = productionCloudSyncHandler
         model.setCloudSyncHandler(productionCloudSyncHandler)
-        if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_ACCOUNT_NOTICE"] == "signedOut" {
-            accountNoticeModel = AppleAccountNoticeModel(
+#if DEBUG
+        let uiTestAccountNoticeModel =
+            ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_ACCOUNT_NOTICE"] == "signedOut"
+            ? AppleAccountNoticeModel(
                 notice: .signedOut,
                 handler: UITestAppleAccountCacheHandler()
             )
+            : nil
+#else
+        let uiTestAccountNoticeModel: AppleAccountNoticeModel? = nil
+#endif
+        if let uiTestAccountNoticeModel {
+            accountNoticeModel = uiTestAccountNoticeModel
         } else if let handler = productionCloudSyncHandler {
             accountNoticeModel = AppleAccountNoticeModel(
                 handler: handler,
-                activeLibraryChangeAction: {
-                    guard let session = cloudServices.syncSession else { return }
-                    let active = try await session.activeLibrary()
-                    await model.replaceLibrary(
-                        active.library,
-                        recoveryScope: active.recoveryScope
-                    )
-                }
+                activeLibraryChangeAction: reloadActiveLibrary
             )
         } else {
             accountNoticeModel = nil
@@ -284,14 +299,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             userDriverDelegate: nil
         )
         coordinator = AppCoordinator(model: model, shortcutSettings: shortcutSettings)
-        if let cloudSyncSession {
-            let reloadActiveLibrary: SyncedContentSettingsModel.DeleteCompletionAction = {
-                let active = try await cloudSyncSession.activeLibrary()
-                await model.replaceLibrary(
-                    active.library,
-                    recoveryScope: active.recoveryScope
-                )
-            }
+        if cloudSyncSession != nil {
             syncedContentSettings.setEnableCompletionAction(reloadActiveLibrary)
             syncedContentSettings.setDisableCompletionAction(reloadActiveLibrary)
             syncedContentSettings.setDeleteCompletionAction(reloadActiveLibrary)
@@ -409,15 +417,6 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
 }
 
 extension AppleAccountNoticeModel {
-    var title: String {
-        switch notice {
-        case .paused: String(localized: "iCloud Sync Paused")
-        case .signedOut: String(localized: "Signed Out of iCloud")
-        case .accountChanged: String(localized: "Apple Account Changed")
-        case nil: ""
-        }
-    }
-
     var message: String {
         switch notice {
         case .paused:
@@ -443,8 +442,7 @@ struct AppleAccountNoticeView: View {
                 .textCase(.uppercase)
             Label(
                 model.title,
-                systemImage: model.notice == .paused
-                    ? "icloud.slash" : "person.crop.circle.badge.exclamationmark"
+                systemImage: model.systemImage
             )
                 .font(.headline)
             Text(model.message)
@@ -479,6 +477,7 @@ struct AppleAccountNoticeView: View {
     }
 }
 
+#if DEBUG
 private actor UITestAppleAccountCacheHandler: AppleAccountCacheHandling {
     private var didResolve = false
     func refreshAppleAccountNotice() async throws -> AppleAccountNotice? {
@@ -488,6 +487,7 @@ private actor UITestAppleAccountCacheHandler: AppleAccountCacheHandling {
         didResolve = true
     }
 }
+#endif
 
 private struct UpdateCommands: Commands {
     let updaterController: SPUStandardUpdaterController
@@ -523,12 +523,6 @@ extension FocusedValues {
     }
 }
 
-enum BackupImportCommandRoute: CaseIterable {
-    case previewThenConfirm
-
-    var title: String { String(localized: "Import Backup…") }
-}
-
 private struct SnipCommands: Commands {
     @FocusedValue(\.snipCommandModel) private var model
     let applicationModel: AppModel
@@ -545,7 +539,7 @@ private struct SnipCommands: Commands {
                 .keyboardShortcut("f", modifiers: .command)
         }
         CommandMenu("Snips") {
-            Button(BackupImportCommandRoute.previewThenConfirm.title) {
+            Button(String(localized: "Import Backup…")) {
                 model?.beginBackupImport()
             }
                 .disabled(model == nil)

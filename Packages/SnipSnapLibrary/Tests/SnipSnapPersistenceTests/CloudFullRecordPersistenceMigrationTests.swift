@@ -10,7 +10,7 @@ extension CloudFullRecordPersistenceTests {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
     try FileManager.default.createDirectory(at: location.root, withIntermediateDirectories: true)
-    let namespace = "private|account-a|generation-v4"
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-v4")
     let accepted = entity(.snip, UUID(), identity("v3-record"))
 
     do {
@@ -24,7 +24,7 @@ extension CloudFullRecordPersistenceTests {
       let container = try ModelContainer(for: schema, configurations: [configuration])
       let context = ModelContext(container)
       context.insert(
-        StoredCloudEntityRecord(namespaceKey: namespace, value: accepted, isDeferred: false)
+        StoredCloudEntityRecord(namespaceKey: namespace.rawValue, value: accepted, isDeferred: false)
       )
       try context.save()
     }
@@ -42,7 +42,7 @@ extension CloudFullRecordPersistenceTests {
   func testV2TextRecordMaterializesDeterministicV1FieldsWithoutTouchingAttachments() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
-    let namespace = "private|account-a|generation-a"
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-a")
     let snipID = UUID(uuidString: "00112233-4455-6677-8899-AABBCCDDEEFF")!
     let identity = identity("legacy-record")
     let attachmentURL = location.root.appendingPathComponent("Attachments/keep/data.bin")
@@ -104,7 +104,7 @@ extension CloudFullRecordPersistenceTests {
       context.insert(StoredRequestRecord(id: localSnipID))
       context.insert(
         StoredCloudTextRecord(
-          namespaceKey: namespace,
+          namespaceKey: namespace.rawValue,
           identity: identity,
           snipID: snipID,
           schemaVersion: 1,
@@ -116,7 +116,7 @@ extension CloudFullRecordPersistenceTests {
       )
       context.insert(
         StoredCloudTextRecord(
-          namespaceKey: namespace,
+          namespaceKey: namespace.rawValue,
           identity: self.identity("legacy-record-duplicate"),
           snipID: snipID,
           schemaVersion: 1,
@@ -127,21 +127,21 @@ extension CloudFullRecordPersistenceTests {
       )
       context.insert(
         StoredCloudStagedBatch(
-          namespaceKey: namespace,
+          namespaceKey: namespace.rawValue,
           batchID: batchID,
           payload: stagedPayload
         )
       )
       context.insert(
         StoredCloudRecoveryEvent(
-          namespaceKey: namespace,
+          namespaceKey: namespace.rawValue,
           eventKey: "legacy-event",
           payload: recoveryPayload
         )
       )
       context.insert(
         try StoredCloudNamespaceState(
-          namespaceKey: namespace,
+          namespaceKey: namespace.rawValue,
           value: CloudNamespaceStateStorage(
             phase: .seeding,
             approvedSnipIDs: [snipID]
@@ -205,7 +205,7 @@ extension CloudFullRecordPersistenceTests {
     for crashPoint in CloudFullRecordBackfillPoint.allCases {
       let location = temporaryStore()
       defer { try? FileManager.default.removeItem(at: location.root) }
-      let namespace = "private|account-a|generation-a"
+      let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-a")
       let payload = Data("one legacy payload".utf8)
       try FileManager.default.createDirectory(at: location.root, withIntermediateDirectories: true)
       do {
@@ -219,7 +219,7 @@ extension CloudFullRecordPersistenceTests {
         let container = try ModelContainer(for: schema, configurations: [configuration])
         let context = ModelContext(container)
         context.insert(
-          StoredCloudStagedBatch(namespaceKey: namespace, batchID: UUID(), payload: payload)
+          StoredCloudStagedBatch(namespaceKey: namespace.rawValue, batchID: UUID(), payload: payload)
         )
         try context.save()
       }
@@ -249,7 +249,7 @@ extension CloudFullRecordPersistenceTests {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
     try FileManager.default.createDirectory(at: location.root, withIntermediateDirectories: true)
-    let namespace = "private|account-a|generation-list-only"
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-list-only")
     let customList = SnipList(
       id: UUID(),
       name: "Empty",
@@ -270,7 +270,7 @@ extension CloudFullRecordPersistenceTests {
       context.insert(StoredListRecord(customList))
       context.insert(
         try StoredCloudNamespaceState(
-          namespaceKey: namespace,
+          namespaceKey: namespace.rawValue,
           value: CloudNamespaceStateStorage(phase: .active)
         )
       )
@@ -346,7 +346,7 @@ extension CloudFullRecordPersistenceTests {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
     try FileManager.default.createDirectory(at: location.root, withIntermediateDirectories: true)
-    let namespace = "private|account-a|generation-a"
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-a")
     let future = Data(
       #"{"format":"futureV2","marker":"snipsnap-cloud-wire","payload":"YWJj","storageVersion":99}"#.utf8
     )
@@ -361,7 +361,7 @@ extension CloudFullRecordPersistenceTests {
       let container = try ModelContainer(for: schema, configurations: [configuration])
       let context = ModelContext(container)
       context.insert(
-        StoredCloudStagedBatch(namespaceKey: namespace, batchID: UUID(), payload: future)
+        StoredCloudStagedBatch(namespaceKey: namespace.rawValue, batchID: UUID(), payload: future)
       )
       try context.save()
     }

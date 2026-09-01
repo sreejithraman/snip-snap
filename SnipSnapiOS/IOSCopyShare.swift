@@ -9,7 +9,7 @@ enum IOSCopyItem: Equatable {
     case file(URL)
 }
 
-struct IOSCopySharePayload: Equatable {
+struct IOSCopySharePayload {
     let text: String
     let attachments: [URL]
     let unavailableFileNames: [String]
@@ -284,7 +284,7 @@ private final class IOSPasteboardFileLease {
     }
 }
 
-struct IOSUnavailableFilesNotice: Identifiable, Equatable {
+struct IOSUnavailableFilesNotice: Identifiable {
     let id = UUID()
     let payload: IOSCopySharePayload
 
@@ -294,19 +294,11 @@ struct IOSUnavailableFilesNotice: Identifiable, Equatable {
             ? String(localized: "One or more files could not be read.")
             : String(localized: "These files could not be read: \(names)")
     }
-
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.payload == rhs.payload
-    }
 }
 
-struct IOSShareRequest: Identifiable, Equatable {
+struct IOSShareRequest: Identifiable {
     let id = UUID()
     let items: [IOSCopyItem]
-
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.items == rhs.items
-    }
 }
 
 @MainActor

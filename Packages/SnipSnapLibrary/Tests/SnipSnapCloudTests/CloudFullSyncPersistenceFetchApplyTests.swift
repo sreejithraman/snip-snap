@@ -156,7 +156,7 @@ extension CloudFullSyncPersistenceTests {
     let recovered = try XCTUnwrap(final.snips.first)
     XCTAssertEqual(recovered.content, "offline edit")
     let review = try await reopenedLibrary.recoverySnapshot(
-      in: SnipRecoveryScope(namespace.canonicalKey)
+      in: SnipRecoveryScope(namespace.namespaceKey.rawValue)
     )
     XCTAssertEqual(review.promotedSnips.map(\.id), [recovered.id])
     XCTAssertEqual(review.promotedSnips.map(\.currentSnipID), [snip.id])
@@ -222,10 +222,10 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertEqual(recovered.attachments, snip.attachments)
     XCTAssertEqual(recovered.listID, SnipList.inbox.id)
     XCTAssertEqual(try Data(contentsOf: storedAttachmentURL), attachmentBytes)
-    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.canonicalKey)
+    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
     XCTAssertFalse(stored.readyEntities.contains(where: { $0.reference.domainID == snipID }))
     XCTAssertTrue(stored.conflicts.isEmpty)
-    let review = try await library.recoverySnapshot(in: SnipRecoveryScope(namespace.canonicalKey))
+    let review = try await library.recoverySnapshot(in: SnipRecoveryScope(namespace.namespaceKey.rawValue))
     XCTAssertEqual(review.promotedSnips.map(\.id), [recovered.id])
     XCTAssertEqual(review.promotedSnips.map(\.currentSnipID), [snipID])
     let pending = try await persistence.pendingChanges()
@@ -256,7 +256,7 @@ extension CloudFullSyncPersistenceTests {
     try await persistence.stage(.fetched(batch))
     try await persistence.applyStaged(batch.id)
 
-    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.canonicalKey)
+    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
     XCTAssertEqual(stored.namespaceState.phase, .remoteChecked)
     XCTAssertEqual(stored.namespaceState.revision, 1)
     let loadedEngine = try await persistence.loadEngineState()
@@ -386,7 +386,7 @@ extension CloudFullSyncPersistenceTests {
     try await fresh.stage(.fetched(missing))
     try await fresh.applyStaged(missing.id)
     var stored = try await newLibrary.cloudFullStorageSnapshot(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     XCTAssertEqual(stored.namespaceState.phase, .remoteCheckedMissingZone)
     XCTAssertFalse(stored.namespaceState.zoneCreationPending)
@@ -396,7 +396,7 @@ extension CloudFullSyncPersistenceTests {
     try await fresh.approveEnrollment(
       references: [CloudEntityReference(kind: .list, domainID: SnipList.inbox.id)]
     )
-    stored = try await newLibrary.cloudFullStorageSnapshot(namespaceKey: namespace.canonicalKey)
+    stored = try await newLibrary.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
     XCTAssertEqual(stored.namespaceState.phase, .seeding)
     XCTAssertTrue(stored.namespaceState.zoneCreationPending)
     pending = try await fresh.pendingChanges()
@@ -425,7 +425,7 @@ extension CloudFullSyncPersistenceTests {
     try await known.stage(.fetched(knownMissing))
     try await known.applyStaged(knownMissing.id)
     let knownStored = try await knownLibrary.cloudFullStorageSnapshot(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     XCTAssertEqual(knownStored.namespaceState.phase, .blocked)
     let knownEvidence = try await known.enrollmentEvidence()
@@ -466,7 +466,7 @@ extension CloudFullSyncPersistenceTests {
     try await reopened.stage(.fetched(batch))
     try await reopened.applyStaged(batch.id)
     let stored = try await reopenedLibrary.cloudFullStorageSnapshot(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     XCTAssertEqual(stored.namespaceState.revision, 1)
     let reopenedStaged = try await reopened.stagedBatches()
@@ -580,7 +580,7 @@ extension CloudFullSyncPersistenceTests {
     )
     try await persistence.stage(.fetched(snipBatch))
     try await persistence.applyStaged(snipBatch.id)
-    var stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.canonicalKey)
+    var stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
     XCTAssertTrue(stored.deferredEntities.contains(where: { $0.reference.domainID == snip.id }))
     XCTAssertFalse(stored.enrolledEntities.contains(
       CloudEntityReference(kind: .snip, domainID: snip.id)
@@ -593,7 +593,7 @@ extension CloudFullSyncPersistenceTests {
     )
     try await persistence.stage(.fetched(listBatch))
     try await persistence.applyStaged(listBatch.id)
-    stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.canonicalKey)
+    stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
     XCTAssertTrue(stored.readyEntities.contains(where: { $0.reference.domainID == snip.id }))
     XCTAssertTrue(stored.enrolledEntities.contains(
       CloudEntityReference(kind: .snip, domainID: snip.id)
@@ -681,7 +681,7 @@ extension CloudFullSyncPersistenceTests {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
     try await library.recordCloudFullRecovery(CloudFullRecoveryInput(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey.rawValue,
       batchID: UUID(),
       kind: .deletedListPlacement,
       outboundData: try encoder.encode(oldList.id),
@@ -689,7 +689,7 @@ extension CloudFullSyncPersistenceTests {
     ))
     let waitingPending = try await persistence.pendingChanges()
     XCTAssertTrue(waitingPending.operations.isEmpty)
-    var stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.canonicalKey)
+    var stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
     XCTAssertTrue(stored.deferredEntities.contains(where: { $0.reference.domainID == snip.id }))
     XCTAssertFalse(stored.enrolledEntities.contains(
       CloudEntityReference(kind: .snip, domainID: snip.id)
@@ -709,7 +709,7 @@ extension CloudFullSyncPersistenceTests {
     try await persistence.applyStaged(listBatch.id)
     let released = await library.snapshot(sortedBy: .manual)
     XCTAssertEqual(released.snips.first(where: { $0.id == snip.id })?.listID, newList.id)
-    stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.canonicalKey)
+    stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
     XCTAssertTrue(stored.enrolledEntities.contains(
       CloudEntityReference(kind: .snip, domainID: snip.id)
     ))
@@ -744,7 +744,7 @@ extension CloudFullSyncPersistenceTests {
 
     let local = await library.snapshot(sortedBy: .manual)
     XCTAssertTrue(local.snips.isEmpty)
-    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.canonicalKey)
+    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
     XCTAssertTrue(stored.readyEntities.isEmpty)
     XCTAssertEqual(stored.quarantines.count, 1)
     XCTAssertEqual(stored.quarantines.first?.identity.recordName, legacy.id.name)
@@ -792,7 +792,7 @@ extension CloudFullSyncPersistenceTests {
       let local = try await library.checkedSnapshot(sortedBy: .manual)
       XCTAssertEqual(local.snips.first(where: { $0.id == snip.id })?.content, "canonical wins")
       let stored = try await library.cloudFullStorageSnapshot(
-        namespaceKey: namespace.canonicalKey
+        namespaceKey: namespace.namespaceKey
       )
       XCTAssertEqual(stored.readyEntities.map(\.identity.recordName), [canonical.id.name])
       XCTAssertEqual(stored.quarantines.map(\.identity.recordName), [legacy.id.name])
@@ -844,7 +844,7 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertEqual(local.lists.first(where: { $0.id == list.id })?.desiredName, "Known")
     let storedEngine = try await persistence.loadEngineState()
     XCTAssertEqual(storedEngine, engine)
-    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.canonicalKey)
+    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
     XCTAssertFalse(stored.readyEntities.contains(where: {
       $0.identity.recordName == future.id.name
     }))
@@ -1061,7 +1061,7 @@ extension CloudFullSyncPersistenceTests {
     )
     let engineContext = ModelContext(engineContainer)
     for state in try engineContext.fetch(FetchDescriptor<StoredCloudEngineState>())
-      where state.namespaceKey == namespace.canonicalKey
+      where state.namespaceKey == namespace.namespaceKey.rawValue
     {
       engineContext.delete(state)
     }
@@ -1094,7 +1094,7 @@ extension CloudFullSyncPersistenceTests {
     let secondLocal = await reopenedLibrary.snapshot(sortedBy: .manual)
     XCTAssertFalse(secondLocal.snips.contains(where: { $0.id == snip.id }))
     let stored = try await reopenedLibrary.cloudFullStorageSnapshot(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     XCTAssertTrue(stored.conflicts.isEmpty)
     XCTAssertFalse(stored.readyEntities.contains { $0.reference.domainID == snip.id })

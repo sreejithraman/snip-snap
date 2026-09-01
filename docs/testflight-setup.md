@@ -203,6 +203,9 @@ has no separate Snip Snap login, so it needs no demo account.
   version and a build number that must rise after an Apple submission.
 - `Config/TestFlight.example.entitlements` provides a public production template.
   Its ignored copy and all production names remain local or protected CI input.
+- `Config/MacRelease.example.entitlements` keeps the direct-download Mac app on
+  the same production CloudKit data as TestFlight without reusing Cloud Dev's
+  Development entitlement file.
 - `scripts/testflight.sh` archives and uploads the iOS app separately from the
   Mac release. Its policy checks the signed app and embedded extension before
   upload.

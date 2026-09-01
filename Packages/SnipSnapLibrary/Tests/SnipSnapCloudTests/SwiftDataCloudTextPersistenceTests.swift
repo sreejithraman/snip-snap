@@ -189,7 +189,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         )
         try await bridge.stage(.fetched(missing))
         try await bridge.applyStaged(missing.id)
-        var stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        var stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(stored.namespaceState.phase, .remoteCheckedMissingZone)
         let beforeApproval = try await bridge.pendingChanges()
         XCTAssertTrue(beforeApproval.operations.isEmpty)
@@ -201,7 +201,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
             transport: FakeCloudRecordTransport(server: server, namespace: namespace)
         )
         try await coordinator.sync()
-        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(stored.namespaceState.phase, .active)
         XCTAssertEqual(stored.records.first?.acceptedText, "approved seed")
 
@@ -213,7 +213,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         )
         try await bridge.stage(.fetched(missingAgain))
         try await bridge.applyStaged(missingAgain.id)
-        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(stored.namespaceState.phase, .blocked)
         XCTAssertFalse(stored.recoveryEvents.isEmpty)
         let blockedPending = try await bridge.pendingChanges()
@@ -244,7 +244,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         try await bridge.approveSeeding(snipIDs: [])
 
         var pending = try await bridge.pendingChanges()
-        var stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        var stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(stored.namespaceState.phase, .seeding)
         XCTAssertTrue(pending.operations.isEmpty)
         XCTAssertEqual(pending.zonesToSave, [zone])
@@ -254,7 +254,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
             transport: FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
         )
         try await coordinator.sync()
-        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(stored.namespaceState.phase, .active)
         XCTAssertFalse(stored.namespaceState.zoneCreationPending)
 
@@ -312,7 +312,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         _ = try await library.perform(.delete(ids: [snipID]), sortedBy: .chronological)
 
         let pending = try await bridge.pendingChanges()
-        var stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        var stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(stored.namespaceState.phase, .seeding)
         XCTAssertTrue(stored.namespaceState.approvedSnipIDs.isEmpty)
         XCTAssertEqual(pending.zonesToSave, [zone])
@@ -322,7 +322,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
             transport: FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
         )
         try await coordinator.sync()
-        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(stored.namespaceState.phase, .active)
         XCTAssertFalse(stored.namespaceState.zoneCreationPending)
     }
@@ -375,7 +375,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         )
         try await bridge.stage(.sent(missingDuringSeed))
         try await bridge.applyStaged(missingDuringSeed.id)
-        var stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        var stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(stored.namespaceState.phase, .seeding)
         let retry = try await bridge.pendingChanges()
         XCTAssertEqual(retry.operations.count, 1)
@@ -408,7 +408,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         )
         try await bridge.stage(.sent(missingAfterActivation))
         try await bridge.applyStaged(missingAfterActivation.id)
-        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         let blocked = try await bridge.pendingChanges()
         XCTAssertEqual(stored.namespaceState.phase, .blocked)
         XCTAssertTrue(blocked.operations.isEmpty)
@@ -456,7 +456,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         try await bridge.stage(.sent(missing))
         try await bridge.applyStaged(missing.id)
 
-        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         let retry = try await bridge.pendingChanges()
         XCTAssertEqual(stored.namespaceState.phase, .seeding)
         XCTAssertTrue(stored.namespaceState.zoneCreationPending)
@@ -499,7 +499,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         try await bridge.stage(.fetched(failed))
         try await bridge.applyStaged(failed.id)
 
-        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(stored.namespaceState.phase, .notEnrolled)
         do {
             try await bridge.approveSeeding(snipIDs: [snipID])
@@ -546,7 +546,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         try await bridge.stage(.fetched(fetched))
         try await bridge.applyStaged(fetched.id)
 
-        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         let pending = try await bridge.pendingChanges()
         XCTAssertEqual(stored.namespaceState.phase, .seeding)
         XCTAssertEqual(stored.namespaceState.approvedSnipIDs, [approvedID])
@@ -588,7 +588,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         _ = try await library.perform(.delete(ids: [snipID]), sortedBy: .chronological)
 
         let pending = try await bridge.pendingChanges()
-        var stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        var stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertTrue(pending.operations.isEmpty)
         XCTAssertEqual(stored.namespaceState.phase, .active)
         XCTAssertTrue(stored.namespaceState.approvedSnipIDs.isEmpty)
@@ -605,7 +605,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
             ),
             sortedBy: .chronological
         )
-        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         let afterEnrollment = try await bridge.pendingChanges()
         XCTAssertEqual(afterEnrollment.operations.count, 1)
         XCTAssertTrue(stored.records.isEmpty)
@@ -650,7 +650,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         try await bridge.stage(.sent(rejected))
         try await bridge.applyStaged(rejected.id)
 
-        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         let pending = try await bridge.pendingChanges()
         XCTAssertEqual(stored.namespaceState.phase, .active)
         XCTAssertNotNil(stored.records.first?.recoveryData)
@@ -679,7 +679,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         let wrongBatch = CloudFetchedBatch(id: UUID(), items: [.record(wrong)], engineState: nil)
         try await bridge.stage(.fetched(wrongBatch))
         try await bridge.applyStaged(wrongBatch.id)
-        var stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        var stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(stored.namespaceState.phase, .notEnrolled)
         XCTAssertTrue(stored.records.isEmpty)
         XCTAssertEqual(stored.recoveryEvents.count, 1)
@@ -715,7 +715,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         )
         try await bridge.stage(.fetched(changedBatch))
         try await bridge.applyStaged(changedBatch.id)
-        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         let local = await library.snapshot(sortedBy: .chronological)
         XCTAssertEqual(stored.records.first?.snipID, originalSnipID)
         XCTAssertEqual(local.snips.first?.id, originalSnipID)
@@ -754,7 +754,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         try await bridge.stage(.fetched(batch))
         try await bridge.applyStaged(batch.id)
 
-        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertTrue(stored.stagedBatches.isEmpty)
         XCTAssertEqual(stored.recoveryEvents.count, 1)
         XCTAssertFalse(stored.recoveryEvents[0].payload.contains(Data(sourceURL.path.utf8)))
@@ -807,7 +807,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         } catch CloudApplyFailureGate.Failure.injected {}
 
         let staged = try await failingLibrary.cloudTextSyncSnapshot(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         XCTAssertEqual(staged.stagedBatches.count, 1)
 
@@ -824,7 +824,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         try await reopenedCoordinator.sync()
 
         let recovered = try await reopenedLibrary.cloudTextSyncSnapshot(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         let recordID = try XCTUnwrap(recovered.records.first).identity
         let cloudID = CloudRecordID(
@@ -884,7 +884,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         try await bridge.applyStaged(sent.id)
 
         let snapshot = try await library.cloudTextSyncSnapshot(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         let savedText = try CloudTextRecord(snapshot: saved).text
         let savedRecord = snapshot.records.first { $0.identity.recordName == first.id.name }
@@ -977,7 +977,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         try await bridge.applyStaged(batch.id)
 
         let local = await library.snapshot(sortedBy: .chronological)
-        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(local.snips.map(\.content), ["valid"])
         XCTAssertEqual(local.snips.first?.origin, .quickEntry)
         XCTAssertEqual(local.snips.first?.listID, SnipList.inboxID)
@@ -1021,7 +1021,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         try await bridge.applyStaged(batch.id)
 
         let local = await library.snapshot(sortedBy: .chronological)
-        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(local.snips.map(\.content), ["first"])
         XCTAssertEqual(stored.records.count, 1)
         XCTAssertEqual(stored.recoveryEvents.count, 1)
@@ -1061,7 +1061,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         try await bridge.applyStaged(batch.id)
 
         let local = await library.snapshot(sortedBy: .chronological)
-        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(local.snips.map(\.content), ["second"])
         XCTAssertEqual(stored.records.first?.acceptedText, "second")
         XCTAssertNil(stored.records.first?.recoveryData)
@@ -1112,7 +1112,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         try await bridge.stage(.sent(sent))
         try await bridge.applyStaged(sent.id)
 
-        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         let pending = try await bridge.pendingChanges()
         XCTAssertNotNil(stored.records.first?.recoveryData)
         XCTAssertTrue(pending.operations.isEmpty)
@@ -1183,7 +1183,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         _ = try await library.perform(.delete(ids: [snipID]), sortedBy: .chronological)
 
         let pending = try await bridge.pendingChanges()
-        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertTrue(pending.operations.isEmpty)
         XCTAssertTrue(stored.records.isEmpty)
     }
@@ -1245,7 +1245,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         try await bridge.applyStaged(sent.id)
 
         let snapshot = try await library.cloudTextSyncSnapshot(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         let pending = try await bridge.pendingChanges()
         XCTAssertEqual(snapshot.records.filter { $0.recoveryData != nil }.count, 2)
@@ -1318,7 +1318,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
 
         let local = await library.snapshot(sortedBy: .chronological)
         let cloud = try await library.cloudTextSyncSnapshot(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         let pending = try await bridge.pendingChanges()
         XCTAssertEqual(local.snips.map(\.content), ["local unsent"])
@@ -1382,7 +1382,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
 
         let local = await library.snapshot(sortedBy: .chronological)
         let cloud = try await library.cloudTextSyncSnapshot(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         XCTAssertEqual(local.snips.map(\.content), ["keep local"])
         XCTAssertNil(cloud.records.first?.acceptedText)
@@ -1441,7 +1441,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         try await bridge.applyStaged(fetched.id)
 
         let local = await library.snapshot(sortedBy: .chronological)
-        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertTrue(local.snips.isEmpty)
         XCTAssertEqual(stored.records.first?.acceptedText, "remote edit")
         XCTAssertNotNil(stored.records.first?.recoveryData)

@@ -1,5 +1,6 @@
 import CloudKit
 import Foundation
+import SnipSnapPersistence
 
 package struct CloudZoneID: Codable, Equatable, Hashable, Sendable {
     package let name: String
@@ -279,24 +280,15 @@ package struct CloudSyncNamespace: Codable, Equatable, Sendable {
     package let generation: UUID
     package let zones: Set<CloudZoneID>
 
-    package var canonicalKey: String {
-        var data = Data()
-        Self.append("snipsnap-cloud-namespace-v1", to: &data)
-        Self.append(cloudScope, to: &data)
-        Self.append(accountLineage, to: &data)
-        Self.append(generation.uuidString.lowercased(), to: &data)
-        for zone in zones.sorted(by: { ($0.ownerName, $0.name) < ($1.ownerName, $1.name) }) {
-            Self.append(zone.ownerName, to: &data)
-            Self.append(zone.name, to: &data)
-        }
-        return data.base64EncodedString()
-    }
-
-    private static func append(_ value: String, to data: inout Data) {
-        let bytes = Data(value.utf8)
-        var count = UInt64(bytes.count).bigEndian
-        withUnsafeBytes(of: &count) { data.append(contentsOf: $0) }
-        data.append(bytes)
+    package var namespaceKey: CloudSyncNamespaceKey {
+        ICloudSyncNamespaceBinding(
+            scope: cloudScope,
+            accountLineage: accountLineage,
+            generation: generation,
+            zones: Set(zones.map {
+                ICloudSyncZoneBinding(name: $0.name, ownerName: $0.ownerName)
+            })
+        ).namespaceKey
     }
 }
 

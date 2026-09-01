@@ -4,34 +4,6 @@ import Foundation
 import SnipSnapCore
 import UniformTypeIdentifiers
 
-enum MacBackupImportPickerPolicy {
-    static let allowedContentTypes: [UTType] = [.folder, .json]
-    static let canChooseFiles = true
-    static let canChooseDirectories = true
-    static let message = String(localized: "Choose a backup folder to include attachments, or a plain JSON file for a text-only backup.")
-}
-
-private actor AppModelCommandLock {
-    private var isLocked = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    func acquire() async {
-        guard isLocked else {
-            isLocked = true
-            return
-        }
-        await withCheckedContinuation { waiters.append($0) }
-    }
-
-    func release() {
-        guard !waiters.isEmpty else {
-            isLocked = false
-            return
-        }
-        waiters.removeFirst().resume()
-    }
-}
-
 @MainActor
 final class AppModel: ObservableObject {
 
@@ -57,6 +29,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var appearance: AppAppearance
     @Published private(set) var recoverySnapshot: SnipRecoverySnapshot = .empty
     @Published private(set) var pendingImportPreview: SnipImportPreview?
+    private var pendingImportPreviewID: UUID?
     @Published var toast: AppToast?
     var canReorderSelection: Bool { canReorder(ids: selection) }
 
@@ -67,14 +40,9 @@ final class AppModel: ObservableObject {
         return Set(snips.filter { ids.contains($0.id) }.map(\.listID)).count == 1
     }
 
-    private var library: any SnipLibrary
-    private var recoveryScope: SnipRecoveryScope?
-    @Published private var attachmentURLs: [UUID: URL] = [:]
-    private var cloudSyncHandler: (any OptionalCloudSyncHandling)?
-    private var userActions: any SnipLibraryUserActions
-    private let userActionsRebinder: SnipLibraryUserActionsRebinder
+    private let session: SavedSnipsSession
+    private let attachmentPreparation: AttachmentPreparationCoordinator
     private let defaults: UserDefaults
-    private let commandLock = AppModelCommandLock()
     private let composerDrafts: ComposerDraftStore
     let clipboardHistory: ClipboardHistory
 
@@ -83,7 +51,8 @@ final class AppModel: ObservableObject {
             snips: snips,
             query: query,
             completionFilter: completionFilter,
-            listNames: Dictionary(uniqueKeysWithValues: lists.map { ($0.id, $0.name) })
+            listNames: Dictionary(uniqueKeysWithValues: lists.map { ($0.id, $0.name) }),
+            sourceLabel: { $0.displaySourceLabel }
         )
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return matches.filter { $0.listID == activeList.id }
@@ -109,7 +78,7 @@ final class AppModel: ObservableObject {
     }
 
     func attachmentURL(for attachment: SnipAttachment) -> URL? {
-        attachmentURLs[attachment.id]
+        attachmentPreparation.cachedURL(for: attachment)
     }
 
     init(
@@ -137,68 +106,35 @@ final class AppModel: ObservableObject {
         appearance = AppAppearance(
             rawValue: defaults.string(forKey: Self.appearanceDefaultsKey) ?? ""
         ) ?? .system
-        self.library = library
-        self.userActionsRebinder = userActionsRebinder
-        self.userActions = userActions ?? userActionsRebinder.actions(for: library)
-        self.recoveryScope = recoveryScope
-        self.cloudSyncHandler = cloudSyncHandler
+        session = SavedSnipsSession(
+            library: library,
+            userActions: userActions,
+            userActionsRebinder: userActionsRebinder,
+            recoveryScope: recoveryScope
+        )
+        attachmentPreparation = AttachmentPreparationCoordinator(
+            cloudSyncHandler: cloudSyncHandler
+        )
         presentedError = initialError
         Task { await reload() }
     }
 
     func setCloudSyncHandler(_ handler: (any OptionalCloudSyncHandling)?) {
-        cloudSyncHandler = handler
+        attachmentPreparation.setCloudSyncHandler(handler)
     }
 
     func prepareAttachments(
         _ attachments: [SnipAttachment],
         for use: SyncedAttachmentUse
     ) async throws -> [UUID: URL] {
-        var prepared: [UUID: URL] = [:]
-        for attachment in uniqueAttachments(in: attachments) {
-            if let cached = attachmentURLs[attachment.id],
-               isAvailablePreparedAttachment(cached) {
-                prepared[attachment.id] = cached
-                continue
-            }
-            attachmentURLs[attachment.id] = nil
-            guard let cloudSyncHandler else {
-                throw SnipLibraryError.attachmentCopyFailed
-            }
-            let url = try await cloudSyncHandler.prepareSyncedAttachment(
-                attachment.id,
-                for: use
-            )
-            attachmentURLs[attachment.id] = url
-            prepared[attachment.id] = url
-        }
-        return prepared
+        try await attachmentPreparation.prepare(attachments, for: use)
     }
 
     func prepareAttachmentPreview(
         _ attachments: [SnipAttachment],
         selected: SnipAttachment
     ) async throws -> (urls: [URL], selectedURL: URL)? {
-        let prepared = try await prepareAttachments(attachments, for: .preview)
-        let urls = uniqueAttachments(in: attachments).compactMap { prepared[$0.id] }
-        guard let selectedURL = prepared[selected.id] else { return nil }
-        return (urls, selectedURL)
-    }
-
-    private func uniqueAttachments(
-        in attachments: [SnipAttachment]
-    ) -> [SnipAttachment] {
-        var seen: Set<UUID> = []
-        return attachments.filter { seen.insert($0.id).inserted }
-    }
-
-    private func isAvailablePreparedAttachment(_ url: URL) -> Bool {
-        guard FileManager.default.isReadableFile(atPath: url.path) else { return false }
-        guard let values = try? url.resourceValues(forKeys: [
-            .isRegularFileKey,
-            .isSymbolicLinkKey,
-        ]) else { return false }
-        return values.isRegularFile == true && values.isSymbolicLink != true
+        try await attachmentPreparation.preparePreview(attachments, selected: selected)
     }
 
     @discardableResult
@@ -239,13 +175,14 @@ final class AppModel: ObservableObject {
         recoveryScope: SnipRecoveryScope?
     ) async {
         await withCommandLock {
-            await commitPendingDeletion()
-            self.library = library
-            self.recoveryScope = recoveryScope
-            self.userActions = userActionsRebinder.actions(for: library)
+            clearPendingDeletionToast()
             selection = []
             editingID = nil
-            await reloadUnlocked()
+            apply(await session.replaceLibrary(
+                library,
+                recoveryScope: recoveryScope,
+                sortedBy: sortMode
+            ))
         }
     }
 
@@ -254,7 +191,9 @@ final class AppModel: ObservableObject {
             snips.flatMap(\.attachments),
             for: .export
         )
-        let archive = try await library.archive()
+        let archive = try await session.withExclusiveAccess { session in
+            try await session.archive()
+        }
         return SnipLibraryArchive(
             snips: archive.snips,
             lists: archive.lists,
@@ -264,9 +203,7 @@ final class AppModel: ObservableObject {
     }
 
     private func reloadUnlocked() async {
-        let snapshot = await library.snapshot(sortedBy: sortMode)
-        apply(snapshot)
-        await refreshRecoveryUnlocked()
+        apply(await session.state(sortedBy: sortMode))
     }
 
     var needsAttentionCount: Int { recoverySnapshot.needsAttentionCount }
@@ -288,19 +225,20 @@ final class AppModel: ObservableObject {
 
     func refreshRecovery() async {
         await withCommandLock {
-            let snapshot = await library.snapshot(sortedBy: sortMode)
-            apply(snapshot)
-            await refreshRecoveryUnlocked()
+            apply(await session.state(sortedBy: sortMode))
         }
     }
 
     @discardableResult
     func resolveRecovery(_ id: UUID, choice: SnipRecoveryChoice) async -> Bool {
-        guard let recoveryScope else { return false }
         return await withCommandLock {
             do {
-                apply(try await library.resolveRecovery(id, in: recoveryScope, choice: choice))
-                await refreshRecoveryUnlocked()
+                guard let state = try await session.resolveRecovery(
+                    id,
+                    choice: choice,
+                    sortedBy: sortMode
+                ) else { return false }
+                apply(state)
                 return true
             } catch {
                 presentedError = error.localizedDescription
@@ -310,22 +248,15 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func refreshRecoveryUnlocked() async {
-        guard let recoveryScope else {
-            recoverySnapshot = .empty
-            return
-        }
-        do {
-            recoverySnapshot = try await library.recoverySnapshot(in: recoveryScope)
-        } catch {
-            recoverySnapshot = .empty
-        }
+    private func apply(_ state: SavedSnipsSessionState) {
+        apply(state.library)
+        recoverySnapshot = state.recovery
     }
 
     private func apply(_ snapshot: SnipLibrarySnapshot) {
         snips = snapshot.snips
         lists = snapshot.lists
-        attachmentURLs = snapshot.attachmentURLs
+        attachmentPreparation.replaceCachedURLs(with: snapshot.attachmentURLs)
         if !lists.contains(where: { $0.id == activeListID }) {
             activeListID = SnipList.inboxID
             defaults.set(SnipList.inboxID.uuidString, forKey: Self.activeListDefaultsKey)
@@ -383,7 +314,7 @@ final class AppModel: ObservableObject {
     ) async -> Result<SnipAddOutcome, Error> {
         await withCommandLock {
             let result = await performMutationUnlocked {
-                let update = try await library.perform(
+                let update = try await session.performLibraryCommand(
                     .add(
                         content: content,
                         origin: origin,
@@ -442,7 +373,7 @@ final class AppModel: ObservableObject {
         expectedUpdatedAt: Date? = nil
     ) async -> Result<Void, Error> {
         await performMutation {
-            let update = try await library.perform(
+            let update = try await session.performLibraryCommand(
                 .update(
                     id: id,
                     content: content,
@@ -523,7 +454,7 @@ final class AppModel: ObservableObject {
         movingIDs: Set<UUID> = []
     ) async -> Bool {
         let result = await performMutation {
-            let update = try await library.perform(
+            let update = try await session.performLibraryCommand(
                 .createList(name: name, systemImage: systemImage),
                 sortedBy: sortMode
             )
@@ -551,7 +482,10 @@ final class AppModel: ObservableObject {
     func deleteList(_ list: SnipList) async {
         guard list.id != SnipList.inboxID else { return }
         let result = await performMutation {
-            let update = try await library.perform(.deleteList(id: list.id), sortedBy: sortMode)
+            let update = try await session.performLibraryCommand(
+                .deleteList(id: list.id),
+                sortedBy: sortMode
+            )
             return (update, ())
         }
         if case .failure(let error) = result {
@@ -563,7 +497,7 @@ final class AppModel: ObservableObject {
 
     func updateList(_ list: SnipList, name: String, systemImage: String) async -> Bool {
         let result = await performMutation {
-            let update = try await library.perform(
+            let update = try await session.performLibraryCommand(
                 .updateList(id: list.id, name: name, systemImage: systemImage),
                 sortedBy: sortMode
             )
@@ -623,7 +557,7 @@ final class AppModel: ObservableObject {
         let token = UUID()
         await withCommandLock {
             do {
-                let update = try await userActions.delete(
+                let update = try await session.delete(
                     ids: ids,
                     token: token,
                     sortedBy: sortMode
@@ -649,10 +583,9 @@ final class AppModel: ObservableObject {
     func dismissToast(_ presentedToast: AppToast) {
         guard presentedToast.action == .undoDelete else { return }
         Task {
-            await userActions.discardDeletion(
-                token: presentedToast.id,
-                sortedBy: sortMode
-            )
+            await session.withExclusiveAccess { session in
+                await session.discardDeletion(token: presentedToast.id, sortedBy: sortMode)
+            }
             if toast?.id == presentedToast.id { toast = nil }
         }
     }
@@ -660,7 +593,7 @@ final class AppModel: ObservableObject {
     private func restoreDeletion(token: UUID) async {
         await withCommandLock {
             do {
-                guard let update = try await userActions.restoreDeletion(
+                guard let update = try await session.restoreDeletion(
                     token: token,
                     sortedBy: sortMode
                 ) else { return }
@@ -673,71 +606,67 @@ final class AppModel: ObservableObject {
     }
 
     var importPreviewSummary: String {
-        guard let preview = pendingImportPreview else { return "" }
-        var parts = [preview.totalSnipCount == 1
-            ? String(localized: "1 snip")
-            : String(localized: "\(preview.totalSnipCount) snips")]
-        if preview.addedSnipCount > 0 {
-            parts.append(String(localized: "\(preview.addedSnipCount) new"))
-        }
-        if preview.recoveredSnipCount > 0 {
-            parts.append(preview.recoveredSnipCount == 1
-                ? String(localized: "1 recovered edit")
-                : String(localized: "\(preview.recoveredSnipCount) recovered edits"))
-        }
-        if preview.addedListCount > 0 {
-            parts.append(preview.addedListCount == 1
-                ? String(localized: "1 new list")
-                : String(localized: "\(preview.addedListCount) new lists"))
-        }
-        if preview.addedAttachmentCount > 0 {
-            parts.append(preview.addedAttachmentCount == 1
-                ? String(localized: "1 attachment")
-                : String(localized: "\(preview.addedAttachmentCount) attachments"))
-        }
-        return parts.joined(separator: ", ")
+        pendingImportPreview?.localizedSummary ?? ""
     }
 
     func beginBackupImport() {
         let panel = NSOpenPanel()
         panel.title = String(localized: "Import Backup")
         panel.prompt = String(localized: "Review Backup")
-        panel.message = MacBackupImportPickerPolicy.message
-        panel.allowedContentTypes = MacBackupImportPickerPolicy.allowedContentTypes
+        panel.message = String(localized: "Choose a backup folder to include attachments, or a plain JSON file for a text-only backup.")
+        panel.allowedContentTypes = [.folder, .json]
         panel.allowsMultipleSelection = false
-        panel.canChooseFiles = MacBackupImportPickerPolicy.canChooseFiles
-        panel.canChooseDirectories = MacBackupImportPickerPolicy.canChooseDirectories
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
         panel.begin { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
-            Task { @MainActor [weak self] in await self?.previewBackupImport(from: url) }
+            Task { @MainActor in await self?.previewBackupImport(from: url) }
         }
     }
 
     func previewBackupImport(from url: URL) async {
-        let didAccess = url.startAccessingSecurityScopedResource()
-        defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
-        do {
-            pendingImportPreview = try await userActions.previewImport(backupURL: url)
-        } catch {
-            pendingImportPreview = nil
-            presentedError = error.localizedDescription
+        await withCommandLock {
+            let didAccess = url.startAccessingSecurityScopedResource()
+            defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let preview = try await session.previewImport(from: url)
+                pendingImportPreviewID = preview.id
+                pendingImportPreview = preview.value
+            } catch {
+                pendingImportPreviewID = nil
+                pendingImportPreview = nil
+                presentedError = error.localizedDescription
+            }
         }
     }
 
     func cancelBackupImport() {
+        let id = pendingImportPreviewID
+        pendingImportPreviewID = nil
         pendingImportPreview = nil
+        guard let id else { return }
+        Task {
+            await session.withExclusiveAccess { session in
+                await session.cancelImport(id: id)
+            }
+        }
     }
 
     func confirmBackupImport() async {
-        guard let preview = pendingImportPreview else { return }
+        guard pendingImportPreview != nil, let id = pendingImportPreviewID else { return }
         await withCommandLock {
             do {
-                let result = try await userActions.applyImport(preview, sortedBy: sortMode)
-                await commitPendingDeletion()
+                guard let (result, recovery) = try await session.applyPendingImport(
+                    id: id,
+                    sortedBy: sortMode
+                ) else { return }
+                clearPendingDeletionToast()
+                pendingImportPreviewID = nil
                 pendingImportPreview = nil
                 apply(result.snapshot)
-                await refreshRecoveryUnlocked()
+                recoverySnapshot = recovery
             } catch {
+                pendingImportPreviewID = nil
                 pendingImportPreview = nil
                 presentedError = error.localizedDescription
                 await reloadUnlocked()
@@ -750,7 +679,10 @@ final class AppModel: ObservableObject {
         guard !ids.isEmpty else { return }
         Task {
             await performUserMutation {
-                let update = try await library.perform(.toggleDoneMany(ids: ids), sortedBy: sortMode)
+                let update = try await session.performLibraryCommand(
+                    .toggleDoneMany(ids: ids),
+                    sortedBy: sortMode
+                )
                 return (update, ())
             }
         }
@@ -762,16 +694,19 @@ final class AppModel: ObservableObject {
 
     func toggleDoneNow(id: UUID) async {
         await performUserMutation {
-            let update = try await library.perform(.toggleDone(id: id), sortedBy: sortMode)
+            let update = try await session.performLibraryCommand(
+                .toggleDone(id: id),
+                sortedBy: sortMode
+            )
             return (update, ())
         }
     }
 
-    func markDoneAfterExternalDrop(ids: [UUID]) {
-        Task { await markDoneAfterExternalDropNow(ids: Set(ids)) }
+    func setDoneAfterExternalDrop(ids: [UUID]) {
+        Task { await setDoneAfterExternalDropNow(ids: Set(ids)) }
     }
 
-    func markDoneAfterExternalDropNow(ids: Set<UUID>) async {
+    func setDoneAfterExternalDropNow(ids: Set<UUID>) async {
         let unfinishedIDs = Set(
             snips.lazy
                 .filter { ids.contains($0.id) && !$0.isDone }
@@ -779,7 +714,7 @@ final class AppModel: ObservableObject {
         )
         guard !unfinishedIDs.isEmpty else { return }
         await performUserMutation {
-            let update = try await library.perform(
+            let update = try await session.performLibraryCommand(
                 .setDone(ids: unfinishedIDs, done: true),
                 sortedBy: sortMode
             )
@@ -933,7 +868,7 @@ final class AppModel: ObservableObject {
     func copySelectionNow(to pasteboard: NSPasteboard = .general) async -> Bool {
         let selected = selectedSnips
         guard !selected.isEmpty else { return false }
-        let attachments = uniqueAttachments(in: selected.flatMap(\.attachments))
+        let attachments = attachmentPreparation.unique(selected.flatMap(\.attachments))
         let prepared: [UUID: URL]
         do {
             prepared = try await prepareAttachments(attachments, for: .copy)
@@ -956,8 +891,7 @@ final class AppModel: ObservableObject {
     }
 
     func clearDownloadedFiles() async throws {
-        guard let cloudSyncHandler else { throw SnipLibraryError.transferUnsupported }
-        try await cloudSyncHandler.clearDownloadedFiles()
+        try await attachmentPreparation.clearDownloadedFiles()
         await reload()
     }
 
@@ -986,7 +920,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func performMutation<Value>(
+    private func performMutation<Value: Sendable>(
         _ mutation: () async throws -> (SnipLibraryUpdate, Value)
     ) async -> Result<Value, Error> {
         await withCommandLock {
@@ -994,12 +928,12 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func performMutationUnlocked<Value>(
+    private func performMutationUnlocked<Value: Sendable>(
         _ mutation: () async throws -> (SnipLibraryUpdate, Value)
     ) async -> Result<Value, Error> {
         do {
             let (update, value) = try await mutation()
-            await commitPendingDeletion()
+            clearPendingDeletionToast()
             apply(update.snapshot)
             return .success(value)
         } catch {
@@ -1022,11 +956,11 @@ final class AppModel: ObservableObject {
     ) async -> Result<SnipLibraryOutcome, Error> {
         await withCommandLock {
             do {
-                let update = try await userActions.perform(
-                    command: command,
+                let update = try await session.performUserCommand(
+                    command,
                     sortedBy: sortMode
                 )
-                await commitPendingDeletion()
+                clearPendingDeletionToast()
                 apply(update.snapshot)
                 if let afterSortMode { setSortMode(afterSortMode) }
                 if let afterSelection { selection = afterSelection(update.outcome) }
@@ -1037,18 +971,14 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func withCommandLock<Value>(
-        _ operation: () async -> Value
+    private func withCommandLock<Value: Sendable>(
+        _ operation: @MainActor @Sendable () async -> Value
     ) async -> Value {
-        await commandLock.acquire()
-        let value = await operation()
-        await commandLock.release()
-        return value
+        await session.withExclusiveAccess { _ in await operation() }
     }
 
-    private func commitPendingDeletion() async {
+    private func clearPendingDeletionToast() {
         guard let toast, toast.action == .undoDelete else { return }
         self.toast = nil
-        await userActions.discardDeletion(token: toast.id, sortedBy: sortMode)
     }
 }

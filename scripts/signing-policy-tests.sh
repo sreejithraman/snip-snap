@@ -92,8 +92,9 @@ wrong_entitlements="$test_root/Wrong.entitlements"
 /usr/bin/plutil -create xml1 "$wrong_entitlements"
 /usr/bin/plutil -insert 'com\.apple\.security\.application-groups' \
     -json '["group.org.example.other"]' "$wrong_entitlements"
+wrong_cloudkit_container="iCloud.""org.example.other"
 /usr/bin/plutil -insert 'com\.apple\.developer\.icloud-container-identifiers' \
-    -json '["iCloud.org.example.other"]' "$wrong_entitlements"
+    -json "[\"$wrong_cloudkit_container\"]" "$wrong_entitlements"
 /usr/bin/plutil -insert 'com\.apple\.developer\.icloud-services' \
     -json '["CloudDocuments"]' "$wrong_entitlements"
 wrong_settings="$test_root/wrong-entitlements-settings.txt"
@@ -191,12 +192,15 @@ assert_fails_with_all \
     'CODE_SIGN_ENTITLEMENTS file'
 
 release_settings="$test_root/release-settings.txt"
-print '    DEVELOPMENT_TEAM = FAKE123456' > "$release_settings"
-print '    PRODUCT_BUNDLE_IDENTIFIER = org.example.snipsnap' >> "$release_settings"
-print '    CODE_SIGN_ENTITLEMENTS =' >> "$release_settings"
+/bin/cp "$production_settings" "$release_settings"
 SNIP_SNAP_SIGNING_IDENTITY='FAKE Developer ID identity' \
 SNIP_SNAP_NOTARY_PROFILE='FAKE notary profile' \
     assert_succeeds signing_policy_preflight release "$release_settings" "$test_root"
+SNIP_SNAP_SIGNING_IDENTITY='FAKE Developer ID identity' \
+SNIP_SNAP_NOTARY_PROFILE='FAKE notary profile' \
+    assert_fails_with_all \
+        "signing_policy_preflight release '$complete' '$test_root'" \
+        'CloudKit Production environment entitlement'
 
 incomplete_release="$test_root/incomplete-release.txt"
 print '    PRODUCT_BUNDLE_IDENTIFIER = org.example.snipsnap' > "$incomplete_release"
@@ -204,8 +208,43 @@ unset SNIP_SNAP_SIGNING_IDENTITY SNIP_SNAP_NOTARY_PROFILE || true
 assert_fails_with_all \
     "signing_policy_preflight release '$incomplete_release' '$test_root'" \
     DEVELOPMENT_TEAM \
+    SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER \
+    CODE_SIGN_ENTITLEMENTS \
     SNIP_SNAP_SIGNING_IDENTITY \
     SNIP_SNAP_NOTARY_PROFILE
+
+signed_app="$test_root/Snip Snap.app"
+/bin/mkdir -p "$signed_app"
+signed_entitlements="$test_root/signed-entitlements.plist"
+/bin/cp "$production_entitlements" "$signed_entitlements"
+fake_codesign="$test_root/fake-codesign"
+print -r -- '#!/bin/zsh
+set -euo pipefail
+if [[ "$*" == *"--entitlements"* ]]; then
+    /bin/cat "$SNIP_SNAP_FAKE_SIGNED_ENTITLEMENTS"
+fi' > "$fake_codesign"
+/bin/chmod +x "$fake_codesign"
+SNIP_SNAP_CODESIGN="$fake_codesign" \
+SNIP_SNAP_FAKE_SIGNED_ENTITLEMENTS="$signed_entitlements" \
+    assert_succeeds signing_policy_verify_production_cloudkit_app \
+        "$signed_app" iCloud.org.example.snipsnap
+wrong_signed_cloudkit_container="iCloud.""org.example.other"
+/usr/bin/plutil -replace 'com\.apple\.developer\.icloud-container-identifiers' \
+    -json "[\"$wrong_signed_cloudkit_container\"]" "$signed_entitlements"
+SNIP_SNAP_CODESIGN="$fake_codesign" \
+SNIP_SNAP_FAKE_SIGNED_ENTITLEMENTS="$signed_entitlements" \
+    assert_fails_with_all \
+        "signing_policy_verify_production_cloudkit_app '$signed_app' iCloud.org.example.snipsnap" \
+        'signed CloudKit container'
+/usr/bin/plutil -replace 'com\.apple\.developer\.icloud-container-identifiers' \
+    -json '["iCloud.org.example.snipsnap"]' "$signed_entitlements"
+/usr/bin/plutil -replace 'com\.apple\.developer\.icloud-container-environment' \
+    -string Development "$signed_entitlements"
+SNIP_SNAP_CODESIGN="$fake_codesign" \
+SNIP_SNAP_FAKE_SIGNED_ENTITLEMENTS="$signed_entitlements" \
+    assert_fails_with_all \
+        "signing_policy_verify_production_cloudkit_app '$signed_app' iCloud.org.example.snipsnap" \
+        'signed CloudKit Production environment'
 
 resolved_override="$test_root/resolved-override.txt"
 print '    DEVELOPMENT_TEAM =' > "$resolved_override"
@@ -274,5 +313,35 @@ assert_succeeds signing_policy_write_export_options "$export_options" FAKE123456
 /usr/bin/grep -F 'CODE_SIGN_ENTITLEMENTS =' \
     "$repo_dir/Config/Debug.xcconfig" >/dev/null || \
     fail_test "Debug does not clear entitlements"
+/usr/bin/plutil -lint "$repo_dir/Config/MacRelease.example.entitlements" >/dev/null || \
+    fail_test "the Mac release entitlement template is not valid"
+[[ "$(/usr/bin/plutil -extract \
+    'com\.apple\.developer\.icloud-container-environment' raw -o - \
+    "$repo_dir/Config/MacRelease.example.entitlements")" == Production ]] || \
+    fail_test "the Mac release entitlement template is not Production"
+/usr/bin/grep -F '/Config/MacRelease.entitlements' "$repo_dir/.gitignore" >/dev/null || \
+    fail_test "the local Mac release entitlement file is not ignored"
+for required in \
+    'SNIP_SNAP_MAC_RELEASE_ENTITLEMENTS' \
+    'CODE_SIGN_ENTITLEMENTS="$mac_release_entitlements"' \
+    'SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER="$cloudkit_container_identifier"'; do
+    /usr/bin/grep -F -- "$required" "$script_dir/release.sh" >/dev/null || \
+        fail_test "the Mac release command is missing $required"
+done
+[[ "$(/usr/bin/grep -c \
+    'signing_policy_verify_production_cloudkit_app' "$script_dir/release.sh")" == 2 ]] || \
+    fail_test "the Mac release command must verify the archive and export"
+verify_lines=( ${(@f)$(/usr/bin/grep -n '^    verify_release_cloudkit$' \
+    "$script_dir/release.sh" | /usr/bin/cut -d: -f1)} )
+[[ "${#verify_lines[@]}" == 2 ]] || \
+    fail_test "the Mac release command must gate fresh and resumed releases"
+history_line="$(/usr/bin/grep -n 'history_json=' "$script_dir/release.sh" | \
+    /usr/bin/head -1 | /usr/bin/cut -d: -f1)"
+dmg_line="$(/usr/bin/grep -n '/usr/bin/hdiutil create' "$script_dir/release.sh" | \
+    /usr/bin/head -1 | /usr/bin/cut -d: -f1)"
+(( verify_lines[1] < history_line )) || \
+    fail_test "the resumed release checks CloudKit after notarization work starts"
+(( verify_lines[2] < dmg_line )) || \
+    fail_test "the fresh release checks CloudKit after the release image is made"
 
 print "Signing policy checks passed."

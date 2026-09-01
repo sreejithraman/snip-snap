@@ -1,3 +1,4 @@
+#if DEBUG
 import CloudKit
 import Foundation
 
@@ -164,3 +165,4 @@ public enum CloudDevelopmentTransportContract {
     case zoneCleanupWasNotConfirmed
   }
 }
+#endif

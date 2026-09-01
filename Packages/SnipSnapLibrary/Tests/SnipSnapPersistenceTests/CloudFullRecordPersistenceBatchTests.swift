@@ -9,7 +9,7 @@ extension CloudFullRecordPersistenceTests {
   func testFullBatchCommitsLocalRecordsBasesConflictStageAndEngineOnce() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
-    let namespace = "private|account-a|generation-a"
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-a")
     let listID = UUID()
     let snipID = UUID()
     let list = SnipList(
@@ -45,7 +45,7 @@ extension CloudFullRecordPersistenceTests {
       payload: Data("list conflict".utf8)
     )
     let batch = CloudFullBatchCommit(
-      namespaceKey: namespace,
+      namespaceKey: namespace.rawValue,
       batchID: UUID(),
       expectedEngineState: nil,
       nextEngineState: Data("engine-1".utf8),
@@ -89,7 +89,7 @@ extension CloudFullRecordPersistenceTests {
     XCTAssertTrue(textState.stagedBatches.isEmpty)
 
     let exactReplay = CloudFullBatchCommit(
-      namespaceKey: namespace,
+      namespaceKey: namespace.rawValue,
       batchID: UUID(),
       expectedEngineState: Data("engine-1".utf8),
       nextEngineState: Data("engine-2".utf8),
@@ -125,7 +125,7 @@ extension CloudFullRecordPersistenceTests {
       dependencyListID: listID
     )
     let stale = CloudFullBatchCommit(
-      namespaceKey: namespace,
+      namespaceKey: namespace.rawValue,
       batchID: UUID(),
       expectedEngineState: Data("engine-2".utf8),
       nextEngineState: Data("must-not-commit".utf8),
@@ -155,7 +155,7 @@ extension CloudFullRecordPersistenceTests {
   func testFullBatchDefersLocalSnipAndRollsBackEverySurfaceOnFailedSave() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
-    let namespace = "private|account-a|generation-a"
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-a")
     let listID = UUID()
     let snipID = UUID()
     let key = try XCTUnwrap(SnipOrderKey.rebalanced(count: 1).first)
@@ -172,7 +172,7 @@ extension CloudFullRecordPersistenceTests {
       orderKey: key
     )
     let snipBatch = CloudFullBatchCommit(
-      namespaceKey: namespace,
+      namespaceKey: namespace.rawValue,
       batchID: UUID(),
       expectedEngineState: nil,
       nextEngineState: Data("engine-snip".utf8),
@@ -198,7 +198,7 @@ extension CloudFullRecordPersistenceTests {
     }
     let list = SnipList(id: listID, name: "Later", systemImage: "clock", position: 1, sortKey: key)
     let listBatch = CloudFullBatchCommit(
-      namespaceKey: namespace,
+      namespaceKey: namespace.rawValue,
       batchID: UUID(),
       expectedEngineState: Data("engine-snip".utf8),
       nextEngineState: Data("engine-list".utf8),
@@ -244,7 +244,7 @@ extension CloudFullRecordPersistenceTests {
   func testFullBatchKeepsStageWhenLocalStateChangesAfterStaging() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
-    let namespace = "private|account-a|generation-local-cas"
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-local-cas")
     let store = try SwiftDataSnipLibrary(storeURL: location.store)
     _ = try await store.perform(
       .add(
@@ -274,7 +274,7 @@ extension CloudFullRecordPersistenceTests {
       orderKey: base.manualSortKey
     )
     let batch = CloudFullBatchCommit(
-      namespaceKey: namespace,
+      namespaceKey: namespace.rawValue,
       batchID: UUID(),
       expectedEngineState: nil,
       nextEngineState: Data("next".utf8),
@@ -318,7 +318,7 @@ extension CloudFullRecordPersistenceTests {
   func testFullBatchRejectsFinalSnipStateThatReferencesARemovedList() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
-    let namespace = "private|account-a|generation-final-state"
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-final-state")
     let store = try SwiftDataSnipLibrary(storeURL: location.store)
     let listUpdate = try await store.perform(
       .createList(name: "Work", systemImage: "briefcase"),
@@ -341,7 +341,7 @@ extension CloudFullRecordPersistenceTests {
       orderKey: try XCTUnwrap(SnipOrderKey.rebalanced(count: 1).first)
     )
     let batch = CloudFullBatchCommit(
-      namespaceKey: namespace,
+      namespaceKey: namespace.rawValue,
       batchID: UUID(),
       expectedEngineState: nil,
       nextEngineState: Data("must-not-advance".utf8),
@@ -390,7 +390,9 @@ extension CloudFullRecordPersistenceTests {
     ] {
       let location = temporaryStore()
       defer { try? FileManager.default.removeItem(at: location.root) }
-      let namespace = "private|account-a|generation-duplicate-item-(collision)-(reversed)"
+      let namespace = CloudSyncNamespaceKey(
+        rawValue: "private|account-a|generation-duplicate-item-\(collision)-\(reversed)"
+      )
       let firstID = UUID()
       let secondID = collision == "domain" ? firstID : UUID()
       let firstIdentity = identity("s-duplicate-item-first")
@@ -441,7 +443,7 @@ extension CloudFullRecordPersistenceTests {
         quarantine: nil
       )
       let batch = CloudFullBatchCommit(
-        namespaceKey: namespace,
+        namespaceKey: namespace.rawValue,
         batchID: UUID(),
         expectedEngineState: nil,
         nextEngineState: Data("must-not-advance".utf8),
@@ -469,7 +471,7 @@ extension CloudFullRecordPersistenceTests {
   func testFullBatchRemovesAcceptedAndLocalStateWithCASAndReplaysOnce() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
-    let namespace = "private|account-a|generation-remove"
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-remove")
     let snipID = UUID()
     let key = try XCTUnwrap(SnipOrderKey.rebalanced(count: 1).first)
     let mutation = CloudLocalSnipMutation(
@@ -486,7 +488,7 @@ extension CloudFullRecordPersistenceTests {
     )
     let accepted = entity(.snip, snipID, identity("s-remove"))
     let seed = CloudFullBatchCommit(
-      namespaceKey: namespace,
+      namespaceKey: namespace.rawValue,
       batchID: UUID(),
       expectedEngineState: nil,
       nextEngineState: Data("seeded".utf8),
@@ -507,7 +509,7 @@ extension CloudFullRecordPersistenceTests {
     _ = try await store.commitCloudFullBatch(seed)
 
     let remove = CloudFullBatchCommit(
-      namespaceKey: namespace,
+      namespaceKey: namespace.rawValue,
       batchID: UUID(),
       expectedEngineState: Data("seeded".utf8),
       nextEngineState: Data("removed".utf8),
@@ -541,10 +543,10 @@ extension CloudFullRecordPersistenceTests {
   func testFullBatchStaleAcceptedRemoveKeepsEverySurface() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
-    let namespace = "private|account-a|generation-stale-remove"
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-stale-remove")
     let accepted = entity(.list, SnipList.inbox.id, identity("l-stale-remove"))
     let seed = CloudFullBatchCommit(
-      namespaceKey: namespace,
+      namespaceKey: namespace.rawValue,
       batchID: UUID(),
       expectedEngineState: nil,
       nextEngineState: Data("seeded".utf8),
@@ -564,7 +566,7 @@ extension CloudFullRecordPersistenceTests {
     try await store.stageCloudFullBatch(seed)
     _ = try await store.commitCloudFullBatch(seed)
     let remove = CloudFullBatchCommit(
-      namespaceKey: namespace,
+      namespaceKey: namespace.rawValue,
       batchID: UUID(),
       expectedEngineState: Data("seeded".utf8),
       nextEngineState: Data("must-not-advance".utf8),
@@ -684,11 +686,11 @@ extension CloudFullRecordPersistenceTests {
   func testLegacyNamespaceClearRemovesEveryFullRecordRowAndReplayReceipt() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
-    let namespace = "private|account-a|generation-clear"
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-clear")
     let snipID = UUID()
     let accepted = entity(.snip, snipID, identity("s-clear"))
     let batch = CloudFullBatchCommit(
-      namespaceKey: namespace,
+      namespaceKey: namespace.rawValue,
       batchID: UUID(),
       expectedEngineState: nil,
       nextEngineState: Data("engine".utf8),
@@ -707,7 +709,7 @@ extension CloudFullRecordPersistenceTests {
     try await store.stageCloudFullBatch(batch)
     let firstApply = try await store.commitCloudFullBatch(batch)
     XCTAssertEqual(firstApply, .applied)
-    try await store.storeCloudConflict(
+    try await store.testStoreCloudConflict(
       namespaceKey: namespace,
       key: "clear-conflict",
       reference: accepted.reference,
@@ -726,7 +728,7 @@ extension CloudFullRecordPersistenceTests {
         CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
       ]
     )
-    _ = try await store.acceptCloudEntity(
+    try await store.testAcceptCloudEntity(
       namespaceKey: namespace,
       value: entity(.snip, snipID, identity("s-clear-duplicate"))
     )
@@ -743,7 +745,7 @@ extension CloudFullRecordPersistenceTests {
     XCTAssertTrue(cleared.quarantines.isEmpty)
     XCTAssertTrue(cleared.enrolledEntities.isEmpty)
     XCTAssertTrue(cleared.pendingDeletes.isEmpty)
-    let dormant = try await store.dormantCloudBase(
+    let dormant = try await store.testDormantCloudBase(
       namespaceKey: namespace,
       reference: accepted.reference
     )

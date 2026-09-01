@@ -36,8 +36,8 @@ final class CloudKitRecordTransportTests: XCTestCase {
             zones: [zone]
         )
 
-        XCTAssertNotEqual(first.canonicalKey, second.canonicalKey)
-        XCTAssertEqual(first.canonicalKey, first.canonicalKey)
+        XCTAssertNotEqual(first.namespaceKey, second.namespaceKey)
+        XCTAssertEqual(first.namespaceKey, first.namespaceKey)
         let binding = ICloudSyncNamespaceBinding(
             scope: first.cloudScope,
             accountLineage: first.accountLineage,
@@ -47,9 +47,26 @@ final class CloudKitRecordTransportTests: XCTestCase {
             })
         )
         XCTAssertEqual(
-            SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: binding)?.rawValue,
-            first.canonicalKey
+            binding.namespaceKey.rawValue,
+            "AAAAAAAAABtzbmlwc25hcC1jbG91ZC1uYW1lc3BhY2UtdjEAAAAAAAAADXNjb3BlfGFjY291bnQAAAAAAAAAB2xpbmVhZ2UAAAAAAAAAJDEyMTIxMjEyLTEyMTItMTIxMi0xMjEyLTEyMTIxMjEyMTIxMgAAAAAAAAAJb3duZXIvdHdvAAAAAAAAAAh6b25lLG9uZQ=="
         )
+        XCTAssertEqual(
+            try JSONEncoder().encode(binding.namespaceKey),
+            try JSONEncoder().encode(binding.namespaceKey.rawValue)
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                CloudSyncNamespaceKey.self,
+                from: JSONEncoder().encode(binding.namespaceKey.rawValue)
+            ),
+            binding.namespaceKey
+        )
+        XCTAssertEqual(first.namespaceKey, binding.namespaceKey)
+        XCTAssertEqual(
+            SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: binding)?.rawValue,
+            binding.namespaceKey.rawValue
+        )
+        XCTAssertEqual(first.namespaceKey, binding.namespaceKey)
     }
 
     func testRejectsEngineStateFromAnotherNamespaceBeforeNetworkWork() async {

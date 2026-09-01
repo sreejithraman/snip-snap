@@ -758,7 +758,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let initial = try await snapshot(library, namespace)
     let readyForMetadata = try XCTUnwrap(initial.publications.last)
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       transitions: [.payloadAccepted(
         attachmentID: readyForMetadata.metadata.attachmentID,
         expectedRevision: readyForMetadata.revision,
@@ -879,7 +879,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let bad = try XCTUnwrap(ordered.first)
     let good = try XCTUnwrap(ordered.last)
     try await fixture.library.commitCloudAttachmentTransitions(
-      namespaceKey: fixture.namespace.canonicalKey,
+      namespaceKey: fixture.namespace.namespaceKey,
       transitions: ordered.map {
         .payloadAccepted(
           attachmentID: $0.metadata.attachmentID,
@@ -894,7 +894,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
       $0.metadata.attachmentID == bad.metadata.attachmentID
     }))
     try await fixture.library.commitCloudAttachmentTransitions(
-      namespaceKey: fixture.namespace.canonicalKey,
+      namespaceKey: fixture.namespace.namespaceKey,
       transitions: [.metadataConflict(
         attachmentID: badReady.metadata.attachmentID,
         expectedRevision: badReady.revision,
@@ -925,7 +925,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let bad = try XCTUnwrap(ordered.first)
     let good = try XCTUnwrap(ordered.last)
     try await fixture.library.commitCloudAttachmentTransitions(
-      namespaceKey: fixture.namespace.canonicalKey,
+      namespaceKey: fixture.namespace.namespaceKey,
       transitions: [.remoteMetadataAccepted(
         metadata: bad.metadata,
         metadataIdentity: bad.metadataIdentity,
@@ -966,7 +966,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let initial = try await snapshot(fixture.library, fixture.namespace)
     let publication = try XCTUnwrap(initial.publications.first)
     try await fixture.library.commitCloudAttachmentTransitions(
-      namespaceKey: fixture.namespace.canonicalKey,
+      namespaceKey: fixture.namespace.namespaceKey,
       transitions: [.payloadAccepted(
         attachmentID: publication.metadata.attachmentID,
         expectedRevision: publication.revision,
@@ -985,7 +985,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
       return XCTFail("Expected metadata save")
     }
     try await fixture.library.commitCloudAttachmentTransitions(
-      namespaceKey: fixture.namespace.canonicalKey,
+      namespaceKey: fixture.namespace.namespaceKey,
       transitions: [.metadataAccepted(
         attachmentID: readyForMetadata.metadata.attachmentID,
         expectedRevision: readyForMetadata.revision,
@@ -1009,7 +1009,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let removed = try await snapshot(fixture.library, fixture.namespace)
     let deletion = try XCTUnwrap(removed.publications.first)
     try await fixture.library.commitCloudAttachmentTransitions(
-      namespaceKey: fixture.namespace.canonicalKey,
+      namespaceKey: fixture.namespace.namespaceKey,
       transitions: [.metadataDeleteAccepted(
         attachmentID: deletion.metadata.attachmentID,
         expectedRevision: deletion.revision
@@ -1062,7 +1062,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
       recordName: UUID().uuidString.lowercased()
     )
     try await fixture.library.commitCloudAttachmentTransitions(
-      namespaceKey: fixture.namespace.canonicalKey,
+      namespaceKey: fixture.namespace.namespaceKey,
       transitions: [.remoteMetadataAccepted(
         metadata: CloudAttachmentMetadataValue(
           attachmentID: deletedAttachmentID,
@@ -1110,7 +1110,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     )
 
     try await fixture.library.commitCloudAttachmentTransitions(
-      namespaceKey: fixture.namespace.canonicalKey,
+      namespaceKey: fixture.namespace.namespaceKey,
       transitions: [
         .metadataUnknown(
           attachmentID: currentReplacement.metadata.attachmentID,
@@ -1224,7 +1224,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
       $0.metadata.fileName == "replacement.txt"
     }))
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       transitions: [.payloadAccepted(
         attachmentID: replacementPublication.metadata.attachmentID,
         expectedRevision: replacementPublication.revision,
@@ -1692,7 +1692,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
       ), sortedBy: .manual
     )
     try await library.reconcileCloudAttachments(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       metadataZoneName: dataZone.name,
       metadataOwnerName: dataZone.ownerName,
       payloadZoneName: payloadZone.name,
@@ -1713,7 +1713,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     }
     try await transport.confirmApplied(payloadResult.id)
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       transitions: [.payloadAccepted(
         attachmentID: initial.metadata.attachmentID,
         expectedRevision: initial.revision,
@@ -1732,7 +1732,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     }
     try await transport.confirmApplied(metadataResult.id)
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       transitions: [.metadataAccepted(
         attachmentID: initial.metadata.attachmentID,
         expectedRevision: payloadAccepted.revision,
@@ -1780,7 +1780,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
       XCTAssertEqual(error as? CloudAttachmentStorageError, .invalidMetadata)
     }
     let invalidReceiptStagingRoot = try await receiverLibrary.cloudAttachmentStagingRoot(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     let stagedFiles = FileManager.default.enumerator(
       at: invalidReceiptStagingRoot,
@@ -1846,7 +1846,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     )
     try Data("orphan".utf8).write(to: orphan)
     let stagingRoot = try await receiverLibrary.cloudAttachmentStagingRoot(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     let interrupted = stagingRoot.appendingPathComponent("interrupted/payload")
     try FileManager.default.createDirectory(
@@ -1970,7 +1970,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
       ), sortedBy: .manual
     )
     try await library.reconcileCloudAttachments(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       metadataZoneName: "data",
       metadataOwnerName: "owner",
       payloadZoneName: "payload",
@@ -2020,7 +2020,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     }
     let namespace = namespaceValue()
     try await library.reconcileCloudAttachments(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       metadataZoneName: "data",
       metadataOwnerName: "owner",
       payloadZoneName: "payload",
@@ -2028,7 +2028,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     )
     let remoteID = UUID()
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       transitions: [
         .remoteMetadataAccepted(
           metadata: CloudAttachmentMetadataValue(
@@ -2306,7 +2306,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     )
     let namespace = namespaceValue()
     try await library.reconcileCloudAttachments(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       metadataZoneName: "data",
       metadataOwnerName: "owner",
       payloadZoneName: "payload",
@@ -2315,7 +2315,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let stored = try await snapshot(library, namespace)
     let publication = try XCTUnwrap(stored.publications.first)
     let stagingRoot = try await library.cloudAttachmentStagingRoot(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     let staged = stagingRoot.appendingPathComponent("oversize/payload")
     try FileManager.default.createDirectory(
@@ -2325,7 +2325,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
 
     do {
       _ = try await library.installCloudAttachmentCacheFile(
-        namespaceKey: namespace.canonicalKey,
+        namespaceKey: namespace.namespaceKey,
         attachmentID: publication.metadata.attachmentID,
         expectedPayloadIdentity: publication.metadata.payloadIdentity,
         stagedURL: staged,
@@ -2363,7 +2363,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     )
     let namespace = namespaceValue()
     try await library.reconcileCloudAttachments(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       metadataZoneName: "data",
       metadataOwnerName: "owner",
       payloadZoneName: "payload",
@@ -2372,7 +2372,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let before = try await snapshot(library, namespace)
     let publication = try XCTUnwrap(before.publications.first)
     let stagingRoot = try await library.cloudAttachmentStagingRoot(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     let staged = stagingRoot.appendingPathComponent("race/payload")
     try FileManager.default.createDirectory(
@@ -2395,7 +2395,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
       )
     )
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       transitions: [.remoteMetadataAccepted(
         metadata: replacement,
         metadataIdentity: publication.metadataIdentity,
@@ -2406,7 +2406,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
 
     do {
       _ = try await library.installCloudAttachmentCacheFile(
-        namespaceKey: namespace.canonicalKey,
+        namespaceKey: namespace.namespaceKey,
         attachmentID: publication.metadata.attachmentID,
         expectedPayloadIdentity: publication.metadata.payloadIdentity,
         stagedURL: staged,
@@ -2444,7 +2444,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     )
     let namespace = namespaceValue()
     try await library.reconcileCloudAttachments(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       metadataZoneName: "data",
       metadataOwnerName: "owner",
       payloadZoneName: "payload",
@@ -2453,7 +2453,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let stored = try await snapshot(library, namespace)
     let publication = try XCTUnwrap(stored.publications.first)
     let stagingRoot = try await library.cloudAttachmentStagingRoot(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     let staged = stagingRoot.appendingPathComponent("unavailable/payload")
     try FileManager.default.createDirectory(
@@ -2461,7 +2461,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     )
     try bytes.write(to: staged)
     let cached = try await library.installCloudAttachmentCacheFile(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       attachmentID: publication.metadata.attachmentID,
       expectedPayloadIdentity: publication.metadata.payloadIdentity,
       stagedURL: staged,
@@ -2473,7 +2473,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: cached.path))
 
     let unavailable = try await library.touchCloudAttachmentCache(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       attachmentID: publication.metadata.attachmentID,
       now: Date(timeIntervalSince1970: 1)
     )
@@ -2488,7 +2488,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     try Data(repeating: 0xEE, count: fixture.bytes.count).write(to: fixture.cachedURL)
 
     let available = try await fixture.library.touchCloudAttachmentCache(
-      namespaceKey: fixture.namespace.canonicalKey,
+      namespaceKey: fixture.namespace.namespaceKey,
       attachmentID: fixture.attachmentID,
       now: Date(timeIntervalSince1970: 2)
     )
@@ -2503,7 +2503,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     try Data(repeating: 0xDD, count: fixture.bytes.count).write(to: fixture.cachedURL)
 
     try await fixture.library.sweepCloudAttachmentCache(
-      namespaceKey: fixture.namespace.canonicalKey,
+      namespaceKey: fixture.namespace.namespaceKey,
       maximumBytes: 1_024
     )
 
@@ -2533,7 +2533,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     )
     let namespace = namespaceValue()
     try await library.reconcileCloudAttachments(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       metadataZoneName: "data",
       metadataOwnerName: "owner",
       payloadZoneName: "payload",
@@ -2585,7 +2585,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let namespace = namespaceValue()
     let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
     try await library.reconcileCloudAttachments(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       metadataZoneName: "data",
       metadataOwnerName: "owner",
       payloadZoneName: payloadZone.name,
@@ -2604,7 +2604,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     }
     try await transport.confirmApplied(payloadResult.id)
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       transitions: [.payloadAccepted(
         attachmentID: publication.metadata.attachmentID,
         expectedRevision: publication.revision,
@@ -2623,7 +2623,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     }
     try await transport.confirmApplied(metadataResult.id)
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       transitions: [.metadataAccepted(
         attachmentID: accepted.metadata.attachmentID,
         expectedRevision: accepted.revision,
@@ -2654,7 +2654,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     _ library: SwiftDataSnipLibrary,
     _ namespace: CloudSyncNamespace
   ) async throws -> CloudAttachmentStorageSnapshot {
-    try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespace.canonicalKey)
+    try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespace.namespaceKey)
   }
 
   private func makeAvailableCacheFixture(
@@ -2680,7 +2680,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     )
     let namespace = namespaceValue()
     try await library.reconcileCloudAttachments(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       metadataZoneName: "data",
       metadataOwnerName: "owner",
       payloadZoneName: "payload",
@@ -2689,7 +2689,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let storage = try await snapshot(library, namespace)
     let publication = try XCTUnwrap(storage.publications.first)
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       transitions: [.remoteMetadataAccepted(
         metadata: publication.metadata,
         metadataIdentity: publication.metadataIdentity,
@@ -2698,7 +2698,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
       )]
     )
     let stagingRoot = try await library.cloudAttachmentStagingRoot(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     let staged = stagingRoot.appendingPathComponent("\(name)/payload")
     try FileManager.default.createDirectory(
@@ -2706,7 +2706,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     )
     try bytes.write(to: staged)
     let cachedURL = try await library.installCloudAttachmentCacheFile(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       attachmentID: publication.metadata.attachmentID,
       expectedPayloadIdentity: publication.metadata.payloadIdentity,
       stagedURL: staged,

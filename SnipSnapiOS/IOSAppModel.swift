@@ -5,13 +5,8 @@ import SnipSnapCore
 @MainActor
 @Observable
 final class IOSAppModel {
-    private var library: any SnipLibrary
-    private var recoveryScope: SnipRecoveryScope?
+    private let session: SavedSnipsSession
     private let cloudSyncHandler: (any OptionalCloudSyncHandling)?
-    private var userActions: any SnipLibraryUserActions
-    private let userActionsRebinder: SnipLibraryUserActionsRebinder
-    private var mutationInProgress = false
-    private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
 
     private(set) var snips: [Snip]
     private(set) var lists: [SnipList]
@@ -23,6 +18,7 @@ final class IOSAppModel {
     private var hasKnownCloudSyncActivity: Bool
     private var hasKnownCloudAttachmentStates = false
     private(set) var pendingImportPreview: SnipImportPreview?
+    private var pendingImportPreviewID: UUID?
     var toast: AppToast?
     var selectedListID: UUID
     var selectedSnipID: UUID?
@@ -44,10 +40,12 @@ final class IOSAppModel {
         startupError: String? = nil,
         cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil
     ) {
-        self.library = library
-        self.userActionsRebinder = userActionsRebinder
-        self.userActions = userActions ?? userActionsRebinder.actions(for: library)
-        self.recoveryScope = recoveryScope
+        session = SavedSnipsSession(
+            library: library,
+            userActions: userActions,
+            userActionsRebinder: userActionsRebinder,
+            recoveryScope: recoveryScope
+        )
         self.cloudSyncHandler = cloudSyncHandler
         hasKnownCloudSyncActivity = cloudSyncHandler == nil
         snips = initialSnapshot.snips
@@ -77,20 +75,13 @@ final class IOSAppModel {
     }
 
     var visibleSnips: [Snip] {
-        let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let matches = snips.filter { snip in
-            guard snip.listID == selectedListID else { return false }
-            switch completionFilter {
-            case .all: break
-            case .done: guard snip.isDone else { return false }
-            case .notDone: guard !snip.isDone else { return false }
-            }
-            guard !needle.isEmpty else { return true }
-            return snip.content.localizedCaseInsensitiveContains(needle)
-                || snip.attachments.contains { $0.fileName.localizedCaseInsensitiveContains(needle) }
-                || snip.displaySourceLabel.localizedCaseInsensitiveContains(needle)
-                || snip.source?.url?.localizedCaseInsensitiveContains(needle) == true
-        }
+        let selected = snips.filter { $0.listID == selectedListID }
+        let matches = SnipFilter.apply(
+            snips: selected,
+            query: searchText,
+            completionFilter: completionFilter,
+            sourceLabel: { $0.displaySourceLabel }
+        )
         return Snip.sorted(matches, by: sortMode)
     }
 
@@ -98,10 +89,6 @@ final class IOSAppModel {
         sortMode == .manual && completionFilter == .all
             && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
-
-    var needsAttentionCount: Int { recoverySnapshot.needsAttentionCount }
-    var pendingRecoveredSnips: [RecoveredSnip] { recoverySnapshot.pendingSnips }
-    var pendingRecoveredLists: [RecoveredListEdit] { recoverySnapshot.pendingLists }
 
     func currentSnip(for recovery: RecoveredSnip) -> Snip? {
         snips.first { $0.id == recovery.currentSnipID }
@@ -125,12 +112,14 @@ final class IOSAppModel {
         recoveryScope: SnipRecoveryScope?
     ) async {
         await withSerializedMutation {
-            await commitPendingDeletion()
-            self.library = library
-            self.recoveryScope = recoveryScope
-            self.userActions = userActionsRebinder.actions(for: library)
+            clearPendingDeletionToast()
             selectedSnipID = nil
-            await loadUnlocked()
+            apply(await session.replaceLibrary(
+                library,
+                recoveryScope: recoveryScope,
+                sortedBy: sortMode
+            ))
+            await refreshAttachmentTransferStates()
         }
     }
 
@@ -247,17 +236,15 @@ final class IOSAppModel {
     func dismissToast(_ presentedToast: AppToast) {
         guard presentedToast.action == .undoDelete else { return }
         Task {
-            await userActions.discardDeletion(
-                token: presentedToast.id,
-                sortedBy: sortMode
-            )
+            await session.withExclusiveAccess { session in
+                await session.discardDeletion(token: presentedToast.id, sortedBy: sortMode)
+            }
             if toast?.id == presentedToast.id { toast = nil }
         }
     }
 
     private func loadUnlocked() async {
-        apply(await library.snapshot(sortedBy: sortMode))
-        await loadRecoveries()
+        apply(await session.state(sortedBy: sortMode))
         await refreshAttachmentTransferStates()
     }
 
@@ -265,10 +252,13 @@ final class IOSAppModel {
         _ id: UUID,
         choice: SnipRecoveryChoice
     ) async -> Bool {
-        guard let recoveryScope else { return false }
         do {
-            apply(try await library.resolveRecovery(id, in: recoveryScope, choice: choice))
-            await loadRecoveries()
+            guard let state = try await session.resolveRecovery(
+                id,
+                choice: choice,
+                sortedBy: sortMode
+            ) else { return false }
+            apply(state)
             return true
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -312,8 +302,6 @@ final class IOSAppModel {
         }
         return attachmentURLs[attachmentID]
     }
-
-    var hasCloudSync: Bool { isCloudSyncActive }
 
     func attachmentTransferState(for attachmentID: UUID) -> SyncedAttachmentTransferState {
         if let state = attachmentTransferStates[attachmentID] { return state }
@@ -372,7 +360,7 @@ final class IOSAppModel {
         guard let cloudSyncHandler else { return }
         do {
             try await cloudSyncHandler.clearDownloadedFiles()
-            apply(await library.snapshot(sortedBy: .chronological))
+            apply(await session.state(sortedBy: .chronological))
             await refreshAttachmentTransferStates()
         } catch {
             errorMessage = String(localized: "Snip Snap could not clear the downloaded files.")
@@ -515,13 +503,13 @@ final class IOSAppModel {
 
     private func restoreDeletion(token: UUID) async {
         do {
-            guard let update = try await userActions.restoreDeletion(
+            guard let update = try await session.restoreDeletion(
                 token: token,
                 sortedBy: sortMode
             ) else { return }
             apply(update.snapshot)
             if toast?.id == token { toast = nil }
-            await loadRecoveries()
+            recoverySnapshot = await session.refreshRecovery()
             await refreshAttachmentTransferStates()
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -533,7 +521,7 @@ final class IOSAppModel {
         let count = snips.lazy.filter { ids.contains($0.id) }.count
         let token = UUID()
         do {
-            let update = try await userActions.delete(
+            let update = try await session.delete(
                 ids: ids,
                 token: token,
                 sortedBy: sortMode
@@ -542,7 +530,7 @@ final class IOSAppModel {
             if let selectedSnipID, ids.contains(selectedSnipID) { self.selectedSnipID = nil }
             selectedSnipIDs.subtract(ids)
             toast = .deleted(count: count, id: token)
-            await loadRecoveries()
+            recoverySnapshot = await session.refreshRecovery()
             await refreshAttachmentTransferStates()
             return true
         } catch {
@@ -556,13 +544,13 @@ final class IOSAppModel {
         afterSuccess: (SnipLibraryOutcome) -> Void = { _ in }
     ) async -> Bool {
         do {
-            let update = try await userActions.perform(
-                command: command,
+            let update = try await session.performUserCommand(
+                command,
                 sortedBy: sortMode
             )
-            await commitPendingDeletion()
+            clearPendingDeletionToast()
             apply(update.snapshot)
-            await loadRecoveries()
+            recoverySnapshot = await session.refreshRecovery()
             await refreshAttachmentTransferStates()
             afterSuccess(update.outcome)
             return true
@@ -572,78 +560,61 @@ final class IOSAppModel {
         }
     }
 
-    private func commitPendingDeletion() async {
+    private func clearPendingDeletionToast() {
         guard let toast, toast.action == .undoDelete else { return }
         self.toast = nil
-        await userActions.discardDeletion(token: toast.id, sortedBy: sortMode)
-    }
-
-    var importPreviewSummary: String {
-        guard let preview = pendingImportPreview else { return "" }
-        var parts = [preview.totalSnipCount == 1
-            ? String(localized: "1 snip")
-            : String(localized: "\(preview.totalSnipCount) snips")]
-        if preview.addedSnipCount > 0 {
-            parts.append(String(localized: "\(preview.addedSnipCount) new"))
-        }
-        if preview.recoveredSnipCount > 0 {
-            parts.append(preview.recoveredSnipCount == 1
-                ? String(localized: "1 recovered edit")
-                : String(localized: "\(preview.recoveredSnipCount) recovered edits"))
-        }
-        if preview.addedListCount > 0 {
-            parts.append(preview.addedListCount == 1
-                ? String(localized: "1 new list")
-                : String(localized: "\(preview.addedListCount) new lists"))
-        }
-        if preview.addedAttachmentCount > 0 {
-            parts.append(preview.addedAttachmentCount == 1
-                ? String(localized: "1 attachment")
-                : String(localized: "\(preview.addedAttachmentCount) attachments"))
-        }
-        return parts.joined(separator: ", ")
     }
 
     func previewBackupImport(from url: URL) async {
-        let didAccess = url.startAccessingSecurityScopedResource()
-        defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
         do {
-            pendingImportPreview = try await userActions.previewImport(backupURL: url)
+            let preview = try await session.withExclusiveAccess { session in
+                let didAccess = url.startAccessingSecurityScopedResource()
+                defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+                return try await session.previewImport(from: url)
+            }
+            pendingImportPreviewID = preview.id
+            pendingImportPreview = preview.value
         } catch {
+            pendingImportPreviewID = nil
             pendingImportPreview = nil
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
     func cancelBackupImport() {
+        let id = pendingImportPreviewID
+        pendingImportPreviewID = nil
         pendingImportPreview = nil
+        guard let id else { return }
+        Task {
+            await session.withExclusiveAccess { session in
+                await session.cancelImport(id: id)
+            }
+        }
     }
 
     func confirmBackupImport() async {
-        guard let preview = pendingImportPreview else { return }
+        guard pendingImportPreview != nil, let id = pendingImportPreviewID else { return }
         do {
-            let result = try await userActions.applyImport(preview, sortedBy: .chronological)
-            await commitPendingDeletion()
+            guard let (result, recovery) = try await session.withExclusiveAccess({ session in
+                try await session.applyPendingImport(id: id, sortedBy: .chronological)
+            }) else { return }
+            clearPendingDeletionToast()
+            pendingImportPreviewID = nil
             pendingImportPreview = nil
             apply(result.snapshot)
-            await loadRecoveries()
+            recoverySnapshot = recovery
         } catch {
+            pendingImportPreviewID = nil
             pendingImportPreview = nil
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             await load()
         }
     }
 
-    private func loadRecoveries() async {
-        guard let recoveryScope else {
-            recoverySnapshot = .empty
-            return
-        }
-        do {
-            recoverySnapshot = try await library.recoverySnapshot(in: recoveryScope)
-        } catch {
-            recoverySnapshot = .empty
-        }
+    private func apply(_ state: SavedSnipsSessionState) {
+        apply(state.library)
+        recoverySnapshot = state.recovery
     }
 
     private func apply(_ snapshot: SnipLibrarySnapshot) {
@@ -691,31 +662,10 @@ final class IOSAppModel {
         }
     }
 
-    private func withSerializedMutation<Result>(
-        _ operation: () async -> Result
+    private func withSerializedMutation<Result: Sendable>(
+        _ operation: @MainActor @Sendable () async -> Result
     ) async -> Result {
-        await acquireMutationTurn()
-        let result = await operation()
-        releaseMutationTurn()
-        return result
-    }
-
-    private func acquireMutationTurn() async {
-        guard mutationInProgress else {
-            mutationInProgress = true
-            return
-        }
-        await withCheckedContinuation { continuation in
-            mutationWaiters.append(continuation)
-        }
-    }
-
-    private func releaseMutationTurn() {
-        guard !mutationWaiters.isEmpty else {
-            mutationInProgress = false
-            return
-        }
-        mutationWaiters.removeFirst().resume()
+        await session.withExclusiveAccess { _ in await operation() }
     }
 
 }

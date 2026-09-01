@@ -2,25 +2,7 @@ import Foundation
 import SnipSnapCore
 import SnipSnapPersistence
 
-private protocol ICloudModeTextPersistence: CloudTextSyncPersistence {
-    func approveModeMerge(snipIDs: Set<UUID>) async throws
-    func enrollmentEvidence() async throws -> CloudTextEnrollmentEvidence
-    func statusEvidence() async throws -> CloudTextEnrollmentEvidence
-    func clearRetryableEvents(_ keys: Set<String>) async throws
-    func currentModeSeedSettlement(
-        candidates: [SyncModeSeedSettlementCandidate],
-        namespace: ICloudSyncNamespaceBinding
-    ) async throws -> SyncModeSeedSettlementProof
-    func modeSendAttempt(
-        for outbound: CloudOutboundBatch,
-        namespace: ICloudSyncNamespaceBinding
-    ) async throws -> SyncModeSendAttempt
-    func prepareModeRetry(snipIDs: Set<UUID>) async throws
-}
-
-extension SwiftDataCloudTextPersistence: ICloudModeTextPersistence {}
-
-private protocol ICloudModeSyncAdapter: Sendable {
+private protocol ICloudSyncAdapter: Sendable {
     func sync() async throws
     func fetchRemote(
         beforeApply: @escaping @Sendable () async throws -> Void
@@ -55,7 +37,7 @@ private enum ICloudAccountGateError: Error {
     case stateChanged
 }
 
-private actor LegacyTextModeSyncAdapter: ICloudModeSyncAdapter {
+private actor LegacyTextSyncAdapter: ICloudSyncAdapter {
     private let raw: SwiftDataCloudTextPersistence
     private let syncDriver: CloudTextSyncCoordinator
 
@@ -129,7 +111,7 @@ private actor LegacyTextModeSyncAdapter: ICloudModeSyncAdapter {
     }
 }
 
-private actor FullRecordModeSyncAdapter: ICloudModeSyncAdapter {
+private actor FullRecordSyncAdapter: ICloudSyncAdapter {
     private let raw: CloudFullSyncPersistence
     private let syncDriver: CloudFullSyncCoordinator
 
@@ -619,7 +601,7 @@ package actor ICloudSyncModeCoordinator {
         return try await statusUnchecked()
     }
 
-    private func adapter(storeID: UUID) async throws -> any ICloudModeSyncAdapter {
+    private func adapter(storeID: UUID) async throws -> any ICloudSyncAdapter {
         let storage = try await persistence.snapshot()
         let isActive = storage.activeStore.id == storeID
         let isCandidate = storage.transition?.candidateStoreID == storeID
@@ -631,10 +613,10 @@ package actor ICloudSyncModeCoordinator {
         switch syncProtocol {
         case .legacyTextV1:
             let raw = try await rawBridge(storeID: storeID)
-            return LegacyTextModeSyncAdapter(raw: raw, transport: makeTransport())
+            return LegacyTextSyncAdapter(raw: raw, transport: makeTransport())
         case .fullRecordV1:
             let raw = try await fullBridge(storeID: storeID)
-            return FullRecordModeSyncAdapter(raw: raw, transport: makeTransport())
+            return FullRecordSyncAdapter(raw: raw, transport: makeTransport())
         }
     }
 
@@ -668,7 +650,7 @@ package actor ICloudSyncModeCoordinator {
     }
 
     private func sendUntilSettled(
-        adapter: any ICloudModeSyncAdapter
+        adapter: any ICloudSyncAdapter
     ) async throws {
         for _ in 0..<8 {
             try await adapter.sendPending { [persistence, namespace] outbound in
@@ -693,6 +675,7 @@ package actor ICloudSyncModeCoordinator {
     }
 
     private func isRetryableConnectivity(_ error: Error) -> Bool {
+        if CloudKitRetryPolicy.isTransient(error) { return true }
         if let error = error as? CloudTransportError {
             return error == .fetchFailed || error == .sendFailed
         }

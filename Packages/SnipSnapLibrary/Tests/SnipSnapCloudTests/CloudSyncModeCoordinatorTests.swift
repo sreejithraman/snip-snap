@@ -19,7 +19,7 @@ final class ICloudSyncModeCoordinatorTests: XCTestCase {
         let candidate = try await persistence.libraryForTransition(
             storeID: transition.candidateStoreID
         )
-        let cloud = try await candidate.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        let cloud = try await candidate.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         let failed = try XCTUnwrap(cloud.records.first(where: { $0.snipID == failedSnipID }))
         await transport.failNextSentItem(
             CloudRecordID(
@@ -108,7 +108,7 @@ final class ICloudSyncModeCoordinatorTests: XCTestCase {
         let candidate = try await persistence.libraryForTransition(
             storeID: transition.candidateStoreID
         )
-        let cloud = try await candidate.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+        let cloud = try await candidate.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         let record = try XCTUnwrap(cloud.records.first(where: { $0.snipID == snipID }))
         return CloudRecordID(
             zone: CloudZoneID(name: record.identity.zoneName, ownerName: record.identity.ownerName),

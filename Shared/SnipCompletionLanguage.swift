@@ -54,3 +54,30 @@ extension Snip {
         }
     }
 }
+
+extension SnipImportPreview {
+    var localizedSummary: String {
+        var parts = [totalSnipCount == 1
+            ? String(localized: "1 snip")
+            : String(localized: "\(totalSnipCount) snips")]
+        if addedSnipCount > 0 {
+            parts.append(String(localized: "\(addedSnipCount) new"))
+        }
+        if recoveredSnipCount > 0 {
+            parts.append(recoveredSnipCount == 1
+                ? String(localized: "1 recovered edit")
+                : String(localized: "\(recoveredSnipCount) recovered edits"))
+        }
+        if addedListCount > 0 {
+            parts.append(addedListCount == 1
+                ? String(localized: "1 new list")
+                : String(localized: "\(addedListCount) new lists"))
+        }
+        if addedAttachmentCount > 0 {
+            parts.append(addedAttachmentCount == 1
+                ? String(localized: "1 attachment")
+                : String(localized: "\(addedAttachmentCount) attachments"))
+        }
+        return parts.joined(separator: ", ")
+    }
+}

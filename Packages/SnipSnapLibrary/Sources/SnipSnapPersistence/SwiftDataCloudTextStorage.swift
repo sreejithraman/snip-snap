@@ -33,8 +33,9 @@ extension SwiftDataSnipLibrary {
   }
 
   package func cloudTextSyncSnapshot(
-    namespaceKey: String
+    namespaceKey: CloudSyncNamespaceKey
   ) throws -> CloudTextStorageSnapshot {
+    let namespaceKey = namespaceKey.rawValue
     guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
@@ -73,10 +74,11 @@ extension SwiftDataSnipLibrary {
   }
 
   package func stageCloudTextBatch(
-    namespaceKey: String,
+    namespaceKey: CloudSyncNamespaceKey,
     batchID: UUID,
     payload: Data
   ) throws {
+    let namespaceKey = namespaceKey.rawValue
     guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
@@ -93,9 +95,10 @@ extension SwiftDataSnipLibrary {
   }
 
   package func reserveCloudTextRecords(
-    namespaceKey: String,
+    namespaceKey: CloudSyncNamespaceKey,
     reservations: [CloudTextRecordReservation]
   ) throws {
+    let namespaceKey = namespaceKey.rawValue
     guard !reservations.isEmpty else { return }
     guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
@@ -127,10 +130,11 @@ extension SwiftDataSnipLibrary {
   }
 
   package func transitionCloudTextNamespace(
-    namespaceKey: String,
+    namespaceKey: CloudSyncNamespaceKey,
     expectedPhase: CloudNamespaceBootstrapPhase,
     value: CloudNamespaceStateStorage
   ) throws {
+    let namespaceKey = namespaceKey.rawValue
     guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
@@ -149,9 +153,10 @@ extension SwiftDataSnipLibrary {
   }
 
   package func discardUnacceptedCloudTextRecords(
-    namespaceKey: String,
+    namespaceKey: CloudSyncNamespaceKey,
     liveSnipIDs: Set<UUID>
   ) throws -> Bool {
+    let namespaceKey = namespaceKey.rawValue
     guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
@@ -172,13 +177,14 @@ extension SwiftDataSnipLibrary {
   }
 
   package func applyCloudTextFetched(
-    namespaceKey: String,
+    namespaceKey: CloudSyncNamespaceKey,
     mutations: [CloudTextFetchedMutation],
     recoveryEvents: [CloudRecoveryEventStorage],
     engineState: Data?,
     namespaceState: CloudNamespaceStateStorage?,
     stagedBatchID: UUID
   ) throws {
+    let namespaceKey = namespaceKey.rawValue
     guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
@@ -288,13 +294,14 @@ extension SwiftDataSnipLibrary {
   }
 
   package func applyCloudTextSent(
-    namespaceKey: String,
+    namespaceKey: CloudSyncNamespaceKey,
     mutations: [CloudTextRecordMutation],
     recoveryEvents: [CloudRecoveryEventStorage],
     engineState: Data?,
     namespaceState: CloudNamespaceStateStorage?,
     stagedBatchID: UUID
   ) throws {
+    let namespaceKey = namespaceKey.rawValue
     guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
@@ -340,7 +347,8 @@ extension SwiftDataSnipLibrary {
     }
   }
 
-  package func clearCloudTextSyncState(namespaceKey: String) throws {
+  package func clearCloudTextSyncState(namespaceKey: CloudSyncNamespaceKey) throws {
+    let namespaceKey = namespaceKey.rawValue
     guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
@@ -398,9 +406,10 @@ extension SwiftDataSnipLibrary {
   }
 
   package func removeCloudTextRecoveryEvents(
-    namespaceKey: String,
+    namespaceKey: CloudSyncNamespaceKey,
     keys: Set<String>
   ) throws {
+    let namespaceKey = namespaceKey.rawValue
     guard !keys.isEmpty else { return }
     guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
@@ -416,11 +425,12 @@ extension SwiftDataSnipLibrary {
   }
 
   package func prepareCloudTextModeRetry(
-    namespaceKey: String,
+    namespaceKey: CloudSyncNamespaceKey,
     supersededSnipIDs: Set<UUID>,
     liveSnipIDs: Set<UUID>,
     deletionRecoveryData: Data
   ) throws {
+    let namespaceKey = namespaceKey.rawValue
     guard !supersededSnipIDs.isEmpty else { return }
     guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)

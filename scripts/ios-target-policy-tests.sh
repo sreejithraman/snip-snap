@@ -28,9 +28,14 @@ fi
 
 for required_file in \
     SnipSnapiOSApp.swift \
+    IOSAppSession.swift \
+    IOSUITestSupport.swift \
     IOSAppModel.swift \
     IOSAppRootView.swift \
-    LibraryViews.swift \
+    LibrarySidebarViews.swift \
+    SnipCollectionViews.swift \
+    RecoveryViews.swift \
+    MoveSnipMenu.swift \
     WorkflowControls.swift \
     EditorViews.swift \
     AttachmentViews.swift \
@@ -110,6 +115,9 @@ ios_sources="$({
         capture && /runOnlyForDeploymentPostprocessing = 0/ { exit }
     ' "$project_file"
 })"
+for source_file in "$ios_source_dir"/*.swift; do
+    [[ "$ios_sources" == *"${source_file:t}"* ]]
+done
 for forbidden_file in \
     SelectionCapture.swift \
     GlobalHotKeyManager.swift \

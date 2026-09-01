@@ -1,3 +1,4 @@
+#if DEBUG
 import Foundation
 
 package enum FakeCloudError: Error, Equatable, Sendable {
@@ -363,8 +364,6 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
     private var fetchItemFailures: [CloudRecordID: CloudOperationFailure] = [:]
     private var sendItemFailures: [CloudRecordID: CloudOperationFailure] = [:]
     private var nextOmittedSentResult: CloudRecordID?
-    private var nextDuplicatedSentResult: CloudRecordID?
-    private var shouldReverseNextSentResults = false
     private var eventLog: [FakeCloudTransportEvent] = []
     private var fetchScopeLog: [CloudFetchScope] = []
     private var shouldPauseNextFetch = false
@@ -447,14 +446,6 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
         nextOmittedSentResult = id
     }
 
-    package func duplicateNextSentResult(_ id: CloudRecordID) {
-        nextDuplicatedSentResult = id
-    }
-
-    package func reverseNextSentResults() {
-        shouldReverseNextSentResults = true
-    }
-
     package func fetch(scope: CloudFetchScope) async throws -> CloudFetchedBatch {
         eventLog.append(.fetched)
         fetchScopeLog.append(scope)
@@ -522,15 +513,6 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
             items.removeAll { $0.id == id }
             nextOmittedSentResult = nil
         }
-        if let id = nextDuplicatedSentResult,
-           let item = items.first(where: { $0.id == id }) {
-            items.append(item)
-            nextDuplicatedSentResult = nil
-        }
-        if shouldReverseNextSentResults {
-            items.reverse()
-            shouldReverseNextSentResults = false
-        }
         let result = CloudSentBatch(
             id: serverResult.id,
             items: items,
@@ -590,3 +572,4 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
     package func events() -> [FakeCloudTransportEvent] { eventLog }
     package func fetchScopes() -> [CloudFetchScope] { fetchScopeLog }
 }
+#endif

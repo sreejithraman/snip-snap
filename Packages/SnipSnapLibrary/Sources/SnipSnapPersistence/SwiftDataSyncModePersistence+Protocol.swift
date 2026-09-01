@@ -125,7 +125,7 @@ extension SwiftDataSyncModePersistence {
       let namespace = transition.namespace,
       attempt.namespace == namespace
     else { return }
-    let namespaceKey = Self.namespaceKey(namespace)
+    let namespaceKey = namespace.namespaceKey
     let stored = try await candidate.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     let accepted = Dictionary(uniqueKeysWithValues:
       (stored.readyEntities + stored.deferredEntities).map { ($0.reference, $0) }
@@ -150,7 +150,7 @@ extension SwiftDataSyncModePersistence {
         dependencyListID: entity.dependencyListID
       ))
       bases.append(CloudDormantBase(
-        namespaceKey: namespaceKey,
+        namespaceKey: namespaceKey.rawValue,
         reference: entity.reference,
         identity: entity.identity,
         payload: payload

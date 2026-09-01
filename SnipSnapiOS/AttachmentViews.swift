@@ -198,14 +198,6 @@ enum AttachmentDraftLifecycle {
         !isSaving && !isStaging && !isImporting && !isPreviewing
     }
 
-    static func shouldClean(
-        isSaving: Bool,
-        isStaging: Bool,
-        isImporting: Bool,
-        isPreviewing: Bool
-    ) -> Bool {
-        !isSaving && !isStaging && !isImporting && !isPreviewing
-    }
 }
 
 enum AttachmentDraftStager {

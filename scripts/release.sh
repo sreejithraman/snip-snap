@@ -10,6 +10,8 @@ development_team=""
 signing_temp_root=""
 resolved_settings=""
 export_options=""
+mac_release_entitlements="${SNIP_SNAP_MAC_RELEASE_ENTITLEMENTS:-$repo_dir/Config/MacRelease.entitlements}"
+cloudkit_container_identifier=""
 
 source "$script_dir/release-policy.sh"
 source "$script_dir/signing-policy.sh"
@@ -17,6 +19,14 @@ source "$script_dir/signing-policy.sh"
 fail() {
     print -u2 "release: $1"
     exit 1
+}
+
+verify_release_cloudkit() {
+    local archive_app_path="$archive_path/Products/Applications/Snip Snap.app"
+    signing_policy_verify_production_cloudkit_app \
+        "$archive_app_path" "$cloudkit_container_identifier"
+    signing_policy_verify_production_cloudkit_app \
+        "$app_path" "$cloudkit_container_identifier"
 }
 
 cleanup() {
@@ -29,11 +39,18 @@ trap cleanup EXIT
 signing_temp_root="$(/usr/bin/mktemp -d /private/tmp/snip-snap-release-signing.XXXXXX)"
 resolved_settings="$signing_temp_root/build-settings.txt"
 export_options="$signing_temp_root/export-options.plist"
+mac_release_entitlements="$(signing_policy_entitlement_path \
+    "$repo_dir" "$mac_release_entitlements")"
+[[ -f "$mac_release_entitlements" ]] || \
+    fail "copy Config/MacRelease.example.entitlements to the ignored Config/MacRelease.entitlements"
+typeset -gx SNIP_SNAP_CODE_SIGN_ENTITLEMENTS="$mac_release_entitlements"
 signing_policy_capture_build_settings \
     "$repo_dir" Release 'generic/platform=macOS' "$resolved_settings" \
     "$signing_temp_root/DerivedData"
 development_team="$(signing_policy_resolve_setting \
     "$resolved_settings" DEVELOPMENT_TEAM)"
+cloudkit_container_identifier="$(signing_policy_resolve_setting \
+    "$resolved_settings" SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER)"
 
 if [[ -z "$signing_identity" && -n "$development_team" ]]; then
     signing_identity="$(/usr/bin/security find-identity -v -p codesigning | \
@@ -70,6 +87,7 @@ fi
 
 if [[ -e "$release_root" ]]; then
     [[ -d "$release_root" ]] || fail "$release_root is not a directory"
+    verify_release_cloudkit
 
     history_json="$(/usr/bin/xcrun notarytool history \
         --keychain-profile "$notary_profile" \
@@ -123,6 +141,8 @@ else
         CURRENT_PROJECT_VERSION="$build_number" \
         DEVELOPMENT_TEAM="$development_team" \
         MARKETING_VERSION="$version" \
+        CODE_SIGN_ENTITLEMENTS="$mac_release_entitlements" \
+        SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER="$cloudkit_container_identifier" \
         archive
 
     signing_policy_write_export_options "$export_options" "$development_team"
@@ -135,6 +155,7 @@ else
 
     [[ -d "$app_path" ]] || fail "Xcode did not export Snip Snap.app"
     release_policy_verify_app "$app_path"
+    verify_release_cloudkit
 
     /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_path"
     /bin/mkdir -p "$dmg_source"

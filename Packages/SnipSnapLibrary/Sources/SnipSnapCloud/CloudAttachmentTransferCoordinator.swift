@@ -103,7 +103,7 @@ package protocol CloudAttachmentTransferring: Sendable {
 
 package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
   private let library: SwiftDataSnipLibrary
-  private let namespaceKey: String
+  private let namespaceKey: CloudSyncNamespaceKey
   private let payloadZone: CloudZoneID
   private let transport: any CloudRecordTransport
   private let maximumCacheBytes: Int64
@@ -121,7 +121,7 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
     precondition(maximumCacheBytes >= 0)
     precondition(namespace.zones.contains(payloadZone))
     self.library = library
-    namespaceKey = namespace.canonicalKey
+    namespaceKey = namespace.namespaceKey
     self.payloadZone = payloadZone
     self.transport = transport
     self.maximumCacheBytes = maximumCacheBytes

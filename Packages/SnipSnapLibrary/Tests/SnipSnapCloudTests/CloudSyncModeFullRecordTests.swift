@@ -1,5 +1,5 @@
 import SnipSnapCore
-import SnipSnapPersistence
+@testable import SnipSnapPersistence
 @testable import SnipSnapCloud
 import XCTest
 
@@ -69,7 +69,7 @@ extension ICloudSyncModeCoordinatorTests {
         let activeStore = try await persistence.snapshot().activeStore
         let activeLibrary = try await persistence.libraryForTransition(storeID: activeStore.id)
         let attachmentStorage = try await activeLibrary.cloudAttachmentStorageSnapshot(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         let replacement = try XCTUnwrap(attachmentStorage.publications.first(where: {
             !$0.payloadAccepted
@@ -87,7 +87,7 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(laterResult.state, .on)
 
         let after = try await activeLibrary.cloudAttachmentStorageSnapshot(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         XCTAssertEqual(
             after.publications.first(where: {
@@ -110,7 +110,7 @@ extension ICloudSyncModeCoordinatorTests {
         let remoteUnrelated = await server.fullSnapshot(for: .snip(unrelated.id, in: dataZone))
         XCTAssertNotNil(remoteUnrelated)
         let recovery = try await activeLibrary.cloudFullRecoveryEvents(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         XCTAssertFalse(recovery.contains(where: { $0.kind == .terminalSend }))
       }
@@ -160,7 +160,7 @@ extension ICloudSyncModeCoordinatorTests {
         let storage = try await persistence.snapshot()
         let active = try await persistence.libraryForTransition(storeID: storage.activeStore.id)
         let attachments = try await active.cloudAttachmentStorageSnapshot(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         let publication = try XCTUnwrap(attachments.publications.first)
         XCTAssertTrue(publication.payloadAccepted)
@@ -231,7 +231,7 @@ extension ICloudSyncModeCoordinatorTests {
             storeID: transition.candidateStoreID
         )
         let partialAttachments = try await candidate.cloudAttachmentStorageSnapshot(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         let partialPublication = try XCTUnwrap(
             partialAttachments.publications.first(where: {
@@ -263,7 +263,7 @@ extension ICloudSyncModeCoordinatorTests {
             storeID: completedStorage.activeStore.id
         )
         let settled = try await active.cloudAttachmentStorageSnapshot(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         let publication = try XCTUnwrap(settled.publications.first)
         XCTAssertTrue(publication.payloadAccepted)
@@ -393,10 +393,10 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(modeBefore.activeStore.syncProtocol, .fullRecordV1)
         let active = try await persistence.libraryForTransition(storeID: modeBefore.activeStore.id)
         let fullBefore = try await active.cloudFullStorageSnapshot(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         let legacyBefore = try await active.cloudTextSyncSnapshot(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         XCTAssertEqual(fullBefore.namespaceState.phase, .active)
         XCTAssertTrue(legacyBefore.records.isEmpty)
@@ -405,7 +405,7 @@ extension ICloudSyncModeCoordinatorTests {
         let secondStatus = try await coordinator.status()
         let modeAfter = try await persistence.snapshot()
         let fullAfter = try await active.cloudFullStorageSnapshot(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         XCTAssertEqual(firstStatus.state, .on)
         XCTAssertEqual(secondStatus, firstStatus)
@@ -514,7 +514,7 @@ extension ICloudSyncModeCoordinatorTests {
             storeID: activeStorage.activeStore.id
         )
         let full = try await active.cloudFullStorageSnapshot(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         XCTAssertTrue(full.enrolledEntities.contains(
             CloudEntityReference(kind: .list, domainID: list.id)
@@ -574,7 +574,7 @@ extension ICloudSyncModeCoordinatorTests {
 
         XCTAssertEqual(result.state, .on)
         let stored = try await library.cloudAttachmentStorageSnapshot(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         let publication = try XCTUnwrap(stored.publications.first)
         XCTAssertTrue(publication.payloadAccepted)
@@ -666,7 +666,7 @@ extension ICloudSyncModeCoordinatorTests {
                 storeID: cloudStorage.activeStore.id
             )
             let acceptedBefore = try await cloudLibrary.cloudFullStorageSnapshot(
-                namespaceKey: namespace.canonicalKey
+                namespaceKey: namespace.namespaceKey
             )
             XCTAssertFalse(acceptedBefore.readyEntities.isEmpty)
             XCTAssertEqual(acceptedBefore.deferredEntities.map(\.reference.domainID), [deferred.id])
@@ -679,17 +679,17 @@ extension ICloudSyncModeCoordinatorTests {
             )
             let dormant = try await local.dormantCloudBases()
             XCTAssertEqual(
-                Set(dormant.filter { $0.namespaceKey == namespace.canonicalKey }.map(\.reference)),
+                Set(dormant.filter { $0.namespaceKey == namespace.namespaceKey.rawValue }.map(\.reference)),
                 Set((acceptedBefore.readyEntities + acceptedBefore.deferredEntities).map(\.reference))
             )
             let localFull = try await local.cloudFullStorageSnapshot(
-                namespaceKey: namespace.canonicalKey
+                namespaceKey: namespace.namespaceKey
             )
             let localWire = try await local.cloudTextSyncSnapshot(
-                namespaceKey: namespace.canonicalKey
+                namespaceKey: namespace.namespaceKey
             )
             let localRecovery = try await local.cloudFullRecoveryEvents(
-                namespaceKey: namespace.canonicalKey
+                namespaceKey: namespace.namespaceKey
             )
             XCTAssertTrue(localFull.readyEntities.isEmpty)
             XCTAssertTrue(localFull.deferredEntities.isEmpty)
@@ -832,13 +832,13 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(final.snips.count, 2)
         let storage = try await persistence.snapshot()
         let raw = try await persistence.libraryForTransition(storeID: storage.activeStore.id)
-        let full = try await raw.cloudFullStorageSnapshot(namespaceKey: namespace.canonicalKey)
+        let full = try await raw.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(full.conflicts.filter { $0.reference.domainID == base.id }.count, 1)
-        let recovery = try await raw.cloudFullRecoveryEvents(namespaceKey: namespace.canonicalKey)
+        let recovery = try await raw.cloudFullRecoveryEvents(namespaceKey: namespace.namespaceKey)
         let link = try XCTUnwrap(recovery.first { $0.kind == .modeRecoveredSnip })
         XCTAssertTrue(String(decoding: link.resultData, as: UTF8.self).contains(base.id.uuidString))
         let pending = try await raw.recoverySnapshot(
-            in: SnipRecoveryScope(namespace.canonicalKey)
+            in: SnipRecoveryScope(namespace.namespaceKey.rawValue)
         )
         let review = try XCTUnwrap(pending.pendingSnips.first)
         XCTAssertEqual(review.currentSnipID, base.id)
@@ -847,19 +847,19 @@ extension ICloudSyncModeCoordinatorTests {
 
         _ = try await raw.resolveRecovery(
             review.id,
-            in: SnipRecoveryScope(namespace.canonicalKey),
+            in: SnipRecoveryScope(namespace.namespaceKey.rawValue),
             choice: .keepBoth
         )
         let resolved = await raw.snapshot(sortedBy: .manual)
         XCTAssertEqual(resolved.snips.count, 2)
         let resolvedReview = try await raw.recoverySnapshot(
-            in: SnipRecoveryScope(namespace.canonicalKey)
+            in: SnipRecoveryScope(namespace.namespaceKey.rawValue)
         )
         XCTAssertTrue(resolvedReview.pendingSnips.isEmpty)
         XCTAssertEqual(resolvedReview.promotedSnips.first?.currentSnipID, base.id)
         XCTAssertEqual(resolvedReview.promotedSnips.first?.conflictingFields, [.text])
         let resolvedStorage = try await raw.cloudFullStorageSnapshot(
-            namespaceKey: namespace.canonicalKey
+            namespaceKey: namespace.namespaceKey
         )
         XCTAssertTrue(resolvedStorage.conflicts.isEmpty)
     }
@@ -920,7 +920,7 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(try Data(contentsOf: copiedURL), bytes)
         let storage = try await persistence.snapshot()
         let raw = try await persistence.libraryForTransition(storeID: storage.activeStore.id)
-        let recovery = try await raw.cloudFullRecoveryEvents(namespaceKey: namespace.canonicalKey)
+        let recovery = try await raw.cloudFullRecoveryEvents(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(recovery.filter { $0.kind == .modeRecoveredSnip }.count, 1)
     }
 
@@ -1002,7 +1002,7 @@ extension ICloudSyncModeCoordinatorTests {
                 storeID: transition.candidateStoreID
             )
             let receipt = try await candidate.cloudFullReenableReceipt(
-                namespaceKey: namespace.canonicalKey,
+                namespaceKey: namespace.namespaceKey,
                 transitionID: transition.id
             )
             XCTAssertEqual(receipt == nil, point == .beforeCandidateMergeDurability)
@@ -1086,23 +1086,39 @@ extension ICloudSyncModeCoordinatorTests {
             )
             if failure == "stale-cas" {
                 let listID = UUID()
-                _ = try await candidate.acceptCloudEntity(
-                    namespaceKey: namespace.canonicalKey,
-                    value: CloudAcceptedEntityInput(
-                        reference: CloudEntityReference(kind: .list, domainID: listID),
-                        identity: CloudTextStorageIdentity(
-                            zoneName: zone.name,
-                            ownerName: zone.ownerName,
-                            recordName: "l-\(listID.uuidString.lowercased())"
-                        ),
-                        schemaVersion: 2,
-                        acceptedData: Data("added".utf8),
-                        presenceData: Data("presence".utf8),
-                        shadowData: Data("shadow".utf8),
-                        systemFields: Data("system".utf8),
-                        dependencyListID: nil
-                    )
+                let accepted = CloudAcceptedEntityInput(
+                    reference: CloudEntityReference(kind: .list, domainID: listID),
+                    identity: CloudTextStorageIdentity(
+                        zoneName: zone.name,
+                        ownerName: zone.ownerName,
+                        recordName: "l-\(listID.uuidString.lowercased())"
+                    ),
+                    schemaVersion: 2,
+                    acceptedData: Data("added".utf8),
+                    presenceData: Data("presence".utf8),
+                    shadowData: Data("shadow".utf8),
+                    systemFields: Data("system".utf8),
+                    dependencyListID: nil
                 )
+                let wire = try await candidate.cloudTextSyncSnapshot(
+                    namespaceKey: namespace.namespaceKey
+                )
+                let batch = CloudFullBatchCommit(
+                    namespaceKey: namespace.namespaceKey.rawValue,
+                    batchID: UUID(),
+                    expectedEngineState: wire.engineState,
+                    nextEngineState: wire.engineState,
+                    items: [CloudFullBatchItem(
+                        accepted: accepted,
+                        expectedLocalRevision: nil,
+                        expectedSystemFields: nil,
+                        localMutation: .none,
+                        conflict: nil,
+                        quarantine: nil
+                    )]
+                )
+                try await candidate.stageCloudFullBatch(batch)
+                _ = try await candidate.commitCloudFullBatch(batch)
             } else {
                 let planPath = try XCTUnwrap(
                     FileManager.default.subpathsOfDirectory(atPath: root.path)
@@ -1268,7 +1284,7 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertTrue(final.snips.isEmpty)
         let storage = try await persistence.snapshot()
         let raw = try await persistence.libraryForTransition(storeID: storage.activeStore.id)
-        let recovery = try await raw.cloudFullRecoveryEvents(namespaceKey: namespace.canonicalKey)
+        let recovery = try await raw.cloudFullRecoveryEvents(namespaceKey: namespace.namespaceKey)
         XCTAssertTrue(recovery.isEmpty)
     }
 
@@ -1317,7 +1333,7 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(final.snips.first(where: { $0.id == snip.id })?.listID, SnipList.inbox.id)
         let storage = try await persistence.snapshot()
         let raw = try await persistence.libraryForTransition(storeID: storage.activeStore.id)
-        let recovery = try await raw.cloudFullRecoveryEvents(namespaceKey: namespace.canonicalKey)
+        let recovery = try await raw.cloudFullRecoveryEvents(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(recovery.filter { $0.kind == .modeDeletedListPlacement }.count, 1)
         let recoveredList = try XCTUnwrap(recovery.first { $0.kind == .modeRecoveredList })
         let recoveredText = String(decoding: recoveredList.resultData, as: UTF8.self)
@@ -1568,7 +1584,7 @@ extension ICloudSyncModeCoordinatorTests {
             storeID: interrupted.activeStore.id
         )
         let promoted = try await rawSource.dormantCloudBases()
-            .filter { $0.namespaceKey == namespace.canonicalKey }
+            .filter { $0.namespaceKey == namespace.namespaceKey.rawValue }
         XCTAssertTrue(promoted.contains(where: {
             $0.reference == CloudEntityReference(kind: .snip, domainID: accepted.id)
         }))
@@ -1636,7 +1652,7 @@ extension ICloudSyncModeCoordinatorTests {
             storeID: interrupted.activeStore.id
         )
         let interruptedBases = try await interruptedSource.dormantCloudBases()
-            .filter { $0.namespaceKey == namespace.canonicalKey }
+            .filter { $0.namespaceKey == namespace.namespaceKey.rawValue }
         XCTAssertTrue(interruptedBases.isEmpty)
 
         let reopened = try SwiftDataSyncModePersistence(rootURL: root)
@@ -1659,7 +1675,7 @@ extension ICloudSyncModeCoordinatorTests {
             )
         )
         let promoted = try await recoveredSource.dormantCloudBases()
-            .filter { $0.namespaceKey == namespace.canonicalKey }
+            .filter { $0.namespaceKey == namespace.namespaceKey.rawValue }
         let promotedReferences = Set(promoted.map(\.reference))
         XCTAssertEqual(
             promotedReferences,

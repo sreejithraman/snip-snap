@@ -69,6 +69,10 @@ signing_policy_capture_build_settings() {
         shared_arguments+=("DEVELOPMENT_TEAM=$SNIP_SNAP_DEVELOPMENT_TEAM")
     [[ -z "${SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER:-}" ]] || \
         shared_arguments+=("SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER=$SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER")
+    [[ -z "${SNIP_SNAP_IOS_PRODUCT_BUNDLE_IDENTIFIER:-}" ]] || \
+        shared_arguments+=("SNIP_SNAP_IOS_PRODUCT_BUNDLE_IDENTIFIER=$SNIP_SNAP_IOS_PRODUCT_BUNDLE_IDENTIFIER")
+    [[ -z "${SNIP_SNAP_IOS_SHARE_PRODUCT_BUNDLE_IDENTIFIER:-}" ]] || \
+        shared_arguments+=("SNIP_SNAP_IOS_SHARE_PRODUCT_BUNDLE_IDENTIFIER=$SNIP_SNAP_IOS_SHARE_PRODUCT_BUNDLE_IDENTIFIER")
     [[ -z "${SNIP_SNAP_APP_GROUP_IDENTIFIER:-}" ]] || \
         shared_arguments+=("SNIP_SNAP_APP_GROUP_IDENTIFIER=$SNIP_SNAP_APP_GROUP_IDENTIFIER")
     [[ -z "${SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER:-}" ]] || \
@@ -192,6 +196,8 @@ signing_policy_preflight() {
             required_settings=(
                 DEVELOPMENT_TEAM
                 PRODUCT_BUNDLE_IDENTIFIER
+                SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER
+                CODE_SIGN_ENTITLEMENTS
             )
             required_environment=(
                 SNIP_SNAP_SIGNING_IDENTITY
@@ -232,11 +238,14 @@ signing_policy_preflight() {
             missing+=("CODE_SIGN_ENTITLEMENTS file")
         elif ! /usr/bin/plutil -lint "$entitlement_path" >/dev/null 2>&1; then
             missing+=("valid entitlement plist")
-        elif [[ "$lane" == cloud || "$lane" == device || "$lane" == testflight ]]; then
-            signing_policy_plist_array_contains \
-                "$entitlement_path" com.apple.security.application-groups \
-                "$app_group_identifier" '$(SNIP_SNAP_APP_GROUP_IDENTIFIER)' || \
-                missing+=("App Group entitlement")
+        elif [[ "$lane" == cloud || "$lane" == device || \
+                "$lane" == testflight || "$lane" == release ]]; then
+            if [[ "$lane" != release ]]; then
+                signing_policy_plist_array_contains \
+                    "$entitlement_path" com.apple.security.application-groups \
+                    "$app_group_identifier" '$(SNIP_SNAP_APP_GROUP_IDENTIFIER)' || \
+                    missing+=("App Group entitlement")
+            fi
             signing_policy_plist_array_contains \
                 "$entitlement_path" com.apple.developer.icloud-container-identifiers \
                 "$cloudkit_container_identifier" \
@@ -250,7 +259,7 @@ signing_policy_preflight() {
                     "$entitlement_path" \
                     com.apple.developer.icloud-container-environment \
                     Development || missing+=("CloudKit Development environment entitlement")
-            elif [[ "$lane" == testflight ]]; then
+            elif [[ "$lane" == testflight || "$lane" == release ]]; then
                 signing_policy_plist_value_equals \
                     "$entitlement_path" \
                     com.apple.developer.icloud-container-environment \
@@ -313,6 +322,59 @@ signing_policy_preflight() {
     fi
 
     print "Signed lane: $lane (ready)."
+}
+
+signing_policy_verify_production_cloudkit_app() {
+    local app_path="$1"
+    local cloudkit_container_identifier="$2"
+    local codesign_tool="${SNIP_SNAP_CODESIGN:-/usr/bin/codesign}"
+    local temp_root=""
+    local entitlements=""
+    local item
+    local -a missing
+
+    [[ -d "$app_path" ]] || {
+        signing_policy_fail "missing signed app at $app_path"
+        return 1
+    }
+    [[ -n "$cloudkit_container_identifier" ]] || {
+        signing_policy_fail "CloudKit container identifier is missing"
+        return 1
+    }
+    "$codesign_tool" --verify --deep --strict "$app_path" >/dev/null 2>&1 || {
+        signing_policy_fail "signed app verification failed"
+        return 1
+    }
+
+    temp_root="$(/usr/bin/mktemp -d /private/tmp/snip-snap-mac-cloudkit.XXXXXX)"
+    entitlements="$temp_root/entitlements.plist"
+    if ! "$codesign_tool" -d --entitlements :- "$app_path" \
+        > "$entitlements" 2>/dev/null; then
+        /bin/rm -rf "$temp_root"
+        signing_policy_fail "could not inspect signed app entitlements"
+        return 1
+    fi
+
+    /usr/bin/plutil -lint "$entitlements" >/dev/null 2>&1 || \
+        missing+=("valid signed app entitlements")
+    signing_policy_plist_array_contains \
+        "$entitlements" com.apple.developer.icloud-container-identifiers \
+        "$cloudkit_container_identifier" || missing+=("signed CloudKit container")
+    signing_policy_plist_array_contains \
+        "$entitlements" com.apple.developer.icloud-services CloudKit || \
+        missing+=("signed CloudKit service")
+    signing_policy_plist_value_equals \
+        "$entitlements" com.apple.developer.icloud-container-environment Production || \
+        missing+=("signed CloudKit Production environment")
+    /bin/rm -rf "$temp_root"
+
+    if (( ${#missing} )); then
+        for item in "${missing[@]}"; do
+            print -u2 -- "Signed Mac release: missing $item."
+        done
+        return 1
+    fi
+    print "Signed Mac release CloudKit checks passed."
 }
 
 signing_policy_write_export_options() {

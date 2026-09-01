@@ -367,9 +367,10 @@ extension SwiftDataSnipLibrary {
   }
 
   package func cloudFullReenableReceipt(
-    namespaceKey: String,
+    namespaceKey: CloudSyncNamespaceKey,
     transitionID: UUID
   ) throws -> Data? {
+    let namespaceKey = namespaceKey.rawValue
     guard let container else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }

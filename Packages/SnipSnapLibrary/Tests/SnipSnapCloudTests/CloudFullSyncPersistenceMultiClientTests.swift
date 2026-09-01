@@ -93,7 +93,7 @@ extension CloudFullSyncPersistenceTests {
       XCTAssertFalse(local.lists.contains { $0.id == list.id })
       XCTAssertEqual(local.snips.first(where: { $0.id == snipID })?.listID, SnipList.inbox.id)
       let recovery = try await editingLibrary.cloudFullRecoveryEvents(
-        namespaceKey: namespace.canonicalKey
+        namespaceKey: namespace.namespaceKey
       )
       let evidence = try await editingStore.enrollmentEvidence()
       XCTAssertEqual(recovery.filter { $0.kind == .deletedListPlacement }.count, 1)
@@ -227,7 +227,7 @@ extension CloudFullSyncPersistenceTests {
       )
       XCTAssertEqual(recovered.listID, SnipList.inbox.id)
       let review = try await editingLibrary.recoverySnapshot(
-        in: SnipRecoveryScope(namespace.canonicalKey)
+        in: SnipRecoveryScope(namespace.namespaceKey.rawValue)
       )
       XCTAssertEqual(review.promotedSnips.map(\.id), [recovered.id])
       XCTAssertEqual(review.promotedSnips.map(\.currentSnipID), [originalID])
@@ -550,7 +550,7 @@ extension CloudFullSyncPersistenceTests {
     let secondLocal = await secondLibrary.snapshot(sortedBy: .manual)
     XCTAssertEqual(secondLocal.snips.first(where: { $0.id == sharedID })?.content, "first seed")
     let stored = try await secondLibrary.cloudFullStorageSnapshot(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     let conflict = try XCTUnwrap(stored.conflicts.first(where: { $0.reference == reference }))
     let payload = try JSONDecoder().decode(CloudSnipConflictPayload.self, from: conflict.payload)
@@ -558,7 +558,7 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertEqual(payload.server.text, "first seed")
     XCTAssertEqual(payload.fields, [.text, .source, .isDone, .placement])
     let recovery = try await secondLibrary.recoverySnapshot(
-      in: SnipRecoveryScope(namespace.canonicalKey)
+      in: SnipRecoveryScope(namespace.namespaceKey.rawValue)
     )
     let recovered = try XCTUnwrap(recovery.pendingSnips.first)
     XCTAssertEqual(recovered.currentSnipID, sharedID)
@@ -608,7 +608,7 @@ extension CloudFullSyncPersistenceTests {
     try await second.sendPending()
 
     let stored = try await secondLibrary.cloudFullStorageSnapshot(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     let pending = try await secondStore.pendingChanges()
     XCTAssertTrue(stored.conflicts.isEmpty)
@@ -689,7 +689,7 @@ extension CloudFullSyncPersistenceTests {
     try await second.fetchRemote()
 
     let recovery = try await secondLibrary.recoverySnapshot(
-      in: SnipRecoveryScope(namespace.canonicalKey)
+      in: SnipRecoveryScope(namespace.namespaceKey.rawValue)
     )
     let recovered = try XCTUnwrap(recovery.pendingLists.first)
     XCTAssertEqual(recovered.currentListID, list.id)
@@ -872,7 +872,7 @@ extension CloudFullSyncPersistenceTests {
       XCTAssertTrue(snip.isDone)
       XCTAssertEqual(snip.listID, work.id)
       XCTAssertEqual(snip.manualSortKey, SnipOrderKey(rawDigits: [96]))
-      let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.canonicalKey)
+      let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
       XCTAssertTrue(stored.conflicts.isEmpty)
     }
 
@@ -891,7 +891,7 @@ extension CloudFullSyncPersistenceTests {
     try await first.sendPending()
     try await second.sendPending()
     let afterOrder = try await secondLibrary.cloudFullStorageSnapshot(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     XCTAssertTrue(afterOrder.conflicts.isEmpty)
     let secondAfterOrder = await secondLibrary.snapshot(sortedBy: .manual)
@@ -913,13 +913,13 @@ extension CloudFullSyncPersistenceTests {
     try await second.sendPending()
     try await third.sendPending()
     let thirdStored = try await thirdLibrary.cloudFullStorageSnapshot(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     let textConflict = try XCTUnwrap(thirdStored.conflicts.last)
     let payload = try JSONDecoder().decode(CloudSnipConflictPayload.self, from: textConflict.payload)
     XCTAssertEqual(payload.fields, [.text])
     let recovery = try await thirdLibrary.recoverySnapshot(
-      in: SnipRecoveryScope(namespace.canonicalKey)
+      in: SnipRecoveryScope(namespace.namespaceKey.rawValue)
     )
     XCTAssertEqual(recovery.pendingSnips.map(\.currentSnipID), [base.id])
     XCTAssertEqual(recovery.pendingSnips.map(\.recovered.content), ["third text"])

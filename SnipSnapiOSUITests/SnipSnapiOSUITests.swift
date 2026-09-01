@@ -630,12 +630,12 @@ final class SnipSnapiOSUITests: XCTestCase {
         let end = snip.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.5))
         start.press(forDuration: 0.1, thenDragTo: end)
 
-        let markDone = app.buttons["mark-done"]
-        XCTAssertTrue(markDone.waitForExistence(timeout: 3))
-        XCTAssertEqual(markDone.label, "Done")
-        let screenshot = markDone.screenshot()
+        let done = app.buttons["done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 3))
+        XCTAssertEqual(done.label, "Done")
+        let screenshot = done.screenshot()
         let attachment = XCTAttachment(screenshot: screenshot)
-        attachment.name = "Revealed row mark done action"
+        attachment.name = "Revealed row Done action"
         attachment.lifetime = .keepAlways
         add(attachment)
         XCTAssertTrue(
@@ -975,8 +975,8 @@ final class SnipSnapiOSUITests: XCTestCase {
             NSPredicate(format: "label BEGINSWITH %@", "Alpha plan")
         ).firstMatch
         alpha.swipeRight()
-        if app.buttons["mark-done"].exists {
-            app.buttons["mark-done"].tap()
+        if app.buttons["done"].exists {
+            app.buttons["done"].tap()
         }
         let becameDone = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "value == %@", "Done"),

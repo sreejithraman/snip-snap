@@ -2,6 +2,7 @@ import CloudKit
 import Foundation
 @testable import SnipSnapCloud
 @testable import SnipSnapCore
+@testable import SnipSnapPersistence
 import XCTest
 
 final class CloudFullRecordTests: XCTestCase {
@@ -352,20 +353,21 @@ final class CloudFullRecordTests: XCTestCase {
   }
 
   func testConflictKeyUsesNamespaceRecordAndBothSystemIdentities() {
+    let namespaceKey = CloudSyncNamespaceKey(rawValue: "namespace")
     let zone = CloudZoneID(name: "metadata", ownerName: "owner")
     let recordID = CloudRecordID.snip(UUID(), in: zone)
     let first = CloudConflictKey.make(
-      namespaceKey: "namespace",
+      namespaceKey: namespaceKey,
       recordID: recordID,
       ancestorSystemFields: Data([1]),
       serverSystemFields: Data([2]))
     let same = CloudConflictKey.make(
-      namespaceKey: "namespace",
+      namespaceKey: namespaceKey,
       recordID: recordID,
       ancestorSystemFields: Data([1]),
       serverSystemFields: Data([2]))
     let next = CloudConflictKey.make(
-      namespaceKey: "namespace",
+      namespaceKey: namespaceKey,
       recordID: recordID,
       ancestorSystemFields: Data([1]),
       serverSystemFields: Data([3]))

@@ -13,7 +13,10 @@ Use Xcode 26 or later:
 ```
 
 These commands do not sign the app. They need no Apple Developer account,
-certificate, provisioning profile, or CloudKit access.
+certificate, provisioning profile, or CloudKit access. The test command runs
+the package tests, Mac app tests, and iOS unit tests. It stores Mac test data
+and both app test builds under a fresh DerivedData folder. Set
+`SNIP_SNAP_IOS_TEST_DESTINATION` to use another installed iOS Simulator.
 
 Run the full unsigned build matrix before a pull request or release:
 
@@ -33,9 +36,9 @@ Simulator names, pass overrides:
   --ipad-destination 'platform=iOS Simulator,name=Example iPad'
 ```
 
-CI runs `scripts/test.sh`, this build matrix, and the named Simulator release
-tests on a clean checkout. These commands set `CODE_SIGNING_ALLOWED=NO` for
-app builds.
+CI runs `scripts/test.sh` and a focused iPhone build on a clean checkout. The
+test script includes `SnipSnapiOSTests` on an iPhone Simulator. Both commands
+set `CODE_SIGNING_ALLOWED=NO` for app builds.
 
 Run the same release tests on an iPhone and iPad Simulator:
 
@@ -120,29 +123,34 @@ SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS = Config/Local.entitlements
 
 `Config/Local.xcconfig` and `Config/Local.entitlements` stay out of Git. The
 entitlement file must include the App Group and CloudKit capabilities tied to
-those settings. Do not put a team ID, profile name, device ID, certificate, or
-local path in a tracked file.
+those settings and select the Development CloudKit environment. Do not reuse
+it for an official Mac release. Do not put a team ID, profile name, device ID,
+certificate, or local path in a tracked file.
 
 Cloud Dev uses a separate installed-app identity. By default, the build adds
-`.clouddev` to the configured bundle root and App Group. For example:
+`.dev` to the resolved iOS app identifier and configured App Group. For example:
 
 ```text
-App:             <bundle root>.clouddev.ios
-Share extension: <bundle root>.clouddev.ios.share
-App Group:       <App Group>.clouddev
+App:             <bundle root>.ios.dev
+Share extension: <bundle root>.ios.dev.share
+App Group:       <App Group>.dev
 CloudKit:        <the same container>, Development environment
 ```
 
 Register the two Cloud Dev App IDs and the Cloud Dev App Group with the team.
 Give both targets the Cloud Dev App Group. Give only the main app the existing
 CloudKit container. If the registered names differ, set
-`SNIP_SNAP_CLOUD_DEV_PRODUCT_BUNDLE_IDENTIFIER` and
-`SNIP_SNAP_CLOUD_DEV_APP_GROUP_IDENTIFIER` in ignored `Local.xcconfig` or the
+`SNIP_SNAP_DEV_IOS_PRODUCT_BUNDLE_IDENTIFIER` and
+`SNIP_SNAP_DEV_APP_GROUP_IDENTIFIER` in ignored `Local.xcconfig` or the
 protected CI job.
 
 The separate bundle IDs let Cloud Dev and TestFlight stay installed together.
 The separate App Groups keep their device data apart. The shared CloudKit
 container still keeps Development data apart from Production data.
+
+The CloudKit entitlement grants access; it does not force sync on. The signed
+Dev app still works from its local store when the user leaves iCloud Sync off.
+Normal numbered Dev builds remain local-only and carry no CloudKit entitlement.
 
 For a Mac Cloud Dev build, run the preflight and build with the same scheme,
 configuration, and destination:
@@ -202,6 +210,21 @@ unchecked; do not report a skipped run as a pass.
 Official releases use the team from `Local.xcconfig` or
 `SNIP_SNAP_DEVELOPMENT_TEAM`. They need these environment variables:
 
+Copy the separate production entitlement template once:
+
+```sh
+cp Config/MacRelease.example.entitlements Config/MacRelease.entitlements
+```
+
+The copied file stays out of Git. Set the run-only
+`SNIP_SNAP_MAC_RELEASE_ENTITLEMENTS` environment variable if you keep it at
+another path. The release command does not reuse the Development entitlement
+file used by Cloud Dev. It requires the production CloudKit container and
+checks both the archived and exported app's signed entitlements before
+notarization.
+
+Then provide the release credentials:
+
 ```sh
 export SNIP_SNAP_SIGNING_IDENTITY='YOUR_SIGNING_IDENTITY'
 export SNIP_SNAP_NOTARY_PROFILE='YOUR_NOTARY_PROFILE'
@@ -214,8 +237,8 @@ team. The notary profile name points to credentials stored by `notarytool` in
 the Keychain. CI can pass the same named inputs through its secret store.
 
 The release command creates its export options in a private temporary folder.
-No personalized export file, certificate name, profile, or team ID belongs in
-Git.
+No personalized entitlement file, export file, certificate name, profile, or
+team ID belongs in Git.
 
 ## Prepare a TestFlight build
 

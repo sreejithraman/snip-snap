@@ -197,6 +197,7 @@ package enum CloudCollectionError: LocalizedError, Equatable, Sendable {
   case noActiveCollection
   case invalidDescriptor
   case operationInProgress
+  case syncNeedsAttention
   case encryptedDataResetRequiresChoice
 
   package var errorDescription: String? {
@@ -207,6 +208,8 @@ package enum CloudCollectionError: LocalizedError, Equatable, Sendable {
       String(localized: "The iCloud Sync collection is not valid.", bundle: .main)
     case .operationInProgress:
       String(localized: "Another iCloud Sync task is still running.", bundle: .main)
+    case .syncNeedsAttention:
+      String(localized: "iCloud Sync needs attention before setup can finish.", bundle: .main)
     case .encryptedDataResetRequiresChoice:
       String(localized: "Choose how to handle the iCloud encrypted-data reset before turning sync on.", bundle: .main)
     }

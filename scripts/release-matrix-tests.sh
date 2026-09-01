@@ -59,18 +59,7 @@ cleanup() {
     [[ -f "$owner_marker" ]] && /bin/rm -rf "$derived_data_root"
 }
 
-run_stage() {
-    local exit_code
-    if "$@"; then
-        return 0
-    else
-        exit_code="$?"
-        cleanup
-        exit "$exit_code"
-    fi
-}
-
-trap cleanup INT TERM HUP
+trap cleanup EXIT
 start_share_fixture() {
     local root="$derived_data_root/share-fixture"
     local port_file="$derived_data_root/share-fixture-port"
@@ -158,20 +147,19 @@ run_share_process() {
         test
 }
 
-run_stage start_share_fixture
+start_share_fixture || exit $?
 
 print "Release matrix tests: iPhone 25 MiB transfer"
-run_stage run_transfer_test "$iphone_destination" "$derived_data_root/iphone-transfer"
+run_transfer_test "$iphone_destination" "$derived_data_root/iphone-transfer" || exit $?
 print "Release matrix tests: iPhone limit, Share, and attachment actions"
-run_stage run_app_actions "$iphone_destination" "$derived_data_root/iphone-app"
+run_app_actions "$iphone_destination" "$derived_data_root/iphone-app" || exit $?
 print "Release matrix tests: iPhone Share extension process"
-run_stage run_share_process "$iphone_destination" "$derived_data_root/iphone-share-process"
+run_share_process "$iphone_destination" "$derived_data_root/iphone-share-process" || exit $?
 print "Release matrix tests: iPad 25 MiB transfer"
-run_stage run_transfer_test "$ipad_destination" "$derived_data_root/ipad-transfer"
+run_transfer_test "$ipad_destination" "$derived_data_root/ipad-transfer" || exit $?
 print "Release matrix tests: iPad limit, Share, and attachment actions"
-run_stage run_app_actions "$ipad_destination" "$derived_data_root/ipad-app"
+run_app_actions "$ipad_destination" "$derived_data_root/ipad-app" || exit $?
 print "Release matrix tests: iPad Share extension process"
-run_stage run_share_process "$ipad_destination" "$derived_data_root/ipad-share-process"
+run_share_process "$ipad_destination" "$derived_data_root/ipad-share-process" || exit $?
 
 print "iPhone and iPad release-matrix tests passed."
-cleanup

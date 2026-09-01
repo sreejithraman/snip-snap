@@ -25,8 +25,9 @@ safe_repo="$(new_repo safe)"
 print -r -- 'DEVELOPMENT_TEAM = FAKE123456' > "$safe_repo/fake-settings.xcconfig"
 print -r -- 'PRODUCT_BUNDLE_IDENTIFIER = org.example.open-source-app' >> "$safe_repo/fake-settings.xcconfig"
 print -r -- 'SNIP_SNAP_APP_GROUP_IDENTIFIER = group.org.example.snipsnap' >> "$safe_repo/fake-settings.xcconfig"
-print -r -- 'SNIP_SNAP_CLOUD_DEV_APP_GROUP_IDENTIFIER = group.org.example.snipsnap.clouddev' >> "$safe_repo/fake-settings.xcconfig"
-print -r -- 'SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER = iCloud.org.example.open-source-app' >> "$safe_repo/fake-settings.xcconfig"
+print -r -- 'SNIP_SNAP_DEV_APP_GROUP_IDENTIFIER = group.org.example.snipsnap.dev' >> "$safe_repo/fake-settings.xcconfig"
+print -r -- 'SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER =' >> "$safe_repo/fake-settings.xcconfig"
+print -r -- 'SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER = iCloud.org.example.snipsnap' >> "$safe_repo/fake-settings.xcconfig"
 print -r -- '/private/tmp/open-source-build' >> "$safe_repo/fake-settings.xcconfig"
 print -r -- '<string>$(SNIP_SNAP_APP_GROUP_IDENTIFIER)</string>' > \
     "$safe_repo/fake.entitlements"
@@ -68,6 +69,10 @@ assert_rejected_without_value device "$device_value" "$device_line"
 app_group_value="group.com.acme.snipsnap"
 assert_rejected_without_value app-group "$app_group_value" \
     "SNIP_SNAP_APP_GROUP_IDENTIFIER = $app_group_value" \
+    Fake.xcconfig
+cloudkit_value="iCloud.""com.acme.snipsnap"
+assert_rejected_without_value cloudkit "$cloudkit_value" \
+    "SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER = $cloudkit_value" \
     Fake.xcconfig
 
 for credential_name in AuthKey_FAKE123.p8 distribution.p12 AppStore.mobileprovision; do

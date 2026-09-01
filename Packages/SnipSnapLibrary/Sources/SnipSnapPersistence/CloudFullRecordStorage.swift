@@ -85,12 +85,6 @@ package struct CloudAcceptedEntityInput: Codable, Equatable, Sendable {
   }
 }
 
-package enum CloudEntityAcceptance: Equatable, Sendable {
-  case accepted(releasedSnipIDs: Set<UUID>)
-  case duplicateDomain(existing: CloudTextStorageIdentity)
-  case duplicateIdentity(existing: CloudEntityReference)
-}
-
 package struct CloudStoredConflict: Equatable, Sendable {
   package let key: String
   package let reference: CloudEntityReference

@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct AppToast: Identifiable, Equatable {
+struct AppToast: Identifiable {
     enum Action: Equatable {
         case undoDelete
     }

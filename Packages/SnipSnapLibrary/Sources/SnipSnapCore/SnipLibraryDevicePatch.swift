@@ -67,10 +67,6 @@ package extension SnipLibraryDevicePatch {
 }
 
 public extension SnipLibraryDevicePatch {
-  func canApply(to snapshot: SnipLibrarySnapshot) -> Bool {
-    applying(to: snapshot) != nil
-  }
-
   func applying(to snapshot: SnipLibrarySnapshot) -> SnipLibrarySnapshot? {
     var state = SnipLibraryState(
       snips: snapshot.snips,

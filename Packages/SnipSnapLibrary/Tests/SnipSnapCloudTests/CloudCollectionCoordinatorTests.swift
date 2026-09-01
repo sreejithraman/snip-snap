@@ -1,7 +1,7 @@
 import Foundation
 import CloudKit
 import SnipSnapCore
-import SnipSnapPersistence
+@testable import SnipSnapPersistence
 import XCTest
 
 @testable import SnipSnapCloud
@@ -103,7 +103,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
   @MainActor
   func testExplicitModeEnableImportsLocalLibraryThenUsesGenerationGatedForegroundSync() async throws {
     let root = FileManager.default.temporaryDirectory
-      .appendingPathComponent("CloudModeLifecycle-\(UUID().uuidString)")
+      .appendingPathComponent("ICloudSyncLifecycle-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let source = try JSONSnipLibrary(
@@ -130,7 +130,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     )
     let server = FakeCloudServer()
     let control = FakeCloudControlTransport(server: server)
-    let lifecycle = SnipSnapCloudModeLifecycle(
+    let lifecycle = SnipSnapICloudSyncLifecycle(
       rootURL: root.appendingPathComponent("SyncMode", isDirectory: true),
       sourceLibrary: source,
       syncModeStore: nil,
@@ -176,7 +176,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
 
   func testModeLifecycleTurnsSyncOffWithoutDeletingCloudContent() async throws {
     let root = FileManager.default.temporaryDirectory
-      .appendingPathComponent("CloudModeDisable-\(UUID().uuidString)")
+      .appendingPathComponent("ICloudSyncDisable-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let source = try JSONSnipLibrary(
@@ -196,7 +196,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     )
     let active = CloudCollectionDescriptor.fresh(ownerName: "owner")
     let server = FakeCloudServer()
-    let lifecycle = SnipSnapCloudModeLifecycle(
+    let lifecycle = SnipSnapICloudSyncLifecycle(
       rootURL: root.appendingPathComponent("SyncMode", isDirectory: true),
       sourceLibrary: source,
       syncModeStore: nil,
@@ -223,9 +223,185 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertEqual(cloudControl, active)
   }
 
+  func testStartupReaderDoesNotTreatPendingOrFailedEnableAsActiveCloud() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("ICloudStartupState-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+    let namespace = ICloudSyncNamespaceBinding(
+      scope: "private",
+      accountLineage: "account-a",
+      generation: UUID(),
+      zones: [ICloudSyncZoneBinding(name: "snips-test", ownerName: "owner")]
+    )
+    _ = try await persistence.beginTransition(to: .iCloudSync, namespace: namespace)
+
+    XCTAssertNil(SyncModeActivationManifestReader.activeCloudNamespace(
+      atSyncModeRootURL: root
+    ))
+    XCTAssertEqual(
+      SyncModeActivationManifestReader.iCloudStartupState(atSyncModeRootURL: root),
+      .settingUp(namespace)
+    )
+
+    try await persistence.recordAttention(.terminalFetchFailure)
+
+    XCTAssertNil(SyncModeActivationManifestReader.activeCloudNamespace(
+      atSyncModeRootURL: root
+    ))
+    XCTAssertEqual(
+      SyncModeActivationManifestReader.iCloudStartupState(atSyncModeRootURL: root),
+      .needsAttention(namespace)
+    )
+  }
+
+  func testCancelPendingEnableRemovesCandidateAndLeavesLocalStoreActive() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CancelPendingICloudEnable-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+    let namespace = ICloudSyncNamespaceBinding(
+      scope: "private",
+      accountLineage: "account-a",
+      generation: UUID(),
+      zones: [ICloudSyncZoneBinding(name: "snips-test", ownerName: "owner")]
+    )
+    _ = try await persistence.beginTransition(to: .iCloudSync, namespace: namespace)
+
+    try await persistence.cancelPendingICloudEnable()
+
+    let snapshot = try await persistence.snapshot()
+    XCTAssertEqual(snapshot.activeStore.kind, .localOnly)
+    XCTAssertNil(snapshot.transition)
+    XCTAssertNil(snapshot.attentionReason)
+    XCTAssertEqual(
+      SyncModeActivationManifestReader.iCloudStartupState(atSyncModeRootURL: root),
+      .localOnly
+    )
+  }
+
+  func testOfflineEnableStaysPendingAndResumesOnLaterSync() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("ICloudSyncPendingEnable-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = try JSONSnipLibrary(
+      fileURL: root.appendingPathComponent("source.json", isDirectory: false)
+    )
+    _ = try await source.add(content: "keep local", origin: .quickEntry)
+    let server = FakeCloudServer()
+    let control = OfflineThenOnlineControlTransport(server: server)
+    let descriptor = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    let syncRoot = root.appendingPathComponent("SyncMode", isDirectory: true)
+    func lifecycle() -> SnipSnapICloudSyncLifecycle {
+      SnipSnapICloudSyncLifecycle(
+        rootURL: syncRoot,
+        sourceLibrary: source,
+        syncModeStore: nil,
+        cloudScope: "private",
+        accountLineage: "account-a",
+        ownerName: "owner",
+        controlTransport: control,
+        makeRecordTransport: { context in
+          FakeCloudRecordTransport(server: server, namespace: context.namespace)
+        },
+        makeDescriptor: { descriptor }
+      )
+    }
+
+    let first = try await lifecycle().enableICloudSync()
+    XCTAssertEqual(first, .settingUp)
+    XCTAssertNil(SyncModeActivationManifestReader.activeCloudNamespace(
+      atSyncModeRootURL: syncRoot
+    ))
+
+    await control.goOnline()
+    let resumed = try await lifecycle().synchronize()
+
+    XCTAssertEqual(resumed, .iCloudSyncEnabled)
+    XCTAssertNotNil(SyncModeActivationManifestReader.activeCloudNamespace(
+      atSyncModeRootURL: syncRoot
+    ))
+  }
+
+  func testPendingOfflineEnableCanBeCanceledBeforeConnectivityReturns() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CancelOfflineICloudEnable-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = try JSONSnipLibrary(fileURL: root.appendingPathComponent("source.json"))
+    _ = try await source.add(content: "stay local", origin: .quickEntry)
+    let server = FakeCloudServer()
+    let control = OfflineThenOnlineControlTransport(server: server)
+    let syncRoot = root.appendingPathComponent("SyncMode", isDirectory: true)
+    let lifecycle = SnipSnapICloudSyncLifecycle(
+      rootURL: syncRoot,
+      sourceLibrary: source,
+      syncModeStore: nil,
+      cloudScope: "private",
+      accountLineage: "account-a",
+      ownerName: "owner",
+      controlTransport: control,
+      makeRecordTransport: { context in
+        FakeCloudRecordTransport(server: server, namespace: context.namespace)
+      },
+      makeDescriptor: { CloudCollectionDescriptor.fresh(ownerName: "owner") }
+    )
+
+    let enableOutcome = try await lifecycle.enableICloudSync()
+    XCTAssertEqual(enableOutcome, .settingUp)
+    try await lifecycle.cancelPendingEnable()
+    await control.goOnline()
+
+    let syncOutcome = try await lifecycle.synchronize()
+    XCTAssertEqual(syncOutcome, .noChange)
+    XCTAssertEqual(
+      SyncModeActivationManifestReader.iCloudStartupState(atSyncModeRootURL: syncRoot),
+      .localOnly
+    )
+    let snapshot = try await lifecycle.activeLibrary().library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(snapshot.snips.map(\.content), ["stay local"])
+  }
+
+  @MainActor
+  func testTerminalEnableFailureRestartsAsLocalNeedsAttention() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("TerminalICloudEnable-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = try JSONSnipLibrary(fileURL: root.appendingPathComponent("source.json"))
+    let syncRoot = root.appendingPathComponent("SyncMode", isDirectory: true)
+    let lifecycle = SnipSnapICloudSyncLifecycle(
+      rootURL: syncRoot,
+      sourceLibrary: source,
+      syncModeStore: nil,
+      cloudScope: "private",
+      accountLineage: "account-a",
+      ownerName: "owner",
+      controlTransport: TerminalSetupControlTransport(),
+      makeRecordTransport: { context in
+        FakeCloudRecordTransport(server: FakeCloudServer(), namespace: context.namespace)
+      },
+      makeDescriptor: { CloudCollectionDescriptor.fresh(ownerName: "owner") }
+    )
+
+    do {
+      _ = try await lifecycle.enableICloudSync()
+      XCTFail("Expected terminal setup failure")
+    } catch {}
+
+    let restarted = SnipSnapCloudAppAssembly.settingsStartupState(
+      rootURL: syncRoot,
+      startupState: SyncModeActivationManifestReader.iCloudStartupState(
+        atSyncModeRootURL: syncRoot
+      )
+    )
+    XCTAssertEqual(restarted.mode, .localOnly)
+    guard case .failed = restarted.state else {
+      return XCTFail("Expected Needs Attention after restart")
+    }
+  }
+
   func testExplicitEnableStagesConflictZonesBeforeCleanupAndRetriesOnForeground() async throws {
     let root = FileManager.default.temporaryDirectory
-      .appendingPathComponent("CloudModeConflict-\(UUID().uuidString)")
+      .appendingPathComponent("ICloudSyncConflict-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let losing = descriptor(
       generation: "45454545-4545-4545-4545-454545454545",
@@ -241,7 +417,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let losingTransport = FakeCloudControlTransport(server: server)
     let winningTransport = FakeCloudControlTransport(server: server)
     await losingTransport.pauseNextControlSave()
-    let losingLifecycle = SnipSnapCloudModeLifecycle(
+    let losingLifecycle = SnipSnapICloudSyncLifecycle(
       rootURL: root.appendingPathComponent("losing", isDirectory: true),
       sourceLibrary: try JSONSnipLibrary(
         fileURL: root.appendingPathComponent("losing.json", isDirectory: false)
@@ -256,7 +432,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
       },
       makeDescriptor: { losing }
     )
-    let winningLifecycle = SnipSnapCloudModeLifecycle(
+    let winningLifecycle = SnipSnapICloudSyncLifecycle(
       rootURL: root.appendingPathComponent("winning", isDirectory: true),
       sourceLibrary: try JSONSnipLibrary(
         fileURL: root.appendingPathComponent("winning.json", isDirectory: false)
@@ -302,40 +478,12 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertFalse(CloudKitCollectionControlTransport.isMissingControl(.networkFailure))
   }
 
-  @MainActor
-  func testSettingsModelRunsARealFakeServerReset() async throws {
-    let old = descriptor(
-      generation: "13131313-1313-1313-1313-131313131313",
-      metadata: "settings-old-metadata",
-      payload: "settings-old-payload"
-    )
-    let fresh = descriptor(
-      generation: "14141414-1414-1414-1414-141414141414",
-      metadata: "settings-fresh-metadata",
-      payload: "settings-fresh-payload"
-    )
-    let server = FakeCloudServer()
-    let transport = FakeCloudControlTransport(server: server)
-    await transport.seedControl(old)
-    let local = TestCloudCollectionLocalStore(active: namespace(old), hasSyncedBefore: true)
-    let coordinator = CloudCollectionCoordinator(
-      cloudScope: "private",
-      accountLineage: "account-a",
-      ownerName: "owner",
-      localStore: local,
-      transport: transport,
-      syncDriver: TestCloudCollectionSyncDriver(),
-      makeDescriptor: { fresh }
-    )
-    let model = CloudCollectionAssembly.settingsModel(for: coordinator)
-
-    await model.deleteSyncedContent()
-
-    let control = await server.controlDescriptor()
-    let oldMetadataRemains = await server.hasZone(old.metadataZone)
-    XCTAssertEqual(model.state, .deleted)
-    XCTAssertEqual(control, fresh)
-    XCTAssertFalse(oldMetadataRemains)
+  func testCloudKitRetryPolicySeparatesTransientAndPermanentSetupFailures() {
+    XCTAssertTrue(CloudKitRetryPolicy.isTransient(.networkUnavailable))
+    XCTAssertTrue(CloudKitRetryPolicy.isTransient(.serviceUnavailable))
+    XCTAssertFalse(CloudKitRetryPolicy.isTransient(.notAuthenticated))
+    XCTAssertFalse(CloudKitRetryPolicy.isTransient(.permissionFailure))
+    XCTAssertFalse(CloudKitRetryPolicy.isTransient(.quotaExceeded))
   }
 
   @MainActor
@@ -382,37 +530,16 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
       initializeSyncModeStore: true
     )
     let handle = try XCTUnwrap(assembly.syncModeStore)
-    let old = descriptor(
-      generation: "17171717-1717-1717-1717-171717171717",
-      metadata: "shared-old-metadata",
-      payload: "shared-old-payload"
-    )
-    let fresh = descriptor(
-      generation: "18181818-1818-1818-1818-181818181818",
-      metadata: "shared-fresh-metadata",
-      payload: "shared-fresh-payload"
-    )
-    try await handle.persistence.activateEmptyCollection(namespace: binding(old))
-    let server = FakeCloudServer()
-    let transport = FakeCloudControlTransport(server: server)
-    await transport.seedControl(old)
-    let local = try SwiftDataCloudCollectionLocalStore(
+    let services = SnipSnapCloudAppAssembly.simulatedServices(
       rootURL: root,
-      persistence: handle.persistence
+      syncModeStore: handle
     )
-    let coordinator = CloudCollectionCoordinator(
-      cloudScope: "private",
-      accountLineage: "account-a",
-      ownerName: "owner",
-      localStore: local,
-      transport: transport,
-      syncDriver: TestCloudCollectionSyncDriver(),
-      makeDescriptor: { fresh }
-    )
-    let model = CloudCollectionAssembly.settingsModel(for: coordinator)
+    let model = services.syncedContentSettings
 
     await model.deleteSyncedContent()
-    _ = try await assembly.library.perform(
+    let session = try XCTUnwrap(services.syncSession)
+    let activeLibrary = try await session.activeLibrary().library
+    _ = try await activeLibrary.perform(
       .add(
         content: "written after reset",
         origin: .quickEntry,
@@ -425,7 +552,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
       sortedBy: .manual
     )
 
-    let appSnapshot = await assembly.library.snapshot(sortedBy: .manual)
+    let appSnapshot = await activeLibrary.snapshot(sortedBy: .manual)
     XCTAssertEqual(model.state, .deleted)
     XCTAssertEqual(appSnapshot.snips.map(\.content), ["written after reset"])
   }
@@ -1053,7 +1180,10 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
         _ = try await syncCoordinator.synchronize()
         return .contentUpdated
       },
-      enable: { _ = try await syncCoordinator.enableSync() },
+      enable: {
+        _ = try await syncCoordinator.enableSync()
+        return .enabled
+      },
       delete: {
         _ = try await resetCoordinator.deleteSyncedContent()
         return .completed
@@ -1107,7 +1237,10 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
         _ = try await coordinator.synchronize()
         return .contentUpdated
       },
-      enable: { _ = try await coordinator.enableSync() },
+      enable: {
+        _ = try await coordinator.enableSync()
+        return .enabled
+      },
       delete: {
         _ = try await coordinator.deleteSyncedContent()
         return .completed
@@ -1154,7 +1287,10 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
         _ = try await coordinator.synchronize()
         return .contentUpdated
       },
-      enable: { _ = try await coordinator.enableSync() },
+      enable: {
+        _ = try await coordinator.enableSync()
+        return .enabled
+      },
       delete: {
         _ = try await coordinator.deleteSyncedContent()
         return .completed
@@ -1162,7 +1298,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
       activeLibrary: { throw SyncModePersistenceError.missingStore }
     )
 
-    try await session.enableCollectionIfNeeded()
+    try await session.enableICloudSync()
     let foregroundResult = try await session.synchronize()
 
     let driverEvents = await driver.events()
@@ -1842,7 +1978,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
       return XCTFail("Expected a saved snip")
     }
     try await oldLibrary.reconcileCloudAttachments(
-      namespaceKey: namespace(old).canonicalKey,
+      namespaceKey: namespace(old).namespaceKey,
       metadataZoneName: old.metadataZone.name,
       metadataOwnerName: old.metadataZone.ownerName,
       payloadZoneName: old.payloadZone.name,
@@ -1850,7 +1986,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     )
     let unavailableAttachmentID = UUID()
     try await oldLibrary.commitCloudAttachmentTransitions(
-      namespaceKey: namespace(old).canonicalKey,
+      namespaceKey: namespace(old).namespaceKey,
       transitions: [.remoteMetadataAccepted(
         metadata: CloudAttachmentMetadataValue(
           attachmentID: unavailableAttachmentID,
@@ -1971,8 +2107,8 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let transport = FakeCloudControlTransport(server: server)
     await transport.seedControl(old)
     await transport.removeControl()
-    func lifecycle() -> SnipSnapCloudModeLifecycle {
-      SnipSnapCloudModeLifecycle(
+    func lifecycle() -> SnipSnapICloudSyncLifecycle {
+      SnipSnapICloudSyncLifecycle(
         rootURL: root,
         sourceLibrary: source,
         syncModeStore: modeStore,
@@ -2040,8 +2176,8 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     )
     let server = FakeCloudServer()
     let transport = FakeCloudControlTransport(server: server)
-    func lifecycle() -> SnipSnapCloudModeLifecycle {
-      SnipSnapCloudModeLifecycle(
+    func lifecycle() -> SnipSnapICloudSyncLifecycle {
+      SnipSnapICloudSyncLifecycle(
         rootURL: root,
         sourceLibrary: source,
         syncModeStore: modeStore,
@@ -2428,6 +2564,54 @@ private actor TestCloudCollectionLocalStore: CloudCollectionLocalStore {
   func activeNamespace() -> CloudSyncNamespace? { active }
   func events() -> [Event] { log }
   func retainedRecoveryNamespace() -> CloudSyncNamespace? { recoveryNamespace }
+}
+
+private actor TerminalSetupControlTransport: CloudCollectionControlTransport {
+  func fetchControl() async throws -> CloudCollectionControlRecord? {
+    throw CloudCollectionError.invalidDescriptor
+  }
+
+  func createZones(_ zones: Set<CloudZoneID>) async throws {}
+
+  func saveControl(
+    _ descriptor: CloudCollectionDescriptor,
+    replacing version: Data?
+  ) async throws -> CloudCollectionControlSaveResult {
+    throw CloudCollectionError.invalidDescriptor
+  }
+
+  func deleteZones(_ zones: Set<CloudZoneID>) async throws {}
+}
+
+private actor OfflineThenOnlineControlTransport: CloudCollectionControlTransport {
+  private let base: FakeCloudControlTransport
+  private var isOffline = true
+
+  init(server: FakeCloudServer) {
+    base = FakeCloudControlTransport(server: server)
+  }
+
+  func goOnline() { isOffline = false }
+
+  func fetchControl() async throws -> CloudCollectionControlRecord? {
+    guard !isOffline else { throw CloudTransportError.fetchFailed }
+    return try await base.fetchControl()
+  }
+
+  func createZones(_ zones: Set<CloudZoneID>) async throws {
+    try await base.createZones(zones)
+  }
+
+  func saveControl(
+    _ descriptor: CloudCollectionDescriptor,
+    replacing version: Data?
+  ) async throws -> CloudCollectionControlSaveResult {
+    try await base.saveControl(descriptor, replacing: version)
+  }
+
+  func deleteZones(_ zones: Set<CloudZoneID>) async throws {
+    try await base.deleteZones(zones)
+  }
 }
 
 private actor TestCloudCollectionSyncDriver: CloudCollectionSyncDriver {

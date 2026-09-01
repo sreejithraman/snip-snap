@@ -79,37 +79,3 @@ The icon ships in the build. Apple accepts either an Icon Composer file or asset
 Apple says the new rendered icon also appears on the App Store product page. All variants remain subject to App Review. The app must own the artwork rights, and its small, large, Watch, and alternate icons must stay consistent enough not to mislead people. [Say hello to the new look of app icons](https://developer.apple.com/videos/play/wwdc2025/220/), [App icons](https://developer.apple.com/design/human-interface-guidelines/app-icons), [App Review Guidelines](https://developer.apple.com/app-store/review/guidelines/)
 
 No separate App Store artwork upload is needed for the main app icon after it is set in Xcode. The normal archive and upload path carries it. This does not change Snip Snap's signing, team, or open-source setup; the `.icon` file and its source art contain no account or team data.
-
-## Current repo findings
-
-- The current icon lives in `SnipSnap/Assets.xcassets/AppIcon.appiconset` as ten Mac PNG size entries.
-- The largest file, `icon_512x512@2x.png`, is 1024 by 1024 pixels, RGB, and has no alpha channel.
-- The repo has no SVG, layered icon file, or other editable icon source. The PNG files first entered the repo in the initial public-source commit.
-- The current Xcode target selects `AppIcon` through `ASSETCATALOG_COMPILER_APPICON_NAME`.
-
-These checks show why the old icon should remain as a visual reference during the rebuild rather than serve as the only imported layer.
-
-## Codex capability assessment
-
-Codex can carry out the work in this repo:
-
-1. Trace the current scissors shape into a clean 1024-pixel SVG and keep it under source control.
-2. Create deterministic light, dark, and mono layer inputs. Image generation can help explore concepts, but a vector reconstruction is a better production source because it keeps edges, spacing, and symmetry exact.
-3. Use Icon Composer on this Mac to set the background, layer material, colors, dark and mono overrides, and platform scale.
-4. Save and add `AppIcon.icon` to both app targets while keeping signing and developer settings unchanged.
-5. Build Mac, iPhone Simulator, and iPad Simulator versions, switch system icon appearances, and capture review images.
-6. Capture fixed Simulator and Icon Composer views for visual checks, then run a final device check if wanted.
-
-The only part that should not be treated as unattended file generation is the initial `.icon` authoring. Apple documents a GUI workflow and does not publish a stable command-line authoring format. Codex can operate that GUI, but the tracked SVG inputs and visual exports should be the durable, reviewable parts of the process.
-
-## Recommended next step
-
-Build one proof before replacing the current icon:
-
-1. Recreate the current scissors as one SVG foreground layer.
-2. Make one shared `AppIcon.icon` with default, dark, and mono tuning.
-3. Capture the default, dark, clear, and tinted previews and place them in a review sheet beside the current Mac icon.
-4. Check the icon at Home Screen, Settings, Spotlight, Dock, and App Store-like sizes in Simulator and on Mac.
-5. After approval, add the `.icon` file to both app targets and keep the existing PNG catalog in git history rather than bundling both as competing `AppIcon` sources.
-
-This proof is small enough for Codex to make and test without changing the app UI or data model.

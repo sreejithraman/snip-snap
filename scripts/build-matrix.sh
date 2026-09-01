@@ -22,7 +22,6 @@ ipad_destination="${SNIP_SNAP_IPAD_DESTINATION:-generic/platform=iOS Simulator}"
 xcodebuild_tool="${SNIP_SNAP_XCODEBUILD:-xcodebuild}"
 source_packages="$derived_data_root/SourcePackages"
 build_mac=YES
-build_iphone=YES
 build_ipad=YES
 
 usage() {
@@ -111,12 +110,10 @@ if [[ "$build_mac" == YES ]]; then
     build SnipSnap "$mac_destination" "$derived_data_root/mac"
 fi
 
-if [[ "$build_iphone" == YES ]]; then
-    print "Build matrix: iPhone Simulator and Share extension"
-    build SnipSnapiOS "$iphone_destination" "$derived_data_root/iphone" \
-        TARGETED_DEVICE_FAMILY=1
-    assert_embedded_share_extension "$derived_data_root/iphone"
-fi
+print "Build matrix: iPhone Simulator and Share extension"
+build SnipSnapiOS "$iphone_destination" "$derived_data_root/iphone" \
+    TARGETED_DEVICE_FAMILY=1
+assert_embedded_share_extension "$derived_data_root/iphone"
 
 if [[ "$build_ipad" == YES ]]; then
     print "Build matrix: iPad Simulator and Share extension"

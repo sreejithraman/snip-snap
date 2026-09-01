@@ -51,10 +51,16 @@ paths.each do |path|
     app_group_values = line.scan(/\bgroup\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+\b/)
     public_app_groups = [
       "group.org.example.snipsnap",
-      "group.org.example.snipsnap.clouddev"
+      "group.org.example.snipsnap.dev"
     ]
     if build_input && app_group_values.any? { |value| !public_app_groups.include?(value) }
       rules << "non-placeholder App Group ID"
+    end
+
+    cloudkit_values = line.scan(/\biCloud\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+\b/)
+    public_cloudkit_containers = ["iCloud.org.example.snipsnap"]
+    if cloudkit_values.any? { |value| !public_cloudkit_containers.include?(value) }
+      rules << "non-placeholder CloudKit container ID"
     end
 
     team_context = line.match?(/DEVELOPMENT_TEAM|teamID|TeamIdentifier|Developer ID Application/i)

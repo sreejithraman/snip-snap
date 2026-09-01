@@ -9,4 +9,5 @@ artifacts/
 docs/research/
 /Config/Local.xcconfig
 /Config/Local.entitlements
+/Config/MacRelease.entitlements
 /Config/TestFlight.entitlements

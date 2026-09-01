@@ -70,6 +70,9 @@
     "Snip Snap is checking iCloud before it starts or joins the new synced collection." : {
 
     },
+    "Snip Snap is checking iCloud for changes." : {
+
+    },
     "Snip Snap is fetching iCloud data and preparing a safe merged copy." : {
 
     },
@@ -92,6 +95,9 @@
 
     },
     "Starting a New Synced Collection…" : {
+
+    },
+    "Syncing with iCloud…" : {
 
     },
     "Sync Needs Attention" : {
@@ -164,6 +170,9 @@
 
     },
     "iCloud Sync On" : {
+
+    },
+    "iCloud Sync needs attention before setup can finish." : {
 
     },
     "iCloud Sync does not have an active collection." : {

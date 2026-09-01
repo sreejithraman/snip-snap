@@ -8,10 +8,41 @@ import UniformTypeIdentifiers
 
 final class AppModelTests: StoreBackedTestCase {
     @MainActor
+    func testMacDelayedCancelDoesNotClearNewerBackupPreview() async throws {
+        let root = try storeURL().deletingLastPathComponent()
+        let firstURL = root.appendingPathComponent("cancel-first.json")
+        let secondURL = root.appendingPathComponent("cancel-second.json")
+        let target = try JSONSnipLibrary(fileURL: root.appendingPathComponent("cancel-target.json"))
+        let firstBackup = try JSONSnipLibrary(fileURL: firstURL)
+        let secondBackup = try JSONSnipLibrary(fileURL: secondURL)
+        _ = try await firstBackup.add(content: "First", origin: .quickEntry)
+        _ = try await secondBackup.add(content: "Second", origin: .quickEntry)
+        let actions = DirectSnipLibraryUserActions(
+            library: target,
+            previewBackupImport: { url, library in
+                try await SnipLibraryImport.preview(backupURL: url, target: library)
+            }
+        )
+        let session = SavedSnipsSession(library: target, userActions: actions)
+
+        let first = try await session.previewImport(from: firstURL)
+        let second = try await session.previewImport(from: secondURL)
+        await session.cancelImport(id: first.id)
+        let applied = try await session.applyPendingImport(
+            id: second.id,
+            sortedBy: .chronological
+        )
+
+        XCTAssertEqual(applied?.0.snapshot.snips.map(\.content), ["Second"])
+    }
+
+    @MainActor
     func testMacAccountNoticeInvokesHandlerAndHidesAfterRemove() async {
         let handler = MacAppleAccountCacheHandlerProbe()
         let model = AppleAccountNoticeModel(notice: .accountChanged, handler: handler)
         XCTAssertEqual(model.notice, .accountChanged)
+        XCTAssertEqual(model.title, "Apple Account Changed")
+        XCTAssertTrue(model.showsResolutionActions)
 
         await model.resolve(.remove)
 
@@ -58,33 +89,6 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(choices, [.keepLocalCopy])
         XCTAssertEqual(refreshCount, 2)
         XCTAssertEqual(rebindCount, 2)
-    }
-
-    @MainActor
-    func testMacMainPanelReceivesNeedsAttentionModel() throws {
-        let defaults = try XCTUnwrap(
-            UserDefaults(suiteName: "Snip SnapAccountNoticePanelTests-\(UUID().uuidString)")
-        )
-        let appModel = AppModel(
-            library: try JSONSnipLibrary(fileURL: try storeURL()),
-            defaults: defaults
-        )
-        let settings = ShortcutSettings(defaults: defaults)
-        let noticeModel = AppleAccountNoticeModel(
-            notice: .accountChanged,
-            handler: MacAppleAccountCacheHandlerProbe()
-        )
-
-        let view = ContentView(
-            coordinator: AppCoordinator(model: appModel, shortcutSettings: settings),
-            fileDropController: PanelFileDropController(),
-            dragSessionController: PanelDragSessionController(),
-            accountNoticeModel: noticeModel
-        )
-
-        XCTAssertTrue(view.showsAccountNoticeInMainPanel)
-        XCTAssertEqual(noticeModel.title, "Apple Account Changed")
-        XCTAssertTrue(noticeModel.showsResolutionActions)
     }
 
     private actor InMemorySnipLibrary: SnipLibrary {
@@ -261,7 +265,10 @@ final class AppModelTests: StoreBackedTestCase {
         )
         let model = AppModel(library: oldLibrary)
         await model.reload()
-        let settings = SyncedContentSettingsModel(mode: .localOnly, enableAction: {})
+        let settings = SyncedContentSettingsModel(
+            mode: .localOnly,
+            enableAction: { .enabled }
+        )
         settings.setEnableCompletionAction {
             await model.replaceLibrary(cloudLibrary, recoveryScope: nil)
         }
@@ -463,7 +470,7 @@ final class AppModelTests: StoreBackedTestCase {
         let model = AppModel(library: repository)
         await model.reload()
 
-        await model.markDoneAfterExternalDropNow(ids: [first.id, second.id])
+        await model.setDoneAfterExternalDropNow(ids: [first.id, second.id])
 
         XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == first.id }).isDone)
         XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == second.id }).isDone)
@@ -1361,15 +1368,6 @@ final class AppModelTests: StoreBackedTestCase {
 
     @MainActor
     func testMacBackupImportWaitsForConfirmation() async throws {
-        XCTAssertEqual(
-            BackupImportCommandRoute.allCases,
-            [.previewThenConfirm],
-            "The menu must offer only the preview and confirm import route."
-        )
-        XCTAssertEqual(
-            BackupImportCommandRoute.previewThenConfirm.title,
-            "Import Backup…"
-        )
         let targetURL = try storeURL()
         let backupURL = targetURL.deletingLastPathComponent()
             .appendingPathComponent("backup.json")
@@ -1396,16 +1394,66 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testMacBackupPickerAndModelImportAnAttachmentBackupFolder() async throws {
-        XCTAssertEqual(
-            MacBackupImportPickerPolicy.allowedContentTypes,
-            [.folder, .json]
+    func testBackupPreviewWaitsForLibraryReplacementAndUsesNewActions() async throws {
+        let root = try storeURL().deletingLastPathComponent()
+        let backupURL = root.appendingPathComponent("race-backup.json")
+        let backup = try JSONSnipLibrary(fileURL: backupURL)
+        _ = try await backup.add(content: "From backup", origin: .quickEntry)
+        let active = try JSONSnipLibrary(
+            fileURL: root.appendingPathComponent("race-active.json")
         )
-        XCTAssertTrue(MacBackupImportPickerPolicy.canChooseFiles)
-        XCTAssertTrue(MacBackupImportPickerPolicy.canChooseDirectories)
-        XCTAssertTrue(MacBackupImportPickerPolicy.message.contains("folder"))
-        XCTAssertTrue(MacBackupImportPickerPolicy.message.contains("attachments"))
+        let addedActiveSnip = try await active.add(
+            content: "Pending delete",
+            origin: .quickEntry
+        )
+        let activeSnip = try XCTUnwrap(addedActiveSnip)
+        let replacement = try JSONSnipLibrary(
+            fileURL: root.appendingPathComponent("replacement.json")
+        )
+        let gatedActions = GatedDiscardUserActions(base: userActions(for: active))
+        let rebinder = SnipLibraryUserActionsRebinder { library in
+            DirectSnipLibraryUserActions(
+                library: library,
+                previewBackupImport: { backupURL, target in
+                    try await SnipLibraryImport.preview(
+                        backupURL: backupURL,
+                        target: target
+                    )
+                }
+            )
+        }
+        let model = AppModel(
+            library: active,
+            defaults: defaults(),
+            userActions: gatedActions,
+            userActionsRebinder: rebinder
+        )
+        await model.reload()
+        model.selection = [activeSnip.id]
+        await model.deleteSelectionNow()
+        XCTAssertEqual(model.toast?.action, .undoDelete)
 
+        let replacementTask = Task { @MainActor in
+            await model.replaceLibrary(replacement, recoveryScope: nil)
+        }
+        await gatedActions.waitUntilDiscardStarts()
+        var previewStarted = false
+        let previewTask = Task { @MainActor in
+            previewStarted = true
+            await model.previewBackupImport(from: backupURL)
+        }
+        let didStartPreview = await waitUntil { previewStarted }
+        XCTAssertTrue(didStartPreview)
+        await Task.yield()
+        await gatedActions.resumeDiscard()
+        await replacementTask.value
+        await previewTask.value
+
+        XCTAssertEqual(model.pendingImportPreview?.addedSnipCount, 1)
+    }
+
+    @MainActor
+    func testMacBackupPickerAndModelImportAnAttachmentBackupFolder() async throws {
         let root = try storeURL().deletingLastPathComponent()
         let inputURL = root.appendingPathComponent("attachment.txt")
         let bytes = Data("folder attachment".utf8)
@@ -1477,6 +1525,64 @@ final class AppModelTests: StoreBackedTestCase {
                 try await SnipLibraryImport.preview(backupURL: backupURL, target: target)
             }
         )
+    }
+}
+
+private actor GatedDiscardUserActions: SnipLibraryUserActions {
+    private let base: any SnipLibraryUserActions
+    private var discardStarted = false
+    private var discardContinuation: CheckedContinuation<Void, Never>?
+
+    init(base: any SnipLibraryUserActions) {
+        self.base = base
+    }
+
+    func perform(
+        command: SnipLibraryCommand,
+        sortedBy sortMode: SnipSortMode
+    ) async throws -> SnipLibraryUpdate {
+        try await base.perform(command: command, sortedBy: sortMode)
+    }
+
+    func delete(
+        ids: Set<UUID>,
+        token: UUID,
+        sortedBy sortMode: SnipSortMode
+    ) async throws -> SnipLibraryUpdate {
+        try await base.delete(ids: ids, token: token, sortedBy: sortMode)
+    }
+
+    func restoreDeletion(
+        token: UUID,
+        sortedBy sortMode: SnipSortMode
+    ) async throws -> SnipLibraryUpdate? {
+        try await base.restoreDeletion(token: token, sortedBy: sortMode)
+    }
+
+    func discardDeletion(token: UUID, sortedBy sortMode: SnipSortMode) async {
+        discardStarted = true
+        await withCheckedContinuation { discardContinuation = $0 }
+        await base.discardDeletion(token: token, sortedBy: sortMode)
+    }
+
+    func previewImport(backupURL: URL) async throws -> SnipImportPreview {
+        try await base.previewImport(backupURL: backupURL)
+    }
+
+    func applyImport(
+        _ preview: SnipImportPreview,
+        sortedBy sortMode: SnipSortMode
+    ) async throws -> SnipImportResult {
+        try await base.applyImport(preview, sortedBy: sortMode)
+    }
+
+    func waitUntilDiscardStarts() async {
+        while !discardStarted { await Task.yield() }
+    }
+
+    func resumeDiscard() {
+        discardContinuation?.resume()
+        discardContinuation = nil
     }
 }
 

@@ -27,14 +27,14 @@ final class CloudAttachmentStorageTests: XCTestCase {
       sortedBy: .manual
     )
     try await library?.reconcileCloudAttachments(
-      namespaceKey: "namespace-generation-a",
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace-generation-a"),
       metadataZoneName: "data",
       metadataOwnerName: "owner",
       payloadZoneName: "payload",
       payloadOwnerName: "owner"
     )
     let firstSnapshot = try await library?.cloudAttachmentStorageSnapshot(
-      namespaceKey: "namespace-generation-a"
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace-generation-a")
     )
     let first = try XCTUnwrap(firstSnapshot?.publications.first)
     XCTAssertFalse(first.payloadAccepted)
@@ -46,14 +46,14 @@ final class CloudAttachmentStorageTests: XCTestCase {
     library = nil
     let reopened = try SwiftDataSnipLibrary(storeURL: storeURL)
     try await reopened.reconcileCloudAttachments(
-      namespaceKey: "namespace-generation-a",
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace-generation-a"),
       metadataZoneName: "data",
       metadataOwnerName: "owner",
       payloadZoneName: "payload",
       payloadOwnerName: "owner"
     )
     let secondSnapshot = try await reopened.cloudAttachmentStorageSnapshot(
-      namespaceKey: "namespace-generation-a"
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace-generation-a")
     )
     let second = try XCTUnwrap(secondSnapshot.publications.first)
     XCTAssertEqual(second.metadata.payloadIdentity, first.metadata.payloadIdentity)
@@ -79,7 +79,10 @@ final class CloudAttachmentStorageTests: XCTestCase {
         now: .distantPast
       ), sortedBy: .manual
     )
-    for namespace in ["generation-a", "generation-b"] {
+    for namespace in [
+      CloudSyncNamespaceKey(rawValue: "generation-a"),
+      CloudSyncNamespaceKey(rawValue: "generation-b"),
+    ] {
       try await library.reconcileCloudAttachments(
         namespaceKey: namespace,
         metadataZoneName: "data",
@@ -88,8 +91,12 @@ final class CloudAttachmentStorageTests: XCTestCase {
         payloadOwnerName: "owner"
       )
     }
-    let a = try await library.cloudAttachmentStorageSnapshot(namespaceKey: "generation-a")
-    let b = try await library.cloudAttachmentStorageSnapshot(namespaceKey: "generation-b")
+    let a = try await library.cloudAttachmentStorageSnapshot(
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "generation-a")
+    )
+    let b = try await library.cloudAttachmentStorageSnapshot(
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "generation-b")
+    )
     XCTAssertEqual(a.publications.map(\.metadata.attachmentID), b.publications.map(\.metadata.attachmentID))
     XCTAssertNotEqual(a.publications.first?.metadata.payloadIdentity, b.publications.first?.metadata.payloadIdentity)
   }
@@ -119,7 +126,7 @@ final class CloudAttachmentStorageTests: XCTestCase {
       zoneName: "payload", ownerName: "owner", recordName: UUID().uuidString.lowercased()
     )
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: "namespace",
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"),
       transitions: [.remoteMetadataAccepted(
         metadata: CloudAttachmentMetadataValue(
           attachmentID: attachmentID,
@@ -145,14 +152,14 @@ final class CloudAttachmentStorageTests: XCTestCase {
     _ = try await library.perform(.replaceAll(local), sortedBy: .manual)
 
     try await library.reconcileCloudAttachments(
-      namespaceKey: "namespace",
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"),
       metadataZoneName: "data",
       metadataOwnerName: "owner",
       payloadZoneName: "payload",
       payloadOwnerName: "owner"
     )
 
-    let stored = try await library.cloudAttachmentStorageSnapshot(namespaceKey: "namespace")
+    let stored = try await library.cloudAttachmentStorageSnapshot(namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"))
     let publication = try XCTUnwrap(stored.publications.first)
     XCTAssertEqual(publication.metadata.fileName, "renamed.txt")
     XCTAssertFalse(publication.metadataAccepted)
@@ -189,7 +196,7 @@ final class CloudAttachmentStorageTests: XCTestCase {
       )
     }
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: "namespace",
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"),
       transitions: [.remoteMetadataAccepted(
         metadata: metadata(firstPayload, hashByte: 1),
         metadataIdentity: metadataIdentity,
@@ -198,7 +205,7 @@ final class CloudAttachmentStorageTests: XCTestCase {
       )]
     )
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: "namespace",
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"),
       transitions: [.remoteMetadataAccepted(
         metadata: metadata(secondPayload, hashByte: 2),
         metadataIdentity: metadataIdentity,
@@ -207,7 +214,7 @@ final class CloudAttachmentStorageTests: XCTestCase {
       )]
     )
 
-    let stored = try await library.cloudAttachmentStorageSnapshot(namespaceKey: "namespace")
+    let stored = try await library.cloudAttachmentStorageSnapshot(namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"))
     XCTAssertEqual(stored.publications.first?.metadata.payloadIdentity, secondPayload)
     XCTAssertEqual(stored.publications.first?.metadata.sha256, Data(repeating: 2, count: 32))
   }
@@ -232,13 +239,13 @@ final class CloudAttachmentStorageTests: XCTestCase {
       sortedBy: .manual
     )
     try await library.reconcileCloudAttachments(
-      namespaceKey: "namespace",
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"),
       metadataZoneName: "data",
       metadataOwnerName: "owner",
       payloadZoneName: "payload",
       payloadOwnerName: "owner"
     )
-    let initial = try await library.cloudAttachmentStorageSnapshot(namespaceKey: "namespace")
+    let initial = try await library.cloudAttachmentStorageSnapshot(namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"))
     let queued = try XCTUnwrap(initial.publications.first?.sourceURL)
     let uploadRoot = queued.deletingLastPathComponent().deletingLastPathComponent()
     let orphan = uploadRoot.appendingPathComponent("orphan/payload")
@@ -249,7 +256,7 @@ final class CloudAttachmentStorageTests: XCTestCase {
     try Data("left after a crash".utf8).write(to: orphan)
 
     try await library.reconcileCloudAttachments(
-      namespaceKey: "namespace",
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"),
       metadataZoneName: "data",
       metadataOwnerName: "owner",
       payloadZoneName: "payload",
@@ -280,20 +287,20 @@ final class CloudAttachmentStorageTests: XCTestCase {
       sortedBy: .manual
     )
     try await library.reconcileCloudAttachments(
-      namespaceKey: "namespace",
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"),
       metadataZoneName: "data",
       metadataOwnerName: "owner",
       payloadZoneName: "payload",
       payloadOwnerName: "owner"
     )
-    let initial = try await library.cloudAttachmentStorageSnapshot(namespaceKey: "namespace")
+    let initial = try await library.cloudAttachmentStorageSnapshot(namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"))
     let publication = try XCTUnwrap(initial.publications.first)
     let oldUpload = try XCTUnwrap(publication.sourceURL)
     let localSource = try XCTUnwrap(publication.localSourceURL)
     try Data("replacement".utf8).write(to: localSource)
 
     try await library.reconcileCloudAttachments(
-      namespaceKey: "namespace",
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"),
       metadataZoneName: "data",
       metadataOwnerName: "owner",
       payloadZoneName: "payload",
@@ -323,7 +330,7 @@ final class CloudAttachmentStorageTests: XCTestCase {
       recordName: UUID().uuidString.lowercased()
     )
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: "namespace",
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"),
       transitions: [.remoteMetadataAccepted(
         metadata: CloudAttachmentMetadataValue(
           attachmentID: attachmentID,
@@ -342,11 +349,11 @@ final class CloudAttachmentStorageTests: XCTestCase {
     )
 
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: "namespace",
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"),
       transitions: [.remoteMetadataDeleted(metadataIdentity: metadataIdentity)]
     )
 
-    let stored = try await library.cloudAttachmentStorageSnapshot(namespaceKey: "namespace")
+    let stored = try await library.cloudAttachmentStorageSnapshot(namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"))
     XCTAssertTrue(stored.publications.isEmpty)
     XCTAssertEqual(stored.cleanups.map(\.identity), [payloadIdentity])
   }
@@ -368,7 +375,7 @@ final class CloudAttachmentStorageTests: XCTestCase {
       zoneName: "payload", ownerName: "owner", recordName: "replacement-payload"
     )
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: "namespace",
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"),
       transitions: [.remoteMetadataAccepted(
         metadata: CloudAttachmentMetadataValue(
           attachmentID: attachmentID,
@@ -386,18 +393,18 @@ final class CloudAttachmentStorageTests: XCTestCase {
       )]
     )
     try await library.reconcileCloudAttachments(
-      namespaceKey: "namespace",
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"),
       metadataZoneName: "data",
       metadataOwnerName: "owner",
       payloadZoneName: "payload",
       payloadOwnerName: "owner"
     )
     let deletingSnapshot = try await library.cloudAttachmentStorageSnapshot(
-      namespaceKey: "namespace"
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace")
     )
     let deleting = try XCTUnwrap(deletingSnapshot.publications.first)
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: "namespace",
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"),
       transitions: [.metadataDeleteConflict(
         attachmentID: attachmentID,
         expectedRevision: deleting.revision,
@@ -407,19 +414,19 @@ final class CloudAttachmentStorageTests: XCTestCase {
       )]
     )
     let conflictedSnapshot = try await library.cloudAttachmentStorageSnapshot(
-      namespaceKey: "namespace"
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace")
     )
     let conflicted = try XCTUnwrap(conflictedSnapshot.publications.first)
     XCTAssertEqual(conflicted.metadata.payloadIdentity, replacementPayload)
 
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: "namespace",
+      namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"),
       transitions: [.metadataDeleteAccepted(
         attachmentID: attachmentID,
         expectedRevision: conflicted.revision
       )]
     )
-    let cleaned = try await library.cloudAttachmentStorageSnapshot(namespaceKey: "namespace")
+    let cleaned = try await library.cloudAttachmentStorageSnapshot(namespaceKey: CloudSyncNamespaceKey(rawValue: "namespace"))
     XCTAssertEqual(Set(cleaned.cleanups.map(\.identity)), Set([oldPayload, replacementPayload]))
   }
 
@@ -443,7 +450,7 @@ final class CloudAttachmentStorageTests: XCTestCase {
     guard case .add(.added(let snipID)) = added.outcome else {
       return XCTFail("Expected a saved snip")
     }
-    let namespace = "reset-namespace"
+    let namespace = CloudSyncNamespaceKey(rawValue: "reset-namespace")
     let attachmentID = UUID()
     let payload = CloudTextStorageIdentity(
       zoneName: "payload", ownerName: "owner", recordName: UUID().uuidString.lowercased()

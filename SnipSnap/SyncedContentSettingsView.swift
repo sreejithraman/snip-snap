@@ -25,6 +25,9 @@ struct SyncedContentSettingsView: View {
             if case .enabling = model.state {
                 ProgressView("Setting up iCloud Sync…")
                     .controlSize(.small)
+            } else if case .syncing = model.state {
+                ProgressView("Syncing with iCloud…")
+                    .controlSize(.small)
             } else if case .disabling = model.state {
                 ProgressView("Making a local copy…")
                     .controlSize(.small)
@@ -66,11 +69,13 @@ struct SyncedContentSettingsView: View {
 
     private var syncEnabled: Binding<Bool> {
         Binding(
-            get: { model.mode == .iCloudSync },
+            get: { model.mode == .iCloudSync || model.state == .enabling },
             set: { enabled in
                 Task {
                     if enabled {
                         await model.enableICloudSync()
+                    } else if model.canCancelEnable {
+                        await model.cancelICloudSyncSetup()
                     } else {
                         await model.disableICloudSync(.refreshThenCopy)
                         if model.mode == .iCloudSync, case .failed = model.state {
@@ -83,7 +88,8 @@ struct SyncedContentSettingsView: View {
     }
 
     private var canChangeSync: Bool {
-        model.mode == .iCloudSync ? model.canDisable : model.canEnable
+        if model.canCancelEnable { return true }
+        return model.mode == .iCloudSync ? model.canDisable : model.canEnable
     }
 
     private var encryptedDataResetChoices: some View {

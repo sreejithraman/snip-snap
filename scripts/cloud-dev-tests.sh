@@ -36,12 +36,14 @@ for (( index = 1; index <= $#; index++ )); do
     fi
 done
 root="${SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER:-org.example.snipsnap}"
+ios_product="${SNIP_SNAP_IOS_PRODUCT_BUNDLE_IDENTIFIER:-$root.ios}"
+share_product="${SNIP_SNAP_IOS_SHARE_PRODUCT_BUNDLE_IDENTIFIER:-$ios_product.share}"
 group="${SNIP_SNAP_APP_GROUP_IDENTIFIER:-group.org.example.snipsnap}"
 if [[ "$target" == SnipSnapShareExtension ]]; then
-    product="$root.ios.share"
+    product="$share_product"
     entitlements=SnipSnapShareExtension/SnipSnapShareExtension.entitlements
 else
-    product="$root.ios"
+    product="$ios_product"
     entitlements="$SNIP_SNAP_FAKE_ENTITLEMENTS"
 fi
 if [[ "$*" == *-showBuildSettings* ]]; then
@@ -63,13 +65,21 @@ SNIP_SNAP_CLOUD_DEV_DERIVED_DATA="$test_root/DerivedData" \
     "$script_dir/cloud-dev.sh" build >/dev/null
 
 /usr/bin/grep -F -- \
-    'SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER=org.example.snipsnap.clouddev' \
-    "$args_file" >/dev/null || fail_test "the bundle root was not isolated"
+    'SNIP_SNAP_IOS_PRODUCT_BUNDLE_IDENTIFIER=org.example.snipsnap.ios.dev' \
+    "$args_file" >/dev/null || fail_test "the Dev app identifier was not isolated"
 /usr/bin/grep -F -- \
-    'SNIP_SNAP_APP_GROUP_IDENTIFIER=group.org.example.snipsnap.clouddev' \
+    'SNIP_SNAP_IOS_SHARE_PRODUCT_BUNDLE_IDENTIFIER=org.example.snipsnap.ios.dev.share' \
+    "$args_file" >/dev/null || fail_test "the Dev Share identifier was not isolated"
+/usr/bin/grep -F -- \
+    'SNIP_SNAP_APP_GROUP_IDENTIFIER=group.org.example.snipsnap.dev' \
     "$args_file" >/dev/null || fail_test "the App Group was not isolated"
 /usr/bin/grep -F -- 'SNIP_SNAP_BUILD_LANE=cloud-dev' "$args_file" >/dev/null || \
     fail_test "the build lane was not marked"
+/usr/bin/grep -F -- 'DEVELOPMENT_TEAM=FAKE123456' "$args_file" >/dev/null || \
+    fail_test "the development team did not reach the signed build"
+/usr/bin/grep -F -- \
+    'SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER=iCloud.org.example.snipsnap' \
+    "$args_file" >/dev/null || fail_test "the CloudKit container did not reach the signed build"
 /usr/bin/grep -F -- 'ASSETCATALOG_COMPILER_APPICON_NAME=AppIconDev' \
     "$args_file" >/dev/null || fail_test "the Dev icon was not selected"
 /usr/bin/grep -F -- 'SNIP_SNAP_DISPLAY_NAME=Snip Snap Dev' \
@@ -82,13 +92,13 @@ SNIP_SNAP_XCODEBUILD="$fake_xcodebuild" \
 SNIP_SNAP_FAKE_XCODEBUILD_ARGS="$explicit_args" \
 SNIP_SNAP_FAKE_ENTITLEMENTS="$entitlements" \
 SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS="$entitlements" \
-SNIP_SNAP_CLOUD_DEV_PRODUCT_BUNDLE_IDENTIFIER=org.example.snipsnap.teamdev \
-SNIP_SNAP_CLOUD_DEV_APP_GROUP_IDENTIFIER=group.org.example.snipsnap.teamdev \
+SNIP_SNAP_DEV_IOS_PRODUCT_BUNDLE_IDENTIFIER=org.example.snipsnap.ios.teamdev \
+SNIP_SNAP_DEV_APP_GROUP_IDENTIFIER=group.org.example.snipsnap.teamdev \
 SNIP_SNAP_CLOUD_DEV_DERIVED_DATA="$test_root/ExplicitDerivedData" \
     "$script_dir/cloud-dev.sh" build >/dev/null
 /usr/bin/grep -F -- \
-    'SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER=org.example.snipsnap.teamdev' \
-    "$explicit_args" >/dev/null || fail_test "the explicit bundle root was ignored"
+    'SNIP_SNAP_IOS_PRODUCT_BUNDLE_IDENTIFIER=org.example.snipsnap.ios.teamdev' \
+    "$explicit_args" >/dev/null || fail_test "the explicit Dev app identifier was ignored"
 /usr/bin/grep -F -- \
     'SNIP_SNAP_APP_GROUP_IDENTIFIER=group.org.example.snipsnap.teamdev' \
     "$explicit_args" >/dev/null || fail_test "the explicit App Group was ignored"

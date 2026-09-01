@@ -8,4 +8,4 @@ delivery = ["scripts/run.sh"]
 [snip-snap-ios]
 project = "SnipSnap.xcodeproj"
 scheme = "SnipSnapiOS"
-delivery = ["scripts/run.sh"]
+delivery = ["scripts/showroom-ios-delivery.sh"]

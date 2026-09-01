@@ -298,7 +298,7 @@ extension CloudFullSyncPersistence {
   static func malformedSentRecovery(
     sent: CloudSentBatch,
     outbound: CloudOutboundBatch,
-    namespaceKey: String
+    namespaceKey: CloudSyncNamespaceKey
   ) throws -> CloudFullRecoveryInput {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
@@ -309,7 +309,7 @@ extension CloudFullSyncPersistence {
       identityOrder(storageIdentity($0.id)) < identityOrder(storageIdentity($1.id))
     }
     return CloudFullRecoveryInput(
-      namespaceKey: namespaceKey,
+      namespaceKey: namespaceKey.rawValue,
       batchID: sent.id,
       kind: .malformedSentBatch,
       outboundData: try encoder.encode(operations),

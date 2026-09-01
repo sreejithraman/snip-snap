@@ -212,7 +212,7 @@ package actor SwiftDataCloudCollectionLocalStore: CloudCollectionLocalStore {
     if snapshot.activeStore.id == reset.recoveryStoreID {
       let library = try await persistence.libraryForTransition(storeID: snapshot.activeStore.id)
       try await library.quarantineCloudNamespaceState(
-        namespaceKey: reset.priorNamespace.canonicalKey
+        namespaceKey: reset.priorNamespace.namespaceKey
       )
       try await persistence.activateEmptyCollection(namespace: nil)
     }

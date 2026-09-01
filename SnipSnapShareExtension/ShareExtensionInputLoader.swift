@@ -3,27 +3,12 @@ import SnipSnapPersistence
 @preconcurrency import UIKit
 import UniformTypeIdentifiers
 
-struct LoadedShareInput: Sendable {
-    let textParts: [String]
-    let attachments: [ShareImportAttachment]
-
-    var text: String {
-        textParts
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .reduce(into: [String]()) { parts, value in
-                if !parts.contains(value) { parts.append(value) }
-            }
-            .joined(separator: "\n\n")
-    }
-}
-
 @MainActor
 enum ShareExtensionInputLoader {
     static func load(
         items: [NSExtensionItem],
         staging: ShareImportStagingArea
-    ) async throws -> LoadedShareInput {
+    ) async throws -> (text: String, attachments: [ShareImportAttachment]) {
         var textParts: [String] = []
         var attachments: [ShareImportAttachment] = []
         for item in items {
@@ -48,10 +33,17 @@ enum ShareExtensionInputLoader {
                 }
             }
         }
-        return LoadedShareInput(textParts: textParts, attachments: attachments)
+        let text = textParts
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .reduce(into: [String]()) { parts, value in
+                if !parts.contains(value) { parts.append(value) }
+            }
+            .joined(separator: "\n\n")
+        return (text, attachments)
     }
 
-    private enum Part: Sendable {
+    private enum Part {
         case text(String)
         case attachment(ShareImportAttachment)
         case none

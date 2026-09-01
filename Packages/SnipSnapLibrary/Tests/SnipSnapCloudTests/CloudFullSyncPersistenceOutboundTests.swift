@@ -45,7 +45,7 @@ extension CloudFullSyncPersistenceTests {
     try await coordinator.sendPending()
 
     let afterFailure = try await library.cloudFullStorageSnapshot(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     let pendingAfterFailure = try await store.pendingChanges()
     let serverAfterFailure = await server.fullSnapshot(for: recordID)
@@ -66,7 +66,7 @@ extension CloudFullSyncPersistenceTests {
     try await reopened.sendPending()
 
     let settled = try await reopenedLibrary.cloudFullStorageSnapshot(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     let pendingAfterAcceptance = try await reopenedStore.pendingChanges()
     let serverAfterAcceptance = await server.fullSnapshot(for: recordID)
@@ -199,7 +199,7 @@ extension CloudFullSyncPersistenceTests {
       recordName: "s-valid-remote-payload"
     )
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       transitions: [
         .remoteMetadataAccepted(
           metadata: CloudAttachmentMetadataValue(
@@ -219,7 +219,7 @@ extension CloudFullSyncPersistenceTests {
       ]
     )
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       transitions: [.remoteMetadataDeleted(metadataIdentity: metadataIdentity)]
     )
     let persistence = CloudFullSyncPersistence(
@@ -244,11 +244,11 @@ extension CloudFullSyncPersistenceTests {
     let evidence = try await persistence.enrollmentEvidence()
     XCTAssertFalse(evidence.needsAttention)
     let attachments = try await library.cloudAttachmentStorageSnapshot(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     XCTAssertEqual(attachments.cleanups.first?.lastFailure, .rejected)
     let recovery = try await library.cloudFullRecoveryEvents(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     XCTAssertFalse(recovery.contains(where: { $0.kind == .terminalSend }))
   }
@@ -315,7 +315,7 @@ extension CloudFullSyncPersistenceTests {
       payloadIdentity: payloadIdentity
     )
     try await library.commitCloudAttachmentTransitions(
-      namespaceKey: namespace.canonicalKey,
+      namespaceKey: namespace.namespaceKey,
       transitions: [.remoteMetadataAccepted(
         metadata: metadata,
         metadataIdentity: collidingMetadataIdentity,
@@ -324,7 +324,7 @@ extension CloudFullSyncPersistenceTests {
       )]
     )
     let beforeSnapshot = try await library.cloudAttachmentStorageSnapshot(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     let before = try XCTUnwrap(beforeSnapshot.publications.first(where: {
       $0.metadata.attachmentID == attachmentID
@@ -375,7 +375,7 @@ extension CloudFullSyncPersistenceTests {
     let evidence = try await persistence.enrollmentEvidence()
     XCTAssertTrue(evidence.needsAttention)
     let attachments = try await library.cloudAttachmentStorageSnapshot(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     XCTAssertEqual(attachments.publications.first(where: {
       $0.metadata.attachmentID == attachmentID
@@ -435,7 +435,7 @@ extension CloudFullSyncPersistenceTests {
     let remainingStaged = try await persistence.stagedBatches()
     XCTAssertTrue(remainingStaged.isEmpty)
     let recoveries = try await library.cloudFullRecoveryEvents(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     XCTAssertEqual(recoveries.count, malformed.count)
     XCTAssertTrue(recoveries.allSatisfy { $0.kind == .malformedSentBatch })
@@ -499,10 +499,10 @@ extension CloudFullSyncPersistenceTests {
     await XCTAssertThrowsErrorAsync { try await coordinator.sendPending() }
 
     let recoveries = try await library.cloudFullRecoveryEvents(
-      namespaceKey: namespace.canonicalKey
+      namespaceKey: namespace.namespaceKey
     )
     let staged = try await persistence.stagedBatches()
-    let wire = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.canonicalKey)
+    let wire = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
     let events = await transport.events()
     XCTAssertEqual(recoveries.count, 1)
     XCTAssertTrue(staged.isEmpty)
@@ -581,12 +581,12 @@ extension CloudFullSyncPersistenceTests {
     let unknownSaveEvidence = try await persistence.enrollmentEvidence()
     XCTAssertFalse(unknownSaveEvidence.needsAttention)
     XCTAssertTrue(unknownSaveEvidence.retryableEventKeys.isEmpty)
-    var stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.canonicalKey)
+    var stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
     XCTAssertFalse(stored.readyEntities.contains(where: { $0.reference.domainID == snip.id }))
 
     let reopenedLibrary = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
     let review = try await reopenedLibrary.recoverySnapshot(
-      in: SnipRecoveryScope(namespace.canonicalKey)
+      in: SnipRecoveryScope(namespace.namespaceKey.rawValue)
     )
     XCTAssertEqual(review.promotedSnips.map(\.id), [recovered.id])
     XCTAssertEqual(review.promotedSnips.first?.currentSnipID, snip.id)
@@ -595,7 +595,7 @@ extension CloudFullSyncPersistenceTests {
     try await coordinator.sendPending()
     let pendingAfterDelete = try await persistence.pendingChanges()
     XCTAssertTrue(pendingAfterDelete.operations.isEmpty)
-    stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.canonicalKey)
+    stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
     XCTAssertFalse(stored.readyEntities.contains(where: { $0.reference.domainID == snip.id }))
   }
 

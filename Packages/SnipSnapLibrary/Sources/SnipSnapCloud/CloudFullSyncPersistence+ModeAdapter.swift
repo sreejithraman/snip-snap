@@ -6,7 +6,7 @@ package enum CloudFullReenableError: Error, Equatable, Sendable {
   case deferredDependencies
 }
 
-private struct CloudModeRecoveryPayload: Codable, Equatable {
+private struct ICloudSyncRecoveryPayload: Codable, Equatable {
   let storageVersion: Int
   let sourceID: UUID
   let recoveredID: UUID?
@@ -184,7 +184,7 @@ extension CloudFullSyncPersistence {
     let acceptedBundle = try CloudDormantAcceptedBaseBundle(entries:
       (stored.readyEntities + stored.deferredEntities).map { entity in
         CloudDormantAcceptedBaseBundle.Entry(
-          namespaceKey: namespaceKey,
+          namespaceKey: namespaceKey.rawValue,
           reference: entity.reference,
           identity: entity.identity,
           payload: try encoder.encode(Self.acceptedInput(entity))
@@ -205,7 +205,7 @@ extension CloudFullSyncPersistence {
     targetRevision: UInt64
   ) async throws -> CloudFullReenableApplyPlan? {
     let sourceBundle = try CloudDormantAcceptedBaseBundle.decode(source.opaqueSyncStatePayload)
-    let exactEntries = sourceBundle.entries.filter { $0.namespaceKey == namespaceKey }
+    let exactEntries = sourceBundle.entries.filter { $0.namespaceKey == namespaceKey.rawValue }
     guard !exactEntries.isEmpty else { return nil }
     let allowedZones = Set(namespace.zones.map { "\($0.ownerName)|\($0.name)" })
     var bases: [CloudEntityReference: CloudAcceptedEntity] = [:]
@@ -247,10 +247,10 @@ extension CloudFullSyncPersistence {
         if !Self.sameListFields(baseFields, localFields) {
           recoveryInputs.append(try Self.modeRecovery(
             transitionID: transitionID,
-            namespaceKey: namespaceKey,
+            namespaceKey: namespaceKey.rawValue,
             sourceID: local.id,
             kind: .modeRecoveredList,
-            payload: CloudModeRecoveryPayload(
+            payload: ICloudSyncRecoveryPayload(
               sourceID: local.id,
               deletedListID: local.id,
               recoveredList: localFields
@@ -296,10 +296,10 @@ extension CloudFullSyncPersistence {
         adjustedSnips[index] = local
         recoveryInputs.append(try Self.modeRecovery(
           transitionID: transitionID,
-          namespaceKey: namespaceKey,
+          namespaceKey: namespaceKey.rawValue,
           sourceID: local.id,
           kind: .modeDeletedListPlacement,
-          payload: CloudModeRecoveryPayload(sourceID: local.id, deletedListID: deletedListID)
+          payload: ICloudSyncRecoveryPayload(sourceID: local.id, deletedListID: deletedListID)
         ))
       }
       guard let base = bases[reference] else { continue }
@@ -319,10 +319,10 @@ extension CloudFullSyncPersistence {
         recoveredSourceIDs.insert(local.id)
         recoveryInputs.append(try Self.modeRecovery(
           transitionID: transitionID,
-          namespaceKey: namespaceKey,
+            namespaceKey: namespaceKey.rawValue,
           sourceID: local.id,
           kind: .modeRecoveredSnip,
-          payload: CloudModeRecoveryPayload(sourceID: local.id, recoveredID: recoveredID)
+          payload: ICloudSyncRecoveryPayload(sourceID: local.id, recoveredID: recoveredID)
         ))
         continue
       }
@@ -375,10 +375,10 @@ extension CloudFullSyncPersistence {
         recoveredSourceIDs.insert(local.id)
         recoveryInputs.append(try Self.modeRecovery(
           transitionID: transitionID,
-          namespaceKey: namespaceKey,
+            namespaceKey: namespaceKey.rawValue,
           sourceID: local.id,
           kind: .modeRecoveredSnip,
-          payload: CloudModeRecoveryPayload(sourceID: local.id, recoveredID: recoveredID)
+          payload: ICloudSyncRecoveryPayload(sourceID: local.id, recoveredID: recoveredID)
         ))
       }
     }
@@ -401,7 +401,7 @@ extension CloudFullSyncPersistence {
     )
     return try CloudFullReenableApplyPlan(
       transitionID: transitionID,
-      namespaceKey: namespaceKey,
+      namespaceKey: namespaceKey.rawValue,
       expectedNamespaceRevision: stored.namespaceState.revision,
       targetRevision: transfer.targetRevision,
       targetDigest: transfer.targetDigest,
@@ -531,7 +531,7 @@ extension CloudFullSyncPersistence {
     namespaceKey: String,
     sourceID: UUID,
     kind: CloudFullRecoveryKind,
-    payload: CloudModeRecoveryPayload
+    payload: ICloudSyncRecoveryPayload
   ) throws -> CloudFullRecoveryInput {
     let salt: UUID = switch kind {
     case .modeRecoveredSnip:
