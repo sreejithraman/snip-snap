@@ -387,9 +387,9 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testComposerExpansionDoesNotRepeatDuringReentrantWindowLayout() throws {
-        let repository = try SnipRepository(fileURL: storeURL())
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
         let coordinator = AppCoordinator(
-            model: AppModel(repository: repository),
+            model: AppModel(library: repository),
             shortcutSettings: ShortcutSettings(),
             isAccessibilityTrusted: { true }
         )

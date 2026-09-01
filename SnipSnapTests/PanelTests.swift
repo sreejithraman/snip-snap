@@ -361,7 +361,7 @@ final class PanelTests: StoreBackedTestCase {
             storeURL: clipboardURL
         )
         let model = AppModel(
-            repository: try SnipRepository(fileURL: storeURL()),
+            library: try JSONSnipLibrary(fileURL: storeURL()),
             defaults: defaults,
             clipboardHistory: history
         )
