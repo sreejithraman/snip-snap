@@ -168,17 +168,17 @@ print '<rss><channel><item><enclosure url="other.zip" length="10" sparkle:versio
 assert_fails release_policy_require_matching_appcast_release "$old_appcast" "$new_appcast"
 
 update_root="$test_root/update"
-/bin/mkdir -p "$update_root/scripts" "$update_root/SnipSnap.xcodeproj"
+/bin/mkdir -p "$update_root/scripts" "$update_root/Config"
 /bin/cp "$script_dir/release-policy.sh" "$update_root/scripts/release-policy.sh"
 /bin/cp "$script_dir/set-release.sh" "$update_root/scripts/set-release.sh"
 print '{"version":"0.1.0","build":1}' > "$update_root/release.json"
-print 'MARKETING_VERSION = 0.1.0;' > "$update_root/SnipSnap.xcodeproj/project.pbxproj"
-print 'CURRENT_PROJECT_VERSION = 1;' >> "$update_root/SnipSnap.xcodeproj/project.pbxproj"
+print 'MARKETING_VERSION = 0.1.0' > "$update_root/Config/Shared.xcconfig"
+print 'CURRENT_PROJECT_VERSION = 1' >> "$update_root/Config/Shared.xcconfig"
 assert_succeeds "$update_root/scripts/set-release.sh" 0.2.0 2
-/usr/bin/grep -q 'MARKETING_VERSION = 0.2.0;' \
-    "$update_root/SnipSnap.xcodeproj/project.pbxproj" || fail_test "set-release missed Xcode version"
-/usr/bin/grep -q 'CURRENT_PROJECT_VERSION = 2;' \
-    "$update_root/SnipSnap.xcodeproj/project.pbxproj" || fail_test "set-release missed Xcode build"
+/usr/bin/grep -q 'MARKETING_VERSION = 0.2.0' \
+    "$update_root/Config/Shared.xcconfig" || fail_test "set-release missed Xcode version"
+/usr/bin/grep -q 'CURRENT_PROJECT_VERSION = 2' \
+    "$update_root/Config/Shared.xcconfig" || fail_test "set-release missed Xcode build"
 assert_fails "$update_root/scripts/set-release.sh" 0.1.0 3
 assert_fails "$update_root/scripts/set-release.sh" 0.2.0 2
 
@@ -200,17 +200,27 @@ second_app="$test_root/second/Snip Snap.app"
 /bin/mkdir -p "$first_app" "$second_app"
 for architecture in arm64 x86_64; do
     print 'Identifier=world.sree.snipsnap' > "$first_app/identity-$architecture"
-    print 'TeamIdentifier=K6239Y94G5' >> "$first_app/identity-$architecture"
+    print 'TeamIdentifier=FAKE123456' >> "$first_app/identity-$architecture"
     print "CDHash=$architecture-hash" >> "$first_app/identity-$architecture"
     /bin/cp "$first_app/identity-$architecture" "$second_app/identity-$architecture"
 done
 SNIP_SNAP_CODESIGN="$codesign_fixture"
 assert_succeeds release_policy_require_matching_apps "$first_app" "$second_app"
 print 'Identifier=world.sree.snipsnap' > "$second_app/identity-x86_64"
-print 'TeamIdentifier=K6239Y94G5' >> "$second_app/identity-x86_64"
+print 'TeamIdentifier=FAKE123456' >> "$second_app/identity-x86_64"
 print 'CDHash=different-x86_64-hash' >> "$second_app/identity-x86_64"
 assert_fails release_policy_require_matching_apps "$first_app" "$second_app"
 unset SNIP_SNAP_CODESIGN
+
+verified_app="$test_root/verified/Snip Snap.app"
+/bin/mkdir -p "$verified_app/Contents/Resources"
+print '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>0.1.0</string><key>CFBundleVersion</key><string>1</string></dict></plist>' > \
+    "$verified_app/Contents/Info.plist"
+print '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>NSPrivacyTracking</key><false/></dict></plist>' > \
+    "$verified_app/Contents/Resources/PrivacyInfo.xcprivacy"
+assert_succeeds release_policy_verify_app "$verified_app"
+/bin/rm "$verified_app/Contents/Resources/PrivacyInfo.xcprivacy"
+assert_fails release_policy_verify_app "$verified_app"
 
 archive="$test_root/Snip-Snap-0.1.0.zip"
 checksum="$archive.sha256"

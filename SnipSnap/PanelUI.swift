@@ -204,10 +204,6 @@ extension PanelListHeader where Actions == EmptyView {
     }
 }
 
-enum PanelDropTargetStyle {
-    static let expansion: CGFloat = 6
-}
-
 enum PanelEdgeThickness {
     static let subtle: CGFloat = 0.5
     static let regular: CGFloat = 0.75
@@ -289,40 +285,6 @@ extension View {
             .contentShape(shape)
     }
 
-    func panelStandaloneActionControl(
-        edge: PanelGlassEdgeState = .standard
-    ) -> some View {
-        let shape = Circle()
-        return frame(
-            width: PanelControlMetrics.floatingRowHeight,
-            height: PanelControlMetrics.floatingRowHeight
-        )
-        .background {
-            shape
-                .fill(SnipSnapColors.standaloneActionFill)
-        }
-        .panelGlassSurface(
-            in: shape,
-            interactive: true,
-            edge: edge
-        )
-        .contentShape(shape)
-    }
-
-    func panelEmbeddedActionControl() -> some View {
-        let shape = Circle()
-        return frame(
-            width: PanelControlMetrics.compactControlLength,
-            height: PanelControlMetrics.compactControlLength
-        )
-        .panelGlassSurface(
-            in: shape,
-            interactive: true,
-            edge: .hidden
-        )
-        .contentShape(shape)
-    }
-
     func panelEmbeddedProminentActionControl() -> some View {
         modifier(PanelAdaptiveProminentActionModifier())
     }
@@ -395,27 +357,12 @@ extension View {
 private struct PanelAdaptiveProminentActionModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .buttonStyle(PanelSlimProminentActionStyle())
-    }
-}
-
-private struct PanelSlimProminentActionStyle: ButtonStyle {
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(SnipSnapColors.primaryActionLabel(for: colorScheme))
             .frame(
                 width: PanelControlMetrics.sendButtonWidth,
                 height: PanelControlMetrics.sendButtonHeight
             )
-            .background {
-                Capsule(style: .continuous)
-                    .fill(SnipSnapColors.primaryActionTint(for: colorScheme))
-            }
-            .contentShape(Capsule(style: .continuous))
-            .opacity(isEnabled ? (configuration.isPressed ? 0.78 : 1) : 0.28)
+            .buttonStyle(.glassProminent)
+            .buttonBorderShape(.capsule)
     }
 }
 

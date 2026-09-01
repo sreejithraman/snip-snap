@@ -1,4 +1,5 @@
 import AppKit
+import SnipSnapCore
 import CryptoKit
 import Foundation
 
@@ -286,7 +287,7 @@ actor ClipboardHistoryFileStore {
             try encoder.encode(entries).write(to: url, options: .atomic)
             return nil
         } catch {
-            return "Snip Snap could not save clipboard history. Snip Snap may lose new clipboard items when it quits."
+            return String(localized: "Snip Snap could not save clipboard history. Snip Snap may lose new clipboard items when it quits.")
         }
     }
 }
@@ -392,9 +393,7 @@ final class ClipboardHistory: ObservableObject {
     init(
         pasteboard: NSPasteboard = .general,
         defaults: UserDefaults = .standard,
-        storeURL: URL = SnipRepository.defaultStoreURL()
-            .deletingLastPathComponent()
-            .appendingPathComponent("clipboard.json")
+        storeURL: URL = ClipboardHistory.defaultStoreURL()
     ) {
         self.pasteboard = pasteboard
         self.defaults = defaults
@@ -412,6 +411,21 @@ final class ClipboardHistory: ObservableObject {
         pollingTimer.timer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.poll() }
         }
+    }
+
+    private static func defaultStoreURL() -> URL {
+        if let overridePath = ProcessInfo.processInfo.environment["SNIP_SNAP_STORE_PATH"],
+           !overridePath.isEmpty {
+            return URL(fileURLWithPath: overridePath, isDirectory: false)
+                .deletingLastPathComponent()
+                .appendingPathComponent("clipboard.json", isDirectory: false)
+        }
+        let fileManager = FileManager.default
+        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fileManager.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support", isDirectory: true)
+        return base.appendingPathComponent("Snip Snap", isDirectory: true)
+            .appendingPathComponent("clipboard.json", isDirectory: false)
     }
 
     deinit {

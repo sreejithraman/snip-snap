@@ -1,4 +1,5 @@
 import QuickLook
+import SnipSnapCore
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -20,6 +21,7 @@ struct ContentView: View {
     let coordinator: AppCoordinator
     @ObservedObject private var accessibilityPermissions: AccessibilityPermissionController
     @ObservedObject private var fileDropController: PanelFileDropController
+    private let accountNoticeModel: AppleAccountNoticeModel?
     private let dragSessionController: PanelDragSessionController
 
     @State private var entryDraft = ComposerDraft()
@@ -30,6 +32,7 @@ struct ContentView: View {
     @State private var fileImportTarget: FileImportTarget?
     @State private var pendingEditAttachmentImport: PendingEditAttachmentImport?
     @State private var showingClearClipboard = false
+    @State private var showingRecoveryReview = false
     @State private var measuredInlineEntryHeight = PanelControlMetrics.inlineEntryBaseHeight
     @State private var inlineEntryFieldHeight: CGFloat = 0
     @State private var isSavingInlineEntry = false
@@ -42,9 +45,11 @@ struct ContentView: View {
     init(
         coordinator: AppCoordinator,
         fileDropController: PanelFileDropController,
-        dragSessionController: PanelDragSessionController
+        dragSessionController: PanelDragSessionController,
+        accountNoticeModel: AppleAccountNoticeModel? = nil
     ) {
         self.coordinator = coordinator
+        self.accountNoticeModel = accountNoticeModel
         _accessibilityPermissions = ObservedObject(
             wrappedValue: coordinator.accessibilityPermissions
         )
@@ -66,6 +71,13 @@ struct ContentView: View {
                     )
             }
         }
+        .appToast(
+            $model.toast,
+            alignment: .top,
+            edge: .top,
+            onAction: model.performToastAction,
+            onDismiss: model.dismissToast
+        )
         .background {
             PanelDragRegion()
         }
@@ -115,6 +127,13 @@ struct ContentView: View {
     private var panelShell: some View {
         VStack(spacing: SnipSnapSpacing.relatedContent) {
             floatingHeader
+
+            if let accountNoticeModel, accountNoticeModel.notice != nil {
+                AppleAccountNoticeView(
+                    model: accountNoticeModel,
+                    accessibilityIdentifier: "apple-account-notice-main"
+                )
+            }
 
             if accessibilityPermissions.isSetupCardVisible {
                 AccessibilitySetupCard(controller: accessibilityPermissions)
@@ -175,6 +194,24 @@ struct ContentView: View {
                 isPresented: $showingNewList,
                 movesSelection: movesSelectionToNewList
             )
+        }
+        .sheet(isPresented: $showingRecoveryReview) {
+            MacRecoveryReviewSheet(model: model)
+        }
+        .confirmationDialog(
+            "Import this backup?",
+            isPresented: Binding(
+                get: { model.pendingImportPreview != nil },
+                set: { if !$0 { model.cancelBackupImport() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Import Backup") {
+                Task { await model.confirmBackupImport() }
+            }
+            Button("Cancel", role: .cancel) { model.cancelBackupImport() }
+        } message: {
+            Text("Review: \(model.importPreviewSummary). Snip Snap will merge these records with your saved snips.")
         }
         .sheet(isPresented: $accessibilityPermissions.isRepairPresented) {
             AccessibilityRepairView(controller: accessibilityPermissions)
@@ -259,6 +296,16 @@ struct ContentView: View {
             }
             .padding(.horizontal, SnipSnapSpacing.controlContentInset)
             .panelInputSurface()
+
+            if model.needsAttentionCount > 0 {
+                Button {
+                    showingRecoveryReview = true
+                } label: {
+                    Label("Needs Attention (\(model.needsAttentionCount))", systemImage: "exclamationmark.circle.fill")
+                }
+                .buttonStyle(.bordered)
+                .help("Review recovered edits")
+            }
 
             PanelMoreButton(
                 model: model,
@@ -376,7 +423,7 @@ struct ContentView: View {
 
     private var emptyStateTitle: String {
         if !model.query.isEmpty {
-            return "No matches"
+            return String(localized: "No matches")
         }
         return model.completionFilter.emptyStateTitle
     }
@@ -389,10 +436,12 @@ struct ContentView: View {
                 if !entryDraft.attachments.isEmpty {
                     AttachmentPreviewStrip(
                         items: draftAttachmentPreviewItems,
-                        onPreview: { url in
+                        onPreview: { item in
+                            guard let url = item.url else { return }
                             openAttachmentPreview(entryDraft.attachments, selectedURL: url)
                         },
-                        onRemove: { url in
+                        onRemove: { item in
+                            guard let url = item.url else { return }
                             removePreviewURL(url)
                             model.removeDraftAttachment(url, from: model.activeListID)
                             entryDraft = model.composerDraft(for: model.activeListID)
@@ -440,17 +489,17 @@ struct ContentView: View {
                     width: PanelControlMetrics.floatingIconLength,
                     height: PanelControlMetrics.floatingIconLength
                 )
-                .panelStandaloneActionControl(edge: .emphasized)
         }
         .menuIndicator(.hidden)
-        .buttonStyle(.plain)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
         .help("Add Attachment")
         .accessibilityLabel("Add Attachment")
     }
 
     private var inlineEntryField: some View {
         PanelMultilineTextInput(
-            "Add to \(model.activeList.name)…",
+            "Add to \(model.activeList.displayName)…",
             text: entryText,
             lineRange: PanelComposerMetrics.textLineRange,
             lineSpacing: PanelComposerMetrics.textLineSpacing,
@@ -492,8 +541,8 @@ struct ContentView: View {
         }
         .panelEmbeddedProminentActionControl()
         .disabled(!canSaveInlineEntry)
-        .accessibilityLabel("Add to \(model.activeList.name)")
-        .help("Add to \(model.activeList.name)")
+        .accessibilityLabel("Add to \(model.activeList.displayName)")
+        .help("Add to \(model.activeList.displayName)")
     }
 
     private var isInlineEntryExpanded: Bool {
@@ -641,7 +690,7 @@ struct ContentView: View {
         }
         do { try process.run() } catch {
             completion(false)
-            model.presentedError = "Snip Snap could not start screen capture."
+            model.presentedError = String(localized: "Snip Snap could not start screen capture.")
         }
     }
 

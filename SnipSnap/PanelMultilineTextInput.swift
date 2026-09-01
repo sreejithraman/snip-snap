@@ -1,4 +1,5 @@
 import AppKit
+import SnipSnapCore
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -50,7 +51,7 @@ enum PanelPastedImageStagingError: Error, LocalizedError, Sendable {
     case writeFailed
 
     var errorDescription: String? {
-        "Snip Snap could not prepare the pasted images."
+        String(localized: "Snip Snap could not prepare the pasted images.")
     }
 }
 

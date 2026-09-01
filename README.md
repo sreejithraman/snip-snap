@@ -33,21 +33,38 @@ system-wide capture and Shift shortcuts can work.
 Everything stays in a small panel where you can edit, copy, or drag snips back
 into your work.
 
-## Private on your Mac
+## Private by default
 
-Snip Snap stores snips and clipboard history on your Mac. It has no account,
-sync, or tracking. Release builds contact the public update feed to check for
-new versions.
+Snip Snap needs no sign-in and has no tracking. Snip Snap does not send
+local-only data to CloudKit. Turn on iCloud Sync to sync saved snips and
+attachments.
+
+With iCloud Sync on, Snip Snap stores saved snips and attachments in your
+private iCloud database. Snip Snap's maintainers cannot inspect your private
+records in CloudKit Console. Apple encrypts synced data in transit and at rest;
+Snip Snap stores user fields as encrypted values and file bytes as `CKAsset`
+data. Those user fields and attachments are end-to-end encrypted only when
+Advanced Data Protection is on for your iCloud account.
+
+Snip Snap supports iCloud Sync attachments up to 25 MiB each and 100 MiB total
+per snip. These are Snip Snap limits, not Apple limits. Local-only attachments
+do not use these sync limits.
+
+Release builds contact the public update feed to check for new versions.
 
 ## Build from source
 
-Use Xcode 26 or later:
+Use Xcode 26 or later. A clean checkout needs no Apple Developer account:
 
 ```sh
 ./scripts/build.sh
 ./scripts/test.sh
 ./scripts/run.sh
 ```
+
+The Dev app uses ad hoc signing by default. See
+[Build and signing setup](docs/building.md) for optional developer signing,
+Cloud and device needs, fork identifiers, and official releases.
 
 ## License
 

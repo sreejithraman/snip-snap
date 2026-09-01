@@ -3,18 +3,63 @@ set -euo pipefail
 
 script_dir="${0:A:h}"
 repo_dir="${script_dir:h}"
-derived_data="${SNIP_SNAP_DERIVED_DATA:-/tmp/snip-snap-derived-data}"
+run_mac_app_tests=YES
+ios_test_destination="${SNIP_SNAP_IOS_TEST_DESTINATION:-platform=iOS Simulator,name=iPhone 17 Pro,OS=latest}"
+
+if (( $# )); then
+    [[ "$#" == 1 && "$1" == --without-mac-app-tests ]] || {
+        print -u2 "Usage: $0 [--without-mac-app-tests]"
+        exit 2
+    }
+    run_mac_app_tests=NO
+fi
+
+source "$script_dir/derived-data.sh"
+snip_snap_claim_derived_data
+trap snip_snap_cleanup_derived_data EXIT
 
 "$script_dir/release-policy-tests.sh"
+"$script_dir/signing-policy-tests.sh"
+"$script_dir/testflight-policy-tests.sh"
+"$script_dir/testflight-tests.sh"
+"$script_dir/tracked-input-policy-tests.sh"
+"$script_dir/tracked-input-policy.sh"
 "$script_dir/showroom-delivery-tests.sh"
 "$script_dir/dev-slot-tests.sh"
 "$script_dir/build-tests.sh"
+"$script_dir/derived-data-tests.sh"
+"$script_dir/build-matrix-tests.sh"
+"$script_dir/release-matrix-tests-tests.sh"
+"$script_dir/cloud-dev-transport-contract-tests.sh"
+"$script_dir/cloud-dev-tests.sh"
+"$script_dir/ios-target-policy-tests.sh"
+"$script_dir/localization-policy-tests.sh"
+
+swift test --package-path "$repo_dir/Packages/SnipSnapLibrary"
+
+if [[ "$run_mac_app_tests" == YES ]]; then
+    mac_derived_data="$derived_data/mac"
+    mac_store_path="$derived_data/mac-test-store/snips.json"
+    SNIP_SNAP_STORE_PATH="$mac_store_path" xcodebuild \
+        -project "$repo_dir/SnipSnap.xcodeproj" \
+        -scheme SnipSnap \
+        -configuration Debug \
+        -destination 'platform=macOS' \
+        -derivedDataPath "$mac_derived_data" \
+        CODE_SIGNING_ALLOWED=NO \
+        SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER= \
+        test
+else
+    print "Public policy and package tests passed; the iOS release gate omits Mac app-host tests."
+fi
 
 xcodebuild \
     -project "$repo_dir/SnipSnap.xcodeproj" \
-    -scheme SnipSnap \
+    -scheme SnipSnapiOS \
     -configuration Debug \
-    -destination 'platform=macOS' \
-    -derivedDataPath "$derived_data" \
+    -destination "$ios_test_destination" \
+    -derivedDataPath "$derived_data/ios" \
     CODE_SIGNING_ALLOWED=NO \
+    SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER= \
+    -only-testing:SnipSnapiOSTests \
     test

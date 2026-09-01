@@ -69,7 +69,7 @@ release_policy_load_manifest() {
 }
 
 release_policy_require_project_versions() {
-    local project_path="$1"
+    local settings_path="$1"
     local value
     local found_marketing=0
     local found_build=0
@@ -81,7 +81,8 @@ release_policy_require_project_versions() {
             return 1
         }
     done < <(/usr/bin/sed -nE \
-        's/^[[:space:]]*MARKETING_VERSION = ([^;]+);/\1/p' "$project_path")
+        's/^[[:space:]]*MARKETING_VERSION = ([^;[:space:]]+);?[[:space:]]*$/\1/p' \
+        "$settings_path")
 
     while IFS= read -r value; do
         found_build=1
@@ -90,14 +91,15 @@ release_policy_require_project_versions() {
             return 1
         }
     done < <(/usr/bin/sed -nE \
-        's/^[[:space:]]*CURRENT_PROJECT_VERSION = ([^;]+);/\1/p' "$project_path")
+        's/^[[:space:]]*CURRENT_PROJECT_VERSION = ([^;[:space:]]+);?[[:space:]]*$/\1/p' \
+        "$settings_path")
 
     (( found_marketing )) || {
-        release_policy_fail "Xcode has no MARKETING_VERSION"
+        release_policy_fail "build settings have no MARKETING_VERSION"
         return 1
     }
     (( found_build )) || {
-        release_policy_fail "Xcode has no CURRENT_PROJECT_VERSION"
+        release_policy_fail "build settings have no CURRENT_PROJECT_VERSION"
         return 1
     }
 }
@@ -154,7 +156,7 @@ release_policy_preflight() {
 
     release_policy_load_manifest "$repo_dir/release.json" || return 1
     release_policy_require_project_versions \
-        "$repo_dir/SnipSnap.xcodeproj/project.pbxproj" || return 1
+        "$repo_dir/Config/Shared.xcconfig" || return 1
     release_policy_require_source "$repo_dir" "$release_repo" || return 1
     case "$mode" in
         release)
@@ -363,11 +365,20 @@ release_policy_require_new_notary_build() {
 release_policy_verify_app() {
     local app_path="$1"
     local plist="$app_path/Contents/Info.plist"
+    local privacy_manifest="$app_path/Contents/Resources/PrivacyInfo.xcprivacy"
     local app_version
     local app_build
 
     [[ -f "$plist" ]] || {
         release_policy_fail "missing app Info.plist"
+        return 1
+    }
+    [[ -f "$privacy_manifest" ]] || {
+        release_policy_fail "missing Mac privacy manifest"
+        return 1
+    }
+    /usr/bin/plutil -lint "$privacy_manifest" >/dev/null 2>&1 || {
+        release_policy_fail "invalid Mac privacy manifest"
         return 1
     }
     app_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" || {

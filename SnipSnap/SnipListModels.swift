@@ -1,4 +1,5 @@
 import CoreTransferable
+import SnipSnapCore
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
@@ -10,6 +11,7 @@ extension UTType {
 struct SnipDragPayload: Codable, Equatable, Sendable, Transferable {
     let ids: [UUID]
     let text: String
+    let attachmentIDs: [UUID]
     let attachmentURLs: [URL]
     let previewSourceLabel: String
     let previewIsDone: Bool
@@ -17,12 +19,14 @@ struct SnipDragPayload: Codable, Equatable, Sendable, Transferable {
     init(
         ids: [UUID],
         text: String,
+        attachmentIDs: [UUID] = [],
         attachmentURLs: [URL] = [],
-        previewSourceLabel: String = "Snip Snap",
+        previewSourceLabel: String = String(localized: "Snip Snap"),
         previewIsDone: Bool = false
     ) {
         self.ids = ids
         self.text = text
+        self.attachmentIDs = attachmentIDs
         self.attachmentURLs = attachmentURLs
         self.previewSourceLabel = previewSourceLabel
         self.previewIsDone = previewIsDone
@@ -40,21 +44,30 @@ struct SnipDragPayload: Codable, Equatable, Sendable, Transferable {
 
     static func make(
         snips: [Snip],
-        attachmentURL: ((SnipAttachment) -> URL)?
+        attachmentURL: ((SnipAttachment) -> URL?)?
     ) -> SnipDragPayload {
-        SnipDragPayload(
+        var seenAttachmentIDs: Set<UUID> = []
+        let attachments = snips.flatMap(\.attachments).filter {
+            seenAttachmentIDs.insert($0.id).inserted
+        }
+        return SnipDragPayload(
             ids: snips.map(\.id),
             text: snips.count == 1
                 ? snips[0].content
                 : SnipFormatter.formatInGivenOrder(snips: snips),
+            attachmentIDs: attachments.map(\.id),
             attachmentURLs: attachmentURL.map { resolve in
-                snips.flatMap(\.attachments).map(resolve)
+                attachments.compactMap(resolve)
             } ?? [],
             previewSourceLabel: snips.count == 1
                 ? snips[0].displaySourceLabel
-                : "\(snips.count) snips",
+                : String(localized: "\(snips.count) snips"),
             previewIsDone: snips.allSatisfy(\.isDone)
         )
+    }
+
+    var hasRemoteOnlyAttachments: Bool {
+        attachmentURLs.count < attachmentIDs.count
     }
 }
 
@@ -155,7 +168,7 @@ struct SnipListSnapshot {
         lists: [SnipList],
         selection: Set<UUID>,
         keepsEmptyListID: UUID? = nil,
-        attachmentURL: ((SnipAttachment) -> URL)? = nil
+        attachmentURL: ((SnipAttachment) -> URL?)? = nil
     ) {
         groups = Self.groups(
             for: visibleSnips,
@@ -182,7 +195,7 @@ struct SnipListSnapshot {
         return SnipDragPayload.make(snips: [snip], attachmentURL: attachmentURL)
     }
 
-    private let attachmentURL: ((SnipAttachment) -> URL)?
+    private let attachmentURL: ((SnipAttachment) -> URL?)?
 
     private static func groups(
         for snips: [Snip],
@@ -193,7 +206,7 @@ struct SnipListSnapshot {
         return lists.compactMap { list in
             let snips = grouped[list.id] ?? []
             guard !snips.isEmpty || list.id == keepsEmptyListID else { return nil }
-            return SnipListGroup(listID: list.id, listName: list.name, snips: snips)
+            return SnipListGroup(listID: list.id, listName: list.displayName, snips: snips)
         }
     }
 }
@@ -310,83 +323,5 @@ enum SnipSelection {
         guard let anchorIndex = orderedIDs.firstIndex(of: anchor),
               let focusIndex = orderedIDs.firstIndex(of: focus) else { return [] }
         return Set(orderedIDs[min(anchorIndex, focusIndex)...max(anchorIndex, focusIndex)])
-    }
-}
-
-enum SnipFilter {
-    static func apply(
-        snips: [Snip],
-        query: String,
-        completionFilter: SnipCompletionFilter,
-        listNames: [UUID: String] = [:]
-    ) -> [Snip] {
-        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return snips.filter { snip in
-            switch completionFilter {
-            case .all:
-                break
-            case .done:
-                guard snip.isDone else { return false }
-            case .notDone:
-                guard !snip.isDone else { return false }
-            }
-            guard !needle.isEmpty else { return true }
-            return snip.content.localizedCaseInsensitiveContains(needle)
-                || snip.attachments.contains { $0.fileName.localizedCaseInsensitiveContains(needle) }
-                || listNames[snip.listID]?.localizedCaseInsensitiveContains(needle) == true
-                || snip.displaySourceLabel.localizedCaseInsensitiveContains(needle)
-                || snip.source?.url?.localizedCaseInsensitiveContains(needle) == true
-        }
-    }
-}
-
-enum SnipFormatter {
-    static func formatForClipboard(snips: [Snip]) -> String {
-        guard snips.count != 1 else { return snips[0].content }
-        return formatAsList(snips: snips)
-    }
-
-    static func format(snips: [Snip]) -> String {
-        sorted(snips)
-            .map(format)
-            .joined(separator: "\n\n---\n\n")
-    }
-
-    private static func formatAsList(snips: [Snip]) -> String {
-        sorted(snips)
-            .map { snip in
-                let indented = format(snip).replacingOccurrences(of: "\n", with: "\n  ")
-                return "- \(indented)"
-            }
-            .joined(separator: "\n")
-    }
-
-    static func formatInGivenOrder(snips: [Snip]) -> String {
-        snips
-            .map(format)
-            .joined(separator: "\n\n---\n\n")
-    }
-
-    private static func sorted(_ snips: [Snip]) -> [Snip] {
-        snips.sorted { lhs, rhs in
-            if lhs.createdAt != rhs.createdAt {
-                return lhs.createdAt < rhs.createdAt
-            }
-            return lhs.id.uuidString < rhs.id.uuidString
-        }
-    }
-
-    private static func format(_ snip: Snip) -> String {
-        var parts = [snip.content]
-        if let source = snip.source {
-            let label = source.conciseLabel
-            if !label.isEmpty {
-                parts.append("Source: \(label)")
-            }
-            if let url = source.url, !url.isEmpty {
-                parts.append("URL: \(url)")
-            }
-        }
-        return parts.joined(separator: "\n")
     }
 }

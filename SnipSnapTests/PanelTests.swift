@@ -1,7 +1,9 @@
 import XCTest
+import SnipSnapCore
 import AppKit
 import SwiftUI
 @testable import SnipSnap
+@testable import SnipSnapPersistence
 
 // SwiftUI may still resolve Transferable metadata after this test returns.
 // Keep its host alive until the short-lived test process exits.
@@ -31,6 +33,11 @@ private final class PanelResizeCancelResponder: NSResponder {
     }
 }
 
+private actor PanelAppleAccountCacheHandler: AppleAccountCacheHandling {
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { .signedOut }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
+}
+
 @MainActor
 private final class PanelTextValue {
     var text: String
@@ -41,6 +48,108 @@ private final class PanelTextValue {
 }
 
 final class PanelTests: StoreBackedTestCase {
+    @MainActor
+    func testMainPanelRendersNeedsAttentionWithBothSafeChoices() async throws {
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: "Snip SnapPanelAccountNoticeTests-\(UUID().uuidString)")
+        )
+        let model = AppModel(
+            library: try JSONSnipLibrary(fileURL: try storeURL()),
+            defaults: defaults
+        )
+        let settings = ShortcutSettings(defaults: defaults)
+        let noticeModel = AppleAccountNoticeModel(
+            notice: .signedOut,
+            handler: PanelAppleAccountCacheHandler()
+        )
+        let rootView = ContentView(
+            coordinator: AppCoordinator(model: model, shortcutSettings: settings),
+            fileDropController: PanelFileDropController(),
+            dragSessionController: PanelDragSessionController(),
+            accountNoticeModel: noticeModel
+        )
+        .environmentObject(model)
+        .environmentObject(settings)
+        let hostingView = NSHostingView(rootView: rootView)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 620, height: 720)
+        let window = NSWindow(
+            contentRect: hostingView.frame,
+            styleMask: [],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.orderFrontRegardless()
+        hostingView.layoutSubtreeIfNeeded()
+        hostingView.displayIfNeeded()
+        await Task.yield()
+        hostingView.layoutSubtreeIfNeeded()
+
+        let bitmap = try XCTUnwrap(
+            hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds)
+        )
+        hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+        let image = NSImage(size: hostingView.bounds.size)
+        image.addRepresentation(bitmap)
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "Mac main panel signed-out notice"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
+        XCTAssertTrue(noticeModel.showsResolutionActions)
+        XCTAssertEqual(noticeModel.title, "Signed Out of iCloud")
+        processLifetimePanelSearchWindows.append(window)
+    }
+
+    @MainActor
+    func testMacApplicationBootstrapUsesMigratedSwiftDataForSavedSnipCommands() async throws {
+        let jsonURL = try storeURL()
+        let json = try JSONSnipLibrary(fileURL: jsonURL)
+        _ = try await json.perform(
+            .add(
+                content: "Before migration",
+                origin: .selection,
+                source: SnipSource(
+                    applicationName: "Safari",
+                    windowTitle: "Reference",
+                    url: "https://example.com"
+                ),
+                listID: SnipList.inboxID,
+                attachmentURLs: [],
+                requestID: UUID(),
+                now: Date(timeIntervalSince1970: 100)
+            ),
+            sortedBy: .manual
+        )
+
+        let opened = SnipSnapApplicationDelegate.openLibrary(jsonURL: jsonURL)
+        XCTAssertEqual(opened.mode, .swiftData)
+        let defaultsName = "SnipSnapSwiftDataWiring-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        addTeardownBlock { UserDefaults.standard.removePersistentDomain(forName: defaultsName) }
+        let clipboardURL = jsonURL.deletingLastPathComponent().appendingPathComponent("clipboard.json")
+        let clipboard = ClipboardHistory(
+            pasteboard: NSPasteboard(name: .init("SnipSnapSwiftDataWiring-\(UUID().uuidString)")),
+            defaults: defaults,
+            storeURL: clipboardURL
+        )
+        let model = AppModel(
+            library: opened.library,
+            defaults: defaults,
+            clipboardHistory: clipboard,
+            initialError: opened.errorMessage
+        )
+        await model.reload()
+        XCTAssertEqual(model.snips.map(\.content), ["Before migration"])
+
+        let added = await model.add(content: "After migration", origin: .quickEntry)
+        XCTAssertTrue(added)
+        let reopened = SnipSnapApplicationDelegate.openLibrary(jsonURL: jsonURL)
+        XCTAssertEqual(reopened.mode, .swiftData)
+        let snapshot = await reopened.library.snapshot(sortedBy: .chronological)
+        XCTAssertEqual(Set(snapshot.snips.map(\.content)), ["Before migration", "After migration"])
+    }
+
     @MainActor
     func testGlobalSearchUsesOneScrollViewForSavedAndClipboardResults() async throws {
         let clipboardEntry = ClipboardEntry(
@@ -76,7 +185,7 @@ final class PanelTests: StoreBackedTestCase {
         await history.waitForInitialLoad()
 
         let model = AppModel(
-            repository: try SnipRepository(fileURL: try storeURL()),
+            library: try JSONSnipLibrary(fileURL: try storeURL()),
             defaults: defaults,
             clipboardHistory: history
         )
@@ -147,6 +256,10 @@ final class PanelTests: StoreBackedTestCase {
         XCTAssertEqual(
             DevelopmentBuildIdentity(bundleIdentifier: "world.sree.snipsnap.dev3")?.slot,
             3
+        )
+        XCTAssertEqual(
+            DevelopmentBuildIdentity(bundleIdentifier: "org.example.fork.dev4")?.slot,
+            4
         )
         XCTAssertNil(DevelopmentBuildIdentity(bundleIdentifier: "world.sree.snipsnap"))
         XCTAssertNil(DevelopmentBuildIdentity(bundleIdentifier: "world.sree.snipsnap.dev03"))
@@ -248,7 +361,7 @@ final class PanelTests: StoreBackedTestCase {
             storeURL: clipboardURL
         )
         let model = AppModel(
-            repository: try SnipRepository(fileURL: storeURL()),
+            library: try JSONSnipLibrary(fileURL: storeURL()),
             defaults: defaults,
             clipboardHistory: history
         )
@@ -770,7 +883,9 @@ final class PanelTests: StoreBackedTestCase {
         let hostingView = NSHostingView(rootView: input)
         window.contentView = hostingView
         window.makeKeyAndOrderFront(nil)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        defer { window.orderOut(nil) }
+        hostingView.layoutSubtreeIfNeeded()
+        hostingView.displayIfNeeded()
 
         let textField = try XCTUnwrap(findTextField(in: hostingView))
         let cell = try XCTUnwrap(textField.cell)
@@ -1482,11 +1597,6 @@ final class PanelTests: StoreBackedTestCase {
             PanelGlassEdgeState.emphasized.style.color,
             PanelGlassEdgeState.focused.style.color
         )
-    }
-
-    func testPrimaryActionTintUsesExactThemeContrast() {
-        XCTAssertEqual(SnipSnapColors.primaryActionTint(for: .light), .black)
-        XCTAssertEqual(SnipSnapColors.primaryActionTint(for: .dark), .white)
     }
 
     func testElevatedListHeaderTintUsesTheInversePrimaryAsset() {

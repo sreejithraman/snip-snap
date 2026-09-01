@@ -11,6 +11,7 @@ export SNIP_SNAP_DEV_SLOT=2
 export SNIP_SNAP_DEV_STATE_DIR="$test_dir/dev-state"
 export SNIP_SNAP_DEV_WORKTREE="$test_dir/worktree"
 export SNIP_SNAP_SHOWROOM_STATE_DIR="$test_dir/showroom-state"
+unset SNIP_SNAP_DERIVED_DATA
 /bin/mkdir -p "$SNIP_SNAP_DEV_WORKTREE"
 /bin/mkdir -p "$SNIP_SNAP_SHOWROOM_STATE_DIR"
 
@@ -39,6 +40,27 @@ fi
 /usr/bin/grep -F -- \
     'delivery = ["scripts/run.sh"]' \
     "$script_dir/../.showroom.toml" >/dev/null
+ios_description="$(zsh "$script_dir/showroom-ios-delivery.sh" describe --json)"
+print -r -- "$ios_description" | /usr/bin/ruby -rjson -e '
+data = JSON.parse(STDIN.read)
+abort unless data.fetch("protocol_version") == 1
+device = data.fetch("surfaces").fetch("device")
+abort unless device.fetch("start") == ["device-start"]
+abort unless device.fetch("verify") == ["device-verify"]
+'
+/usr/bin/grep -F -- \
+    'delivery = ["scripts/showroom-ios-delivery.sh"]' \
+    "$script_dir/../.showroom.toml" >/dev/null
+zsh "$script_dir/showroom-ios-delivery.sh" \
+    device-verify \
+    --result-json "$test_dir/ios-device-result.json"
+/usr/bin/ruby -rjson -e '
+data = JSON.parse(File.read(ARGV.fetch(0)))
+abort unless data.fetch("surface") == "device"
+abort unless data.fetch("operation") == "verify"
+abort unless data.fetch("verification").fetch("status") == "blocked"
+abort unless data.fetch("location").fetch("command") == ["scripts/cloud-dev.sh", "build"]
+' "$test_dir/ios-device-result.json"
 
 "$script_dir/run.sh" \
     device-verify \
@@ -99,7 +121,12 @@ abort unless data.fetch("verification").fetch("status") == "failed"
 
 /bin/mkdir -p "$test_dir/bin"
 print -r -- '#!/bin/zsh
-print -r -- "$@" > "$SNIP_SNAP_BUILD_ARGS_FILE"' > "$test_dir/bin/xcodebuild"
+if [[ "$*" == *-showBuildSettings* ]]; then
+    print "    DEVELOPMENT_TEAM ="
+    print "    SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER = world.sree.snipsnap"
+else
+    print -r -- "$@" > "$SNIP_SNAP_BUILD_ARGS_FILE"
+fi' > "$test_dir/bin/xcodebuild"
 /bin/chmod +x "$test_dir/bin/xcodebuild"
 PATH="$test_dir/bin:$PATH" \
     SNIP_SNAP_BUILD_ARGS_FILE="$test_dir/build-args" \

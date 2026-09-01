@@ -1,5 +1,7 @@
 import AppKit
+import SnipSnapCore
 import SwiftUI
+
 
 enum PanelFocusTarget: Hashable {
     case list
@@ -19,95 +21,6 @@ private enum SnipListScrollTarget {
 
 private let clipboardSectionHeaderID = UUID()
 
-@MainActor
-private final class SnipListReorderGeometry: ObservableObject {
-    var rowFrames: [UUID: CGRect] = [:]
-    var listFrame: CGRect = .zero
-    var scrollOffsetY: CGFloat = 0
-}
-
-private struct SnipListWindowFrameReader: NSViewRepresentable {
-    let onChange: @MainActor (CGRect, CGFloat) -> Void
-
-    func makeNSView(context: Context) -> SnipListWindowFrameReaderView {
-        SnipListWindowFrameReaderView(onChange: onChange)
-    }
-
-    func updateNSView(_ nsView: SnipListWindowFrameReaderView, context: Context) {
-        nsView.onChange = onChange
-        nsView.reportFrameIfNeeded()
-    }
-}
-
-@MainActor
-private final class SnipListWindowFrameReaderView: NSView {
-    var onChange: @MainActor (CGRect, CGFloat) -> Void
-    private var lastFrame: CGRect?
-    private var lastScrollOffsetY: CGFloat?
-    private weak var observedClipView: NSClipView?
-
-    init(onChange: @escaping @MainActor (CGRect, CGFloat) -> Void) {
-        self.onChange = onChange
-        super.init(frame: .zero)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override func layout() {
-        super.layout()
-        observeScrollIfNeeded()
-        reportFrameIfNeeded()
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        observeScrollIfNeeded()
-        reportFrameIfNeeded()
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
-
-    func reportFrameIfNeeded() {
-        guard window != nil else { return }
-        let nextFrame = convert(bounds, to: nil)
-        let nextScrollOffsetY = enclosingScrollView?.contentView.bounds.origin.y ?? 0
-        guard nextFrame != lastFrame || nextScrollOffsetY != lastScrollOffsetY else { return }
-        lastFrame = nextFrame
-        lastScrollOffsetY = nextScrollOffsetY
-        onChange(nextFrame, nextScrollOffsetY)
-    }
-
-    private func observeScrollIfNeeded() {
-        let clipView = window == nil ? nil : enclosingScrollView?.contentView
-        guard observedClipView !== clipView else { return }
-        if let observedClipView {
-            NotificationCenter.default.removeObserver(
-                self,
-                name: NSView.boundsDidChangeNotification,
-                object: observedClipView
-            )
-        }
-        observedClipView = clipView
-        guard let clipView else { return }
-        clipView.postsBoundsChangedNotifications = true
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(clipViewBoundsDidChange),
-            name: NSView.boundsDidChangeNotification,
-            object: clipView
-        )
-    }
-
-    @objc
-    private func clipViewBoundsDidChange(_ notification: Notification) {
-        reportFrameIfNeeded()
-    }
-}
 
 @MainActor
 final class SnipListState: ObservableObject {
@@ -148,6 +61,7 @@ final class SnipListState: ObservableObject {
 }
 
 struct SnipListView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var model: AppModel
     let coordinator: AppCoordinator
     let dragSessionController: PanelDragSessionController
@@ -240,7 +154,7 @@ struct SnipListView: View {
                             }
                         } header: {
                             listSectionHeader(
-                                model.activeList.name,
+                                model.activeList.displayName,
                                 listID: model.activeListID
                             )
                         }
@@ -276,7 +190,7 @@ struct SnipListView: View {
             }
             .onChange(of: model.sortMode) {
                 if let selectedID = orderedSnipIDs.first(where: model.selection.contains) {
-                    withAnimation(.snappy(duration: 0.18)) {
+                    animateIfAllowed(.snappy(duration: 0.18)) {
                         proxy.scrollTo(selectedID, anchor: .center)
                     }
                 }
@@ -312,7 +226,7 @@ struct SnipListView: View {
                     model.snips.first(where: { $0.id == snipID }).map { snip in
                         InlineEditSession(
                             snipID: snipID,
-                            attachments: snip.attachments.map(model.attachmentURL)
+                            attachments: snip.attachments.compactMap(model.attachmentURL)
                         )
                     }
                 }
@@ -320,7 +234,7 @@ struct SnipListView: View {
                       snapshot.orderedVisibleIDs.contains(editingID) else { return }
                 Task { @MainActor in
                     await Task.yield()
-                    withAnimation(.snappy(duration: 0.18)) {
+                    animateIfAllowed(.snappy(duration: 0.18)) {
                         proxy.scrollTo(editingID, anchor: .center)
                     }
                     try? await Task.sleep(for: .milliseconds(220))
@@ -371,7 +285,7 @@ struct SnipListView: View {
         } else {
             session = InlineEditSession(
                 snipID: snipID,
-                attachments: snip.attachments.map(model.attachmentURL)
+                attachments: snip.attachments.compactMap(model.attachmentURL)
             )
         }
         guard !session.isSaving else { return }
@@ -390,7 +304,7 @@ struct SnipListView: View {
     ) {
         Task { @MainActor in
             await Task.yield()
-            withAnimation(.snappy(duration: 0.18)) {
+            animateIfAllowed(.snappy(duration: 0.18)) {
                 switch destination {
                 case .scrollViewTop:
                     proxy.scrollTo(SnipListScrollTarget.top, anchor: .top)
@@ -504,6 +418,14 @@ struct SnipListView: View {
             previewImage: { export, context in
                 SnipDragPreview.image(for: export.payload, in: context)
             },
+            canBegin: { !payload.hasRemoteOnlyAttachments },
+            onBlocked: {
+                Task { @MainActor in
+                    _ = await model.prepareAttachmentsForExternalDrag(
+                        snipIDs: payload.ids
+                    )
+                }
+            },
             callbacks: PanelDragSessionCallbacks(
                 onBegan: {
                     beginDrag(payload, orderedIDs: snips.map(\.id))
@@ -569,7 +491,7 @@ struct SnipListView: View {
             target: target
         ) else { return }
         guard pendingOrderByList[listID] != reorderedIDs else { return }
-        withAnimation(.easeOut(duration: 0.12)) {
+        animateIfAllowed(.easeOut(duration: 0.12)) {
             pendingOrderByList[listID] = reorderedIDs
         }
     }
@@ -618,7 +540,7 @@ struct SnipListView: View {
             return
         }
         if outcome == .copy {
-            model.markDoneAfterExternalDrop(ids: payload.ids)
+            model.setDoneAfterExternalDrop(ids: payload.ids)
         }
         guard outcome == .move else {
             clearDrag(listID: listID)
@@ -636,7 +558,7 @@ struct SnipListView: View {
     }
 
     private func clearDrag(listID: UUID) {
-        withAnimation(.snappy(duration: 0.12)) {
+        animateIfAllowed(.snappy(duration: 0.12)) {
             pendingOrderByList[listID] = nil
             activeDragPayload = nil
             activeDragOriginalOrder = []
@@ -644,6 +566,17 @@ struct SnipListView: View {
             activeDragRowFrames = [:]
             activeDropTarget = nil
             isCommittingDrop = false
+        }
+    }
+
+    private func animateIfAllowed(
+        _ animation: Animation,
+        changes: () -> Void
+    ) {
+        if reduceMotion {
+            changes()
+        } else {
+            withAnimation(animation, changes)
         }
     }
 
@@ -690,12 +623,14 @@ struct SnipListView: View {
     private func snipCard(_ snip: Snip) -> some View {
         SnipCardRow(
             snip: snip,
+            isRecovered: model.isRecoveredSnip(snip.id),
             isSelected: (contextMenuSelection ?? model.selection).contains(snip.id),
             isEditing: model.editingID == snip.id,
             editAttachments: editAttachmentsBinding(for: snip),
             isSaving: savingBinding(for: snip),
             attachmentURL: model.attachmentURL,
-            onPreviewAttachments: onPreviewAttachments,
+            onPreviewSavedAttachments: previewSavedAttachments,
+            onPreviewLocalAttachments: onPreviewAttachments,
             onRemovePreviewURL: onRemovePreviewURL,
             onSelect: { select(snip.id) },
             onOpen: { edit(snip.id) },
@@ -773,11 +708,28 @@ struct SnipListView: View {
         }
     }
 
+    private func previewSavedAttachments(
+        _ attachments: [SnipAttachment],
+        selected: SnipAttachment
+    ) {
+        Task { @MainActor in
+            do {
+                guard let preview = try await model.prepareAttachmentPreview(
+                    attachments,
+                    selected: selected
+                ) else { return }
+                onPreviewAttachments(preview.urls, preview.selectedURL)
+            } catch {
+                model.presentedError = error.localizedDescription
+            }
+        }
+    }
+
     private func editAttachmentsBinding(for snip: Snip) -> Binding<[URL]> {
         Binding(
             get: {
                 guard let editSession, editSession.snipID == snip.id else {
-                    return snip.attachments.map(model.attachmentURL)
+                    return snip.attachments.compactMap(model.attachmentURL)
                 }
                 return editSession.attachments
             },
@@ -801,7 +753,7 @@ struct SnipListView: View {
                 if let editSession, editSession.snipID == snip.id {
                     attachments = editSession.attachments
                 } else {
-                    attachments = snip.attachments.map(model.attachmentURL)
+                    attachments = snip.attachments.compactMap(model.attachmentURL)
                 }
                 editSession = InlineEditSession(
                     snipID: snip.id,
@@ -828,7 +780,10 @@ struct SnipListView: View {
     private func edit(_ id: UUID) {
         selectExclusively(id)
         focusedTarget = nil
-        model.editingID = id
+        Task { @MainActor in
+            let opened = await model.beginEditing(id)
+            if !opened { focusedTarget = .list }
+        }
     }
 
     private func selectExclusively(_ id: UUID) {
@@ -913,23 +868,23 @@ struct SnipListView: View {
         ) {
             perform(.merge, on: ids)
         }
-        menu.addPanelSubmenu("Move to") { submenu in
+        menu.addPanelSubmenu(String(localized: "Move to")) { submenu in
             for list in model.lists {
-                submenu.addPanelAction(list.name) {
+                submenu.addPanelAction(list.displayName) {
                     model.selection = ids
                     model.moveSelection(to: list.id)
                 }
             }
             submenu.addItem(.separator())
-            submenu.addPanelAction("New List…") {
+            submenu.addPanelAction(String(localized: "New List…")) {
                 moveSelectionToNewList(ids)
             }
         }
-        menu.addPanelAction("Move Up", isEnabled: canReorder(ids)) {
+        menu.addPanelAction(String(localized: "Move Up"), isEnabled: canReorder(ids)) {
             model.selection = ids
             model.moveSelectionUp()
         }
-        menu.addPanelAction("Move Down", isEnabled: canReorder(ids)) {
+        menu.addPanelAction(String(localized: "Move Down"), isEnabled: canReorder(ids)) {
             model.selection = ids
             model.moveSelectionDown()
         }

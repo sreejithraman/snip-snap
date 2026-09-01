@@ -1,4 +1,5 @@
 import XCTest
+import SnipSnapCore
 import AppKit
 @testable import SnipSnap
 

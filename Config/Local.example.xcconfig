@@ -1,0 +1,16 @@
+// Copy this file to Local.xcconfig. The copied file stays out of Git.
+// Leave values blank when you only need unsigned builds or an ad hoc Dev app.
+
+DEVELOPMENT_TEAM =
+
+// Forks may replace these public names without editing the Xcode project.
+// SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER = org.example.snipsnap
+// SNIP_SNAP_APP_GROUP_IDENTIFIER = group.org.example.snipsnap
+// SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER = iCloud.org.example.snipsnap
+// CODE_SIGN_ENTITLEMENTS = Config/LocalMac.entitlements
+// SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS = Config/LocalIOS.entitlements
+
+// The signed Dev lane adds .dev to the iOS app and App Group identifiers.
+// Override them only when your registered development identifiers differ.
+// SNIP_SNAP_DEV_IOS_PRODUCT_BUNDLE_IDENTIFIER = org.example.snipsnap.ios.dev
+// SNIP_SNAP_DEV_APP_GROUP_IDENTIFIER = group.org.example.snipsnap.dev

@@ -1,7 +1,9 @@
 import XCTest
+import SnipSnapCore
 import AppKit
 import Carbon.HIToolbox
 @testable import SnipSnap
+@testable import SnipSnapPersistence
 
 final class AppCoordinatorTests: StoreBackedTestCase {
     @MainActor
@@ -18,7 +20,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             storeURL: try storeURL().deletingLastPathComponent().appendingPathComponent("clipboard.json")
         )
         let model = AppModel(
-            repository: try SnipRepository(fileURL: storeURL()),
+            library: try JSONSnipLibrary(fileURL: storeURL()),
             defaults: defaults,
             clipboardHistory: history
         )
@@ -90,8 +92,8 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testStartShowsAccessibilitySetupCardBeforeRequestingIt() throws {
-        let repository = try SnipRepository(fileURL: storeURL())
-        let model = AppModel(repository: repository)
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let model = AppModel(library: repository)
         let suiteName = "Snip SnapShortcutTrustTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -145,14 +147,14 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
         coordinator.accessibilityPermissions.performMenuAction()
 
-        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(requestCount, 2)
         XCTAssertEqual(openSettingsCount, 1)
     }
 
     @MainActor
     func testStartOffersAccessibilitySetupWithoutDoubleShiftShortcuts() throws {
-        let repository = try SnipRepository(fileURL: storeURL())
-        let model = AppModel(repository: repository)
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let model = AppModel(library: repository)
         let suiteName = "Snip SnapShortcutTrustTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -190,9 +192,33 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testRepairActionRequestsAccessAgainForCurrentUntrustedApp() throws {
+        let suiteName = "Snip SnapAccessibilityRepairTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(
+            true,
+            forKey: AccessibilityPermissionController.didRequestAccessDefaultsKey
+        )
+        var requestCount = 0
+        var openSettingsCount = 0
+        let controller = AccessibilityPermissionController(
+            defaults: defaults,
+            isTrusted: { false },
+            requestTrust: { requestCount += 1 },
+            openSettings: { openSettingsCount += 1 }
+        )
+
+        controller.performPrimaryAction()
+
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(openSettingsCount, 1)
+    }
+
+    @MainActor
     func testTrustedStartDoesNotOfferOrRequestAccessibility() throws {
-        let repository = try SnipRepository(fileURL: storeURL())
-        let model = AppModel(repository: repository)
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let model = AppModel(library: repository)
         var requestCount = 0
         var openSettingsCount = 0
         let coordinator = AppCoordinator(
@@ -220,8 +246,8 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testCapturePresentsAccessibilityRepairWithoutRequestingIt() throws {
-        let repository = try SnipRepository(fileURL: storeURL())
-        let model = AppModel(repository: repository)
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let model = AppModel(library: repository)
         let panel = NSWindow()
         defer { panel.orderOut(nil) }
         var requestCount = 0
@@ -242,8 +268,8 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testDeferredAccessibilitySetupStaysQuietOnNextStart() throws {
-        let repository = try SnipRepository(fileURL: storeURL())
-        let model = AppModel(repository: repository)
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let model = AppModel(library: repository)
         let suiteName = "Snip SnapDeferredAccessibilityTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -275,8 +301,8 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testGrantRefreshRestartsShortcutsAndHidesPermissionUI() throws {
-        let repository = try SnipRepository(fileURL: storeURL())
-        let model = AppModel(repository: repository)
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let model = AppModel(library: repository)
         let suiteName = "Snip SnapAccessibilityGrantTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -308,8 +334,8 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testCoordinatorKeepsTheExactPanelWindow() throws {
-        let repository = try SnipRepository(fileURL: storeURL())
-        let model = AppModel(repository: repository)
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let model = AppModel(library: repository)
         let settings = ShortcutSettings()
         let coordinator = AppCoordinator(
             model: model,
@@ -329,9 +355,9 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     func testComposerExpansionGrowsPanelDownwardAndPreservesBaseHeight() throws {
         let autosaveName = NSWindow.FrameAutosaveName("AppCoordinatorTests-\(UUID().uuidString)")
         defer { NSWindow.removeFrame(usingName: autosaveName) }
-        let repository = try SnipRepository(fileURL: storeURL())
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
         let coordinator = AppCoordinator(
-            model: AppModel(repository: repository),
+            model: AppModel(library: repository),
             shortcutSettings: ShortcutSettings(),
             isAccessibilityTrusted: { true }
         )
@@ -361,9 +387,9 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testComposerExpansionDoesNotRepeatDuringReentrantWindowLayout() throws {
-        let repository = try SnipRepository(fileURL: storeURL())
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
         let coordinator = AppCoordinator(
-            model: AppModel(repository: repository),
+            model: AppModel(library: repository),
             shortcutSettings: ShortcutSettings(),
             isAccessibilityTrusted: { true }
         )
@@ -387,9 +413,9 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testToggleHidesAVisiblePanelOnActiveSpace() throws {
-        let repository = try SnipRepository(fileURL: storeURL())
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
         let coordinator = AppCoordinator(
-            model: AppModel(repository: repository),
+            model: AppModel(library: repository),
             shortcutSettings: ShortcutSettings(),
             isAccessibilityTrusted: { true }
         )
@@ -405,8 +431,8 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testClipboardShortcutOpensClipboardThenHidesIt() throws {
-        let repository = try SnipRepository(fileURL: storeURL())
-        let model = AppModel(repository: repository)
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let model = AppModel(library: repository)
         model.query = "old search"
         let coordinator = AppCoordinator(
             model: model,
@@ -460,8 +486,8 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testCoordinatorSendsSearchFocusRequest() throws {
-        let repository = try SnipRepository(fileURL: storeURL())
-        let model = AppModel(repository: repository)
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let model = AppModel(library: repository)
         let coordinator = AppCoordinator(
             model: model,
             shortcutSettings: ShortcutSettings(),
@@ -482,8 +508,8 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testFailedShortcutInstallReleasesPartialManagerBeforeRollback() throws {
-        let repository = try SnipRepository(fileURL: storeURL())
-        let model = AppModel(repository: repository)
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let model = AppModel(library: repository)
         let suiteName = "Snip SnapShortcutRollbackTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }

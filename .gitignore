@@ -1,8 +1,15 @@
 .DS_Store
 DerivedData/
 build/
+.build/
 *.xcuserstate
 *.profraw
 xcuserdata/
 artifacts/
 docs/research/
+/Config/Local.xcconfig
+/Config/Local.entitlements
+/Config/LocalIOS.entitlements
+/Config/LocalMac.entitlements
+/Config/MacRelease.entitlements
+/Config/TestFlight.entitlements

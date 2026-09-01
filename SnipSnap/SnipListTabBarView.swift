@@ -1,7 +1,9 @@
 import CoreTransferable
+import SnipSnapCore
 import SwiftUI
 
 struct SnipListTabBarView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private enum TabSelection: Hashable {
         case clipboard
         case list(UUID)
@@ -50,7 +52,7 @@ struct SnipListTabBarView: View {
             SnipListEditSheet(model: model, list: list)
         }
         .confirmationDialog(
-            "Delete \(listPendingDeletion?.name ?? "list")?",
+            String(localized: "Delete \(listPendingDeletion?.name ?? String(localized: "list"))?"),
             isPresented: listDeletionPresented
         ) {
             Button("Delete List", role: .destructive) {
@@ -88,9 +90,9 @@ struct SnipListTabBarView: View {
                     width: PanelControlMetrics.floatingIconLength,
                     height: PanelControlMetrics.floatingIconLength
                 )
-                .panelStandaloneActionControl()
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
         .accessibilityLabel("New List")
         .help("New List")
     }
@@ -253,8 +255,12 @@ struct SnipListTabBarView: View {
     private func scrollSelectedTab(using proxy: ScrollViewProxy) {
         Task { @MainActor in
             await Task.yield()
-            withAnimation(.easeOut(duration: 0.16)) {
+            if reduceMotion {
                 proxy.scrollTo(currentTab, anchor: .center)
+            } else {
+                withAnimation(.easeOut(duration: 0.16)) {
+                    proxy.scrollTo(currentTab, anchor: .center)
+                }
             }
         }
     }
@@ -262,9 +268,10 @@ struct SnipListTabBarView: View {
     private func tabName(_ tab: TabSelection) -> String {
         switch tab {
         case .clipboard:
-            "Clipboard"
+            String(localized: "Clipboard")
         case .list(let listID):
-            model.lists.first(where: { $0.id == listID })?.name ?? "List"
+            model.lists.first(where: { $0.id == listID })?.displayName
+                ?? String(localized: "List")
         }
     }
 
@@ -297,8 +304,8 @@ struct SnipListTabBarView: View {
         case .list(let listID):
             if let list = model.lists.first(where: { $0.id == listID }) {
                 Image(systemName: list.systemImage)
-                    .accessibilityLabel(list.name)
-                    .help(list.name)
+                    .accessibilityLabel(list.displayName)
+                    .help(list.displayName)
             }
         }
     }

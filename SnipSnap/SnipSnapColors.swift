@@ -14,15 +14,13 @@ enum SnipSnapColors {
 
     // MARK: Controls and interaction
 
-    static let controlTint = Color.primary
-    static let selectionFill = Color.primary.opacity(0.10)
+    static let controlTint = SnipSnapTheme.controlTint
+    static let selectionFill = SnipSnapTheme.selectionFill
     static let selectionEdge = Color.primary.opacity(0.50)
-    static let compactSelectionFill = Color.primary.opacity(0.18)
+    static let compactSelectionFill = SnipSnapTheme.compactSelectionFill
     static let compactSubduedFill = Color.primary.opacity(0.05)
     static let dropTargetFill = Color.primary.opacity(0.08)
     static let dropTargetEdge = Color.primary.opacity(0.48)
-    static let insertionEdge = Color.primary.opacity(0.20)
-
     static func developmentBadge(tone: DevelopmentBadgeTone) -> Color {
         switch tone {
         case .red: Color(nsColor: .systemRed)
@@ -48,23 +46,12 @@ enum SnipSnapColors {
         tone == .white ? .black.opacity(0.30) : .white.opacity(0.75)
     }
 
-    static func primaryActionTint(for colorScheme: ColorScheme) -> Color {
-        // Send needs exact monochrome contrast; the hierarchical primary color
-        // is softer than black and white on macOS.
-        colorScheme == .dark ? .white : .black
-    }
-
-    static func primaryActionLabel(for colorScheme: ColorScheme) -> Color {
-        colorScheme == .dark ? .black : .white
-    }
-
     // MARK: Surfaces
 
-    static let standaloneActionFill = Color.primary.opacity(0.08)
-    static let compactActionFill = Color.primary.opacity(0.10)
-    static let glassEdge = Color.primary.opacity(0.10)
-    static let emphasizedGlassEdge = Color.primary.opacity(0.20)
-    static let focusedGlassEdge = Color.primary.opacity(0.32)
+    static let compactActionFill = SnipSnapTheme.compactActionFill
+    static let glassEdge = SnipSnapTheme.glassEdge
+    static let emphasizedGlassEdge = SnipSnapTheme.emphasizedGlassEdge
+    static let focusedGlassEdge = SnipSnapTheme.focusedGlassEdge
     static let attachmentFill = Color.primary.opacity(0.055)
     static let attachmentEdge = Color.primary.opacity(0.12)
     static let contentCardEdge = Color(nsColor: .separatorColor)

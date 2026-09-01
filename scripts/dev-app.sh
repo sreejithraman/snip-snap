@@ -3,6 +3,7 @@ set -euo pipefail
 
 script_dir="${0:A:h}"
 repo_dir="${script_dir:h}"
+source "$script_dir/signing-policy.sh"
 program="$0"
 dev_state_dir="${SNIP_SNAP_DEV_STATE_DIR:-$HOME/Library/Application Support/Snip Snap/Development}"
 current_worktree_dir="${SNIP_SNAP_DEV_WORKTREE:-$(git -C "$repo_dir" rev-parse --show-toplevel)}"
@@ -141,6 +142,40 @@ stop_running_app() {
 }
 
 run_signed_build() {
+    local settings_file="$derived_data/resolved-build-settings.txt"
+    local development_team=""
+    local product_bundle_identifier=""
+    local -a signing_arguments
+    /bin/mkdir -p "$derived_data"
+    signing_policy_capture_build_settings \
+        "$repo_dir" Debug 'platform=macOS' "$settings_file" "$derived_data" || \
+        return 1
+    development_team="$(signing_policy_resolve_setting \
+        "$settings_file" DEVELOPMENT_TEAM)"
+    product_bundle_identifier="$(signing_policy_resolve_setting \
+        "$settings_file" SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER)"
+    /bin/rm -f "$settings_file"
+
+    if [[ -z "$product_bundle_identifier" ]]; then
+        print -u2 "Dev build could not resolve SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER."
+        return 1
+    fi
+
+    if [[ -z "$development_team" ]]; then
+        print "Signed lane: local Dev (ad hoc; CloudKit disabled)."
+        signing_arguments=(
+            CODE_SIGN_STYLE=Manual
+            CODE_SIGN_IDENTITY=-
+            DEVELOPMENT_TEAM=
+        )
+    else
+        print "Signed lane: local Dev (developer team; CloudKit disabled)."
+        signing_arguments=(
+            CODE_SIGN_STYLE=Automatic
+            "DEVELOPMENT_TEAM=$development_team"
+        )
+    fi
+
     local command=(
         xcodebuild
         -project "$repo_dir/SnipSnap.xcodeproj"
@@ -150,7 +185,12 @@ run_signed_build() {
         -derivedDataPath "$derived_data"
         CODE_SIGNING_ALLOWED=YES
         CODE_SIGNING_REQUIRED=YES
-        "PRODUCT_BUNDLE_IDENTIFIER=world.sree.snipsnap.dev$slot"
+        CODE_SIGN_ENTITLEMENTS=
+        SNIP_SNAP_APP_GROUP_IDENTIFIER=
+        SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER=
+        "${signing_arguments[@]}"
+        "SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER=$product_bundle_identifier"
+        "PRODUCT_BUNDLE_IDENTIFIER=$product_bundle_identifier.dev$slot"
         "PRODUCT_NAME=$process_name"
         "INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Dev $slot"
         build

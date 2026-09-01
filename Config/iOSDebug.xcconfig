@@ -1,0 +1,10 @@
+#include "Shared.xcconfig"
+#include "iOSShared.xcconfig"
+
+SNIP_SNAP_BUILD_LANE = local-dev
+
+// A developer may keep signing and fork-specific names in this ignored file.
+#include? "Local.xcconfig"
+
+// Keep the app entitlement input separate from the embedded extension.
+CODE_SIGN_ENTITLEMENTS = $(SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS)

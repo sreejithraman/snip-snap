@@ -1,0 +1,26 @@
+// Safe defaults for the universal local-only iPhone and iPad app.
+
+SNIP_SNAP_IOS_PRODUCT_BUNDLE_IDENTIFIER = $(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).ios
+SNIP_SNAP_IOS_SHARE_PRODUCT_BUNDLE_IDENTIFIER = $(SNIP_SNAP_IOS_PRODUCT_BUNDLE_IDENTIFIER).share
+PRODUCT_BUNDLE_IDENTIFIER = $(SNIP_SNAP_IOS_PRODUCT_BUNDLE_IDENTIFIER)
+PRODUCT_MODULE_NAME = SnipSnapiOS
+PRODUCT_NAME = Snip Snap iOS
+SNIP_SNAP_DISPLAY_NAME = Snip Snap
+SNIP_SNAP_SHARE_DISPLAY_NAME = Save to Snip Snap
+
+SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS = SnipSnapiOS/SnipSnapiOS.entitlements
+CODE_SIGN_ENTITLEMENTS = $(SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS)
+
+ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor
+INFOPLIST_FILE = SnipSnapiOS/Info.plist
+INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES
+INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES
+INFOPLIST_KEY_UILaunchScreen_Generation = YES
+INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+IPHONEOS_DEPLOYMENT_TARGET = 26.0
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks
+SDKROOT = iphoneos
+SUPPORTED_PLATFORMS = iphoneos iphonesimulator
+SUPPORTS_MACCATALYST = NO
+TARGETED_DEVICE_FAMILY = 1,2
