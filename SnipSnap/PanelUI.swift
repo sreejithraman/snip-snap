@@ -70,6 +70,20 @@ enum PanelComposerMetrics {
     static let minimumTextLines = 1
     static let maximumTextLines = 5
     static let textLineRange = minimumTextLines...maximumTextLines
+    static let textLineSpacing: CGFloat = 0
+    static let maximumTextInputHeight = PanelTextInputLayout.maximumHeight(
+        lineRange: textLineRange,
+        lineSpacing: textLineSpacing
+    )
+    static let maximumTextRowHeight = maximumTextInputHeight
+        + PanelControlMetrics.expandedInputVerticalPadding * 2
+    static let maximumAttachmentRowHeight = AttachmentPreviewMetrics.side
+        + AttachmentPreviewMetrics.removeButtonOverflow * 2
+        + PanelControlMetrics.expandedInputVerticalPadding
+    static let maximumInlineEntryHeight = maximumTextRowHeight
+        + maximumAttachmentRowHeight
+        + SnipSnapSpacing.relatedContent
+        + PanelControlMetrics.inlineEntryInset * 2
 }
 
 enum PanelInlineEditMetrics {
@@ -95,6 +109,11 @@ enum PanelGeometryChange {
 }
 
 enum PanelComposerLayout {
+    static func clampedEntryHeight(_ height: CGFloat) -> CGFloat {
+        guard height.isFinite else { return PanelControlMetrics.inlineEntryBaseHeight }
+        return min(max(height, 0), PanelComposerMetrics.maximumInlineEntryHeight)
+    }
+
     static func actionAlignment(isExpanded: Bool) -> VerticalAlignment {
         isExpanded ? .top : .center
     }

@@ -374,7 +374,8 @@ final class AppCoordinator {
 
     private func applyPanelComposerExpansion() {
         guard let panelWindow else { return }
-        let requestedDelta = requestedPanelComposerExpansion - appliedPanelComposerExpansion
+        let requestedExpansion = requestedPanelComposerExpansion
+        let requestedDelta = requestedExpansion - appliedPanelComposerExpansion
         guard abs(requestedDelta) >= 0.5 else { return }
 
         var frame = panelWindow.frame
@@ -382,8 +383,8 @@ final class AppCoordinator {
         let appliedDelta = targetHeight - frame.height
         frame.origin.y -= appliedDelta
         frame.size.height = targetHeight
+        appliedPanelComposerExpansion = requestedExpansion
         panelWindow.setFrame(frame, display: panelWindow.isVisible, animate: false)
-        appliedPanelComposerExpansion = requestedPanelComposerExpansion
     }
 
     private func handle(_ action: GlobalHotKeyAction) {

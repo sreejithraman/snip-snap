@@ -386,6 +386,32 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testComposerExpansionDoesNotRepeatDuringReentrantWindowLayout() throws {
+        let repository = try SnipRepository(fileURL: storeURL())
+        let coordinator = AppCoordinator(
+            model: AppModel(repository: repository),
+            shortcutSettings: ShortcutSettings(),
+            isAccessibilityTrusted: { true }
+        )
+        let panel = ReentrantLayoutWindow(
+            contentRect: NSRect(origin: .zero, size: AppWindowDefaults.defaultSize),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        coordinator.attachPanelWindow(panel)
+        let baseline = panel.frame
+        panel.onFirstFrameChange = {
+            coordinator.updatePanelComposerExpansion(44)
+        }
+
+        coordinator.updatePanelComposerExpansion(44)
+
+        XCTAssertEqual(panel.frame.height, baseline.height + 44)
+        XCTAssertEqual(panel.frameChangeCount, 1)
+    }
+
+    @MainActor
     func testToggleHidesAVisiblePanelOnActiveSpace() throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let coordinator = AppCoordinator(
@@ -510,5 +536,22 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         XCTAssertEqual(failedReplacement.unregisterCount, 1)
         XCTAssertEqual(rollback.registeredConfigurations, [.snipSnapDefaults])
         XCTAssertEqual(settings.configuration, .snipSnapDefaults)
+    }
+}
+
+@MainActor
+private final class ReentrantLayoutWindow: NSWindow {
+    var onFirstFrameChange: (() -> Void)?
+    private(set) var frameChangeCount = 0
+
+    override func setFrame(
+        _ frameRect: NSRect,
+        display flag: Bool,
+        animate animateFlag: Bool
+    ) {
+        frameChangeCount += 1
+        super.setFrame(frameRect, display: flag, animate: animateFlag)
+        guard frameChangeCount == 1 else { return }
+        onFirstFrameChange?()
     }
 }

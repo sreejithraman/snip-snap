@@ -343,6 +343,90 @@ final class PanelTests: StoreBackedTestCase {
         XCTAssertTrue(hostingView.sizingOptions.isEmpty)
     }
 
+    @MainActor
+    func testLongComposerInsertionDoesNotGrowThePanelPastFiveLines() throws {
+        let defaultsName = "Snip SnapLongComposerTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        addTeardownBlock { defaults.removePersistentDomain(forName: defaultsName) }
+        let pasteboard = NSPasteboard(
+            name: .init("world.sree.snipsnap.long-composer-tests.\(UUID().uuidString)")
+        )
+        addTeardownBlock { pasteboard.releaseGlobally() }
+        let clipboardURL = try storeURL()
+            .deletingLastPathComponent()
+            .appendingPathComponent("clipboard.json")
+        let history = ClipboardHistory(
+            pasteboard: pasteboard,
+            defaults: defaults,
+            storeURL: clipboardURL
+        )
+        let model = AppModel(
+            repository: try SnipRepository(fileURL: storeURL()),
+            defaults: defaults,
+            clipboardHistory: history
+        )
+        let settings = ShortcutSettings(defaults: defaults)
+        let coordinator = AppCoordinator(
+            model: model,
+            shortcutSettings: settings,
+            isAccessibilityTrusted: { true }
+        )
+        let fileDropController = PanelFileDropController()
+        let dragSessionController = PanelDragSessionController()
+        let rootView = ContentView(
+            coordinator: coordinator,
+            fileDropController: fileDropController,
+            dragSessionController: dragSessionController
+        )
+        .environmentObject(model)
+        .environmentObject(settings)
+        let hostingView = PanelFileDropHostingView(
+            rootView: rootView,
+            controller: fileDropController,
+            dragSessionController: dragSessionController
+        )
+        let contentViewController = NSViewController()
+        contentViewController.view = hostingView
+        let panel = SnipSnapPanel.make(
+            contentViewController: contentViewController,
+            frameAutosaveName: nil
+        )
+        coordinator.attachPanelWindow(panel)
+        panel.makeKeyAndOrderFront(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        let baselineHeight = panel.frame.height
+        let textField = try XCTUnwrap(
+            findTextField(in: hostingView, placeholder: "Add to Inbox…")
+        )
+        XCTAssertTrue(panel.makeFirstResponder(textField))
+        let fieldEditor = try XCTUnwrap(panel.firstResponder as? NSTextView)
+        let longText = (0..<400).map { "line \($0)" }.joined(separator: "\n")
+        let startedAt = Date()
+
+        fieldEditor.insertText(longText, replacementRange: fieldEditor.selectedRange())
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 15)
+        XCTAssertEqual(fieldEditor.string, longText)
+        XCTAssertEqual(textField.stringValue, longText)
+        XCTAssertLessThanOrEqual(panel.frame.height, baselineHeight + 160)
+        XCTAssertLessThanOrEqual(
+            textField.frame.height,
+            PanelComposerMetrics.maximumTextInputHeight
+        )
+        let textContainer = try XCTUnwrap(fieldEditor.textContainer)
+        let layoutManager = try XCTUnwrap(fieldEditor.layoutManager)
+        layoutManager.ensureLayout(for: textContainer)
+        XCTAssertGreaterThan(
+            layoutManager.usedRect(for: textContainer).height,
+            textField.frame.height
+        )
+        panel.makeFirstResponder(nil)
+        panel.orderOut(nil)
+        processLifetimePanelSearchWindows.append(panel)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+    }
+
     func testPanelFileDropValidationKeepsOnlyExistingFiles() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("Snip SnapPanelDropTests-\(UUID().uuidString)", isDirectory: true)
@@ -575,11 +659,19 @@ final class PanelTests: StoreBackedTestCase {
     }
 
     @MainActor
-    private func findTextField(in view: NSView?) -> NSTextField? {
+    private func findTextField(
+        in view: NSView?,
+        placeholder: String? = nil
+    ) -> NSTextField? {
         guard let view else { return nil }
-        if let textField = view as? NSTextField { return textField }
+        if let textField = view as? NSTextField,
+           placeholder == nil || textField.placeholderString == placeholder {
+            return textField
+        }
         for subview in view.subviews {
-            if let textField = findTextField(in: subview) { return textField }
+            if let textField = findTextField(in: subview, placeholder: placeholder) {
+                return textField
+            }
         }
         return nil
     }
@@ -753,6 +845,17 @@ final class PanelTests: StoreBackedTestCase {
             PanelComposerLayout.isExpanded(
                 fieldHeight: PanelControlMetrics.floatingRowHeight + 1
             )
+        )
+    }
+
+    func testComposerHeightRejectsRunawayLayoutMeasurements() {
+        XCTAssertEqual(
+            PanelComposerLayout.clampedEntryHeight(.infinity),
+            PanelControlMetrics.inlineEntryBaseHeight
+        )
+        XCTAssertEqual(
+            PanelComposerLayout.clampedEntryHeight(5_612),
+            PanelComposerMetrics.maximumInlineEntryHeight
         )
     }
 
