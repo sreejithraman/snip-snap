@@ -104,6 +104,8 @@ for required in \
     'scripts/publish-beta.sh --build-number' \
     'scripts/build-matrix.sh' \
     'SNIP_SNAP_RELEASE_CHECKS_PASSED: YES' \
+    'IOS_DEVELOPMENT_CERTIFICATE_BASE64' \
+    'IOS_DEVELOPMENT_CERTIFICATE_PASSWORD' \
     'needs: [test, mac-build, ios-upload]' \
     'SNIP_SNAP_GENERATE_APPCAST=' \
     '"Shared/**"' \
@@ -143,6 +145,68 @@ done
 
 /usr/bin/ruby -c "$script_dir/snip-snap-beta.rb.template" >/dev/null || \
     fail_test "invalid beta cask template"
+
+ci_setup_repo="$test_root/ci-setup-repo"
+ci_setup_root="$test_root/snip-snap-release-setup"
+security_log="$test_root/security.log"
+fake_security="$test_root/security"
+/bin/mkdir -p "$ci_setup_repo/Config"
+print -r -- '#!/bin/zsh
+set -euo pipefail
+print -r -- "$*" >> "$SNIP_SNAP_SECURITY_LOG"
+[[ "$1" != create-keychain ]] || /usr/bin/touch "${@: -1}"' > "$fake_security"
+/bin/chmod +x "$fake_security"
+encoded_distribution="$(print -n distribution | /usr/bin/base64)"
+encoded_development="$(print -n development | /usr/bin/base64)"
+/usr/bin/env \
+    RUNNER_TEMP="$test_root" \
+    SNIP_SNAP_CI_ROOT="$ci_setup_root" \
+    SNIP_SNAP_REPO_DIR="$ci_setup_repo" \
+    SNIP_SNAP_SECURITY_TOOL="$fake_security" \
+    SNIP_SNAP_SECURITY_LOG="$security_log" \
+    SNIP_SNAP_CI_LOCAL_XCCONFIG=local-settings \
+    SNIP_SNAP_CI_TESTFLIGHT_ENTITLEMENTS=testflight-entitlements \
+    SNIP_SNAP_CI_APPLE_API_PRIVATE_KEY=api-key \
+    SNIP_SNAP_CI_CERTIFICATE_BASE64="$encoded_distribution" \
+    SNIP_SNAP_CI_CERTIFICATE_PASSWORD=distribution-password \
+    SNIP_SNAP_CI_DEVELOPMENT_CERTIFICATE_BASE64="$encoded_development" \
+    SNIP_SNAP_CI_DEVELOPMENT_CERTIFICATE_PASSWORD=development-password \
+    SHOWROOM_APPLE_KEY_ID=key-id \
+    SHOWROOM_APPLE_ISSUER_ID=issuer-id \
+    "$script_dir/ci-apple-setup.sh" setup ios
+for certificate in signing.p12 development-signing.p12; do
+    [[ "$(/usr/bin/stat -f '%Lp' "$ci_setup_root/$certificate")" == 600 ]] || \
+        fail_test "CI setup left $certificate readable"
+    /usr/bin/grep -F "import $ci_setup_root/$certificate" "$security_log" >/dev/null || \
+        fail_test "CI setup did not import $certificate"
+done
+[[ ! -e "$ci_setup_root/development-signing-password" ]] || \
+    fail_test "CI setup wrote the development certificate password"
+
+missing_development_repo="$test_root/missing-development-repo"
+missing_development_root="$test_root/snip-snap-release-missing-development"
+/bin/mkdir -p "$missing_development_repo/Config"
+if missing_output="$(/usr/bin/env \
+    RUNNER_TEMP="$test_root" \
+    SNIP_SNAP_CI_ROOT="$missing_development_root" \
+    SNIP_SNAP_REPO_DIR="$missing_development_repo" \
+    SNIP_SNAP_SECURITY_TOOL="$fake_security" \
+    SNIP_SNAP_SECURITY_LOG="$security_log" \
+    SNIP_SNAP_CI_LOCAL_XCCONFIG=local-settings \
+    SNIP_SNAP_CI_TESTFLIGHT_ENTITLEMENTS=testflight-entitlements \
+    SNIP_SNAP_CI_APPLE_API_PRIVATE_KEY=api-key \
+    SNIP_SNAP_CI_CERTIFICATE_BASE64="$encoded_distribution" \
+    SNIP_SNAP_CI_CERTIFICATE_PASSWORD=distribution-password \
+    SNIP_SNAP_CI_DEVELOPMENT_CERTIFICATE_PASSWORD=development-password \
+    SHOWROOM_APPLE_KEY_ID=key-id \
+    SHOWROOM_APPLE_ISSUER_ID=issuer-id \
+    "$script_dir/ci-apple-setup.sh" setup ios 2>&1)"; then
+    fail_test "CI setup accepted a missing development certificate"
+fi
+[[ "$missing_output" == *"development signing certificate is missing"* ]] || \
+    fail_test "CI setup hid the missing development certificate"
+[[ ! -e "$missing_development_root" ]] || \
+    fail_test "CI setup changed state before validating development signing inputs"
 
 ci_repo="$test_root/ci-repo"
 ci_root="${RUNNER_TEMP:-$test_root}/snip-snap-release-cleanup"

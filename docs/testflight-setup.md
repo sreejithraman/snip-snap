@@ -307,6 +307,8 @@ Add these secrets to `apple-release`:
 - `APPLE_TEAM_ID`
 - `IOS_DISTRIBUTION_CERTIFICATE_BASE64`
 - `IOS_DISTRIBUTION_CERTIFICATE_PASSWORD`
+- `IOS_DEVELOPMENT_CERTIFICATE_BASE64`
+- `IOS_DEVELOPMENT_CERTIFICATE_PASSWORD`
 - `MAC_DEVELOPER_ID_CERTIFICATE_BASE64`
 - `MAC_DEVELOPER_ID_CERTIFICATE_PASSWORD`
 - `MAC_PROVISIONING_PROFILE_BASE64`
@@ -347,6 +349,12 @@ maintainer-only environment. An app-limited individual Developer key cannot use
 the provisioning API; do not switch to one unless the workflow also installs
 explicit iOS profiles and uses manual signing. If CI later manages external
 groups and review, it also needs App Manager access.
+
+Xcode uses Apple Development signing while it creates an automatically signed
+archive, then replaces that signature with Apple Distribution signing during
+the App Store Connect export. Keep both iOS identities in the protected
+environment. The archive check accepts either push environment; the uploaded
+export always uses the production distribution profile.
 
 The workflow jobs:
 

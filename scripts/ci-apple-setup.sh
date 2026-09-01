@@ -12,6 +12,7 @@ repo_secret_record="$ci_root/repo-secret-paths"
 local_xcconfig="$repo_dir/Config/Local.xcconfig"
 testflight_entitlements="$repo_dir/Config/TestFlight.entitlements"
 mac_release_entitlements="$repo_dir/Config/MacRelease.entitlements"
+security_tool="${SNIP_SNAP_SECURITY_TOOL:-/usr/bin/security}"
 
 fail() {
     print -u2 "CI Apple setup: $1"
@@ -36,10 +37,34 @@ write_secret() {
     /bin/chmod 600 "$path"
 }
 
+import_certificate() {
+    local encoded_certificate="$1"
+    local certificate_password="$2"
+    local certificate_path="$3"
+
+    print -rn -- "$encoded_certificate" | /usr/bin/base64 -D > "$certificate_path"
+    /bin/chmod 600 "$certificate_path"
+    "$security_tool" import "$certificate_path" \
+        -k "$keychain" \
+        -P "$certificate_password" \
+        -T /usr/bin/codesign \
+        -T /usr/bin/security
+}
+
 case "$action" in
     setup)
         safe_root || fail "SNIP_SNAP_CI_ROOT must end in snip-snap-release-*"
         [[ "$lane" == mac || "$lane" == ios ]] || fail "setup needs the mac or ios lane"
+        [[ -n "${SNIP_SNAP_CI_CERTIFICATE_BASE64:-}" ]] || \
+            fail "signing certificate is missing"
+        [[ -n "${SNIP_SNAP_CI_CERTIFICATE_PASSWORD:-}" ]] || \
+            fail "signing certificate password is missing"
+        if [[ "$lane" == ios ]]; then
+            [[ -n "${SNIP_SNAP_CI_DEVELOPMENT_CERTIFICATE_BASE64:-}" ]] || \
+                fail "development signing certificate is missing"
+            [[ -n "${SNIP_SNAP_CI_DEVELOPMENT_CERTIFICATE_PASSWORD:-}" ]] || \
+                fail "development signing certificate password is missing"
+        fi
         /bin/mkdir -p "$ci_root"
         lane_entitlements="$testflight_entitlements"
         [[ "$lane" == ios ]] || lane_entitlements="$mac_release_entitlements"
@@ -59,33 +84,35 @@ case "$action" in
                 "$testflight_entitlements"
         fi
         write_secret "${SNIP_SNAP_CI_APPLE_API_PRIVATE_KEY:-}" "$ci_root/AuthKey.p8"
-        [[ -n "${SNIP_SNAP_CI_CERTIFICATE_BASE64:-}" ]] || fail "certificate is missing"
-        [[ -n "${SNIP_SNAP_CI_CERTIFICATE_PASSWORD:-}" ]] || fail "certificate password is missing"
         [[ -n "${SHOWROOM_APPLE_KEY_ID:-}" ]] || fail "Apple key ID is missing"
         [[ -n "${SHOWROOM_APPLE_ISSUER_ID:-}" ]] || fail "Apple issuer ID is missing"
 
-        print -n "$SNIP_SNAP_CI_CERTIFICATE_BASE64" | /usr/bin/base64 -D > "$ci_root/signing.p12"
         /usr/bin/uuidgen > "$keychain_password_file"
         keychain_password="$(<"$keychain_password_file")"
-        /usr/bin/security create-keychain -p "$keychain_password" "$keychain"
-        /usr/bin/security set-keychain-settings -lut 21600 "$keychain"
-        /usr/bin/security unlock-keychain -p "$keychain_password" "$keychain"
-        /usr/bin/security import "$ci_root/signing.p12" \
-            -k "$keychain" \
-            -P "$SNIP_SNAP_CI_CERTIFICATE_PASSWORD" \
-            -T /usr/bin/codesign \
-            -T /usr/bin/security
-        /usr/bin/security set-key-partition-list \
+        "$security_tool" create-keychain -p "$keychain_password" "$keychain"
+        "$security_tool" set-keychain-settings -lut 21600 "$keychain"
+        "$security_tool" unlock-keychain -p "$keychain_password" "$keychain"
+        import_certificate \
+            "${SNIP_SNAP_CI_CERTIFICATE_BASE64:-}" \
+            "${SNIP_SNAP_CI_CERTIFICATE_PASSWORD:-}" \
+            "$ci_root/signing.p12"
+        if [[ "$lane" == ios ]]; then
+            import_certificate \
+                "${SNIP_SNAP_CI_DEVELOPMENT_CERTIFICATE_BASE64:-}" \
+                "${SNIP_SNAP_CI_DEVELOPMENT_CERTIFICATE_PASSWORD:-}" \
+                "$ci_root/development-signing.p12"
+        fi
+        "$security_tool" set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
             -s -k "$keychain_password" "$keychain" >/dev/null
-        /usr/bin/security list-keychains -d user -s "$keychain"
+        "$security_tool" list-keychains -d user -s "$keychain"
 
         if [[ "$lane" == mac ]]; then
             [[ -n "${SNIP_SNAP_CI_MAC_PROFILE_BASE64:-}" ]] || fail "Mac profile is missing"
             print -n "$SNIP_SNAP_CI_MAC_PROFILE_BASE64" | \
                 /usr/bin/base64 -D > "$ci_root/mac.provisionprofile"
             profile_plist="$ci_root/mac-profile.plist"
-            /usr/bin/security cms -D -i "$ci_root/mac.provisionprofile" > "$profile_plist"
+            "$security_tool" cms -D -i "$ci_root/mac.provisionprofile" > "$profile_plist"
             profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$profile_plist")"
             [[ -n "$profile_uuid" ]] || fail "Mac profile has no UUID"
             profile_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
@@ -117,7 +144,7 @@ case "$action" in
             [[ "$installed_profile" == "$HOME/Library/MobileDevice/Provisioning Profiles/"*.provisionprofile ]] && \
                 /bin/rm -f "$installed_profile"
         fi
-        [[ ! -f "$keychain" ]] || /usr/bin/security delete-keychain "$keychain" || true
+        [[ ! -f "$keychain" ]] || "$security_tool" delete-keychain "$keychain" || true
         /bin/rm -rf "$ci_root"
         ;;
     *)
