@@ -5,6 +5,8 @@ script_dir="${0:A:h}"
 repo_dir="${script_dir:h}"
 release_repo="${SNIP_SNAP_RELEASE_REPO:-sreejithraman/snip-snap}"
 notary_profile="${SNIP_SNAP_NOTARY_PROFILE:-}"
+notary_keychain="${SNIP_SNAP_NOTARY_KEYCHAIN:-}"
+notary_keychain_args=()
 signing_identity="${SNIP_SNAP_SIGNING_IDENTITY:-}"
 development_team=""
 signing_temp_root=""
@@ -14,14 +16,36 @@ mac_release_entitlements="${SNIP_SNAP_MAC_RELEASE_ENTITLEMENTS:-$repo_dir/Config
 cloudkit_container_identifier=""
 product_bundle_identifier=""
 provisioning_profile_specifier="${SNIP_SNAP_MAC_PROVISIONING_PROFILE_SPECIFIER:-}"
+requested_build=""
 
 source "$script_dir/release-policy.sh"
 source "$script_dir/signing-policy.sh"
+
+[[ -z "$notary_keychain" ]] || notary_keychain_args=(--keychain "$notary_keychain")
 
 fail() {
     print -u2 "release: $1"
     exit 1
 }
+
+usage() {
+    print -u2 "Usage: $0 --build-number NUMBER"
+}
+
+while (( $# )); do
+    case "$1" in
+        --build-number)
+            (( $# >= 2 )) || { usage; exit 2; }
+            requested_build="$2"
+            shift 2
+            ;;
+        *)
+            usage
+            exit 2
+            ;;
+    esac
+done
+[[ -n "$requested_build" ]] || fail "pass --build-number with the generated build number"
 
 verify_release_cloudkit() {
     local archive_app_path="$archive_path/Products/Applications/Snip Snap.app"
@@ -67,7 +91,7 @@ typeset -gx SNIP_SNAP_SIGNING_IDENTITY="$signing_identity"
 typeset -gx SNIP_SNAP_NOTARY_PROFILE="$notary_profile"
 signing_policy_preflight release "$resolved_settings" "$repo_dir" || exit 1
 
-release_policy_preflight "$repo_dir" "$release_repo"
+release_policy_preflight "$repo_dir" "$release_repo" release "$requested_build"
 version="$RELEASE_VERSION"
 build_number="$RELEASE_BUILD_NUMBER"
 
@@ -81,11 +105,13 @@ release_dmg="$release_root/Snip-Snap-$version.dmg"
 app_path="$export_path/Snip Snap.app"
 dmg_source="$release_root/dmg-source"
 
-"$script_dir/test.sh"
+if [[ "${SNIP_SNAP_RELEASE_CHECKS_PASSED:-}" != YES ]]; then
+    "$script_dir/test.sh"
+fi
 
 if [[ -e "$release_root" &&
       ( ! -f "$submission_dmg" || ! -d "$app_path" ) ]]; then
-    release_policy_require_new_notary_build "$notary_profile" "$build_number"
+    release_policy_require_new_notary_build "$notary_profile" "$build_number" "$notary_keychain"
     incomplete_root="$release_root.incomplete-$(/bin/date -u +%Y%m%dT%H%M%SZ)-$$"
     /bin/mv "$release_root" "$incomplete_root"
     print "Kept the incomplete release at $incomplete_root."
@@ -97,6 +123,7 @@ if [[ -e "$release_root" ]]; then
 
     history_json="$(/usr/bin/xcrun notarytool history \
         --keychain-profile "$notary_profile" \
+        "${notary_keychain_args[@]}" \
         --output-format json)" || fail "could not read Apple notarization history"
     if submission_entry="$(release_policy_notary_submission_entry \
         "$history_json" \
@@ -110,6 +137,7 @@ if [[ -e "$release_root" ]]; then
             "In Progress")
                 wait_json="$(/usr/bin/xcrun notarytool wait "$submission_id" \
                     --keychain-profile "$notary_profile" \
+                    "${notary_keychain_args[@]}" \
                     --output-format json)" || fail "could not wait for $submission_name"
                 wait_status="$(print -r -- "$wait_json" | /usr/bin/ruby -rjson -e \
                     'puts JSON.parse(STDIN.read).fetch("status")')" || \
@@ -122,17 +150,18 @@ if [[ -e "$release_root" ]]; then
                 ;;
         esac
     else
-        release_policy_require_new_notary_build "$notary_profile" "$build_number"
+        release_policy_require_new_notary_build "$notary_profile" "$build_number" "$notary_keychain"
         release_policy_verify_app "$app_path"
         /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_path"
         /usr/bin/codesign --verify --verbose=2 "$submission_dmg"
         /usr/bin/hdiutil verify "$submission_dmg"
         /usr/bin/xcrun notarytool submit "$submission_dmg" \
             --keychain-profile "$notary_profile" \
+            "${notary_keychain_args[@]}" \
             --wait
     fi
 else
-    release_policy_require_new_notary_build "$notary_profile" "$build_number"
+    release_policy_require_new_notary_build "$notary_profile" "$build_number" "$notary_keychain"
     /bin/mkdir -p "$release_root"
 
     /usr/bin/xcodebuild \
@@ -184,6 +213,7 @@ else
 
     /usr/bin/xcrun notarytool submit "$submission_dmg" \
         --keychain-profile "$notary_profile" \
+        "${notary_keychain_args[@]}" \
         --wait
 fi
 

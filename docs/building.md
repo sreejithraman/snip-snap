@@ -213,6 +213,15 @@ unchecked; do not report a skipped run as a pass.
 
 ## Make an official release
 
+Set the next planned marketing version in a normal reviewed change:
+
+```sh
+./scripts/set-release.sh 0.5.0
+```
+
+This updates `release.json` and the public Xcode setting. It does not change a
+build counter. Protected CI generates that number when it makes a beta.
+
 Official releases use the team from `Local.xcconfig` or
 `SNIP_SNAP_DEVELOPMENT_TEAM`. They need these environment variables:
 
@@ -235,7 +244,7 @@ Then provide the release credentials:
 export SNIP_SNAP_SIGNING_IDENTITY='YOUR_SIGNING_IDENTITY'
 export SNIP_SNAP_NOTARY_PROFILE='YOUR_NOTARY_PROFILE'
 export SNIP_SNAP_MAC_PROVISIONING_PROFILE_SPECIFIER='YOUR_DEVELOPER_ID_PROFILE_NAME'
-./scripts/release.sh
+./scripts/release.sh --build-number 7
 ```
 
 The identity can come from the local Keychain instead of the first variable;
@@ -277,7 +286,7 @@ Check the signed settings without uploading:
 Create and inspect a release archive:
 
 ```sh
-./scripts/testflight.sh archive
+./scripts/testflight.sh archive --build-number 7
 ```
 
 The command runs the public policy and package tests, then the Simulator build
@@ -301,7 +310,7 @@ After that flow has worked once, a maintainer can upload the checked archive:
 
 ```sh
 SNIP_SNAP_CONFIRM_TESTFLIGHT_UPLOAD=YES \
-  ./scripts/testflight.sh upload
+  ./scripts/testflight.sh upload --build-number 7
 ```
 
 The upload command runs only from a clean commit that equals `origin/main`.
@@ -311,8 +320,11 @@ command writes its export options in a private temporary folder, turns off
 Xcode build-number changes, and keeps logs under the ignored `artifacts`
 folder.
 
-Never run the upload from pull-request CI. A later CI job must use a protected,
-manual environment that does not expose secrets to forks.
+Never run the upload from pull-request CI. The protected beta workflow runs
+only on `main`, and its `apple-release` environment keeps secrets away from
+forks and pull requests. The numbers above are examples for a local maintainer
+check. GitHub Actions generates the real number from its run number and the
+offset in `scripts/release-build-number.sh`.
 
 ## Check tracked inputs
 

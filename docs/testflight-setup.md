@@ -202,8 +202,9 @@ has no separate Snip Snap login, so it needs no demo account.
   app gets CloudKit.
 - `scripts/build-matrix.sh` checks iPhone and iPad Simulator builds and confirms
   that the Share extension is embedded.
-- `release.json`, `Config/Shared.xcconfig`, and ADR 0011 establish one checked
-  version and a build number that must rise after an Apple submission.
+- `release.json`, `Config/Shared.xcconfig`, and ADR 0011 establish one planned
+  marketing version. Protected CI generates a rising build number and passes
+  the same number to the iOS app, Share extension, and Mac app.
 - `Config/TestFlight.example.entitlements` provides a public production template.
   Its ignored copy and all production names remain local or protected CI input.
 - `Config/MacRelease.example.entitlements` keeps the direct-download Mac app on
@@ -238,9 +239,9 @@ has no separate Snip Snap login, so it needs no demo account.
 ## First internal build
 
 1. Finish the gaps above on a clean commit from `origin/main`.
-2. Increase the checked build number. Keep the current marketing version unless
-   this beta starts a new public version. Apple identifies a build by bundle ID,
-   version, and build string. [Upload
+2. Keep the planned marketing version unless this beta starts a new public
+   version. The protected beta workflow generates a new build number. Apple
+   identifies a build by bundle ID, version, and build string. [Upload
    builds](https://developer.apple.com/help/app-store-connect/manage-builds/upload-builds)
 3. Run the iOS UI tests, signed Cloud Dev contract, and physical-iPhone release
    check. `scripts/testflight.sh archive` runs `scripts/test.sh` and the unsigned
@@ -259,11 +260,12 @@ has no separate Snip Snap login, so it needs no demo account.
    - Only the main app contains CloudKit, and its environment is production.
    - The main app has the production push entitlement; the Share extension does
      not.
-   - The version and build match the checked release values.
+   - The version matches `release.json` and the build matches the workflow's
+     generated value.
    - Privacy manifests and dSYMs are present.
 6. In Organizer, choose **Distribute App**, **TestFlight & App Store**, automatic
    signing, and symbol upload. Turn off Xcode's automatic version/build-number
-   management because this repo checks those values in Git.
+   management because the archive already contains the workflow's value.
 7. Wait for App Store Connect processing, resolve export compliance, review all
    warnings, add **What to Test**, and assign the build to the internal group.
 
@@ -273,10 +275,10 @@ builds](https://developer.apple.com/help/app-store-connect/manage-builds/upload-
 
 ## Repeat for each beta build
 
-1. Use a clean reviewed commit and increase `CURRENT_PROJECT_VERSION`. Never
-   reuse a build string after a successful upload. Apple says a failed upload
-   may reuse its build number, but Snip Snap's stricter ADR can continue to avoid
-   reuse. [Build upload
+1. Use a clean reviewed commit on `main`. The workflow run number plus its fixed
+   offset produces the build number. A retry of the same run keeps the same
+   number and verifies the same files; a later run gets a larger number. Never
+   reuse a build number for different files. [Build upload
    status](https://developer.apple.com/help/app-store-connect/manage-builds/view-builds-and-metadata)
 2. Run the release tests and production-signing preflight.
 3. Archive, inspect, and upload the same way.
@@ -288,11 +290,45 @@ builds](https://developer.apple.com/help/app-store-connect/manage-builds/upload-
 6. Keep the archive, dSYMs, commit, version, build, and App Store Connect delivery
    result together as release evidence.
 
-## CI after the manual upload works
+## Protected beta delivery
 
-The best fit for the current GitHub CI is a maintainer-only workflow that calls
-`scripts/testflight.sh`. Keep it separate from public pull-request
-CI so forked code cannot read signing secrets.
+`.github/workflows/beta.yml` tests a push to `main`, then uses the protected
+`apple-release` environment for signed work. It uploads the iOS build to
+TestFlight and publishes the same-number Mac beta to GitHub, Sparkle's `beta`
+channel, and the `snip-snap@beta` cask. Set the repository environment variable
+`SNIP_SNAP_BETA_DELIVERY_ENABLED` to `true` only after all protected inputs have
+been added. Until then, the workflow runs its public test job and skips delivery.
+
+Add these secrets to `apple-release`:
+
+- `APPLE_API_ISSUER_ID`
+- `APPLE_API_KEY_ID`
+- `APPLE_API_PRIVATE_KEY`
+- `APPLE_TEAM_ID`
+- `IOS_DISTRIBUTION_CERTIFICATE_BASE64`
+- `IOS_DISTRIBUTION_CERTIFICATE_PASSWORD`
+- `MAC_DEVELOPER_ID_CERTIFICATE_BASE64`
+- `MAC_DEVELOPER_ID_CERTIFICATE_PASSWORD`
+- `MAC_PROVISIONING_PROFILE_BASE64`
+- `MAC_PROVISIONING_PROFILE_NAME`
+- `MAC_RELEASE_ENTITLEMENTS`
+- `RELEASE_LOCAL_XCCONFIG`
+- `SNIP_SNAP_PUBLISH_TOKEN`
+- `SPARKLE_PRIVATE_KEY`
+- `TESTFLIGHT_ENTITLEMENTS`
+
+`SNIP_SNAP_PUBLISH_TOKEN` needs write access to both the app repo and the
+Homebrew tap. The other values hold Apple or Sparkle signing inputs. Keep them
+only in the protected environment. The setup job writes them to short-lived
+files and a short-lived keychain, then removes those files even after a failed
+step.
+
+To publish stable, run **Promote stable release** and enter the marketing
+version and build number from the tested beta tag. For example,
+`v0.5.0-beta.7` means version `0.5.0` and build `7`. The workflow checks the
+beta record, tag, files, and checksums before it updates the stable GitHub
+release, Sparkle item, and Homebrew cask. It does not rebuild the app. Its last
+step names the same TestFlight build to select in App Store Connect.
 
 It needs secret inputs for the production identifiers, Team ID, distribution
 signing material, and upload credentials. An App Store Connect API key has a key
@@ -305,12 +341,14 @@ API](https://developer.apple.com/help/app-store-connect/get-started/app-store-co
 [Creating API
 keys](https://developer.apple.com/documentation/appstoreconnectapi/creating-api-keys-for-app-store-connect-api)
 
-Prefer an app-limited App Store Connect user with an individual Developer key
-for build upload. It cannot use provisioning API endpoints, so provide signing
-assets separately or use a tightly controlled team key only for the signing
-step. If CI also manages external groups and review, it needs App Manager access.
+This workflow asks Xcode to manage the iOS provisioning profiles, so its Apple
+API key must allow that work. Use a tightly held team key for this small
+maintainer-only environment. An app-limited individual Developer key cannot use
+the provisioning API; do not switch to one unless the workflow also installs
+explicit iOS profiles and uses manual signing. If CI later manages external
+groups and review, it also needs App Manager access.
 
-The script should:
+The workflow jobs:
 
 - Run the same tests and production preflight as the manual path.
 - Archive with `xcodebuild archive`.

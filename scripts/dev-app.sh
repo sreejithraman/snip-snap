@@ -262,6 +262,7 @@ build_app() {
 
 start_app() {
     local launched_pid=""
+    local -a launch_arguments
     configure_claimed_slot
     acquire_lock
     clear_runtime_state
@@ -274,10 +275,15 @@ start_app() {
         write_result start failed "Snip Snap Dev $slot did not build." failed blocked
         return 1
     fi
-    if ! /usr/bin/open -n \
-        --env "SNIP_SNAP_STORE_PATH=$store_path" \
-        --env "SNIP_SNAP_SHOW_PANEL_ON_LAUNCH=1" \
-        "$app_path"; then
+    launch_arguments=(
+        -n
+        --env "SNIP_SNAP_STORE_PATH=$store_path"
+        --env "SNIP_SNAP_SHOW_PANEL_ON_LAUNCH=1"
+    )
+    if [[ "${SNIP_SNAP_UI_TEST_UPDATE_SETTINGS:-}" == 1 ]]; then
+        launch_arguments+=(--env "SNIP_SNAP_UI_TEST_UPDATE_SETTINGS=1")
+    fi
+    if ! /usr/bin/open "${launch_arguments[@]}" "$app_path"; then
         write_result start failed "Snip Snap Dev $slot did not open." passed failed
         return 1
     fi

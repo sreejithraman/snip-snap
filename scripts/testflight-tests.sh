@@ -8,13 +8,13 @@ fail_test() {
     exit 1
 }
 
-if output="$("$script_dir/testflight.sh" archive --build-number 999999 2>&1)"; then
-    fail_test "a mismatched build number was accepted"
+if output="$("$script_dir/testflight.sh" archive 2>&1)"; then
+    fail_test "a missing generated build number was accepted"
 fi
-[[ "$output" == *'--build-number must match release.json'* ]] || \
-    fail_test "the build mismatch was not clear"
+[[ "$output" == *'pass --build-number with the generated build number'* ]] || \
+    fail_test "the missing build number was not clear"
 
-if output="$("$script_dir/testflight.sh" upload 2>&1)"; then
+if output="$("$script_dir/testflight.sh" upload --build-number 7 2>&1)"; then
     fail_test "an upload without explicit confirmation was accepted"
 fi
 [[ "$output" == *'SNIP_SNAP_CONFIRM_TESTFLIGHT_UPLOAD=YES'* ]] || \
