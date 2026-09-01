@@ -215,6 +215,7 @@ struct ContentView: View {
                     .onGeometryChange(for: CGFloat.self) { proxy in
                         proxy.size.height
                     } action: { height in
+                        let height = PanelComposerLayout.clampedEntryHeight(height)
                         guard PanelGeometryChange.shouldApply(
                             current: measuredInlineEntryHeight,
                             proposed: height
@@ -452,6 +453,7 @@ struct ContentView: View {
             "Add to \(model.activeList.name)…",
             text: entryText,
             lineRange: PanelComposerMetrics.textLineRange,
+            lineSpacing: PanelComposerMetrics.textLineSpacing,
             isFocused: focusedTarget == .inlineEntry,
             onFocusChange: { isFocused in
                 if isFocused {

@@ -94,6 +94,19 @@ enum PanelTextInputReturnAction: Equatable {
     }
 }
 
+enum PanelTextInputLayout {
+    static func maximumHeight(
+        lineRange: ClosedRange<Int>,
+        lineSpacing: CGFloat
+    ) -> CGFloat {
+        let font = NSFont.preferredFont(forTextStyle: .body)
+        let lineHeight = ceil(font.ascender - font.descender + font.leading)
+        let addedLineCount = max(lineRange.upperBound - 1, 0)
+        return PanelControlMetrics.floatingRowHeight
+            + CGFloat(addedLineCount) * (lineHeight + lineSpacing)
+    }
+}
+
 enum PanelImagePasteCommand {
     static func matches(modifiers: NSEvent.ModifierFlags) -> Bool {
         let modifiers = modifiers.intersection(.deviceIndependentFlagsMask)
@@ -202,7 +215,13 @@ struct PanelMultilineTextInput: View {
         TextField(prompt, text: $text, axis: .vertical)
         .textFieldStyle(.plain)
         .lineLimit(lineRange)
-        .frame(minHeight: PanelControlMetrics.floatingRowHeight)
+        .frame(
+            minHeight: PanelControlMetrics.floatingRowHeight,
+            maxHeight: PanelTextInputLayout.maximumHeight(
+                lineRange: lineRange,
+                lineSpacing: lineSpacing
+            )
+        )
         .font(.body)
         .foregroundStyle(SnipSnapColors.textPrimary)
         .lineSpacing(lineSpacing)
