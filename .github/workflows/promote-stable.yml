@@ -1,0 +1,49 @@
+name: Promote stable release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Tested beta marketing version
+        required: true
+        type: string
+      build:
+        description: Tested beta build number
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stable-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Promote exact beta files
+    runs-on: macos-26
+    environment: apple-release
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.SNIP_SNAP_PUBLISH_TOKEN }}
+      SNIP_SNAP_VERSION: ${{ inputs.version }}
+      SNIP_SNAP_BUILD_NUMBER: ${{ inputs.build }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+
+      - name: Promote tested files
+        run: |
+          git config --global user.name "Snip Snap Release"
+          git config --global user.email "actions@users.noreply.github.com"
+          ./scripts/promote-release.sh \
+            --version "${{ inputs.version }}" \
+            --build-number "${{ inputs.build }}"
+
+      - name: Record Apple handoff
+        run: |
+          echo "Select TestFlight build ${{ inputs.version }} (${{ inputs.build }}) in App Store Connect." >> "$GITHUB_STEP_SUMMARY"

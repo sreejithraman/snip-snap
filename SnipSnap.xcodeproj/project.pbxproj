@@ -60,6 +60,8 @@
 		100000000000000000000037 /* SnipListIconCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000040 /* SnipListIconCatalog.swift */; };
 		100000000000000000000038 /* PanelCardInteraction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000041 /* PanelCardInteraction.swift */; };
 		100000000000000000000039 /* SyncedContentSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000042 /* SyncedContentSettingsView.swift */; };
+		AB1000000000000000000001 /* UpdateChannelSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2000000000000000000001 /* UpdateChannelSettings.swift */; };
+		AB1000000000000000000002 /* UpdateChannelSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2000000000000000000002 /* UpdateChannelSettingsTests.swift */; };
 		10000000000000000000003A /* CloudDevTransportContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000043 /* CloudDevTransportContractTests.swift */; };
 		10000000000000000000003B /* ComposerDraftStore+ScreenCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000044 /* ComposerDraftStore+ScreenCapture.swift */; };
 		B10000000000000000000001 /* AccessibilityPermissionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* AccessibilityPermissionController.swift */; };
@@ -233,6 +235,8 @@
 		200000000000000000000040 /* SnipListIconCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListIconCatalog.swift; sourceTree = "<group>"; };
 		200000000000000000000041 /* PanelCardInteraction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelCardInteraction.swift; sourceTree = "<group>"; };
 		200000000000000000000042 /* SyncedContentSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncedContentSettingsView.swift; sourceTree = "<group>"; };
+		AB2000000000000000000001 /* UpdateChannelSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateChannelSettings.swift; sourceTree = "<group>"; };
+		AB2000000000000000000002 /* UpdateChannelSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateChannelSettingsTests.swift; sourceTree = "<group>"; };
 		200000000000000000000043 /* CloudDevTransportContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudDevTransportContractTests.swift; sourceTree = "<group>"; };
 		200000000000000000000044 /* ComposerDraftStore+ScreenCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ComposerDraftStore+ScreenCapture.swift"; sourceTree = "<group>"; };
 		B20000000000000000000001 /* AccessibilityPermissionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityPermissionController.swift; sourceTree = "<group>"; };
@@ -385,6 +389,7 @@
 				200000000000000000000041 /* PanelCardInteraction.swift */,
 				B20000000000000000000002 /* PanelContentCard.swift */,
 				200000000000000000000042 /* SyncedContentSettingsView.swift */,
+				AB2000000000000000000001 /* UpdateChannelSettings.swift */,
 				20000000000000000000003D /* PanelResizeSurface.swift */,
 				20000000000000000000003F /* PanelMultilineTextInput.swift */,
 				200000000000000000000016 /* SnipCardRow.swift */,
@@ -422,6 +427,7 @@
 				20000000000000000000002A /* SnipListModelsTests.swift */,
 				20000000000000000000002B /* DetachedEditorTests.swift */,
 				20000000000000000000002C /* ShortcutTests.swift */,
+				AB2000000000000000000002 /* UpdateChannelSettingsTests.swift */,
 				20000000000000000000002D /* AppCoordinatorTests.swift */,
 				20000000000000000000002E /* SelectionCaptureTestSupport.swift */,
 				20000000000000000000001F /* SelectionCaptureTests.swift */,
@@ -814,6 +820,7 @@
 				100000000000000000000038 /* PanelCardInteraction.swift in Sources */,
 				B10000000000000000000002 /* PanelContentCard.swift in Sources */,
 				100000000000000000000039 /* SyncedContentSettingsView.swift in Sources */,
+				AB1000000000000000000001 /* UpdateChannelSettings.swift in Sources */,
 				100000000000000000000034 /* PanelResizeSurface.swift in Sources */,
 				100000000000000000000036 /* PanelMultilineTextInput.swift in Sources */,
 				10000000000000000000000E /* SnipCardRow.swift in Sources */,
@@ -852,6 +859,7 @@
 				100000000000000000000022 /* SnipListModelsTests.swift in Sources */,
 				100000000000000000000023 /* DetachedEditorTests.swift in Sources */,
 				100000000000000000000024 /* ShortcutTests.swift in Sources */,
+				AB1000000000000000000002 /* UpdateChannelSettingsTests.swift in Sources */,
 				100000000000000000000025 /* AppCoordinatorTests.swift in Sources */,
 				100000000000000000000026 /* SelectionCaptureTestSupport.swift in Sources */,
 				100000000000000000000017 /* SelectionCaptureTests.swift in Sources */,

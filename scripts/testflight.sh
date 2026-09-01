@@ -53,11 +53,10 @@ done
     exit 2
 }
 
-release_policy_load_manifest "$repo_dir/release.json"
+[[ -n "$requested_build" ]] || fail "pass --build-number with the generated build number"
+release_policy_load_release "$repo_dir/release.json" "$requested_build"
 version="$RELEASE_VERSION"
 build_number="$RELEASE_BUILD_NUMBER"
-[[ -z "$requested_build" || "$requested_build" == "$build_number" ]] || \
-    fail "--build-number must match release.json"
 release_policy_require_project_versions "$repo_dir/Config/Shared.xcconfig"
 if [[ "$action" == upload && "${SNIP_SNAP_CONFIRM_TESTFLIGHT_UPLOAD:-}" != YES ]]; then
     fail "set SNIP_SNAP_CONFIRM_TESTFLIGHT_UPLOAD=YES for this upload"
@@ -130,8 +129,10 @@ archive_and_check() {
     source_state="$(git -C "$repo_dir" status --porcelain)"
     [[ -z "$source_state" ]] || source_is_clean=false
     /bin/mkdir -p "$release_root"
-    "$script_dir/test.sh" --without-mac-app-tests
-    "$script_dir/build-matrix.sh"
+    if [[ "${SNIP_SNAP_RELEASE_CHECKS_PASSED:-}" != YES ]]; then
+        "$script_dir/test.sh" --without-mac-app-tests
+        "$script_dir/build-matrix.sh"
+    fi
 
     "$xcodebuild_tool" \
         -project "$repo_dir/SnipSnap.xcodeproj" \

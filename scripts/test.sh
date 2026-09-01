@@ -19,6 +19,7 @@ snip_snap_claim_derived_data
 trap snip_snap_cleanup_derived_data EXIT
 
 "$script_dir/release-policy-tests.sh"
+"$script_dir/release-automation-tests.sh"
 "$script_dir/signing-policy-tests.sh"
 "$script_dir/testflight-policy-tests.sh"
 "$script_dir/testflight-tests.sh"

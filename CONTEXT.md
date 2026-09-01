@@ -43,3 +43,19 @@ _Avoid_: Mark Done, Mark Not Done, Complete, Incomplete
 **Sync generation**:
 A random identity for one version of the user's synced collection. Devices must match it before they may upload.
 _Avoid_: Schema version, account ID
+
+**Marketing version**:
+The public three-part app version, such as `0.5.0`. It names one planned stable release across iOS and Mac.
+_Avoid_: Release number, short version
+
+**Build number**:
+One internal positive integer for a set of iOS and Mac files built from the same commit. It always rises and never resets.
+_Avoid_: Beta number, run attempt
+
+**Beta**:
+A tested build offered through TestFlight, the Sparkle beta channel, a GitHub prerelease, or the `snip-snap@beta` cask before stable release.
+_Avoid_: Prerelease version in an Apple bundle
+
+**Promotion**:
+Publishing the exact tested beta files as stable without rebuilding them or changing their marketing version or build number.
+_Avoid_: Rebuild, rerelease

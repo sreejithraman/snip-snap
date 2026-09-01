@@ -41,7 +41,11 @@ struct SnipSnapApp: App {
                 syncedContentSettings: appDelegate.syncedContentSettings,
                 coordinator: appDelegate.coordinator,
                 accountNoticeModel: appDelegate.accountNoticeModel,
-                cloudSyncHandler: appDelegate.cloudSyncHandler
+                cloudSyncHandler: appDelegate.cloudSyncHandler,
+                updateChannelSettings: appDelegate.updateChannelSettings,
+                updaterController: appDelegate.updateSettingsVisible
+                    ? appDelegate.updaterController
+                    : nil
             )
         }
         .defaultSize(width: 440, height: 290)
@@ -66,6 +70,8 @@ private struct AppSettingsContent: View {
     let coordinator: AppCoordinator
     @State var accountNoticeModel: AppleAccountNoticeModel?
     let cloudSyncHandler: (any OptionalCloudSyncHandling)?
+    let updateChannelSettings: UpdateChannelSettings
+    let updaterController: SPUStandardUpdaterController?
     @State private var isClearingDownloads = false
     @State private var isSyncing = false
     @State private var clearDownloadsError: String?
@@ -88,6 +94,14 @@ private struct AppSettingsContent: View {
                 attachmentControls
             }
                 .tabItem { Label("Sync", systemImage: "icloud") }
+
+            if let updaterController {
+                UpdateSettingsView(
+                    settings: updateChannelSettings,
+                    updater: updaterController.updater
+                )
+                .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
+            }
         }
         .preferredColorScheme(model.appearance.colorScheme)
     }
@@ -151,7 +165,9 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     let fileDropController: PanelFileDropController
     let dragSessionController: PanelDragSessionController
     let updaterController: SPUStandardUpdaterController
+    let updateChannelSettings: UpdateChannelSettings
     let updateChecksEnabled: Bool
+    let updateSettingsVisible: Bool
     let accountNoticeModel: AppleAccountNoticeModel?
     let cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private var cloudAccountObserver: NSObjectProtocol?
@@ -185,6 +201,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             userActionsRebinder: assembly.userActionsRebinder
         )
         let shortcutSettings = ShortcutSettings()
+        let updateChannelSettings = UpdateChannelSettings()
         let cloudServices: SnipSnapCloudAppServices
 #if DEBUG
         if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_ENABLE"] == "1" {
@@ -221,12 +238,19 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let dragSessionController = PanelDragSessionController()
         self.model = model
         self.shortcutSettings = shortcutSettings
+        self.updateChannelSettings = updateChannelSettings
         syncedContentSettings = cloudServices.syncedContentSettings
         cloudSyncSession = cloudServices.syncSession
         self.fileDropController = fileDropController
         self.dragSessionController = dragSessionController
         updateChecksEnabled = isReleaseApp &&
             ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
+#if DEBUG
+        updateSettingsVisible = updateChecksEnabled ||
+            ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_UPDATE_SETTINGS"] == "1"
+#else
+        updateSettingsVisible = updateChecksEnabled
+#endif
         let reloadActiveLibrary: SyncedContentSettingsModel.DeleteCompletionAction = {
             guard let session = cloudServices.syncSession else { return }
             let active = try await session.activeLibrary()
@@ -299,7 +323,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         }
         updaterController = SPUStandardUpdaterController(
             startingUpdater: updateChecksEnabled,
-            updaterDelegate: nil,
+            updaterDelegate: updateChannelSettings,
             userDriverDelegate: nil
         )
         coordinator = AppCoordinator(model: model, shortcutSettings: shortcutSettings)

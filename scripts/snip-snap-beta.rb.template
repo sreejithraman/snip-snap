@@ -1,13 +1,14 @@
-cask "snip-snap" do
-  version "@VERSION@"
+cask "snip-snap@beta" do
+  version "@VERSION@-beta.@BUILD@"
   sha256 "@SHA256@"
 
-  url "https://github.com/@REPO@/releases/download/v#{version}/Snip-Snap-#{version}.zip"
-  name "Snip Snap"
+  url "https://github.com/@REPO@/releases/download/@TAG@/Snip-Snap-@VERSION@.zip"
+  name "Snip Snap Beta"
   desc "Keep saved snips ready to use later"
   homepage "https://sree.world/snip-snap"
 
   auto_updates true
+  conflicts_with cask: "snip-snap"
   depends_on macos: :tahoe
 
   app "Snip Snap.app"

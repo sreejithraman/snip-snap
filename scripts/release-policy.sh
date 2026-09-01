@@ -30,7 +30,6 @@ release_policy_version_is_greater() {
 release_policy_load_manifest() {
     local manifest_path="$1"
     local manifest_version
-    local manifest_build
 
     [[ -f "$manifest_path" ]] || {
         release_policy_fail "missing $manifest_path"
@@ -40,32 +39,43 @@ release_policy_load_manifest() {
         release_policy_fail "release.json needs a string version"
         return 1
     }
-    manifest_build="$(/usr/bin/plutil -extract build raw -o - "$manifest_path" 2>/dev/null)" || {
-        release_policy_fail "release.json needs an integer build"
-        return 1
-    }
-
     release_policy_valid_version "$manifest_version" || {
         release_policy_fail "version must use stable MAJOR.MINOR.PATCH without leading zeroes"
         return 1
     }
-    [[ "$manifest_build" =~ '^[1-9][0-9]*$' ]] || {
-        release_policy_fail "build must be a positive integer"
+    if /usr/bin/plutil -extract build raw -o - "$manifest_path" >/dev/null 2>&1; then
+        release_policy_fail "release.json must not contain a build counter"
         return 1
-    }
+    fi
 
     if [[ -n "${SNIP_SNAP_VERSION:-}" && "$SNIP_SNAP_VERSION" != "$manifest_version" ]]; then
         release_policy_fail "SNIP_SNAP_VERSION must match release.json ($manifest_version)"
         return 1
     fi
+    typeset -g RELEASE_VERSION="$manifest_version"
+}
+
+release_policy_set_build_number() {
+    local build_number="$1"
+
+    [[ "$build_number" =~ '^[1-9][0-9]*$' ]] || {
+        release_policy_fail "build must be a positive integer"
+        return 1
+    }
     if [[ -n "${SNIP_SNAP_BUILD_NUMBER:-}" &&
-          "$SNIP_SNAP_BUILD_NUMBER" != "$manifest_build" ]]; then
-        release_policy_fail "SNIP_SNAP_BUILD_NUMBER must match release.json ($manifest_build)"
+          "$SNIP_SNAP_BUILD_NUMBER" != "$build_number" ]]; then
+        release_policy_fail "SNIP_SNAP_BUILD_NUMBER must match the requested build ($build_number)"
         return 1
     fi
+    typeset -g RELEASE_BUILD_NUMBER="$build_number"
+}
 
-    typeset -g RELEASE_VERSION="$manifest_version"
-    typeset -g RELEASE_BUILD_NUMBER="$manifest_build"
+release_policy_load_release() {
+    local manifest_path="$1"
+    local build_number="$2"
+
+    release_policy_load_manifest "$manifest_path" || return 1
+    release_policy_set_build_number "$build_number"
 }
 
 release_policy_require_project_versions() {
@@ -86,8 +96,8 @@ release_policy_require_project_versions() {
 
     while IFS= read -r value; do
         found_build=1
-        [[ "$value" == "$RELEASE_BUILD_NUMBER" ]] || {
-            release_policy_fail "Xcode CURRENT_PROJECT_VERSION $value does not match $RELEASE_BUILD_NUMBER"
+        [[ "$value" =~ '^[1-9][0-9]*$' ]] || {
+            release_policy_fail "Xcode CURRENT_PROJECT_VERSION must be a positive integer"
             return 1
         }
     done < <(/usr/bin/sed -nE \
@@ -107,6 +117,7 @@ release_policy_require_project_versions() {
 release_policy_require_source() {
     local repo_dir="$1"
     local release_repo="$2"
+    local relation="${3:-exact}"
     local git_status
     local head
     local remote_head
@@ -125,16 +136,6 @@ release_policy_require_source() {
         release_policy_fail "could not read HEAD"
         return 1
     }
-    remote_head="$(git -C "$repo_dir" ls-remote origin refs/heads/main | \
-        /usr/bin/awk 'NR == 1 { print $1 }')" || {
-        release_policy_fail "could not read public origin/main"
-        return 1
-    }
-    [[ -n "$remote_head" && "$head" == "$remote_head" ]] || {
-        release_policy_fail "HEAD must equal current public origin/main"
-        return 1
-    }
-
     command -v gh >/dev/null || {
         release_policy_fail "install GitHub CLI"
         return 1
@@ -147,25 +148,67 @@ release_policy_require_source() {
         release_policy_fail "$release_repo must be public"
         return 1
     }
+    case "$relation" in
+        exact)
+            remote_head="$(git -C "$repo_dir" ls-remote origin refs/heads/main | \
+                /usr/bin/awk 'NR == 1 { print $1 }')" || {
+                release_policy_fail "could not read public origin/main"
+                return 1
+            }
+            [[ -n "$remote_head" && "$head" == "$remote_head" ]] || {
+                release_policy_fail "HEAD must equal current public origin/main"
+                return 1
+            }
+            ;;
+        on-main)
+            release_policy_require_commit_on_main "$release_repo" "$head"
+            ;;
+        *)
+            release_policy_fail "unknown source relation $relation"
+            return 1
+            ;;
+    esac
+}
+
+release_policy_require_commit_on_main() {
+    local release_repo="$1"
+    local commit="$2"
+    local gh_tool="${3:-${SNIP_SNAP_GH:-gh}}"
+    local compare_status
+
+    compare_status="$("$gh_tool" api \
+        "repos/$release_repo/compare/$commit...main" --jq '.status')" || {
+        release_policy_fail "could not compare the release commit with public main"
+        return 1
+    }
+    [[ "$compare_status" == ahead || "$compare_status" == identical ]] || {
+        release_policy_fail "the release commit must be on public main"
+        return 1
+    }
 }
 
 release_policy_preflight() {
     local repo_dir="$1"
     local release_repo="$2"
     local mode="${3:-release}"
+    local build_number="$4"
 
-    release_policy_load_manifest "$repo_dir/release.json" || return 1
+    release_policy_load_release "$repo_dir/release.json" "$build_number" || return 1
     release_policy_require_project_versions \
         "$repo_dir/Config/Shared.xcconfig" || return 1
-    release_policy_require_source "$repo_dir" "$release_repo" || return 1
     case "$mode" in
         release)
+            release_policy_require_source "$repo_dir" "$release_repo" || return 1
             release_policy_require_new_version "$repo_dir" || return 1
             release_policy_require_new_build "$repo_dir/appcast.xml" || return 1
             ;;
-        publish)
-            release_policy_require_version_not_older "$repo_dir" || return 1
+        beta)
+            release_policy_require_source "$repo_dir" "$release_repo" || return 1
+            release_policy_require_new_version "$repo_dir" || return 1
             release_policy_require_build_not_older "$repo_dir/appcast.xml" || return 1
+            ;;
+        beta-publish)
+            release_policy_require_source "$repo_dir" "$release_repo" on-main || return 1
             ;;
         *)
             release_policy_fail "unknown preflight mode $mode"
@@ -209,28 +252,6 @@ release_policy_require_new_version() {
         release_policy_fail "version $RELEASE_VERSION must be newer than v$latest"
         return 1
     }
-}
-
-release_policy_require_version_not_older() {
-    local repo_dir="$1"
-    local latest
-
-    latest="$(release_policy_latest_remote_version "$repo_dir")" || return 1
-    [[ -z "$latest" ]] && return 0
-    if release_policy_version_is_greater "$latest" "$RELEASE_VERSION"; then
-        release_policy_fail "version $RELEASE_VERSION is older than v$latest"
-        return 1
-    fi
-}
-
-release_policy_remote_tag_exists() {
-    local repo_dir="$1"
-    local version="$2"
-    local tag_output
-
-    tag_output="$(git -C "$repo_dir" ls-remote --tags origin "refs/tags/v$version")" ||
-        return 1
-    [[ -n "$tag_output" ]]
 }
 
 release_policy_latest_appcast_build() {
@@ -351,10 +372,15 @@ release_policy_require_new_notary_build_from_history() {
 release_policy_require_new_notary_build() {
     local profile="$1"
     local build_number="$2"
+    local keychain="${3:-}"
     local history_json
+    local keychain_args=()
+
+    [[ -z "$keychain" ]] || keychain_args=(--keychain "$keychain")
 
     history_json="$(/usr/bin/xcrun notarytool history \
         --keychain-profile "$profile" \
+        "${keychain_args[@]}" \
         --output-format json)" || {
         release_policy_fail "could not read Apple notarization history with profile $profile"
         return 1
@@ -395,42 +421,6 @@ release_policy_verify_app() {
     }
     [[ "$app_build" == "$RELEASE_BUILD_NUMBER" ]] || {
         release_policy_fail "app build $app_build does not match $RELEASE_BUILD_NUMBER"
-        return 1
-    }
-}
-
-release_policy_signed_app_identity() {
-    local app_path="$1"
-    local codesign_tool="${SNIP_SNAP_CODESIGN:-/usr/bin/codesign}"
-    local architecture
-    local identity
-
-    for architecture in arm64 x86_64; do
-        identity="$("$codesign_tool" \
-            --display \
-            --verbose=4 \
-            --arch "$architecture" \
-            "$app_path" 2>&1 | \
-            /usr/bin/sed -nE '/^(Identifier|TeamIdentifier|CDHash)=/p')" || return 1
-        [[ "$(print -r -- "$identity" | /usr/bin/grep -c '^CDHash=')" == 1 ]] || {
-            release_policy_fail "$app_path has no $architecture signed slice"
-            return 1
-        }
-        print -r -- "$architecture"
-        print -r -- "$identity"
-    done
-}
-
-release_policy_require_matching_apps() {
-    local first_app="$1"
-    local second_app="$2"
-    local first_identity
-    local second_identity
-
-    first_identity="$(release_policy_signed_app_identity "$first_app")" || return 1
-    second_identity="$(release_policy_signed_app_identity "$second_app")" || return 1
-    [[ -n "$first_identity" && "$first_identity" == "$second_identity" ]] || {
-        release_policy_fail "release files contain different signed apps"
         return 1
     }
 }

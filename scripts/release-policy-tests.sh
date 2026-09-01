@@ -66,35 +66,38 @@ publish_keeps_all_appcast_versions() {
     ' "$1"
 }
 
-assert_succeeds publish_keeps_all_appcast_versions "$script_dir/publish-release.sh"
+assert_succeeds publish_keeps_all_appcast_versions "$script_dir/publish-beta.sh"
 publish_missing_history_limit="$test_root/publish-missing-history-limit.sh"
 /usr/bin/awk '
     /^[[:space:]]*"\$sparkle_tool"([[:space:]]|$)/ { in_call = 1 }
     in_call && !removed && sub(/--maximum-versions[[:space:]]+0/, "") { removed = 1 }
     { print }
     in_call && $0 !~ /\\[[:space:]]*$/ { in_call = 0 }
-' "$script_dir/publish-release.sh" > "$publish_missing_history_limit"
+' "$script_dir/publish-beta.sh" > "$publish_missing_history_limit"
 assert_fails publish_keeps_all_appcast_versions "$publish_missing_history_limit"
 
 manifest="$test_root/release.json"
-print '{"version":"0.1.0","build":1}' > "$manifest"
+print '{"version":"0.1.0"}' > "$manifest"
 assert_succeeds release_policy_load_manifest "$manifest"
 [[ "$RELEASE_VERSION" == "0.1.0" ]] || fail_test "wrong manifest version"
+assert_succeeds release_policy_set_build_number 1
 [[ "$RELEASE_BUILD_NUMBER" == "1" ]] || fail_test "wrong manifest build"
 
 SNIP_SNAP_VERSION="0.2.0"
 assert_fails release_policy_load_manifest "$manifest"
 unset SNIP_SNAP_VERSION
 SNIP_SNAP_BUILD_NUMBER="2"
-assert_fails release_policy_load_manifest "$manifest"
+assert_fails release_policy_set_build_number 1
 unset SNIP_SNAP_BUILD_NUMBER
 
-print '{"version":"01.0.0","build":1}' > "$manifest"
-assert_fails release_policy_load_manifest "$manifest"
-print '{"version":"0.1.0","build":0}' > "$manifest"
+print '{"version":"01.0.0"}' > "$manifest"
 assert_fails release_policy_load_manifest "$manifest"
 print '{"version":"0.1.0","build":1}' > "$manifest"
-assert_succeeds release_policy_load_manifest "$manifest"
+assert_fails release_policy_load_manifest "$manifest"
+print '{"version":"0.1.0"}' > "$manifest"
+assert_succeeds release_policy_load_release "$manifest" 1
+assert_fails release_policy_set_build_number 0
+assert_fails release_policy_set_build_number beta
 
 assert_succeeds release_policy_version_is_greater 0.1.1 0.1.0
 assert_succeeds release_policy_version_is_greater 0.2.0 0.1.9
@@ -171,46 +174,16 @@ update_root="$test_root/update"
 /bin/mkdir -p "$update_root/scripts" "$update_root/Config"
 /bin/cp "$script_dir/release-policy.sh" "$update_root/scripts/release-policy.sh"
 /bin/cp "$script_dir/set-release.sh" "$update_root/scripts/set-release.sh"
-print '{"version":"0.1.0","build":1}' > "$update_root/release.json"
+print '{"version":"0.1.0"}' > "$update_root/release.json"
 print 'MARKETING_VERSION = 0.1.0' > "$update_root/Config/Shared.xcconfig"
 print 'CURRENT_PROJECT_VERSION = 1' >> "$update_root/Config/Shared.xcconfig"
-assert_succeeds "$update_root/scripts/set-release.sh" 0.2.0 2
+assert_succeeds "$update_root/scripts/set-release.sh" 0.2.0
 /usr/bin/grep -q 'MARKETING_VERSION = 0.2.0' \
     "$update_root/Config/Shared.xcconfig" || fail_test "set-release missed Xcode version"
-/usr/bin/grep -q 'CURRENT_PROJECT_VERSION = 2' \
-    "$update_root/Config/Shared.xcconfig" || fail_test "set-release missed Xcode build"
-assert_fails "$update_root/scripts/set-release.sh" 0.1.0 3
-assert_fails "$update_root/scripts/set-release.sh" 0.2.0 2
-
-codesign_fixture="$test_root/codesign"
-print '#!/bin/zsh' > "$codesign_fixture"
-print 'while (( $# )); do' >> "$codesign_fixture"
-print '    if [[ "$1" == --arch ]]; then' >> "$codesign_fixture"
-print '        architecture="$2"' >> "$codesign_fixture"
-print '        shift 2' >> "$codesign_fixture"
-print '    else' >> "$codesign_fixture"
-print '        app_path="$1"' >> "$codesign_fixture"
-print '        shift' >> "$codesign_fixture"
-print '    fi' >> "$codesign_fixture"
-print 'done' >> "$codesign_fixture"
-print '/bin/cat "$app_path/identity-$architecture"' >> "$codesign_fixture"
-/bin/chmod +x "$codesign_fixture"
-first_app="$test_root/first/Snip Snap.app"
-second_app="$test_root/second/Snip Snap.app"
-/bin/mkdir -p "$first_app" "$second_app"
-for architecture in arm64 x86_64; do
-    print 'Identifier=world.sree.snipsnap' > "$first_app/identity-$architecture"
-    print 'TeamIdentifier=FAKE123456' >> "$first_app/identity-$architecture"
-    print "CDHash=$architecture-hash" >> "$first_app/identity-$architecture"
-    /bin/cp "$first_app/identity-$architecture" "$second_app/identity-$architecture"
-done
-SNIP_SNAP_CODESIGN="$codesign_fixture"
-assert_succeeds release_policy_require_matching_apps "$first_app" "$second_app"
-print 'Identifier=world.sree.snipsnap' > "$second_app/identity-x86_64"
-print 'TeamIdentifier=FAKE123456' >> "$second_app/identity-x86_64"
-print 'CDHash=different-x86_64-hash' >> "$second_app/identity-x86_64"
-assert_fails release_policy_require_matching_apps "$first_app" "$second_app"
-unset SNIP_SNAP_CODESIGN
+/usr/bin/grep -q 'CURRENT_PROJECT_VERSION = 1' \
+    "$update_root/Config/Shared.xcconfig" || fail_test "set-release changed the local build"
+assert_fails "$update_root/scripts/set-release.sh" 0.1.0
+assert_fails "$update_root/scripts/set-release.sh" 0.3.0 2
 
 verified_app="$test_root/verified/Snip Snap.app"
 /bin/mkdir -p "$verified_app/Contents/Resources"

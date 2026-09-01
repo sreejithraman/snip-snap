@@ -1,0 +1,201 @@
+name: Beta delivery
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/beta.yml"
+      - "CloudKit/**"
+      - "Config/**"
+      - "Packages/**"
+      - "Shared/**"
+      - "SnipSnap/**"
+      - "SnipSnapiOS/**"
+      - "SnipSnapiOSTests/**"
+      - "SnipSnapiOSUITests/**"
+      - "SnipSnapShareExtension/**"
+      - "SnipSnapTests/**"
+      - "SnipSnap.xcodeproj/**"
+      - "scripts/**"
+      - "release.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: beta-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test release source
+    runs-on: macos-26
+    outputs:
+      build: ${{ steps.release.outputs.build }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve version and build
+        id: release
+        run: |
+          version="$(plutil -extract version raw -o - release.json)"
+          build="$(./scripts/release-build-number.sh "$GITHUB_RUN_NUMBER")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests
+        run: |
+          ./scripts/test.sh
+          ./scripts/build-matrix.sh
+
+  mac-build:
+    name: Build signed Mac beta
+    needs: test
+    if: vars.SNIP_SNAP_BETA_DELIVERY_ENABLED == 'true'
+    runs-on: macos-26
+    environment: apple-release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHOWROOM_APPLE_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+      SHOWROOM_APPLE_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      SHOWROOM_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      SNIP_SNAP_BUILD_NUMBER: ${{ needs.test.outputs.build }}
+      SNIP_SNAP_CI_APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+      SNIP_SNAP_CI_CERTIFICATE_BASE64: ${{ secrets.MAC_DEVELOPER_ID_CERTIFICATE_BASE64 }}
+      SNIP_SNAP_CI_CERTIFICATE_PASSWORD: ${{ secrets.MAC_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+      SNIP_SNAP_CI_LOCAL_XCCONFIG: ${{ secrets.RELEASE_LOCAL_XCCONFIG }}
+      SNIP_SNAP_CI_MAC_PROFILE_BASE64: ${{ secrets.MAC_PROVISIONING_PROFILE_BASE64 }}
+      SNIP_SNAP_CI_MAC_RELEASE_ENTITLEMENTS: ${{ secrets.MAC_RELEASE_ENTITLEMENTS }}
+      SNIP_SNAP_MAC_PROVISIONING_PROFILE_SPECIFIER: ${{ secrets.MAC_PROVISIONING_PROFILE_NAME }}
+      SNIP_SNAP_NOTARY_PROFILE: snip-snap-ci
+      SNIP_SNAP_RELEASE_CHECKS_PASSED: YES
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set release paths
+        run: |
+          release_root="$RUNNER_TEMP/snip-snap-release-${{ github.run_id }}-mac"
+          echo "SHOWROOM_APPLE_KEY_PATH=$release_root/AuthKey.p8" >> "$GITHUB_ENV"
+          echo "SNIP_SNAP_CI_ROOT=$release_root" >> "$GITHUB_ENV"
+          echo "SNIP_SNAP_NOTARY_KEYCHAIN=$release_root/release.keychain-db" >> "$GITHUB_ENV"
+
+      - name: Load protected Apple inputs
+        run: ./scripts/ci-apple-setup.sh setup mac
+
+      - name: Build, sign, and notarize Mac beta
+        run: ./scripts/release.sh --build-number "${{ needs.test.outputs.build }}"
+
+      - name: Keep exact Mac beta files
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mac-beta-${{ needs.test.outputs.version }}-${{ needs.test.outputs.build }}
+          path: |
+            artifacts/release-${{ needs.test.outputs.version }}-${{ needs.test.outputs.build }}/Snip-Snap-${{ needs.test.outputs.version }}.zip
+            artifacts/release-${{ needs.test.outputs.version }}-${{ needs.test.outputs.build }}/Snip-Snap-${{ needs.test.outputs.version }}.zip.sha256
+            artifacts/release-${{ needs.test.outputs.version }}-${{ needs.test.outputs.build }}/Snip-Snap-${{ needs.test.outputs.version }}.dmg
+            artifacts/release-${{ needs.test.outputs.version }}-${{ needs.test.outputs.build }}/Snip-Snap-${{ needs.test.outputs.version }}.dmg.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove protected Apple inputs
+        if: always()
+        run: ./scripts/ci-apple-setup.sh cleanup
+
+  ios-upload:
+    name: Upload internal TestFlight beta
+    needs: test
+    if: vars.SNIP_SNAP_BETA_DELIVERY_ENABLED == 'true'
+    runs-on: macos-26
+    environment: apple-release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHOWROOM_APPLE_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+      SHOWROOM_APPLE_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      SHOWROOM_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      SNIP_SNAP_BUILD_NUMBER: ${{ needs.test.outputs.build }}
+      SNIP_SNAP_CI_APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+      SNIP_SNAP_CI_CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
+      SNIP_SNAP_CI_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+      SNIP_SNAP_CI_LOCAL_XCCONFIG: ${{ secrets.RELEASE_LOCAL_XCCONFIG }}
+      SNIP_SNAP_CI_TESTFLIGHT_ENTITLEMENTS: ${{ secrets.TESTFLIGHT_ENTITLEMENTS }}
+      SNIP_SNAP_CONFIRM_TESTFLIGHT_UPLOAD: YES
+      SNIP_SNAP_RELEASE_CHECKS_PASSED: YES
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set release paths
+        run: |
+          release_root="$RUNNER_TEMP/snip-snap-release-${{ github.run_id }}-ios"
+          echo "SHOWROOM_APPLE_KEY_PATH=$release_root/AuthKey.p8" >> "$GITHUB_ENV"
+          echo "SNIP_SNAP_CI_ROOT=$release_root" >> "$GITHUB_ENV"
+
+      - name: Load protected Apple inputs
+        run: ./scripts/ci-apple-setup.sh setup ios
+
+      - name: Upload iOS beta
+        run: ./scripts/testflight.sh upload --build-number "${{ needs.test.outputs.build }}"
+
+      - name: Remove protected Apple inputs
+        if: always()
+        run: ./scripts/ci-apple-setup.sh cleanup
+
+  mac-publish:
+    name: Publish Mac beta channels
+    needs: [test, mac-build, ios-upload]
+    runs-on: macos-26
+    environment: apple-release
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.SNIP_SNAP_PUBLISH_TOKEN }}
+      SNIP_SNAP_BUILD_NUMBER: ${{ needs.test.outputs.build }}
+      SNIP_SNAP_RELEASE_DIR: ${{ github.workspace }}/artifacts/release-${{ needs.test.outputs.version }}-${{ needs.test.outputs.build }}
+      SNIP_SNAP_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set release paths
+        run: echo "SNIP_SNAP_SPARKLE_PRIVATE_KEY_FILE=$RUNNER_TEMP/sparkle.key" >> "$GITHUB_ENV"
+
+      - name: Download exact Mac beta files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: mac-beta-${{ needs.test.outputs.version }}-${{ needs.test.outputs.build }}
+          path: artifacts/release-${{ needs.test.outputs.version }}-${{ needs.test.outputs.build }}
+
+      - name: Resolve Sparkle tools
+        run: |
+          sparkle_derived_data="$RUNNER_TEMP/snip-snap-sparkle"
+          xcodebuild \
+            -resolvePackageDependencies \
+            -project SnipSnap.xcodeproj \
+            -scheme SnipSnap \
+            -derivedDataPath "$sparkle_derived_data"
+          generate_appcast="$(find "$sparkle_derived_data" \
+            -type f -name generate_appcast -perm -111 -print -quit)"
+          test -n "$generate_appcast"
+          echo "SNIP_SNAP_GENERATE_APPCAST=$generate_appcast" >> "$GITHUB_ENV"
+
+      - name: Load Sparkle key
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$SNIP_SNAP_SPARKLE_PRIVATE_KEY_FILE"
+          chmod 600 "$SNIP_SNAP_SPARKLE_PRIVATE_KEY_FILE"
+
+      - name: Publish beta feeds
+        run: |
+          git config --global user.name "Snip Snap Release"
+          git config --global user.email "actions@users.noreply.github.com"
+          ./scripts/publish-beta.sh --build-number "${{ needs.test.outputs.build }}"
+
+      - name: Remove Sparkle key
+        if: always()
+        run: rm -f "$SNIP_SNAP_SPARKLE_PRIVATE_KEY_FILE"
