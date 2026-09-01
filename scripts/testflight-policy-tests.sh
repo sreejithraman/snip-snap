@@ -111,8 +111,13 @@ assert_fails_with 'signed CloudKit Production environment' verify_archive
 
 /usr/bin/plutil -replace aps-environment \
     -string development "$app/fake-entitlements.plist"
-assert_fails_with 'signed Apple Push Notification production environment' verify_archive
+assert_succeeds verify_archive
 /usr/bin/plutil -replace aps-environment \
+    -string invalid "$app/fake-entitlements.plist"
+assert_fails_with 'signed Apple Push Notification environment' verify_archive
+/usr/bin/plutil -remove aps-environment "$app/fake-entitlements.plist"
+assert_fails_with 'signed Apple Push Notification environment' verify_archive
+/usr/bin/plutil -insert aps-environment \
     -string production "$app/fake-entitlements.plist"
 
 /usr/bin/plutil -insert 'com\.apple\.developer\.icloud-services' \
