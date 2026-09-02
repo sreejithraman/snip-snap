@@ -103,7 +103,7 @@ enum PanelTextInputLayout {
         let font = NSFont.preferredFont(forTextStyle: .body)
         let lineHeight = ceil(font.ascender - font.descender + font.leading)
         let addedLineCount = max(lineRange.upperBound - 1, 0)
-        return PanelControlMetrics.floatingRowHeight
+        return PanelControlMetrics.compactComposerHeight
             + CGFloat(addedLineCount) * (lineHeight + lineSpacing)
     }
 }
@@ -217,7 +217,7 @@ struct PanelMultilineTextInput: View {
         .textFieldStyle(.plain)
         .lineLimit(lineRange)
         .frame(
-            minHeight: PanelControlMetrics.floatingRowHeight,
+            minHeight: PanelControlMetrics.compactComposerHeight,
             maxHeight: PanelTextInputLayout.maximumHeight(
                 lineRange: lineRange,
                 lineSpacing: lineSpacing

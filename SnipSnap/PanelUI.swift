@@ -20,24 +20,16 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 enum PanelControlMetrics {
     static let floatingRowHeight: CGFloat = 40
     static let floatingIconLength: CGFloat = 18
-    static let compactControlLength: CGFloat = 32
+    static let compactComposerHeight: CGFloat = 32
+    static let compactControlLength = compactComposerHeight
     static let tabSelectionInset: CGFloat = 4
     static let compactSelectionWidth: CGFloat = 40
     static let compactSelectionHeight = floatingRowHeight - tabSelectionInset * 2
     static let inlineEntryInset = SnipSnapSpacing.relatedContent
-    static let inlineEntryBaseHeight = floatingRowHeight + inlineEntryInset * 2
+    static let inlineEntryBaseHeight = compactComposerHeight + inlineEntryInset * 2
     static let expandedInputVerticalPadding = SnipSnapSpacing.relatedContent
 
     static let tabItemWidth = compactSelectionWidth + tabSelectionInset * 2
-}
-
-/// Shared gaps and insets for the custom panel surfaces. Ordinary SwiftUI
-/// layouts should keep their system spacing unless two surfaces must align.
-enum SnipSnapSpacing {
-    static let relatedContent: CGFloat = 8
-    static let controlContentInset: CGFloat = 10
-    static let cardContentInset: CGFloat = 12
-    static let paneContentInset: CGFloat = 16
 }
 
 enum PanelShapeMetrics {
@@ -116,7 +108,7 @@ enum PanelComposerLayout {
     }
 
     static func isExpanded(fieldHeight: CGFloat) -> Bool {
-        fieldHeight > PanelControlMetrics.floatingRowHeight
+        fieldHeight > PanelControlMetrics.compactComposerHeight
             + PanelGeometryChange.minimumMeaningfulChange
     }
 }
@@ -284,6 +276,20 @@ extension View {
 
     func panelEmbeddedProminentActionControl() -> some View {
         modifier(PanelAdaptiveProminentActionModifier())
+    }
+
+    func panelStandaloneActionControl() -> some View {
+        let shape = Circle()
+        return frame(
+            width: PanelControlMetrics.compactControlLength,
+            height: PanelControlMetrics.compactControlLength
+        )
+        .panelGlassSurface(
+            in: shape,
+            interactive: true,
+            edge: .hidden
+        )
+        .contentShape(shape)
     }
 
     func panelEmbeddedInputSurface(

@@ -404,18 +404,32 @@ final class SnipSnapiOSUITests: XCTestCase {
             XCTAssertGreaterThanOrEqual(control.frame.width, 44)
             XCTAssertGreaterThanOrEqual(control.frame.height, 44)
         }
+        XCTAssertEqual(addAttachments.frame.midY, composer.frame.midY, accuracy: 1)
+        XCTAssertEqual(send.frame.midY, composer.frame.midY, accuracy: 1)
         XCTAssertTrue(newList.exists)
         XCTAssertFalse(send.isEnabled)
 
         composer.tap()
-        composer.typeText("Sent from the quick composer")
+        composer.typeText("Sent")
         XCTAssertTrue(app.keyboards.firstMatch.exists)
         XCTAssertTrue(newList.exists)
         XCTAssertTrue(send.isEnabled)
+        XCTAssertEqual(addAttachments.frame.midY, composer.frame.midY, accuracy: 1)
+        XCTAssertEqual(send.frame.midY, composer.frame.midY, accuracy: 1)
+        let filledComposerScreenshot = XCTAttachment(screenshot: app.screenshot())
+        filledComposerScreenshot.name = "Filled Quick Composer"
+        filledComposerScreenshot.lifetime = .keepAlways
+        add(filledComposerScreenshot)
+        composer.typeText(
+            " from a quick composer entry that is long enough to wrap "
+                + "onto another line even on a wide iPhone display"
+        )
+        XCTAssertGreaterThan(composer.frame.height, addAttachments.frame.height)
+        XCTAssertEqual(addAttachments.frame.maxY, send.frame.maxY, accuracy: 1)
         send.tap()
 
         let savedText = app.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS %@", "Sent from the quick composer")
+            NSPredicate(format: "label CONTAINS %@", "Sent")
         ).firstMatch
         XCTAssertTrue(savedText.waitForExistence(timeout: 5))
 

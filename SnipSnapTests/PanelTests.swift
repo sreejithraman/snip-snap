@@ -755,6 +755,13 @@ final class PanelTests: StoreBackedTestCase {
         )
     }
 
+    func testCompactComposerPeerControlsShareVisibleHeight() {
+        XCTAssertEqual(
+            PanelControlMetrics.compactControlLength,
+            PanelControlMetrics.compactComposerHeight
+        )
+    }
+
     func testTabSelectionUsesTheNearRoundActionProportion() {
         XCTAssertGreaterThan(
             PanelControlMetrics.compactSelectionWidth,
@@ -822,12 +829,12 @@ final class PanelTests: StoreBackedTestCase {
     func testCompactComposerDoesNotTreatItsAlignedFieldAsExpanded() {
         XCTAssertFalse(
             PanelComposerLayout.isExpanded(
-                fieldHeight: PanelControlMetrics.floatingRowHeight
+                fieldHeight: PanelControlMetrics.compactComposerHeight
             )
         )
         XCTAssertTrue(
             PanelComposerLayout.isExpanded(
-                fieldHeight: PanelControlMetrics.floatingRowHeight + 1
+                fieldHeight: PanelControlMetrics.compactComposerHeight + 1
             )
         )
     }
@@ -841,6 +848,21 @@ final class PanelTests: StoreBackedTestCase {
             PanelComposerLayout.clampedEntryHeight(5_612),
             PanelComposerMetrics.maximumInlineEntryHeight
         )
+    }
+
+    @MainActor
+    func testCompactPanelTextInputUsesCompactMacHeight() {
+        let input = PanelMultilineTextInput(
+            "Add to Inbox…",
+            text: .constant(""),
+            lineRange: 1...5,
+            isFocused: false,
+            onFocusChange: { _ in },
+            onSubmit: {}
+        )
+        let hostingView = NSHostingView(rootView: input)
+
+        XCTAssertEqual(hostingView.fittingSize.height, 32, accuracy: 0.5)
     }
 
     @MainActor
@@ -858,7 +880,7 @@ final class PanelTests: StoreBackedTestCase {
                 x: 0,
                 y: 0,
                 width: 320,
-                height: PanelControlMetrics.floatingRowHeight
+                height: PanelControlMetrics.compactComposerHeight
             ),
             styleMask: .borderless,
             backing: .buffered,
