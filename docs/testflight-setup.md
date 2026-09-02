@@ -100,14 +100,13 @@ app](https://developer.apple.com/help/app-store-connect/create-an-app-record/add
 
 ### 5. Set signing
 
-Start with Xcode's automatic signing for both the iOS app and Share extension.
-Select the same paid team for both targets. Xcode can create and update App Store
-distribution profiles during archive export.
+Use Xcode's automatic signing for local work on both the iOS app and Share
+extension. Select the same paid team for both targets. Protected CI installs
+explicit development and App Store Connect profiles for each target, so it does
+not depend on a signed-in Xcode account or profile downloads during a build.
 
-If the team later uses manual signing, it needs an Apple Distribution
-certificate and an App Store Connect provisioning profile for each signed
-executable. Each profile must match its explicit App ID and allowed
-capabilities. Enabling or changing an App ID capability invalidates old manual
+Each profile must match its explicit App ID, certificate, and allowed
+capabilities. Enabling or changing an App ID capability invalidates old
 profiles, so recreate them after capability changes. [App Store Connect
 provisioning
 profiles](https://developer.apple.com/help/account/provisioning-profiles/create-an-app-store-provisioning-profile/),
@@ -309,6 +308,12 @@ Add these secrets to `apple-release`:
 - `IOS_DISTRIBUTION_CERTIFICATE_PASSWORD`
 - `IOS_DEVELOPMENT_CERTIFICATE_BASE64`
 - `IOS_DEVELOPMENT_CERTIFICATE_PASSWORD`
+- `IOS_APP_DEVELOPMENT_PROFILE_BASE64`
+- `IOS_SHARE_DEVELOPMENT_PROFILE_BASE64`
+- `IOS_APP_STORE_PROFILE_BASE64`
+- `IOS_SHARE_APP_STORE_PROFILE_BASE64`
+- `IOS_APP_STORE_PROFILE_NAME`
+- `IOS_SHARE_APP_STORE_PROFILE_NAME`
 - `MAC_DEVELOPER_ID_CERTIFICATE_BASE64`
 - `MAC_DEVELOPER_ID_CERTIFICATE_PASSWORD`
 - `MAC_PROVISIONING_PROFILE_BASE64`
@@ -343,18 +348,16 @@ API](https://developer.apple.com/help/app-store-connect/get-started/app-store-co
 [Creating API
 keys](https://developer.apple.com/documentation/appstoreconnectapi/creating-api-keys-for-app-store-connect-api)
 
-This workflow asks Xcode to manage the iOS provisioning profiles, so its Apple
-API key must allow that work. Use a tightly held team key for this small
-maintainer-only environment. An app-limited individual Developer key cannot use
-the provisioning API; do not switch to one unless the workflow also installs
-explicit iOS profiles and uses manual signing. If CI later manages external
-groups and review, it also needs App Manager access.
+The workflow installs explicit iOS profiles before it builds. The API key is
+used for App Store Connect upload, not for creating or downloading profiles.
+Renew the protected profiles when their certificate expires or an App ID
+capability changes.
 
-Xcode uses Apple Development signing while it creates an automatically signed
-archive, then replaces that signature with Apple Distribution signing during
-the App Store Connect export. Keep both iOS identities in the protected
-environment. The archive check accepts either push environment; the uploaded
-export always uses the production distribution profile.
+Xcode uses Apple Development signing and the installed development profiles for
+the archive. It then uses Apple Distribution signing and the two named App Store
+Connect profiles during export. Keep both iOS identities and all four profiles
+in the protected environment. The archive check accepts either push
+environment; the uploaded export uses production distribution profiles.
 
 The workflow jobs:
 

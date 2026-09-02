@@ -7,7 +7,7 @@ ci_root="${SNIP_SNAP_CI_ROOT:-}"
 repo_dir="${SNIP_SNAP_REPO_DIR:-${0:A:h:h}}"
 keychain="$ci_root/release.keychain-db"
 keychain_password_file="$ci_root/keychain-password"
-profile_record="$ci_root/profile-path"
+profile_record="$ci_root/profile-paths"
 repo_secret_record="$ci_root/repo-secret-paths"
 local_xcconfig="$repo_dir/Config/Local.xcconfig"
 testflight_entitlements="$repo_dir/Config/TestFlight.entitlements"
@@ -51,6 +51,27 @@ import_certificate() {
         -T /usr/bin/security
 }
 
+install_profile() {
+    local encoded_profile="$1"
+    local source_path="$2"
+    local profile_extension="$3"
+    local profile_dir="$4"
+    local profile_plist="$source_path.plist"
+    local profile_uuid
+    local installed_profile
+
+    print -rn -- "$encoded_profile" | /usr/bin/base64 -D > "$source_path"
+    /bin/chmod 600 "$source_path"
+    "$security_tool" cms -D -i "$source_path" > "$profile_plist"
+    profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$profile_plist")"
+    [[ -n "$profile_uuid" ]] || fail "provisioning profile has no UUID"
+    /bin/mkdir -p "$profile_dir"
+    installed_profile="$profile_dir/$profile_uuid.$profile_extension"
+    /bin/cp "$source_path" "$installed_profile"
+    /bin/chmod 600 "$installed_profile"
+    print -r -- "$installed_profile" >> "$profile_record"
+}
+
 case "$action" in
     setup)
         safe_root || fail "SNIP_SNAP_CI_ROOT must end in snip-snap-release-*"
@@ -64,6 +85,14 @@ case "$action" in
                 fail "development signing certificate is missing"
             [[ -n "${SNIP_SNAP_CI_DEVELOPMENT_CERTIFICATE_PASSWORD:-}" ]] || \
                 fail "development signing certificate password is missing"
+            [[ -n "${SNIP_SNAP_CI_IOS_APP_DEVELOPMENT_PROFILE_BASE64:-}" ]] || \
+                fail "iOS app development profile is missing"
+            [[ -n "${SNIP_SNAP_CI_IOS_SHARE_DEVELOPMENT_PROFILE_BASE64:-}" ]] || \
+                fail "iOS Share development profile is missing"
+            [[ -n "${SNIP_SNAP_CI_IOS_APP_STORE_PROFILE_BASE64:-}" ]] || \
+                fail "iOS app App Store profile is missing"
+            [[ -n "${SNIP_SNAP_CI_IOS_SHARE_APP_STORE_PROFILE_BASE64:-}" ]] || \
+                fail "iOS Share App Store profile is missing"
         fi
         /bin/mkdir -p "$ci_root"
         lane_entitlements="$testflight_entitlements"
@@ -109,23 +138,35 @@ case "$action" in
 
         if [[ "$lane" == mac ]]; then
             [[ -n "${SNIP_SNAP_CI_MAC_PROFILE_BASE64:-}" ]] || fail "Mac profile is missing"
-            print -n "$SNIP_SNAP_CI_MAC_PROFILE_BASE64" | \
-                /usr/bin/base64 -D > "$ci_root/mac.provisionprofile"
-            profile_plist="$ci_root/mac-profile.plist"
-            "$security_tool" cms -D -i "$ci_root/mac.provisionprofile" > "$profile_plist"
-            profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$profile_plist")"
-            [[ -n "$profile_uuid" ]] || fail "Mac profile has no UUID"
-            profile_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
-            /bin/mkdir -p "$profile_dir"
-            installed_profile="$profile_dir/$profile_uuid.provisionprofile"
-            /bin/cp "$ci_root/mac.provisionprofile" "$installed_profile"
-            print -r -- "$installed_profile" > "$profile_record"
+            install_profile \
+                "$SNIP_SNAP_CI_MAC_PROFILE_BASE64" \
+                "$ci_root/mac.provisionprofile" \
+                provisionprofile \
+                "$HOME/Library/MobileDevice/Provisioning Profiles"
 
             /usr/bin/xcrun notarytool store-credentials snip-snap-ci \
                 --key "$ci_root/AuthKey.p8" \
                 --key-id "$SHOWROOM_APPLE_KEY_ID" \
                 --issuer "$SHOWROOM_APPLE_ISSUER_ID" \
                 --keychain "$keychain"
+        else
+            ios_profile_dir="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+            install_profile \
+                "$SNIP_SNAP_CI_IOS_APP_DEVELOPMENT_PROFILE_BASE64" \
+                "$ci_root/ios-app-development.mobileprovision" \
+                mobileprovision "$ios_profile_dir"
+            install_profile \
+                "$SNIP_SNAP_CI_IOS_SHARE_DEVELOPMENT_PROFILE_BASE64" \
+                "$ci_root/ios-share-development.mobileprovision" \
+                mobileprovision "$ios_profile_dir"
+            install_profile \
+                "$SNIP_SNAP_CI_IOS_APP_STORE_PROFILE_BASE64" \
+                "$ci_root/ios-app-store.mobileprovision" \
+                mobileprovision "$ios_profile_dir"
+            install_profile \
+                "$SNIP_SNAP_CI_IOS_SHARE_APP_STORE_PROFILE_BASE64" \
+                "$ci_root/ios-share-app-store.mobileprovision" \
+                mobileprovision "$ios_profile_dir"
         fi
         ;;
     cleanup)
@@ -140,9 +181,14 @@ case "$action" in
             done < "$repo_secret_record"
         fi
         if [[ -f "$profile_record" ]]; then
-            installed_profile="$(<"$profile_record")"
-            [[ "$installed_profile" == "$HOME/Library/MobileDevice/Provisioning Profiles/"*.provisionprofile ]] && \
-                /bin/rm -f "$installed_profile"
+            while IFS= read -r installed_profile; do
+                case "$installed_profile" in
+                    "$HOME/Library/MobileDevice/Provisioning Profiles/"*.provisionprofile|\
+                    "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/"*.mobileprovision)
+                        /bin/rm -f "$installed_profile"
+                        ;;
+                esac
+            done < "$profile_record"
         fi
         [[ ! -f "$keychain" ]] || "$security_tool" delete-keychain "$keychain" || true
         /bin/rm -rf "$ci_root"
