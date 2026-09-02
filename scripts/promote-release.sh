@@ -8,8 +8,13 @@ repo_dir="${script_dir:h}"
 release_repo="${SNIP_SNAP_RELEASE_REPO:-sreejithraman/snip-snap}"
 tap_repo="${SNIP_SNAP_TAP_REPO:-sreejithraman/homebrew-tap}"
 gh_tool="${SNIP_SNAP_GH:-gh}"
+git_tool="${SNIP_SNAP_GIT:-git}"
 requested_build=""
 requested_version=""
+
+git() {
+    command "$git_tool" "$@"
+}
 
 source "$script_dir/release-policy.sh"
 source "$script_dir/release-automation.sh"
