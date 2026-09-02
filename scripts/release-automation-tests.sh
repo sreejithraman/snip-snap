@@ -114,7 +114,8 @@ for required in \
     'IOS_SHARE_APP_STORE_PROFILE_NAME' \
     'needs: [test, mac-build, ios-upload]' \
     'SNIP_SNAP_GENERATE_APPCAST=' \
-    'SNIP_SNAP_BREW: ${{ steps.homebrew.outputs.repository-path }}/bin/brew' \
+    'echo "SNIP_SNAP_BREW=$brew_tool" >> "$GITHUB_ENV"' \
+    'gh auth setup-git --hostname github.com' \
     '"Shared/**"' \
     'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' \
     'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c' \
@@ -124,15 +125,26 @@ for required in \
 done
 /usr/bin/grep -F 'brew_tool="${SNIP_SNAP_BREW:-' "$script_dir/publish-beta.sh" >/dev/null || \
     fail_test "beta publish does not support an explicit Homebrew executable"
+for script in publish-beta.sh promote-release.sh; do
+    /usr/bin/grep -F '"$brew_tool" tap "$tap_name"' "$script_dir/$script" >/dev/null || \
+        fail_test "$script does not register its cask tap"
+    /usr/bin/grep -F '"$brew_tool" --repository "$tap_name"' "$script_dir/$script" >/dev/null || \
+        fail_test "$script does not use the registered tap checkout"
+done
 promotion_workflow="$script_dir/../.github/workflows/promote-stable.yml"
 for required in \
     'version:' \
+    'Homebrew/actions/setup-homebrew@a657b8b0cd35d0f65cce41fce9b24cf054b49869' \
+    'echo "SNIP_SNAP_BREW=$brew_tool" >> "$GITHUB_ENV"' \
+    'gh auth setup-git --hostname github.com' \
     'scripts/promote-release.sh' \
     '--version "${{ inputs.version }}"' \
     '--build-number "${{ inputs.build }}"'; do
     /usr/bin/grep -F -- "$required" "$promotion_workflow" >/dev/null || \
         fail_test "stable workflow is missing $required"
 done
+/usr/bin/grep -F 'brew_tool="${SNIP_SNAP_BREW:-' "$script_dir/promote-release.sh" >/dev/null || \
+    fail_test "stable promotion does not support an explicit Homebrew executable"
 
 for retry_guard in \
     'gh release view "$beta_tag"' \

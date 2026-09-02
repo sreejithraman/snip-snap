@@ -36,8 +36,26 @@ jobs:
         with:
           ref: main
 
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@a657b8b0cd35d0f65cce41fce9b24cf054b49869 # 2026.08.24.1
+        with:
+          core: true
+          cask: true
+
+      - name: Resolve Homebrew executable
+        run: |
+          for brew_tool in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+            if [[ -x "$brew_tool" ]]; then
+              echo "SNIP_SNAP_BREW=$brew_tool" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "Homebrew executable not found" >&2
+          exit 1
+
       - name: Promote tested files
         run: |
+          gh auth setup-git --hostname github.com
           git config --global user.name "Snip Snap Release"
           git config --global user.email "actions@users.noreply.github.com"
           ./scripts/promote-release.sh \

@@ -5,6 +5,8 @@ script_dir="${0:A:h}"
 repo_dir="${script_dir:h}"
 release_repo="${SNIP_SNAP_RELEASE_REPO:-sreejithraman/snip-snap}"
 tap_repo="${SNIP_SNAP_TAP_REPO:-sreejithraman/homebrew-tap}"
+tap_owner="${tap_repo%%/*}"
+tap_name="$tap_owner/${${tap_repo#*/}#homebrew-}"
 requested_build=""
 requested_version=""
 
@@ -50,24 +52,21 @@ stable_tag="v$version"
 record_name="$(release_automation_record_name "$version" "$build_number")"
 
 command -v gh >/dev/null || fail "install GitHub CLI"
-command -v brew >/dev/null || fail "install Homebrew"
+brew_tool="${SNIP_SNAP_BREW:-$(command -v brew 2>/dev/null || true)}"
+[[ -x "$brew_tool" ]] || fail "install Homebrew"
 gh auth status >/dev/null || fail "sign in with GitHub CLI"
 [[ "$(gh repo view "$release_repo" --json isPrivate --jq '.isPrivate')" == false ]] || \
     fail "$release_repo must be public"
 
 temp_root="$(/usr/bin/mktemp -d /private/tmp/snip-snap-promote.XXXXXX)"
-tap_checkout=""
 cleanup() {
     [[ "$temp_root" == /private/tmp/snip-snap-promote.* ]] && /bin/rm -rf "$temp_root"
-    [[ -z "$tap_checkout" || "$tap_checkout" != /private/tmp/snip-snap-stable-tap.* ]] || \
-        /bin/rm -rf "$tap_checkout"
 }
 trap cleanup EXIT
 
 beta_dir="$temp_root/beta"
 existing_dir="$temp_root/existing"
 release_checkout="$temp_root/snip-snap"
-tap_checkout="$(/usr/bin/mktemp -d /private/tmp/snip-snap-stable-tap.XXXXXX)"
 /bin/mkdir -p "$beta_dir" "$existing_dir"
 
 for asset in \
@@ -132,7 +131,9 @@ if (( ! release_exists )); then
 fi
 
 gh repo clone "$release_repo" "$release_checkout" -- --quiet
-gh repo clone "$tap_repo" "$tap_checkout" -- --quiet
+"$brew_tool" tap "$tap_name"
+tap_checkout="$("$brew_tool" --repository "$tap_name")"
+[[ -d "$tap_checkout/.git" ]] || fail "could not open Homebrew tap $tap_name"
 [[ -f "$release_checkout/appcast.xml" ]] || fail "the beta appcast is missing"
 promoted_appcast="$temp_root/appcast.xml"
 if release_automation_require_appcast_channel \
@@ -182,7 +183,7 @@ if [[ -f "$cask_path" ]] &&
 fi
 /bin/mkdir -p "${cask_path:h}"
 /bin/cp "$desired_cask" "$cask_path"
-brew style --cask "$cask_path"
+"$brew_tool" style --cask "$cask_path"
 
 if [[ -n "$(git -C "$release_checkout" status --short)" ]]; then
     git -C "$release_checkout" add appcast.xml "$notes_name"

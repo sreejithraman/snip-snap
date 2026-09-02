@@ -5,6 +5,8 @@ script_dir="${0:A:h}"
 repo_dir="${script_dir:h}"
 release_repo="${SNIP_SNAP_RELEASE_REPO:-sreejithraman/snip-snap}"
 tap_repo="${SNIP_SNAP_TAP_REPO:-sreejithraman/homebrew-tap}"
+tap_owner="${tap_repo%%/*}"
+tap_name="$tap_owner/${${tap_repo#*/}#homebrew-}"
 sparkle_account="${SNIP_SNAP_SPARKLE_KEY_ACCOUNT:-ed25519}"
 requested_build=""
 
@@ -87,22 +89,20 @@ if [[ -n "${SNIP_SNAP_SPARKLE_PRIVATE_KEY_FILE:-}" ]]; then
 fi
 
 temp_root="$(/usr/bin/mktemp -d /private/tmp/snip-snap-publish-beta.XXXXXX)"
-tap_checkout=""
 cleanup() {
     [[ "$temp_root" == /private/tmp/snip-snap-publish-beta.* ]] && /bin/rm -rf "$temp_root"
-    [[ -z "$tap_checkout" || "$tap_checkout" != /private/tmp/snip-snap-beta-tap.* ]] || \
-        /bin/rm -rf "$tap_checkout"
 }
 trap cleanup EXIT
 
 release_checkout="$temp_root/snip-snap"
-tap_checkout="$(/usr/bin/mktemp -d /private/tmp/snip-snap-beta-tap.XXXXXX)"
 feed_dir="$temp_root/feed"
 expected_feed_dir="$temp_root/expected-feed"
 existing_dir="$temp_root/existing"
 /bin/mkdir -p "$feed_dir" "$expected_feed_dir" "$existing_dir"
 gh repo clone "$release_repo" "$release_checkout" -- --quiet
-gh repo clone "$tap_repo" "$tap_checkout" -- --quiet
+"$brew_tool" tap "$tap_name"
+tap_checkout="$("$brew_tool" --repository "$tap_name")"
+[[ -d "$tap_checkout/.git" ]] || fail "could not open Homebrew tap $tap_name"
 release_policy_require_build_not_older "$release_checkout/appcast.xml"
 
 notes_name="Snip-Snap-$version-beta.$build_number.md"
@@ -217,4 +217,4 @@ fi
 
 print "GitHub prerelease: https://github.com/$release_repo/releases/tag/$beta_tag"
 print "Sparkle channel: beta"
-print "Homebrew: brew install --cask snip-snap@beta"
+print "Homebrew: brew install --cask $tap_name/snip-snap@beta"
