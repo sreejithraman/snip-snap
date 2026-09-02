@@ -28,6 +28,7 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ secrets.SNIP_SNAP_PUBLISH_TOKEN }}
+      HOMEBREW_NO_AUTO_UPDATE: 1
       SNIP_SNAP_VERSION: ${{ inputs.version }}
       SNIP_SNAP_BUILD_NUMBER: ${{ inputs.build }}
     steps:
@@ -35,23 +36,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
-
-      - name: Set up Homebrew
-        uses: Homebrew/actions/setup-homebrew@a657b8b0cd35d0f65cce41fce9b24cf054b49869 # 2026.08.24.1
-        with:
-          core: true
-          cask: true
-
-      - name: Resolve Homebrew executable
-        run: |
-          for brew_tool in /opt/homebrew/bin/brew /usr/local/bin/brew; do
-            if [[ -x "$brew_tool" ]]; then
-              echo "SNIP_SNAP_BREW=$brew_tool" >> "$GITHUB_ENV"
-              exit 0
-            fi
-          done
-          echo "Homebrew executable not found" >&2
-          exit 1
 
       - name: Promote tested files
         run: |

@@ -5,8 +5,6 @@ script_dir="${0:A:h}"
 repo_dir="${script_dir:h}"
 release_repo="${SNIP_SNAP_RELEASE_REPO:-sreejithraman/snip-snap}"
 tap_repo="${SNIP_SNAP_TAP_REPO:-sreejithraman/homebrew-tap}"
-tap_owner="${tap_repo%%/*}"
-tap_name="$tap_owner/${${tap_repo#*/}#homebrew-}"
 requested_build=""
 requested_version=""
 
@@ -52,8 +50,9 @@ stable_tag="v$version"
 record_name="$(release_automation_record_name "$version" "$build_number")"
 
 command -v gh >/dev/null || fail "install GitHub CLI"
-brew_tool="${SNIP_SNAP_BREW:-$(command -v brew 2>/dev/null || true)}"
-[[ -x "$brew_tool" ]] || fail "install Homebrew"
+brew_tool="$(release_automation_brew_tool "${SNIP_SNAP_BREW:-}")" || fail "install Homebrew"
+tap_name="$(release_automation_tap_name "$tap_repo")" || fail "set a valid Homebrew tap repo"
+working_tap_name="$(release_automation_working_tap_name)" || fail "make a working Homebrew tap name"
 gh auth status >/dev/null || fail "sign in with GitHub CLI"
 [[ "$(gh repo view "$release_repo" --json isPrivate --jq '.isPrivate')" == false ]] || \
     fail "$release_repo must be public"
@@ -61,6 +60,7 @@ gh auth status >/dev/null || fail "sign in with GitHub CLI"
 temp_root="$(/usr/bin/mktemp -d /private/tmp/snip-snap-promote.XXXXXX)"
 cleanup() {
     [[ "$temp_root" == /private/tmp/snip-snap-promote.* ]] && /bin/rm -rf "$temp_root"
+    release_automation_remove_working_tap "$brew_tool" "$working_tap_name" || true
 }
 trap cleanup EXIT
 
@@ -131,9 +131,8 @@ if (( ! release_exists )); then
 fi
 
 gh repo clone "$release_repo" "$release_checkout" -- --quiet
-"$brew_tool" tap "$tap_name"
-tap_checkout="$("$brew_tool" --repository "$tap_name")"
-[[ -d "$tap_checkout/.git" ]] || fail "could not open Homebrew tap $tap_name"
+tap_checkout="$(release_automation_tap_checkout "$brew_tool" "$working_tap_name" "$tap_repo")" || \
+    fail "could not open a working copy of Homebrew tap $tap_name"
 [[ -f "$release_checkout/appcast.xml" ]] || fail "the beta appcast is missing"
 promoted_appcast="$temp_root/appcast.xml"
 if release_automation_require_appcast_channel \

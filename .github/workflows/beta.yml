@@ -162,6 +162,7 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ secrets.SNIP_SNAP_PUBLISH_TOKEN }}
+      HOMEBREW_NO_AUTO_UPDATE: 1
       SNIP_SNAP_BUILD_NUMBER: ${{ needs.test.outputs.build }}
       SNIP_SNAP_RELEASE_DIR: ${{ github.workspace }}/artifacts/release-${{ needs.test.outputs.version }}-${{ needs.test.outputs.build }}
       SNIP_SNAP_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -177,23 +178,6 @@ jobs:
         with:
           name: mac-beta-${{ needs.test.outputs.version }}-${{ needs.test.outputs.build }}
           path: artifacts/release-${{ needs.test.outputs.version }}-${{ needs.test.outputs.build }}
-
-      - name: Set up Homebrew
-        uses: Homebrew/actions/setup-homebrew@a657b8b0cd35d0f65cce41fce9b24cf054b49869 # 2026.08.24.1
-        with:
-          core: true
-          cask: true
-
-      - name: Resolve Homebrew executable
-        run: |
-          for brew_tool in /opt/homebrew/bin/brew /usr/local/bin/brew; do
-            if [[ -x "$brew_tool" ]]; then
-              echo "SNIP_SNAP_BREW=$brew_tool" >> "$GITHUB_ENV"
-              exit 0
-            fi
-          done
-          echo "Homebrew executable not found" >&2
-          exit 1
 
       - name: Resolve Sparkle tools
         run: |

@@ -5,8 +5,6 @@ script_dir="${0:A:h}"
 repo_dir="${script_dir:h}"
 release_repo="${SNIP_SNAP_RELEASE_REPO:-sreejithraman/snip-snap}"
 tap_repo="${SNIP_SNAP_TAP_REPO:-sreejithraman/homebrew-tap}"
-tap_owner="${tap_repo%%/*}"
-tap_name="$tap_owner/${${tap_repo#*/}#homebrew-}"
 sparkle_account="${SNIP_SNAP_SPARKLE_KEY_ACCOUNT:-ed25519}"
 requested_build=""
 
@@ -72,8 +70,9 @@ for path in "$release_zip" "$release_dmg" "$zip_checksum_file" "$dmg_checksum_fi
 done
 release_policy_verify_checksum "$release_zip" "$zip_checksum_file"
 release_policy_verify_checksum "$release_dmg" "$dmg_checksum_file"
-brew_tool="${SNIP_SNAP_BREW:-$(command -v brew 2>/dev/null || true)}"
-[[ -x "$brew_tool" ]] || fail "install Homebrew"
+brew_tool="$(release_automation_brew_tool "${SNIP_SNAP_BREW:-}")" || fail "install Homebrew"
+tap_name="$(release_automation_tap_name "$tap_repo")" || fail "set a valid Homebrew tap repo"
+working_tap_name="$(release_automation_working_tap_name)" || fail "make a working Homebrew tap name"
 gh auth status >/dev/null || fail "sign in with GitHub CLI"
 
 sparkle_tool="${SNIP_SNAP_GENERATE_APPCAST:-}"
@@ -91,6 +90,7 @@ fi
 temp_root="$(/usr/bin/mktemp -d /private/tmp/snip-snap-publish-beta.XXXXXX)"
 cleanup() {
     [[ "$temp_root" == /private/tmp/snip-snap-publish-beta.* ]] && /bin/rm -rf "$temp_root"
+    release_automation_remove_working_tap "$brew_tool" "$working_tap_name" || true
 }
 trap cleanup EXIT
 
@@ -100,9 +100,8 @@ expected_feed_dir="$temp_root/expected-feed"
 existing_dir="$temp_root/existing"
 /bin/mkdir -p "$feed_dir" "$expected_feed_dir" "$existing_dir"
 gh repo clone "$release_repo" "$release_checkout" -- --quiet
-"$brew_tool" tap "$tap_name"
-tap_checkout="$("$brew_tool" --repository "$tap_name")"
-[[ -d "$tap_checkout/.git" ]] || fail "could not open Homebrew tap $tap_name"
+tap_checkout="$(release_automation_tap_checkout "$brew_tool" "$working_tap_name" "$tap_repo")" || \
+    fail "could not open a working copy of Homebrew tap $tap_name"
 release_policy_require_build_not_older "$release_checkout/appcast.xml"
 
 notes_name="Snip-Snap-$version-beta.$build_number.md"

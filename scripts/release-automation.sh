@@ -5,6 +5,69 @@ release_automation_fail() {
     return 1
 }
 
+release_automation_brew_tool() {
+    local explicit_tool="${1:-}"
+    local path_tool=""
+    local candidate
+
+    if [[ -n "$explicit_tool" ]]; then
+        [[ -x "$explicit_tool" ]] || return 1
+        print -r -- "$explicit_tool"
+        return 0
+    fi
+    path_tool="$(command -v brew 2>/dev/null || true)"
+    for candidate in "$path_tool" /opt/homebrew/bin/brew /usr/local/bin/brew; do
+        [[ -n "$candidate" && -x "$candidate" ]] || continue
+        print -r -- "$candidate"
+        return 0
+    done
+    return 1
+}
+
+release_automation_tap_name() {
+    local tap_repo="$1"
+    local owner="${tap_repo%%/*}"
+    local repository="${tap_repo#*/}"
+
+    [[ "$owner" != "$tap_repo" && -n "$owner" && "$repository" == homebrew-* &&
+       "$repository" != */* && -n "${repository#homebrew-}" ]] || return 1
+    print -r -- "$owner/${repository#homebrew-}"
+}
+
+release_automation_working_tap_name() {
+    local suffix="${1:-}"
+
+    if [[ -z "$suffix" ]]; then
+        suffix="$(/usr/bin/uuidgen | /usr/bin/tr '[:upper:]' '[:lower:]' | /usr/bin/tr -d '-')"
+    fi
+    [[ "$suffix" =~ '^[a-z0-9]+$' ]] || return 1
+    print -r -- "snip-snap-release/$suffix"
+}
+
+release_automation_tap_checkout() {
+    local brew_tool="$1"
+    local working_tap_name="$2"
+    local tap_repo="$3"
+    local tap_checkout
+    local tap_status
+
+    release_automation_tap_name "$tap_repo" >/dev/null || return 1
+    "$brew_tool" tap "$working_tap_name" "https://github.com/$tap_repo.git" >&2 || return 1
+    tap_checkout="$("$brew_tool" --repository "$working_tap_name")" || return 1
+    [[ -d "$tap_checkout/.git" ]] || return 1
+    git -C "$tap_checkout" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+    tap_status="$(git -C "$tap_checkout" status --porcelain)" || return 1
+    [[ -z "$tap_status" ]] || return 1
+    print -r -- "$tap_checkout"
+}
+
+release_automation_remove_working_tap() {
+    local brew_tool="$1"
+    local working_tap_name="$2"
+
+    "$brew_tool" untap --force "$working_tap_name" >/dev/null 2>&1
+}
+
 release_automation_build_number() {
     local run_number="$1"
     local offset="${2:-6}"
