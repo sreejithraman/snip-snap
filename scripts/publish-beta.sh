@@ -73,8 +73,9 @@ dmg_checksum_file="$release_dmg.sha256"
 record_name="$(release_automation_record_name "$version" "$build_number")"
 record_path="$release_root/$record_name"
 
-for path in "$release_zip" "$release_dmg" "$zip_checksum_file" "$dmg_checksum_file"; do
-    [[ -f "$path" ]] || fail "missing $path"
+# `path` is zsh's array view of PATH, so it cannot be a loop variable here.
+for artifact_path in "$release_zip" "$release_dmg" "$zip_checksum_file" "$dmg_checksum_file"; do
+    [[ -f "$artifact_path" ]] || fail "missing $artifact_path"
 done
 release_policy_verify_checksum "$release_zip" "$zip_checksum_file"
 release_policy_verify_checksum "$release_dmg" "$dmg_checksum_file"
