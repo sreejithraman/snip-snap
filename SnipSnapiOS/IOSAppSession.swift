@@ -67,7 +67,7 @@ final class IOSAppSession {
             mode: .localOnly
         ),
         cloudSyncSession: (any IOSCloudSyncSessionHandling)? = nil,
-        shareImportOperation: (@Sendable () async -> Int)? = nil,
+        shareImportOperation: (@Sendable () async -> ShareImportSummary)? = nil,
         accountNoticeModel: AppleAccountNoticeModel? = nil,
         cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil
     ) {
@@ -87,13 +87,16 @@ final class IOSAppSession {
 
         let activeShareImportOperation = shareImportOperation ?? shareImports.map { imports in
             { @Sendable in
+                guard await imports.pendingImportCount() > 0 else {
+                    return ShareImportSummary(imported: 0, failed: 0)
+                }
                 if let cloudSyncSession {
                     guard let active = try? await cloudSyncSession.iosActiveLibrary() else {
-                        return 1
+                        return ShareImportSummary(imported: 0, failed: 1)
                     }
-                    return await imports.importPending(into: active.library).failed
+                    return await imports.importPending(into: active.library)
                 }
-                return await imports.importPending(into: library).failed
+                return await imports.importPending(into: library)
             }
         }
         let syncOperation: @MainActor @Sendable () async throws -> Void = {
@@ -256,20 +259,15 @@ final class IOSCloudSyncActionBridge {
 
 @MainActor
 final class IOSShareImportCoordinator {
-    private struct PassResult: Sendable {
-        let importFailures: Int
-        let syncFailed: Bool
-    }
-
     private let model: IOSAppModel
-    private let importOperation: @Sendable () async -> Int
+    private let importOperation: @Sendable () async -> ShareImportSummary
     private let syncOperation: @MainActor @Sendable () async throws -> Void
-    private var inFlight: Task<PassResult, Never>?
+    private var inFlight: Task<Int, Never>?
     private var needsTrailingPass = false
 
     init(
         model: IOSAppModel,
-        importOperation: @escaping @Sendable () async -> Int,
+        importOperation: @escaping @Sendable () async -> ShareImportSummary,
         syncOperation: @escaping @MainActor @Sendable () async throws -> Void = {}
     ) {
         self.model = model
@@ -285,39 +283,30 @@ final class IOSShareImportCoordinator {
         }
         let task = Task { [self] in
             var importFailures = 0
-            var syncFailed = false
             repeat {
                 needsTrailingPass = false
-                let result = await runPass()
-                importFailures += result.importFailures
-                syncFailed = syncFailed || result.syncFailed
+                importFailures += await runPass()
             } while needsTrailingPass
             inFlight = nil
-            return PassResult(importFailures: importFailures, syncFailed: syncFailed)
+            return importFailures
         }
         inFlight = task
         report(await task.value)
     }
 
-    private func runPass() async -> PassResult {
-        let failed = await importOperation()
+    private func runPass() async -> Int {
+        let summary = await importOperation()
         await model.load()
-        do {
-            try await syncOperation()
-            return PassResult(importFailures: failed, syncFailed: false)
-        } catch {
-            return PassResult(importFailures: failed, syncFailed: true)
+        if summary.imported > 0 {
+            try? await syncOperation()
         }
+        return summary.failed
     }
 
-    private func report(_ result: PassResult) {
-        if result.importFailures > 0 {
+    private func report(_ importFailures: Int) {
+        if importFailures > 0 {
             model.errorMessage = String(
                 localized: "Some shared content could not be added yet. Snip Snap will try again next time."
-            )
-        } else if result.syncFailed {
-            model.errorMessage = String(
-                localized: "The shared content is saved on this device. iCloud sync will try again later."
             )
         }
     }

@@ -344,7 +344,10 @@ extension CloudFullSyncPersistenceTests {
       afterPendingSaveBeforeCleanup: { throw ShareSyncCrash.afterLocalSave }
     )
     let interruptedResult = await interrupted.importPending(into: importedLibrary)
-    XCTAssertEqual(interruptedResult, ShareImportSummary(imported: 0, failed: 1))
+    XCTAssertEqual(
+      interruptedResult,
+      ShareImportSummary(imported: 1, failed: 0, cleanupFailures: 1)
+    )
     let savedLocally = await importedLibrary.snapshot(sortedBy: .manual)
     let snip = try XCTUnwrap(savedLocally.snips.first(where: { $0.requestID == requestID }))
 
@@ -370,7 +373,7 @@ extension CloudFullSyncPersistenceTests {
     let relaunchedLibrary = try SwiftDataSnipLibrary(storeURL: firstStoreURL)
     let replay = await ShareImportStore(sharedRootURL: sharedRoot)
       .importPending(into: relaunchedLibrary)
-    XCTAssertEqual(replay, ShareImportSummary(imported: 1, failed: 0))
+    XCTAssertEqual(replay, ShareImportSummary(imported: 0, failed: 0))
     let relaunchedPersistence = CloudFullSyncPersistence(
       library: relaunchedLibrary,
       namespace: namespace,

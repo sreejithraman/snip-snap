@@ -402,7 +402,10 @@ final class ShareImportStoreTests: XCTestCase {
       afterPendingSaveBeforeCleanup: { throw SimulatedCrash() }
     )
     let interruptedImport = await interrupted.importPending(into: library)
-    XCTAssertEqual(interruptedImport, ShareImportSummary(imported: 0, failed: 1))
+    XCTAssertEqual(
+      interruptedImport,
+      ShareImportSummary(imported: 1, failed: 0, cleanupFailures: 1)
+    )
     let interruptedSnapshot = await library.snapshot(sortedBy: .chronological)
     XCTAssertEqual(interruptedSnapshot.snips.count, 1)
     let pendingAfterCrash = await interrupted.pendingImportCount()
@@ -410,7 +413,7 @@ final class ShareImportStoreTests: XCTestCase {
 
     let resumed = ShareImportStore(sharedRootURL: root)
     let resumedImport = await resumed.importPending(into: library)
-    XCTAssertEqual(resumedImport, ShareImportSummary(imported: 1, failed: 0))
+    XCTAssertEqual(resumedImport, ShareImportSummary(imported: 0, failed: 0))
     let pendingAfterResume = await resumed.pendingImportCount()
     XCTAssertEqual(pendingAfterResume, 0)
     let resumedSnapshot = await library.snapshot(sortedBy: .chronological)
