@@ -114,6 +114,7 @@ for required in \
     'IOS_SHARE_APP_STORE_PROFILE_NAME' \
     'needs: [test, mac-build, ios-upload]' \
     'SNIP_SNAP_GENERATE_APPCAST=' \
+    'SNIP_SNAP_BREW: ${{ steps.homebrew.outputs.repository-path }}/bin/brew' \
     '"Shared/**"' \
     'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' \
     'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c' \
@@ -121,6 +122,8 @@ for required in \
     /usr/bin/grep -F "$required" "$beta_workflow" >/dev/null || \
         fail_test "beta workflow is missing $required"
 done
+/usr/bin/grep -F 'brew_tool="${SNIP_SNAP_BREW:-' "$script_dir/publish-beta.sh" >/dev/null || \
+    fail_test "beta publish does not support an explicit Homebrew executable"
 promotion_workflow="$script_dir/../.github/workflows/promote-stable.yml"
 for required in \
     'version:' \

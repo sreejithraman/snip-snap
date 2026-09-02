@@ -70,7 +70,8 @@ for path in "$release_zip" "$release_dmg" "$zip_checksum_file" "$dmg_checksum_fi
 done
 release_policy_verify_checksum "$release_zip" "$zip_checksum_file"
 release_policy_verify_checksum "$release_dmg" "$dmg_checksum_file"
-command -v brew >/dev/null || fail "install Homebrew"
+brew_tool="${SNIP_SNAP_BREW:-$(command -v brew 2>/dev/null || true)}"
+[[ -x "$brew_tool" ]] || fail "install Homebrew"
 gh auth status >/dev/null || fail "sign in with GitHub CLI"
 
 sparkle_tool="${SNIP_SNAP_GENERATE_APPCAST:-}"
@@ -199,7 +200,7 @@ if [[ -f "$cask_path" ]] &&
 fi
 /bin/mkdir -p "${cask_path:h}"
 /bin/cp "$desired_cask" "$cask_path"
-brew style --cask "$cask_path"
+"$brew_tool" style --cask "$cask_path"
 
 /bin/cp "$feed_dir/appcast.xml" "$release_checkout/appcast.xml"
 /bin/cp "$notes_path" "$release_checkout/$notes_name"

@@ -179,6 +179,7 @@ jobs:
           path: artifacts/release-${{ needs.test.outputs.version }}-${{ needs.test.outputs.build }}
 
       - name: Set up Homebrew
+        id: homebrew
         uses: Homebrew/actions/setup-homebrew@a657b8b0cd35d0f65cce41fce9b24cf054b49869 # 2026.08.24.1
         with:
           core: true
@@ -205,6 +206,8 @@ jobs:
           chmod 600 "$SNIP_SNAP_SPARKLE_PRIVATE_KEY_FILE"
 
       - name: Publish beta feeds
+        env:
+          SNIP_SNAP_BREW: ${{ steps.homebrew.outputs.repository-path }}/bin/brew
         run: |
           git config --global user.name "Snip Snap Release"
           git config --global user.email "actions@users.noreply.github.com"
