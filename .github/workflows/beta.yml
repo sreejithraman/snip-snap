@@ -158,8 +158,6 @@ jobs:
     needs: [test, mac-build, ios-upload]
     runs-on: macos-26
     environment: apple-release
-    permissions:
-      contents: write
     env:
       GH_TOKEN: ${{ secrets.SNIP_SNAP_PUBLISH_TOKEN }}
       HOMEBREW_NO_AUTO_UPDATE: 1

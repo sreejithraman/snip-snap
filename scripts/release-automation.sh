@@ -342,11 +342,12 @@ release_automation_require_appcast_channel() {
         candidate.match?(/sparkle:version(?:="|>)#{Regexp.escape(build)}(?:"|<)/) &&
           candidate.match?(/sparkle:shortVersionString(?:="|>)#{Regexp.escape(version)}(?:"|<)/)
       end
-      abort unless item
+      abort "appcast item not found" unless item
       channel = item[/<sparkle:channel>([^<]+)<\/sparkle:channel>/, 1]
-      abort unless expected == "default" ? channel.nil? : channel == expected
+      abort "appcast item channel does not match #{expected}" unless
+        expected == "default" ? channel.nil? : channel == expected
     ' "$appcast_path" "$version" "$build_number" "$expected_channel" || {
-        release_automation_fail "appcast item has the wrong channel"
+        release_automation_fail "could not verify appcast item channel"
         return 1
     }
 }
