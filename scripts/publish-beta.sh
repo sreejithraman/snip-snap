@@ -70,7 +70,9 @@ for path in "$release_zip" "$release_dmg" "$zip_checksum_file" "$dmg_checksum_fi
 done
 release_policy_verify_checksum "$release_zip" "$zip_checksum_file"
 release_policy_verify_checksum "$release_dmg" "$dmg_checksum_file"
-command -v brew >/dev/null || fail "install Homebrew"
+brew_tool="$(release_automation_brew_tool "${SNIP_SNAP_BREW:-}")" || fail "install Homebrew"
+tap_name="$(release_automation_tap_name "$tap_repo")" || fail "set a valid Homebrew tap repo"
+working_tap_name="$(release_automation_working_tap_name)" || fail "make a working Homebrew tap name"
 gh auth status >/dev/null || fail "sign in with GitHub CLI"
 
 sparkle_tool="${SNIP_SNAP_GENERATE_APPCAST:-}"
@@ -86,22 +88,20 @@ if [[ -n "${SNIP_SNAP_SPARKLE_PRIVATE_KEY_FILE:-}" ]]; then
 fi
 
 temp_root="$(/usr/bin/mktemp -d /private/tmp/snip-snap-publish-beta.XXXXXX)"
-tap_checkout=""
 cleanup() {
     [[ "$temp_root" == /private/tmp/snip-snap-publish-beta.* ]] && /bin/rm -rf "$temp_root"
-    [[ -z "$tap_checkout" || "$tap_checkout" != /private/tmp/snip-snap-beta-tap.* ]] || \
-        /bin/rm -rf "$tap_checkout"
+    release_automation_remove_working_tap "$brew_tool" "$working_tap_name" || true
 }
 trap cleanup EXIT
 
 release_checkout="$temp_root/snip-snap"
-tap_checkout="$(/usr/bin/mktemp -d /private/tmp/snip-snap-beta-tap.XXXXXX)"
 feed_dir="$temp_root/feed"
 expected_feed_dir="$temp_root/expected-feed"
 existing_dir="$temp_root/existing"
 /bin/mkdir -p "$feed_dir" "$expected_feed_dir" "$existing_dir"
 gh repo clone "$release_repo" "$release_checkout" -- --quiet
-gh repo clone "$tap_repo" "$tap_checkout" -- --quiet
+tap_checkout="$(release_automation_tap_checkout "$brew_tool" "$working_tap_name" "$tap_repo")" || \
+    fail "could not open a working copy of Homebrew tap $tap_name"
 release_policy_require_build_not_older "$release_checkout/appcast.xml"
 
 notes_name="Snip-Snap-$version-beta.$build_number.md"
@@ -199,7 +199,7 @@ if [[ -f "$cask_path" ]] &&
 fi
 /bin/mkdir -p "${cask_path:h}"
 /bin/cp "$desired_cask" "$cask_path"
-brew style --cask "$cask_path"
+"$brew_tool" style --cask "$cask_path"
 
 /bin/cp "$feed_dir/appcast.xml" "$release_checkout/appcast.xml"
 /bin/cp "$notes_path" "$release_checkout/$notes_name"
@@ -216,4 +216,4 @@ fi
 
 print "GitHub prerelease: https://github.com/$release_repo/releases/tag/$beta_tag"
 print "Sparkle channel: beta"
-print "Homebrew: brew install --cask snip-snap@beta"
+print "Homebrew: brew install --cask $tap_name/snip-snap@beta"

@@ -28,6 +28,7 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ secrets.SNIP_SNAP_PUBLISH_TOKEN }}
+      HOMEBREW_NO_AUTO_UPDATE: 1
       SNIP_SNAP_VERSION: ${{ inputs.version }}
       SNIP_SNAP_BUILD_NUMBER: ${{ inputs.build }}
     steps:
@@ -38,6 +39,7 @@ jobs:
 
       - name: Promote tested files
         run: |
+          gh auth setup-git --hostname github.com
           git config --global user.name "Snip Snap Release"
           git config --global user.email "actions@users.noreply.github.com"
           ./scripts/promote-release.sh \

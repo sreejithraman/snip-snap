@@ -29,6 +29,32 @@ assert_fails release_automation_build_number 0 6
 assert_fails release_automation_build_number 1 -1
 [[ "$(release_automation_beta_tag 0.5.0 7)" == v0.5.0-beta.7 ]] || \
     fail_test "wrong beta tag"
+fake_brew="$test_root/brew"
+print '#!/bin/zsh' > "$fake_brew"
+print '[[ "$1" == tap ]] && exit 0' >> "$fake_brew"
+print '[[ "$1" == untap ]] && exit 0' >> "$fake_brew"
+print '[[ "$1" == --repository ]] && { print -r -- "$SNIP_SNAP_TEST_TAP"; exit 0; }' >> "$fake_brew"
+print 'exit 1' >> "$fake_brew"
+/bin/chmod +x "$fake_brew"
+fake_tap="$test_root/homebrew-tap"
+git init --quiet --initial-branch=main "$fake_tap"
+SNIP_SNAP_TEST_TAP="$fake_tap"
+export SNIP_SNAP_TEST_TAP
+[[ "$(release_automation_brew_tool "$fake_brew")" == "$fake_brew" ]] || \
+    fail_test "explicit Homebrew executable was ignored"
+assert_fails release_automation_brew_tool "$test_root/missing-brew"
+[[ "$(release_automation_tap_name sreejithraman/homebrew-tap)" == sreejithraman/tap ]] || \
+    fail_test "wrong Homebrew tap name"
+assert_fails release_automation_tap_name sreejithraman/tap
+[[ "$(release_automation_working_tap_name abc123)" == snip-snap-release/abc123 ]] || \
+    fail_test "wrong working Homebrew tap name"
+assert_fails release_automation_working_tap_name invalid-suffix
+[[ "$(release_automation_tap_checkout "$fake_brew" snip-snap-release/abc123 \
+    sreejithraman/homebrew-tap)" == "$fake_tap" ]] || \
+    fail_test "wrong Homebrew tap checkout"
+release_automation_remove_working_tap "$fake_brew" snip-snap-release/abc123 || \
+    fail_test "working Homebrew tap was not removed"
+unset SNIP_SNAP_TEST_TAP
 
 zip="$test_root/Snip-Snap-0.5.0.zip"
 dmg="$test_root/Snip-Snap-0.5.0.dmg"
@@ -114,16 +140,17 @@ for required in \
     'IOS_SHARE_APP_STORE_PROFILE_NAME' \
     'needs: [test, mac-build, ios-upload]' \
     'SNIP_SNAP_GENERATE_APPCAST=' \
+    'gh auth setup-git --hostname github.com' \
     '"Shared/**"' \
     'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' \
-    'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c' \
-    'Homebrew/actions/setup-homebrew@a657b8b0cd35d0f65cce41fce9b24cf054b49869'; do
+    'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'; do
     /usr/bin/grep -F "$required" "$beta_workflow" >/dev/null || \
         fail_test "beta workflow is missing $required"
 done
 promotion_workflow="$script_dir/../.github/workflows/promote-stable.yml"
 for required in \
     'version:' \
+    'gh auth setup-git --hostname github.com' \
     'scripts/promote-release.sh' \
     '--version "${{ inputs.version }}"' \
     '--build-number "${{ inputs.build }}"'; do
