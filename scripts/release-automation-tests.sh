@@ -174,7 +174,7 @@ for release_script in publish-beta.sh promote-release.sh; do
         fail_test "$release_script does not use Git for its source checkout"
 done
 for release_script in publish-beta.sh promote-release.sh; do
-    /usr/bin/grep -F 'export PATH="$SNIP_SNAP_RUNNER_PATH"' \
+    /usr/bin/grep -F 'export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${SNIP_SNAP_RUNNER_PATH:-$PATH}"' \
         "$script_dir/$release_script" >/dev/null || \
         fail_test "$release_script does not restore the runner tool path"
 done
