@@ -4,6 +4,18 @@
         <title>Snip Snap</title>
         <item>
             <title>0.5.0</title>
+            <pubDate>Wed, 02 Sep 2026 15:20:07 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.5.0-beta.22</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.5.0-beta.22.md</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>22</sparkle:version>
+            <sparkle:shortVersionString>0.5.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:releaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.5.0.md</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.5.0-beta.22/Snip-Snap-0.5.0.zip" length="8656648" type="application/octet-stream" sparkle:edSignature="psFN0GGfYRe7dF/LAEx6G0REqgpY45qY/a+Y0XsZBBdW0l0chbhnl9Q/wxNnDxsWCRv8EXqsm/TpZ7G/YE47Cg=="/>
+        </item>
+        <item>
+            <title>0.5.0</title>
             <pubDate>Wed, 02 Sep 2026 14:32:57 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.5.0-beta.21</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.5.0-beta.21.md</sparkle:fullReleaseNotesLink>
