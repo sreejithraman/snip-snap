@@ -133,7 +133,7 @@ if (( ! release_exists )); then
         --notes-file "$beta_notes"
 fi
 
-"$gh_tool" repo clone "$release_repo" "$release_checkout" -- --quiet
+git clone --quiet "https://github.com/$release_repo.git" "$release_checkout"
 tap_checkout="$(release_automation_tap_checkout "$brew_tool" "$working_tap_name" "$tap_repo")" || \
     fail "could not open a working copy of Homebrew tap $tap_name"
 [[ -f "$release_checkout/appcast.xml" ]] || fail "the beta appcast is missing"
