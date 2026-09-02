@@ -116,7 +116,8 @@ for required in \
     'SNIP_SNAP_GENERATE_APPCAST=' \
     '"Shared/**"' \
     'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' \
-    'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'; do
+    'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c' \
+    'Homebrew/actions/setup-homebrew@a657b8b0cd35d0f65cce41fce9b24cf054b49869'; do
     /usr/bin/grep -F "$required" "$beta_workflow" >/dev/null || \
         fail_test "beta workflow is missing $required"
 done
