@@ -103,7 +103,7 @@ feed_dir="$temp_root/feed"
 expected_feed_dir="$temp_root/expected-feed"
 existing_dir="$temp_root/existing"
 /bin/mkdir -p "$feed_dir" "$expected_feed_dir" "$existing_dir"
-"$gh_tool" repo clone "$release_repo" "$release_checkout" -- --quiet
+git clone --quiet "https://github.com/$release_repo.git" "$release_checkout"
 tap_checkout="$(release_automation_tap_checkout "$brew_tool" "$working_tap_name" "$tap_repo")" || \
     fail "could not open a working copy of Homebrew tap $tap_name"
 release_policy_require_build_not_older "$release_checkout/appcast.xml"

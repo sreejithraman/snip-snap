@@ -143,6 +143,7 @@ for required in \
     'gh auth setup-git --hostname github.com' \
     'export SNIP_SNAP_RUNNER_PATH="$PATH"' \
     'export SNIP_SNAP_GH="$(command -v gh)"' \
+    'export HOMEBREW_GIT_PATH="$(command -v git)"' \
     '"Shared/**"' \
     'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' \
     'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'; do
@@ -155,11 +156,17 @@ for required in \
     'gh auth setup-git --hostname github.com' \
     'export SNIP_SNAP_RUNNER_PATH="$PATH"' \
     'export SNIP_SNAP_GH="$(command -v gh)"' \
+    'export HOMEBREW_GIT_PATH="$(command -v git)"' \
     'scripts/promote-release.sh' \
     '--version "${{ inputs.version }}"' \
     '--build-number "${{ inputs.build }}"'; do
     /usr/bin/grep -F -- "$required" "$promotion_workflow" >/dev/null || \
         fail_test "stable workflow is missing $required"
+done
+for release_script in publish-beta.sh promote-release.sh; do
+    /usr/bin/grep -F 'git clone --quiet "https://github.com/$release_repo.git"' \
+        "$script_dir/$release_script" >/dev/null || \
+        fail_test "$release_script does not use Git for its source checkout"
 done
 for release_script in publish-beta.sh promote-release.sh; do
     /usr/bin/grep -F 'export PATH="$SNIP_SNAP_RUNNER_PATH"' \
