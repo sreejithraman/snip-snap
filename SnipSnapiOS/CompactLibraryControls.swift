@@ -80,10 +80,12 @@ struct CompactLibraryControls: View {
             } label: {
                 Image(systemName: isStaging ? "hourglass" : "plus")
                     .font(.title3.weight(.medium))
-                    .frame(width: 52, height: 52)
+                    .frame(width: 24, height: 24)
             }
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
             .disabled(storage.isSaving || isStaging)
             .accessibilityLabel("Add Attachments")
             .accessibilityIdentifier("composer-add-attachments")
@@ -96,39 +98,35 @@ struct CompactLibraryControls: View {
                 }
 
                 HStack(alignment: .bottom, spacing: 8) {
-                    TextField("New snip", text: composerText, axis: .vertical)
+                    TextField(
+                        "Add to \(model.selectedList.displayName)…",
+                        text: composerText,
+                        axis: .vertical
+                    )
                         .textFieldStyle(.plain)
                         .lineLimit(1...5)
                         .focused($isComposerFocused)
                         .disabled(storage.isSaving)
-                        .padding(.leading, 16)
-                        .padding(.vertical, 15)
+                        .padding(.leading, 12)
+                        .padding(.vertical, 8)
                         .accessibilityIdentifier("composer-text")
 
-                    Button {
-                        Task { await send() }
-                    } label: {
-                        Image(systemName: "arrow.up")
-                            .font(.body.weight(.bold))
-                            .frame(width: 46, height: 36)
-                    }
-                    .buttonStyle(.glassProminent)
-                    .buttonBorderShape(.capsule)
-                    .disabled(!canSend)
-                    .padding(.trailing, 6)
-                    .padding(.vertical, 6)
+                    CompactComposerSendButton(
+                        isEnabled: canSend,
+                        action: { Task { await send() } }
+                    )
                     .accessibilityLabel("Send Snip")
                     .accessibilityIdentifier("composer-send")
                 }
                 .id(composerFieldID)
             }
-            .frame(minHeight: 52)
+            .frame(minHeight: 40)
             .glassEffect(
                 .regular.interactive(),
-                in: RoundedRectangle(cornerRadius: 26, style: .continuous)
+                in: RoundedRectangle(cornerRadius: 20, style: .continuous)
             )
             .overlay {
-                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
                     .strokeBorder(
                         isComposerFocused
                             ? SnipSnapTheme.focusedGlassEdge
@@ -289,6 +287,48 @@ final class CompactComposerStorage {
     }
 }
 
+private struct CompactComposerSendButton: View {
+    let isEnabled: Bool
+    let action: () -> Void
+
+    @ScaledMetric(relativeTo: .body) private var controlHeight: CGFloat = 44
+    @ScaledMetric(relativeTo: .body) private var edgeInset: CGFloat = 4
+    @ScaledMetric(relativeTo: .body) private var iconLength: CGFloat = 16
+
+    private var hitHeight: CGFloat {
+        max(44, controlHeight)
+    }
+
+    private var visibleHeight: CGFloat {
+        max(iconLength, hitHeight - (edgeInset * 2))
+    }
+
+    private var visibleWidth: CGFloat {
+        visibleHeight + iconLength
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "arrow.up")
+                .font(.system(size: iconLength, weight: .bold))
+                .foregroundStyle(
+                    isEnabled ? Color.white : Color(uiColor: .secondaryLabel)
+                )
+                .frame(width: iconLength, height: iconLength)
+                .frame(width: visibleWidth, height: visibleHeight)
+                .background(
+                    isEnabled ? Color.accentColor : Color(uiColor: .systemGray5),
+                    in: Capsule()
+                )
+                .frame(height: hitHeight)
+                .padding(.trailing, edgeInset)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+    }
+}
+
 private struct CompactListTabBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -355,10 +395,12 @@ private struct CompactListTabBar: View {
         } label: {
             Image(systemName: "plus")
                 .font(.body.weight(.semibold))
-                .frame(width: 56, height: 56)
+                .frame(width: 24, height: 24)
         }
         .buttonStyle(.glass)
         .buttonBorderShape(.circle)
+        .frame(width: 44, height: 44)
+        .contentShape(Rectangle())
         .accessibilityLabel("New List")
         .accessibilityIdentifier("new-list")
     }

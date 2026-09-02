@@ -755,22 +755,6 @@ final class PanelTests: StoreBackedTestCase {
         )
     }
 
-    func testComposerSendIsAThinInsetCapsule() {
-        XCTAssertGreaterThan(
-            PanelControlMetrics.sendButtonWidth,
-            PanelControlMetrics.sendButtonHeight
-        )
-        XCTAssertLessThan(
-            PanelControlMetrics.sendButtonHeight,
-            PanelControlMetrics.floatingRowHeight
-        )
-        XCTAssertEqual(
-            PanelControlMetrics.sendButtonInset,
-            (PanelControlMetrics.floatingRowHeight
-                - PanelControlMetrics.sendButtonHeight) / 2
-        )
-    }
-
     func testTabSelectionUsesTheNearRoundActionProportion() {
         XCTAssertGreaterThan(
             PanelControlMetrics.compactSelectionWidth,

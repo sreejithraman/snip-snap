@@ -459,7 +459,7 @@ struct ContentView: View {
                 ) {
                     inlineEntryField
                     inlineSendButton
-                        .padding(.trailing, PanelControlMetrics.sendButtonInset)
+                        .padding(.trailing, SnipSnapSpacing.relatedContent)
                 }
                 .padding(.leading, SnipSnapSpacing.controlContentInset)
                 .padding(.top, inlineEntryTextTopPadding)
@@ -842,5 +842,6 @@ private struct InlineSendButtonLabel: View {
     var body: some View {
         Image(systemName: "arrow.up")
             .font(.system(size: 13, weight: .bold))
+            .padding(.horizontal, 4)
     }
 }

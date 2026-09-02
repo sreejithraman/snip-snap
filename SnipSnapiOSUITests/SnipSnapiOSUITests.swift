@@ -358,7 +358,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(savedText.waitForExistence(timeout: 3))
         let composer = app.descendants(matching: .any)["composer-text"]
         expectation(
-            for: NSPredicate(format: "value == %@ OR value == %@", "New snip", ""),
+            for: NSPredicate(format: "value == %@ OR value == %@", "Add to Inbox…", ""),
             evaluatedWith: composer
         )
         waitForExpectations(timeout: 5)
@@ -392,6 +392,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         continueAfterFailure = false
         let app = launchApp()
         let composer = app.descendants(matching: .any)["composer-text"]
+        let addAttachments = app.buttons["composer-add-attachments"]
         let send = app.buttons["composer-send"]
         let newList = app.buttons["new-list"]
 
@@ -399,6 +400,10 @@ final class SnipSnapiOSUITests: XCTestCase {
             composer.waitForExistence(timeout: 5),
             "The quick composer must exist on both iPhone and iPad."
         )
+        for control in [addAttachments, send, newList] {
+            XCTAssertGreaterThanOrEqual(control.frame.width, 44)
+            XCTAssertGreaterThanOrEqual(control.frame.height, 44)
+        }
         XCTAssertTrue(newList.exists)
         XCTAssertFalse(send.isEnabled)
 

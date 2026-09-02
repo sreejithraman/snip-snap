@@ -26,9 +26,6 @@ enum PanelControlMetrics {
     static let compactSelectionHeight = floatingRowHeight - tabSelectionInset * 2
     static let inlineEntryInset = SnipSnapSpacing.relatedContent
     static let inlineEntryBaseHeight = floatingRowHeight + inlineEntryInset * 2
-    static let sendButtonWidth: CGFloat = 34
-    static let sendButtonHeight: CGFloat = 26
-    static let sendButtonInset = (floatingRowHeight - sendButtonHeight) / 2
     static let expandedInputVerticalPadding = SnipSnapSpacing.relatedContent
 
     static let tabItemWidth = compactSelectionWidth + tabSelectionInset * 2
@@ -357,10 +354,6 @@ extension View {
 private struct PanelAdaptiveProminentActionModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .frame(
-                width: PanelControlMetrics.sendButtonWidth,
-                height: PanelControlMetrics.sendButtonHeight
-            )
             .buttonStyle(.glassProminent)
             .buttonBorderShape(.capsule)
     }
