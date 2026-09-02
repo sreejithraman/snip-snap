@@ -6,6 +6,7 @@ repo_dir="${script_dir:h}"
 release_repo="${SNIP_SNAP_RELEASE_REPO:-sreejithraman/snip-snap}"
 tap_repo="${SNIP_SNAP_TAP_REPO:-sreejithraman/homebrew-tap}"
 sparkle_account="${SNIP_SNAP_SPARKLE_KEY_ACCOUNT:-ed25519}"
+gh_tool="${SNIP_SNAP_GH:-gh}"
 requested_build=""
 
 source "$script_dir/release-policy.sh"
@@ -73,7 +74,8 @@ release_policy_verify_checksum "$release_dmg" "$dmg_checksum_file"
 brew_tool="$(release_automation_brew_tool "${SNIP_SNAP_BREW:-}")" || fail "install Homebrew"
 tap_name="$(release_automation_tap_name "$tap_repo")" || fail "set a valid Homebrew tap repo"
 working_tap_name="$(release_automation_working_tap_name)" || fail "make a working Homebrew tap name"
-gh auth status >/dev/null || fail "sign in with GitHub CLI"
+command -v "$gh_tool" >/dev/null || fail "install GitHub CLI"
+"$gh_tool" auth status >/dev/null || fail "sign in with GitHub CLI"
 
 sparkle_tool="${SNIP_SNAP_GENERATE_APPCAST:-}"
 if [[ -z "$sparkle_tool" ]]; then
@@ -99,7 +101,7 @@ feed_dir="$temp_root/feed"
 expected_feed_dir="$temp_root/expected-feed"
 existing_dir="$temp_root/existing"
 /bin/mkdir -p "$feed_dir" "$expected_feed_dir" "$existing_dir"
-gh repo clone "$release_repo" "$release_checkout" -- --quiet
+"$gh_tool" repo clone "$release_repo" "$release_checkout" -- --quiet
 tap_checkout="$(release_automation_tap_checkout "$brew_tool" "$working_tap_name" "$tap_repo")" || \
     fail "could not open a working copy of Homebrew tap $tap_name"
 release_policy_require_build_not_older "$release_checkout/appcast.xml"
@@ -146,14 +148,14 @@ release_automation_verify_record \
     "$record_path" "$version" "$build_number" "$release_zip" "$release_dmg" "$source_commit"
 
 release_exists=0
-if gh release view "$beta_tag" --repo "$release_repo" >/dev/null 2>&1; then
+if "$gh_tool" release view "$beta_tag" --repo "$release_repo" >/dev/null 2>&1; then
     release_exists=1
     [[ "$(release_automation_remote_tag_commit "$release_repo" "$beta_tag")" == \
        "$source_commit" ]] || fail "the existing beta tag points at another commit"
     for asset in \
         "Snip-Snap-$version.zip" "Snip-Snap-$version.zip.sha256" \
         "Snip-Snap-$version.dmg" "Snip-Snap-$version.dmg.sha256" "$record_name"; do
-        gh release download "$beta_tag" --repo "$release_repo" \
+        "$gh_tool" release download "$beta_tag" --repo "$release_repo" \
             --pattern "$asset" --dir "$existing_dir"
     done
     release_automation_verify_record \
@@ -172,7 +174,7 @@ elif git ls-remote --exit-code "https://github.com/$release_repo.git" \
 fi
 
 if (( ! release_exists )); then
-    gh release create "$beta_tag" \
+    "$gh_tool" release create "$beta_tag" \
         "$release_zip" "$zip_checksum_file" "$release_dmg" "$dmg_checksum_file" "$record_path" \
         --repo "$release_repo" \
         --target "$source_commit" \
