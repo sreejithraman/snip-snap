@@ -9,7 +9,12 @@ release_repo="${SNIP_SNAP_RELEASE_REPO:-sreejithraman/snip-snap}"
 tap_repo="${SNIP_SNAP_TAP_REPO:-sreejithraman/homebrew-tap}"
 sparkle_account="${SNIP_SNAP_SPARKLE_KEY_ACCOUNT:-ed25519}"
 gh_tool="${SNIP_SNAP_GH:-gh}"
+git_tool="${SNIP_SNAP_GIT:-git}"
 requested_build=""
+
+git() {
+    command "$git_tool" "$@"
+}
 
 source "$script_dir/release-policy.sh"
 source "$script_dir/release-automation.sh"
