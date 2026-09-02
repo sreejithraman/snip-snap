@@ -42,6 +42,7 @@ jobs:
           gh auth setup-git --hostname github.com
           git config --global user.name "Snip Snap Release"
           git config --global user.email "actions@users.noreply.github.com"
+          export SNIP_SNAP_GH="$(command -v gh)"
           ./scripts/promote-release.sh \
             --version "${{ inputs.version }}" \
             --build-number "${{ inputs.build }}"

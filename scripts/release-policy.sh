@@ -122,6 +122,7 @@ release_policy_require_source() {
     local head
     local remote_head
     local is_private
+    local gh_tool="${SNIP_SNAP_GH:-gh}"
 
     git_status="$(git -C "$repo_dir" status --porcelain --untracked-files=normal)" || {
         release_policy_fail "could not read Git status"
@@ -136,11 +137,11 @@ release_policy_require_source() {
         release_policy_fail "could not read HEAD"
         return 1
     }
-    command -v gh >/dev/null || {
+    command -v "$gh_tool" >/dev/null || {
         release_policy_fail "install GitHub CLI"
         return 1
     }
-    is_private="$(gh repo view "$release_repo" --json isPrivate --jq '.isPrivate')" || {
+    is_private="$("$gh_tool" repo view "$release_repo" --json isPrivate --jq '.isPrivate')" || {
         release_policy_fail "could not read $release_repo"
         return 1
     }

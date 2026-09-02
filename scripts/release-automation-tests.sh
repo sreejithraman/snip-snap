@@ -141,6 +141,7 @@ for required in \
     'needs: [test, mac-build, ios-upload]' \
     'SNIP_SNAP_GENERATE_APPCAST=' \
     'gh auth setup-git --hostname github.com' \
+    'export SNIP_SNAP_GH="$(command -v gh)"' \
     '"Shared/**"' \
     'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' \
     'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'; do
@@ -151,6 +152,7 @@ promotion_workflow="$script_dir/../.github/workflows/promote-stable.yml"
 for required in \
     'version:' \
     'gh auth setup-git --hostname github.com' \
+    'export SNIP_SNAP_GH="$(command -v gh)"' \
     'scripts/promote-release.sh' \
     '--version "${{ inputs.version }}"' \
     '--build-number "${{ inputs.build }}"'; do
@@ -159,13 +161,13 @@ for required in \
 done
 
 for retry_guard in \
-    'gh release view "$beta_tag"' \
+    '"$gh_tool" release view "$beta_tag"' \
     'release_automation_verify_record'; do
     /usr/bin/grep -F "$retry_guard" "$script_dir/publish-beta.sh" >/dev/null || \
         fail_test "beta retry is missing $retry_guard"
 done
 for retry_guard in \
-    'gh release view "$stable_tag"' \
+    '"$gh_tool" release view "$stable_tag"' \
     'release_automation_remote_tag_commit' \
     'matching beta or stable item' \
     'release_policy_verify_checksum'; do

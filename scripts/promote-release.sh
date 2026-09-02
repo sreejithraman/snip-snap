@@ -5,6 +5,7 @@ script_dir="${0:A:h}"
 repo_dir="${script_dir:h}"
 release_repo="${SNIP_SNAP_RELEASE_REPO:-sreejithraman/snip-snap}"
 tap_repo="${SNIP_SNAP_TAP_REPO:-sreejithraman/homebrew-tap}"
+gh_tool="${SNIP_SNAP_GH:-gh}"
 requested_build=""
 requested_version=""
 
@@ -49,12 +50,12 @@ beta_tag="$(release_automation_beta_tag "$version" "$build_number")"
 stable_tag="v$version"
 record_name="$(release_automation_record_name "$version" "$build_number")"
 
-command -v gh >/dev/null || fail "install GitHub CLI"
+command -v "$gh_tool" >/dev/null || fail "install GitHub CLI"
 brew_tool="$(release_automation_brew_tool "${SNIP_SNAP_BREW:-}")" || fail "install Homebrew"
 tap_name="$(release_automation_tap_name "$tap_repo")" || fail "set a valid Homebrew tap repo"
 working_tap_name="$(release_automation_working_tap_name)" || fail "make a working Homebrew tap name"
-gh auth status >/dev/null || fail "sign in with GitHub CLI"
-[[ "$(gh repo view "$release_repo" --json isPrivate --jq '.isPrivate')" == false ]] || \
+"$gh_tool" auth status >/dev/null || fail "sign in with GitHub CLI"
+[[ "$("$gh_tool" repo view "$release_repo" --json isPrivate --jq '.isPrivate')" == false ]] || \
     fail "$release_repo must be public"
 
 temp_root="$(/usr/bin/mktemp -d /private/tmp/snip-snap-promote.XXXXXX)"
@@ -72,7 +73,7 @@ release_checkout="$temp_root/snip-snap"
 for asset in \
     "Snip-Snap-$version.zip" "Snip-Snap-$version.zip.sha256" \
     "Snip-Snap-$version.dmg" "Snip-Snap-$version.dmg.sha256" "$record_name"; do
-    gh release download "$beta_tag" --repo "$release_repo" \
+    "$gh_tool" release download "$beta_tag" --repo "$release_repo" \
         --pattern "$asset" --dir "$beta_dir" || fail "missing $asset on $beta_tag"
 done
 
@@ -95,7 +96,7 @@ release_policy_require_commit_on_main "$release_repo" "$source_commit"
 release_automation_verify_workflow_run "$record_path" "$release_repo" "$source_commit"
 
 release_exists=0
-if gh release view "$stable_tag" --repo "$release_repo" >/dev/null 2>&1; then
+if "$gh_tool" release view "$stable_tag" --repo "$release_repo" >/dev/null 2>&1; then
     release_exists=1
     [[ "$(release_automation_remote_tag_commit "$release_repo" "$stable_tag")" == \
        "$source_commit" ]] || \
@@ -103,7 +104,7 @@ if gh release view "$stable_tag" --repo "$release_repo" >/dev/null 2>&1; then
     for asset in \
         "Snip-Snap-$version.zip" "Snip-Snap-$version.zip.sha256" \
         "Snip-Snap-$version.dmg" "Snip-Snap-$version.dmg.sha256"; do
-        gh release download "$stable_tag" --repo "$release_repo" \
+        "$gh_tool" release download "$stable_tag" --repo "$release_repo" \
             --pattern "$asset" --dir "$existing_dir"
     done
     release_policy_verify_checksum \
@@ -119,10 +120,10 @@ fi
 
 notes_name="Snip-Snap-$version.md"
 beta_notes="$temp_root/beta-notes.md"
-gh release view "$beta_tag" --repo "$release_repo" --json body --jq '.body' > "$beta_notes" || \
+"$gh_tool" release view "$beta_tag" --repo "$release_repo" --json body --jq '.body' > "$beta_notes" || \
     fail "could not read beta notes"
 if (( ! release_exists )); then
-    gh release create "$stable_tag" \
+    "$gh_tool" release create "$stable_tag" \
         "$release_zip" "$zip_checksum_file" "$release_dmg" "$dmg_checksum_file" \
         --repo "$release_repo" \
         --target "$source_commit" \
@@ -130,7 +131,7 @@ if (( ! release_exists )); then
         --notes-file "$beta_notes"
 fi
 
-gh repo clone "$release_repo" "$release_checkout" -- --quiet
+"$gh_tool" repo clone "$release_repo" "$release_checkout" -- --quiet
 tap_checkout="$(release_automation_tap_checkout "$brew_tool" "$working_tap_name" "$tap_repo")" || \
     fail "could not open a working copy of Homebrew tap $tap_name"
 [[ -f "$release_checkout/appcast.xml" ]] || fail "the beta appcast is missing"
