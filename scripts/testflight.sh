@@ -28,6 +28,21 @@ fail() {
     exit 1
 }
 
+report_xcodebuild_failure() {
+    local operation="$1"
+    local log_path="$2"
+
+    print -u2 "TestFlight: $operation failed. Relevant Xcode output:"
+    if [[ -f "$log_path" ]]; then
+        {
+            /usr/bin/grep -E -i \
+                'error:|fatal error:|Command .* failed|ARCHIVE FAILED|EXPORT FAILED|errSec|Provisioning Profile|Signing Identity|unable to build chain|requires a provisioning profile|doesn.t include' \
+                "$log_path" || true
+        } | /usr/bin/tail -n 80 >&2
+    fi
+    fail "full $operation log: $log_path"
+}
+
 [[ -n "$action" ]] || { usage; exit 2; }
 shift
 while (( $# )); do
@@ -134,7 +149,7 @@ archive_and_check() {
         "$script_dir/build-matrix.sh"
     fi
 
-    "$xcodebuild_tool" \
+    if ! "$xcodebuild_tool" \
         -project "$repo_dir/SnipSnap.xcodeproj" \
         -scheme SnipSnapiOS \
         -configuration Release \
@@ -150,8 +165,9 @@ archive_and_check() {
         "SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER=$cloudkit_container_identifier" \
         "SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS=$testflight_entitlements" \
         "SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER=$product_bundle_root" \
-        archive > "$build_log" 2>&1 || \
-        fail "archive failed; inspect $build_log"
+        archive > "$build_log" 2>&1; then
+        report_xcodebuild_failure archive "$build_log"
+    fi
 
     testflight_policy_require_unchanged_source \
         "$source_revision" "$source_state" \
@@ -203,14 +219,15 @@ case "$action" in
             "$version" \
             "$build_number"
         testflight_policy_write_export_options "$export_options" "$development_team"
-        "$xcodebuild_tool" \
+        if ! "$xcodebuild_tool" \
             -exportArchive \
             -archivePath "$archive_path" \
             -exportPath "$export_path" \
             -exportOptionsPlist "$export_options" \
             -allowProvisioningUpdates \
-            "${authentication_args[@]}" > "$upload_log" 2>&1 || \
-            fail "upload failed; inspect $upload_log"
+            "${authentication_args[@]}" > "$upload_log" 2>&1; then
+            report_xcodebuild_failure upload "$upload_log"
+        fi
         print "Apple received Snip Snap $version ($build_number) for processing."
         ;;
 esac
