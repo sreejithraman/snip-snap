@@ -106,6 +106,12 @@ for required in \
     'SNIP_SNAP_RELEASE_CHECKS_PASSED: YES' \
     'IOS_DEVELOPMENT_CERTIFICATE_BASE64' \
     'IOS_DEVELOPMENT_CERTIFICATE_PASSWORD' \
+    'IOS_APP_DEVELOPMENT_PROFILE_BASE64' \
+    'IOS_SHARE_DEVELOPMENT_PROFILE_BASE64' \
+    'IOS_APP_STORE_PROFILE_BASE64' \
+    'IOS_SHARE_APP_STORE_PROFILE_BASE64' \
+    'IOS_APP_STORE_PROFILE_NAME' \
+    'IOS_SHARE_APP_STORE_PROFILE_NAME' \
     'needs: [test, mac-build, ios-upload]' \
     'SNIP_SNAP_GENERATE_APPCAST=' \
     '"Shared/**"' \
@@ -154,11 +160,23 @@ fake_security="$test_root/security"
 print -r -- '#!/bin/zsh
 set -euo pipefail
 print -r -- "$*" >> "$SNIP_SNAP_SECURITY_LOG"
-[[ "$1" != create-keychain ]] || /usr/bin/touch "${@: -1}"' > "$fake_security"
+[[ "$1" != create-keychain ]] || /usr/bin/touch "${@: -1}"
+if [[ "$1" == cms ]]; then
+    case "$*" in
+        *ios-app-development*) uuid=00000000-0000-0000-0000-000000000001 ;;
+        *ios-share-development*) uuid=00000000-0000-0000-0000-000000000002 ;;
+        *ios-app-store*) uuid=00000000-0000-0000-0000-000000000003 ;;
+        *ios-share-app-store*) uuid=00000000-0000-0000-0000-000000000004 ;;
+        *) uuid=00000000-0000-0000-0000-000000000005 ;;
+    esac
+    print -r -- "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>UUID</key><string>$uuid</string></dict></plist>"
+fi' > "$fake_security"
 /bin/chmod +x "$fake_security"
 encoded_distribution="$(print -n distribution | /usr/bin/base64)"
 encoded_development="$(print -n development | /usr/bin/base64)"
+encoded_profile="$(print -n profile | /usr/bin/base64)"
 /usr/bin/env \
+    HOME="$test_root/home" \
     RUNNER_TEMP="$test_root" \
     SNIP_SNAP_CI_ROOT="$ci_setup_root" \
     SNIP_SNAP_REPO_DIR="$ci_setup_repo" \
@@ -171,6 +189,10 @@ encoded_development="$(print -n development | /usr/bin/base64)"
     SNIP_SNAP_CI_CERTIFICATE_PASSWORD=distribution-password \
     SNIP_SNAP_CI_DEVELOPMENT_CERTIFICATE_BASE64="$encoded_development" \
     SNIP_SNAP_CI_DEVELOPMENT_CERTIFICATE_PASSWORD=development-password \
+    SNIP_SNAP_CI_IOS_APP_DEVELOPMENT_PROFILE_BASE64="$encoded_profile" \
+    SNIP_SNAP_CI_IOS_SHARE_DEVELOPMENT_PROFILE_BASE64="$encoded_profile" \
+    SNIP_SNAP_CI_IOS_APP_STORE_PROFILE_BASE64="$encoded_profile" \
+    SNIP_SNAP_CI_IOS_SHARE_APP_STORE_PROFILE_BASE64="$encoded_profile" \
     SHOWROOM_APPLE_KEY_ID=key-id \
     SHOWROOM_APPLE_ISSUER_ID=issuer-id \
     "$script_dir/ci-apple-setup.sh" setup ios
@@ -182,6 +204,13 @@ for certificate in signing.p12 development-signing.p12; do
 done
 [[ ! -e "$ci_setup_root/development-signing-password" ]] || \
     fail_test "CI setup wrote the development certificate password"
+[[ "$(/usr/bin/wc -l < "$ci_setup_root/profile-paths" | /usr/bin/tr -d ' ')" == 4 ]] || \
+    fail_test "CI setup did not record all iOS profiles"
+while IFS= read -r installed_profile; do
+    [[ -f "$installed_profile" ]] || fail_test "CI setup did not install $installed_profile"
+    [[ "$(/usr/bin/stat -f '%Lp' "$installed_profile")" == 600 ]] || \
+        fail_test "CI setup left $installed_profile readable"
+done < "$ci_setup_root/profile-paths"
 
 missing_development_repo="$test_root/missing-development-repo"
 missing_development_root="$test_root/snip-snap-release-missing-development"

@@ -134,6 +134,16 @@ if [[ -n "${SHOWROOM_APPLE_KEY_PATH:-}" || \
         -authenticationKeyIssuerID "$SHOWROOM_APPLE_ISSUER_ID"
     )
 fi
+app_store_profile_name="${SNIP_SNAP_IOS_APP_STORE_PROFILE_NAME:-}"
+share_store_profile_name="${SNIP_SNAP_IOS_SHARE_APP_STORE_PROFILE_NAME:-}"
+archive_provisioning_args=(-allowProvisioningUpdates "${authentication_args[@]}")
+export_provisioning_args=(-allowProvisioningUpdates)
+if [[ -n "$app_store_profile_name" || -n "$share_store_profile_name" ]]; then
+    [[ -n "$app_store_profile_name" && -n "$share_store_profile_name" ]] || \
+        fail "both App Store provisioning profile names are required"
+    archive_provisioning_args=()
+    export_provisioning_args=()
+fi
 
 archive_and_check() {
     local source_revision
@@ -156,8 +166,7 @@ archive_and_check() {
         -destination 'generic/platform=iOS' \
         -archivePath "$archive_path" \
         -derivedDataPath "$derived_data" \
-        -allowProvisioningUpdates \
-        "${authentication_args[@]}" \
+        "${archive_provisioning_args[@]}" \
         "CURRENT_PROJECT_VERSION=$build_number" \
         "DEVELOPMENT_TEAM=$development_team" \
         "MARKETING_VERSION=$version" \
@@ -218,13 +227,16 @@ case "$action" in
             "$cloudkit_container_identifier" \
             "$version" \
             "$build_number"
-        testflight_policy_write_export_options "$export_options" "$development_team"
+        testflight_policy_write_export_options \
+            "$export_options" "$development_team" \
+            "$app_bundle_identifier" "$share_bundle_identifier" \
+            "$app_store_profile_name" "$share_store_profile_name"
         if ! "$xcodebuild_tool" \
             -exportArchive \
             -archivePath "$archive_path" \
             -exportPath "$export_path" \
             -exportOptionsPlist "$export_options" \
-            -allowProvisioningUpdates \
+            "${export_provisioning_args[@]}" \
             "${authentication_args[@]}" > "$upload_log" 2>&1; then
             report_xcodebuild_failure upload "$upload_log"
         fi

@@ -11,6 +11,10 @@ testflight_policy_fail() {
 testflight_policy_write_export_options() {
     local output_file="$1"
     local development_team="$2"
+    local app_bundle_identifier="${3:-}"
+    local share_bundle_identifier="${4:-}"
+    local app_profile_name="${5:-}"
+    local share_profile_name="${6:-}"
 
     [[ -n "$development_team" ]] || {
         testflight_policy_fail "DEVELOPMENT_TEAM is missing"
@@ -22,7 +26,24 @@ testflight_policy_write_export_options() {
     /usr/bin/plutil -insert iCloudContainerEnvironment -string Production "$output_file"
     /usr/bin/plutil -insert manageAppVersionAndBuildNumber -bool NO "$output_file"
     /usr/bin/plutil -insert method -string app-store-connect "$output_file"
-    /usr/bin/plutil -insert signingStyle -string automatic "$output_file"
+    if [[ -n "$app_profile_name" || -n "$share_profile_name" ]]; then
+        [[ -n "$app_bundle_identifier" && -n "$share_bundle_identifier" && \
+           -n "$app_profile_name" && -n "$share_profile_name" ]] || {
+            testflight_policy_fail "manual App Store profile inputs are incomplete"
+            return 1
+        }
+        /usr/bin/plutil -insert signingCertificate -string 'Apple Distribution' "$output_file"
+        /usr/bin/plutil -insert signingStyle -string manual "$output_file"
+        /usr/libexec/PlistBuddy -c 'Add :provisioningProfiles dict' "$output_file"
+        /usr/libexec/PlistBuddy \
+            -c "Add :provisioningProfiles:$app_bundle_identifier string '$app_profile_name'" \
+            "$output_file"
+        /usr/libexec/PlistBuddy \
+            -c "Add :provisioningProfiles:$share_bundle_identifier string '$share_profile_name'" \
+            "$output_file"
+    else
+        /usr/bin/plutil -insert signingStyle -string automatic "$output_file"
+    fi
     /usr/bin/plutil -insert stripSwiftSymbols -bool YES "$output_file"
     /usr/bin/plutil -insert teamID -string "$development_team" "$output_file"
     /usr/bin/plutil -insert testFlightInternalTestingOnly -bool NO "$output_file"

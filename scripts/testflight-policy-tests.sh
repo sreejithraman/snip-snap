@@ -178,4 +178,25 @@ assert_succeeds testflight_policy_write_export_options "$export_options" FAKE123
 [[ "$(/usr/bin/plutil -extract testFlightInternalTestingOnly raw -o - \
     "$export_options")" == false ]] || fail_test "build was limited to internal testing"
 
+manual_export_options="$test_root/ManualExportOptions.plist"
+assert_succeeds testflight_policy_write_export_options \
+    "$manual_export_options" FAKE123456 \
+    world.sree.snipsnap.ios world.sree.snipsnap.ios.share \
+    'Snip Snap iOS App Store' 'Snip Snap Share App Store'
+[[ "$(/usr/bin/plutil -extract signingStyle raw -o - "$manual_export_options")" == \
+    manual ]] || fail_test "manual profiles kept automatic export signing"
+[[ "$(/usr/libexec/PlistBuddy -c \
+    'Print :provisioningProfiles:world.sree.snipsnap.ios' \
+    "$manual_export_options")" == 'Snip Snap iOS App Store' ]] || \
+    fail_test "manual export missed the app profile"
+[[ "$(/usr/libexec/PlistBuddy -c \
+    'Print :provisioningProfiles:world.sree.snipsnap.ios.share' \
+    "$manual_export_options")" == 'Snip Snap Share App Store' ]] || \
+    fail_test "manual export missed the Share profile"
+assert_fails_with 'manual App Store profile inputs are incomplete' \
+    testflight_policy_write_export_options \
+    "$test_root/IncompleteExportOptions.plist" FAKE123456 \
+    world.sree.snipsnap.ios world.sree.snipsnap.ios.share \
+    'Snip Snap iOS App Store' ''
+
 print "TestFlight policy checks passed."
