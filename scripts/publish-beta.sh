@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 
-[[ -z "${SNIP_SNAP_RUNNER_PATH:-}" ]] || export PATH="$SNIP_SNAP_RUNNER_PATH"
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${SNIP_SNAP_RUNNER_PATH:-$PATH}"
 
 script_dir="${0:A:h}"
 repo_dir="${script_dir:h}"
