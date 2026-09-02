@@ -1,5 +1,6 @@
 import Foundation
 import SnipSnapCore
+import SwiftData
 @testable import SnipSnapPersistence
 import XCTest
 
@@ -408,6 +409,180 @@ final class MacLocalSnipLibraryMigrationTests: XCTestCase {
     XCTAssertNil(try markerJSON(jsonURL: jsonURL)["backupPath"])
   }
 
+  func testOlderMarkedSwiftDataStoreMigratesAndRefreshesMarker() async throws {
+    let root = try makeRoot()
+    let jsonURL = root.appendingPathComponent("snips.json")
+    let paths = LocalSnipStorePaths(jsonURL: jsonURL)
+    try FileManager.default.createDirectory(
+      at: paths.localDirectory,
+      withIntermediateDirectories: false
+    )
+    try makeVersionOneStore(at: paths.swiftDataStoreURL)
+    try writeMigrationMarker(schemaVersion: 1, jsonURL: jsonURL)
+
+    let result = MacLocalSnipLibraryBootstrap.open(jsonURL: jsonURL)
+
+    XCTAssertEqual(result.mode, .swiftData)
+    XCTAssertNil(result.errorMessage)
+    let snapshot = await result.library.snapshot(sortedBy: .manual)
+    XCTAssertEqual(snapshot.lists, [.inbox])
+    let marker = try markerJSON(jsonURL: jsonURL)
+    XCTAssertEqual(marker["schemaVersion"] as? Int, SnipSnapStoreSchemaContract.currentVersion)
+    XCTAssertEqual(marker["sourceJSONPath"] as? String, "snips.json")
+    XCTAssertEqual(marker["sourceVersion"] as? Int, 6)
+    XCTAssertEqual(
+      marker["backupPath"] as? String,
+      "Migration Backups/JSON-to-SwiftData-fixture"
+    )
+    XCTAssertEqual(marker["completedAt"] as? String, "2026-08-28T21:25:02Z")
+  }
+
+  func testEachSupportedOlderMarkerVersionIsRefreshedAfterOpen() throws {
+    let current = try makeCurrentStore()
+
+    let olderVersions = SnipSnapSchemaMigrationPlan.supportedMarkerSchemaVersions
+      .filter { $0 < SnipSnapStoreSchemaContract.currentVersion }
+      .sorted()
+    for version in olderVersions {
+      try writeMigrationMarker(schemaVersion: version, jsonURL: current.jsonURL)
+
+      let reopened = MacLocalSnipLibraryBootstrap.open(
+        jsonURL: current.jsonURL,
+        checkpoint: { _ in },
+        libraryFactory: { _ in current.library }
+      )
+
+      XCTAssertEqual(reopened.mode, .swiftData, "schema version \(version)")
+      XCTAssertEqual(
+        try markerJSON(jsonURL: current.jsonURL)["schemaVersion"] as? Int,
+        SnipSnapStoreSchemaContract.currentVersion,
+        "schema version \(version)"
+      )
+    }
+  }
+
+  func testUnsupportedMarkerSchemaVersionsAreRejectedBeforeStoreOpen() throws {
+    let current = try makeCurrentStore()
+
+    for version in [-1, 0, SnipSnapStoreSchemaContract.currentVersion + 1] {
+      try writeMigrationMarker(schemaVersion: version, jsonURL: current.jsonURL)
+      var openedStore = false
+
+      let reopened = MacLocalSnipLibraryBootstrap.open(
+        jsonURL: current.jsonURL,
+        checkpoint: { _ in },
+        libraryFactory: { _ in
+          openedStore = true
+          return current.library
+        }
+      )
+
+      XCTAssertEqual(reopened.mode, .unavailable, "schema version \(version)")
+      XCTAssertFalse(openedStore, "schema version \(version)")
+      XCTAssertEqual(
+        try markerJSON(jsonURL: current.jsonURL)["schemaVersion"] as? Int,
+        version
+      )
+    }
+  }
+
+  func testUnreadableMarkerContentsAreRejectedBeforeStoreOpen() throws {
+    let current = try makeCurrentStore()
+    let paths = LocalSnipStorePaths(jsonURL: current.jsonURL)
+    let missingSchema = try JSONSerialization.data(withJSONObject: [
+      "completedAt": "2026-08-28T21:25:02Z",
+      "sourceJSONPath": "snips.json",
+      "storeDirectory": "Local",
+      "storeFile": "snips.store",
+      "version": 1,
+    ])
+
+    for markerData in [Data("{".utf8), missingSchema] {
+      try markerData.write(to: paths.markerURL, options: .atomic)
+      var openedStore = false
+
+      let reopened = MacLocalSnipLibraryBootstrap.open(
+        jsonURL: current.jsonURL,
+        checkpoint: { _ in },
+        libraryFactory: { _ in
+          openedStore = true
+          return current.library
+        }
+      )
+
+      XCTAssertEqual(reopened.mode, .unavailable)
+      XCTAssertFalse(openedStore)
+      XCTAssertEqual(try Data(contentsOf: paths.markerURL), markerData)
+    }
+  }
+
+  func testFailedOldStoreOpenLeavesMarkerUnchanged() throws {
+    let current = try makeCurrentStore()
+    try writeMigrationMarker(schemaVersion: 1, jsonURL: current.jsonURL)
+
+    let reopened = MacLocalSnipLibraryBootstrap.open(
+      jsonURL: current.jsonURL,
+      checkpoint: { _ in },
+      libraryFactory: { _ in throw InjectedFailure.stop }
+    )
+
+    XCTAssertEqual(reopened.mode, .unavailable)
+    XCTAssertEqual(try markerJSON(jsonURL: current.jsonURL)["schemaVersion"] as? Int, 1)
+  }
+
+  func testMarkerRefreshFailureBeforeWriteLeavesOldMarkerAndStoreUnavailable() throws {
+    let current = try makeCurrentStore()
+    try writeMigrationMarker(schemaVersion: 1, jsonURL: current.jsonURL)
+
+    let reopened = MacLocalSnipLibraryBootstrap.open(
+      jsonURL: current.jsonURL,
+      checkpoint: { _ in },
+      libraryFactory: { _ in current.library },
+      markerDataWriter: { _, _ in throw InjectedFailure.stop }
+    )
+
+    XCTAssertEqual(reopened.mode, .unavailable)
+    XCTAssertTrue(reopened.errorMessage?.contains("could not update") == true)
+    XCTAssertTrue(reopened.errorMessage?.contains("in place") == true)
+    XCTAssertEqual(try markerJSON(jsonURL: current.jsonURL)["schemaVersion"] as? Int, 1)
+  }
+
+  func testMarkerRefreshFailureAfterReplaceLeavesCurrentMarkerAndStoreUnavailable() throws {
+    let current = try makeCurrentStore()
+    try writeMigrationMarker(schemaVersion: 1, jsonURL: current.jsonURL)
+
+    let reopened = MacLocalSnipLibraryBootstrap.open(
+      jsonURL: current.jsonURL,
+      checkpoint: { _ in },
+      libraryFactory: { _ in current.library },
+      markerDataWriter: { data, url in
+        try data.write(to: url, options: .atomic)
+        throw InjectedFailure.stop
+      }
+    )
+
+    XCTAssertEqual(reopened.mode, .unavailable)
+    XCTAssertTrue(reopened.errorMessage?.contains("could not update") == true)
+    XCTAssertTrue(reopened.errorMessage?.contains("in place") == true)
+    XCTAssertEqual(
+      try markerJSON(jsonURL: current.jsonURL)["schemaVersion"] as? Int,
+      SnipSnapStoreSchemaContract.currentVersion
+    )
+  }
+
+  func testCurrentMarkerDoesNotNeedARewrite() throws {
+    let current = try makeCurrentStore()
+
+    let reopened = MacLocalSnipLibraryBootstrap.open(
+      jsonURL: current.jsonURL,
+      checkpoint: { _ in },
+      libraryFactory: { _ in current.library },
+      markerDataWriter: { _, _ in XCTFail("A current marker must not be rewritten") }
+    )
+
+    XCTAssertEqual(reopened.mode, .swiftData)
+  }
+
   func testNewInstallCreatesMissingStoreRootBeforeStaging() async throws {
     let base = try makeRoot()
     let missingRoot = base.appendingPathComponent("Missing/Application Support/Snip Snap")
@@ -671,6 +846,48 @@ final class MacLocalSnipLibraryMigrationTests: XCTestCase {
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     encoder.dateEncodingStrategy = .iso8601
     try encoder.encode(value).write(to: url, options: .atomic)
+  }
+
+  private func makeVersionOneStore(at storeURL: URL) throws {
+    let schema = Schema(versionedSchema: SnipSnapSchemaV1.self)
+    let configuration = ModelConfiguration(
+      "SnipSnapLocal",
+      schema: schema,
+      url: storeURL,
+      cloudKitDatabase: .none
+    )
+    let container = try ModelContainer(
+      for: schema,
+      migrationPlan: SnipSnapSchemaMigrationPlan.self,
+      configurations: [configuration]
+    )
+    let context = ModelContext(container)
+    context.autosaveEnabled = false
+    context.insert(StoredListRecord(.inbox))
+    try context.save()
+  }
+
+  private func makeCurrentStore() throws -> (jsonURL: URL, library: any SnipLibrary) {
+    let root = try makeRoot()
+    let jsonURL = root.appendingPathComponent("snips.json")
+    let result = MacLocalSnipLibraryBootstrap.open(jsonURL: jsonURL)
+    XCTAssertEqual(result.mode, .swiftData)
+    return (jsonURL, result.library)
+  }
+
+  private func writeMigrationMarker(schemaVersion: Int, jsonURL: URL) throws {
+    let marker: [String: Any] = [
+      "backupPath": "Migration Backups/JSON-to-SwiftData-fixture",
+      "completedAt": "2026-08-28T21:25:02Z",
+      "schemaVersion": schemaVersion,
+      "sourceJSONPath": "snips.json",
+      "sourceVersion": 6,
+      "storeDirectory": "Local",
+      "storeFile": "snips.store",
+      "version": 1,
+    ]
+    let markerURL = LocalSnipStorePaths(jsonURL: jsonURL).markerURL
+    try JSONSerialization.data(withJSONObject: marker).write(to: markerURL, options: .atomic)
   }
 
   private func markerJSON(jsonURL: URL) throws -> [String: Any] {
