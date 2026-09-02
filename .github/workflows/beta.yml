@@ -204,6 +204,7 @@ jobs:
           gh auth setup-git --hostname github.com
           git config --global user.name "Snip Snap Release"
           git config --global user.email "actions@users.noreply.github.com"
+          export SNIP_SNAP_RUNNER_PATH="$PATH"
           export SNIP_SNAP_GH="$(command -v gh)"
           ./scripts/publish-beta.sh --build-number "${{ needs.test.outputs.build }}"
 

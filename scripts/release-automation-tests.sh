@@ -141,6 +141,7 @@ for required in \
     'needs: [test, mac-build, ios-upload]' \
     'SNIP_SNAP_GENERATE_APPCAST=' \
     'gh auth setup-git --hostname github.com' \
+    'export SNIP_SNAP_RUNNER_PATH="$PATH"' \
     'export SNIP_SNAP_GH="$(command -v gh)"' \
     '"Shared/**"' \
     'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' \
@@ -152,12 +153,18 @@ promotion_workflow="$script_dir/../.github/workflows/promote-stable.yml"
 for required in \
     'version:' \
     'gh auth setup-git --hostname github.com' \
+    'export SNIP_SNAP_RUNNER_PATH="$PATH"' \
     'export SNIP_SNAP_GH="$(command -v gh)"' \
     'scripts/promote-release.sh' \
     '--version "${{ inputs.version }}"' \
     '--build-number "${{ inputs.build }}"'; do
     /usr/bin/grep -F -- "$required" "$promotion_workflow" >/dev/null || \
         fail_test "stable workflow is missing $required"
+done
+for release_script in publish-beta.sh promote-release.sh; do
+    /usr/bin/grep -F 'export PATH="$SNIP_SNAP_RUNNER_PATH"' \
+        "$script_dir/$release_script" >/dev/null || \
+        fail_test "$release_script does not restore the runner tool path"
 done
 
 for retry_guard in \
