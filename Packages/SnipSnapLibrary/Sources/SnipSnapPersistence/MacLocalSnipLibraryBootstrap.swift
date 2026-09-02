@@ -72,6 +72,19 @@ private struct LocalStoreMigrationMarker: Codable, Equatable {
   let storeDirectory: String
   let storeFile: String
   let completedAt: Date
+
+  func recordingOpenedSchema(_ schemaVersion: Int) -> Self {
+    Self(
+      version: version,
+      schemaVersion: schemaVersion,
+      sourceVersion: sourceVersion,
+      sourceJSONPath: sourceJSONPath,
+      backupPath: backupPath,
+      storeDirectory: storeDirectory,
+      storeFile: storeFile,
+      completedAt: completedAt
+    )
+  }
 }
 
 private struct RawBackupManifest: Codable, Equatable {
@@ -134,7 +147,8 @@ public enum MacLocalSnipLibraryBootstrap {
   package static func open(
     jsonURL: URL,
     checkpoint: (LocalStoreMigrationCheckpoint) throws -> Void,
-    libraryFactory: (URL) throws -> any SnipLibrary
+    libraryFactory: (URL) throws -> any SnipLibrary,
+    markerDataWriter: (Data, URL) throws -> Void = { try DurableFile.write($0, to: $1) }
   ) -> LocalSnipLibraryOpenResult {
     let fileManager = FileManager.default
     let paths = LocalSnipStorePaths(jsonURL: jsonURL)
@@ -149,8 +163,9 @@ public enum MacLocalSnipLibraryBootstrap {
     cleanupStaleWork(paths: paths, fileManager: fileManager)
 
     if fileManager.fileExists(atPath: paths.localDirectory.path) {
+      let marker: LocalStoreMigrationMarker
       do {
-        try validateMarker(at: paths.markerURL, paths: paths)
+        marker = try validateMarker(at: paths.markerURL, paths: paths)
       } catch {
         let backupURL = try? makeRawBackupIfPresent(paths: paths, fileManager: fileManager)
         return unavailableAfterInvalidFinalStore(
@@ -162,14 +177,24 @@ public enum MacLocalSnipLibraryBootstrap {
       guard fileManager.fileExists(atPath: paths.swiftDataStoreURL.path) else {
         return unavailableSwiftData(paths: paths)
       }
+      let library: any SnipLibrary
       do {
-        return LocalSnipLibraryOpenResult(
-          library: try libraryFactory(paths.swiftDataStoreURL),
-          mode: .swiftData
-        )
+        library = try libraryFactory(paths.swiftDataStoreURL)
       } catch {
         return unavailableSwiftData(paths: paths)
       }
+      if marker.schemaVersion != SnipSnapStoreSchemaContract.currentVersion {
+        do {
+          try writeMarker(
+            marker.recordingOpenedSchema(SnipSnapStoreSchemaContract.currentVersion),
+            to: paths.markerURL,
+            dataWriter: markerDataWriter
+          )
+        } catch {
+          return unavailableAfterMarkerUpdateFailure(paths: paths)
+        }
+      }
+      return LocalSnipLibraryOpenResult(library: library, mode: .swiftData)
     }
 
     let migrationID = UUID()
@@ -245,7 +270,11 @@ public enum MacLocalSnipLibraryBootstrap {
         storeFile: paths.swiftDataStoreURL.lastPathComponent,
         completedAt: Date()
       )
-      try writeMarker(marker, to: stagingDirectory.appendingPathComponent("migration.json"))
+      try writeMarker(
+        marker,
+        to: stagingDirectory.appendingPathComponent("migration.json"),
+        dataWriter: markerDataWriter
+      )
       try checkpoint(.afterMarkerWrite)
       try checkpoint(.beforeActivation)
       try verifyAttachmentFiles(
@@ -261,7 +290,7 @@ public enum MacLocalSnipLibraryBootstrap {
       }
       try fileManager.moveItem(at: stagingDirectory, to: paths.localDirectory)
       do {
-        try validateMarker(at: paths.markerURL, paths: paths)
+        _ = try validateMarker(at: paths.markerURL, paths: paths)
         return LocalSnipLibraryOpenResult(
           library: try libraryFactory(paths.swiftDataStoreURL),
           mode: .swiftData,
@@ -432,6 +461,16 @@ public enum MacLocalSnipLibraryBootstrap {
     )
   }
 
+  private static func unavailableAfterMarkerUpdateFailure(
+    paths: LocalSnipStorePaths
+  ) -> LocalSnipLibraryOpenResult {
+    LocalSnipLibraryOpenResult(
+      library: SwiftDataSnipLibrary.unavailable(storeURL: paths.swiftDataStoreURL),
+      mode: .unavailable,
+      errorMessage: String(localized: "Snip Snap opened its SwiftData store but could not update its migration marker. It left the Local and JSON stores in place, so it cannot save new snips.", bundle: .main)
+    )
+  }
+
   private static func unavailableStoreRoot(
     paths: LocalSnipStorePaths,
     error: Error
@@ -599,14 +638,21 @@ public enum MacLocalSnipLibraryBootstrap {
     return path
   }
 
-  private static func writeMarker(_ marker: LocalStoreMigrationMarker, to url: URL) throws {
+  private static func writeMarker(
+    _ marker: LocalStoreMigrationMarker,
+    to url: URL,
+    dataWriter: (Data, URL) throws -> Void
+  ) throws {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     encoder.dateEncodingStrategy = .iso8601
-    try encoder.encode(marker).write(to: url, options: .atomic)
+    try dataWriter(encoder.encode(marker), url)
   }
 
-  private static func validateMarker(at markerURL: URL, paths: LocalSnipStorePaths) throws {
+  private static func validateMarker(
+    at markerURL: URL,
+    paths: LocalSnipStorePaths
+  ) throws -> LocalStoreMigrationMarker {
     guard FileManager.default.fileExists(atPath: markerURL.path) else {
       throw LocalStoreMigrationError.unmarkedLocalStore
     }
@@ -618,12 +664,13 @@ public enum MacLocalSnipLibraryBootstrap {
         from: Data(contentsOf: markerURL)
       )
       guard marker.version == LocalStoreMigrationMarker.currentVersion,
-        marker.schemaVersion == SnipSnapStoreSchemaContract.currentVersion,
+        SnipSnapSchemaMigrationPlan.supportedMarkerSchemaVersions.contains(marker.schemaVersion),
         marker.storeDirectory == paths.localDirectory.lastPathComponent,
         marker.storeFile == paths.swiftDataStoreURL.lastPathComponent,
         JSONSnipArchiveReader.isSafeRelativePath(marker.sourceJSONPath),
         marker.backupPath.map(JSONSnipArchiveReader.isSafeRelativePath) ?? true
       else { throw LocalStoreMigrationError.invalidMarker }
+      return marker
     } catch let error as LocalStoreMigrationError {
       throw error
     } catch {

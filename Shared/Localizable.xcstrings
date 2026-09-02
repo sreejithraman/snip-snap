@@ -58,6 +58,9 @@
     "Snip Snap could not open its SwiftData store. It left the Local and JSON stores unchanged, so it cannot save new snips." : {
 
     },
+    "Snip Snap opened its SwiftData store but could not update its migration marker. It left the Local and JSON stores in place, so it cannot save new snips." : {
+
+    },
     "Snip Snap could not read its saved snips." : {
 
     },

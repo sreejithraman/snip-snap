@@ -73,4 +73,12 @@ package enum SnipSnapSchemaMigrationPlan: SchemaMigrationPlan {
       .lightweight(fromVersion: SnipSnapSchemaV3.self, toVersion: SnipSnapSchemaV4.self),
     ]
   }
+
+  package static var supportedMarkerSchemaVersions: Set<Int> {
+    Set(schemas.compactMap { schema in
+      let version = schema.versionIdentifier
+      guard version.minor == 0, version.patch == 0 else { return nil }
+      return version.major
+    })
+  }
 }
