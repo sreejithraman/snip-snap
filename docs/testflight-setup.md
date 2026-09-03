@@ -291,12 +291,21 @@ builds](https://developer.apple.com/help/app-store-connect/manage-builds/upload-
 
 ## Protected beta delivery
 
-`.github/workflows/beta.yml` tests a push to `main`, then uses the protected
-`apple-release` environment for signed work. It uploads the iOS build to
-TestFlight and publishes the same-number Mac beta to GitHub, Sparkle's `beta`
-channel, and the `snip-snap@beta` cask. Set the repository environment variable
-`SNIP_SNAP_BETA_DELIVERY_ENABLED` to `true` only after all protected inputs have
-been added. Until then, the workflow runs its public test job and skips delivery.
+`.github/workflows/beta-candidate.yml` tests each release-sized push to `main`.
+A newer push cancels an older candidate that is still testing. After a candidate
+passes, `.github/workflows/beta.yml` checks that its commit is still the tip of
+`main`, then uses the protected `apple-release` environment for signed work. The
+delivery workflow runs one release at a time and never cancels a release that
+has started. Each workflow keeps only its newest waiting run.
+
+The delivery uploads the iOS build to TestFlight and publishes the same-number
+Mac beta to GitHub, Sparkle's `beta` channel, and the `snip-snap@beta` cask. Set
+the repository environment variable `SNIP_SNAP_BETA_DELIVERY_ENABLED` to `true`
+only after all protected inputs have been added. Until then, candidates run the
+public checks and protected delivery jobs stay skipped. To start a beta by hand,
+dispatch the Beta candidate workflow; delivery cannot bypass its checks.
+The release record saves both the candidate and delivery run IDs so stable
+promotion can check the unsigned tests and signed jobs for the same commit.
 
 Add these secrets to `apple-release`:
 

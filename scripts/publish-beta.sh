@@ -65,6 +65,8 @@ source_commit="$(git -C "$repo_dir" rev-parse HEAD)"
 run_url="${SNIP_SNAP_RUN_URL:-local}"
 run_id="${GITHUB_RUN_ID:-}"
 run_attempt="${GITHUB_RUN_ATTEMPT:-}"
+candidate_run_id="${SNIP_SNAP_CANDIDATE_RUN_ID:-}"
+candidate_run_attempt="${SNIP_SNAP_CANDIDATE_RUN_ATTEMPT:-}"
 release_root="${SNIP_SNAP_RELEASE_DIR:-$repo_dir/artifacts/release-$version-$build_number}"
 release_zip="$release_root/Snip-Snap-$version.zip"
 release_dmg="$release_root/Snip-Snap-$version.dmg"
@@ -151,7 +153,8 @@ fi
 
 release_automation_write_record \
     "$record_path" "$version" "$build_number" "$source_commit" "$run_url" \
-    "$release_zip" "$release_dmg" "$run_id" "$run_attempt" "$feed_dir/appcast.xml"
+    "$release_zip" "$release_dmg" "$run_id" "$run_attempt" "$feed_dir/appcast.xml" \
+    "$candidate_run_id" "$candidate_run_attempt"
 release_automation_verify_record \
     "$record_path" "$version" "$build_number" "$release_zip" "$release_dmg" "$source_commit"
 

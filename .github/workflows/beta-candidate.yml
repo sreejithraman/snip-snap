@@ -1,0 +1,43 @@
+name: Beta candidate
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/beta-candidate.yml"
+      - ".github/workflows/beta.yml"
+      - "CloudKit/**"
+      - "Config/**"
+      - "Packages/**"
+      - "Shared/**"
+      - "SnipSnap/**"
+      - "SnipSnapiOS/**"
+      - "SnipSnapiOSTests/**"
+      - "SnipSnapiOSUITests/**"
+      - "SnipSnapShareExtension/**"
+      - "SnipSnapTests/**"
+      - "SnipSnap.xcodeproj/**"
+      - "scripts/**"
+      - "release.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: beta-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test beta candidate
+    runs-on: macos-26
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run tests
+        run: |
+          ./scripts/test.sh
+          ./scripts/build-matrix.sh
