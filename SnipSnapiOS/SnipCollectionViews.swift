@@ -1,6 +1,7 @@
 import QuickLook
 import SnipSnapCore
 import SwiftUI
+import UIKit
 
 enum SnipCollectionLayout: Equatable {
     case compactStack
@@ -18,11 +19,12 @@ struct SnipCollectionView: View {
     let copyShare: IOSCopyShareCoordinator
     @Binding var sheet: AppSheet?
     let layout: SnipCollectionLayout
+    @Binding var editMode: EditMode
     var dismissComposerKeyboard: () -> Void = {}
-    @State private var editMode: EditMode = .inactive
     @State private var inlineEditSession: CompactInlineEditSession?
     @State private var previewURLs: [URL] = []
     @State private var selectedPreviewURL: URL?
+    @State private var isSearchPresented = false
     @FocusState private var isInlineEditorFocused: Bool
 
     var body: some View {
@@ -62,6 +64,7 @@ struct SnipCollectionView: View {
                                     showsStatusIcon: false
                                 )
                                 .contentShape(Rectangle())
+                                .accessibilityAddTraits(.isButton)
                                 .accessibilityIdentifier("snip-\(snip.id)")
                             } else {
                                 if inlineEditSession?.original.id == snip.id {
@@ -165,16 +168,31 @@ struct SnipCollectionView: View {
         )
         .quickLookPreview($selectedPreviewURL, in: previewURLs)
         .navigationTitle(model.selectedList.name)
-        .modifier(PhoneAwareSearchModifier(
-            isEnabled: layout != .compactStack,
-            text: Binding(
-                get: { model.searchText },
-                set: { model.searchText = $0 }
-            )
-        ))
+        .allowsHitTesting(!isSearchPresented || hasSearchQuery)
+        .overlay {
+            if isSearchPresented && !hasSearchQuery {
+                Color.black.opacity(0.18)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: dismissSearch)
+                    .accessibilityHidden(true)
+            }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if isSearchPresented {
+                collectionSearchBar
+            }
+        }
+        .toolbar(isSearchPresented ? .hidden : .visible, for: .navigationBar)
         .environment(\.editMode, $editMode)
         .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Search", systemImage: "magnifyingglass") {
+                    isSearchPresented = true
+                }
+                .accessibilityIdentifier("search-snips")
+            }
+            ToolbarItemGroup(placement: .topBarTrailing) {
                 if isSelecting {
                     SelectionActionsMenu(
                         model: model,
@@ -185,9 +203,6 @@ struct SnipCollectionView: View {
                 } else {
                     WorkflowOptionsMenu(model: model)
                 }
-                EditButton()
-                    .disabled(model.visibleSnips.isEmpty)
-                    .accessibilityIdentifier("select-snips")
             }
         }
         .onChange(of: model.selectedListID) {
@@ -202,22 +217,56 @@ struct SnipCollectionView: View {
                 model.selectedSnipID = nil
             }
         }
+        .onChange(of: isSearchPresented) { _, isPresented in
+            if !isPresented {
+                model.searchText = ""
+            }
+        }
     }
 
     private var emptyTitle: String {
-        if !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if hasSearchQuery {
             return String(localized: "No Results")
         }
         return model.completionFilter.emptyStateTitle
     }
 
+    private var collectionSearchBar: some View {
+        HStack(spacing: 0) {
+            NativeCollectionSearchBar(text: Binding(
+                get: { model.searchText },
+                set: { model.searchText = $0 }
+            ))
+
+            Button(action: dismissSearch) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 20, weight: .medium))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .glassEffect(.regular.interactive(), in: Circle())
+            .accessibilityLabel("Cancel Search")
+            .accessibilityIdentifier("close-search")
+        }
+        .frame(height: 56)
+        .padding(.horizontal, 2)
+    }
+
+    private func dismissSearch() {
+        isSearchPresented = false
+    }
+
+    private var hasSearchQuery: Bool {
+        !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var emptySystemImage: String {
-        model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "text.page" : "magnifyingglass"
+        hasSearchQuery ? "magnifyingglass" : "text.page"
     }
 
     private var emptyDescription: String {
-        if !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if hasSearchQuery {
             return String(localized: "Try a different search.")
         }
         return model.completionFilter == .all
@@ -407,20 +456,54 @@ private struct CompactInlineSnipEditor: View {
     }
 }
 
-private struct PhoneAwareSearchModifier: ViewModifier {
-    let isEnabled: Bool
+private struct NativeCollectionSearchBar: UIViewRepresentable {
     @Binding var text: String
 
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if isEnabled {
-            content.searchable(
-                text: $text,
-                placement: .navigationBarDrawer(displayMode: .always),
-                prompt: String(localized: "Search Snips")
-            )
-        } else {
-            content
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeUIView(context: Context) -> UISearchBar {
+        let searchBar = UISearchBar(frame: .zero)
+        searchBar.delegate = context.coordinator
+        searchBar.placeholder = String(localized: "Search Snips")
+        searchBar.searchBarStyle = .minimal
+        searchBar.returnKeyType = .search
+        searchBar.autocapitalizationType = .none
+        searchBar.autocorrectionType = .no
+        searchBar.searchTextField.accessibilityIdentifier = "search-snips-field"
+        searchBar.setShowsCancelButton(false, animated: false)
+
+        Task { @MainActor in
+            searchBar.becomeFirstResponder()
+        }
+        return searchBar
+    }
+
+    func updateUIView(_ searchBar: UISearchBar, context: Context) {
+        context.coordinator.parent = self
+        if searchBar.text != text {
+            searchBar.text = text
+        }
+    }
+
+    static func dismantleUIView(_ searchBar: UISearchBar, coordinator: Coordinator) {
+        searchBar.resignFirstResponder()
+    }
+
+    final class Coordinator: NSObject, UISearchBarDelegate {
+        var parent: NativeCollectionSearchBar
+
+        init(parent: NativeCollectionSearchBar) {
+            self.parent = parent
+        }
+
+        func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
+            parent.text = searchText
+        }
+
+        func searchBarSearchButtonClicked(_ searchBar: UISearchBar) {
+            searchBar.resignFirstResponder()
         }
     }
 }
