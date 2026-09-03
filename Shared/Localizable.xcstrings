@@ -1,6 +1,9 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "A device setting or management rule is blocking iCloud. Your changes will stay on this device." : {
+
+    },
     "A Local store exists without a valid migration marker. Snip Snap left it in place." : {
 
     },
@@ -10,13 +13,46 @@
     "Another iCloud Sync task is still running." : {
 
     },
+    "An Attachment Couldn’t Be Saved" : {
+
+    },
+    "An Attachment Couldn’t Sync" : {
+
+    },
+    "An Attachment Isn’t Available" : {
+
+    },
     "Captured Selection" : {
+
+    },
+    "Checking iCloud…" : {
 
     },
     "Choose how to handle the iCloud encrypted-data reset before turning sync on." : {
 
     },
     "Deleting Synced Content…" : {
+
+    },
+    "iCloud Access Is Restricted" : {
+
+    },
+    "iCloud Access Was Denied" : {
+
+    },
+    "iCloud Account Changed" : {
+
+    },
+    "iCloud Is Unavailable" : {
+
+    },
+    "iCloud Storage Is Full" : {
+
+    },
+    "iCloud Sync Setup Stopped" : {
+
+    },
+    "iCloud Sync Was Turned Off" : {
 
     },
     "Local Only" : {
@@ -34,6 +70,9 @@
     "Old Synced Content Removal Pending" : {
 
     },
+    "One attachment can’t be read from iCloud right now. Your other changes are safe, and Snip Snap will try again." : {
+
+    },
     "Saved snips and attachments sync through your private iCloud database. Snip Snap’s maintainers cannot inspect private records in CloudKit Console. Apple encrypts synced data in transit and at rest; user fields use encrypted values and files use CKAsset data. Those user fields and attachments are end-to-end encrypted only when Advanced Data Protection is on." : {
 
     },
@@ -41,6 +80,12 @@
 
     },
     "Setting Up iCloud Sync…" : {
+
+    },
+    "Sign In to iCloud" : {
+
+    },
+    "Sign in to iCloud in Settings to sync your snips. Your changes will stay on this device until then." : {
 
     },
     "Shared" : {
@@ -64,6 +109,21 @@
     "Snip Snap could not read its saved snips." : {
 
     },
+    "Snip Snap Couldn’t Sync" : {
+
+    },
+    "Snip Snap can’t find or read one attachment on this device. Your other changes are safe." : {
+
+    },
+    "Snip Snap can’t reach iCloud right now. Your changes are safe on this device, and sync will try again." : {
+
+    },
+    "Snip Snap can’t reach iCloud right now. Your local library remains available, and setup will try again." : {
+
+    },
+    "Snip Snap couldn’t prepare a safe place for one iCloud attachment on this device. Your other changes are safe, and sync will try again." : {
+
+    },
     "Snip Snap does not send local-only data to CloudKit." : {
 
     },
@@ -77,6 +137,36 @@
 
     },
     "Snip Snap is fetching iCloud data and preparing a safe merged copy." : {
+
+    },
+    "Snip Snap stopped sync for the prior iCloud account and opened a separate local library. Sign in to the account you want to use, then turn sync on." : {
+
+    },
+    "Some changes did not reach iCloud. Your other changes are safe, and Snip Snap will retry." : {
+
+    },
+    "Some Changes Haven’t Synced" : {
+
+    },
+    "The synced Snip Snap data was removed from iCloud. Snip Snap cleared its old sync copy and will not upload it again. You can turn sync on when you’re ready." : {
+
+    },
+    "Update Snip Snap to Sync" : {
+
+    },
+    "Waiting for a Connection" : {
+
+    },
+    "You appear to be offline. Your changes are safe on this device and will sync when you’re back online." : {
+
+    },
+    "You appear to be offline. Your local library remains available, and Snip Snap will finish setup when you’re back online." : {
+
+    },
+    "Your changes are safe on this device." : {
+
+    },
+    "Your local library remains available." : {
 
     },
     "Snip Snap is finishing iCloud Sync setup." : {
