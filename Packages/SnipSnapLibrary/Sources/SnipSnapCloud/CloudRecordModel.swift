@@ -310,11 +310,33 @@ package enum CloudFetchScope: Codable, Equatable, Sendable {
 }
 
 package enum CloudOperationFailure: String, Codable, Equatable, Sendable {
+    case networkUnavailable
+    case iCloudUnavailable
+    case rateLimited
+    case authenticationRequired
+    case accountTemporarilyUnavailable
     case retryable
     case quotaExceeded
+    case updateRequired
+    case accessDenied
+    case attachmentMissing
+    case attachmentUnavailable
+    case changeTokenExpired
     case rejected
     case invalidRecord
     case zoneMissing
+
+    package var isRetryable: Bool {
+        switch self {
+        case .networkUnavailable, .iCloudUnavailable, .rateLimited,
+             .authenticationRequired, .accountTemporarilyUnavailable,
+             .attachmentUnavailable, .changeTokenExpired, .retryable:
+            true
+        case .quotaExceeded, .updateRequired, .accessDenied, .attachmentMissing,
+             .rejected, .invalidRecord, .zoneMissing:
+            false
+        }
+    }
 }
 
 package enum CloudZoneDeletionReason: String, Codable, Equatable, Sendable {
@@ -478,6 +500,11 @@ package struct CloudAssetReceipt: Codable, Equatable, Sendable {
 
 package protocol CloudRecordTransport: Sendable {
     func start(state: CloudEngineStateEnvelope?) async throws
+    func start(
+        state: CloudEngineStateEnvelope?,
+        initialOutbound: CloudOutboundBatch?
+    ) async throws
+    func reset() async
     func fetch(scope: CloudFetchScope) async throws -> CloudFetchedBatch
     func send(_ batch: CloudOutboundBatch) async throws -> CloudSentBatch
     func confirmApplied(_ batchID: UUID) async throws
@@ -497,6 +524,13 @@ package struct CloudPendingBatch: Sendable {
 }
 
 package extension CloudRecordTransport {
+    func reset() async {}
+    func start(
+        state: CloudEngineStateEnvelope?,
+        initialOutbound: CloudOutboundBatch?
+    ) async throws {
+        try await start(state: state)
+    }
     func pendingBatch() async -> CloudPendingBatch? { nil }
     func drainAutomaticSyncEvents() async {}
 }

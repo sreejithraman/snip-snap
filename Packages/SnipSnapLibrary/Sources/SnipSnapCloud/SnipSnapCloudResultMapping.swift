@@ -1,5 +1,19 @@
 import SnipSnapCore
 
+package enum CloudAccountIsolationError: Error, Equatable, Sendable {
+  case signedOut
+  case accountChanged
+
+  var syncResult: SnipSnapCloudSyncResult {
+    self == .signedOut ? .iCloudSignedOut : .iCloudAccountChanged
+  }
+}
+
+func automaticSyncResult(for error: any Error) -> SnipSnapCloudSyncResult {
+  if let isolation = error as? CloudAccountIsolationError { return isolation.syncResult }
+  return .syncIssue(SnipSnapCloudSyncIssueMapper.issue(for: error))
+}
+
 func syncResult(for status: CloudCollectionStatus) -> SnipSnapCloudSyncResult {
   switch status {
   case .on:
@@ -10,19 +24,11 @@ func syncResult(for status: CloudCollectionStatus) -> SnipSnapCloudSyncResult {
     .oldSyncedContentRemovalPending
   case .deletedSyncedContent:
     .oldSyncedContentRemovalCompleted
-  case .enabled, .adoptedRemoteCollection, .purged:
+  case .enabled, .adoptedRemoteCollection:
     .libraryReplaced
-  case .encryptedDataResetRequiresChoice:
-    .encryptedDataResetRequiresChoice
-  case .syncKeptOff:
-    .syncKeptOff
+  case .purged:
+    .iCloudDataReset
   }
-}
-
-func resolutionOutcome(
-  for result: SnipSnapCloudSyncResult
-) -> EncryptedDataResetResolutionOutcome {
-  result == .encryptedDataResetRequiresChoice ? .requiresChoice : .resolved
 }
 
 func deleteOutcome(for status: CloudCollectionStatus) -> SyncedContentDeleteOutcome {

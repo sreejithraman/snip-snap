@@ -68,6 +68,7 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
     private var attachmentDescriptor: CloudCollectionDescriptor?
     private let productionConfiguration: ProductionConfiguration?
     private let syncAction: SyncAction?
+    private let retryAction: SyncAction?
     private let scheduleAction: ScheduleAction?
 
     package init(
@@ -75,6 +76,7 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         attachmentCoordinator: (any CloudAttachmentTransferring)? = nil,
         activeDescriptor: CloudCollectionDescriptor? = nil,
         syncWhenPossible: SyncAction? = nil,
+        retrySyncWhenPossible: SyncAction? = nil,
         scheduleSyncAfterLocalChange: ScheduleAction? = nil
     ) {
         self.coordinator = coordinator
@@ -84,6 +86,7 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         attachmentDescriptor = activeDescriptor
         productionConfiguration = nil
         syncAction = syncWhenPossible
+        retryAction = retrySyncWhenPossible
         scheduleAction = scheduleSyncAfterLocalChange
     }
 
@@ -107,6 +110,7 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
             )
         )
         syncAction = nil
+        retryAction = nil
         scheduleAction = nil
     }
 
@@ -115,6 +119,7 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         syncRootURL: URL,
         containerIdentifier: String,
         syncWhenPossible: @escaping SyncAction,
+        retrySyncWhenPossible: SyncAction? = nil,
         scheduleSyncAfterLocalChange: @escaping ScheduleAction = {}
     ) {
         let identifier = containerIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -131,6 +136,7 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
             backend: .cloudKit(containerIdentifier: identifier)
         )
         syncAction = syncWhenPossible
+        retryAction = retrySyncWhenPossible
         scheduleAction = scheduleSyncAfterLocalChange
     }
 
@@ -183,6 +189,14 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         } catch {
             // Launch and foreground work is best effort. Durable work remains queued.
         }
+    }
+
+    public func retrySyncWhenPossible() async {
+        if let retryAction {
+            await retryAction()
+            return
+        }
+        await syncWhenPossible()
     }
 
     public func scheduleSyncAfterLocalChange() async {

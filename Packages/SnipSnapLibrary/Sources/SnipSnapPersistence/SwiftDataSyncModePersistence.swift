@@ -693,6 +693,70 @@ package actor SwiftDataSyncModePersistence {
     }
   }
 
+  /// Replaces the active synced cache and queues its store for deletion.
+  package func discardActiveCloudCollection() async throws {
+    guard manifest.transition == nil,
+      manifest.writeReservation == nil,
+      !writeAdmissionInProgress,
+      let current = store(id: manifest.activeStoreID),
+      current.kind == .iCloudSync
+    else {
+      if store(id: manifest.activeStoreID)?.kind == .localOnly { return }
+      throw SyncModePersistenceError.transitionInProgress
+    }
+    let original = manifest
+    var candidate = Self.newStore(
+      kind: .localOnly,
+      namespace: nil,
+      syncProtocol: current.syncProtocol
+    )
+    var declared = manifest
+    declared.stores.append(candidate)
+    declared.attentionReason = nil
+    try commit(declared)
+    do {
+      let candidateRoot = storeURL(candidate)
+      _ = try SwiftDataSnipLibrary(
+        storeURL: candidateRoot.appendingPathComponent("snips.store", isDirectory: false)
+      )
+      try DurableFile.syncDirectory(candidateRoot)
+      try DurableFile.syncDirectory(candidateRoot.deletingLastPathComponent())
+      let currentLibrary = try libraryForTransition(storeID: current.id)
+      try await currentLibrary.markReadOnlyRecovery()
+      candidate.lifecycle = .ready
+      var activated = manifest
+      activated.stores[try storeIndex(id: candidate.id)] = candidate
+      activated.stores[try storeIndex(id: current.id)].lifecycle = .deleting
+      activated.activeStoreID = candidate.id
+      try commit(activated)
+      try? cleanupRetiredStores()
+    } catch {
+      if let currentLibrary = try? libraryForTransition(storeID: current.id) {
+        try? await currentLibrary.removeReadOnlyRecoveryMarker()
+      }
+      try commit(original)
+      try? FileManager.default.removeItem(at: storeURL(candidate))
+      throw error
+    }
+  }
+
+  /// Queues a prior synced cache for deletion without changing the active library.
+  package func discardInactiveCloudCollection(storeID: UUID) throws {
+    guard storeID != manifest.activeStoreID,
+      let index = manifest.stores.firstIndex(where: { $0.id == storeID })
+    else { return }
+    guard manifest.stores[index].kind == .iCloudSync,
+      manifest.transition?.sourceStoreID != storeID,
+      manifest.transition?.candidateStoreID != storeID,
+      manifest.accountIsolation?.storeID != storeID,
+      manifest.accountIsolation?.replacementStoreID != storeID
+    else { throw SyncModePersistenceError.transitionInProgress }
+    var deleting = manifest
+    deleting.stores[index].lifecycle = .deleting
+    try commit(deleting)
+    try? cleanupRetiredStores()
+  }
+
   func finishRecoveryQuarantines() async {
     for store in manifest.stores where store.lifecycle == .recovery {
       do {

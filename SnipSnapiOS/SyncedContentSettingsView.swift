@@ -4,6 +4,7 @@ import SwiftUI
 struct SyncedContentSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var model: SyncedContentSettingsModel
+    var retryAction: (@MainActor @Sendable () async -> Void)?
     @State private var confirmsDelete = false
     @State private var confirmsUsingDeviceCopy = false
 
@@ -19,6 +20,10 @@ struct SyncedContentSettingsView: View {
                     Text(model.detail)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                    if model.canRetryFailedSync, let retryAction {
+                        Button("Try Again") { Task { await retryAction() } }
+                            .accessibilityIdentifier("retry-icloud-sync")
+                    }
                 }
 
                 if case .enabling = model.state {
@@ -36,29 +41,6 @@ struct SyncedContentSettingsView: View {
                 } else if case .deleting = model.state {
                     Section {
                         ProgressView("Deleting synced content…")
-                    }
-                } else if case .resolvingEncryptedDataReset = model.state {
-                    Section {
-                        ProgressView("Starting a new synced collection…")
-                    }
-                } else if case .encryptedDataReset = model.state {
-                    Section("Choose What to Do") {
-                        Button("Restore from This Device") {
-                            Task {
-                                await model.resolveEncryptedDataReset(.restoreFromThisDevice)
-                            }
-                        }
-                        .accessibilityIdentifier("encrypted-reset-restore")
-
-                        Button("Start Empty") {
-                            Task { await model.resolveEncryptedDataReset(.startEmpty) }
-                        }
-                        .accessibilityIdentifier("encrypted-reset-start-empty")
-
-                        Button("Keep Sync Off") {
-                            Task { await model.resolveEncryptedDataReset(.keepSyncOff) }
-                        }
-                        .accessibilityIdentifier("encrypted-reset-keep-off")
                     }
                 } else if model.canDelete {
                     Section {
@@ -84,6 +66,7 @@ struct SyncedContentSettingsView: View {
                 }
             }
         }
+        .onAppear(perform: showUITestIssueIfNeeded)
         .alert("Delete Synced Content?", isPresented: $confirmsDelete) {
             Button("Cancel", role: .cancel) {}
             Button("Delete Synced Content", role: .destructive) {
@@ -102,9 +85,20 @@ struct SyncedContentSettingsView: View {
         }
     }
 
+    init(
+        model: SyncedContentSettingsModel,
+        retryAction: (@MainActor @Sendable () async -> Void)? = nil
+    ) {
+        self.model = model
+        self.retryAction = retryAction
+    }
+
     private var syncEnabled: Binding<Bool> {
         Binding(
-            get: { model.mode == .iCloudSync || model.state == .enabling },
+            get: {
+                if case .enabling = model.state { return true }
+                return model.mode == .iCloudSync
+            },
             set: { enabled in
                 Task {
                     if enabled {
@@ -120,6 +114,14 @@ struct SyncedContentSettingsView: View {
                 }
             }
         )
+    }
+
+    private func showUITestIssueIfNeeded() {
+#if DEBUG
+        if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_ISSUE"] == "app-data" {
+            model.recordSyncFailure(.appDataIssue)
+        }
+#endif
     }
 
     private var canChangeSync: Bool {

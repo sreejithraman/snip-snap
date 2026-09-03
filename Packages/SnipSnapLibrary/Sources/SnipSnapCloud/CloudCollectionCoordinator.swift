@@ -102,21 +102,15 @@ package struct CloudEncryptedDataReset: Codable, Equatable, Sendable {
   package let id: UUID
   package let priorNamespace: CloudSyncNamespace
   package let recoveryStoreID: UUID?
-  package var choice: EncryptedDataResetChoice?
-  package var proposal: CloudCollectionDescriptor?
 
   package init(
     id: UUID = UUID(),
     priorNamespace: CloudSyncNamespace,
-    recoveryStoreID: UUID? = nil,
-    choice: EncryptedDataResetChoice? = nil,
-    proposal: CloudCollectionDescriptor? = nil
+    recoveryStoreID: UUID? = nil
   ) {
     self.id = id
     self.priorNamespace = priorNamespace
     self.recoveryStoreID = recoveryStoreID
-    self.choice = choice
-    self.proposal = proposal
   }
 }
 
@@ -151,39 +145,30 @@ package protocol CloudCollectionLocalStore: Sendable {
   func markDeletionPending() async throws
   func markDeletionCompleted() async throws
   func beginEncryptedDataReset(from namespace: CloudSyncNamespace) async throws
-  func restartEncryptedDataReset(from namespace: CloudSyncNamespace) async throws
-  func prepareEncryptedDataResetEnable() async throws
-  func chooseEncryptedDataReset(
-    _ choice: EncryptedDataResetChoice,
-    proposal: CloudCollectionDescriptor?
-  ) async throws
-  func activateResetCollection(
-    _ namespace: CloudSyncNamespace,
-    recoveryStoreID: UUID?,
-    seedRecovery: Bool,
-    resetID: UUID
-  ) async throws
-  func finishEncryptedDataReset() async throws
 }
 
 package enum CloudCollectionFetchResult: Equatable, Sendable {
   case fetched
   case encryptedDataReset
+  case purged
 }
 
 package enum CloudCollectionSendResult: Equatable, Sendable {
   case sent
   case encryptedDataReset
+  case purged
 }
 
 package protocol CloudCollectionSyncDriver: Sendable {
   func prepareAutomaticSync(_ context: CloudCollectionSyncContext) async throws
+  func prepareManualRetry(_ context: CloudCollectionSyncContext) async throws
   func fetch(_ context: CloudCollectionSyncContext) async throws -> CloudCollectionFetchResult
   func send(_ context: CloudCollectionSyncContext) async throws -> CloudCollectionSendResult
 }
 
 package extension CloudCollectionSyncDriver {
   func prepareAutomaticSync(_ context: CloudCollectionSyncContext) async throws {}
+  func prepareManualRetry(_ context: CloudCollectionSyncContext) async throws {}
 }
 
 package enum CloudCollectionStatus: Equatable, Sendable {
@@ -194,8 +179,6 @@ package enum CloudCollectionStatus: Equatable, Sendable {
   case oldSyncedContentRemovalPending(CloudSyncNamespace)
   case purged
   case requiresEnable
-  case encryptedDataResetRequiresChoice
-  case syncKeptOff
 }
 
 package enum CloudCollectionError: LocalizedError, Equatable, Sendable {
@@ -203,7 +186,6 @@ package enum CloudCollectionError: LocalizedError, Equatable, Sendable {
   case invalidDescriptor
   case operationInProgress
   case syncNeedsAttention
-  case encryptedDataResetRequiresChoice
 
   package var errorDescription: String? {
     switch self {
@@ -215,8 +197,6 @@ package enum CloudCollectionError: LocalizedError, Equatable, Sendable {
       String(localized: "Another iCloud Sync task is still running.", bundle: .main)
     case .syncNeedsAttention:
       String(localized: "iCloud Sync needs attention before setup can finish.", bundle: .main)
-    case .encryptedDataResetRequiresChoice:
-      String(localized: "Choose how to handle the iCloud encrypted-data reset before turning sync on.", bundle: .main)
     }
   }
 }
@@ -408,19 +388,28 @@ package actor CloudCollectionCoordinator {
 
   /// Fetches the control record before work and again immediately before the only send.
   package func synchronize() async throws -> CloudCollectionStatus {
+    try await synchronize(retryingUserRecoverableFailures: false)
+  }
+
+  /// Retries failures that need a clear user action before another CloudKit request.
+  package func retrySynchronization() async throws -> CloudCollectionStatus {
+    try await synchronize(retryingUserRecoverableFailures: true)
+  }
+
+  private func synchronize(
+    retryingUserRecoverableFailures: Bool
+  ) async throws -> CloudCollectionStatus {
     try beginOperation()
     defer { finishOperation() }
     let local = try await localStore.state()
-    if local.encryptedDataReset?.choice == .keepSyncOff {
-      return .syncKeptOff
+    if local.encryptedDataReset != nil {
+      try await localStore.markPurged()
+      return .purged
     }
     guard let control = try await transport.fetchControl() else {
-      if local.encryptedDataReset != nil {
-        return .encryptedDataResetRequiresChoice
-      }
-      if let active = local.activeNamespace {
-        try await localStore.beginEncryptedDataReset(from: active)
-        return .encryptedDataResetRequiresChoice
+      if local.activeNamespace != nil || local.encryptedDataReset != nil {
+        try await localStore.markPurged()
+        return .purged
       }
       return .requiresEnable
     }
@@ -429,22 +418,6 @@ package actor CloudCollectionCoordinator {
       cloudScope: cloudScope,
       accountLineage: accountLineage
     )
-    if let reset = local.encryptedDataReset {
-      if remoteNamespace == reset.priorNamespace {
-        return .encryptedDataResetRequiresChoice
-      }
-      if reset.proposal == control.descriptor,
-        let choice = reset.choice,
-        choice != .keepSyncOff
-      {
-        return try await completeOwnedReset(
-          reset,
-          choice: choice,
-          descriptor: control.descriptor
-        )
-      }
-      return try await adoptResetWinner(control.descriptor)
-    }
     try await localStore.finishCleanup(control.descriptor.zones)
     do {
       try await cleanPendingZones(protecting: control.descriptor.zones)
@@ -461,9 +434,13 @@ package actor CloudCollectionCoordinator {
       }
       try await localStore.adopt(remoteNamespace)
       let result = try await syncDriver.fetch(context(control.descriptor))
+      if result == .purged {
+        try await localStore.markPurged()
+        return .purged
+      }
       if result == .encryptedDataReset {
-        try await localStore.beginEncryptedDataReset(from: remoteNamespace)
-        return .encryptedDataResetRequiresChoice
+        try await localStore.markPurged()
+        return .purged
       }
       do {
         try await cleanPendingZones(protecting: control.descriptor.zones)
@@ -480,14 +457,22 @@ package actor CloudCollectionCoordinator {
       )
     }
 
+    if retryingUserRecoverableFailures {
+      try await syncDriver.prepareManualRetry(context(control.descriptor))
+    }
+
     let fetchResult = try await syncDriver.fetch(context(control.descriptor))
+    if fetchResult == .purged {
+      try await localStore.markPurged()
+      return .purged
+    }
     if fetchResult == .encryptedDataReset {
-      try await localStore.beginEncryptedDataReset(from: remoteNamespace)
-      return .encryptedDataResetRequiresChoice
+      try await localStore.markPurged()
+      return .purged
     }
     guard let checked = try await transport.fetchControl() else {
-      try await localStore.beginEncryptedDataReset(from: remoteNamespace)
-      return .encryptedDataResetRequiresChoice
+      try await localStore.markPurged()
+      return .purged
     }
     try validate(checked.descriptor)
     try await localStore.finishCleanup(checked.descriptor.zones)
@@ -501,9 +486,13 @@ package actor CloudCollectionCoordinator {
       )
       try await localStore.adopt(checkedNamespace)
       let result = try await syncDriver.fetch(context(checked.descriptor))
+      if result == .purged {
+        try await localStore.markPurged()
+        return .purged
+      }
       if result == .encryptedDataReset {
-        try await localStore.beginEncryptedDataReset(from: checkedNamespace)
-        return .encryptedDataResetRequiresChoice
+        try await localStore.markPurged()
+        return .purged
       }
       do {
         try await cleanPendingZones(protecting: checked.descriptor.zones)
@@ -521,9 +510,13 @@ package actor CloudCollectionCoordinator {
       )
     }
     let sendResult = try await syncDriver.send(context(checked.descriptor))
+    if sendResult == .purged {
+      try await localStore.markPurged()
+      return .purged
+    }
     if sendResult == .encryptedDataReset {
-      try await localStore.beginEncryptedDataReset(from: checkedNamespace)
-      return .encryptedDataResetRequiresChoice
+      try await localStore.markPurged()
+      return .purged
     }
     let state = try await localStore.state()
     return try await deletionStatusIfNeeded(
@@ -533,67 +526,12 @@ package actor CloudCollectionCoordinator {
     )
   }
 
-  package func resolveEncryptedDataReset(
-    _ choice: EncryptedDataResetChoice
-  ) async throws -> CloudCollectionStatus {
-    try beginOperation()
-    defer { finishOperation() }
-    return try await resolveEncryptedDataResetWithoutGate(choice)
-  }
-
-  private func resolveEncryptedDataResetWithoutGate(
-    _ choice: EncryptedDataResetChoice
-  ) async throws -> CloudCollectionStatus {
-    guard var reset = try await localStore.state().encryptedDataReset else {
-      throw CloudCollectionError.noActiveCollection
-    }
-    if choice == .keepSyncOff {
-      try await localStore.chooseEncryptedDataReset(choice, proposal: nil)
-      return .syncKeptOff
-    }
-    let current = try await transport.fetchControl()
-    if let current {
-      try validate(current.descriptor)
-      let currentNamespace = current.descriptor.namespace(
-        cloudScope: cloudScope,
-        accountLineage: accountLineage
-      )
-      if let proposal = reset.proposal, current.descriptor == proposal {
-        return try await completeOwnedReset(reset, choice: choice, descriptor: proposal)
-      }
-      if currentNamespace != reset.priorNamespace {
-        return try await adoptResetWinner(current.descriptor)
-      }
-    }
-
-    let proposal = reset.proposal ?? makeDescriptor()
-    try validate(proposal)
-    try await localStore.chooseEncryptedDataReset(choice, proposal: proposal)
-    reset = try await localStore.state().encryptedDataReset ?? reset
-
-    try await localStore.stageCleanup(proposal.zones)
-    try await transport.createZones(proposal.zones)
-    let saved = try await transport.saveControl(proposal, replacing: current?.version)
-    switch saved {
-    case .accepted(let accepted):
-      try validate(accepted.descriptor)
-      return try await completeOwnedReset(reset, choice: choice, descriptor: accepted.descriptor)
-    case .conflict(let winner):
-      try validate(winner.descriptor)
-      if winner.descriptor == proposal {
-        return try await completeOwnedReset(reset, choice: choice, descriptor: proposal)
-      }
-      return try await adoptResetWinner(winner.descriptor)
-    }
-  }
-
   /// Explicit user intent is required before a missing control record may be recreated.
   package func enableSync() async throws -> CloudCollectionStatus {
     try beginOperation()
     defer { finishOperation() }
-    if try await localStore.state().encryptedDataReset?.choice == .keepSyncOff {
-      try await localStore.prepareEncryptedDataResetEnable()
-      return try await resolveEncryptedDataResetWithoutGate(.restoreFromThisDevice)
+    if try await localStore.state().encryptedDataReset != nil {
+      try await localStore.markPurged()
     }
     if let current = try await transport.fetchControl() {
       try validate(current.descriptor)
@@ -607,9 +545,13 @@ package actor CloudCollectionCoordinator {
         try await localStore.adopt(namespace)
       }
       let result = try await syncDriver.fetch(context(current.descriptor))
+      if result == .purged {
+        try await localStore.markPurged()
+        return .purged
+      }
       if result == .encryptedDataReset {
-        try await localStore.beginEncryptedDataReset(from: namespace)
-        return .encryptedDataResetRequiresChoice
+        try await localStore.markPurged()
+        return .purged
       }
       return .enabled(namespace)
     }
@@ -629,9 +571,13 @@ package actor CloudCollectionCoordinator {
       try await localStore.adopt(namespace)
       try await localStore.finishCleanup(accepted.descriptor.zones)
       let fetchResult = try await syncDriver.fetch(context(accepted.descriptor))
+      if fetchResult == .purged {
+        try await localStore.markPurged()
+        return .purged
+      }
       if fetchResult == .encryptedDataReset {
-        try await localStore.beginEncryptedDataReset(from: namespace)
-        return .encryptedDataResetRequiresChoice
+        try await localStore.markPurged()
+        return .purged
       }
       try await cleanPendingZones(protecting: accepted.descriptor.zones)
       return .enabled(namespace)
@@ -643,9 +589,13 @@ package actor CloudCollectionCoordinator {
       )
       try await localStore.adopt(namespace)
       let fetchResult = try await syncDriver.fetch(context(winning.descriptor))
+      if fetchResult == .purged {
+        try await localStore.markPurged()
+        return .purged
+      }
       if fetchResult == .encryptedDataReset {
-        try await localStore.beginEncryptedDataReset(from: namespace)
-        return .encryptedDataResetRequiresChoice
+        try await localStore.markPurged()
+        return .purged
       }
       try await cleanPendingZones(protecting: winning.descriptor.zones)
       return .enabled(namespace)
@@ -662,57 +612,6 @@ package actor CloudCollectionCoordinator {
 
   private func fetchWhenPossible(_ descriptor: CloudCollectionDescriptor) async {
     _ = try? await syncDriver.fetch(context(descriptor))
-  }
-
-  private func completeOwnedReset(
-    _ reset: CloudEncryptedDataReset,
-    choice: EncryptedDataResetChoice,
-    descriptor: CloudCollectionDescriptor
-  ) async throws -> CloudCollectionStatus {
-    let namespace = descriptor.namespace(cloudScope: cloudScope, accountLineage: accountLineage)
-    try await localStore.activateResetCollection(
-      namespace,
-      recoveryStoreID: reset.recoveryStoreID,
-      seedRecovery: choice == .restoreFromThisDevice,
-      resetID: reset.id
-    )
-    try await localStore.finishCleanup(descriptor.zones)
-    let result = try await syncDriver.fetch(context(descriptor))
-    if result == .encryptedDataReset {
-      try await localStore.restartEncryptedDataReset(from: namespace)
-      return .encryptedDataResetRequiresChoice
-    }
-    guard let checked = try await transport.fetchControl() else {
-      try await localStore.restartEncryptedDataReset(from: namespace)
-      return .encryptedDataResetRequiresChoice
-    }
-    try validate(checked.descriptor)
-    guard checked.descriptor == descriptor else {
-      return try await adoptResetWinner(checked.descriptor)
-    }
-    if choice == .restoreFromThisDevice {
-      let sendResult = try await syncDriver.send(context(descriptor))
-      if sendResult == .encryptedDataReset {
-        try await localStore.restartEncryptedDataReset(from: namespace)
-        return .encryptedDataResetRequiresChoice
-      }
-    }
-    try await localStore.finishEncryptedDataReset()
-    return .enabled(namespace)
-  }
-
-  private func adoptResetWinner(
-    _ descriptor: CloudCollectionDescriptor
-  ) async throws -> CloudCollectionStatus {
-    let namespace = descriptor.namespace(cloudScope: cloudScope, accountLineage: accountLineage)
-    try await localStore.adopt(namespace)
-    let result = try await syncDriver.fetch(context(descriptor))
-    if result == .encryptedDataReset {
-      try await localStore.restartEncryptedDataReset(from: namespace)
-      return .encryptedDataResetRequiresChoice
-    }
-    try await localStore.finishEncryptedDataReset()
-    return .adoptedRemoteCollection(namespace)
   }
 
   private func deleteZonesWhenPossible(_ zones: Set<CloudZoneID>) async -> Bool {

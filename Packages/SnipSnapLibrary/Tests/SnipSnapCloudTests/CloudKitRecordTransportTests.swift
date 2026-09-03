@@ -5,6 +5,39 @@ import SnipSnapPersistence
 import XCTest
 
 final class CloudKitRecordTransportTests: XCTestCase {
+    func testAutomaticProviderKeepsEveryRetryableRecordBody() {
+        let zone = CloudZoneID(name: "metadata", ownerName: "owner")
+        let retryableFailures: [CloudOperationFailure] = [
+            .networkUnavailable,
+            .iCloudUnavailable,
+            .rateLimited,
+            .authenticationRequired,
+            .accountTemporarilyUnavailable,
+            .retryable,
+            .attachmentUnavailable,
+            .changeTokenExpired,
+        ]
+        let retryableIDs = retryableFailures.enumerated().map { index, failure in
+            (
+                CloudRecordID(zone: zone, name: "retry-\(index)"),
+                failure
+            )
+        }
+        let terminalID = CloudRecordID(zone: zone, name: "terminal")
+        let batch = CloudSentBatch(
+            id: UUID(),
+            items: retryableIDs.map { .failed($0.0, $0.1) } + [
+                .failed(terminalID, .accessDenied),
+            ],
+            engineState: nil
+        )
+
+        XCTAssertEqual(
+            CloudKitRecordTransport.retryingRecordIDs(in: batch),
+            Set(retryableIDs.map(\.0))
+        )
+    }
+
     func testOperationCancellationKeepsRecordWorkRetryable() {
         let cancellation = CKError(_nsError: NSError(
             domain: CKErrorDomain,

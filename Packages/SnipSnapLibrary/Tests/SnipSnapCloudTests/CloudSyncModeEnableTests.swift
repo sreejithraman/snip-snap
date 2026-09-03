@@ -114,6 +114,7 @@ extension ICloudSyncModeCoordinatorTests {
         let offlineStorage = try await persistence.snapshot()
         let localTexts = await local.snapshot(sortedBy: .chronological).snips.map(\.content)
         XCTAssertEqual(offlineResult.state, .settingUp)
+        XCTAssertEqual(offlineResult.syncIssue, .someChangesPending)
         XCTAssertEqual(offlineStorage.activeStore.id, originalID)
         XCTAssertEqual(localTexts, ["kept local"])
 

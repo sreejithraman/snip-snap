@@ -205,6 +205,58 @@ extension SwiftDataSnipLibrary {
     )
   }
 
+  package func quarantineCorruptCloudEntities(
+    namespaceKey: CloudSyncNamespaceKey,
+    values: [CloudAcceptedEntity]
+  ) throws {
+    guard !values.isEmpty else { return }
+    let namespaceKey = namespaceKey.rawValue
+    guard let container else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    for value in values {
+      let id = StoredCloudEntityRecord.domainKey(
+        namespaceKey: namespaceKey,
+        reference: value.reference
+      )
+      let records = try context.fetch(FetchDescriptor<StoredCloudEntityRecord>(
+        predicate: #Predicate { $0.id == id }
+      ))
+      guard let record = records.first,
+        record.identity == value.identity,
+        record.shadowData == value.shadowData
+      else { throw CloudFullStorageError.staleAcceptedEntity }
+      let shadowDigest = SHA256.hash(data: value.shadowData).prefix(8)
+        .map { String(format: "%02x", $0) }
+        .joined()
+      let key = "corrupt-shadow-\(value.reference.kind.rawValue)-\(value.reference.domainID.uuidString.lowercased())-\(shadowDigest)"
+      try Self.insertQuarantineIfNeeded(
+        CloudQuarantineInput(
+          key: key,
+          reference: value.reference,
+          identity: value.identity,
+          payload: value.shadowData
+        ),
+        namespaceKey: namespaceKey,
+        context: context
+      )
+      context.delete(record)
+      let pendingID = StoredCloudPendingDelete.domainKey(
+        namespaceKey: namespaceKey,
+        reference: value.reference
+      )
+      let pendingDeletes = try context.fetch(FetchDescriptor<StoredCloudPendingDelete>(
+        predicate: #Predicate { $0.id == pendingID }
+      ))
+      for pending in pendingDeletes {
+        context.delete(pending)
+      }
+    }
+    try afterMutationBeforeSave()
+    try context.save()
+  }
+
   package func stageCloudPendingDeletes(
     namespaceKey: CloudSyncNamespaceKey,
     values: [CloudPendingDelete]

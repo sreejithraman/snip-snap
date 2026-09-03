@@ -44,6 +44,10 @@ _Avoid_: Mark Done, Mark Not Done, Complete, Incomplete
 A random identity for one version of the user's synced collection. Devices must match it before they may upload.
 _Avoid_: Schema version, account ID
 
+**iCloud data reset**:
+A CloudKit notice that synced data was purged or its encrypted data was reset. A device must drop that sync cache and must not upload it again.
+_Avoid_: Recovery choice, sync conflict
+
 **Marketing version**:
 The public three-part app version, such as `0.5.0`. It names one planned stable release across iOS and Mac.
 _Avoid_: Release number, short version

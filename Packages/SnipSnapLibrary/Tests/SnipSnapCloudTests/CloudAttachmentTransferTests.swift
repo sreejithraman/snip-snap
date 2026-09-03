@@ -191,6 +191,18 @@ final class CloudAttachmentTransferTests: XCTestCase {
       fetchScope: .zones([dataZone])
     )
     try await resumed.sync()
+    let automaticRetryCount = await server.acceptedOperationCount(
+      for: CloudAttachmentRecordCodec.recordID(queuedPublication.metadata.payloadIdentity)
+    )
+    let automaticallyRetried = try await snapshot(reopened, namespace)
+    XCTAssertEqual(automaticRetryCount, 0)
+    XCTAssertEqual(
+      automaticallyRetried.publications.first?.transferState,
+      .failed(.quotaExceeded)
+    )
+
+    try await resumedStore.prepareManualRetry()
+    try await resumed.sync()
     try await resumed.sync()
 
     let settled = try await snapshot(reopened, namespace)
@@ -715,6 +727,90 @@ final class CloudAttachmentTransferTests: XCTestCase {
     XCTAssertTrue(try XCTUnwrap(after.publications.first(where: {
       $0.metadata.attachmentID == successful.metadata.attachmentID
     })).metadataAccepted)
+    let automaticResult = try await CloudFullRecordCollectionSyncDriver.automaticSentResult(
+      store: store
+    )
+    XCTAssertEqual(automaticResult, .noChange)
+    let unresolvedIssue = try await store.unresolvedSyncIssue()
+    XCTAssertEqual(unresolvedIssue, .appDataIssue)
+  }
+
+  func testTerminalAttachmentIssueKeepsExactPriorityAfterReopen() async throws {
+    let cases: [(CloudOperationFailure, SyncedContentSyncIssue)] = [
+      (.quotaExceeded, .iCloudStorageFull),
+      (.updateRequired, .updateRequired),
+      (.accessDenied, .accessDenied),
+      (.attachmentMissing, .attachmentMissing),
+      (.rejected, .appDataIssue),
+    ]
+    for (failure, expectedIssue) in cases {
+      let fixture = try await makePendingAttachmentFixture(names: ["terminal", "retryable"])
+      defer { try? FileManager.default.removeItem(at: fixture.root) }
+      let publications = try await snapshot(fixture.library, fixture.namespace).publications.sorted {
+        $0.metadata.fileName < $1.metadata.fileName
+      }
+      let retryable = try XCTUnwrap(publications.first)
+      let terminal = try XCTUnwrap(publications.last)
+      let server = FakeCloudServer()
+      let transport = FakeCloudRecordTransport(server: server, namespace: fixture.namespace)
+      await transport.failNextSentItem(
+        CloudAttachmentRecordCodec.recordID(retryable.metadata.payloadIdentity),
+        failure: .retryable
+      )
+      await transport.failNextSentItem(
+        CloudAttachmentRecordCodec.recordID(terminal.metadata.payloadIdentity),
+        failure: failure
+      )
+      let sync = CloudFullSyncCoordinator(
+        store: fixture.store,
+        transport: transport,
+        fetchScope: .zones([CloudZoneID(name: "data", ownerName: "owner")])
+      )
+
+      try await sync.sendPending()
+
+      let mixedIssue = try await fixture.store.unresolvedSyncIssue()
+      XCTAssertEqual(mixedIssue, expectedIssue, "Wrong mixed-failure priority for \(failure)")
+      let reopenedLibrary = try SwiftDataSnipLibrary(
+        storeURL: fixture.root.appendingPathComponent("store")
+      )
+      let reopenedStore = CloudFullSyncPersistence(
+        library: reopenedLibrary,
+        namespace: fixture.namespace,
+        dataZone: CloudZoneID(name: "data", ownerName: "owner"),
+        payloadZone: CloudZoneID(name: "payload", ownerName: "owner")
+      )
+      _ = try await reopenedStore.clearRetryableRecoveryEvents(kind: .retryableSend)
+      let reopenedIssue = try await reopenedStore.unresolvedSyncIssue()
+      XCTAssertEqual(reopenedIssue, expectedIssue, "Lost issue after reopen for \(failure)")
+      let retryableID = CloudAttachmentRecordCodec.recordID(
+        retryable.metadata.payloadIdentity
+      )
+      let terminalID = CloudAttachmentRecordCodec.recordID(
+        terminal.metadata.payloadIdentity
+      )
+      let pending = try await reopenedStore.pendingChanges()
+      let plannedAttachmentIDs = Set(pending.operations.map(\.id))
+        .intersection([retryableID, terminalID])
+      XCTAssertEqual(
+        plannedAttachmentIDs,
+        [retryableID],
+        "Retried a terminal attachment failure for \(failure)"
+      )
+      try await reopenedStore.prepareManualRetry()
+      let manualPending = try await reopenedStore.pendingChanges()
+      let manualAttachmentIDs = Set(manualPending.operations.map(\.id))
+        .intersection([retryableID, terminalID])
+      let expectedManualIDs: Set<CloudRecordID> = switch failure {
+      case .updateRequired, .accessDenied: [retryableID]
+      default: [retryableID, terminalID]
+      }
+      XCTAssertEqual(
+        manualAttachmentIDs,
+        expectedManualIDs,
+        "Manual retry policy was wrong for \(failure)"
+      )
+    }
   }
 
   func testPendingPayloadDoesNotDelayAnotherAttachmentMetadata() async throws {
@@ -2072,7 +2168,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     XCTAssertEqual(unsupported.first?.reason, .snipTotalTooLarge(maximumBytes: 100))
   }
 
-  func testActiveSyncRefusesOversizeSnipBeforeAnyAttachmentSend() async throws {
+  func testActiveSyncQuarantinesOversizeAttachmentsWithoutBlockingOtherRecords() async throws {
     let root = temporaryDirectory()
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -2120,12 +2216,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
       fetchScope: .zones([dataZone])
     )
 
-    do {
-      try await sync.sync()
-      XCTFail("Expected the public attachment limit to stop the send")
-    } catch let CloudAttachmentSetupError.unsupportedFiles(files) {
-      XCTAssertEqual(files.map(\.fileName), ["first.bin", "second.bin"])
-    }
+    try await sync.sync()
 
     let storage = try await snapshot(library, namespace)
     XCTAssertEqual(storage.publications.count, 2)
@@ -2138,7 +2229,12 @@ final class CloudAttachmentTransferTests: XCTestCase {
       )
       XCTAssertEqual(payloadSendCount, 0)
       XCTAssertEqual(metadataSendCount, 0)
+      XCTAssertEqual(publication.lastFailure, .invalidRecord)
     }
+    let snipSendCount = await server.acceptedOperationCount(
+      for: .snip(snipID, in: dataZone)
+    )
+    XCTAssertEqual(snipSendCount, 1)
     XCTAssertEqual(added.snapshot.snips.first?.attachments.count, 2)
   }
 

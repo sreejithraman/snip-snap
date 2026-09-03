@@ -140,25 +140,33 @@ final class FakeCloudRecordTransportTests: XCTestCase {
         )
     }
 
-    func testFetchKeepsSuccessfulItemsFailuresAndZoneDeletionTogether() async throws {
+    func testFetchKeepsOtherSuccessfulItemsFailuresAndZoneDeletionTogether() async throws {
         let server = FakeCloudServer()
         let writer = FakeCloudRecordTransport(server: server)
         let reader = FakeCloudRecordTransport(server: server)
         let zone = CloudZoneID(name: "metadata", ownerName: "owner")
         let id = CloudRecordID(zone: zone, name: "partial-fetch")
+        let successfulID = CloudRecordID(zone: zone, name: "partial-fetch-success")
         let draft = CloudRecordDraft.text(
             id: id,
             snipID: UUID(uuidString: "56565656-5656-5656-5656-565656565656")!,
             text: "keep success"
         )
-        let sent = try await writer.send(CloudOutboundBatch(operations: [.save(draft)]))
+        let successfulDraft = CloudRecordDraft.text(
+            id: successfulID,
+            snipID: UUID(uuidString: "57575757-5757-5757-5757-575757575757")!,
+            text: "other success"
+        )
+        let sent = try await writer.send(CloudOutboundBatch(
+            operations: [.save(draft), .save(successfulDraft)]
+        ))
         try await writer.confirmApplied(sent.id)
         await server.emitZoneDeletion(zone, reason: .encryptedDataReset)
         await reader.failNextFetchedItem(id, failure: .retryable)
 
         let batch = try await reader.fetch(scope: .all)
 
-        XCTAssertEqual(batch.recordSnapshots.map(\.id), [id])
+        XCTAssertEqual(batch.recordSnapshots.map(\.id), [successfulID])
         XCTAssertTrue(
             batch.items.contains {
                 guard case .failed(let failedID, .retryable) = $0 else { return false }

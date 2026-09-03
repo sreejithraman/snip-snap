@@ -13,6 +13,7 @@ package struct CloudTextEnrollmentEvidence: Equatable, Sendable {
     package let hasRetryableRecordFailures: Bool
     package let retryableEventKeys: Set<String>
     package let needsAttention: Bool
+    package let blocksSending: Bool
 }
 
 package enum CloudSyncRetryableError: Error, Equatable, Sendable {
@@ -52,7 +53,12 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
     package func loadEngineState() async throws -> CloudEngineStateEnvelope? {
         let snapshot = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
         guard let data = snapshot.engineState else { return nil }
-        let envelope = try JSONDecoder().decode(CloudEngineStateEnvelope.self, from: data)
+        let envelope: CloudEngineStateEnvelope
+        do {
+            envelope = try JSONDecoder().decode(CloudEngineStateEnvelope.self, from: data)
+        } catch {
+            throw CloudTransportError.invalidEngineState
+        }
         guard envelope.namespace == namespace else {
             throw CloudTransportError.stateNamespaceMismatch
         }
@@ -325,7 +331,8 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
             retryableEventKeys: retryableEventKeys,
             needsAttention: snapshot.namespaceState.phase == .blocked
                 || hasTerminalRecordFailure
-                || hasTerminalEvent
+                || hasTerminalEvent,
+            blocksSending: snapshot.namespaceState.phase == .blocked
         )
     }
 

@@ -57,12 +57,10 @@ These notes record the accepted product direction and the facts that support it.
 - On a generation mismatch, remove old pending cloud work, isolate or clear the old cache, start new engine state, and fetch the new collection before allowing sends.
 - If a device that has synced before finds no control record, treat it as an iCloud Settings purge. Do not restore its old cache to iCloud automatically.
 - Let a first-time device create a generation only after the user enables sync. After a purge, require the user to enable sync again before creating an empty generation.
-- Treat an iCloud encrypted-data reset as a new cloud collection. Stop sends as soon as the app receives a reset signal.
-- Preserve durable data from the old cloud cache as a read-only local recovery copy. Clear its pending CloudKit work, sync shadow, downloaded-file cache, and old engine state.
-- Offer Restore from This Device, Start Empty, and Keep Sync Off. Let only the chosen device seed the new generation.
-- Require other devices to fetch the new generation before sending. Keep their old recovery copies local until the user exports, imports, or deletes them.
-- Send a later recovery import through the normal preview, merge, and conflict-review path. Never combine every device's old cache automatically.
-- Do not depend on Apple resolving its conflicting encrypted-data-reset guidance. Snip Snap's explicit user choice is safe under either documented behavior.
+- Treat an iCloud encrypted-data reset as deleted cloud data. Stop sends, clear the old sync cache, and do not resend it.
+- Delete the old local store. Do not offer to restore it or keep it as a recovery copy.
+- Keep backup import separate from sync reset recovery. A later import must start with a backup that the user owns and picks.
+- Follow the current `CKSyncEngine` contract for both purge and encrypted-data reset: clear cached data and do not resend it.
 - A failed mode change must leave the prior store active and usable.
 - The sync choice is local to each device and must not itself sync.
 - When local and iCloud records differ, merge unrelated records by stable ID.
@@ -210,7 +208,7 @@ Full findings: [Optional iCloud sync policy research](icloud-sync-policy-researc
 
 Sources: [CloudKit encrypted values](https://developer.apple.com/documentation/cloudkit/encrypting-user-data), [private CloudKit database](https://developer.apple.com/documentation/cloudkit/ckcontainer/privateclouddatabase), and [iCloud data security](https://support.apple.com/en-us/102651).
 
-Apple's current documentation gives conflicting advice about whether a `CKSyncEngine` client should resend cached data after an encrypted-data reset. Snip Snap therefore uses an explicit recovery choice rather than an automatic resend. This rule does not need Apple to resolve the conflict. Sources: [encrypted-data reset](https://developer.apple.com/documentation/cloudkit/ckdatabase/databasechange/deletion/reason-swift.enum/encrypteddatareset) and [`CKSyncEngine` zone deletion reason](https://developer.apple.com/documentation/cloudkit/cksyncenginezonedeletionreason/encrypteddatareset).
+Snip Snap follows the current `CKSyncEngine` rule for purge and encrypted-data reset: it clears cached data and does not resend it. A later backup import is a separate user action. Sources: [encrypted-data reset](https://developer.apple.com/documentation/cloudkit/ckdatabase/databasechange/deletion/reason-swift.enum/encrypteddatareset) and [`CKSyncEngine` zone deletion reason](https://developer.apple.com/documentation/cloudkit/cksyncenginezonedeletionreason/encrypteddatareset).
 
 ## Open decisions
 

@@ -5,12 +5,17 @@ import SnipSnapPersistence
 
 protocol IOSCloudSyncSessionHandling: Sendable {
     func synchronize() async throws -> SnipSnapCloudSyncResult
+    func retrySynchronization() async throws -> SnipSnapCloudSyncResult
     func scheduleAutomaticSync() async
     func iosActiveLibrary() async throws -> (library: any SnipLibrary, recoveryScope: SnipRecoveryScope?)
     var automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> { get }
 }
 
 extension IOSCloudSyncSessionHandling {
+    func retrySynchronization() async throws -> SnipSnapCloudSyncResult {
+        try await synchronize()
+    }
+
     func scheduleAutomaticSync() async {}
 
     var automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> {
@@ -127,7 +132,6 @@ final class IOSAppSession {
             syncedContentSettings.setEnableCompletionAction(reloadActiveLibrary)
             syncedContentSettings.setDisableCompletionAction(reloadActiveLibrary)
             syncedContentSettings.setDeleteCompletionAction(reloadActiveLibrary)
-            syncedContentSettings.setEncryptedDataResetCompletionAction(reloadActiveLibrary)
         }
         cloudLifecycleHooks = SnipSnapCloudLifecycleHooks {
             try? await Self.synchronizeCloudSessionOrThrow(
@@ -179,6 +183,15 @@ final class IOSAppSession {
         )
     }
 
+    func retrySyncWhenPossible() async {
+        try? await Self.synchronizeCloudSessionOrThrow(
+            cloudSyncSession,
+            model: model,
+            settings: syncedContentSettings,
+            retryingUserRecoverableFailures: true
+        )
+    }
+
     func scheduleSyncAfterLocalChange() async {
         await cloudSyncSession?.scheduleAutomaticSync()
     }
@@ -187,7 +200,10 @@ final class IOSAppSession {
         switch result {
         case .contentUpdated:
             await model.load()
-        case .encryptedDataResetRequiresChoice:
+        case .syncCompleted:
+            await model.load()
+            syncedContentSettings.recordOutstandingSyncRecovered()
+        case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
             if let cloudSyncSession,
                let active = try? await cloudSyncSession.iosActiveLibrary()
             {
@@ -196,49 +212,81 @@ final class IOSAppSession {
                     recoveryScope: active.recoveryScope
                 )
             }
-            syncedContentSettings.recordEncryptedDataReset()
+            let issue: SyncedContentSyncIssue
+            switch result {
+            case .iCloudDataReset:
+                issue = .iCloudDataReset
+            case .iCloudSignedOut:
+                issue = .signInRequired
+            default:
+                issue = .iCloudAccountChanged
+            }
+            syncedContentSettings.recordSyncStopped(issue)
+        case .syncIssue(let issue):
+            syncedContentSettings.recordSyncFailure(issue)
+            return
         default:
             break
         }
-        syncedContentSettings.recordSyncCompleted()
     }
 
     private static func synchronizeCloudSessionOrThrow(
         _ session: (any IOSCloudSyncSessionHandling)?,
         model: IOSAppModel,
-        settings: SyncedContentSettingsModel
+        settings: SyncedContentSettingsModel,
+        retryingUserRecoverableFailures: Bool = false
     ) async throws {
         guard let session else { return }
         settings.recordSyncStarted()
         do {
-            let result = try await session.synchronize()
+            let result: SnipSnapCloudSyncResult
+            if retryingUserRecoverableFailures {
+                result = try await session.retrySynchronization()
+            } else {
+                result = try await session.synchronize()
+            }
             switch result {
             case .noChange:
                 break
             case .contentUpdated:
                 await model.load()
-            case .iCloudSyncSettingUp:
-                settings.recordEnableSettingUp()
+            case .syncCompleted:
+                settings.recordOutstandingSyncRecovered()
+            case .iCloudSyncSettingUp(let issue):
+                settings.recordEnableSettingUp(issue)
             case .iCloudSyncEnabled:
                 let active = try await session.iosActiveLibrary()
                 await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
                 settings.recordEnableCompleted()
             case .libraryReplaced, .oldSyncedContentRemovalPending,
-                    .oldSyncedContentRemovalCompleted, .encryptedDataResetRequiresChoice,
-                    .syncKeptOff:
+                    .oldSyncedContentRemovalCompleted:
                 let active = try await session.iosActiveLibrary()
                 await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
                 if case .oldSyncedContentRemovalPending = result {
                     settings.recordRemovalPending(true)
                 } else if case .oldSyncedContentRemovalCompleted = result {
                     settings.recordRemovalPending(false)
-                } else if case .encryptedDataResetRequiresChoice = result {
-                    settings.recordEncryptedDataReset()
                 }
+            case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
+                let active = try await session.iosActiveLibrary()
+                await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+                let issue: SyncedContentSyncIssue
+                switch result {
+                case .iCloudDataReset:
+                    issue = .iCloudDataReset
+                case .iCloudSignedOut:
+                    issue = .signInRequired
+                default:
+                    issue = .iCloudAccountChanged
+                }
+                settings.recordSyncStopped(issue)
+            case .syncIssue(let issue):
+                settings.recordSyncFailure(issue)
+                return
             }
             settings.recordSyncCompleted()
         } catch {
-            settings.recordSyncFailure(error.localizedDescription)
+            settings.recordSyncFailure(SnipSnapCloudSyncIssueMapper.issue(for: error))
             throw error
         }
     }
@@ -250,6 +298,10 @@ final class IOSCloudSyncActionBridge {
 
     func syncWhenPossible() async {
         await session?.syncWhenPossible()
+    }
+
+    func retrySyncWhenPossible() async {
+        await session?.retrySyncWhenPossible()
     }
 
     func scheduleSyncAfterLocalChange() async {

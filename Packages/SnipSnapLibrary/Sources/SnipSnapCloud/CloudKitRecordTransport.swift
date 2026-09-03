@@ -40,6 +40,13 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
     }
 
     package func start(state: CloudEngineStateEnvelope?) throws {
+        try start(state: state, initialOutbound: nil)
+    }
+
+    package func start(
+        state: CloudEngineStateEnvelope?,
+        initialOutbound: CloudOutboundBatch?
+    ) throws {
         guard engine == nil else { return }
         let serialization = try Self.validate(namespace: namespace, state: state)
         currentSerialization = state?.serialization
@@ -51,6 +58,9 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         configuration.automaticallySync = automaticBatchHandler != nil
         currentFetchZones = automaticallyFetchedZones.map(CloudKitRecordMapper.zoneID(for:))
         engine = CKSyncEngine(configuration)
+        if let initialOutbound {
+            try schedule(initialOutbound)
+        }
     }
 
     package func configureAutomaticSync(
@@ -63,6 +73,27 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         self.accountChangeHandler = accountChangeHandler
         self.recordSendGate = recordSendGate
         self.engineStateHandler = engineStateHandler
+    }
+
+    package func reset() {
+        engine = nil
+        currentSerialization = nil
+        currentFetchZones = []
+        fetchedItems = []
+        fetchedDatabaseEvents = []
+        fetchedZoneEvents = []
+        outbound = [:]
+        outboundOrder = []
+        sendResults = [:]
+        sentDatabaseEvents = []
+        sentZoneEvents = []
+        currentOutboundBatch = nil
+        pending = nil
+        isPerformingSyncOperation = false
+        automaticFetchReady = false
+        automaticSendReady = false
+        fetchCycleInProgress = false
+        sendCycleInProgress = false
     }
 
     package nonisolated static func validate(
@@ -87,7 +118,9 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         if case .fetched(let batch)? = pending { return batch }
         if pending != nil { throw CloudTransportError.wrongBatchConfirmation }
         guard let engine else { throw CloudTransportError.notStarted }
-        guard !isPerformingSyncOperation else { throw CloudTransportError.syncAlreadyRunning }
+        guard !isPerformingSyncOperation, !fetchCycleInProgress, !sendCycleInProgress else {
+            throw CloudTransportError.syncAlreadyRunning
+        }
         isPerformingSyncOperation = true
         defer { isPerformingSyncOperation = false }
         currentFetchZones = automaticallyFetchedZones
@@ -104,6 +137,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
                 CKSyncEngine.FetchChangesOptions(scope: .zoneIDs(currentFetchZones))
             )
         } catch {
+            CloudSyncDiagnostics.record(error, operation: "record fetch")
             fetchedDatabaseEvents.append(.failed(nil, Self.failure(error)))
         }
         let batch = CloudFetchedBatch(
@@ -127,7 +161,9 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         if case .sent(let result)? = pending { return result }
         if pending != nil { throw CloudTransportError.wrongBatchConfirmation }
         guard let engine else { throw CloudTransportError.notStarted }
-        guard !isPerformingSyncOperation else { throw CloudTransportError.syncAlreadyRunning }
+        guard !isPerformingSyncOperation, !fetchCycleInProgress, !sendCycleInProgress else {
+            throw CloudTransportError.syncAlreadyRunning
+        }
         isPerformingSyncOperation = true
         defer { isPerformingSyncOperation = false }
         try schedule(batch)
@@ -138,6 +174,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         do {
             try await engine.sendChanges(CKSyncEngine.SendChangesOptions(scope: .all))
         } catch {
+            CloudSyncDiagnostics.record(error, operation: "record send")
             sentDatabaseEvents.append(.failed(nil, Self.failure(error)))
         }
         let items = outboundOrder.map { id in
@@ -164,9 +201,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         }
         self.pending = nil
         if case .sent(let sent) = pending {
-            let retrying = Set(sent.items.compactMap { result in
-                if case .failed(let id, .retryable) = result { id } else { nil }
-            })
+            let retrying = Self.retryingRecordIDs(in: sent)
             outbound = outbound.filter { retrying.contains($0.key) }
             outboundOrder = outboundOrder.filter(retrying.contains)
             currentOutboundBatch = outbound.isEmpty
@@ -177,6 +212,17 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
                 )
             sendResults = [:]
         }
+    }
+
+    package nonisolated static func retryingRecordIDs(
+        in batch: CloudSentBatch
+    ) -> Set<CloudRecordID> {
+        Set(batch.items.compactMap { result in
+            guard case .failed(let id, let failure) = result,
+                  failure.isRetryable
+            else { return nil }
+            return id
+        })
     }
 
     package func drainAutomaticSyncEvents() async {
@@ -550,9 +596,19 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
     package nonisolated static func failure(_ error: Error) -> CloudOperationFailure {
         guard let error = error as? CKError else { return .retryable }
         return switch error.code {
+        case .networkUnavailable: .networkUnavailable
+        case .networkFailure, .serviceUnavailable, .serverResponseLost: .iCloudUnavailable
+        case .requestRateLimited, .zoneBusy: .rateLimited
+        case .notAuthenticated: .authenticationRequired
+        case .accountTemporarilyUnavailable: .accountTemporarilyUnavailable
         case .quotaExceeded: .quotaExceeded
+        case .incompatibleVersion: .updateRequired
+        case .permissionFailure, .managedAccountRestricted: .accessDenied
+        case .assetFileModified, .assetFileNotFound: .attachmentMissing
+        case .assetNotAvailable: .attachmentUnavailable
+        case .changeTokenExpired: .changeTokenExpired
         case .zoneNotFound: .zoneMissing
-        case .notAuthenticated, .operationCancelled: .retryable
+        case .operationCancelled: .retryable
         case let code where CloudKitRetryPolicy.isTransient(code): .retryable
         default: .rejected
         }

@@ -419,6 +419,47 @@ extension SwiftDataSnipLibrary {
     }
   }
 
+  package func clearManuallyRetryableCloudAttachmentFailures(
+    namespaceKey: CloudSyncNamespaceKey
+  ) throws {
+    let namespaceKey = namespaceKey.rawValue
+    guard let container else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    let publications = try Self.cloudAttachmentPublications(
+      namespaceKey: namespaceKey,
+      context: context
+    )
+    let cleanups = try Self.cloudAttachmentCleanups(
+      namespaceKey: namespaceKey,
+      context: context
+    )
+    var changed = false
+    for row in publications {
+      guard let failure = row.lastFailure.flatMap(CloudAttachmentFailure.init(rawValue:)),
+        failure.retriesManually,
+        !failure.retriesAutomatically
+      else { continue }
+      row.lastFailure = nil
+      row.revision += 1
+      changed = true
+    }
+    for row in cleanups {
+      guard let failure = row.lastFailure.flatMap(CloudAttachmentFailure.init(rawValue:)),
+        failure.retriesManually,
+        !failure.retriesAutomatically
+      else { continue }
+      row.lastFailure = nil
+      row.revision += 1
+      changed = true
+    }
+    if changed {
+      try afterMutationBeforeSave()
+      try context.save()
+    }
+  }
+
   package func cloudAttachmentStagingRoot(namespaceKey: CloudSyncNamespaceKey) throws -> URL {
     try cloudAttachmentFiles.stagingRoot(namespaceKey: namespaceKey.rawValue)
   }

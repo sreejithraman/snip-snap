@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SyncedContentSettingsView: View {
     @Bindable var model: SyncedContentSettingsModel
+    var retryAction: (@MainActor @Sendable () async -> Void)?
     @State private var confirmsDelete = false
     @State private var confirmsUsingDeviceCopy = false
 
@@ -20,6 +21,11 @@ struct SyncedContentSettingsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            if model.canRetryFailedSync, let retryAction {
+                Button("Try Again") { Task { await retryAction() } }
+                    .accessibilityIdentifier("retry-icloud-sync")
+            }
+
             Spacer(minLength: 0)
 
             if case .enabling = model.state {
@@ -34,11 +40,6 @@ struct SyncedContentSettingsView: View {
             } else if case .deleting = model.state {
                 ProgressView("Deleting synced content…")
                     .controlSize(.small)
-            } else if case .resolvingEncryptedDataReset = model.state {
-                ProgressView("Starting a new synced collection…")
-                    .controlSize(.small)
-            } else if case .encryptedDataReset = model.state {
-                encryptedDataResetChoices
             } else if model.canDelete {
                 Button("Delete Synced Content…", role: .destructive) {
                     confirmsDelete = true
@@ -47,8 +48,7 @@ struct SyncedContentSettingsView: View {
             }
         }
         .padding(20)
-        .frame(width: 420, height: model.state == .encryptedDataReset ? 330 : 230,
-               alignment: .topLeading)
+        .frame(width: 420, height: 230, alignment: .topLeading)
         .alert("Delete Synced Content?", isPresented: $confirmsDelete) {
             Button("Cancel", role: .cancel) {}
             Button("Delete Synced Content", role: .destructive) {
@@ -67,9 +67,20 @@ struct SyncedContentSettingsView: View {
         }
     }
 
+    init(
+        model: SyncedContentSettingsModel,
+        retryAction: (@MainActor @Sendable () async -> Void)? = nil
+    ) {
+        self.model = model
+        self.retryAction = retryAction
+    }
+
     private var syncEnabled: Binding<Bool> {
         Binding(
-            get: { model.mode == .iCloudSync || model.state == .enabling },
+            get: {
+                if case .enabling = model.state { return true }
+                return model.mode == .iCloudSync
+            },
             set: { enabled in
                 Task {
                     if enabled {
@@ -90,25 +101,6 @@ struct SyncedContentSettingsView: View {
     private var canChangeSync: Bool {
         if model.canCancelEnable { return true }
         return model.mode == .iCloudSync ? model.canDisable : model.canEnable
-    }
-
-    private var encryptedDataResetChoices: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Button("Restore from This Device") {
-                Task { await model.resolveEncryptedDataReset(.restoreFromThisDevice) }
-            }
-            .accessibilityIdentifier("encrypted-reset-restore")
-
-            Button("Start Empty") {
-                Task { await model.resolveEncryptedDataReset(.startEmpty) }
-            }
-            .accessibilityIdentifier("encrypted-reset-start-empty")
-
-            Button("Keep Sync Off") {
-                Task { await model.resolveEncryptedDataReset(.keepSyncOff) }
-            }
-            .accessibilityIdentifier("encrypted-reset-keep-off")
-        }
     }
 
     private var statusImage: String {

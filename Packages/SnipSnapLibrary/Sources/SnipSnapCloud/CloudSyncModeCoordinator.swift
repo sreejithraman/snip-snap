@@ -10,6 +10,7 @@ private protocol ICloudSyncAdapter: Sendable {
     func sendPending(
         beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void
     ) async throws
+    func takeSyncIssue() async -> SyncedContentSyncIssue?
     func approveModeMerge(snipIDs: Set<UUID>) async throws
     func enrollmentEvidence() async throws -> CloudTextEnrollmentEvidence
     func statusEvidence() async throws -> CloudTextEnrollmentEvidence
@@ -33,8 +34,12 @@ private protocol ICloudSyncAdapter: Sendable {
     func prepareModeRetry(snipIDs: Set<UUID>) async throws
 }
 
-private enum ICloudAccountGateError: Error {
-    case stateChanged
+package enum ICloudAccountGateError: Error, Equatable, Sendable {
+    case couldNotDetermine
+    case noAccount
+    case restricted
+    case temporarilyUnavailable
+    case accountChanged
 }
 
 private actor LegacyTextSyncAdapter: ICloudSyncAdapter {
@@ -61,6 +66,8 @@ private actor LegacyTextSyncAdapter: ICloudSyncAdapter {
     ) async throws {
         try await syncDriver.sendPending(beforeSend: beforeSend)
     }
+
+    func takeSyncIssue() async -> SyncedContentSyncIssue? { nil }
 
     func approveModeMerge(snipIDs: Set<UUID>) async throws {
         try await raw.approveModeMerge(snipIDs: snipIDs)
@@ -114,6 +121,7 @@ private actor LegacyTextSyncAdapter: ICloudSyncAdapter {
 private actor FullRecordSyncAdapter: ICloudSyncAdapter {
     private let raw: CloudFullSyncPersistence
     private let syncDriver: CloudFullSyncCoordinator
+    private var pendingIssue: SyncedContentSyncIssue?
 
     init(raw: CloudFullSyncPersistence, transport: any CloudRecordTransport) {
         self.raw = raw
@@ -124,18 +132,49 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
         )
     }
 
-    func sync() async throws { try await syncDriver.sync() }
+    func sync() async throws {
+        pendingIssue = nil
+        try await syncDriver.sync()
+        try await reportCompletedSyncIssue()
+        if let issue = await takeSyncIssue() { throw CloudSyncIssueError(issue) }
+    }
 
     func fetchRemote(
         beforeApply: @escaping @Sendable () async throws -> Void
     ) async throws {
+        pendingIssue = nil
         try await syncDriver.fetchRemote(beforeApply: beforeApply)
+        try await retainFetchIssue()
     }
 
     func sendPending(
         beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void
     ) async throws {
         try await syncDriver.sendPending(beforeSend: beforeSend)
+        try await reportCompletedSyncIssue()
+    }
+
+    private func retainFetchIssue() async throws {
+        let blocksOutbound = await syncDriver.isOutboundBlocked()
+        if let issue = await syncDriver.takeSyncIssue() {
+            if blocksOutbound { throw CloudSyncIssueError(issue) }
+            pendingIssue = issue
+        }
+    }
+
+    private func reportCompletedSyncIssue() async throws {
+        let issue = await syncDriver.takeSyncIssue() ?? pendingIssue
+        if let issue, issue.retriesAutomatically {
+            pendingIssue = issue
+            return
+        }
+        pendingIssue = nil
+        if let issue { throw CloudSyncIssueError(issue) }
+    }
+
+    func takeSyncIssue() async -> SyncedContentSyncIssue? {
+        defer { pendingIssue = nil }
+        return pendingIssue
     }
 
     func approveModeMerge(snipIDs: Set<UUID>) async throws {
@@ -209,15 +248,18 @@ package struct ICloudSyncModeStatus: Equatable, Sendable {
     package let state: ICloudSyncModeState
     package let activeStoreID: UUID
     package let attentionReason: ICloudSyncAttentionReason?
+    package let syncIssue: SyncedContentSyncIssue?
 
     package init(
         state: ICloudSyncModeState,
         activeStoreID: UUID,
-        attentionReason: ICloudSyncAttentionReason? = nil
+        attentionReason: ICloudSyncAttentionReason? = nil,
+        syncIssue: SyncedContentSyncIssue? = nil
     ) {
         self.state = state
         self.activeStoreID = activeStoreID
         self.attentionReason = attentionReason
+        self.syncIssue = syncIssue
     }
 }
 
@@ -347,7 +389,7 @@ package actor ICloudSyncModeCoordinator {
                         clearedEarlierRetry = true
                         continue
                     }
-                    guard evidence.hasPendingChanges, !evidence.needsAttention,
+                    guard evidence.hasPendingChanges, !evidence.blocksSending,
                           evidence.phase != .blocked
                     else { break }
                     try await adapter.sendPending { _ in
@@ -413,14 +455,25 @@ package actor ICloudSyncModeCoordinator {
                         accountState: await accountStateSource.currentAccountState()
                     )
                 }
-                if isRetryableConnectivity(error) { return try await statusUnchecked() }
+                if isRetryableConnectivity(error) {
+                    return try await statusUnchecked(
+                        syncIssue: SnipSnapCloudSyncIssueMapper.issue(for: error)
+                    )
+                }
                 try await persistence.recordAttention(.terminalFetchFailure)
+                if error is CloudSyncIssueError { throw error }
                 return try await statusUnchecked()
             }
+            let fetchIssue = await bridge.takeSyncIssue()
             let evidence = try await bridge.enrollmentEvidence()
             if !evidence.retryableEventKeys.isEmpty {
                 try await bridge.clearRetryableEvents(evidence.retryableEventKeys)
-                return try await statusUnchecked()
+                return try await statusUnchecked(
+                    syncIssue: fetchIssue ?? .someChangesPending
+                )
+            }
+            if let fetchIssue {
+                return try await statusUnchecked(syncIssue: fetchIssue)
             }
             if evidence.needsAttention {
                 try await persistence.recordAttention(.enrollmentBlocked)
@@ -492,7 +545,11 @@ package actor ICloudSyncModeCoordinator {
             }
             let retryable = isRetryableConnectivity(error)
             await restoreSourceAfterPreSwapFailure(error, retryable: retryable)
-            if retryable { return try await statusUnchecked() }
+            if retryable {
+                return try await statusUnchecked(
+                    syncIssue: SnipSnapCloudSyncIssueMapper.issue(for: error)
+                )
+            }
             throw error
         }
 
@@ -661,15 +718,21 @@ package actor ICloudSyncModeCoordinator {
                 )
                 try await persistence.recordSendAttempt(attempt)
             }
+            let issue = await adapter.takeSyncIssue()
             let evidence = try await adapter.enrollmentEvidence()
             if evidence.hasRetryableRecordFailures || !evidence.retryableEventKeys.isEmpty {
                 try await adapter.clearRetryableEvents(evidence.retryableEventKeys)
+                if let issue { throw CloudSyncIssueError(issue) }
                 throw CloudSyncRetryableError.itemFailure
             }
             if evidence.phase == .blocked {
                 throw CloudNamespaceEnrollmentError.invalidSeedSelection
             }
-            if evidence.phase == .active, !evidence.hasPendingChanges { return }
+            if evidence.phase == .active, !evidence.hasPendingChanges {
+                if let issue { throw CloudSyncIssueError(issue) }
+                return
+            }
+            if let issue { throw CloudSyncIssueError(issue) }
         }
         throw CloudTransportError.sendFailed
     }
@@ -681,6 +744,7 @@ package actor ICloudSyncModeCoordinator {
         }
         if error is CloudSyncRetryableError { return true }
         if error is ICloudAccountGateError { return true }
+        if let error = error as? CloudSyncIssueError { return error.issue.retriesAutomatically }
         return false
     }
 
@@ -740,7 +804,8 @@ package actor ICloudSyncModeCoordinator {
     }
 
     private func statusUnchecked(
-        accountState: ICloudAccountState? = nil
+        accountState: ICloudAccountState? = nil,
+        syncIssue: SyncedContentSyncIssue? = nil
     ) async throws -> ICloudSyncModeStatus {
         let storage = try await persistence.snapshot()
         if let isolation = storage.accountIsolation {
@@ -784,7 +849,11 @@ package actor ICloudSyncModeCoordinator {
             let state: ICloudSyncModeState = transition.targetKind == .iCloudSync
                 ? .settingUp
                 : .syncing
-            return ICloudSyncModeStatus(state: state, activeStoreID: storage.activeStore.id)
+            return ICloudSyncModeStatus(
+                state: state,
+                activeStoreID: storage.activeStore.id,
+                syncIssue: syncIssue
+            )
         }
         guard storage.activeStore.kind == .iCloudSync else {
             return ICloudSyncModeStatus(state: .off, activeStoreID: storage.activeStore.id)
@@ -839,9 +908,20 @@ package actor ICloudSyncModeCoordinator {
     }
 
     private func requireMatchingAccount() async throws {
-        guard case .available(let accountLineage) = await accountStateSource.currentAccountState(),
-              accountLineage == namespace.accountLineage
-        else { throw ICloudAccountGateError.stateChanged }
+        switch await accountStateSource.currentAccountState() {
+        case .available(let accountLineage):
+            guard accountLineage == namespace.accountLineage else {
+                throw ICloudAccountGateError.accountChanged
+            }
+        case .couldNotDetermine:
+            throw ICloudAccountGateError.couldNotDetermine
+        case .noAccount:
+            throw ICloudAccountGateError.noAccount
+        case .restricted:
+            throw ICloudAccountGateError.restricted
+        case .temporarilyUnavailable:
+            throw ICloudAccountGateError.temporarilyUnavailable
+        }
     }
 }
 

@@ -44,7 +44,12 @@ actor SimulatedCloudCollectionReset {
 
   func synchronize() async throws -> SnipSnapCloudSyncResult {
     let coordinator = try await prepare()
-    return syncResult(for: try await coordinator.synchronize())
+    let status = try await coordinator.synchronize()
+    if status == .purged {
+      try await local?.markPurged()
+      return .iCloudDataReset
+    }
+    return syncResult(for: status)
   }
 
   func enableSync() async throws {
@@ -76,13 +81,6 @@ actor SimulatedCloudCollectionReset {
   func deleteSyncedContent() async throws -> SyncedContentDeleteOutcome {
     let coordinator = try await prepare()
     return deleteOutcome(for: try await coordinator.deleteSyncedContent())
-  }
-
-  func resolveEncryptedDataReset(
-    _ choice: EncryptedDataResetChoice
-  ) async throws -> SnipSnapCloudSyncResult {
-    let coordinator = try await prepare()
-    return syncResult(for: try await coordinator.resolveEncryptedDataReset(choice))
   }
 
   func activeLibrary() async throws -> SnipSnapCloudActiveLibrary {
