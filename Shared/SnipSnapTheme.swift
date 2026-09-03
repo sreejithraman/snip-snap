@@ -91,29 +91,33 @@ private struct AppToastPresenter: ViewModifier {
 
     private func toastView(_ toast: AppToast) -> some View {
         GlassEffectContainer(spacing: 8) {
-            HStack(spacing: 12) {
+            HStack(spacing: SnipSnapSpacing.relatedContent) {
                 Image(systemName: toast.systemImage)
                     .foregroundStyle(.secondary)
                 Text(toast.message)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(2)
                 if toast.action != nil {
-                    Button("Undo") {
+                    Button {
                         self.toast = nil
                         onAction(toast)
+                    } label: {
+                        Text("Undo")
+                            .foregroundStyle(SnipSnapTheme.prominentControlLabel)
                     }
                     .buttonStyle(.glassProminent)
+                    .tint(SnipSnapTheme.prominentControlFill)
                     .buttonBorderShape(.capsule)
                     .controlSize(.small)
                     .font(.subheadline.weight(.bold))
                     .accessibilityIdentifier("toast-action")
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .padding(.horizontal, SnipSnapSpacing.cardContentInset)
+            .padding(.vertical, SnipSnapSpacing.relatedContent)
             .glassEffect(
                 toast.action == nil ? .regular : .regular.interactive(),
-                in: .rect(cornerRadius: 18)
+                in: .capsule
             )
         }
         .frame(maxWidth: 360)
@@ -150,6 +154,12 @@ extension View {
 /// keep the same monochrome Snip Snap look in light and dark mode.
 enum SnipSnapTheme {
     static let controlTint = Color.primary
+    static let prominentControlFill = Color.primary
+#if os(macOS)
+    static let prominentControlLabel = Color(nsColor: .windowBackgroundColor)
+#else
+    static let prominentControlLabel = Color(uiColor: .systemBackground)
+#endif
     static let selectionFill = Color.primary.opacity(0.10)
     static let compactSelectionFill = Color.primary.opacity(0.18)
     static let compactActionFill = Color.primary.opacity(0.10)

@@ -49,6 +49,43 @@ private final class PanelTextValue {
 
 final class PanelTests: StoreBackedTestCase {
     @MainActor
+    func testProminentControlThemeHasReadableContrast() throws {
+        for appearanceName in [NSAppearance.Name.aqua, .darkAqua] {
+            let appearance = try XCTUnwrap(NSAppearance(named: appearanceName))
+            var resolvedFill: NSColor?
+            var resolvedLabel: NSColor?
+            appearance.performAsCurrentDrawingAppearance {
+                resolvedFill = NSColor(SnipSnapTheme.prominentControlFill)
+                resolvedLabel = NSColor(SnipSnapTheme.prominentControlLabel)
+            }
+            let fill = try XCTUnwrap(resolvedFill?.usingColorSpace(.sRGB))
+            let label = try XCTUnwrap(resolvedLabel?.usingColorSpace(.sRGB))
+            XCTAssertGreaterThanOrEqual(
+                contrastRatio(fill, label),
+                4.5,
+                "Prominent controls need readable label contrast in \(appearanceName.rawValue)."
+            )
+        }
+    }
+
+    private func contrastRatio(_ first: NSColor, _ second: NSColor) -> CGFloat {
+        let lighter = max(relativeLuminance(first), relativeLuminance(second))
+        let darker = min(relativeLuminance(first), relativeLuminance(second))
+        return (lighter + 0.05) / (darker + 0.05)
+    }
+
+    private func relativeLuminance(_ color: NSColor) -> CGFloat {
+        func linear(_ value: CGFloat) -> CGFloat {
+            value <= 0.04045
+                ? value / 12.92
+                : pow((value + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linear(color.redComponent)
+            + 0.7152 * linear(color.greenComponent)
+            + 0.0722 * linear(color.blueComponent)
+    }
+
+    @MainActor
     func testMainPanelRendersNeedsAttentionWithBothSafeChoices() async throws {
         let defaults = try XCTUnwrap(
             UserDefaults(suiteName: "Snip SnapPanelAccountNoticeTests-\(UUID().uuidString)")
