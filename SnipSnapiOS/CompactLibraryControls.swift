@@ -4,6 +4,26 @@ import SnipSnapCore
 import SwiftUI
 import UniformTypeIdentifiers
 
+private enum CompactControlMetrics {
+    static let minimumInteractiveLength: CGFloat = 44
+}
+
+private struct CompactGlassCircleButton<Label: View>: View {
+    let length: CGFloat
+    let action: () -> Void
+    @ViewBuilder let label: () -> Label
+
+    var body: some View {
+        Button(action: action) {
+            label()
+                .frame(width: length, height: length)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: Circle())
+    }
+}
+
 struct CompactLibraryControls: View {
     let model: IOSAppModel
     let storage: CompactComposerStorage
@@ -16,6 +36,12 @@ struct CompactLibraryControls: View {
     @State private var composerFieldID = UUID()
     @State private var stagingTask: Task<Void, Never>?
     @FocusState.Binding private var isComposerFocused: Bool
+    @ScaledMetric(relativeTo: .body) private var scaledControlLength =
+        CompactControlMetrics.minimumInteractiveLength
+
+    private var controlLength: CGFloat {
+        max(CompactControlMetrics.minimumInteractiveLength, scaledControlLength)
+    }
 
     init(
         model: IOSAppModel,
@@ -34,20 +60,21 @@ struct CompactLibraryControls: View {
     private var isStaging: Bool { stagingTask != nil }
 
     var body: some View {
-        GlassEffectContainer(spacing: 8) {
-            VStack(spacing: 8) {
+        GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
+            VStack(spacing: SnipSnapSpacing.relatedContent) {
                 composer
                 if showsListTabs {
                     CompactListTabBar(
                         model: model,
+                        controlLength: controlLength,
                         sheet: $sheet,
                         deleteList: deleteList
                     )
                 }
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
+        .padding(.horizontal, SnipSnapSpacing.cardContentInset)
+        .padding(.top, SnipSnapSpacing.relatedContent)
         .padding(.bottom, 6)
         .fileImporter(
             isPresented: $isImporting,
@@ -74,30 +101,26 @@ struct CompactLibraryControls: View {
     }
 
     private var composer: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            Button {
-                isImporting = true
-            } label: {
+        HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
+            CompactGlassCircleButton(
+                length: controlLength,
+                action: { isImporting = true }
+            ) {
                 Image(systemName: isStaging ? "hourglass" : "plus")
                     .font(.title3.weight(.medium))
-                    .frame(width: 24, height: 24)
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
             .disabled(storage.isSaving || isStaging)
             .accessibilityLabel("Add Attachments")
             .accessibilityIdentifier("composer-add-attachments")
 
-            VStack(spacing: 8) {
+            VStack(spacing: SnipSnapSpacing.relatedContent) {
                 if !draft.attachments.isEmpty {
                     attachmentStrip
-                        .padding(.horizontal, 12)
+                        .padding(.horizontal, SnipSnapSpacing.cardContentInset)
                         .padding(.top, 10)
                 }
 
-                HStack(alignment: .bottom, spacing: 8) {
+                HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
                     TextField(
                         "Add to \(model.selectedList.displayName)…",
                         text: composerText,
@@ -107,8 +130,9 @@ struct CompactLibraryControls: View {
                         .lineLimit(1...5)
                         .focused($isComposerFocused)
                         .disabled(storage.isSaving)
-                        .padding(.leading, 12)
-                        .padding(.vertical, 8)
+                        .padding(.leading, SnipSnapSpacing.cardContentInset)
+                        .padding(.vertical, SnipSnapSpacing.relatedContent)
+                        .frame(minHeight: controlLength, alignment: .center)
                         .accessibilityIdentifier("composer-text")
 
                     CompactComposerSendButton(
@@ -120,7 +144,7 @@ struct CompactLibraryControls: View {
                 }
                 .id(composerFieldID)
             }
-            .frame(minHeight: 40)
+            .frame(minHeight: controlLength)
             .glassEffect(
                 .regular.interactive(),
                 in: RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -291,7 +315,8 @@ private struct CompactComposerSendButton: View {
     let isEnabled: Bool
     let action: () -> Void
 
-    @ScaledMetric(relativeTo: .body) private var controlHeight: CGFloat = 44
+    @ScaledMetric(relativeTo: .body) private var controlHeight =
+        CompactControlMetrics.minimumInteractiveLength
     @ScaledMetric(relativeTo: .body) private var edgeInset: CGFloat = 4
     @ScaledMetric(relativeTo: .body) private var iconLength: CGFloat = 16
 
@@ -333,19 +358,32 @@ private struct CompactListTabBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let model: IOSAppModel
+    let controlLength: CGFloat
     @Binding var sheet: AppSheet?
     let deleteList: (UUID) async -> Void
 
+    private var stripHeight: CGFloat {
+        controlLength + SnipSnapSpacing.cardContentInset
+    }
+
+    private var selectionHeight: CGFloat {
+        controlLength - SnipSnapSpacing.relatedContent
+    }
+
+    private var itemWidth: CGFloat {
+        controlLength + SnipSnapSpacing.relatedContent
+    }
+
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 8) {
+            HStack(spacing: SnipSnapSpacing.relatedContent) {
                 tabStrip
                     .fixedSize(horizontal: true, vertical: false)
                 newListButton
             }
             .fixedSize(horizontal: true, vertical: false)
 
-            HStack(spacing: 8) {
+            HStack(spacing: SnipSnapSpacing.relatedContent) {
                 scrollingTabStrip
                     .frame(maxWidth: .infinity, alignment: .leading)
                 newListButton
@@ -357,7 +395,7 @@ private struct CompactListTabBar: View {
     private var tabStrip: some View {
         tabItems
             .padding(.horizontal, 6)
-            .frame(height: 56)
+            .frame(height: stripHeight)
             .glassEffect(.regular, in: Capsule())
     }
 
@@ -368,7 +406,7 @@ private struct CompactListTabBar: View {
                     .padding(.horizontal, 6)
             }
             .scrollIndicators(.hidden)
-            .frame(height: 56)
+            .frame(height: stripHeight)
             .glassEffect(.regular, in: Capsule())
             .onAppear { scrollToSelection(using: proxy) }
             .onChange(of: model.selectedListID) { _, _ in
@@ -390,17 +428,13 @@ private struct CompactListTabBar: View {
     }
 
     private var newListButton: some View {
-        Button {
-            sheet = .newList
-        } label: {
+        CompactGlassCircleButton(
+            length: controlLength,
+            action: { sheet = .newList }
+        ) {
             Image(systemName: "plus")
-                .font(.body.weight(.semibold))
-                .frame(width: 24, height: 24)
+                .font(.title3.weight(.semibold))
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
-        .frame(width: 44, height: 44)
-        .contentShape(Rectangle())
         .accessibilityLabel("New List")
         .accessibilityIdentifier("new-list")
     }
@@ -414,12 +448,18 @@ private struct CompactListTabBar: View {
                 .symbolVariant(selected ? .fill : .none)
                 .font(.title3.weight(selected ? .semibold : .regular))
                 .foregroundStyle(selected ? Color.primary : Color.secondary)
-                .frame(width: 44, height: 36)
+                .frame(
+                    width: controlLength,
+                    height: selectionHeight
+                )
                 .background(
                     selected ? SnipSnapTheme.compactSelectionFill : Color.clear,
                     in: Capsule(style: .continuous)
                 )
-                .frame(width: 52, height: 56)
+                .frame(
+                    width: itemWidth,
+                    height: stripHeight
+                )
                 .contentShape(Rectangle())
                 .accessibilityHidden(true)
         }

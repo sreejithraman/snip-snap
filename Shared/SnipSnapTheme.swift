@@ -158,3 +158,13 @@ enum SnipSnapTheme {
     static let focusedGlassEdge = Color.primary.opacity(0.32)
 
 }
+
+/// Shared gaps and insets for custom surfaces on both platforms.
+/// Platform views keep their own control sizes because pointer and touch
+/// controls have different system defaults.
+enum SnipSnapSpacing {
+    static let relatedContent: CGFloat = 8
+    static let controlContentInset: CGFloat = 10
+    static let cardContentInset: CGFloat = 12
+    static let paneContentInset: CGFloat = 16
+}

@@ -466,7 +466,7 @@ struct ContentView: View {
                 .padding(.bottom, inlineEntryTextBottomPadding)
             }
             .panelEmbeddedInputSurface(
-                minHeight: PanelControlMetrics.floatingRowHeight,
+                minHeight: PanelControlMetrics.compactComposerHeight,
                 expanded: isInlineEntrySurfaceExpanded,
                 isFocused: focusedTarget == .inlineEntry
             )
@@ -489,10 +489,10 @@ struct ContentView: View {
                     width: PanelControlMetrics.floatingIconLength,
                     height: PanelControlMetrics.floatingIconLength
                 )
+                .panelStandaloneActionControl()
         }
         .menuIndicator(.hidden)
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
+        .buttonStyle(.plain)
         .help("Add Attachment")
         .accessibilityLabel("Add Attachment")
     }

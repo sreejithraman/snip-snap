@@ -90,9 +90,9 @@ struct SnipListTabBarView: View {
                     width: PanelControlMetrics.floatingIconLength,
                     height: PanelControlMetrics.floatingIconLength
                 )
+                .panelStandaloneActionControl()
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
+        .buttonStyle(.plain)
         .accessibilityLabel("New List")
         .help("New List")
     }
