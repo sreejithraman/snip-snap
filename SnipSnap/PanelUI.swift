@@ -274,10 +274,6 @@ extension View {
             .contentShape(shape)
     }
 
-    func panelEmbeddedProminentActionControl() -> some View {
-        modifier(PanelAdaptiveProminentActionModifier())
-    }
-
     func panelStandaloneActionControl() -> some View {
         let shape = Circle()
         return frame(
@@ -355,14 +351,6 @@ extension View {
         )
     }
 
-}
-
-private struct PanelAdaptiveProminentActionModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        content
-            .buttonStyle(.glassProminent)
-            .buttonBorderShape(.capsule)
-    }
 }
 
 private struct PanelCompactStateSurfaceModifier: ViewModifier {

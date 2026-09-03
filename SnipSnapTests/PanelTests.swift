@@ -55,11 +55,13 @@ final class PanelTests: StoreBackedTestCase {
             var resolvedFill: NSColor?
             var resolvedLabel: NSColor?
             appearance.performAsCurrentDrawingAppearance {
-                resolvedFill = NSColor(SnipSnapTheme.prominentControlFill)
+                resolvedFill = NSColor(SnipSnapTheme.controlTint)
+                    .usingColorSpace(.sRGB)
                 resolvedLabel = NSColor(SnipSnapTheme.prominentControlLabel)
+                    .usingColorSpace(.sRGB)
             }
-            let fill = try XCTUnwrap(resolvedFill?.usingColorSpace(.sRGB))
-            let label = try XCTUnwrap(resolvedLabel?.usingColorSpace(.sRGB))
+            let fill = try XCTUnwrap(resolvedFill)
+            let label = try XCTUnwrap(resolvedLabel)
             XCTAssertGreaterThanOrEqual(
                 contrastRatio(fill, label),
                 4.5,

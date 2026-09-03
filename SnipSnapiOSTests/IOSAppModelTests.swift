@@ -12,7 +12,7 @@ final class IOSAppModelTests: XCTestCase {
     func testProminentControlThemeHasReadableContrast() {
         for style in [UIUserInterfaceStyle.light, .dark] {
             let traits = UITraitCollection(userInterfaceStyle: style)
-            let fill = UIColor(SnipSnapTheme.prominentControlFill).resolvedColor(with: traits)
+            let fill = UIColor(SnipSnapTheme.controlTint).resolvedColor(with: traits)
             let label = UIColor(SnipSnapTheme.prominentControlLabel).resolvedColor(with: traits)
             XCTAssertGreaterThanOrEqual(
                 contrastRatio(fill, label),

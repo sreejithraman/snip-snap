@@ -536,10 +536,9 @@ struct ContentView: View {
     }
 
     private var inlineSendButton: some View {
-        Button(action: saveInlineEntry) {
+        AppProminentActionButton(action: saveInlineEntry) {
             InlineSendButtonLabel()
         }
-        .panelEmbeddedProminentActionControl()
         .disabled(!canSaveInlineEntry)
         .accessibilityLabel("Add to \(model.activeList.displayName)")
         .help("Add to \(model.activeList.displayName)")

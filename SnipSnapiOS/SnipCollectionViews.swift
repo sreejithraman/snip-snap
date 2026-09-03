@@ -439,13 +439,11 @@ private struct CompactInlineSnipEditor: View {
                     .accessibilityLabel("Cancel Editing")
                     .accessibilityIdentifier("inline-snip-cancel")
 
-                    Button(action: save) {
+                    AppProminentActionButton(action: save) {
                         Image(systemName: "checkmark")
                             .font(.body.weight(.bold))
                             .frame(width: 46, height: 36)
                     }
-                    .buttonStyle(.glassProminent)
-                    .buttonBorderShape(.capsule)
                     .disabled(!canSave)
                     .accessibilityLabel("Save Snip")
                     .accessibilityIdentifier("inline-snip-save")

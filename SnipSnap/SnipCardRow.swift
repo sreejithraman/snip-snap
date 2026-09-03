@@ -255,11 +255,10 @@ struct SnipCardRow: View {
             .help("Cancel Editing")
             .accessibilityLabel("Cancel Editing")
 
-            Button(action: saveEdit) {
+            AppProminentActionButton(action: saveEdit) {
                 Image(systemName: "checkmark")
                     .font(.system(size: 12, weight: .bold))
             }
-            .panelEmbeddedProminentActionControl()
             .keyboardShortcut("s", modifiers: .command)
             .disabled(!canSaveEdit)
             .help("Save Snip")

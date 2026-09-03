@@ -47,6 +47,21 @@ struct AppToast: Identifiable {
     }
 }
 
+struct AppProminentActionButton<Label: View>: View {
+    let action: () -> Void
+    @ViewBuilder let label: () -> Label
+
+    var body: some View {
+        Button(action: action) {
+            label()
+        }
+        .buttonStyle(.glassProminent)
+        .tint(SnipSnapTheme.controlTint)
+        .foregroundStyle(SnipSnapTheme.prominentControlLabel)
+        .buttonBorderShape(.capsule)
+    }
+}
+
 private struct AppToastPresenter: ViewModifier {
     @Binding var toast: AppToast?
     let alignment: Alignment
@@ -98,18 +113,14 @@ private struct AppToastPresenter: ViewModifier {
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(2)
                 if toast.action != nil {
-                    Button {
+                    AppProminentActionButton {
                         self.toast = nil
                         onAction(toast)
                     } label: {
                         Text("Undo")
-                            .foregroundStyle(SnipSnapTheme.prominentControlLabel)
                     }
-                    .buttonStyle(.glassProminent)
-                    .tint(SnipSnapTheme.prominentControlFill)
-                    .buttonBorderShape(.capsule)
-                    .controlSize(.small)
                     .font(.subheadline.weight(.bold))
+                    .controlSize(.small)
                     .accessibilityIdentifier("toast-action")
                 }
             }
@@ -154,7 +165,6 @@ extension View {
 /// keep the same monochrome Snip Snap look in light and dark mode.
 enum SnipSnapTheme {
     static let controlTint = Color.primary
-    static let prominentControlFill = Color.primary
 #if os(macOS)
     static let prominentControlLabel = Color(nsColor: .windowBackgroundColor)
 #else

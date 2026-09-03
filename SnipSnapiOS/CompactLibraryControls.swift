@@ -38,6 +38,7 @@ struct CompactLibraryControls: View {
     @FocusState.Binding private var isComposerFocused: Bool
     @ScaledMetric(relativeTo: .body) private var scaledControlLength =
         CompactControlMetrics.minimumInteractiveLength
+    @ScaledMetric(relativeTo: .body) private var sendIconLength: CGFloat = 16
 
     private var controlLength: CGFloat {
         max(CompactControlMetrics.minimumInteractiveLength, scaledControlLength)
@@ -130,18 +131,25 @@ struct CompactLibraryControls: View {
                         .lineLimit(1...5)
                         .focused($isComposerFocused)
                         .disabled(storage.isSaving)
-                        .padding(.leading, SnipSnapSpacing.cardContentInset)
-                        .padding(.vertical, SnipSnapSpacing.relatedContent)
+                        .padding(SnipSnapSpacing.relatedContent)
                         .frame(minHeight: controlLength, alignment: .center)
                         .accessibilityIdentifier("composer-text")
 
-                    CompactComposerSendButton(
-                        isEnabled: canSend,
-                        action: { Task { await send() } }
-                    )
+                    AppProminentActionButton {
+                        Task { await send() }
+                    } label: {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: sendIconLength, weight: .bold))
+                            .frame(width: sendIconLength, height: sendIconLength)
+                    }
+                    .frame(width: controlLength, height: controlLength, alignment: .trailing)
+                    .contentShape(Rectangle())
+                    .controlSize(.regular)
+                    .disabled(!canSend)
                     .accessibilityLabel("Send Snip")
                     .accessibilityIdentifier("composer-send")
                 }
+                .padding(.horizontal, SnipSnapSpacing.relatedContent / 2)
                 .id(composerFieldID)
             }
             .frame(minHeight: controlLength)
@@ -308,49 +316,6 @@ final class CompactComposerStorage {
             textDefaultsKey: textDefaultsKey,
             temporaryRootDirectory: stagingDirectory
         )
-    }
-}
-
-private struct CompactComposerSendButton: View {
-    let isEnabled: Bool
-    let action: () -> Void
-
-    @ScaledMetric(relativeTo: .body) private var controlHeight =
-        CompactControlMetrics.minimumInteractiveLength
-    @ScaledMetric(relativeTo: .body) private var edgeInset: CGFloat = 4
-    @ScaledMetric(relativeTo: .body) private var iconLength: CGFloat = 16
-
-    private var hitHeight: CGFloat {
-        max(44, controlHeight)
-    }
-
-    private var visibleHeight: CGFloat {
-        max(iconLength, hitHeight - (edgeInset * 2))
-    }
-
-    private var visibleWidth: CGFloat {
-        visibleHeight + iconLength
-    }
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: "arrow.up")
-                .font(.system(size: iconLength, weight: .bold))
-                .foregroundStyle(
-                    isEnabled ? Color.white : Color(uiColor: .secondaryLabel)
-                )
-                .frame(width: iconLength, height: iconLength)
-                .frame(width: visibleWidth, height: visibleHeight)
-                .background(
-                    isEnabled ? Color.accentColor : Color(uiColor: .systemGray5),
-                    in: Capsule()
-                )
-                .frame(height: hitHeight)
-                .padding(.trailing, edgeInset)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!isEnabled)
     }
 }
 
