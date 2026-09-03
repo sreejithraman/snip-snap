@@ -4,6 +4,7 @@ import SwiftUI
 struct ListSidebarView: View {
     let model: IOSAppModel
     @Binding var sheet: AppSheet?
+    @Binding var editMode: EditMode
     var importBackup: () -> Void = {}
 
     private var selection: Binding<UUID?> {
@@ -47,30 +48,26 @@ struct ListSidebarView: View {
         }
         .navigationTitle("Lists")
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button("Settings", systemImage: "gearshape") {
-                    sheet = .settings
-                }
-                .accessibilityIdentifier("settings")
-            }
-            ToolbarItem(placement: .secondaryAction) {
+            ToolbarItem(placement: .topBarTrailing) {
                 LibraryActionsMenu(
                     model: model,
                     importBackup: importBackup,
+                    settings: { sheet = .settings },
+                    editMode: $editMode,
                     reviewRecoveredEdits: model.recoverySnapshot.needsAttentionCount > 0
                         ? { sheet = .recoveryCenter }
                         : nil,
                     editSelectedList: { sheet = .editList(id: model.selectedListID) }
                 )
             }
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItem(placement: .topBarTrailing) {
                 Button("New List", systemImage: "folder.badge.plus") {
                     sheet = .newList
                 }
                 .accessibilityIdentifier("new-list")
             }
             if model.isCloudSyncActive {
-                ToolbarItemGroup(placement: .secondaryAction) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     CloudLibraryActions(model: model)
                 }
             }
@@ -81,6 +78,8 @@ struct ListSidebarView: View {
 struct LibraryActionsMenu: View {
     let model: IOSAppModel
     let importBackup: () -> Void
+    let settings: () -> Void
+    @Binding var editMode: EditMode
     var includesCloudActions = false
     var reviewRecoveredEdits: (() -> Void)?
     var editSelectedList: (() -> Void)?
@@ -88,6 +87,17 @@ struct LibraryActionsMenu: View {
 
     var body: some View {
         Menu("Library Actions", systemImage: "ellipsis.circle") {
+            Button("Settings", systemImage: "gearshape", action: settings)
+                .accessibilityIdentifier("settings")
+            Button(
+                editMode.isEditing ? "Done Selecting" : "Select Snips",
+                systemImage: editMode.isEditing ? "checkmark" : "checkmark.circle"
+            ) {
+                editMode = editMode.isEditing ? .inactive : .active
+            }
+            .disabled(!editMode.isEditing && model.visibleSnips.isEmpty)
+            .accessibilityIdentifier("select-snips")
+            Divider()
             if let reviewRecoveredEdits {
                 Button {
                     reviewRecoveredEdits()

@@ -47,16 +47,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             NSPredicate(format: "label CONTAINS %@", "Keep while enabling sync")
         ).firstMatch
         XCTAssertTrue(localSnip.waitForExistence(timeout: 3))
-        let settings = app.buttons["settings"]
-        for _ in 0..<3 where !settings.waitForExistence(timeout: 1) {
-            if app.buttons["Show Sidebar"].exists {
-                app.buttons["Show Sidebar"].tap()
-            } else if app.navigationBars.buttons.firstMatch.exists {
-                app.navigationBars.buttons.firstMatch.tap()
-            }
-        }
-        XCTAssertTrue(settings.waitForExistence(timeout: 5))
-        settings.tap()
+        openSettings(in: app)
         let privacyPolicy = app.descendants(matching: .any)
             .matching(identifier: "privacy-policy")
             .firstMatch
@@ -77,16 +68,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         continueAfterFailure = false
         let app = launchApp(withSyncEnable: true, withLimitAttachments: true)
         XCTAssertTrue(app.staticTexts["Attachment fixture"].waitForExistence(timeout: 8))
-        let settings = app.buttons["settings"]
-        for _ in 0..<3 where !settings.waitForExistence(timeout: 1) {
-            if app.buttons["Show Sidebar"].exists {
-                app.buttons["Show Sidebar"].tap()
-            } else if app.navigationBars.buttons.firstMatch.exists {
-                app.navigationBars.buttons.firstMatch.tap()
-            }
-        }
-        XCTAssertTrue(settings.waitForExistence(timeout: 5))
-        settings.tap()
+        openSettings(in: app)
 
         toggle(app.switches["icloud-sync-toggle"])
 
@@ -109,8 +91,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         createSnip("Keep this", in: app)
         let saved = collectionRow(named: "Keep this", in: app)
         XCTAssertTrue(saved.waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["settings"].waitForExistence(timeout: 3))
-        app.buttons["settings"].tap()
+        openSettings(in: app)
 
         let sync = app.switches["icloud-sync-toggle"]
         XCTAssertTrue(sync.waitForExistence(timeout: 3))
@@ -142,19 +123,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             NSPredicate(format: "label CONTAINS %@", "Visible before cloud reset")
         ).firstMatch
         XCTAssertTrue(priorSnip.waitForExistence(timeout: 3))
-        let settings = app.buttons["settings"]
-        for _ in 0..<3 where !settings.waitForExistence(timeout: 1) {
-            let showSidebar = app.buttons["Show Sidebar"]
-            if showSidebar.exists {
-                showSidebar.tap()
-            } else if app.buttons["BackButton"].exists {
-                app.buttons["BackButton"].tap()
-            } else if app.navigationBars.buttons.firstMatch.exists {
-                app.navigationBars.buttons.firstMatch.tap()
-            }
-        }
-        XCTAssertTrue(settings.waitForExistence(timeout: 5))
-        settings.tap()
+        openSettings(in: app)
 
         XCTAssertTrue(app.staticTexts["iCloud Sync On"].waitForExistence(timeout: 3))
         app.buttons["delete-synced-content"].tap()
@@ -174,16 +143,7 @@ final class SnipSnapiOSUITests: XCTestCase {
     func testEncryptedDataResetOffersAllThreeSafeChoices() {
         continueAfterFailure = false
         let app = launchApp(withSyncedContent: true, withEncryptedReset: true)
-        let settings = app.buttons["settings"]
-        for _ in 0..<3 where !settings.waitForExistence(timeout: 1) {
-            if app.buttons["Show Sidebar"].exists {
-                app.buttons["Show Sidebar"].tap()
-            } else if app.navigationBars.buttons.firstMatch.exists {
-                app.navigationBars.buttons.firstMatch.tap()
-            }
-        }
-        XCTAssertTrue(settings.waitForExistence(timeout: 5))
-        settings.tap()
+        openSettings(in: app)
 
         XCTAssertTrue(app.staticTexts["iCloud Encrypted Data Was Reset"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["encrypted-reset-restore"].exists)
@@ -969,15 +929,60 @@ final class SnipSnapiOSUITests: XCTestCase {
         createSnip("Beta note", in: app)
         returnToCollection(in: app)
 
-        let search = app.searchFields["Search Snips"]
-        if app.descendants(matching: .any)["composer-text"].exists {
-            XCTAssertFalse(search.exists)
-            return
-        }
+        let search = app.searchFields["search-snips-field"]
+        XCTAssertFalse(search.exists)
+        let searchButton = app.buttons["search-snips"]
+        XCTAssertTrue(searchButton.waitForExistence(timeout: 3))
+        let filterButton = app.buttons["workflow-options"]
+        let actionsButton = app.buttons["library-actions"]
+        XCTAssertTrue(filterButton.waitForExistence(timeout: 3))
+        XCTAssertTrue(actionsButton.waitForExistence(timeout: 3))
+        XCTAssertLessThan(searchButton.frame.midX, filterButton.frame.midX)
+        XCTAssertLessThan(searchButton.frame.midX, actionsButton.frame.midX)
+        searchButton.tap()
         XCTAssertTrue(search.waitForExistence(timeout: 3))
+        let firstSearchFrame = search.frame
+        XCTAssertLessThan(
+            firstSearchFrame.midY,
+            app.frame.height / 3,
+            "The search field should open at the top on the first tap."
+        )
+        let expandedSearch = XCTAttachment(screenshot: app.screenshot())
+        expandedSearch.name = "Expanded search"
+        expandedSearch.lifetime = .keepAlways
+        add(expandedSearch)
+
+        let firstCloseSearch = app.buttons["close-search"]
+        XCTAssertTrue(firstCloseSearch.waitForExistence(timeout: 2))
+        XCTAssertEqual(
+            firstCloseSearch.frame.height,
+            firstSearchFrame.height,
+            accuracy: 2,
+            "The close button should match the search field height."
+        )
+        XCTAssertEqual(
+            firstCloseSearch.frame.width,
+            firstSearchFrame.height,
+            accuracy: 2,
+            "The close button should be a circle that matches the search field height."
+        )
+        firstCloseSearch.tap()
+        XCTAssertTrue(search.waitForNonExistence(timeout: 3))
+
+        XCTAssertTrue(searchButton.waitForExistence(timeout: 3))
+        searchButton.tap()
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        XCTAssertEqual(
+            search.frame.midY,
+            firstSearchFrame.midY,
+            accuracy: 20,
+            "Search should use the same top placement every time."
+        )
+
         search.tap()
         search.typeText("Alpha")
-        XCTAssertTrue(row(named: "Alpha plan", in: app).exists)
+        let alphaResult = row(named: "Alpha plan", in: app)
+        XCTAssertTrue(alphaResult.isHittable, "A matching search result should be usable.")
         XCTAssertFalse(collectionRow(named: "Beta note", in: app).exists)
         if app.keyboards.buttons["Search"].exists {
             app.keyboards.buttons["Search"].tap()
@@ -985,10 +990,13 @@ final class SnipSnapiOSUITests: XCTestCase {
             search.typeText("\n")
         }
         XCTAssertTrue(app.keyboards.element.waitForNonExistence(timeout: 3))
-        if app.buttons["Close"].waitForExistence(timeout: 1) {
-            app.buttons["Close"].tap()
+        let workflowOptions = app.buttons["workflow-options"]
+        if !workflowOptions.waitForExistence(timeout: 1) {
+            let closeSearch = app.buttons["close-search"]
+            XCTAssertTrue(closeSearch.waitForExistence(timeout: 1))
+            closeSearch.tap()
         }
-        XCTAssertTrue(app.buttons["workflow-options"].waitForExistence(timeout: 3))
+        XCTAssertTrue(workflowOptions.waitForExistence(timeout: 3))
 
         let alpha = app.buttons.matching(
             NSPredicate(format: "label BEGINSWITH %@", "Alpha plan")
@@ -1002,7 +1010,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             object: alpha
         )
         XCTAssertEqual(XCTWaiter.wait(for: [becameDone], timeout: 3), .completed)
-        app.buttons["workflow-options"].tap()
+        workflowOptions.tap()
         app.buttons["filter-done"].tap()
         XCTAssertTrue(collectionRow(named: "Alpha plan", in: app).waitForExistence(timeout: 3))
         XCTAssertFalse(collectionRow(named: "Beta note", in: app).exists)
@@ -1112,17 +1120,32 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     private func enterSelection(in app: XCUIApplication) {
-        let editButton = app.buttons["select-snips"]
-        XCTAssertTrue(editButton.waitForExistence(timeout: 3))
-        editButton.tap()
+        let actions = app.buttons["library-actions"]
+        XCTAssertTrue(actions.waitForExistence(timeout: 3))
+        actions.tap()
+        let select = app.buttons["select-snips"]
+        XCTAssertTrue(select.waitForExistence(timeout: 3))
+        select.tap()
         let selectionActions = app.buttons["selection-actions"]
-        if !selectionActions.waitForExistence(timeout: 3) {
-            let currentButton = app.buttons["select-snips"]
-            XCTAssertTrue(currentButton.waitForExistence(timeout: 3))
-            if currentButton.label != "Done" { currentButton.tap() }
-        }
         XCTAssertTrue(selectionActions.waitForExistence(timeout: 5))
-        XCTAssertEqual(app.buttons["select-snips"].label, "Done")
+    }
+
+    private func openSettings(in app: XCUIApplication) {
+        let actions = app.buttons["library-actions"]
+        for _ in 0..<3 where !actions.waitForExistence(timeout: 1) {
+            if app.buttons["Show Sidebar"].exists {
+                app.buttons["Show Sidebar"].tap()
+            } else if app.buttons["BackButton"].exists {
+                app.buttons["BackButton"].tap()
+            } else if app.navigationBars.buttons.firstMatch.exists {
+                app.navigationBars.buttons.firstMatch.tap()
+            }
+        }
+        XCTAssertTrue(actions.waitForExistence(timeout: 5))
+        actions.tap()
+        let settings = app.buttons["settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 3))
+        settings.tap()
     }
 
     private func toggle(_ element: XCUIElement) {

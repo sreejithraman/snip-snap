@@ -11,6 +11,7 @@ struct IOSAppRootView: View {
     @State private var sheet: AppSheet?
     @State private var copyShare = IOSCopyShareCoordinator()
     @State private var compactComposerStorage = CompactComposerStorage()
+    @State private var collectionEditMode: EditMode = .inactive
     @State private var isImportingBackup = false
     @State private var isExplainingBackupImport = false
     @FocusState private var isCompactComposerFocused: Bool
@@ -191,6 +192,7 @@ struct IOSAppRootView: View {
                     copyShare: copyShare,
                     sheet: $sheet,
                     layout: .compactStack,
+                    editMode: $collectionEditMode,
                     dismissComposerKeyboard: {
                         isCompactComposerFocused = false
                     }
@@ -205,14 +207,12 @@ struct IOSAppRootView: View {
                     )
                 }
                 .toolbar {
-                    ToolbarItemGroup(placement: .topBarLeading) {
-                        Button("Settings", systemImage: "gearshape") {
-                            sheet = .settings
-                        }
-                        .accessibilityIdentifier("settings")
+                    ToolbarItemGroup(placement: .topBarTrailing) {
                         LibraryActionsMenu(
                             model: model,
                             importBackup: { isExplainingBackupImport = true },
+                            settings: { sheet = .settings },
+                            editMode: $collectionEditMode,
                             includesCloudActions: true,
                             reviewRecoveredEdits: model.recoverySnapshot.needsAttentionCount > 0
                                 ? { sheet = .recoveryCenter }
@@ -228,6 +228,7 @@ struct IOSAppRootView: View {
                 ListSidebarView(
                     model: model,
                     sheet: $sheet,
+                    editMode: $collectionEditMode,
                     importBackup: { isExplainingBackupImport = true }
                 )
             } detail: {
@@ -237,6 +238,7 @@ struct IOSAppRootView: View {
                         copyShare: copyShare,
                         sheet: $sheet,
                         layout: .inlineList,
+                        editMode: $collectionEditMode,
                         dismissComposerKeyboard: {
                             isCompactComposerFocused = false
                         }
