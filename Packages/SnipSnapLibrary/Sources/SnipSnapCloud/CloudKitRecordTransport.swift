@@ -547,14 +547,13 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         )
     }
 
-    private nonisolated static func failure(_ error: Error) -> CloudOperationFailure {
+    package nonisolated static func failure(_ error: Error) -> CloudOperationFailure {
         guard let error = error as? CKError else { return .retryable }
         return switch error.code {
         case .quotaExceeded: .quotaExceeded
-        case .networkFailure, .networkUnavailable, .requestRateLimited, .serviceUnavailable,
-             .zoneBusy, .serverResponseLost, .notAuthenticated,
-             .accountTemporarilyUnavailable: .retryable
         case .zoneNotFound: .zoneMissing
+        case .notAuthenticated, .operationCancelled: .retryable
+        case let code where CloudKitRetryPolicy.isTransient(code): .retryable
         default: .rejected
         }
     }

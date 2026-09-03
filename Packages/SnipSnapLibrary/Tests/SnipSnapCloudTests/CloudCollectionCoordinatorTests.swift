@@ -500,6 +500,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertTrue(CloudKitRetryPolicy.isTransient(.serviceUnavailable))
     XCTAssertTrue(CloudKitRetryPolicy.isTransient(.serverResponseLost))
     XCTAssertTrue(CloudKitRetryPolicy.isTransient(.accountTemporarilyUnavailable))
+    XCTAssertFalse(CloudKitRetryPolicy.isTransient(.operationCancelled))
     XCTAssertFalse(CloudKitRetryPolicy.isTransient(.notAuthenticated))
     XCTAssertFalse(CloudKitRetryPolicy.isTransient(.permissionFailure))
     XCTAssertFalse(CloudKitRetryPolicy.isTransient(.quotaExceeded))

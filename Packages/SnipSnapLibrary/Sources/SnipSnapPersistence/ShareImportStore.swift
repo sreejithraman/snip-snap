@@ -67,10 +67,12 @@ public enum ShareImportSaveResult: Equatable, Sendable {
 public struct ShareImportSummary: Equatable, Sendable {
   public let imported: Int
   public let failed: Int
+  public let cleanupFailures: Int
 
-  public init(imported: Int, failed: Int) {
+  public init(imported: Int, failed: Int, cleanupFailures: Int = 0) {
     self.imported = imported
     self.failed = failed
+    self.cleanupFailures = cleanupFailures
   }
 }
 
@@ -207,6 +209,7 @@ public actor ShareImportStore {
   public func importPending(into library: any SnipLibrary) async -> ShareImportSummary {
     var imported = 0
     var failed = 0
+    var cleanupFailures = 0
     for directory in readyDirectories() {
       do {
         let request = try readRequest(in: directory)
@@ -215,7 +218,7 @@ public actor ShareImportStore {
           rememberedListID: request.destinationListID,
           in: snapshot.lists
         )
-        _ = try await library.perform(
+        let update = try await library.perform(
           .add(
             content: request.content,
             origin: .share,
@@ -229,15 +232,25 @@ public actor ShareImportStore {
           ),
           sortedBy: .chronological
         )
-        try afterPendingSaveBeforeCleanup()
-        try FileManager.default.removeItem(at: directory)
-        try DurableFile.syncDirectory(paths.pendingRootURL)
-        imported += 1
+        if case .add(.added) = update.outcome {
+          imported += 1
+        }
+        do {
+          try afterPendingSaveBeforeCleanup()
+          try FileManager.default.removeItem(at: directory)
+          try DurableFile.syncDirectory(paths.pendingRootURL)
+        } catch {
+          cleanupFailures += 1
+        }
       } catch {
         failed += 1
       }
     }
-    return ShareImportSummary(imported: imported, failed: failed)
+    return ShareImportSummary(
+      imported: imported,
+      failed: failed,
+      cleanupFailures: cleanupFailures
+    )
   }
 
   public func pendingImportCount() -> Int {

@@ -746,11 +746,9 @@ final class IOSAppModelTests: XCTestCase {
         let library = ModelTestLibrary(snips: [snip])
         let model = makeModel(library: library)
         let probe = PendingImportProbe()
-        let syncProbe = SyncCallProbe()
         let coordinator = IOSShareImportCoordinator(
             model: model,
-            importOperation: { await probe.run() },
-            syncOperation: { try await syncProbe.run() }
+            importOperation: { await probe.run() }
         )
 
         let launch = Task { await coordinator.importPendingAndReload() }
@@ -763,15 +761,11 @@ final class IOSAppModelTests: XCTestCase {
 
         let overlappingCallCount = await probe.callCount()
         XCTAssertEqual(overlappingCallCount, 2)
-        let overlappingSyncCallCount = await syncProbe.callCount()
-        XCTAssertEqual(overlappingSyncCallCount, 2)
         XCTAssertEqual(model.snips.map(\.id), [snip.id])
 
         await coordinator.importPendingAndReload()
         let foregroundCallCount = await probe.callCount()
         XCTAssertEqual(foregroundCallCount, 3)
-        let foregroundSyncCallCount = await syncProbe.callCount()
-        XCTAssertEqual(foregroundSyncCallCount, 3)
     }
 
     func testTriggerDuringImportTailQueuesOneTrailingPassForANewerRequest() async {
@@ -805,7 +799,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(syncPasses, 2)
     }
 
-    func testEveryImportPassRequestsSyncAfterImportEvenWhenNoItemWasImported() async {
+    func testEmptyImportPassesDoNotRequestRedundantSync() async {
         let model = IOSAppModel(library: ModelTestLibrary())
         let probe = ImportThenSyncProbe()
         let coordinator = IOSShareImportCoordinator(
@@ -818,26 +812,119 @@ final class IOSAppModelTests: XCTestCase {
         await coordinator.importPendingAndReload()
 
         let events = await probe.events()
-        XCTAssertEqual(events, [.importPending, .syncActive, .importPending, .syncActive])
+        XCTAssertEqual(events, [.importPending, .importPending])
     }
 
-    func testSyncFailureKeepsImportFailureReportingDistinct() async {
+    func testForegroundWithoutPendingShareUsesOneSyncAndShowsNoShareAlert() async {
+        let library = ModelTestLibrary()
+        let cloudSession = IOSCloudSyncSessionProbe(
+            result: .noChange,
+            activeLibrary: library,
+            syncError: .offline
+        )
+        let session = IOSAppSession(
+            library: library,
+            cloudSyncSession: cloudSession,
+            shareImportOperation: { ShareImportSummary(imported: 0, failed: 0) }
+        )
+
+        await session.foreground()
+
+        let syncCount = await cloudSession.syncCount()
+        XCTAssertEqual(syncCount, 1)
+        XCTAssertNil(session.model.errorMessage)
+    }
+
+    func testTrailingEmptyPassDoesNotRepeatAShareSync() async {
+        let model = IOSAppModel(library: ModelTestLibrary())
+        let imports = QueuedImportSummaryProbe(
+            summaries: [
+                ShareImportSummary(imported: 1, failed: 0),
+                ShareImportSummary(imported: 0, failed: 0)
+            ]
+        )
+        let sync = SequencedSyncProbe(failures: [true])
+        let coordinator = IOSShareImportCoordinator(
+            model: model,
+            importOperation: { await imports.run() },
+            syncOperation: { try await sync.run() }
+        )
+
+        let first = Task { await coordinator.importPendingAndReload() }
+        await imports.waitUntilFirstImportStarts()
+        let overlapping = Task { await coordinator.importPendingAndReload() }
+        await Task.yield()
+        await imports.finishFirstImport()
+        await first.value
+        await overlapping.value
+
+        let syncCount = await sync.callCount()
+        XCTAssertEqual(syncCount, 1)
+        XCTAssertNil(model.errorMessage)
+    }
+
+    func testNoPendingShareDoesNotResolveActiveCloudLibrary() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "NoPendingShare-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = ModelTestLibrary()
+        let cloudSession = ActiveLibraryFailureProbe()
+        let session = IOSAppSession(
+            library: library,
+            shareImports: ShareImportStore(sharedRootURL: root),
+            cloudSyncSession: cloudSession
+        )
+
+        await session.foreground()
+
+        let activeLibraryCalls = await cloudSession.activeLibraryCallCount()
+        XCTAssertEqual(activeLibraryCalls, 0)
+        XCTAssertNil(session.model.errorMessage)
+    }
+
+    func testImportFailureReportsRetryWithoutRedundantSync() async {
         let model = IOSAppModel(library: ModelTestLibrary())
         let syncProbe = SyncCallProbe(error: ProbeError.offline)
         let coordinator = IOSShareImportCoordinator(
             model: model,
-            importOperation: { 1 },
+            importOperation: { ShareImportSummary(imported: 0, failed: 1) },
             syncOperation: { try await syncProbe.run() }
         )
 
         await coordinator.importPendingAndReload()
 
         let syncCalls = await syncProbe.callCount()
-        XCTAssertEqual(syncCalls, 1)
+        XCTAssertEqual(syncCalls, 0)
         XCTAssertEqual(
             model.errorMessage,
             "Some shared content could not be added yet. Snip Snap will try again next time."
         )
+    }
+
+    func testAcceptedImportStillSyncsWhenInboxCleanupFails() async {
+        let model = IOSAppModel(library: ModelTestLibrary())
+        let imports = QueuedImportSummaryProbe(
+            summaries: [
+                ShareImportSummary(imported: 1, failed: 0, cleanupFailures: 1),
+                ShareImportSummary(imported: 0, failed: 0)
+            ],
+            blocksFirstImport: false
+        )
+        let syncProbe = SyncCallProbe()
+        let coordinator = IOSShareImportCoordinator(
+            model: model,
+            importOperation: { await imports.run() },
+            syncOperation: { try await syncProbe.run() }
+        )
+
+        await coordinator.importPendingAndReload()
+        await coordinator.importPendingAndReload()
+
+        let syncCalls = await syncProbe.callCount()
+        XCTAssertEqual(syncCalls, 1)
+        XCTAssertNil(model.errorMessage)
     }
 
     func testSyncFailureDoesNotTurnALocalImportIntoAFailedSave() async throws {
@@ -859,7 +946,7 @@ final class IOSAppModelTests: XCTestCase {
                     ),
                     sortedBy: .chronological
                 )
-                return 0
+                return ShareImportSummary(imported: 1, failed: 0)
             },
             syncOperation: { throw ProbeError.offline }
         )
@@ -869,10 +956,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(model.snips.map(\.requestID), [requestID])
         let acceptedLocalSnapshot = await library.snapshot(sortedBy: .chronological)
         XCTAssertEqual(acceptedLocalSnapshot.snips.map(\.requestID), [requestID])
-        XCTAssertEqual(
-            model.errorMessage,
-            "The shared content is saved on this device. iCloud sync will try again later."
-        )
+        XCTAssertNil(model.errorMessage)
     }
 
     func testCopySharePayloadsCoverTextFileMixedMultiAndUnavailableCases() throws {
@@ -2331,7 +2415,7 @@ private actor PendingImportProbe {
     private var startWaiters: [CheckedContinuation<Void, Never>] = []
     private var firstImportContinuation: CheckedContinuation<Void, Never>?
 
-    func run() async -> Int {
+    func run() async -> ShareImportSummary {
         calls += 1
         startWaiters.forEach { $0.resume() }
         startWaiters.removeAll()
@@ -2340,7 +2424,7 @@ private actor PendingImportProbe {
                 firstImportContinuation = continuation
             }
         }
-        return 0
+        return ShareImportSummary(imported: 0, failed: 0)
     }
 
     func waitUntilFirstImportStarts() async {
@@ -2358,12 +2442,47 @@ private actor PendingImportProbe {
     func callCount() -> Int { calls }
 }
 
+private actor QueuedImportSummaryProbe {
+    private var summaries: [ShareImportSummary]
+    private let blocksFirstImport: Bool
+    private var firstImportContinuation: CheckedContinuation<Void, Never>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var calls = 0
+
+    init(summaries: [ShareImportSummary], blocksFirstImport: Bool = true) {
+        self.summaries = summaries
+        self.blocksFirstImport = blocksFirstImport
+    }
+
+    func run() async -> ShareImportSummary {
+        calls += 1
+        if calls == 1, blocksFirstImport {
+            startWaiters.forEach { $0.resume() }
+            startWaiters.removeAll()
+            await withCheckedContinuation { firstImportContinuation = $0 }
+        }
+        return summaries.isEmpty
+            ? ShareImportSummary(imported: 0, failed: 0)
+            : summaries.removeFirst()
+    }
+
+    func waitUntilFirstImportStarts() async {
+        if calls > 0 { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func finishFirstImport() {
+        firstImportContinuation?.resume()
+        firstImportContinuation = nil
+    }
+}
+
 private actor ImportCallProbe {
     private var calls = 0
 
-    func run() -> Int {
+    func run() -> ShareImportSummary {
         calls += 1
-        return 0
+        return ShareImportSummary(imported: 0, failed: 0)
     }
 
     func callCount() -> Int { calls }
@@ -2377,9 +2496,9 @@ private enum ImportThenSyncEvent: Equatable {
 private actor ImportThenSyncProbe {
     private var recorded: [ImportThenSyncEvent] = []
 
-    func importPending() -> Int {
+    func importPending() -> ShareImportSummary {
         recorded.append(.importPending)
-        return 0
+        return ShareImportSummary(imported: 0, failed: 0)
     }
 
     func syncActive() throws {
@@ -2411,7 +2530,7 @@ private actor TrailingShareImportProbe {
         pending.append(PendingRequest(content: content, requestID: requestID))
     }
 
-    func importPending() async -> Int {
+    func importPending() async -> ShareImportSummary {
         importCalls += 1
         let scanned = pending
         pending.removeAll()
@@ -2429,12 +2548,14 @@ private actor TrailingShareImportProbe {
                 sortedBy: .chronological
             )
         }
-        guard importCalls == 1 else { return 0 }
+        guard importCalls == 1 else {
+            return ShareImportSummary(imported: scanned.count, failed: 0)
+        }
         didFirstPassScan = true
         firstPassWaiters.forEach { $0.resume() }
         firstPassWaiters.removeAll()
         await withCheckedContinuation { firstPassRelease = $0 }
-        return 0
+        return ShareImportSummary(imported: scanned.count, failed: 0)
     }
 
     func waitUntilFirstPassScanned() async {
@@ -2474,4 +2595,37 @@ private actor SyncCallProbe {
     }
 
     func callCount() -> Int { calls }
+}
+
+private actor SequencedSyncProbe {
+    private var failures: [Bool]
+    private var calls = 0
+
+    init(failures: [Bool]) {
+        self.failures = failures
+    }
+
+    func run() throws {
+        calls += 1
+        if !failures.isEmpty, failures.removeFirst() {
+            throw ProbeError.offline
+        }
+    }
+
+    func callCount() -> Int { calls }
+}
+
+private actor ActiveLibraryFailureProbe: IOSCloudSyncSessionHandling {
+    private var activeLibraryCalls = 0
+
+    func synchronize() async throws -> SnipSnapCloudSyncResult { .noChange }
+
+    func iosActiveLibrary() async throws
+        -> (library: any SnipLibrary, recoveryScope: SnipRecoveryScope?)
+    {
+        activeLibraryCalls += 1
+        throw ProbeError.offline
+    }
+
+    func activeLibraryCallCount() -> Int { activeLibraryCalls }
 }

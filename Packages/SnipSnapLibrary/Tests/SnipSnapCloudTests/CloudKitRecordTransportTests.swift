@@ -5,6 +5,15 @@ import SnipSnapPersistence
 import XCTest
 
 final class CloudKitRecordTransportTests: XCTestCase {
+    func testOperationCancellationKeepsRecordWorkRetryable() {
+        let cancellation = CKError(_nsError: NSError(
+            domain: CKErrorDomain,
+            code: CKError.Code.operationCancelled.rawValue
+        ))
+
+        XCTAssertEqual(CloudKitRecordTransport.failure(cancellation), .retryable)
+    }
+
     func testEncryptedDataResetFlagIsDistinctFromAnOrdinaryMissingZone() {
         let reset = CKError(_nsError: NSError(
             domain: CKErrorDomain,
