@@ -149,7 +149,8 @@ struct CompactLibraryControls: View {
                     .accessibilityLabel("Send Snip")
                     .accessibilityIdentifier("composer-send")
                 }
-                .padding(.horizontal, SnipSnapSpacing.relatedContent / 2)
+                .padding(.leading, SnipSnapSpacing.relatedContent / 2)
+                .padding(.trailing, SnipSnapSpacing.relatedContent)
                 .id(composerFieldID)
             }
             .frame(minHeight: controlLength)

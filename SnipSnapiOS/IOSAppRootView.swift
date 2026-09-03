@@ -195,7 +195,19 @@ struct IOSAppRootView: View {
                     editMode: $collectionEditMode,
                     dismissComposerKeyboard: {
                         isCompactComposerFocused = false
-                    }
+                    },
+                    libraryActions: LibraryActionsMenu(
+                        model: model,
+                        importBackup: { isExplainingBackupImport = true },
+                        settings: { sheet = .settings },
+                        editMode: $collectionEditMode,
+                        includesCloudActions: true,
+                        reviewRecoveredEdits: model.recoverySnapshot.needsAttentionCount > 0
+                            ? { sheet = .recoveryCenter }
+                            : nil,
+                        editSelectedList: model.selectedListID == SnipList.inboxID
+                            ? nil : { sheet = .editList(id: model.selectedListID) }
+                    )
                 )
                 .libraryToast(model: model)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -205,22 +217,6 @@ struct IOSAppRootView: View {
                         isComposerFocused: $isCompactComposerFocused,
                         sheet: $sheet
                     )
-                }
-                .toolbar {
-                    ToolbarItemGroup(placement: .topBarTrailing) {
-                        LibraryActionsMenu(
-                            model: model,
-                            importBackup: { isExplainingBackupImport = true },
-                            settings: { sheet = .settings },
-                            editMode: $collectionEditMode,
-                            includesCloudActions: true,
-                            reviewRecoveredEdits: model.recoverySnapshot.needsAttentionCount > 0
-                                ? { sheet = .recoveryCenter }
-                                : nil,
-                            editSelectedList: model.selectedListID == SnipList.inboxID
-                                ? nil : { sheet = .editList(id: model.selectedListID) }
-                        )
-                    }
                 }
             }
         } else {
