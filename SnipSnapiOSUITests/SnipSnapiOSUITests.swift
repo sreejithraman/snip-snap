@@ -546,6 +546,9 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     func testDeleteToastUndoRestoresSnip() {
         continueAfterFailure = false
+        let originalAppearance = XCUIDevice.shared.appearance
+        XCUIDevice.shared.appearance = .dark
+        defer { XCUIDevice.shared.appearance = originalAppearance }
         let app = launchApp()
         createSnip("Undo this", in: app)
 
@@ -558,9 +561,12 @@ final class SnipSnapiOSUITests: XCTestCase {
         let toast = app.descendants(matching: .any)["app-toast"]
         XCTAssertTrue(toast.waitForExistence(timeout: 3))
         XCTAssertLessThan(toast.frame.width, app.frame.width - 48)
+        let composer = app.textFields["composer-text"]
+        let sendButton = app.buttons["composer-send"]
+        XCTAssertLessThanOrEqual(toast.frame.height, sendButton.frame.height + 4)
         XCTAssertLessThanOrEqual(
             toast.frame.maxY,
-            app.textFields["composer-text"].frame.minY
+            composer.frame.minY
         )
         let actionScreenshot = app.buttons["toast-action"].screenshot()
         let actionAttachment = XCTAttachment(screenshot: actionScreenshot)
@@ -568,12 +574,45 @@ final class SnipSnapiOSUITests: XCTestCase {
         actionAttachment.lifetime = .keepAlways
         add(actionAttachment)
         XCTAssertEqual(app.buttons["toast-action"].label, "Undo")
+        XCTAssertTrue(
+            hasDarkPixelsInLabelArea(actionScreenshot),
+            "The Undo label must contrast with its light button background in dark mode."
+        )
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "Delete toast above compact controls"
         screenshot.lifetime = .keepAlways
         add(screenshot)
         app.buttons["toast-action"].tap()
         XCTAssertTrue(row(named: "Undo this", in: app).waitForExistence(timeout: 3))
+    }
+
+    private func hasDarkPixelsInLabelArea(_ screenshot: XCUIScreenshot) -> Bool {
+        guard let source = screenshot.image.cgImage else { return false }
+        let crop = CGRect(
+            x: CGFloat(source.width) * 0.2,
+            y: CGFloat(source.height) * 0.25,
+            width: CGFloat(source.width) * 0.6,
+            height: CGFloat(source.height) * 0.5
+        ).integral
+        guard let labelArea = source.cropping(to: crop) else { return false }
+
+        let width = labelArea.width
+        let height = labelArea.height
+        var pixels = [UInt8](repeating: 255, count: width * height)
+        return pixels.withUnsafeMutableBytes { pointer in
+            guard let context = CGContext(
+                data: pointer.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ) else { return false }
+
+            context.draw(labelArea, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return pointer.contains { $0 < 128 }
+        }
     }
 
     func testRowSwipeShowsAVisibleDestructiveDeleteAction() {
