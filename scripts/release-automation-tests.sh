@@ -66,7 +66,7 @@ record_appcast="$test_root/record-appcast.xml"
 print '<rss><channel><item><enclosure url="https://github.test/releases/download/v0.5.0-beta.7/Snip-Snap-0.5.0.zip" length="9" sparkle:version="7" sparkle:shortVersionString="0.5.0" sparkle:edSignature="signed"/></item></channel></rss>' > "$record_appcast"
 release_automation_write_record \
     "$record" 0.5.0 7 "$commit" https://github.test/runs/7 "$zip" "$dmg" \
-    7 1 "$record_appcast"
+    7 1 "$record_appcast" 6 1
 release_automation_verify_record "$record" 0.5.0 7 "$zip" "$dmg" "$commit"
 release_automation_verify_record_appcast "$record" "$record_appcast" 0.5.0 7
 print '<rss><channel><item><enclosure url="https://github.test/other.zip" length="9" sparkle:version="7" sparkle:shortVersionString="0.5.0" sparkle:edSignature="signed"/></item></channel></rss>' > "$record_appcast"
@@ -78,8 +78,12 @@ gh_fixture="$test_root/gh"
 print '#!/bin/zsh' > "$gh_fixture"
 print 'case "$*" in' >> "$gh_fixture"
 print '  *compare*) print ahead ;;' >> "$gh_fixture"
-print '  *actions/runs/7/jobs*) print '\''{"jobs":[{"name":"Test release source","conclusion":"success","run_attempt":1},{"name":"Build signed Mac beta","conclusion":"success","run_attempt":1},{"name":"Upload internal TestFlight beta","conclusion":"success","run_attempt":1},{"name":"Publish Mac beta channels","conclusion":"failure","run_attempt":1},{"name":"Publish Mac beta channels","conclusion":"success","run_attempt":2}]}'\'' ;;' >> "$gh_fixture"
-print '  *actions/runs/7*) print '\''{"status":"completed","conclusion":"success","head_sha":"0123456789abcdef0123456789abcdef01234567","head_branch":"main","event":"push","run_attempt":2}'\'' ;;' >> "$gh_fixture"
+print '  *actions/runs/6/jobs*) print '\''{"jobs":[{"name":"Test beta candidate","conclusion":"success","run_attempt":1}]}'\'' ;;' >> "$gh_fixture"
+print '  *actions/runs/6*) print '\''{"status":"completed","conclusion":"failure","head_sha":"0123456789abcdef0123456789abcdef01234567","head_branch":"main","event":"push","run_attempt":2}'\'' ;;' >> "$gh_fixture"
+print '  *actions/runs/7/jobs*) print '\''{"jobs":[{"name":"Prepare release source","conclusion":"success","run_attempt":1},{"name":"Build signed Mac beta","conclusion":"success","run_attempt":1},{"name":"Upload internal TestFlight beta","conclusion":"success","run_attempt":1},{"name":"Publish Mac beta channels","conclusion":"failure","run_attempt":1},{"name":"Publish Mac beta channels","conclusion":"success","run_attempt":2}]}'\'' ;;' >> "$gh_fixture"
+print '  *actions/runs/7*) print '\''{"status":"completed","conclusion":"success","head_sha":"0123456789abcdef0123456789abcdef01234567","head_branch":"main","event":"workflow_run","run_attempt":2}'\'' ;;' >> "$gh_fixture"
+print '  *actions/runs/8/jobs*) print '\''{"jobs":[{"name":"Test release source","conclusion":"success","run_attempt":1},{"name":"Build signed Mac beta","conclusion":"success","run_attempt":1},{"name":"Upload internal TestFlight beta","conclusion":"success","run_attempt":1},{"name":"Publish Mac beta channels","conclusion":"success","run_attempt":1}]}'\'' ;;' >> "$gh_fixture"
+print '  *actions/runs/8*) print '\''{"status":"completed","conclusion":"success","head_sha":"0123456789abcdef0123456789abcdef01234567","head_branch":"main","event":"push","run_attempt":1}'\'' ;;' >> "$gh_fixture"
 print '  *) exit 1 ;;' >> "$gh_fixture"
 print 'esac' >> "$gh_fixture"
 /bin/chmod +x "$gh_fixture"
@@ -88,6 +92,26 @@ release_policy_require_commit_on_main test/repo "$commit"
 release_automation_verify_workflow_run "$record" test/repo "$commit"
 assert_fails release_automation_verify_workflow_run \
     "$record" test/repo 1111111111111111111111111111111111111111
+later_candidate_record="$test_root/Snip-Snap-0.5.0-beta.7-later-candidate.json"
+/usr/bin/ruby -rjson -e '
+  record = JSON.parse(File.read(ARGV.fetch(0)))
+  record["candidateWorkflow"]["runAttempt"] = 2
+  File.write(ARGV.fetch(1), JSON.pretty_generate(record) + "\n")
+' "$record" "$later_candidate_record"
+assert_fails release_automation_verify_workflow_run \
+    "$later_candidate_record" test/repo "$commit"
+legacy_record="$test_root/Snip-Snap-0.5.0-beta.7-legacy.json"
+/usr/bin/ruby -rjson -e '
+  record = JSON.parse(File.read(ARGV.fetch(0)))
+  record["schemaVersion"] = 2
+  record.delete("candidateWorkflow")
+  record["workflow"]["runID"] = 8
+  record["workflow"]["runAttempt"] = 1
+  record["workflow"]["testResult"] = "passed"
+  File.write(ARGV.fetch(1), JSON.pretty_generate(record) + "\n")
+' "$record" "$legacy_record"
+release_automation_verify_record "$legacy_record" 0.5.0 7 "$zip" "$dmg" "$commit"
+release_automation_verify_workflow_run "$legacy_record" test/repo "$commit"
 unset SNIP_SNAP_GH
 print -n 'changed' >> "$zip"
 assert_fails release_automation_verify_record "$record" 0.5.0 7 "$zip" "$dmg" "$commit"
@@ -120,15 +144,43 @@ for workflow in beta.yml promote-stable.yml; do
 done
 
 beta_workflow="$script_dir/../.github/workflows/beta.yml"
+beta_candidate_workflow="$script_dir/../.github/workflows/beta-candidate.yml"
+[[ -f "$beta_candidate_workflow" ]] || fail_test "missing beta-candidate.yml"
 /usr/bin/grep -F '${{ runner.temp }}' "$beta_workflow" >/dev/null && \
     fail_test "beta workflow uses runner context before a job starts"
 for required in \
+    'name: Beta candidate' \
+    'workflow_dispatch:' \
+    'group: beta-candidate-${{ github.ref }}' \
+    'cancel-in-progress: true' \
+    './scripts/test.sh' \
+    './scripts/build-matrix.sh' \
+    '"Shared/**"' \
+    '".github/workflows/beta.yml"'; do
+    /usr/bin/grep -F "$required" "$beta_candidate_workflow" >/dev/null || \
+        fail_test "beta candidate workflow is missing $required"
+done
+/usr/bin/grep -F 'environment: apple-release' "$beta_candidate_workflow" >/dev/null && \
+    fail_test "beta candidate uses the protected release environment"
+/usr/bin/grep -F 'secrets.' "$beta_candidate_workflow" >/dev/null && \
+    fail_test "beta candidate reads protected secrets"
+for required in \
+    'workflow_run:' \
+    'Beta candidate' \
+    'group: beta-publish-main' \
     'cancel-in-progress: false' \
+    'Prepare release source' \
+    "github.event.workflow_run.conclusion == 'success'" \
+    'github.event.workflow_run.head_sha' \
+    'Check current main' \
+    'current=false' \
+    'needs.prepare.outputs.current' \
+    'SNIP_SNAP_CANDIDATE_RUN_ATTEMPT' \
+    'SNIP_SNAP_CANDIDATE_RUN_ID' \
     'scripts/release-build-number.sh' \
     'scripts/testflight.sh upload --build-number' \
     'scripts/release.sh --build-number' \
     'scripts/publish-beta.sh --build-number' \
-    'scripts/build-matrix.sh' \
     'SNIP_SNAP_RELEASE_CHECKS_PASSED: YES' \
     'IOS_DEVELOPMENT_CERTIFICATE_BASE64' \
     'IOS_DEVELOPMENT_CERTIFICATE_PASSWORD' \
@@ -138,19 +190,22 @@ for required in \
     'IOS_SHARE_APP_STORE_PROFILE_BASE64' \
     'IOS_APP_STORE_PROFILE_NAME' \
     'IOS_SHARE_APP_STORE_PROFILE_NAME' \
-    'needs: [test, mac-build, ios-upload]' \
+    'needs: [prepare, mac-build, ios-upload]' \
     'SNIP_SNAP_GENERATE_APPCAST=' \
     'gh auth setup-git --hostname github.com' \
     'export SNIP_SNAP_RUNNER_PATH="$PATH"' \
     'export SNIP_SNAP_GH="$(command -v gh)"' \
     'export SNIP_SNAP_GIT="$(command -v git)"' \
     'export HOMEBREW_GIT_PATH="$SNIP_SNAP_GIT"' \
-    '"Shared/**"' \
     'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' \
     'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'; do
     /usr/bin/grep -F "$required" "$beta_workflow" >/dev/null || \
         fail_test "beta workflow is missing $required"
 done
+/usr/bin/grep -E '^[[:space:]]+\./scripts/test\.sh$' "$beta_workflow" >/dev/null && \
+    fail_test "beta delivery reruns candidate tests"
+/usr/bin/grep -F 'workflow_dispatch:' "$beta_workflow" >/dev/null && \
+    fail_test "beta delivery can bypass candidate checks"
 promotion_workflow="$script_dir/../.github/workflows/promote-stable.yml"
 for required in \
     'version:' \

@@ -19,30 +19,38 @@ iPad Simulator builds. Do not load signing files or release secrets.
 
 ### Main beta
 
-Use one long-lived workflow with a path filter for app, package, project,
-release-script, and build-setting changes. A docs-only merge should not make a
-beta.
+Use two long-lived workflows. The candidate workflow has a path filter for app,
+package, project, release-script, and build-setting changes. A docs-only merge
+should not make a beta. The delivery workflow starts only after a candidate
+finishes successfully on `main`.
 
-Keep one beta run active and one pending. If several app changes reach `main`
-before the active run ends, GitHub may replace the older pending run with the
-newest one. This is intentional for a one-maintainer project: ship the latest
-tested state instead of spending signing time on each intermediate commit.
+Cancel an older candidate when a newer app change reaches `main`. Keep one
+delivery active and one pending, and do not cancel active delivery. GitHub
+replaces an older pending delivery with the newest one. Before signed work, the
+delivery checks that its tested commit is still the tip of `main`. Passing that
+check marks the delivery as started; a later push does not stop it.
 
-The workflow:
+The workflows:
 
-1. Read the planned marketing version from `release.json`.
-2. Set the build number to the workflow run number plus the migration offset.
-3. Test the full unsigned matrix once, then build iOS and Mac from the same
-   clean commit and number. Local release commands still test by default.
+1. Test the full unsigned matrix once in the candidate workflow.
+2. Check that the tested commit is still current, then read the planned
+   marketing version from `release.json`.
+3. Set the build number to the delivery workflow run number plus the migration
+   offset, then build iOS and Mac from the same clean commit and number. Local
+   release commands still test by default.
 4. Upload iOS to internal TestFlight.
 5. Sign and notarize the Mac app.
 6. Create a GitHub prerelease such as `v0.5.0-beta.7`.
 7. Add the Mac update to the Sparkle `beta` channel.
 8. Update `snip-snap@beta` in the Homebrew tap.
-9. Save the commit, workflow run, first publishing attempt, number, checksums,
-   Sparkle signature, Mac signing and notarization results, and TestFlight
-   upload result as release evidence. Keep that asset unchanged. GitHub keeps
-   later rerun attempts and their job results on the same workflow run.
+9. Save the commit, candidate run and attempt, delivery run and first publishing
+   attempt, number, checksums, Sparkle signature, Mac signing and notarization
+   results, and TestFlight upload result as release evidence. Keep that asset
+   unchanged. GitHub keeps later delivery rerun attempts and their job results
+   on the same workflow run.
+
+Rerunning a delivery keeps its build number and files. Rerunning a candidate
+starts a new delivery run and therefore gets a new build number.
 
 Publish in that order. If a later step fails, keep the prior beta live and rerun
 the failed job with the same build and files.

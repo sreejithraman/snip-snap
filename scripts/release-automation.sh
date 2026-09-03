@@ -129,7 +129,17 @@ release_automation_verify_workflow_run() {
     local run_attempt
     local run_json
     local jobs_json
+    local schema_version
+    local candidate_run_id
+    local candidate_run_attempt
+    local candidate_run_json
+    local candidate_jobs_json
     local gh_tool="${SNIP_SNAP_GH:-gh}"
+
+    schema_version="$(/usr/bin/plutil -extract schemaVersion raw -o - "$record_path")" || {
+        release_automation_fail "the beta record has no schema version"
+        return 1
+    }
 
     run_id="$(/usr/bin/plutil -extract workflow.runID raw -o - "$record_path")" || {
         release_automation_fail "the beta record has no workflow run ID"
@@ -148,19 +158,51 @@ release_automation_verify_workflow_run() {
         release_automation_fail "could not read the beta workflow jobs"
         return 1
     }
+    [[ "$schema_version" == 2 || "$schema_version" == 3 ]] || {
+        release_automation_fail "the beta record has an unsupported schema version"
+        return 1
+    }
+    candidate_run_json='{}'
+    candidate_jobs_json='{"jobs":[]}'
+    candidate_run_attempt=0
+    if [[ "$schema_version" == 3 ]]; then
+        candidate_run_id="$(/usr/bin/plutil -extract candidateWorkflow.runID raw -o - "$record_path")" || {
+            release_automation_fail "the beta record has no candidate workflow run ID"
+            return 1
+        }
+        candidate_run_attempt="$(/usr/bin/plutil -extract candidateWorkflow.runAttempt raw -o - "$record_path")" || {
+            release_automation_fail "the beta record has no candidate workflow run attempt"
+            return 1
+        }
+        candidate_run_json="$("$gh_tool" api \
+            "repos/$release_repo/actions/runs/$candidate_run_id")" || {
+            release_automation_fail "could not read the beta candidate workflow run"
+            return 1
+        }
+        candidate_jobs_json="$("$gh_tool" api \
+            "repos/$release_repo/actions/runs/$candidate_run_id/jobs?filter=all&per_page=100")" || {
+            release_automation_fail "could not read the beta candidate workflow jobs"
+            return 1
+        }
+    fi
     /usr/bin/ruby -rjson -e '
-      run = JSON.parse(ARGV.fetch(0))
-      jobs = JSON.parse(ARGV.fetch(1)).fetch("jobs")
-      expected_commit = ARGV.fetch(2)
-      expected_attempt = Integer(ARGV.fetch(3), 10)
+      schema = Integer(ARGV.fetch(0), 10)
+      run = JSON.parse(ARGV.fetch(1))
+      jobs = JSON.parse(ARGV.fetch(2)).fetch("jobs")
+      candidate_run = JSON.parse(ARGV.fetch(3))
+      candidate_jobs = JSON.parse(ARGV.fetch(4)).fetch("jobs")
+      expected_commit = ARGV.fetch(5)
+      expected_attempt = Integer(ARGV.fetch(6), 10)
+      expected_candidate_attempt = Integer(ARGV.fetch(7), 10)
       abort unless run["status"] == "completed"
       abort unless run["conclusion"] == "success"
       abort unless run["head_sha"] == expected_commit
       abort unless run["head_branch"] == "main"
-      abort unless ["push", "workflow_dispatch"].include?(run["event"])
+      expected_event = schema == 2 ? ["push", "workflow_dispatch"] : ["workflow_run"]
+      abort unless expected_event.include?(run["event"])
       abort unless run["run_attempt"] >= expected_attempt
       required = [
-        "Test release source",
+        schema == 2 ? "Test release source" : "Prepare release source",
         "Build signed Mac beta",
         "Upload internal TestFlight beta",
         "Publish Mac beta channels"
@@ -168,8 +210,21 @@ release_automation_verify_workflow_run() {
       abort unless required.all? do |name|
         jobs.any? { |job| job["name"] == name && job["conclusion"] == "success" }
       end
-    ' "$run_json" "$jobs_json" "$expected_commit" "$run_attempt" || {
-        release_automation_fail "the recorded beta workflow did not pass every release job"
+      if schema == 3
+        abort unless candidate_run["head_sha"] == expected_commit
+        abort unless candidate_run["head_branch"] == "main"
+        abort unless ["push", "workflow_dispatch"].include?(candidate_run["event"])
+        abort unless candidate_run["run_attempt"] >= expected_candidate_attempt
+        abort unless candidate_jobs.any? do |job|
+          job["name"] == "Test beta candidate" &&
+            job["conclusion"] == "success" &&
+            job["run_attempt"] == expected_candidate_attempt
+        end
+      end
+    ' "$schema_version" "$run_json" "$jobs_json" "$candidate_run_json" \
+        "$candidate_jobs_json" "$expected_commit" "$run_attempt" \
+        "$candidate_run_attempt" || {
+        release_automation_fail "the recorded beta workflows did not pass every release job"
         return 1
     }
 }
@@ -185,6 +240,8 @@ release_automation_write_record() {
     local run_id="$8"
     local run_attempt="$9"
     local appcast_path="${10}"
+    local candidate_run_id="${11}"
+    local candidate_run_attempt="${12}"
     local beta_tag
     local zip_sha
     local dmg_sha
@@ -197,6 +254,11 @@ release_automation_write_record() {
     }
     [[ "$run_id" =~ '^[1-9][0-9]*$' && "$run_attempt" =~ '^[1-9][0-9]*$' ]] || {
         release_automation_fail "workflow run ID and attempt must be positive integers"
+        return 1
+    }
+    [[ "$candidate_run_id" =~ '^[1-9][0-9]*$' &&
+       "$candidate_run_attempt" =~ '^[1-9][0-9]*$' ]] || {
+        release_automation_fail "candidate workflow run ID and attempt must be positive integers"
         return 1
     }
     [[ -f "$zip_path" && -f "$dmg_path" ]] || {
@@ -213,14 +275,15 @@ release_automation_write_record() {
     }
 
     /usr/bin/ruby -rjson -e '
-      output, version, build, commit, run_url, run_id, run_attempt, tag,
-        zip_name, zip_sha, dmg_name, dmg_sha, enclosure = ARGV
+      output, version, build, commit, run_url, run_id, run_attempt,
+        candidate_run_id, candidate_run_attempt, tag, zip_name, zip_sha,
+        dmg_name, dmg_sha, enclosure = ARGV
       signature = enclosure[/\bsparkle:edSignature="([^"]+)"/, 1]
       length = enclosure[/\blength="([0-9]+)"/, 1]
       url = enclosure[/\burl="([^"]+)"/, 1]
       abort unless signature && length && url
       record = {
-        "schemaVersion" => 2,
+        "schemaVersion" => 3,
         "version" => version,
         "build" => Integer(build, 10),
         "commit" => commit,
@@ -228,10 +291,14 @@ release_automation_write_record() {
         "workflow" => {
           "runID" => Integer(run_id, 10),
           "runAttempt" => Integer(run_attempt, 10),
-          "testResult" => "passed",
           "macSigningResult" => "verified",
           "macNotarizationResult" => "accepted",
           "testFlightUploadResult" => "uploaded"
+        },
+        "candidateWorkflow" => {
+          "runID" => Integer(candidate_run_id, 10),
+          "runAttempt" => Integer(candidate_run_attempt, 10),
+          "testResult" => "passed"
         },
         "betaTag" => tag,
         "zip" => {
@@ -245,8 +312,8 @@ release_automation_write_record() {
       }
       File.write(output, JSON.pretty_generate(record) + "\n")
     ' "$output_path" "$version" "$build_number" "$commit" "$run_url" \
-        "$run_id" "$run_attempt" "$beta_tag" "$zip_path" "$zip_sha" \
-        "$dmg_path" "$dmg_sha" "$enclosure"
+        "$run_id" "$run_attempt" "$candidate_run_id" "$candidate_run_attempt" \
+        "$beta_tag" "$zip_path" "$zip_sha" "$dmg_path" "$dmg_sha" "$enclosure"
 }
 
 release_automation_verify_record() {
@@ -264,7 +331,7 @@ release_automation_verify_record() {
     /usr/bin/ruby -rjson -rdigest -e '
       record_path, version, build, zip_path, dmg_path, expected_commit = ARGV
       record = JSON.parse(File.read(record_path))
-      abort unless record["schemaVersion"] == 2
+      abort unless [2, 3].include?(record["schemaVersion"])
       abort unless record["version"] == version
       abort unless record["build"] == Integer(build, 10)
       abort unless expected_commit.empty? || record["commit"] == expected_commit
@@ -280,7 +347,15 @@ release_automation_verify_record() {
       abort unless workflow.is_a?(Hash)
       abort unless workflow["runID"].is_a?(Integer) && workflow["runID"] > 0
       abort unless workflow["runAttempt"].is_a?(Integer) && workflow["runAttempt"] > 0
-      abort unless workflow["testResult"] == "passed"
+      if record["schemaVersion"] == 2
+        abort unless workflow["testResult"] == "passed"
+      else
+        candidate = record["candidateWorkflow"]
+        abort unless candidate.is_a?(Hash)
+        abort unless candidate["runID"].is_a?(Integer) && candidate["runID"] > 0
+        abort unless candidate["runAttempt"].is_a?(Integer) && candidate["runAttempt"] > 0
+        abort unless candidate["testResult"] == "passed"
+      end
       abort unless workflow["macSigningResult"] == "verified"
       abort unless workflow["macNotarizationResult"] == "accepted"
       abort unless workflow["testFlightUploadResult"] == "uploaded"
