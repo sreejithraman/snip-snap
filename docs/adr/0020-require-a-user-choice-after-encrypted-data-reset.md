@@ -1,5 +1,7 @@
 # 0020: Require a user choice after an encrypted-data reset
 
+Status: superseded by ADR-0024
+
 When CloudKit reports an encrypted-data reset, Snip Snap will stop cloud sends and treat the next synced collection as a new generation. It will preserve the device's durable data as a read-only local recovery copy and clear the old pending CloudKit work, sync shadow, downloaded-file cache, and engine state. The app will offer Restore from This Device, Start Empty, and Keep Sync Off. It will not upload or combine every device's old cache automatically.
 
 ## Consequences

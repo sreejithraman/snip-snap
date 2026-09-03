@@ -42,11 +42,16 @@ extension CloudFullSyncPersistenceTests {
     try await persistence.applyStaged(batch.id)
 
     let pending = try await persistence.pendingChanges()
-    let firstSignal = await persistence.takeEncryptedDataResetSignal()
-    let secondSignal = await persistence.takeEncryptedDataResetSignal()
+    let firstSignal = try await persistence.destructiveResetSignal()
+    let reopened = CloudFullSyncPersistence(
+      library: library,
+      namespace: namespace,
+      dataZone: zone
+    )
+    let secondSignal = try await reopened.destructiveResetSignal()
     XCTAssertTrue(pending.operations.isEmpty)
-    XCTAssertTrue(firstSignal)
-    XCTAssertFalse(secondSignal)
+    XCTAssertEqual(firstSignal, .encryptedDataReset)
+    XCTAssertEqual(secondSignal, .encryptedDataReset)
   }
 
   func testEncryptedDataResetReportedWhileSendingSignalsCollectionCoordinator() async throws {
@@ -74,10 +79,41 @@ extension CloudFullSyncPersistenceTests {
     )
     try await persistence.applyStaged(batch.id)
 
-    let firstSignal = await persistence.takeEncryptedDataResetSignal()
-    let secondSignal = await persistence.takeEncryptedDataResetSignal()
-    XCTAssertTrue(firstSignal)
-    XCTAssertFalse(secondSignal)
+    let firstSignal = try await persistence.destructiveResetSignal()
+    let reopened = CloudFullSyncPersistence(
+      library: library,
+      namespace: namespace,
+      dataZone: zone
+    )
+    let secondSignal = try await reopened.destructiveResetSignal()
+    XCTAssertEqual(firstSignal, .encryptedDataReset)
+    XCTAssertEqual(secondSignal, .encryptedDataReset)
+  }
+
+  func testPurgeEventIsKeptDistinctFromEncryptedDataReset() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudPurgeEvent-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let namespace = makeNamespace()
+    let zone = try XCTUnwrap(namespace.zones.first)
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let persistence = CloudFullSyncPersistence(
+      library: library,
+      namespace: namespace,
+      dataZone: zone
+    )
+    let batch = CloudFetchedBatch(
+      id: UUID(),
+      items: [],
+      databaseEvents: [.zoneDeleted(zone, reason: .purged)],
+      engineState: nil
+    )
+
+    try await persistence.stage(.fetched(batch))
+    try await persistence.applyStaged(batch.id)
+
+    let signal = try await persistence.destructiveResetSignal()
+    XCTAssertEqual(signal, .purged)
   }
 
   func testDuplicateRemoteDeleteAfterApplyFailureCreatesOneRecoveredSnip() async throws {

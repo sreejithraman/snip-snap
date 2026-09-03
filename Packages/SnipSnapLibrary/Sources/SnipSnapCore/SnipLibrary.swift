@@ -27,6 +27,7 @@ public enum SyncedAttachmentTransferState: Equatable, Sendable {
 /// One main-app owner for optional sync and verified, on-demand attachment files.
 public protocol OptionalCloudSyncHandling: AppleAccountCacheHandling {
     func syncWhenPossible() async
+    func retrySyncWhenPossible() async
     func scheduleSyncAfterLocalChange() async
     func isCloudSyncActive() async throws -> Bool
     func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState]
@@ -35,6 +36,10 @@ public protocol OptionalCloudSyncHandling: AppleAccountCacheHandling {
 }
 
 public extension OptionalCloudSyncHandling {
+    func retrySyncWhenPossible() async {
+        await syncWhenPossible()
+    }
+
     func scheduleSyncAfterLocalChange() async {
         await syncWhenPossible()
     }

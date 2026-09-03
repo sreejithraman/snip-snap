@@ -5,6 +5,7 @@ import SnipSnapPersistence
 package protocol CloudFullSyncStore: Sendable {
   func loadEngineState() async throws -> CloudEngineStateEnvelope?
   func saveEngineState(_ state: CloudEngineStateEnvelope) async throws
+  func clearEngineState() async throws
   func stagedBatches() async throws -> [CloudFullBatchCommit]
   func stage(_ batch: CloudSyncBatch, outbound: CloudOutboundBatch?) async throws
   func applyStaged(_ id: UUID) async throws
@@ -17,6 +18,8 @@ package actor CloudFullSyncCoordinator {
   private let fetchScope: CloudFetchScope
   private var started = false
   private var syncing = false
+  private var lastIssue: SyncedContentSyncIssue?
+  private var blocksOutbound = false
 
   package init(
     store: any CloudFullSyncStore,
@@ -53,18 +56,28 @@ package actor CloudFullSyncCoordinator {
     try await run(fetch: false, send: true, beforeSend: beforeSend)
   }
 
-  package func prepareAutomaticSync() async throws {
+  package func prepareAutomaticSync(
+    beforeApply: @escaping @Sendable () async throws -> Void = {}
+  ) async throws {
     guard !syncing else { throw CloudTransportError.syncAlreadyRunning }
     syncing = true
+    lastIssue = nil
+    blocksOutbound = false
     do {
       try await recover()
-      if !started {
-        let state = try await store.loadEngineState()
-        try await transport.start(state: state)
-        started = true
+      let needsBootstrapFetch = try await ensureStarted()
+      if needsBootstrapFetch {
+        let fetched = try await transport.fetch(scope: .all)
+        try await beforeApply()
+        let batch = CloudSyncBatch.fetched(fetched)
+        try await commitAndRecoverExpiredToken(
+          batch,
+          outbound: nil,
+          beforeApply: beforeApply
+        )
       }
-      if let scheduler = transport as? any CloudAutomaticSyncScheduling {
-        let outbound = try await store.pendingChanges()
+      if !blocksOutbound, let scheduler = transport as? any CloudAutomaticSyncScheduling {
+        let outbound = try await pendingChangesOrResetEngine()
         if !outbound.operations.isEmpty || !outbound.zonesToSave.isEmpty {
           try await scheduler.scheduleAutomaticSync(outbound)
         }
@@ -85,11 +98,17 @@ package actor CloudFullSyncCoordinator {
   ) async throws {
     guard !syncing else { throw CloudTransportError.syncAlreadyRunning }
     syncing = true
+    lastIssue = nil
+    blocksOutbound = false
     do {
       try await beforeApply()
       try await recover(excluding: batch.id)
-      try await commit(batch, outbound: outbound)
-      try await schedulePendingChanges()
+      try await commitAndRecoverExpiredToken(
+        batch,
+        outbound: outbound,
+        beforeApply: beforeApply
+      )
+      if !blocksOutbound { try await schedulePendingChanges() }
       syncing = false
       await transport.drainAutomaticSyncEvents()
     } catch {
@@ -107,25 +126,31 @@ package actor CloudFullSyncCoordinator {
   ) async throws {
     guard !syncing else { throw CloudTransportError.syncAlreadyRunning }
     syncing = true
+    lastIssue = nil
+    blocksOutbound = false
     do {
       try await recover()
-      var needsBootstrapFetch = false
-      if !started {
-        let state = try await store.loadEngineState()
-        try await transport.start(state: state)
-        started = true
-        needsBootstrapFetch = state == nil
-      }
+      let needsBootstrapFetch = try await ensureStarted()
       if fetch || (send && needsBootstrapFetch) {
         let fetched = try await transport.fetch(scope: fetch ? fetchScope : .all)
         try await beforeFetchApply()
-        try await commit(.fetched(fetched), outbound: nil)
+        let batch = CloudSyncBatch.fetched(fetched)
+        try await commitAndRecoverExpiredToken(
+          batch,
+          outbound: nil,
+          beforeApply: beforeFetchApply
+        )
       }
-      if send {
-        let outbound = try await store.pendingChanges()
+      if send, !blocksOutbound {
+        let outbound = try await pendingChangesOrResetEngine()
         if !outbound.operations.isEmpty || !outbound.zonesToSave.isEmpty {
           try await beforeSend(outbound)
-          try await commit(.sent(transport.send(outbound)), outbound: outbound)
+          let batch = CloudSyncBatch.sent(try await transport.send(outbound))
+          try await commitAndRecoverExpiredToken(
+            batch,
+            outbound: outbound,
+            beforeApply: beforeFetchApply
+          )
         }
       }
       syncing = false
@@ -135,6 +160,40 @@ package actor CloudFullSyncCoordinator {
       await transport.drainAutomaticSyncEvents()
       throw error
     }
+  }
+
+  private func ensureStarted() async throws -> Bool {
+    guard !started else { return false }
+    let state: CloudEngineStateEnvelope?
+    do {
+      state = try await store.loadEngineState()
+    } catch CloudTransportError.invalidEngineState {
+      try await store.clearEngineState()
+      try await transport.start(state: nil, initialOutbound: nil)
+      started = true
+      return true
+    } catch CloudTransportError.stateNamespaceMismatch {
+      try await store.clearEngineState()
+      try await transport.start(state: nil, initialOutbound: nil)
+      started = true
+      return true
+    }
+    let outbound = state == nil ? nil : try await pendingChangesOrResetEngine()
+    do {
+      try await transport.start(state: state, initialOutbound: outbound)
+    } catch CloudTransportError.invalidEngineState {
+      try await store.clearEngineState()
+      try await transport.start(state: nil, initialOutbound: nil)
+      started = true
+      return true
+    } catch CloudTransportError.stateNamespaceMismatch {
+      try await store.clearEngineState()
+      try await transport.start(state: nil, initialOutbound: nil)
+      started = true
+      return true
+    }
+    started = true
+    return state == nil
   }
 
   private func recover(excluding excludedBatchID: UUID? = nil) async throws {
@@ -162,11 +221,59 @@ package actor CloudFullSyncCoordinator {
     try await store.saveEngineState(state)
   }
 
+  package func takeSyncIssue() -> SyncedContentSyncIssue? {
+    defer { lastIssue = nil }
+    return lastIssue
+  }
+
+  package func isOutboundBlocked() -> Bool { blocksOutbound }
+
   private func schedulePendingChanges() async throws {
     guard let scheduler = transport as? any CloudAutomaticSyncScheduling else { return }
-    let outbound = try await store.pendingChanges()
+    let outbound = try await pendingChangesOrResetEngine()
     guard !outbound.operations.isEmpty || !outbound.zonesToSave.isEmpty else { return }
     try await scheduler.scheduleAutomaticSync(outbound)
+  }
+
+  private func pendingChangesOrResetEngine() async throws -> CloudOutboundBatch {
+    do {
+      return try await store.pendingChanges()
+    } catch is CloudRecordError {
+      try await store.clearEngineState()
+      await transport.reset()
+      started = false
+      throw CloudSyncRetryableError.itemFailure
+    }
+  }
+
+  private func recordSyncIssue(in batch: CloudSyncBatch) {
+    if let issue = CloudSyncIssueError.issue(in: batch) { lastIssue = issue }
+    blocksOutbound = blocksOutbound || CloudSyncIssueError.blocksOutbound(in: batch)
+  }
+
+  private func commitAndRecoverExpiredToken(
+    _ batch: CloudSyncBatch,
+    outbound: CloudOutboundBatch?,
+    beforeApply: @escaping @Sendable () async throws -> Void
+  ) async throws {
+    try await commit(batch, outbound: outbound)
+    guard CloudSyncIssueError.requiresEngineReset(batch) else {
+      recordSyncIssue(in: batch)
+      return
+    }
+    try await store.clearEngineState()
+    await transport.reset()
+    started = false
+    lastIssue = nil
+    blocksOutbound = false
+    _ = try await ensureStarted()
+    let fetched = CloudSyncBatch.fetched(try await transport.fetch(scope: .all))
+    try await beforeApply()
+    try await commit(fetched, outbound: nil)
+    recordSyncIssue(in: fetched)
+    if CloudSyncIssueError.requiresEngineReset(fetched) {
+      blocksOutbound = true
+    }
   }
 }
 
@@ -193,7 +300,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   let namespaceKey: CloudSyncNamespaceKey
   let now: @Sendable () -> Date
   let afterCommitHook: ApplyHook
-  private var observedEncryptedDataReset = false
+  private var observedDestructiveReset: CloudZoneDeletionReason?
 
   package init(
     library: SwiftDataSnipLibrary,
@@ -221,7 +328,12 @@ extension CloudFullSyncPersistence {
   package func loadEngineState() async throws -> CloudEngineStateEnvelope? {
     let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey).engineState
     guard let stored else { return nil }
-    let value = try JSONDecoder().decode(CloudEngineStateEnvelope.self, from: stored)
+    let value: CloudEngineStateEnvelope
+    do {
+      value = try JSONDecoder().decode(CloudEngineStateEnvelope.self, from: stored)
+    } catch {
+      throw CloudTransportError.invalidEngineState
+    }
     guard value.namespace == namespace else { throw CloudTransportError.stateNamespaceMismatch }
     return value
   }
@@ -236,6 +348,10 @@ extension CloudFullSyncPersistence {
     )
   }
 
+  package func clearEngineState() async throws {
+    try await library.clearCloudEngineState(namespaceKey: namespaceKey)
+  }
+
   package func stagedBatches() async throws -> [CloudFullBatchCommit] {
     try await library.stagedCloudFullBatches(namespaceKey: namespaceKey)
   }
@@ -244,9 +360,9 @@ extension CloudFullSyncPersistence {
     guard let batch = try await stagedBatches().first(where: { $0.batchID == id }) else { return }
     if let rawData = batch.rawBatchData,
       let raw = try? JSONDecoder().decode(RawStagedBatch.self, from: rawData),
-      Self.containsEncryptedDataReset(raw.batch)
+      let reason = Self.destructiveResetReason(raw.batch)
     {
-      observedEncryptedDataReset = true
+      observedDestructiveReset = reason
     }
     do {
       _ = try await library.commitCloudFullBatch(batch)
@@ -277,8 +393,8 @@ extension CloudFullSyncPersistence {
     outbound: CloudOutboundBatch?
   ) async throws {
     do {
-      if Self.containsEncryptedDataReset(batch) {
-        observedEncryptedDataReset = true
+      if let reason = Self.destructiveResetReason(batch) {
+        observedDestructiveReset = reason
       }
       let rawData = try Self.rawBatchData(batch, outbound: outbound)
       let commit = try await makeCommit(batch, outbound: outbound, rawBatchData: rawData)
@@ -297,19 +413,38 @@ extension CloudFullSyncPersistence {
     }
   }
 
-  package func takeEncryptedDataResetSignal() -> Bool {
-    defer { observedEncryptedDataReset = false }
-    return observedEncryptedDataReset
+  package func destructiveResetSignal() async throws -> CloudZoneDeletionReason? {
+    if let observedDestructiveReset {
+      self.observedDestructiveReset = nil
+      return observedDestructiveReset
+    }
+    for recovery in try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
+      where recovery.kind == .destructiveReset
+    {
+      let raw = try JSONDecoder().decode(RawStagedBatch.self, from: recovery.resultData)
+      guard raw.storageVersion == 1 else { throw CloudFullStorageError.invalidBatchReplay }
+      if let reason = Self.destructiveResetReason(raw.batch) { return reason }
+    }
+    return nil
   }
 
-  private static func containsEncryptedDataReset(_ batch: CloudSyncBatch) -> Bool {
+  private static func destructiveResetReason(
+    _ batch: CloudSyncBatch
+  ) -> CloudZoneDeletionReason? {
     let events: [CloudDatabaseEvent] = switch batch {
     case .fetched(let fetched): fetched.databaseEvents
     case .sent(let sent): sent.databaseEvents
     }
-    return events.contains { event in
-      if case .zoneDeleted(_, reason: .encryptedDataReset) = event { true } else { false }
+    for event in events {
+      guard case .zoneDeleted(_, let reason) = event else { continue }
+      switch reason {
+      case .purged, .encryptedDataReset:
+        return reason
+      case .deleted:
+        continue
+      }
     }
+    return nil
   }
 
   private static func rawBatchData(
@@ -319,5 +454,35 @@ extension CloudFullSyncPersistence {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
     return try encoder.encode(RawStagedBatch(batch: batch, outbound: outbound))
+  }
+
+  static func storedSyncIssue(
+    for recovery: CloudFullRecoveryInput
+  ) -> SyncedContentSyncIssue {
+    switch recovery.kind {
+    case .retryableFetch, .terminalFetch, .retryableSend, .terminalSend:
+      guard let raw = try? JSONDecoder().decode(RawStagedBatch.self, from: recovery.resultData),
+        raw.storageVersion == 1
+      else { return .appDataIssue }
+      return CloudSyncIssueError.issue(in: raw.batch)
+        ?? (recovery.kind == .retryableFetch || recovery.kind == .retryableSend
+          ? .someChangesPending : .appDataIssue)
+    case .destructiveReset:
+      return .iCloudDataReset
+    case .malformedSentBatch, .modeRecoveredSnip, .modeRecoveredList,
+         .modeDeletedListPlacement, .deletedListPlacement:
+      return .appDataIssue
+    }
+  }
+
+  static func storedSyncIssues(
+    for recovery: CloudFullRecoveryInput
+  ) -> [SyncedContentSyncIssue]? {
+    guard recovery.kind == .terminalFetch || recovery.kind == .terminalSend,
+      let raw = try? JSONDecoder().decode(RawStagedBatch.self, from: recovery.resultData),
+      raw.storageVersion == 1
+    else { return nil }
+    let issues = CloudSyncIssueError.issues(in: raw.batch)
+    return issues.isEmpty ? nil : issues
   }
 }

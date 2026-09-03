@@ -90,7 +90,16 @@ private struct AppSettingsContent: View {
                     )
                     Divider()
                 }
-                SyncedContentSettingsView(model: syncedContentSettings)
+                SyncedContentSettingsView(
+                    model: syncedContentSettings,
+                    retryAction: {
+                        if syncedContentSettings.mode == .localOnly {
+                            await syncedContentSettings.enableICloudSync()
+                        } else {
+                            await cloudSyncHandler?.retrySyncWhenPossible()
+                        }
+                    }
+                )
                 attachmentControls
             }
                 .tabItem { Label("Sync", systemImage: "icloud") }
@@ -256,19 +265,42 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             let active = try await session.activeLibrary()
             await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
         }
-        let syncAction: SnipSnapCloudLifecycleHooks.SyncAction = {
+        let performSync: @MainActor @Sendable (Bool) async -> Void = { retry in
             guard let session = cloudServices.syncSession else { return }
             cloudServices.syncedContentSettings.recordSyncStarted()
             do {
-                switch try await session.synchronize() {
+                let result: SnipSnapCloudSyncResult
+                if retry {
+                    result = try await session.retrySynchronization()
+                } else {
+                    result = try await session.synchronize()
+                }
+                switch result {
                 case .noChange:
                     break
                 case .contentUpdated:
                     await model.reload()
+                case .syncCompleted:
+                    cloudServices.syncedContentSettings.recordOutstandingSyncRecovered()
                 case .libraryReplaced:
                     try await reloadActiveLibrary()
-                case .iCloudSyncSettingUp:
-                    cloudServices.syncedContentSettings.recordEnableSettingUp()
+                case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
+                    try await reloadActiveLibrary()
+                    let issue: SyncedContentSyncIssue
+                    switch result {
+                    case .iCloudDataReset:
+                        issue = .iCloudDataReset
+                    case .iCloudSignedOut:
+                        issue = .signInRequired
+                    default:
+                        issue = .iCloudAccountChanged
+                    }
+                    cloudServices.syncedContentSettings.recordSyncStopped(issue)
+                case .syncIssue(let issue):
+                    cloudServices.syncedContentSettings.recordSyncFailure(issue)
+                    return
+                case .iCloudSyncSettingUp(let issue):
+                    cloudServices.syncedContentSettings.recordEnableSettingUp(issue)
                 case .iCloudSyncEnabled:
                     try await reloadActiveLibrary()
                     cloudServices.syncedContentSettings.recordEnableCompleted()
@@ -278,22 +310,24 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 case .oldSyncedContentRemovalCompleted:
                     try await reloadActiveLibrary()
                     cloudServices.syncedContentSettings.recordRemovalPending(false)
-                case .encryptedDataResetRequiresChoice:
-                    try await reloadActiveLibrary()
-                    cloudServices.syncedContentSettings.recordEncryptedDataReset()
-                case .syncKeptOff:
-                    try await reloadActiveLibrary()
                 }
                 cloudServices.syncedContentSettings.recordSyncCompleted()
             } catch {
                 cloudServices.syncedContentSettings.recordSyncFailure(
-                    error.localizedDescription
+                    SnipSnapCloudSyncIssueMapper.issue(for: error)
                 )
             }
+        }
+        let syncAction: SnipSnapCloudLifecycleHooks.SyncAction = {
+            await performSync(false)
+        }
+        let retryAction: AppleAccountCacheCoordinatorHandler.SyncAction = {
+            await performSync(true)
         }
         cloudLifecycleHooks = SnipSnapCloudLifecycleHooks(syncWhenPossible: syncAction)
         let productionCloudSyncHandler = Self.makeAccountCacheHandler(
             syncWhenPossible: syncAction,
+            retrySyncWhenPossible: retryAction,
             scheduleSyncAfterLocalChange: {
                 await cloudServices.syncSession?.scheduleAutomaticSync()
             }
@@ -331,7 +365,6 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             syncedContentSettings.setEnableCompletionAction(reloadActiveLibrary)
             syncedContentSettings.setDisableCompletionAction(reloadActiveLibrary)
             syncedContentSettings.setDeleteCompletionAction(reloadActiveLibrary)
-            syncedContentSettings.setEncryptedDataResetCompletionAction(reloadActiveLibrary)
         }
         super.init()
     }
@@ -414,22 +447,37 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         switch result {
         case .contentUpdated:
             await model.reload()
-        case .encryptedDataResetRequiresChoice:
+        case .syncCompleted:
+            await model.reload()
+            syncedContentSettings.recordOutstandingSyncRecovered()
+        case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
             if let active = try? await cloudSyncSession?.activeLibrary() {
                 await model.replaceLibrary(
                     active.library,
                     recoveryScope: active.recoveryScope
                 )
             }
-            syncedContentSettings.recordEncryptedDataReset()
+            let issue: SyncedContentSyncIssue
+            switch result {
+            case .iCloudDataReset:
+                issue = .iCloudDataReset
+            case .iCloudSignedOut:
+                issue = .signInRequired
+            default:
+                issue = .iCloudAccountChanged
+            }
+            syncedContentSettings.recordSyncStopped(issue)
+        case .syncIssue(let issue):
+            syncedContentSettings.recordSyncFailure(issue)
+            return
         default:
             break
         }
-        syncedContentSettings.recordSyncCompleted()
     }
 
     private static func makeAccountCacheHandler(
         syncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
+        retrySyncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
         scheduleSyncAfterLocalChange: @escaping AppleAccountCacheCoordinatorHandler.ScheduleAction
     ) -> AppleAccountCacheCoordinatorHandler? {
         guard let containerIdentifier = Bundle.main.object(
@@ -442,6 +490,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             syncRootURL: syncRootURL,
             containerIdentifier: containerIdentifier,
             syncWhenPossible: syncWhenPossible,
+            retrySyncWhenPossible: retrySyncWhenPossible,
             scheduleSyncAfterLocalChange: scheduleSyncAfterLocalChange
         )
     }

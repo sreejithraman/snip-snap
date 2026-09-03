@@ -88,10 +88,19 @@ package enum CloudAttachmentTransferState: Equatable, Sendable {
 package enum CloudAttachmentFailure: String, Codable, Equatable, Sendable {
   case retryable
   case quotaExceeded
+  case updateRequired
+  case accessDenied
   case rejected
+  case attachmentMissing
   case invalidRecord
   case zoneMissing
   case localStorage
+
+  package var retriesAutomatically: Bool { self == .retryable }
+
+  package var retriesManually: Bool {
+    self != .updateRequired && self != .accessDenied
+  }
 }
 
 package extension CloudAttachmentPublication {

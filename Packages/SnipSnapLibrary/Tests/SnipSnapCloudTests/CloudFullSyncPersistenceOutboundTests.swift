@@ -7,6 +7,84 @@ import XCTest
 @testable import SnipSnapPersistence
 
 extension CloudFullSyncPersistenceTests {
+  func testCorruptAcceptedShadowIsQuarantinedOnceWhenRemoteRecordIsAbsent() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CorruptAcceptedShadow-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let storeURL = root.appendingPathComponent("store")
+    let namespace = makeNamespace()
+    let zone = try XCTUnwrap(namespace.zones.first)
+    let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let added = try await library.perform(
+      .add(
+        content: "repair this shadow",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [],
+        requestID: UUID(),
+        now: Date(timeIntervalSince1970: 1)
+      ),
+      sortedBy: .manual
+    )
+    guard case .add(.added(let snipID)) = added.outcome else {
+      return XCTFail("Expected a Snip")
+    }
+    let persistence = CloudFullSyncPersistence(
+      library: library,
+      namespace: namespace,
+      dataZone: zone
+    )
+    try await persistence.approveEnrollment(references: [
+      CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
+      CloudEntityReference(kind: .snip, domainID: snipID),
+    ])
+    let outbound = try await persistence.pendingChanges()
+    let fetchedItems = try outbound.operations.compactMap { operation -> CloudFetchItemResult? in
+      guard case .save(let draft) = operation else { return nil }
+      let record = try CloudKitRecordMapper.record(for: draft)
+      return .record(try CloudKitRecordMapper.snapshot(record))
+    }
+    let fetched = CloudFetchedBatch(id: UUID(), items: fetchedItems, engineState: nil)
+    try await persistence.stage(.fetched(fetched), outbound: nil)
+    try await persistence.applyStaged(fetched.id)
+
+    let schema = Schema(versionedSchema: SnipSnapSchemaV4.self)
+    let configuration = ModelConfiguration(
+      "SnipSnapLocal",
+      schema: schema,
+      url: storeURL,
+      cloudKitDatabase: .none
+    )
+    let container = try ModelContainer(
+      for: schema,
+      migrationPlan: SnipSnapSchemaMigrationPlan.self,
+      configurations: [configuration]
+    )
+    let context = ModelContext(container)
+    let stored = try XCTUnwrap(
+      try context.fetch(FetchDescriptor<StoredCloudEntityRecord>()).first(where: {
+        $0.domainID == snipID
+      })
+    )
+    stored.shadowData = Data("broken shadow".utf8)
+    try context.save()
+
+    do {
+      _ = try await persistence.pendingChanges()
+      XCTFail("Expected the bad shadow to be reported")
+    } catch let error as CloudSyncIssueError {
+      XCTAssertEqual(error.issue, .appDataIssue)
+    }
+
+    let repaired = try await persistence.pendingChanges()
+    let snapshot = try await library.cloudFullStorageSnapshot(
+      namespaceKey: namespace.namespaceKey
+    )
+    XCTAssertEqual(snapshot.quarantines.map(\.reference.domainID), [snipID])
+    XCTAssertTrue(repaired.operations.contains(where: { $0.id == .snip(snipID, in: zone) }))
+  }
+
   func testDeleteLedgerRetriesAfterItemFailureAndSettlesOnlyAfterAcceptance() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudDeleteLedgerRetry-\(UUID().uuidString)")
@@ -71,10 +149,25 @@ extension CloudFullSyncPersistenceTests {
     let pendingAfterAcceptance = try await reopenedStore.pendingChanges()
     let serverAfterAcceptance = await server.fullSnapshot(for: recordID)
     let acceptedDeletionCount = await server.acceptedDeletionCount()
+    let automaticSendResult = try await CloudFullRecordCollectionSyncDriver.automaticSentResult(
+      store: reopenedStore
+    )
     XCTAssertTrue(settled.pendingDeletes.isEmpty)
     XCTAssertTrue(pendingAfterAcceptance.operations.isEmpty)
     XCTAssertNil(serverAfterAcceptance)
     XCTAssertEqual(acceptedDeletionCount, 1)
+    XCTAssertEqual(automaticSendResult, .syncCompleted)
+
+    try await reopenedLibrary.recordCloudFullRecovery(CloudFullRecoveryInput(
+      namespaceKey: namespace.namespaceKey.rawValue,
+      batchID: UUID(),
+      kind: .retryableFetch,
+      outboundData: Data(),
+      resultData: Data()
+    ))
+    let automaticFetchResult = try await CloudFullRecordCollectionSyncDriver
+      .automaticFetchedResult(store: reopenedStore)
+    XCTAssertEqual(automaticFetchResult, .syncCompleted)
   }
 
   func testDomainReadFailureStopsBeforeAnyCloudSend() async throws {
@@ -171,6 +264,107 @@ extension CloudFullSyncPersistenceTests {
       XCTAssertEqual(evidence.hasRetryableRecordFailures, retryable)
       XCTAssertEqual(evidence.needsAttention, needsAttention)
       XCTAssertEqual(evidence.retryableEventKeys.isEmpty, !retryable)
+    }
+  }
+
+  func testManualRetryClearsPastCoreQuotaEvidenceAfterTheRecordSends() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudFullManualQuotaRetry-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let namespace = makeNamespace()
+    let zone = try XCTUnwrap(namespace.zones.first)
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let persistence = CloudFullSyncPersistence(
+      library: library,
+      namespace: namespace,
+      dataZone: zone
+    )
+    try await persistence.approveEnrollment(
+      references: [CloudEntityReference(kind: .list, domainID: SnipList.inbox.id)]
+    )
+    let outbound = try await persistence.pendingChanges()
+    let operation = try XCTUnwrap(outbound.operations.first)
+    let failed = CloudSentBatch(
+      id: UUID(),
+      items: [.failed(operation.id, .quotaExceeded)],
+      engineState: nil
+    )
+    try await persistence.stage(.sent(failed), outbound: outbound)
+    try await persistence.applyStaged(failed.id)
+    let issueBeforeRetry = try await persistence.unresolvedSyncIssue()
+    XCTAssertEqual(issueBeforeRetry, .iCloudStorageFull)
+
+    try await persistence.prepareManualRetry()
+    let server = FakeCloudServer()
+    let coordinator = CloudFullSyncCoordinator(
+      store: persistence,
+      transport: FakeCloudRecordTransport(server: server, namespace: namespace)
+    )
+    try await coordinator.sendPending()
+
+    let issueAfterRetry = try await persistence.unresolvedSyncIssue()
+    let pendingAfterRetry = try await persistence.pendingChanges()
+    let acceptedCount = await server.acceptedOperationCount(for: operation.id)
+    XCTAssertNil(issueAfterRetry)
+    XCTAssertTrue(pendingAfterRetry.operations.isEmpty)
+    XCTAssertEqual(acceptedCount, 1)
+  }
+
+  func testManualRetryClearsMixedRetryableFailuresButKeepsBlockedFailures() async throws {
+    for (secondFailure, keepsEvidence) in [
+      (CloudOperationFailure.retryable, false),
+      (.updateRequired, true),
+      (.accessDenied, true),
+    ] {
+      let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("CloudFullMixedManualRetry-\(UUID().uuidString)")
+      defer { try? FileManager.default.removeItem(at: root) }
+      let namespace = makeNamespace()
+      let zone = try XCTUnwrap(namespace.zones.first)
+      let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+      let update = try await library.perform(
+        .add(
+          content: "mixed terminal retry",
+          origin: .quickEntry,
+          source: nil,
+          listID: SnipList.inbox.id,
+          attachmentURLs: [],
+          requestID: UUID(),
+          now: .distantPast
+        ),
+        sortedBy: .manual
+      )
+      guard case .add(.added(let snipID)) = update.outcome else {
+        return XCTFail("Expected a saved snip")
+      }
+      let persistence = CloudFullSyncPersistence(
+        library: library,
+        namespace: namespace,
+        dataZone: zone
+      )
+      try await persistence.approveEnrollment(references: [
+        CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
+        CloudEntityReference(kind: .snip, domainID: snipID),
+      ])
+      let outbound = try await persistence.pendingChanges()
+      XCTAssertEqual(outbound.operations.count, 2)
+      let sent = CloudSentBatch(
+        id: UUID(),
+        items: [
+          .failed(outbound.operations[0].id, .quotaExceeded),
+          .failed(outbound.operations[1].id, secondFailure),
+        ],
+        engineState: nil
+      )
+      try await persistence.stage(.sent(sent), outbound: outbound)
+      try await persistence.applyStaged(sent.id)
+
+      try await persistence.prepareManualRetry()
+
+      let recovery = try await library.cloudFullRecoveryEvents(
+        namespaceKey: namespace.namespaceKey
+      )
+      XCTAssertEqual(recovery.map(\.kind), keepsEvidence ? [.terminalSend] : [])
     }
   }
 
@@ -374,6 +568,7 @@ extension CloudFullSyncPersistenceTests {
 
     let evidence = try await persistence.enrollmentEvidence()
     XCTAssertTrue(evidence.needsAttention)
+    XCTAssertFalse(evidence.blocksSending)
     let attachments = try await library.cloudAttachmentStorageSnapshot(
       namespaceKey: namespace.namespaceKey
     )

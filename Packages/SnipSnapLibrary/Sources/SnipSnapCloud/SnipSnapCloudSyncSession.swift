@@ -8,18 +8,16 @@ public actor SnipSnapCloudSyncSession {
   package typealias SynchronizeAction = @Sendable () async throws -> SnipSnapCloudSyncResult
   package typealias ScheduleAction = @Sendable () async throws -> Void
   package typealias LibraryAction = @Sendable () async throws -> SnipSnapCloudActiveLibrary
-  package typealias EncryptedDataResetAction = @Sendable (
-    EncryptedDataResetChoice
-  ) async throws -> SnipSnapCloudSyncResult
 
   private let synchronizeAction: SynchronizeAction
+  private let retryAction: SynchronizeAction
   private let scheduleAction: ScheduleAction
   private let enableAction: SyncedContentSettingsModel.EnableAction
   private let cancelEnableAction: SyncedContentSettingsModel.CancelEnableAction
   private let disableAction: SyncedContentSettingsModel.DisableAction
   private let deleteAction: DeleteAction
   private let libraryAction: LibraryAction
-  private let encryptedDataResetAction: EncryptedDataResetAction
+  private let automaticErrorHandler: @Sendable (any Error) async -> Void
   private var automaticScheduleRequested = false
   private var automaticScheduleTask: Task<Void, Never>?
   public nonisolated let automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult>
@@ -30,8 +28,12 @@ public actor SnipSnapCloudSyncSession {
     automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> = AsyncStream { $0.finish() }
   ) {
     self.automaticSyncResults = automaticSyncResults
+    automaticErrorHandler = { _ in }
     synchronizeAction = {
       syncResult(for: try await coordinator.synchronize())
+    }
+    retryAction = {
+      syncResult(for: try await coordinator.retrySynchronization())
     }
     scheduleAction = {}
     enableAction = {
@@ -41,9 +43,6 @@ public actor SnipSnapCloudSyncSession {
     cancelEnableAction = {}
     disableAction = { _ in throw CloudCollectionError.noActiveCollection }
     deleteAction = { deleteOutcome(for: try await coordinator.deleteSyncedContent()) }
-    encryptedDataResetAction = { choice in
-      syncResult(for: try await coordinator.resolveEncryptedDataReset(choice))
-    }
     libraryAction = {
       let snapshot = try await persistence.snapshot()
       return SnipSnapCloudActiveLibrary(
@@ -57,6 +56,7 @@ public actor SnipSnapCloudSyncSession {
 
   package init(
     synchronize: @escaping SynchronizeAction,
+    retry: SynchronizeAction? = nil,
     scheduleAutomaticSync: @escaping ScheduleAction = {},
     enable: @escaping SyncedContentSettingsModel.EnableAction,
     cancelEnable: @escaping SyncedContentSettingsModel.CancelEnableAction = {},
@@ -65,24 +65,26 @@ public actor SnipSnapCloudSyncSession {
     },
     delete: @escaping DeleteAction,
     activeLibrary: @escaping LibraryAction,
-    resolveEncryptedDataReset: @escaping EncryptedDataResetAction = { _ in
-      throw CloudCollectionError.noActiveCollection
-    },
-    automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> = AsyncStream { $0.finish() }
+    automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> = AsyncStream { $0.finish() },
+    automaticErrorHandler: @escaping @Sendable (any Error) async -> Void = { _ in }
   ) {
     self.automaticSyncResults = automaticSyncResults
     synchronizeAction = synchronize
+    retryAction = retry ?? synchronize
     scheduleAction = scheduleAutomaticSync
     enableAction = enable
     cancelEnableAction = cancelEnable
     disableAction = disable
     deleteAction = delete
     libraryAction = activeLibrary
-    encryptedDataResetAction = resolveEncryptedDataReset
+    self.automaticErrorHandler = automaticErrorHandler
   }
 
   public func synchronize() async throws -> SnipSnapCloudSyncResult {
     try await synchronizeAction()
+  }
+  public func retrySynchronization() async throws -> SnipSnapCloudSyncResult {
+    try await retryAction()
   }
   public func scheduleAutomaticSync() {
     automaticScheduleRequested = true
@@ -106,16 +108,14 @@ public actor SnipSnapCloudSyncSession {
   public func activeLibrary() async throws -> SnipSnapCloudActiveLibrary {
     try await libraryAction()
   }
-  public func resolveEncryptedDataReset(
-    _ choice: EncryptedDataResetChoice
-  ) async throws -> SnipSnapCloudSyncResult {
-    try await encryptedDataResetAction(choice)
-  }
-
   private func runAutomaticScheduleLoop() async {
     while automaticScheduleRequested {
       automaticScheduleRequested = false
-      try? await scheduleAction()
+      do {
+        try await scheduleAction()
+      } catch {
+        await automaticErrorHandler(error)
+      }
     }
     automaticScheduleTask = nil
   }

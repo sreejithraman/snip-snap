@@ -4,6 +4,52 @@ import SnipSnapCore
 import XCTest
 
 extension ICloudSyncModeCoordinatorTests {
+    func testFullRecordEnableKeepsTypedFetchIssueWhileSetupWaits() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let server = FakeCloudServer()
+        let namespace = makeNamespace()
+        let zone = textZone(namespace)
+
+        let writerPersistence = try SwiftDataSyncModePersistence(
+            rootURL: root.appendingPathComponent("writer")
+        )
+        let writerLibrary = try await writerPersistence.activeLibrary()
+        try await add("remote record", to: writerLibrary)
+        let writerSnapshot = await writerLibrary.snapshot(sortedBy: .manual)
+        let remoteSnip = try XCTUnwrap(writerSnapshot.snips.first)
+        let writer = ICloudSyncModeCoordinator(
+            persistence: writerPersistence,
+            namespace: namespace,
+            textZone: zone,
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+        )
+        let writerResult = try await writer.enableOrRetry()
+        XCTAssertEqual(writerResult.state, .on)
+
+        let readerPersistence = try SwiftDataSyncModePersistence(
+            rootURL: root.appendingPathComponent("reader")
+        )
+        let readerTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        await readerTransport.failNextFetchedItem(
+            .snip(remoteSnip.id, in: zone),
+            failure: .networkUnavailable
+        )
+        let reader = ICloudSyncModeCoordinator(
+            persistence: readerPersistence,
+            namespace: namespace,
+            textZone: zone,
+            makeTransport: { readerTransport }
+        )
+
+        let result = try await reader.enableOrRetry()
+
+        XCTAssertEqual(result.state, .settingUp)
+        XCTAssertEqual(result.syncIssue, .waitingForConnection)
+        let readerStorage = try await readerPersistence.snapshot()
+        XCTAssertEqual(readerStorage.activeStore.kind, .localOnly)
+    }
+
     func testActiveSyncQuarantinesTerminalAttachmentFailureAndKeepsSending() async throws {
       for failure in [CloudOperationFailure.rejected, .zoneMissing] {
         let root = temporaryDirectory()
@@ -80,8 +126,12 @@ extension ICloudSyncModeCoordinatorTests {
         await transport.failNextSentItem(failedPayloadID, failure: failure)
         await transport.resumeSend()
 
-        let failedResult = try await failingSync.value
-        XCTAssertEqual(failedResult.state, .on)
+        do {
+            _ = try await failingSync.value
+            XCTFail("The settled item problem must be reported")
+        } catch let error as CloudSyncIssueError {
+            XCTAssertEqual(error.issue, .appDataIssue)
+        }
         try await add("unrelated after attachment failure", to: active)
         let laterResult = try await coordinator.syncActive()
         XCTAssertEqual(laterResult.state, .on)
@@ -219,11 +269,12 @@ extension ICloudSyncModeCoordinatorTests {
 
         let enabling = Task { try await coordinator.enableOrRetry() }
         await transport.waitUntilSendPauses()
-        await transport.failNextSentItem(.snip(snip.id, in: dataZone), failure: .retryable)
+        await transport.failNextSentItem(.snip(snip.id, in: dataZone), failure: .rateLimited)
         await transport.resumeSend()
         let partial = try await enabling.value
 
         XCTAssertEqual(partial.state, .settingUp)
+        XCTAssertEqual(partial.syncIssue, .retryingSoon)
         let partialStorage = try await persistence.snapshot()
         XCTAssertEqual(partialStorage.activeStore.kind, .localOnly)
         let transition = try XCTUnwrap(partialStorage.transition)

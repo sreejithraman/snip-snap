@@ -126,7 +126,7 @@ final class CloudAutomaticSyncCoordinatorTests: XCTestCase {
     let fetchCount = await transport.fetchCount()
     XCTAssertEqual(startCount, 1)
     XCTAssertEqual(scheduled, [outbound])
-    XCTAssertEqual(fetchCount, 0)
+    XCTAssertEqual(fetchCount, 1)
   }
 
   func testPreparingAutomaticSyncRecoversStagedEngineStateBeforeStarting() async throws {
@@ -153,6 +153,130 @@ final class CloudAutomaticSyncCoordinatorTests: XCTestCase {
     XCTAssertEqual(startedStates, [nextState])
   }
 
+  func testRestoredEngineStartsWithDurableOutboundWorkReadyForItsProvider() async throws {
+    let namespace = CloudSyncNamespace(
+      cloudScope: "private",
+      accountLineage: "account",
+      generation: UUID(),
+      zones: []
+    )
+    let state = CloudEngineStateEnvelope(namespace: namespace, serialization: Data("state".utf8))
+    let id = CloudRecordID(zone: CloudZoneID(name: "zone", ownerName: "owner"), name: "item")
+    let outbound = CloudOutboundBatch(operations: [.delete(id, base: nil)])
+    let store = AutomaticSyncStoreProbe(pendingChanges: outbound, engineState: state)
+    let transport = AutomaticSyncTransportProbe()
+    let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
+
+    try await coordinator.prepareAutomaticSync()
+
+    let initialOutbounds = await transport.initialOutboundBatches()
+    let fetchCount = await transport.fetchCount()
+    XCTAssertEqual(initialOutbounds, [outbound])
+    XCTAssertEqual(fetchCount, 0)
+  }
+
+  func testCorruptEngineStateIsClearedAndBootstrappedBeforeScheduling() async throws {
+    let namespace = CloudSyncNamespace(
+      cloudScope: "private",
+      accountLineage: "account",
+      generation: UUID(),
+      zones: []
+    )
+    let state = CloudEngineStateEnvelope(namespace: namespace, serialization: Data("bad".utf8))
+    let store = AutomaticSyncStoreProbe(engineState: state)
+    let transport = AutomaticSyncTransportProbe(rejectsStoredState: true)
+    let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
+
+    try await coordinator.prepareAutomaticSync()
+
+    let clearCount = await store.engineStateClearCount()
+    let fetchCount = await transport.fetchCount()
+    let states = await transport.startedEngineStates()
+    XCTAssertEqual(clearCount, 1)
+    XCTAssertEqual(fetchCount, 1)
+    XCTAssertEqual(states, [state, nil])
+  }
+
+  func testFetchFailureBecomesAUserIssueAndStopsTheSameRunSend() async throws {
+    let id = CloudRecordID(
+      zone: CloudZoneID(name: "snips-test", ownerName: "owner"),
+      name: "record"
+    )
+    let outbound = CloudOutboundBatch(operations: [.delete(id, base: nil)])
+    let fetched = CloudFetchedBatch(
+      id: UUID(),
+      items: [],
+      databaseEvents: [.failed(nil, .networkUnavailable)],
+      engineState: nil
+    )
+    let store = AutomaticSyncStoreProbe(pendingChanges: outbound)
+    let transport = AutomaticSyncTransportProbe(fetched: fetched)
+    let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
+
+    try await coordinator.sync()
+
+    let issue = await coordinator.takeSyncIssue()
+    let sendCount = await transport.sendCount()
+    XCTAssertEqual(issue, .waitingForConnection)
+    XCTAssertEqual(sendCount, 0)
+  }
+
+  func testFailedAttachmentDoesNotStopAnUnrelatedSend() async throws {
+    let id = CloudRecordID(
+      zone: CloudZoneID(name: "snips-test", ownerName: "owner"),
+      name: "record"
+    )
+    let outbound = CloudOutboundBatch(operations: [.delete(id, base: nil)])
+    let fetched = CloudFetchedBatch(
+      id: UUID(),
+      items: [.failed(id, .attachmentUnavailable)],
+      engineState: nil
+    )
+    let store = AutomaticSyncStoreProbe(pendingChanges: outbound)
+    let transport = AutomaticSyncTransportProbe(fetched: fetched, sendSucceeds: true)
+    let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
+
+    try await coordinator.sync()
+
+    let issue = await coordinator.takeSyncIssue()
+    let sendCount = await transport.sendCount()
+    XCTAssertEqual(issue, .attachmentUnavailable)
+    XCTAssertEqual(sendCount, 1)
+  }
+
+  func testExpiredChangeTokenClearsStateAndRefetchesBeforeSending() async throws {
+    let zone = CloudZoneID(name: "snips-test", ownerName: "owner")
+    let id = CloudRecordID(zone: zone, name: "record")
+    let outbound = CloudOutboundBatch(operations: [.delete(id, base: nil)])
+    let expired = CloudFetchedBatch(
+      id: UUID(),
+      items: [],
+      zoneEvents: [.failed(zone, .changeTokenExpired)],
+      engineState: nil
+    )
+    let clean = emptyFetchedBatch()
+    let store = AutomaticSyncStoreProbe(pendingChanges: outbound)
+    let transport = AutomaticSyncTransportProbe(
+      fetched: expired,
+      fetchedAfterReset: clean,
+      sendSucceeds: true
+    )
+    let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
+
+    try await coordinator.sync()
+
+    let clearCount = await store.engineStateClearCount()
+    let fetchCount = await transport.fetchCount()
+    let resetCount = await transport.resetCount()
+    let sendCount = await transport.sendCount()
+    let issue = await coordinator.takeSyncIssue()
+    XCTAssertEqual(clearCount, 1)
+    XCTAssertEqual(fetchCount, 2)
+    XCTAssertEqual(resetCount, 1)
+    XCTAssertEqual(sendCount, 1)
+    XCTAssertNil(issue)
+  }
+
   func testAutomaticMergeReschedulesChangesCreatedByTheCommit() async throws {
     let id = CloudRecordID(
       zone: CloudZoneID(name: "snips-test", ownerName: "owner"),
@@ -171,6 +295,37 @@ final class CloudAutomaticSyncCoordinatorTests: XCTestCase {
 
     let scheduled = await transport.scheduledBatches()
     XCTAssertEqual(scheduled, [outbound])
+  }
+
+  func testAutomaticDestructiveResetNeverSchedulesPendingChanges() async throws {
+    let zone = CloudZoneID(name: "snips-test", ownerName: "owner")
+    let id = CloudRecordID(zone: zone, name: "pending-record")
+    let outbound = CloudOutboundBatch(operations: [.delete(id, base: nil)])
+    let reset = CloudFetchedBatch(
+      id: UUID(),
+      items: [],
+      databaseEvents: [
+        .zoneDeleted(zone, reason: .encryptedDataReset),
+        .failed(nil, .networkUnavailable),
+      ],
+      engineState: nil
+    )
+    let store = AutomaticSyncStoreProbe(pendingChanges: outbound)
+    let transport = AutomaticSyncTransportProbe()
+    let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
+
+    try await coordinator.applyAutomatically(
+      .fetched(reset),
+      outbound: nil,
+      beforeApply: {}
+    )
+
+    let scheduled = await transport.scheduledBatches()
+    let issue = await coordinator.takeSyncIssue()
+    let blocked = await coordinator.isOutboundBlocked()
+    XCTAssertTrue(scheduled.isEmpty)
+    XCTAssertEqual(issue, .waitingForConnection)
+    XCTAssertTrue(blocked)
   }
 
   func testEngineStateSavesLocallyWithoutStartingANetworkCycle() async throws {
@@ -218,20 +373,26 @@ private actor AutomaticSyncStoreProbe: CloudFullSyncStore {
   private let outbound: CloudOutboundBatch
   private var engineState: CloudEngineStateEnvelope?
   private let engineStateAfterApply: CloudEngineStateEnvelope?
+  private var clearCount = 0
 
   init(
     stagedBatchID: UUID? = nil,
     pendingChanges: CloudOutboundBatch = CloudOutboundBatch(operations: []),
-    engineStateAfterApply: CloudEngineStateEnvelope? = nil
+    engineStateAfterApply: CloudEngineStateEnvelope? = nil,
+    engineState: CloudEngineStateEnvelope? = nil
   ) {
     staged = stagedBatchID.map { [Self.commit(id: $0)] } ?? []
     outbound = pendingChanges
-    engineState = nil
+    self.engineState = engineState
     self.engineStateAfterApply = engineStateAfterApply
   }
 
   func loadEngineState() -> CloudEngineStateEnvelope? { engineState }
   func saveEngineState(_ state: CloudEngineStateEnvelope) { engineState = state }
+  func clearEngineState() {
+    engineState = nil
+    clearCount += 1
+  }
   func stagedBatches() -> [CloudFullBatchCommit] { staged }
 
   func stage(_ batch: CloudSyncBatch, outbound: CloudOutboundBatch?) {
@@ -249,6 +410,7 @@ private actor AutomaticSyncStoreProbe: CloudFullSyncStore {
   }
 
   func appliedBatchIDs() -> [UUID] { applied }
+  func engineStateClearCount() -> Int { clearCount }
 
   private nonisolated static func commit(id: UUID) -> CloudFullBatchCommit {
     CloudFullBatchCommit(
@@ -272,20 +434,45 @@ private actor AutomaticSyncTransportProbe: CloudRecordTransport, CloudAutomaticS
   private var drainHandler: (@Sendable () async throws -> Void)?
   private var drainError: Error?
   private var pendingAfterDrain: CloudPendingBatch?
+  private var initialOutbounds: [CloudOutboundBatch?] = []
+  private let rejectsStoredState: Bool
+  private var fetchedBatches: [CloudFetchedBatch]
+  private var sends = 0
+  private var resets = 0
+  private let sendSucceeds: Bool
 
   init(
     pending: CloudSyncBatch? = nil,
     pendingOutbound: CloudOutboundBatch? = nil,
-    pendingAfterDrain: CloudPendingBatch? = nil
+    pendingAfterDrain: CloudPendingBatch? = nil,
+    rejectsStoredState: Bool = false,
+    fetched: CloudFetchedBatch? = nil,
+    fetchedAfterReset: CloudFetchedBatch? = nil,
+    sendSucceeds: Bool = false
   ) {
     self.pending = pending
     self.pendingOutbound = pendingOutbound
     self.pendingAfterDrain = pendingAfterDrain
+    self.rejectsStoredState = rejectsStoredState
+    fetchedBatches = [fetched, fetchedAfterReset].compactMap { $0 }
+    self.sendSucceeds = sendSucceeds
   }
 
   func start(state: CloudEngineStateEnvelope?) {
     starts += 1
     startStates.append(state)
+  }
+
+  func start(
+    state: CloudEngineStateEnvelope?,
+    initialOutbound: CloudOutboundBatch?
+  ) throws {
+    starts += 1
+    startStates.append(state)
+    initialOutbounds.append(initialOutbound)
+    if rejectsStoredState, state != nil {
+      throw CloudTransportError.invalidEngineState
+    }
   }
 
   func scheduleAutomaticSync(_ batch: CloudOutboundBatch) {
@@ -294,6 +481,7 @@ private actor AutomaticSyncTransportProbe: CloudRecordTransport, CloudAutomaticS
 
   func fetch(scope: CloudFetchScope) -> CloudFetchedBatch {
     fetches += 1
+    if !fetchedBatches.isEmpty { return fetchedBatches.removeFirst() }
     return CloudFetchedBatch(
       id: UUID(),
       items: [],
@@ -304,8 +492,14 @@ private actor AutomaticSyncTransportProbe: CloudRecordTransport, CloudAutomaticS
   }
 
   func send(_ batch: CloudOutboundBatch) throws -> CloudSentBatch {
+    sends += 1
+    if sendSucceeds {
+      return CloudSentBatch(id: UUID(), items: [], engineState: nil)
+    }
     throw AutomaticSyncTestError.unsupported
   }
+
+  func reset() { resets += 1 }
 
   func confirmApplied(_ batchID: UUID) {
     confirmations.append(batchID)
@@ -354,7 +548,10 @@ private actor AutomaticSyncTransportProbe: CloudRecordTransport, CloudAutomaticS
 
   func confirmedBatchIDs() -> [UUID] { confirmations }
   func fetchCount() -> Int { fetches }
+  func initialOutboundBatches() -> [CloudOutboundBatch?] { initialOutbounds }
   func startCount() -> Int { starts }
   func startedEngineStates() -> [CloudEngineStateEnvelope?] { startStates }
   func scheduledBatches() -> [CloudOutboundBatch] { scheduled }
+  func sendCount() -> Int { sends }
+  func resetCount() -> Int { resets }
 }

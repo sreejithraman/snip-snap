@@ -135,8 +135,27 @@ package actor FakeCloudServer {
         let matching = events.filter { event in
             scope.contains(event.zone) && event.sequence > (cursors[event.zone] ?? 0)
         }
+        var firstFailedSequence: [CloudZoneID: Int] = [:]
+        for event in matching {
+            let failed: Bool = switch event {
+            case .saved(_, let snapshot): failures[snapshot.id] != nil
+            case .deleted(_, let id): failures[id] != nil
+            case .database: false
+            }
+            if failed {
+                firstFailedSequence[event.zone] = min(
+                    firstFailedSequence[event.zone] ?? event.sequence,
+                    event.sequence
+                )
+            }
+        }
         var advanced = cursors
         for event in matching {
+            if let failedSequence = firstFailedSequence[event.zone],
+               event.sequence >= failedSequence
+            {
+                continue
+            }
             advanced[event.zone] = max(advanced[event.zone] ?? 0, event.sequence)
         }
         var latestByID: [CloudRecordID: Event] = [:]
@@ -151,8 +170,10 @@ package actor FakeCloudServer {
         let latest = latestByID.values.sorted { $0.sequence < $1.sequence }
         var items = latest.compactMap { event -> CloudFetchItemResult? in
             switch event {
-            case .saved(_, let snapshot): .record(snapshot)
-            case .deleted(_, let id): .deleted(id)
+            case .saved(_, let snapshot):
+                failures[snapshot.id] == nil ? .record(snapshot) : nil
+            case .deleted(_, let id):
+                failures[id] == nil ? .deleted(id) : nil
             case .database: nil
             }
         }

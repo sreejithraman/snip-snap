@@ -251,7 +251,7 @@ extension SwiftDataCloudTextPersistence {
               isTerminal = true
           case .failed(let recordID, let failure):
               id = recordID
-              isTerminal = failure != .retryable && failure != .zoneMissing
+              isTerminal = !failure.isRetryable && failure != .zoneMissing
           case .deleted:
               continue
           }

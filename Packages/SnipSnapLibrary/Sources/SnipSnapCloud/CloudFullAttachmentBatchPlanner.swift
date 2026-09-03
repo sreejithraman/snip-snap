@@ -219,9 +219,15 @@ struct CloudFullAttachmentBatchPlanner {
     _ failure: CloudOperationFailure
   ) -> CloudAttachmentFailure {
     switch failure {
-    case .retryable: .retryable
+    case .networkUnavailable, .iCloudUnavailable, .rateLimited,
+         .authenticationRequired, .accountTemporarilyUnavailable,
+         .attachmentUnavailable, .changeTokenExpired, .retryable:
+      .retryable
     case .quotaExceeded: .quotaExceeded
+    case .updateRequired: .updateRequired
+    case .accessDenied: .accessDenied
     case .rejected: .rejected
+    case .attachmentMissing: .attachmentMissing
     case .invalidRecord: .invalidRecord
     case .zoneMissing: .zoneMissing
     }

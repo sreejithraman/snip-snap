@@ -3,6 +3,70 @@ import SnipSnapCore
 import SnipSnapPersistence
 
 extension CloudFullSyncPersistence {
+  package func clearRetryableRecoveryEvents(
+    kind: CloudFullRecoveryKind
+  ) async throws -> Bool {
+    guard kind == .retryableFetch || kind == .retryableSend else { return false }
+    let recovery = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
+      .filter { $0.kind == kind }
+    guard !recovery.isEmpty else { return false }
+    let keys = Set(recovery.map {
+      "full-recovery-\($0.batchID.uuidString.lowercased())"
+    })
+    try await library.clearCloudFullRecoveryEvents(namespaceKey: namespaceKey, keys: keys)
+    return true
+  }
+
+  package func isSyncSettled() async throws -> Bool {
+    let pending = try await pendingChanges()
+    guard pending.operations.isEmpty, pending.zonesToSave.isEmpty else { return false }
+    return try await unresolvedSyncIssue() == nil
+  }
+
+  package func unresolvedSyncIssue() async throws -> SyncedContentSyncIssue? {
+    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
+    let recovery = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
+    let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
+    var issues = recovery.map(Self.storedSyncIssue(for:))
+    if stored.namespaceState.phase == .blocked
+      || !stored.conflicts.isEmpty
+      || !stored.quarantines.isEmpty
+    {
+      issues.append(.appDataIssue)
+    }
+    issues += attachments.publications.compactMap(\.lastFailure).map(Self.syncIssue(for:))
+    issues += attachments.cleanups.compactMap(\.lastFailure).map(Self.syncIssue(for:))
+    return CloudSyncIssueError.preferredIssue(from: issues)
+  }
+
+  package func prepareManualRetry() async throws {
+    let recovery = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
+    let keys = Set(recovery.compactMap { event -> String? in
+      guard event.kind == .terminalFetch || event.kind == .terminalSend else { return nil }
+      guard let issues = Self.storedSyncIssues(for: event),
+        issues.allSatisfy(\.canRetry)
+      else { return nil }
+      return "full-recovery-\(event.batchID.uuidString.lowercased())"
+    })
+    if !keys.isEmpty {
+      try await library.clearCloudFullRecoveryEvents(namespaceKey: namespaceKey, keys: keys)
+    }
+    try await library.clearManuallyRetryableCloudAttachmentFailures(namespaceKey: namespaceKey)
+  }
+
+  private static func syncIssue(for failure: CloudAttachmentFailure) -> SyncedContentSyncIssue {
+    switch failure {
+    case .retryable: .someChangesPending
+    case .quotaExceeded: .iCloudStorageFull
+    case .updateRequired: .updateRequired
+    case .accessDenied: .accessDenied
+    case .attachmentMissing: .attachmentMissing
+    case .rejected, .invalidRecord: .appDataIssue
+    case .zoneMissing: .appDataIssue
+    case .localStorage: .attachmentUnavailable
+    }
+  }
+
   package func pendingChanges() async throws -> CloudOutboundBatch {
     // The durable local rows and request ledger, compared with the durable accepted shadows,
     // are the change-history seam. Share imports use this same path; keep one sync driver and
@@ -21,16 +85,40 @@ extension CloudFullSyncPersistence {
       )
     }
     let local = try await library.checkedSnapshot(sortedBy: .manual)
-    let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
+    var attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
     let unsupportedAttachments = CloudAttachmentTransferCoordinator.unsupportedFiles(
       in: attachments,
       policy: attachmentPolicy
     )
     if !unsupportedAttachments.isEmpty {
-      throw CloudAttachmentSetupError.unsupportedFiles(unsupportedAttachments)
+      try await library.quarantineCloudAttachmentOperations(
+        namespaceKey: namespaceKey,
+        publicationIDs: Set(unsupportedAttachments.map(\.attachmentID)),
+        cleanupIdentities: []
+      )
+      attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
+    }
+    let acceptedValues = stored.readyEntities + stored.deferredEntities
+    var corruptAccepted: [CloudAcceptedEntity] = []
+    for value in acceptedValues {
+      do {
+        switch value.reference.kind {
+        case .snip: _ = try Self.snipRecord(value)
+        case .list: _ = try Self.listRecord(value)
+        }
+      } catch {
+        corruptAccepted.append(value)
+      }
+    }
+    if !corruptAccepted.isEmpty {
+      try await library.quarantineCorruptCloudEntities(
+        namespaceKey: namespaceKey,
+        values: corruptAccepted
+      )
+      throw CloudSyncIssueError(.appDataIssue)
     }
     let accepted = Dictionary(uniqueKeysWithValues:
-      (stored.readyEntities + stored.deferredEntities).map { ($0.reference, $0) }
+      acceptedValues.map { ($0.reference, $0) }
     )
     let snips = Dictionary(uniqueKeysWithValues: local.snips.map { ($0.id, $0) })
     let lists = Dictionary(uniqueKeysWithValues: local.lists.map { ($0.id, $0) })
@@ -264,7 +352,7 @@ extension CloudFullSyncPersistence {
   private static func isTerminalAttachmentFailure(
     _ failure: CloudAttachmentFailure?
   ) -> Bool {
-    failure == .rejected || failure == .invalidRecord || failure == .zoneMissing
+    failure.map { !$0.retriesAutomatically } ?? false
   }
   static func uniqueOperations(
     _ operations: [CloudOutboundOperation]

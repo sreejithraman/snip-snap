@@ -139,14 +139,14 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     let calls = DeleteEventRecorder()
     let model = SyncedContentSettingsModel(
       mode: .localOnly,
-      enableAction: { .settingUp },
+      enableAction: { .settingUp() },
       cancelEnableAction: { await calls.record("cancel") }
     )
 
     await model.enableICloudSync()
 
     XCTAssertEqual(model.mode, .localOnly)
-    XCTAssertEqual(model.state, .enabling)
+    XCTAssertEqual(model.state, .enabling())
     XCTAssertEqual(model.statusTitle, "Setting Up iCloud Sync…")
     XCTAssertTrue(model.canCancelEnable)
 
@@ -174,13 +174,61 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     XCTAssertEqual(model.state, .syncing)
     XCTAssertEqual(model.statusTitle, "Syncing with iCloud…")
 
-    model.recordSyncFailure("iCloud is unavailable.")
-    XCTAssertEqual(model.state, .failed("iCloud is unavailable."))
-    XCTAssertTrue(model.detail.contains("iCloud is unavailable"))
+    model.recordSyncFailure(.iCloudUnavailable)
+    XCTAssertEqual(model.state, .failed(.iCloudUnavailable))
+    XCTAssertEqual(model.statusTitle, "iCloud Is Unavailable")
+    XCTAssertEqual(
+      model.detail,
+      "Snip Snap can’t reach iCloud right now. Your changes are safe on this device, and sync will try again."
+    )
 
     model.recordSyncStarted()
     model.recordSyncCompleted()
     XCTAssertEqual(model.state, .ready)
+  }
+
+  @MainActor
+  func testOnlyASettledRetryClearsAnOutstandingIssue() {
+    let model = SyncedContentSettingsModel(mode: .iCloudSync)
+
+    model.recordSyncFailure(.iCloudUnavailable)
+    model.recordSyncCompleted()
+    XCTAssertEqual(model.state, .failed(.iCloudUnavailable))
+    model.recordOutstandingSyncRecovered()
+    XCTAssertEqual(model.state, .ready)
+
+    model.recordSyncFailure(.iCloudStorageFull)
+    model.recordOutstandingSyncRecovered()
+    XCTAssertEqual(model.state, .ready)
+  }
+
+  @MainActor
+  func testRetryingAndUserActionFailuresHaveDifferentStatusMessages() {
+    let model = SyncedContentSettingsModel(mode: .iCloudSync)
+
+    model.recordSyncFailure(.waitingForConnection)
+    XCTAssertEqual(model.statusTitle, "Waiting for a Connection")
+    XCTAssertTrue(model.detail.contains("will sync when you’re back online"))
+
+    model.recordSyncFailure(.iCloudStorageFull)
+    XCTAssertEqual(model.statusTitle, "iCloud Storage Is Full")
+    XCTAssertTrue(model.detail.contains("Free up some iCloud storage"))
+
+    model.recordSyncFailure(.updateRequired)
+    XCTAssertEqual(model.statusTitle, "Update Snip Snap to Sync")
+    XCTAssertTrue(model.detail.contains("Update Snip Snap"))
+  }
+
+  @MainActor
+  func testInternalSyncFailureDoesNotShowRawErrorDetails() {
+    let model = SyncedContentSettingsModel(mode: .iCloudSync)
+
+    model.recordSyncFailure(.appDataIssue)
+
+    XCTAssertEqual(model.statusTitle, "Snip Snap Couldn’t Sync")
+    XCTAssertFalse(model.detail.contains("CloudRecordError"))
+    XCTAssertFalse(model.detail.contains("error 2"))
+    XCTAssertTrue(model.detail.contains("Your changes are safe on this device"))
   }
 
   @MainActor
@@ -215,6 +263,7 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     let calls = DeleteEventRecorder()
     let model = SyncedContentSettingsModel(
       mode: .iCloudSync,
+      issueMapper: { _ in .iCloudUnavailable },
       disableAction: { choice in
         switch choice {
         case .refreshThenCopy:
@@ -228,8 +277,8 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     await model.disableICloudSync(.refreshThenCopy)
 
     XCTAssertEqual(model.mode, .iCloudSync)
-    XCTAssertEqual(model.statusTitle, "Sync Needs Attention")
-    XCTAssertTrue(model.detail.contains("iCloud is unavailable"))
+    XCTAssertEqual(model.statusTitle, "iCloud Is Unavailable")
+    XCTAssertTrue(model.detail.contains("sync will try again"))
     XCTAssertTrue(model.canDisable)
 
     await model.disableICloudSync(.useCurrentCache)
@@ -249,12 +298,13 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     }
     let model = SyncedContentSettingsModel(
       mode: .localOnly,
+      issueMapper: { error in .setupBlocked(error.localizedDescription) },
       enableAction: { throw IncompatibleAttachments() }
     )
 
     await model.enableICloudSync()
 
-    XCTAssertEqual(model.statusTitle, "Sync Needs Attention")
+    XCTAssertEqual(model.statusTitle, "iCloud Sync Setup Stopped")
     XCTAssertTrue(model.detail.contains("could not finish setting up iCloud Sync"))
     XCTAssertTrue(model.detail.contains("local library remains available"))
     XCTAssertFalse(model.detail.contains("Nothing was uploaded or removed"))
@@ -264,83 +314,28 @@ final class SyncedContentSettingsModelTests: XCTestCase {
   }
 
   @MainActor
-  func testEncryptedResetShowsChoicesAndReplacesLibraryBeforeReportingReady() async {
-    let calls = DeleteEventRecorder()
-    let model = SyncedContentSettingsModel(
-      mode: .iCloudSync,
-      encryptedDataResetAction: { choice in
-        XCTAssertEqual(choice, .restoreFromThisDevice)
-        await calls.record("resolve")
-        return .resolved
-      }
-    )
-    model.setEncryptedDataResetCompletionAction {
-      XCTAssertEqual(model.state, .resolvingEncryptedDataReset)
-      await calls.record("replace-library")
-    }
+  func testDataResetAndAccountChangeUseClearLocalOnlyMessages() {
+    let model = SyncedContentSettingsModel(mode: .iCloudSync)
 
-    model.recordEncryptedDataReset()
-    XCTAssertEqual(model.state, .encryptedDataReset)
-    XCTAssertFalse(model.canDelete)
-    XCTAssertTrue(model.detail.contains("read-only recovery copy"))
-
-    await model.resolveEncryptedDataReset(.restoreFromThisDevice)
-
-    let events = await calls.values()
-    XCTAssertEqual(events, ["resolve", "replace-library"])
-    XCTAssertEqual(model.mode, .iCloudSync)
-    XCTAssertEqual(model.state, .ready)
-  }
-
-  @MainActor
-  func testKeepingSyncOffLeavesTheAppLocalOnlyAfterLibraryReplacement() async {
-    let calls = DeleteEventRecorder()
-    let model = SyncedContentSettingsModel(
-      mode: .iCloudSync,
-      enableAction: {
-        await calls.record("enable")
-        return .enabled
-      },
-      encryptedDataResetAction: { choice in
-        XCTAssertEqual(choice, .keepSyncOff)
-        return .resolved
-      }
-    )
-    model.setEncryptedDataResetCompletionAction {}
-    model.recordEncryptedDataReset()
-
-    await model.resolveEncryptedDataReset(.keepSyncOff)
-
+    model.recordSyncStopped(.iCloudDataReset)
     XCTAssertEqual(model.mode, .localOnly)
-    XCTAssertEqual(model.state, .ready)
-    XCTAssertEqual(model.statusTitle, "Local Only")
-    XCTAssertTrue(model.canEnable)
+    XCTAssertEqual(model.statusTitle, "iCloud Sync Was Turned Off")
+    XCTAssertTrue(model.detail.contains("will not upload it again"))
 
-    await model.enableICloudSync()
-
-    let events = await calls.values()
-    XCTAssertEqual(events, ["enable"])
-    XCTAssertEqual(model.mode, .iCloudSync)
+    model.recordSyncStopped(.iCloudAccountChanged)
+    XCTAssertEqual(model.statusTitle, "iCloud Account Changed")
+    XCTAssertTrue(model.detail.contains("separate local library"))
   }
 
   @MainActor
-  func testAResetDuringResolutionKeepsTheRecoveryChoicesVisible() async {
-    let calls = DeleteEventRecorder()
-    let model = SyncedContentSettingsModel(
-      mode: .iCloudSync,
-      encryptedDataResetAction: { _ in .requiresChoice }
-    )
-    model.setEncryptedDataResetCompletionAction {
-      await calls.record("replace-library")
-    }
-    model.recordEncryptedDataReset()
+  func testAttachmentStorageFailureExplainsTheLocalProblem() {
+    let model = SyncedContentSettingsModel(mode: .iCloudSync)
 
-    await model.resolveEncryptedDataReset(.restoreFromThisDevice)
+    model.recordSyncFailure(.attachmentStorageUnavailable)
 
-    let events = await calls.values()
-    XCTAssertEqual(events, ["replace-library"])
-    XCTAssertEqual(model.mode, .iCloudSync)
-    XCTAssertEqual(model.state, .encryptedDataReset)
+    XCTAssertEqual(model.statusTitle, "An Attachment Couldn’t Be Saved")
+    XCTAssertTrue(model.detail.contains("safe place"))
+    XCTAssertFalse(model.detail.contains("error 7"))
   }
 }
 

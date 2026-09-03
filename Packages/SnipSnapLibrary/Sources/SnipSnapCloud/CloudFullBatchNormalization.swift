@@ -159,7 +159,7 @@ extension CloudFullBatchPlanner {
     }
     let relevant = failures.filter { $0 != .zoneMissing }
     guard !relevant.isEmpty else { return nil }
-    return relevant.allSatisfy { $0 == .retryable } ? .retryableFetch : .terminalFetch
+    return relevant.allSatisfy(\.isRetryable) ? .retryableFetch : .terminalFetch
   }
 
   static func sendRecoveryKind(
@@ -170,7 +170,7 @@ extension CloudFullBatchPlanner {
     if batch.databaseEvents.contains(where: isDestructiveReset) { return .destructiveReset }
     let failures = normalized.compactMap { item -> CloudOperationFailure? in
       guard case .failed(let id, let failure) = item else { return nil }
-      if failure != .retryable, let id, attachmentOperationIDs.contains(id)
+      if !failure.isRetryable, let id, attachmentOperationIDs.contains(id)
       {
         return nil
       }
@@ -184,7 +184,7 @@ extension CloudFullBatchPlanner {
     }
     let relevant = failures.filter { $0 != .zoneMissing }
     guard !relevant.isEmpty else { return nil }
-    return relevant.allSatisfy { $0 == .retryable } ? .retryableSend : .terminalSend
+    return relevant.allSatisfy(\.isRetryable) ? .retryableSend : .terminalSend
   }
 
   static func nextNamespaceState(
@@ -225,7 +225,7 @@ extension CloudFullBatchPlanner {
         }
       } else if current.phase == .seeding {
         let hasIncomplete = sent.items.contains { item in
-          if case .failed(_, let failure) = item { failure == .retryable }
+          if case .failed(_, let failure) = item { failure.isRetryable }
           else { false }
         }
         if !hasIncomplete {

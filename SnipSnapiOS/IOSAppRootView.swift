@@ -68,7 +68,16 @@ struct IOSAppRootView: View {
             case .editList(let id):
                 ListEditorView(model: model, mode: .edit(id: id))
             case .settings:
-                SyncedContentSettingsView(model: session.syncedContentSettings)
+                SyncedContentSettingsView(
+                    model: session.syncedContentSettings,
+                    retryAction: {
+                        if session.syncedContentSettings.mode == .localOnly {
+                            await session.syncedContentSettings.enableICloudSync()
+                        } else {
+                            await session.retrySyncWhenPossible()
+                        }
+                    }
+                )
             case .recoveryCenter:
                 RecoveryCenterView(model: model)
             case .recoverSnip(let id):

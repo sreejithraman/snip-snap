@@ -12,7 +12,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         withLimitAttachments: Bool = false,
         withEncryptedReset: Bool = false,
         accountNotice: Bool = false,
-        withCopyShareFixtures: Bool = false
+        withCopyShareFixtures: Bool = false,
+        syncIssue: String? = nil
     ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["SNIP_SNAP_UI_TESTING"] = "1"
@@ -34,6 +35,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
         if withCopyShareFixtures {
             app.launchEnvironment["SNIP_SNAP_UI_TEST_COPY_SHARE"] = "1"
+        }
+        if let syncIssue {
+            app.launchEnvironment["SNIP_SNAP_UI_TEST_SYNC_ISSUE"] = syncIssue
         }
         app.launch()
         return app
@@ -72,7 +76,7 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         toggle(app.switches["icloud-sync-toggle"])
 
-        XCTAssertTrue(app.staticTexts["Sync Needs Attention"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["iCloud Sync Setup Stopped"].waitForExistence(timeout: 8))
         let firstDetail = app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS %@", "over-limit-a.bin")
         ).firstMatch
@@ -83,6 +87,25 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(secondDetail.waitForExistence(timeout: 3))
         XCTAssertTrue(app.switches["icloud-sync-toggle"].exists)
         XCTAssertFalse(app.staticTexts["iCloud Sync On"].exists)
+    }
+
+    func testInternalSyncIssueUsesCalmCopyWithoutRawErrorCodes() {
+        continueAfterFailure = false
+        let app = launchApp(withSyncedContent: true, syncIssue: "app-data")
+
+        openSettings(in: app)
+
+        XCTAssertTrue(app.staticTexts["Snip Snap Couldn’t Sync"].waitForExistence(timeout: 3))
+        let safeCopy = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "Your changes are safe on this device")
+        ).firstMatch
+        XCTAssertTrue(safeCopy.exists)
+        XCTAssertFalse(app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "CloudRecordError")
+        ).firstMatch.exists)
+        XCTAssertFalse(app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "error 2")
+        ).firstMatch.exists)
     }
 
     func testTurningSyncOffKeepsTheLibraryAndLeavesDeleteSeparate() {
@@ -140,18 +163,16 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertFalse(priorSnip.waitForExistence(timeout: 3))
     }
 
-    func testEncryptedDataResetOffersAllThreeSafeChoices() {
+    func testEncryptedDataResetTurnsSyncOffWithoutOfferingARecoveryUpload() {
         continueAfterFailure = false
         let app = launchApp(withSyncedContent: true, withEncryptedReset: true)
         openSettings(in: app)
 
-        XCTAssertTrue(app.staticTexts["iCloud Encrypted Data Was Reset"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["encrypted-reset-restore"].exists)
-        XCTAssertTrue(app.buttons["encrypted-reset-start-empty"].exists)
-        XCTAssertTrue(app.buttons["encrypted-reset-keep-off"].exists)
-
-        app.buttons["encrypted-reset-start-empty"].tap()
-        XCTAssertTrue(app.staticTexts["iCloud Sync On"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["iCloud Sync Was Turned Off"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["encrypted-reset-restore"].exists)
+        XCTAssertFalse(app.buttons["encrypted-reset-start-empty"].exists)
+        XCTAssertFalse(app.buttons["encrypted-reset-keep-off"].exists)
+        XCTAssertTrue(app.switches["icloud-sync-toggle"].value as? String == "0")
     }
 
     func testReviewsRecoveredSnipAndListEdits() {
