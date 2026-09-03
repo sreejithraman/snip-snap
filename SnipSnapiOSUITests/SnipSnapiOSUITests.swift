@@ -978,6 +978,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(actionsButton.waitForExistence(timeout: 3))
         XCTAssertLessThan(searchButton.frame.midX, filterButton.frame.midX)
         XCTAssertLessThan(searchButton.frame.midX, actionsButton.frame.midX)
+        XCTAssertLessThan(filterButton.frame.midX, actionsButton.frame.midX)
         searchButton.tap()
         XCTAssertTrue(search.waitForExistence(timeout: 3))
         let firstSearchFrame = search.frame

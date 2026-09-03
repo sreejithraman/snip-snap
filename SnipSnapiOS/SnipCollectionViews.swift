@@ -21,6 +21,7 @@ struct SnipCollectionView: View {
     let layout: SnipCollectionLayout
     @Binding var editMode: EditMode
     var dismissComposerKeyboard: () -> Void = {}
+    var libraryActions: LibraryActionsMenu?
     @State private var inlineEditSession: CompactInlineEditSession?
     @State private var previewURLs: [URL] = []
     @State private var selectedPreviewURL: URL?
@@ -202,6 +203,9 @@ struct SnipCollectionView: View {
                         .disabled(model.selectedSnipIDs.isEmpty)
                 } else {
                     WorkflowOptionsMenu(model: model)
+                }
+                if let libraryActions {
+                    libraryActions
                 }
             }
         }
