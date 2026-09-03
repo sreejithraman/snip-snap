@@ -20,12 +20,13 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 enum PanelControlMetrics {
     static let floatingRowHeight: CGFloat = 40
     static let floatingIconLength: CGFloat = 18
-    static let compactComposerHeight: CGFloat = 32
-    static let compactControlLength = compactComposerHeight
+    static let regularControlLength: CGFloat = 32
+    static let compactComposerHeight = regularControlLength
+    static let compactControlLength = regularControlLength
     static let tabSelectionInset: CGFloat = 4
     static let compactSelectionWidth: CGFloat = 40
     static let compactSelectionHeight = floatingRowHeight - tabSelectionInset * 2
-    static let inlineEntryInset = SnipSnapSpacing.relatedContent
+    static let inlineEntryInset: CGFloat = 4
     static let inlineEntryBaseHeight = compactComposerHeight + inlineEntryInset * 2
     static let expandedInputVerticalPadding = SnipSnapSpacing.relatedContent
 
@@ -262,19 +263,21 @@ extension View {
     }
 
     func panelInputSurface(
-        minHeight: CGFloat = PanelControlMetrics.floatingRowHeight,
+        height: CGFloat = PanelControlMetrics.regularControlLength,
         expanded: Bool = false
     ) -> some View {
         let shape = RoundedRectangle(
-            cornerRadius: expanded ? PanelShapeMetrics.expandedInputCornerRadius : minHeight / 2,
+            cornerRadius: expanded ? PanelShapeMetrics.expandedInputCornerRadius : height / 2,
             style: .continuous
         )
-        return frame(minHeight: minHeight)
+        return frame(height: height)
             .panelGlassSurface(in: shape)
             .contentShape(shape)
     }
 
-    func panelStandaloneActionControl() -> some View {
+    func panelStandaloneActionControl(
+        edge: PanelGlassEdgeState = .hidden
+    ) -> some View {
         let shape = Circle()
         return frame(
             width: PanelControlMetrics.compactControlLength,
@@ -283,7 +286,7 @@ extension View {
         .panelGlassSurface(
             in: shape,
             interactive: true,
-            edge: .hidden
+            edge: edge
         )
         .contentShape(shape)
     }

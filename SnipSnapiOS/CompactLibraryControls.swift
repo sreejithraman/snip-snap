@@ -135,17 +135,17 @@ struct CompactLibraryControls: View {
                         .frame(minHeight: controlLength, alignment: .center)
                         .accessibilityIdentifier("composer-text")
 
-                    AppProminentActionButton {
-                        Task { await send() }
-                    } label: {
+                    AppTintedGlassActionButton(
+                        isEnabled: canSend,
+                        action: { Task { await send() } }
+                    ) {
                         Image(systemName: "arrow.up")
-                            .font(.system(size: sendIconLength, weight: .bold))
+                            .font(.system(size: sendIconLength, weight: .semibold))
                             .frame(width: sendIconLength, height: sendIconLength)
                     }
                     .frame(width: controlLength, height: controlLength, alignment: .trailing)
                     .contentShape(Rectangle())
                     .controlSize(.regular)
-                    .disabled(!canSend)
                     .accessibilityLabel("Send Snip")
                     .accessibilityIdentifier("composer-send")
                 }

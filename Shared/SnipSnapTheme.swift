@@ -62,6 +62,31 @@ struct AppProminentActionButton<Label: View>: View {
     }
 }
 
+struct AppTintedGlassActionButton<Label: View>: View {
+    let isEnabled: Bool
+    let action: () -> Void
+    @ViewBuilder let label: () -> Label
+
+    var body: some View {
+        Button(action: action) {
+            label()
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.capsule)
+        .tint(
+            isEnabled
+                ? SnipSnapTheme.actionGlassTint
+                : SnipSnapTheme.disabledActionGlassTint
+        )
+        .foregroundStyle(
+            isEnabled
+                ? SnipSnapTheme.actionGlassLabel
+                : SnipSnapTheme.disabledActionGlassLabel
+        )
+        .disabled(!isEnabled)
+    }
+}
+
 private struct AppToastPresenter: ViewModifier {
     @Binding var toast: AppToast?
     let alignment: Alignment
@@ -165,6 +190,10 @@ extension View {
 /// keep the same monochrome Snip Snap look in light and dark mode.
 enum SnipSnapTheme {
     static let controlTint = Color.primary
+    static let actionGlassTint = Color.primary
+    static let disabledActionGlassTint = Color.primary.opacity(0.08)
+    static let actionGlassLabel = Color.primary
+    static let disabledActionGlassLabel = Color.primary.opacity(0.40)
 #if os(macOS)
     static let prominentControlLabel = Color(nsColor: .windowBackgroundColor)
 #else
