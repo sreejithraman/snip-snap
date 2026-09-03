@@ -216,6 +216,7 @@ struct PanelMultilineTextInput: View {
         TextField(prompt, text: $text, axis: .vertical)
         .textFieldStyle(.plain)
         .lineLimit(lineRange)
+        .fixedSize(horizontal: false, vertical: true)
         .frame(
             minHeight: PanelControlMetrics.compactComposerHeight,
             maxHeight: PanelTextInputLayout.maximumHeight(

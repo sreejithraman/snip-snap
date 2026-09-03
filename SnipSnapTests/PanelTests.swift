@@ -437,6 +437,10 @@ final class PanelTests: StoreBackedTestCase {
         let textField = try XCTUnwrap(
             findTextField(in: hostingView, placeholder: "Add to Inbox…")
         )
+        XCTAssertLessThanOrEqual(
+            textField.frame.height,
+            PanelControlMetrics.compactComposerHeight
+        )
         XCTAssertTrue(panel.makeFirstResponder(textField))
         let fieldEditor = try XCTUnwrap(panel.firstResponder as? NSTextView)
         let longText = (0..<400).map { "line \($0)" }.joined(separator: "\n")
@@ -801,6 +805,15 @@ final class PanelTests: StoreBackedTestCase {
         )
     }
 
+    func testCompactComposerKeepsSmallVisualActionsInsideUsefulHitAreas() {
+        XCTAssertEqual(PanelControlMetrics.regularControlLength, 32)
+        XCTAssertEqual(
+            PanelControlMetrics.compactControlLength,
+            PanelControlMetrics.regularControlLength
+        )
+        XCTAssertEqual(PanelControlMetrics.inlineEntryBaseHeight, 40)
+    }
+
     func testTabSelectionUsesTheNearRoundActionProportion() {
         XCTAssertGreaterThan(
             PanelControlMetrics.compactSelectionWidth,
@@ -901,7 +914,11 @@ final class PanelTests: StoreBackedTestCase {
         )
         let hostingView = NSHostingView(rootView: input)
 
-        XCTAssertEqual(hostingView.fittingSize.height, 32, accuracy: 0.5)
+        XCTAssertEqual(
+            hostingView.fittingSize.height,
+            PanelControlMetrics.regularControlLength,
+            accuracy: 0.5
+        )
     }
 
     @MainActor

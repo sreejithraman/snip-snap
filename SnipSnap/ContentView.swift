@@ -472,6 +472,7 @@ struct ContentView: View {
             )
         }
         .frame(maxWidth: .infinity)
+        .fixedSize(horizontal: false, vertical: true)
         .contentShape(.rect)
     }
 
@@ -536,11 +537,22 @@ struct ContentView: View {
     }
 
     private var inlineSendButton: some View {
-        AppProminentActionButton(action: saveInlineEntry) {
-            InlineSendButtonLabel()
+        AppTintedGlassActionButton(
+            isEnabled: canSaveInlineEntry,
+            action: saveInlineEntry
+        ) {
+            Image(systemName: "arrow.up")
+                .font(.system(size: 12, weight: .semibold))
+                .frame(width: 12, height: 12)
         }
-        .disabled(!canSaveInlineEntry)
+        .frame(
+            width: PanelControlMetrics.compactControlLength,
+            height: PanelControlMetrics.compactControlLength
+        )
+        .contentShape(Rectangle())
+        .controlSize(.regular)
         .accessibilityLabel("Add to \(model.activeList.displayName)")
+        .accessibilityIdentifier("composer-send")
         .help("Add to \(model.activeList.displayName)")
     }
 
@@ -834,13 +846,5 @@ private struct ClipboardAlertHost: View {
             get: { history.persistenceError != nil },
             set: { if !$0 { history.dismissPersistenceError() } }
         )
-    }
-}
-
-private struct InlineSendButtonLabel: View {
-    var body: some View {
-        Image(systemName: "arrow.up")
-            .font(.system(size: 13, weight: .bold))
-            .padding(.horizontal, 4)
     }
 }

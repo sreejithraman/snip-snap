@@ -15,17 +15,19 @@ struct PanelMoreButton: View {
             actions
         } label: {
             Image(systemName: "ellipsis")
-                .font(.body.weight(.semibold))
+                .font(.system(size: 13, weight: .semibold))
+                .panelStandaloneActionControl(edge: .emphasized)
                 .frame(
-                    width: PanelControlMetrics.floatingIconLength,
-                    height: PanelControlMetrics.floatingIconLength
+                    width: PanelControlMetrics.floatingRowHeight,
+                    height: PanelControlMetrics.floatingRowHeight
                 )
+                .contentShape(Circle())
         }
         .menuIndicator(.hidden)
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
+        .buttonStyle(.plain)
         .help(moreLabel)
         .accessibilityLabel(moreLabel)
+        .accessibilityIdentifier("panel-more")
     }
 
     @ViewBuilder
