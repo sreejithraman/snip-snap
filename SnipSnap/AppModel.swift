@@ -31,6 +31,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var pendingImportPreview: SnipImportPreview?
     private var pendingImportPreviewID: UUID?
     @Published var toast: AppToast?
+    @Published var clipboardCopyPulse: ClipboardCopyPulse?
     var canReorderSelection: Bool { canReorder(ids: selection) }
 
     func canReorder(ids: Set<UUID>) -> Bool {
@@ -866,16 +867,70 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func copySelection() -> Bool {
-        guard !selectedSnips.isEmpty else { return false }
-        Task { await copySelectionNow() }
-        return true
+        placeOnClipboard(.snips(selectedSnips), feedback: .notify)
     }
 
     @discardableResult
     func copySelectionNow(to pasteboard: NSPasteboard = .general) async -> Bool {
-        let selected = selectedSnips
-        guard !selected.isEmpty else { return false }
-        let attachments = attachmentPreparation.unique(selected.flatMap(\.attachments))
+        await placeOnClipboardNow(
+            .snips(selectedSnips),
+            feedback: .notify,
+            to: pasteboard
+        )
+    }
+
+    @discardableResult
+    func placeOnClipboard(
+        _ placement: ClipboardPlacement,
+        feedback: ClipboardPlacementFeedback = .notify,
+        to pasteboard: NSPasteboard = .general
+    ) -> Bool {
+        switch placement {
+        case .snips(let snips):
+            guard !snips.isEmpty else { return false }
+            Task { await placeOnClipboardNow(.snips(snips), feedback: feedback, to: pasteboard) }
+            return true
+        case .clipboardEntry(let entry):
+            return placeClipboardEntry(entry, feedback: feedback)
+        }
+    }
+
+    @discardableResult
+    func placeOnClipboardNow(
+        _ placement: ClipboardPlacement,
+        feedback: ClipboardPlacementFeedback = .notify,
+        to pasteboard: NSPasteboard = .general
+    ) async -> Bool {
+        switch placement {
+        case .snips(let snips):
+            return await placeSnipsOnClipboard(snips, feedback: feedback, to: pasteboard)
+        case .clipboardEntry(let entry):
+            return placeClipboardEntry(entry, feedback: feedback)
+        }
+    }
+
+    @discardableResult
+    func placeClipboardEntry(
+        _ entry: ClipboardEntry,
+        feedback: ClipboardPlacementFeedback = .notify
+    ) -> Bool {
+        guard clipboardHistory.restore(entry) else {
+            presentedError = String(localized: "Snip Snap could not set the clipboard.")
+            return false
+        }
+        if feedback == .notify {
+            clipboardCopyPulse = ClipboardCopyPulse(entryID: entry.id)
+        }
+        return true
+    }
+
+    private func placeSnipsOnClipboard(
+        _ snips: [Snip],
+        feedback: ClipboardPlacementFeedback,
+        to pasteboard: NSPasteboard
+    ) async -> Bool {
+        guard !snips.isEmpty else { return false }
+        let attachments = attachmentPreparation.unique(snips.flatMap(\.attachments))
         let prepared: [UUID: URL]
         do {
             prepared = try await prepareAttachments(attachments, for: .copy)
@@ -883,16 +938,18 @@ final class AppModel: ObservableObject {
             presentedError = error.localizedDescription
             return false
         }
-        let text = SnipFormatter.formatForClipboard(snips: selected)
+        let text = SnipFormatter.formatForClipboard(snips: snips)
         let textItem = NSPasteboardItem()
         textItem.setString(text, forType: .string)
-        textItem.setData(Data(), forType: ClipboardHistory.internalType)
         var objects: [NSPasteboardWriting] = [textItem]
         objects.append(contentsOf: attachments.compactMap { prepared[$0.id] as NSURL? })
         pasteboard.clearContents()
         let copied = pasteboard.writeObjects(objects)
-        if copied, toast?.action == nil {
-            toast = .copied(count: selected.count)
+        if copied {
+            clipboardHistory.captureNow(from: pasteboard)
+            if feedback == .notify, toast?.action == nil {
+                toast = .copied(count: snips.count)
+            }
         }
         return copied
     }

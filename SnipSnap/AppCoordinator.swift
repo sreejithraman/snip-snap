@@ -175,11 +175,7 @@ final class AppCoordinator {
 
     @discardableResult
     func copyClipboardEntry(_ entry: ClipboardEntry) -> Bool {
-        guard model.clipboardHistory.restore(entry) else {
-            model.presentedError = String(localized: "Snip Snap could not set the clipboard.")
-            return false
-        }
-        return true
+        model.placeOnClipboard(.clipboardEntry(entry), feedback: .notify)
     }
 
     func editSelectionInNewWindow() {

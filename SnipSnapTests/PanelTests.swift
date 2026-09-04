@@ -1023,6 +1023,16 @@ final class PanelTests: StoreBackedTestCase {
         XCTAssertEqual(PanelListMetrics.horizontalContentInset, 16)
     }
 
+    func testCardLeadingControlUsesOneSize() {
+        XCTAssertEqual(PanelCardLeadingMetrics.side, 24)
+        XCTAssertEqual(PanelCardLeadingMetrics.cornerRadius, 5)
+        XCTAssertEqual(PanelCardLeadingMetrics.controlSide, 20)
+        XCTAssertLessThan(
+            PanelCardLeadingMetrics.controlSide,
+            PanelCardLeadingMetrics.side
+        )
+    }
+
     func testDefaultWindowSizeIsUsable() {
         XCTAssertEqual(AppWindowDefaults.defaultSize.width, 430)
         XCTAssertEqual(AppWindowDefaults.defaultSize.height, 500)

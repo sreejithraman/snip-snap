@@ -66,6 +66,7 @@ struct SnipListView: View {
     let coordinator: AppCoordinator
     let dragSessionController: PanelDragSessionController
     let fileDropController: PanelFileDropController
+    @ObservedObject var commandNumberPicker: CommandNumberPicker
     @ObservedObject var state: SnipListState
     @FocusState.Binding var focusedTarget: PanelFocusTarget?
     let moveSelectionToNewList: (Set<UUID>) -> Void
@@ -179,6 +180,7 @@ struct SnipListView: View {
             .background {
                 SnipListWindowFrameReader { frame, _ in
                     reorderGeometry.listFrame = frame
+                    commandNumberPicker.setViewport(frame)
                 }
             }
             .scrollEdgeEffectStyle(.soft, for: .bottom)
@@ -254,9 +256,22 @@ struct SnipListView: View {
         }
         .onAppear {
             state.reconcile(model: model)
+            commandNumberPicker.setOrderedTargets(
+                commandNumberTargets(snapshot: snapshot)
+            )
         }
         .onChange(of: model.selection) {
             state.reconcile(model: model)
+        }
+        .onChange(of: snapshot.orderedVisibleIDs) { _, _ in
+            commandNumberPicker.setOrderedTargets(
+                commandNumberTargets(snapshot: snapshot)
+            )
+        }
+        .onChange(of: clipboardEntries.map(\.id)) { _, _ in
+            commandNumberPicker.setOrderedTargets(
+                commandNumberTargets(snapshot: snapshot)
+            )
         }
         .onReceive(fileDropController.fileDrops) { urls in
             guard let editingID = model.editingID else { return }
@@ -382,10 +397,12 @@ struct SnipListView: View {
                     SnipListWindowFrameReader { frame, scrollOffsetY in
                         reorderGeometry.rowFrames[snip.id] = frame
                         reorderGeometry.scrollOffsetY = scrollOffsetY
+                        commandNumberPicker.setRowFrame(.snip(snip.id), frame: frame)
                     }
                 }
                 .onDisappear {
                     reorderGeometry.rowFrames[snip.id] = nil
+                    commandNumberPicker.setRowFrame(.snip(snip.id), frame: nil)
                 }
     }
 
@@ -393,11 +410,24 @@ struct SnipListView: View {
         ClipboardEntryRow(
             entry: entry,
             dragSessionController: dragSessionController,
+            commandNumber: commandNumberPicker.displayedNumber(for: .clipboardEntry(entry.id)),
+            onPickCommandNumber: {
+                commandNumberPicker.pick(.clipboardEntry(entry.id))
+            },
+            copiedPulse: model.clipboardCopyPulse,
             onPreviewAttachments: onPreviewAttachments
         ) {
-            coordinator.copyClipboardEntry(entry)
+            model.placeOnClipboard(.clipboardEntry(entry), feedback: $0)
         } save: {
             Task { _ = await model.saveClipboardEntry(entry) }
+        }
+        .background {
+            SnipListWindowFrameReader { frame, _ in
+                commandNumberPicker.setRowFrame(.clipboardEntry(entry.id), frame: frame)
+            }
+        }
+        .onDisappear {
+            commandNumberPicker.setRowFrame(.clipboardEntry(entry.id), frame: nil)
         }
         .panelListRowLayout()
     }
@@ -542,13 +572,19 @@ struct SnipListView: View {
         snips: [Snip]
     ) {
         guard payload == activeDragPayload else { return }
-        if !activeDragOriginalOrder.isEmpty, reorderGeometry.listFrame.contains(location) {
+        let droppedInList = !activeDragOriginalOrder.isEmpty
+            && reorderGeometry.listFrame.contains(location)
+        if droppedInList {
             let finalTarget = reorderTarget(at: location, snips: snips)
             commitDrop(payload, target: finalTarget, listID: listID)
             return
         }
-        if outcome == .copy {
+        if ClipboardDragPlacement.shouldPlace(outcome: outcome, droppedInList: false) {
             model.setDoneAfterExternalDrop(ids: payload.ids)
+            let placed = payload.ids.compactMap { id in
+                model.snips.first { $0.id == id }
+            }
+            _ = model.placeOnClipboard(.snips(placed), feedback: .silent)
         }
         guard outcome == .move else {
             clearDrag(listID: listID)
@@ -586,6 +622,14 @@ struct SnipListView: View {
         } else {
             withAnimation(animation, changes)
         }
+    }
+
+    private func commandNumberTargets(snapshot: SnipListSnapshot) -> [CommandNumberTarget] {
+        let snipIDs = snapshot.groups.count > 1
+            ? snapshot.orderedVisibleIDs
+            : displayedSnips(in: snapshot).map(\.id)
+        return snipIDs.map(CommandNumberTarget.snip)
+            + clipboardEntries.map { .clipboardEntry($0.id) }
     }
 
     private func displayedSnips(in snapshot: SnipListSnapshot) -> [Snip] {
@@ -626,6 +670,9 @@ struct SnipListView: View {
                 guard press.modifiers.contains(.command) else { return .ignored }
                 return model.copySelection() ? .handled : .ignored
             }
+            .onKeyPress(phases: .down) { press in
+                commandNumberPicker.handleKeyPress(press)
+            }
     }
 
     private func snipCard(_ snip: Snip) -> some View {
@@ -634,6 +681,8 @@ struct SnipListView: View {
             isRecovered: model.isRecoveredSnip(snip.id),
             isSelected: (contextMenuSelection ?? model.selection).contains(snip.id),
             isEditing: model.editingID == snip.id,
+            commandNumber: commandNumberPicker.displayedNumber(for: .snip(snip.id)),
+            onPickCommandNumber: { commandNumberPicker.pick(.snip(snip.id)) },
             editAttachments: editAttachmentsBinding(for: snip),
             isSaving: savingBinding(for: snip),
             attachmentURL: model.attachmentURL,

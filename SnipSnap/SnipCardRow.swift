@@ -7,6 +7,8 @@ struct SnipCardRow: View {
     let isRecovered: Bool
     let isSelected: Bool
     let isEditing: Bool
+    let commandNumber: Int?
+    let onPickCommandNumber: () -> Void
     @Binding var editAttachments: [URL]
     @Binding var isSaving: Bool
     let attachmentURL: (SnipAttachment) -> URL?
@@ -34,19 +36,29 @@ struct SnipCardRow: View {
                 isSubdued: snip.isDone
             )
         ) {
-            Toggle(
-                SnipCompletionLanguage.done,
-                isOn: Binding(
-                    get: { snip.isDone },
-                    set: { _ in onToggleDone() }
+            ZStack {
+                Toggle(
+                    SnipCompletionLanguage.done,
+                    isOn: Binding(
+                        get: { snip.isDone },
+                        set: { _ in onToggleDone() }
+                    )
                 )
-            )
-            .toggleStyle(.checkbox)
-            .labelsHidden()
-            .tint(SnipSnapColors.controlTint)
-            .focusable(false)
-            .disabled(isEditing)
-            .help(SnipCompletionLanguage.actionTitle(isDone: snip.isDone))
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .tint(SnipSnapColors.controlTint)
+                .focusable(false)
+                .disabled(isEditing || commandNumber != nil)
+                .opacity(commandNumber == nil ? 1 : 0)
+                .help(SnipCompletionLanguage.actionTitle(isDone: snip.isDone))
+                if let commandNumber {
+                    Button(action: onPickCommandNumber) {
+                        CommandNumberBadge(number: commandNumber)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(String(localized: "Copy \(commandNumber)"))
+                }
+            }
         } main: {
             if isEditing {
                 editingBody

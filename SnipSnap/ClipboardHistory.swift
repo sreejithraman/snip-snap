@@ -322,7 +322,6 @@ private final class ClipboardCaptureReader {
         guard pasteboard.changeCount == changeCount,
               let pasteboardItems = pasteboard.pasteboardItems,
               !pasteboardItems.isEmpty,
-              !pasteboardItems.contains(where: { $0.types.contains(ClipboardHistory.internalType) }),
               !pasteboardItems.contains(where: { Self.shouldIgnore($0.types) }) else { return nil }
         var remainingBytes = ClipboardHistory.entryByteLimit
         let items = pasteboardItems.compactMap { pasteboardItem -> ClipboardPayloadItem? in
@@ -370,7 +369,6 @@ final class ClipboardHistory: ObservableObject {
     nonisolated static let entryByteLimit = 32 * 1_024 * 1_024
     nonisolated static let historyByteLimit = 96 * 1_024 * 1_024
     nonisolated static let backgroundProcessingThreshold = 256 * 1_024
-    nonisolated static let internalType = NSPasteboard.PasteboardType("world.sree.snipsnap.internal-copy")
 
     @Published private(set) var entries: [ClipboardEntry] = []
     @Published private(set) var isPaused: Bool
@@ -470,9 +468,14 @@ final class ClipboardHistory: ObservableObject {
     }
 
     func restore(_ entry: ClipboardEntry) -> Bool {
-        let written = entry.write(to: pasteboard)
-        lastChangeCount = pasteboard.changeCount
-        return written
+        guard entry.write(to: pasteboard) else { return false }
+        captureNow(from: pasteboard)
+        return true
+    }
+
+    func captureNow(from pasteboard: NSPasteboard) {
+        guard pasteboard.name == self.pasteboard.name else { return }
+        captureImmediately()
     }
 
     func entry(id: UUID) -> ClipboardEntry? {
@@ -503,11 +506,11 @@ final class ClipboardHistory: ObservableObject {
             lastChangeCount = capturedChangeCount
             return
         }
-        let sourceApplication = NSWorkspace.shared.frontmostApplication?.localizedName
         if pasteboard.name == .general {
             guard inFlightChangeCount != capturedChangeCount else { return }
             captureTask?.cancel()
             inFlightChangeCount = capturedChangeCount
+            let sourceApplication = NSWorkspace.shared.frontmostApplication?.localizedName
             captureTask = Task { [weak self, captureReader] in
                 let snapshot = captureReader.capture(changeCount: capturedChangeCount)
                 guard let self,
@@ -532,6 +535,16 @@ final class ClipboardHistory: ObservableObject {
             }
             return
         }
+        captureImmediately()
+    }
+
+    private func captureImmediately() {
+        let capturedChangeCount = pasteboard.changeCount
+        guard !isPaused, suppressionTokens.isEmpty else {
+            lastChangeCount = capturedChangeCount
+            return
+        }
+        let sourceApplication = NSWorkspace.shared.frontmostApplication?.localizedName
         captureTask?.cancel()
         guard let snapshot = captureReader.capture(changeCount: capturedChangeCount) else {
             lastChangeCount = capturedChangeCount
@@ -569,9 +582,11 @@ final class ClipboardHistory: ObservableObject {
 
     private func insert(_ entry: ClipboardEntry) {
         if let index = entries.firstIndex(where: { $0.hasSamePayload(as: entry) }) {
-            entries.remove(at: index)
+            let existing = entries.remove(at: index)
+            entries.insert(existing, at: 0)
+        } else {
+            entries.insert(entry, at: 0)
         }
-        entries.insert(entry, at: 0)
         entries = Self.trimmed(entries)
         persist()
     }

@@ -140,19 +140,28 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertThrowsError(try decoder.decode(ClipboardEntry.self, from: Data(legacy.utf8)))
     }
 
-    func testInternalCopyMarkerNeverCreatesHistory() throws {
+    func testCaptureNowRecordsTheCurrentPasteboard() throws {
         let context = try makeContext()
         writeText("Initial", to: context.pasteboard)
         context.history.poll()
+        writeText("App copy", to: context.pasteboard)
+        context.history.captureNow(from: context.pasteboard)
 
-        let item = NSPasteboardItem()
-        item.setString("Snip Snap copy", forType: .string)
-        item.setData(Data(), forType: ClipboardHistory.internalType)
-        context.pasteboard.clearContents()
-        XCTAssertTrue(context.pasteboard.writeObjects([item]))
+        XCTAssertEqual(context.history.entries.map(\.text), ["App copy", "Initial"])
+    }
+
+    func testRestoreMovesTheEntryToTheTop() throws {
+        let context = try makeContext()
+        writeText("Older", to: context.pasteboard)
         context.history.poll()
+        writeText("Newer", to: context.pasteboard)
+        context.history.poll()
+        let older = try XCTUnwrap(context.history.entries.last)
 
-        XCTAssertEqual(context.history.entries.map(\.text), ["Initial"])
+        XCTAssertTrue(context.history.restore(older))
+        XCTAssertEqual(context.history.entries.map(\.text), ["Older", "Newer"])
+        XCTAssertEqual(context.history.entries.first?.id, older.id)
+        XCTAssertEqual(context.pasteboard.string(forType: .string), "Older")
     }
 
     func testHistoryPersistsTheLatestClipboardSnapshot() async throws {
