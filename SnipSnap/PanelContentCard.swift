@@ -4,6 +4,12 @@ private enum PanelContentCardMetrics {
     static let cornerRadius: CGFloat = 14
 }
 
+enum PanelCardLeadingMetrics {
+    static let side: CGFloat = 24
+    static let cornerRadius: CGFloat = 5
+    static let controlSide: CGFloat = 20
+}
+
 struct PanelContentCardState: Equatable {
     var isSelected = false
     var isSubdued = false
@@ -33,7 +39,11 @@ struct PanelContentCard<Leading: View, Main: View>: View {
         HStack(alignment: alignment, spacing: SnipSnapSpacing.relatedContent) {
             if hasLeading {
                 leading
-                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(
+                        width: PanelCardLeadingMetrics.side,
+                        height: PanelCardLeadingMetrics.side,
+                        alignment: .center
+                    )
             }
 
             main

@@ -3,22 +3,22 @@ import SwiftUI
 
 struct ClipboardListView: View {
     @ObservedObject var model: AppModel
-    let coordinator: AppCoordinator
     let dragSessionController: PanelDragSessionController
+    @ObservedObject var commandNumberPicker: CommandNumberPicker
     @Binding var showingClearConfirmation: Bool
     let onPreviewAttachments: ([URL], URL) -> Void
     @ObservedObject private var history: ClipboardHistory
 
     init(
         model: AppModel,
-        coordinator: AppCoordinator,
         dragSessionController: PanelDragSessionController,
+        commandNumberPicker: CommandNumberPicker,
         showingClearConfirmation: Binding<Bool>,
         onPreviewAttachments: @escaping ([URL], URL) -> Void
     ) {
         self.model = model
-        self.coordinator = coordinator
         self.dragSessionController = dragSessionController
+        self.commandNumberPicker = commandNumberPicker
         _showingClearConfirmation = showingClearConfirmation
         self.onPreviewAttachments = onPreviewAttachments
         history = model.clipboardHistory
@@ -28,8 +28,8 @@ struct ClipboardListView: View {
         ClipboardEntriesList(
             entries: history.entries,
             model: model,
-            coordinator: coordinator,
             dragSessionController: dragSessionController,
+            commandNumberPicker: commandNumberPicker,
             verticalContentPadding: PanelListMetrics.verticalContentInset,
             maxHeight: .infinity,
             onPreviewAttachments: onPreviewAttachments
@@ -48,8 +48,8 @@ struct ClipboardListView: View {
 private struct ClipboardEntriesList<HeaderActions: View>: View {
     let entries: [ClipboardEntry]
     @ObservedObject var model: AppModel
-    let coordinator: AppCoordinator
     let dragSessionController: PanelDragSessionController
+    @ObservedObject var commandNumberPicker: CommandNumberPicker
     let verticalContentPadding: CGFloat
     let maxHeight: CGFloat
     let onPreviewAttachments: ([URL], URL) -> Void
@@ -75,11 +75,32 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
                             ClipboardEntryRow(
                                 entry: entry,
                                 dragSessionController: dragSessionController,
+                                commandNumber: commandNumberPicker.displayedNumber(
+                                    for: .clipboardEntry(entry.id)
+                                ),
+                                onPickCommandNumber: {
+                                    commandNumberPicker.pick(.clipboardEntry(entry.id))
+                                },
+                                copiedPulse: model.clipboardCopyPulse,
                                 onPreviewAttachments: onPreviewAttachments
                             ) {
-                                coordinator.copyClipboardEntry(entry)
+                                model.placeOnClipboard(.clipboardEntry(entry), feedback: $0)
                             } save: {
                                 Task { _ = await model.saveClipboardEntry(entry) }
+                            }
+                            .background {
+                                SnipListWindowFrameReader { frame, _ in
+                                    commandNumberPicker.setRowFrame(
+                                        .clipboardEntry(entry.id),
+                                        frame: frame
+                                    )
+                                }
+                            }
+                            .onDisappear {
+                                commandNumberPicker.setRowFrame(
+                                    .clipboardEntry(entry.id),
+                                    frame: nil
+                                )
                             }
                         }
                     }
@@ -112,14 +133,33 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
             contentHeight: contentHeight
         )
         .frame(maxHeight: maxHeight)
+        .background {
+            SnipListWindowFrameReader { frame, _ in
+                commandNumberPicker.setViewport(frame)
+            }
+        }
+        .onAppear {
+            commandNumberPicker.setOrderedTargets(
+                entries.map { .clipboardEntry($0.id) }
+            )
+        }
+        .onChange(of: entries.map(\.id)) { _, ids in
+            commandNumberPicker.setOrderedTargets(ids.map(CommandNumberTarget.clipboardEntry))
+        }
+        .onKeyPress(phases: .down) { press in
+            commandNumberPicker.handleKeyPress(press)
+        }
     }
 }
 
 struct ClipboardEntryRow: View {
     let entry: ClipboardEntry
     let dragSessionController: PanelDragSessionController
+    let commandNumber: Int?
+    let onPickCommandNumber: () -> Void
+    let copiedPulse: ClipboardCopyPulse?
     let onPreviewAttachments: ([URL], URL) -> Void
-    let copy: () -> Bool
+    let place: (ClipboardPlacementFeedback) -> Bool
     let save: () -> Void
     @Environment(\.displayScale) private var displayScale
     @State private var previewImages: [NSImage] = []
@@ -137,16 +177,38 @@ struct ClipboardEntryRow: View {
                     colorScheme: context.colorScheme,
                     size: context.sourceFrame.size
                 )
-            }
+            },
+            callbacks: PanelDragSessionCallbacks(
+                onBegan: {},
+                onMoved: { _ in },
+                onEnded: { outcome, _ in
+                    if ClipboardDragPlacement.shouldPlace(
+                        outcome: outcome,
+                        droppedInList: false
+                    ) {
+                        _ = place(.silent)
+                    }
+                }
+            )
         )
     }
 
     var body: some View {
         PanelContentCard(alignment: .top) {
-            ClipboardEntryCopyButton(
-                isCopied: isShowingCopyConfirmation,
-                action: performCopy
-            )
+            ZStack {
+                ClipboardEntryCopyButton(
+                    isCopied: isShowingCopyConfirmation,
+                    action: performCopy
+                )
+                .opacity(commandNumber == nil || isShowingCopyConfirmation ? 1 : 0)
+                if let commandNumber, !isShowingCopyConfirmation {
+                    Button(action: onPickCommandNumber) {
+                        CommandNumberBadge(number: commandNumber)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(String(localized: "Copy \(commandNumber)"))
+                }
+            }
         } main: {
             PanelContentCardMain {
                 if !liveAttachmentPreviewItems.isEmpty {
@@ -173,6 +235,10 @@ struct ClipboardEntryRow: View {
         .task(id: entry.id) {
             previewImages = await loadPreviewImages()
         }
+        .onChange(of: copiedPulse) { _, pulse in
+            guard pulse?.entryID == entry.id else { return }
+            showCopyConfirmation()
+        }
         .onDisappear {
             copyConfirmationTask?.cancel()
             copyConfirmationTask = nil
@@ -180,7 +246,10 @@ struct ClipboardEntryRow: View {
     }
 
     private func performCopy() {
-        guard copy() else { return }
+        _ = place(.notify)
+    }
+
+    private func showCopyConfirmation() {
         copyConfirmationTask?.cancel()
         isShowingCopyConfirmation = true
         copyConfirmationTask = Task { @MainActor in
@@ -283,8 +352,6 @@ private enum ClipboardEntryCardMetrics {
         height: AttachmentPreviewMetrics.side
     )
     static let previewLimit = 3
-    static let actionSide: CGFloat = 24
-    static let actionCornerRadius: CGFloat = 8
 }
 
 private struct ClipboardEntryCardContent: View {
@@ -316,27 +383,32 @@ private struct ClipboardEntryCopyButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
-                .font(.system(size: 9, weight: .medium))
-                .symbolRenderingMode(.monochrome)
-                .frame(
-                    width: ClipboardEntryCardMetrics.actionSide,
-                    height: ClipboardEntryCardMetrics.actionSide
-                )
-                .foregroundStyle(SnipSnapColors.textPrimary)
-                .background {
-                    shape.fill(SnipSnapColors.compactActionFill)
-                }
-                .contentShape(shape)
+            ZStack {
+                shape.fill(SnipSnapColors.compactActionFill)
+                Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 10, weight: .medium))
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(SnipSnapColors.textPrimary)
+            }
+            .frame(
+                width: PanelCardLeadingMetrics.controlSide,
+                height: PanelCardLeadingMetrics.controlSide
+            )
+            .contentShape(shape)
+            .clipShape(shape)
         }
         .buttonStyle(.plain)
+        .frame(
+            width: PanelCardLeadingMetrics.controlSide,
+            height: PanelCardLeadingMetrics.controlSide
+        )
         .help(isCopied ? "Copied" : "Copy")
         .accessibilityLabel(isCopied ? "Copied" : "Copy")
     }
 
     private var shape: RoundedRectangle {
         RoundedRectangle(
-            cornerRadius: ClipboardEntryCardMetrics.actionCornerRadius,
+            cornerRadius: PanelCardLeadingMetrics.cornerRadius,
             style: .continuous
         )
     }

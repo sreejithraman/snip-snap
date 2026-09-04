@@ -40,6 +40,7 @@ struct ContentView: View {
     @State private var selectedPreviewURL: URL?
     @State private var inlineEntryDragBlockingID = UUID()
     @StateObject private var listState = SnipListState()
+    @StateObject private var commandNumberPicker = CommandNumberPicker()
     @FocusState private var focusedTarget: PanelFocusTarget?
 
     init(
@@ -161,6 +162,14 @@ struct ContentView: View {
             entryDraftListID = model.activeListID
             entryDraft = model.composerDraft(for: model.activeListID)
             focusedTarget = .list
+            commandNumberPicker.startMonitoring(onPick: pickCommandNumber)
+            commandNumberPicker.setEnabled(hasCommandNumberFocus)
+        }
+        .onDisappear {
+            commandNumberPicker.stopMonitoring()
+        }
+        .onChange(of: hasCommandNumberFocus, initial: true) { _, isEnabled in
+            commandNumberPicker.setEnabled(isEnabled)
         }
         .onChange(of: model.activeListID) { _, listID in
             entryDraftListID = listID
@@ -289,6 +298,22 @@ struct ContentView: View {
         focusedTarget == .list && model.editingID == nil && controlActiveState == .key
     }
 
+    private var hasCommandNumberFocus: Bool {
+        controlActiveState == .key && model.editingID == nil
+    }
+
+    private func pickCommandNumber(_ target: CommandNumberTarget) {
+        switch target {
+        case .snip(let id):
+            guard let snip = model.snips.first(where: { $0.id == id }) else { return }
+            model.selection = [id]
+            _ = model.placeOnClipboard(.snips([snip]), feedback: .notify)
+        case .clipboardEntry(let id):
+            guard let entry = model.clipboardHistory.entry(id: id) else { return }
+            _ = model.placeOnClipboard(.clipboardEntry(entry), feedback: .notify)
+        }
+    }
+
     private var floatingHeader: some View {
         HStack(spacing: SnipSnapSpacing.relatedContent) {
             HStack(spacing: SnipSnapSpacing.relatedContent) {
@@ -339,8 +364,8 @@ struct ContentView: View {
         } else if model.isShowingClipboard {
             ClipboardListView(
                 model: model,
-                coordinator: coordinator,
                 dragSessionController: dragSessionController,
+                commandNumberPicker: commandNumberPicker,
                 showingClearConfirmation: $showingClearClipboard,
                 onPreviewAttachments: openAttachmentPreview
             )
@@ -372,6 +397,7 @@ struct ContentView: View {
             coordinator: coordinator,
             dragSessionController: dragSessionController,
             fileDropController: fileDropController,
+            commandNumberPicker: commandNumberPicker,
             state: listState,
             focusedTarget: $focusedTarget,
             moveSelectionToNewList: { ids in

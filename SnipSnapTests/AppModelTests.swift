@@ -1181,6 +1181,103 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testPlacingSnipsOnClipboardUsesOnePathForCopyAndSilentDrag() async {
+        let snip = Snip(content: "Place me", origin: .quickEntry)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [snip]),
+            defaults: defaults()
+        )
+        await model.reload()
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-place-snips-\(UUID())"))
+
+        let notified = await model.placeOnClipboardNow(
+            .snips([snip]),
+            feedback: .notify,
+            to: pasteboard
+        )
+        XCTAssertTrue(notified)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Place me")
+        XCTAssertEqual(model.toast?.message, "Copied")
+
+        model.toast = .deleted(count: 1, id: UUID())
+        let silent = await model.placeOnClipboardNow(
+            .snips([snip]),
+            feedback: .silent,
+            to: pasteboard
+        )
+        XCTAssertTrue(silent)
+        XCTAssertEqual(model.toast?.action, .undoDelete)
+        XCTAssertNil(model.clipboardCopyPulse)
+    }
+
+    @MainActor
+    func testPlacingSnipsRecordsTheCopyInClipboardHistory() async throws {
+        let pasteboard = NSPasteboard(
+            name: .init("SnipSnapTests-place-history-\(UUID().uuidString)")
+        )
+        let history = ClipboardHistory(
+            pasteboard: pasteboard,
+            defaults: defaults(),
+            storeURL: try storeURL().deletingLastPathComponent()
+                .appendingPathComponent("clipboard.json")
+        )
+        let snip = Snip(content: "From a snip", origin: .quickEntry)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [snip]),
+            defaults: defaults(),
+            clipboardHistory: history
+        )
+        await model.reload()
+
+        let copied = await model.placeOnClipboardNow(
+            .snips([snip]),
+            feedback: .notify,
+            to: pasteboard
+        )
+
+        XCTAssertTrue(copied)
+        XCTAssertEqual(history.entries.first?.text, "From a snip")
+    }
+
+    @MainActor
+    func testPlacingAClipboardEntryRestoresFormsAndPulsesOnlyWhenNotifying() async throws {
+        let pasteboard = NSPasteboard(
+            name: .init("SnipSnapTests-place-entry-\(UUID().uuidString)")
+        )
+        let history = ClipboardHistory(
+            pasteboard: pasteboard,
+            defaults: defaults(),
+            storeURL: try storeURL().deletingLastPathComponent()
+                .appendingPathComponent("clipboard.json")
+        )
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: []),
+            defaults: defaults(),
+            clipboardHistory: history
+        )
+        let entry = ClipboardEntry(
+            sourceApplication: "Tests",
+            items: [
+                ClipboardPayloadItem(
+                    representations: [
+                        ClipboardRepresentation(
+                            type: NSPasteboard.PasteboardType.string.rawValue,
+                            data: Data("History item".utf8)
+                        )
+                    ]
+                )
+            ]
+        )
+
+        XCTAssertTrue(model.placeOnClipboard(.clipboardEntry(entry), feedback: .silent))
+        XCTAssertEqual(pasteboard.string(forType: .string), "History item")
+        XCTAssertNil(model.clipboardCopyPulse)
+
+        XCTAssertTrue(model.placeOnClipboard(.clipboardEntry(entry), feedback: .notify))
+        XCTAssertEqual(model.clipboardCopyPulse?.entryID, entry.id)
+    }
+
+    @MainActor
     func testCopyFailureDoesNotReplacePasteboardContent() async throws {
         let store = try storeURL()
         let source = store.deletingLastPathComponent().appendingPathComponent("copy.md")
