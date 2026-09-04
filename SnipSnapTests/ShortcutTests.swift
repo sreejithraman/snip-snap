@@ -80,26 +80,6 @@ final class ShortcutTests: StoreBackedTestCase {
         XCTAssertEqual(decoded, .snipSnapDefaults)
     }
 
-    func testRenamedPanelShortcutKeepsTheSavedInboxTrigger() throws {
-        let oldSettings = Data(
-            """
-            {
-              "captureSelection": {"kind": "doubleShift", "side": "right"},
-              "toggleInbox": {"kind": "doubleShift", "side": "left"}
-            }
-            """.utf8
-        )
-
-        let decoded = try JSONDecoder().decode(
-            GlobalShortcutConfiguration.self,
-            from: oldSettings
-        )
-
-        XCTAssertEqual(decoded.captureSelection, .doubleShift(.right))
-        XCTAssertEqual(decoded.togglePanel, .doubleShift(.left))
-        XCTAssertEqual(decoded.toggleClipboard, .commandDoubleShift(.right))
-    }
-
     func testDoubleShiftDetectorRequiresTwoCleanTaps() {
         var detector = DoubleShiftDetector()
 

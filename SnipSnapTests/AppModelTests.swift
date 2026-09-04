@@ -596,27 +596,6 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testRenamedDefaultsKeepListStateAndDrafts() async throws {
-        let settings = defaults()
-        let repository = try JSONSnipLibrary(fileURL: storeURL())
-        let list = try await repository.createList(name: "Review", systemImage: "star")
-        let listID = list.id
-        settings.set(SnipSortMode.manual.rawValue, forKey: "clipSortMode")
-        settings.set(listID.uuidString, forKey: "activeSectionID")
-        settings.set([listID.uuidString: "Saved draft"], forKey: "sectionDrafts")
-
-        let model = AppModel(library: repository, defaults: settings)
-        await model.reload()
-
-        XCTAssertEqual(model.sortMode, .manual)
-        XCTAssertEqual(model.activeListID, listID)
-        XCTAssertEqual(model.composerDraft(for: listID).text, "Saved draft")
-        XCTAssertEqual(settings.string(forKey: AppModel.sortModeDefaultsKey), "manual")
-        XCTAssertEqual(settings.string(forKey: AppModel.activeListDefaultsKey), listID.uuidString)
-        XCTAssertNotNil(settings.dictionary(forKey: AppModel.listDraftsDefaultsKey))
-    }
-
-    @MainActor
     func testMoveKeepsEditorToken() async throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let firstResult = try await repository.add(content: "First", origin: .quickEntry)

@@ -14,8 +14,6 @@ public actor JSONSnipLibrary: SnipLibrary {
             case snips
             case lists
             case seenRequestIDs
-            case legacyItems = "items"
-            case legacySections = "sections"
         }
 
         init(
@@ -33,10 +31,8 @@ public actor JSONSnipLibrary: SnipLibrary {
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             version = try container.decode(Int.self, forKey: .version)
-            snips = try container.decodeIfPresent([Snip].self, forKey: .snips)
-                ?? container.decode([Snip].self, forKey: .legacyItems)
-            lists = try container.decodeIfPresent([SnipList].self, forKey: .lists)
-                ?? container.decode([SnipList].self, forKey: .legacySections)
+            snips = try container.decode([Snip].self, forKey: .snips)
+            lists = try container.decode([SnipList].self, forKey: .lists)
             let storedRequestIDs = try container.decodeIfPresent(
                 [UUID].self,
                 forKey: .seenRequestIDs
@@ -57,8 +53,6 @@ public actor JSONSnipLibrary: SnipLibrary {
     }
 
     static let currentVersion = 6
-    // TODO: Remove version 4 decoding after the 1.0 migration window.
-    package static let legacyVersion = 4
 
     private let fileURL: URL
     nonisolated let attachmentRootURL: URL
@@ -71,7 +65,6 @@ public actor JSONSnipLibrary: SnipLibrary {
     private var seenRequestIDs: Set<UUID>
 
     public init(fileURL: URL = JSONSnipLibrary.defaultStoreURL()) throws {
-        try Self.moveLegacyStoreIfNeeded(to: fileURL)
         self.fileURL = fileURL
         attachmentRootURL = fileURL.deletingLastPathComponent()
             .appendingPathComponent("Attachments", isDirectory: true)
@@ -90,8 +83,7 @@ public actor JSONSnipLibrary: SnipLibrary {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             let document = try decoder.decode(Document.self, from: data)
-            guard document.version == Self.currentVersion
-                    || document.version == Self.legacyVersion else {
+            guard document.version == Self.currentVersion else {
                 throw SnipLibraryError.invalidStore
             }
             snips = document.snips
@@ -102,14 +94,6 @@ public actor JSONSnipLibrary: SnipLibrary {
             )
             guard !lists.isEmpty else { throw SnipLibraryError.invalidStore }
             seenRequestIDs = document.seenRequestIDs
-            if document.version == Self.legacyVersion {
-                try Self.write(
-                    snips: snips,
-                    lists: lists,
-                    seenRequestIDs: seenRequestIDs,
-                    to: fileURL
-                )
-            }
         } catch let error as SnipLibraryError {
             throw error
         } catch {
@@ -181,16 +165,6 @@ public actor JSONSnipLibrary: SnipLibrary {
         return base
             .appendingPathComponent("Snip Snap", isDirectory: true)
             .appendingPathComponent("snips.json", isDirectory: false)
-    }
-
-    private static func moveLegacyStoreIfNeeded(to fileURL: URL) throws {
-        // TODO: Remove items.json migration after the 1.0 migration window.
-        guard fileURL.lastPathComponent == "snips.json",
-              !FileManager.default.fileExists(atPath: fileURL.path) else { return }
-        let legacyURL = fileURL.deletingLastPathComponent()
-            .appendingPathComponent("items.json", isDirectory: false)
-        guard FileManager.default.fileExists(atPath: legacyURL.path) else { return }
-        try FileManager.default.moveItem(at: legacyURL, to: fileURL)
     }
 
     public func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
