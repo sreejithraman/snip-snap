@@ -480,7 +480,8 @@ final class PanelTests: StoreBackedTestCase {
         )
         XCTAssertTrue(panel.makeFirstResponder(textField))
         let fieldEditor = try XCTUnwrap(panel.firstResponder as? NSTextView)
-        let longText = (0..<400).map { "line \($0)" }.joined(separator: "\n")
+        let longText = (0..<20).map { "line \($0)" }.joined(separator: "\n")
+        XCTAssertLessThan(longText.count, LargePastedText.attachmentCharacterLimit)
         let startedAt = Date()
 
         fieldEditor.insertText(longText, replacementRange: fieldEditor.selectedRange())
