@@ -42,6 +42,9 @@ struct SnipListTabBarView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
+            PanelDragRegion()
+        }
+        .background {
             PanelDragBlockingRegion(
                 controller: dragSessionController,
                 id: dragBlockingID

@@ -354,6 +354,29 @@ extension View {
         )
     }
 
+    func panelMeasuredHeight(_ height: Binding<CGFloat>) -> some View {
+        onGeometryChange(for: CGFloat.self) { $0.size.height } action: { proposed in
+            guard PanelGeometryChange.shouldApply(
+                current: height.wrappedValue,
+                proposed: proposed
+            ) else { return }
+            height.wrappedValue = proposed
+        }
+    }
+
+    func panelBlankDragOverlay(
+        viewportHeight: Binding<CGFloat>,
+        contentHeight: CGFloat
+    ) -> some View {
+        panelMeasuredHeight(viewportHeight)
+            .overlay(alignment: .bottom) {
+                PanelBlankDragRegion(
+                    viewportHeight: viewportHeight.wrappedValue,
+                    contentHeight: contentHeight
+                )
+            }
+    }
+
 }
 
 private struct PanelCompactStateSurfaceModifier: ViewModifier {
@@ -398,8 +421,16 @@ struct PanelBlankDragRegion: View {
     let viewportHeight: CGFloat
     let contentHeight: CGFloat
 
+    static func height(viewportHeight: CGFloat, contentHeight: CGFloat) -> CGFloat {
+        guard viewportHeight > 0, contentHeight > 0 else { return 0 }
+        return max(viewportHeight - contentHeight, 0)
+    }
+
     var body: some View {
-        let blankHeight = max(viewportHeight - contentHeight, 0)
+        let blankHeight = Self.height(
+            viewportHeight: viewportHeight,
+            contentHeight: contentHeight
+        )
         if blankHeight > 0 {
             PanelDragRegion()
                 .frame(maxWidth: .infinity)

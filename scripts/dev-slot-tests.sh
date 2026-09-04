@@ -8,7 +8,7 @@ test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
 
 mkdir -p "$test_dir/worktree-a" "$test_dir/worktree-b" "$test_dir/worktree-c"
-mkdir -p "$test_dir/worktree-d" "$test_dir/worktree-e"
+mkdir -p "$test_dir/worktree-d" "$test_dir/worktree-e" "$test_dir/worktree-f"
 
 claim() {
     SNIP_SNAP_DEV_STATE_DIR="$test_dir/state" \
@@ -18,7 +18,7 @@ claim() {
 
 [[ "$(claim "$test_dir/worktree-a")" == 1 ]]
 [[ "$(claim "$test_dir/worktree-a")" == 1 ]]
-for invalid_slot in 0 01 5; do
+for invalid_slot in 0 01 1001; do
     if SNIP_SNAP_DEV_STATE_DIR="$test_dir/state" \
         SNIP_SNAP_DEV_WORKTREE="$test_dir/worktree-e" \
         SNIP_SNAP_DEV_SLOT="$invalid_slot" \
@@ -37,11 +37,12 @@ fi
 [[ "$(claim "$test_dir/worktree-b")" == 2 ]]
 [[ "$(claim "$test_dir/worktree-c")" == 3 ]]
 [[ "$(claim "$test_dir/worktree-d")" == 4 ]]
-
-if claim "$test_dir/worktree-e" >/dev/null 2>&1; then
-    print -u2 "A fifth worktree claimed a slot."
-    exit 1
-fi
+[[ "$(claim "$test_dir/worktree-f")" == 5 ]]
+[[ "$(
+    SNIP_SNAP_DEV_STATE_DIR="$test_dir/state" \
+        SNIP_SNAP_DEV_WORKTREE="$test_dir/worktree-f" \
+        "$script_dir/dev-slot.sh" list
+)" == *"Snip Snap Dev 5: $test_dir/worktree-f"* ]]
 
 if SNIP_SNAP_DEV_STATE_DIR="$test_dir/state" \
     SNIP_SNAP_DEV_WORKTREE="$test_dir/worktree-e" \
@@ -183,5 +184,31 @@ display_name_source="$(
         "$script_dir/../SnipSnap/Info.plist"
 )"
 [[ "$display_name_source" == '$(INFOPLIST_KEY_CFBundleDisplayName)' ]]
+
+slot5_state="$test_dir/slot5-status"
+slot5_worktree="$test_dir/slot5-worktree"
+slot5_app="$slot5_state/build/slot-5/Build/Products/Debug/SnipSnapDev5.app"
+slot5_runtime="$slot5_state/runtime/slot-5"
+mkdir -p "$slot5_worktree" \
+    "$slot5_state/claims/slot-5" \
+    "$slot5_app/Contents/MacOS" \
+    "$slot5_runtime"
+print -r -- "$slot5_worktree" > "$slot5_state/claims/slot-5/owner"
+print -r -- 5 > "$slot5_runtime/slot"
+print -r -- "$slot5_worktree" > "$slot5_runtime/worktree"
+print -r -- SnipSnapDev5 > "$slot5_runtime/process-name"
+print -r -- "$slot5_app" > "$slot5_runtime/app-path"
+print -r -- "$slot5_app/Contents/MacOS/SnipSnapDev5" > "$slot5_runtime/executable-path"
+print -r -- 1 > "$slot5_runtime/process.pid"
+SNIP_SNAP_DEV_STATE_DIR="$slot5_state" \
+    SNIP_SNAP_DEV_WORKTREE="$slot5_worktree" \
+    "$script_dir/dev-app.sh" status \
+        --runtime-dir "$slot5_runtime" \
+        --result-json "$test_dir/slot5-status.json" >/dev/null || true
+/usr/bin/ruby -rjson -e '
+data = JSON.parse(File.read(ARGV.fetch(0)))
+abort unless data.fetch("slot") == 5
+abort unless data.fetch("detail").include?("Snip Snap Dev 5")
+' "$test_dir/slot5-status.json"
 
 print "Development slot checks passed."

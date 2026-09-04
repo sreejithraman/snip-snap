@@ -89,6 +89,8 @@ struct SnipListView: View {
     @State private var activeDropTarget: SnipListReorderTarget?
     @State private var isCommittingDrop = false
     @State private var activeDragRowFrames: [UUID: CGRect] = [:]
+    @State private var contentHeight: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
     @StateObject private var cardInteractionController = PanelCardInteractionController()
     @StateObject private var reorderGeometry = SnipListReorderGeometry()
 
@@ -171,6 +173,7 @@ struct SnipListView: View {
                     }
                     bottomSpacer
                 }
+                .panelMeasuredHeight($contentHeight)
             }
             .contentMargins(0, for: .scrollContent)
             .background {
@@ -244,6 +247,10 @@ struct SnipListView: View {
             .overlay(alignment: .topLeading) {
                 selectionFocusTarget(proxy: proxy)
             }
+            .panelBlankDragOverlay(
+                viewportHeight: $viewportHeight,
+                contentHeight: contentHeight
+            )
         }
         .onAppear {
             state.reconcile(model: model)
@@ -314,7 +321,8 @@ struct SnipListView: View {
     }
 
     private var bottomSpacer: some View {
-        Color.clear
+        PanelDragRegion()
+            .frame(maxWidth: .infinity)
             .frame(
                 height: PanelOverlayLayout.listBottomPadding(
                     composerHeight: bottomContentInset
