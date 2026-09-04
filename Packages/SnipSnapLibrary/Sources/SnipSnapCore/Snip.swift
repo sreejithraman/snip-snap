@@ -219,8 +219,6 @@ public struct Snip: Identifiable, Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, requestID, createdAt, updatedAt, content, origin, source, listID, isDone
-        // TODO: Remove after the 1.0 migration window.
-        case legacySectionID = "sectionID"
         case manualPosition, manualSortKey, attachments
     }
 
@@ -233,8 +231,7 @@ public struct Snip: Identifiable, Codable, Equatable, Sendable {
         content = try container.decode(String.self, forKey: .content)
         origin = try container.decode(SnipOrigin.self, forKey: .origin)
         source = try container.decodeIfPresent(SnipSource.self, forKey: .source)
-        listID = try container.decodeIfPresent(UUID.self, forKey: .listID)
-            ?? container.decode(UUID.self, forKey: .legacySectionID)
+        listID = try container.decode(UUID.self, forKey: .listID)
         isDone = try container.decode(Bool.self, forKey: .isDone)
         manualSortKey = try container.decodeIfPresent(SnipOrderKey.self, forKey: .manualSortKey)
             ?? .legacy(container.decode(Int64.self, forKey: .manualPosition))

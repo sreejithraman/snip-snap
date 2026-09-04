@@ -34,17 +34,13 @@ public enum JSONSnipArchiveReader {
       case snips
       case lists
       case seenRequestIDs
-      case legacyItems = "items"
-      case legacySections = "sections"
     }
 
     init(from decoder: Decoder) throws {
       let container = try decoder.container(keyedBy: CodingKeys.self)
       version = try container.decode(Int.self, forKey: .version)
-      snips = try container.decodeIfPresent([Snip].self, forKey: .snips)
-        ?? container.decode([Snip].self, forKey: .legacyItems)
-      lists = try container.decodeIfPresent([SnipList].self, forKey: .lists)
-        ?? container.decode([SnipList].self, forKey: .legacySections)
+      snips = try container.decode([Snip].self, forKey: .snips)
+      lists = try container.decode([SnipList].self, forKey: .lists)
       let storedRequestIDs = try container.decodeIfPresent([UUID].self, forKey: .seenRequestIDs)
         ?? []
       seenRequestIDs = Set(storedRequestIDs).union(snips.map(\.requestID))
@@ -66,9 +62,9 @@ public enum JSONSnipArchiveReader {
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601
     let document = try decoder.decode(Document.self, from: data)
-    guard document.version == JSONSnipLibrary.currentVersion
-      || document.version == JSONSnipLibrary.legacyVersion
-    else { throw SnipLibraryError.invalidStore }
+    guard document.version == JSONSnipLibrary.currentVersion else {
+      throw SnipLibraryError.invalidStore
+    }
     let lists = try validatedLists(document.lists, snips: document.snips)
     try validateAttachments(in: document.snips)
     return JSONSnipArchive(

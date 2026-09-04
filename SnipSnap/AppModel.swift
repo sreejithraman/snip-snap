@@ -11,9 +11,6 @@ final class AppModel: ObservableObject {
     static let activeListDefaultsKey = "activeListID"
     static let listDraftsDefaultsKey = "listDrafts"
     static let appearanceDefaultsKey = "appAppearance"
-    private static let legacySortModeDefaultsKey = "clipSortMode"
-    private static let legacyActiveListDefaultsKey = "activeSectionID"
-    private static let legacyListDraftsDefaultsKey = "sectionDrafts"
 
     @Published private(set) var snips: [Snip] = []
     @Published private(set) var lists: [SnipList] = [.inbox]
@@ -93,7 +90,6 @@ final class AppModel: ObservableObject {
         userActions: (any SnipLibraryUserActions)? = nil,
         userActionsRebinder: SnipLibraryUserActionsRebinder = .direct
     ) {
-        Self.migrateRenamedDefaults(in: defaults)
         self.defaults = defaults
         composerDrafts = ComposerDraftStore(
             defaults: defaults,
@@ -153,20 +149,6 @@ final class AppModel: ObservableObject {
         } catch {
             presentedError = error.localizedDescription
             return false
-        }
-    }
-
-    private static func migrateRenamedDefaults(in defaults: UserDefaults) {
-        // TODO: Remove legacy defaults migration after the 1.0 migration window.
-        let renamedKeys = [
-            (legacySortModeDefaultsKey, sortModeDefaultsKey),
-            (legacyActiveListDefaultsKey, activeListDefaultsKey),
-            (legacyListDraftsDefaultsKey, listDraftsDefaultsKey),
-        ]
-        for (oldKey, newKey) in renamedKeys
-        where defaults.object(forKey: newKey) == nil {
-            guard let value = defaults.object(forKey: oldKey) else { continue }
-            defaults.set(value, forKey: newKey)
         }
     }
 

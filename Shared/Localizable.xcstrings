@@ -4,9 +4,6 @@
     "A device setting or management rule is blocking iCloud. Your changes will stay on this device." : {
 
     },
-    "A Local store exists without a valid migration marker. Snip Snap left it in place." : {
-
-    },
     "A list with that name already exists." : {
 
     },
@@ -100,10 +97,7 @@
     "Snip Snap could not keep the shared files." : {
 
     },
-    "Snip Snap could not open its SwiftData store. It left the Local and JSON stores unchanged, so it cannot save new snips." : {
-
-    },
-    "Snip Snap opened its SwiftData store but could not update its migration marker. It left the Local and JSON stores in place, so it cannot save new snips." : {
+    "Snip Snap could not open its SwiftData store, so it cannot save new snips." : {
 
     },
     "Snip Snap could not read its saved snips." : {
@@ -221,15 +215,6 @@
 
     },
     "That snip no longer exists." : {
-
-    },
-    "The JSON store changed while Snip Snap was copying it." : {
-
-    },
-    "The Local store migration marker is invalid. Snip Snap left the store in place." : {
-
-    },
-    "The SwiftData check did not match the JSON store." : {
 
     },
     "The backup or saved snips changed. Review the import again." : {

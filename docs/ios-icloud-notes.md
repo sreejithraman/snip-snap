@@ -37,10 +37,8 @@ These notes record the accepted product direction and the facts that support it.
 
 ## Existing data
 
-- Import the current versioned JSON store into the new local persistence schema once.
-- Keep the old JSON file as a backup until the app checks the import.
-- Keep JSON as an export format rather than the permanent store.
-- ADR 0012 supersedes ADR 0001. JSON remains a migration, backup, import, and export format rather than the live store.
+- The Mac live store is SwiftData. JSON is backup import and export only.
+- ADR 0012 supersedes ADR 0001.
 - When the user imports a backup while sync is on, show a preview and merge it through the normal record rules. Send the accepted result through the normal sync path.
 - Do not require the user to turn off sync before importing a backup.
 
@@ -100,8 +98,8 @@ These notes record the accepted product direction and the facts that support it.
 
 ## Release order
 
-1. Ship the Mac migration from JSON to a local-only SwiftData store.
-2. Check migration, recovery, import, and export in normal use before adding public sync.
+1. Keep the Mac live store on local-only SwiftData.
+2. Check recovery, import, and export in normal use before adding public sync.
 3. Build and test the CloudKit schema in development with the Mac, iPhone Simulator, and iPad Simulator checks listed below.
 4. Test optional sync with Mac, iPhone, and iPad builds against the same development schema.
 5. Release Mac sync and the iOS app only after cross-device tests pass. Do not expose a public mode that depends on an unreleased peer implementation.

@@ -1,5 +1,7 @@
 # SwiftData migration marker research
 
+Launch no longer reads `migration.json`. The Mac app opens the SwiftData store directly. This note is the earlier marker design.
+
 Date: September 2, 2026
 
 ## Result

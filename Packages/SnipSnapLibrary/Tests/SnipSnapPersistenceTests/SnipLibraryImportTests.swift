@@ -380,32 +380,6 @@ final class SnipLibraryImportTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: stagingRoot.path))
   }
 
-  func testLegacyBackupPreviewLeavesSourceBytesAndModificationDateUnchanged() async throws {
-    let fixture = try makeBackupFixture(
-      version: JSONSnipLibrary.legacyVersion,
-      relativePath: nil,
-      usesLegacyKeys: true
-    )
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let documentURL = fixture.documentURL
-    let knownDate = Date(timeIntervalSince1970: 1_600_000_000)
-    try FileManager.default.setAttributes([.modificationDate: knownDate], ofItemAtPath: documentURL.path)
-    let beforeBytes = try Data(contentsOf: documentURL)
-    let beforeDate = try documentURL.resourceValues(forKeys: [.contentModificationDateKey])
-      .contentModificationDate
-    let target = try SwiftDataSnipLibrary(
-      storeURL: fixture.root.appendingPathComponent("target.store")
-    )
-
-    _ = try await SnipLibraryImport.preview(backupURL: fixture.documentURL, target: target)
-
-    XCTAssertEqual(try Data(contentsOf: documentURL), beforeBytes)
-    XCTAssertEqual(
-      try documentURL.resourceValues(forKeys: [.contentModificationDateKey])
-        .contentModificationDate,
-      beforeDate
-    )
-  }
 
   func testCommitRejectsSameIDSnipThatArrivesAfterValidation() async throws {
     let directory = temporaryDirectory()
@@ -715,19 +689,11 @@ final class SnipLibraryImportTests: XCTestCase {
     let seenRequestIDs: [UUID]
   }
 
-  private struct LegacyBackupDocument: Encodable {
-    let version: Int
-    let items: [Snip]
-    let sections: [SnipList]
-    let seenRequestIDs: [UUID]
-  }
-
   private func makeBackupFixture(
     version: Int = JSONSnipLibrary.currentVersion,
     relativePath: String?,
     attachmentBytes: Data? = nil,
-    attachmentByteCount: Int64? = nil,
-    usesLegacyKeys: Bool = false
+    attachmentByteCount: Int64? = nil
   ) throws -> BackupFixture {
     let root = temporaryDirectory()
     let backupURL = root.appendingPathComponent("Backup", isDirectory: true)
@@ -772,22 +738,12 @@ final class SnipLibraryImportTests: XCTestCase {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     encoder.dateEncodingStrategy = .iso8601
-    let document: Data
-    if usesLegacyKeys {
-      document = try encoder.encode(LegacyBackupDocument(
-        version: version,
-        items: [imported],
-        sections: [.inbox],
-        seenRequestIDs: [requestID]
-      ))
-    } else {
-      document = try encoder.encode(BackupDocument(
-        version: version,
-        snips: [imported],
-        lists: [.inbox],
-        seenRequestIDs: [requestID]
-      ))
-    }
+    let document = try encoder.encode(BackupDocument(
+      version: version,
+      snips: [imported],
+      lists: [.inbox],
+      seenRequestIDs: [requestID]
+    ))
     let documentURL = backupURL.appendingPathComponent("snips.json")
     try document.write(to: documentURL)
     return BackupFixture(root: root, backupURL: backupURL, documentURL: documentURL)

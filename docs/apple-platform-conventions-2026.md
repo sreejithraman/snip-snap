@@ -22,7 +22,7 @@ The branch now follows the current Apple path in the areas that had gaps:
 - It uses native glass button styles for true buttons and keeps custom glass only for compound controls.
 - It honors Reduce Motion for app-owned motion and uses a 44-point hit area for the small attachment remove control.
 - It uses CloudKit's async record fetch API instead of a hand-built operation and continuation.
-- It fails closed if a final SwiftData store exists but its migration marker is not valid. It never opens an older JSON file as the live store in that state.
+- The Mac live store is SwiftData. JSON is backup import and export only.
 
 ## Current Apple rules used here
 

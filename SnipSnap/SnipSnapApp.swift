@@ -186,10 +186,10 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
 
     override init() {
         let isReleaseApp = Bundle.main.bundleIdentifier == "world.sree.snipsnap"
-        let libraryStoreURL = JSONSnipLibrary.defaultStoreURL()
-        let store = Self.openLibrary(jsonURL: libraryStoreURL)
+        let libraryStoreURL = SwiftDataSnipLibrary.defaultStoreURL()
+        let store = Self.openLibrary(storeURL: libraryStoreURL)
         let library = store.library
-        let syncModeRootURL = libraryStoreURL.deletingLastPathComponent()
+        let syncModeRootURL = LocalSnipStorePaths(storeURL: libraryStoreURL).rootDirectory
             .appendingPathComponent("SyncMode", isDirectory: true)
 #if DEBUG
         let initializeSyncModeStore =
@@ -370,9 +370,9 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 
     static func openLibrary(
-        jsonURL: URL = JSONSnipLibrary.defaultStoreURL()
+        storeURL: URL = SwiftDataSnipLibrary.defaultStoreURL()
     ) -> LocalSnipLibraryOpenResult {
-        MacLocalSnipLibraryBootstrap.open(jsonURL: jsonURL)
+        MacLocalSnipLibraryBootstrap.open(storeURL: storeURL)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -483,8 +483,8 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         guard let containerIdentifier = Bundle.main.object(
             forInfoDictionaryKey: "SnipSnapCloudKitContainerIdentifier"
         ) as? String else { return nil }
-        let syncRootURL = JSONSnipLibrary.defaultStoreURL()
-            .deletingLastPathComponent()
+        let syncRootURL = LocalSnipStorePaths(storeURL: SwiftDataSnipLibrary.defaultStoreURL())
+            .rootDirectory
             .appendingPathComponent("SyncMode", isDirectory: true)
         return AppleAccountCacheCoordinatorHandler(
             syncRootURL: syncRootURL,
