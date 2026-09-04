@@ -121,15 +121,19 @@ enum PanelImagePasteCommand {
 private final class PanelTextInputWindowReference {
     weak var window: NSWindow?
     var readPastedImages: () -> [PanelPastedImage] = { [] }
+    var readPastedText: () -> String? = { nil }
     var pastedContentContainsText: () -> Bool = { false }
     var onPasteImages: ([PanelPastedImage]) -> Void = { _ in }
+    var onPasteLargeText: (String) -> Void = { _ in }
 }
 
 private struct PanelTextInputWindowReader: NSViewRepresentable {
     let reference: PanelTextInputWindowReference
     let readPastedImages: () -> [PanelPastedImage]
+    let readPastedText: () -> String?
     let pastedContentContainsText: () -> Bool
     let onPasteImages: ([PanelPastedImage]) -> Void
+    let onPasteLargeText: (String) -> Void
 
     func makeNSView(context: Context) -> PanelTextInputWindowReaderView {
         updateReference()
@@ -144,8 +148,10 @@ private struct PanelTextInputWindowReader: NSViewRepresentable {
 
     private func updateReference() {
         reference.readPastedImages = readPastedImages
+        reference.readPastedText = readPastedText
         reference.pastedContentContainsText = pastedContentContainsText
         reference.onPasteImages = onPasteImages
+        reference.onPasteLargeText = onPasteLargeText
     }
 }
 
@@ -176,8 +182,10 @@ struct PanelMultilineTextInput: View {
     private let isFocused: Bool
     private let onFocusChange: (Bool) -> Void
     private let readPastedImages: () -> [PanelPastedImage]
+    private let readPastedText: () -> String?
     private let pastedContentContainsText: () -> Bool
     private let onPasteImages: ([PanelPastedImage]) -> Void
+    private let onPasteLargeText: (String) -> Void
     private let onSubmit: () -> Void
 
     @FocusState private var editorFocused: Bool
@@ -194,10 +202,14 @@ struct PanelMultilineTextInput: View {
         readPastedImages: @escaping () -> [PanelPastedImage] = {
             PanelImagePasteboard.images()
         },
+        readPastedText: @escaping () -> String? = {
+            NSPasteboard.general.string(forType: .string)
+        },
         pastedContentContainsText: @escaping () -> Bool = {
             PanelImagePasteboard.containsText()
         },
         onPasteImages: @escaping ([PanelPastedImage]) -> Void = { _ in },
+        onPasteLargeText: @escaping (String) -> Void = { _ in },
         onSubmit: @escaping () -> Void
     ) {
         self.prompt = prompt
@@ -207,8 +219,10 @@ struct PanelMultilineTextInput: View {
         self.isFocused = isFocused
         self.onFocusChange = onFocusChange
         self.readPastedImages = readPastedImages
+        self.readPastedText = readPastedText
         self.pastedContentContainsText = pastedContentContainsText
         self.onPasteImages = onPasteImages
+        self.onPasteLargeText = onPasteLargeText
         self.onSubmit = onSubmit
     }
 
@@ -239,8 +253,10 @@ struct PanelMultilineTextInput: View {
             PanelTextInputWindowReader(
                 reference: windowReference,
                 readPastedImages: readPastedImages,
+                readPastedText: readPastedText,
                 pastedContentContainsText: pastedContentContainsText,
-                onPasteImages: onPasteImages
+                onPasteImages: onPasteImages,
+                onPasteLargeText: onPasteLargeText
             )
                 .allowsHitTesting(false)
         }
@@ -278,8 +294,15 @@ struct PanelMultilineTextInput: View {
                     return event
                 }
                 let images = windowReference.readPastedImages()
+                if !images.isEmpty {
+                    windowReference.onPasteImages(images)
+                }
+                if let pastedText = windowReference.readPastedText(),
+                   LargePastedText.shouldAttach(pastedText) {
+                    windowReference.onPasteLargeText(pastedText)
+                    return nil
+                }
                 guard !images.isEmpty else { return event }
-                windowReference.onPasteImages(images)
                 return windowReference.pastedContentContainsText() ? event : nil
             }
         } else if !isEnabled, let keyEventMonitor {

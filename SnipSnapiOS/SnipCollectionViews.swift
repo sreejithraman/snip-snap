@@ -525,7 +525,7 @@ private struct SnipRow: View {
                     .accessibilityHidden(true)
             }
             VStack(alignment: .leading, spacing: 8) {
-                Text(snip.content)
+                Text(SnipTextPreview.displayText(snip.content, lineLimit: 3))
                     .font(.body)
                     .foregroundStyle(snip.isDone ? .secondary : .primary)
                     .strikethrough(snip.isDone)

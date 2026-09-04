@@ -49,7 +49,14 @@ struct MacRecoveryReviewSheet: View {
                             route = .snip(recovery.id)
                         } label: {
                             VStack(alignment: .leading, spacing: 5) {
-                                Text(recovery.recovered.content.isEmpty ? "Recovered edit" : recovery.recovered.content)
+                                Text(
+                                    recovery.recovered.content.isEmpty
+                                        ? "Recovered edit"
+                                        : SnipTextPreview.displayText(
+                                            recovery.recovered.content,
+                                            lineLimit: 2
+                                        )
+                                )
                                     .lineLimit(2)
                                 Text("Recovered")
                                     .font(.caption.weight(.semibold))

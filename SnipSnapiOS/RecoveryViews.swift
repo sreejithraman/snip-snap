@@ -6,7 +6,11 @@ struct RecoveredSnipRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(recovery.recovered.content.isEmpty ? "Recovered edit" : recovery.recovered.content)
+            Text(
+                recovery.recovered.content.isEmpty
+                    ? "Recovered edit"
+                    : SnipTextPreview.displayText(recovery.recovered.content, lineLimit: 3)
+            )
                 .lineLimit(3)
                 .foregroundStyle(.primary)
             Label("Recovered", systemImage: "arrow.uturn.backward.circle.fill")
