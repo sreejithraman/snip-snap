@@ -5,17 +5,22 @@ script_dir="${0:A:h}"
 repo_dir="${script_dir:h}"
 state_dir="${SNIP_SNAP_DEV_STATE_DIR:-$HOME/Library/Application Support/Snip Snap/Development}"
 claims_dir="$state_dir/claims"
-slot_count=4
+preferred_slot_count=4
+max_slot=1000
 worktree_dir="${SNIP_SNAP_DEV_WORKTREE:-$(git -C "$repo_dir" rev-parse --show-toplevel)}"
 
 usage() {
     print -u2 "Usage: $0 [claim|list|release]"
 }
 
+is_slot_number() {
+    [[ "$1" =~ '^[1-9][0-9]*$' ]]
+}
+
 validate_slot() {
     local slot="$1"
-    if [[ ! "$slot" =~ '^[1-9][0-9]*$' ]] || (( slot > slot_count )); then
-        print -u2 "SNIP_SNAP_DEV_SLOT must be a number from 1 through $slot_count."
+    if ! is_slot_number "$slot" || (( slot > max_slot )); then
+        print -u2 "SNIP_SNAP_DEV_SLOT must be a number from 1 through $max_slot."
         return 1
     fi
 }
@@ -25,10 +30,34 @@ owner_for_slot() {
     [[ -f "$owner_file" ]] && <"$owner_file"
 }
 
+each_slot_number() {
+    local dir n
+    for dir in "$claims_dir"/slot-*(N); do
+        [[ -d "$dir" ]] || continue
+        n="${dir##*-}"
+        is_slot_number "$n" || continue
+        print -r -- "$n"
+    done
+}
+
+owned_slot_for_worktree() {
+    local n owner
+    for n in ${(f)"$(each_slot_number)"}; do
+        is_slot_number "$n" || continue
+        owner="$(owner_for_slot "$n" || true)"
+        if [[ "$owner" == "$worktree_dir" ]]; then
+            print "$n"
+            return
+        fi
+    done
+    return 1
+}
+
 prune_stale_claims() {
-    local slot claim_dir owner_file owner current_owner
-    for (( slot = 1; slot <= slot_count; slot++ )); do
-        claim_dir="$claims_dir/slot-$slot"
+    local n claim_dir owner_file owner current_owner
+    for n in ${(f)"$(each_slot_number)"}; do
+        is_slot_number "$n" || continue
+        claim_dir="$claims_dir/slot-$n"
         owner_file="$claim_dir/owner"
         [[ -f "$owner_file" ]] || continue
 
@@ -47,23 +76,21 @@ claim_slot() {
     mkdir -p "$claims_dir"
     prune_stale_claims
 
-    local slot owner claim_dir
+    local slot owner claim_dir owned_slot
     if [[ -n "${SNIP_SNAP_DEV_SLOT:-}" ]]; then
         validate_slot "$SNIP_SNAP_DEV_SLOT" || return 1
     fi
 
-    for (( slot = 1; slot <= slot_count; slot++ )); do
-        owner="$(owner_for_slot "$slot" || true)"
-        if [[ "$owner" == "$worktree_dir" ]]; then
-            if [[ -n "${SNIP_SNAP_DEV_SLOT:-}" && "$SNIP_SNAP_DEV_SLOT" != "$slot" ]]; then
-                print -u2 "This worktree already owns Snip Snap Dev $slot."
-                print -u2 "Release it before asking for Snip Snap Dev $SNIP_SNAP_DEV_SLOT."
-                return 1
-            fi
-            print "$slot"
-            return
+    owned_slot="$(owned_slot_for_worktree || true)"
+    if [[ -n "$owned_slot" ]]; then
+        if [[ -n "${SNIP_SNAP_DEV_SLOT:-}" && "$SNIP_SNAP_DEV_SLOT" != "$owned_slot" ]]; then
+            print -u2 "This worktree already owns Snip Snap Dev $owned_slot."
+            print -u2 "Release it before asking for Snip Snap Dev $SNIP_SNAP_DEV_SLOT."
+            return 1
         fi
-    done
+        print "$owned_slot"
+        return
+    fi
 
     if [[ -n "${SNIP_SNAP_DEV_SLOT:-}" ]]; then
         slot="$SNIP_SNAP_DEV_SLOT"
@@ -83,7 +110,7 @@ claim_slot() {
         return 1
     fi
 
-    for (( slot = 1; slot <= slot_count; slot++ )); do
+    for (( slot = 1; slot <= max_slot; slot++ )); do
         claim_dir="$claims_dir/slot-$slot"
         if mkdir "$claim_dir" 2>/dev/null; then
             print -r -- "$worktree_dir" > "$claim_dir/owner"
@@ -92,7 +119,7 @@ claim_slot() {
         fi
     done
 
-    print -u2 "All $slot_count Snip Snap development slots are in use."
+    print -u2 "Could not allocate a Snip Snap development slot."
     print -u2 "Run $0 list to see their owners."
     return 1
 }
@@ -101,8 +128,14 @@ list_slots() {
     mkdir -p "$claims_dir"
     prune_stale_claims
 
+    integer last=$preferred_slot_count
     local slot owner claim_dir
-    for (( slot = 1; slot <= slot_count; slot++ )); do
+    for slot in ${(f)"$(each_slot_number)"}; do
+        is_slot_number "$slot" || continue
+        (( slot > last )) && last=$slot
+    done
+
+    for (( slot = 1; slot <= last; slot++ )); do
         claim_dir="$claims_dir/slot-$slot"
         owner="$(owner_for_slot "$slot" || true)"
         if [[ -n "$owner" ]]; then
@@ -119,7 +152,8 @@ release_slot() {
     mkdir -p "$claims_dir"
 
     local slot owner claim_dir released=false
-    for (( slot = 1; slot <= slot_count; slot++ )); do
+    for slot in ${(f)"$(each_slot_number)"}; do
+        is_slot_number "$slot" || continue
         claim_dir="$claims_dir/slot-$slot"
         owner="$(owner_for_slot "$slot" || true)"
         if [[ "$owner" == "$worktree_dir" ]]; then

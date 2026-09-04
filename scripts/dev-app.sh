@@ -312,7 +312,7 @@ load_runtime_state() {
     process_name="$(<"$runtime_dir/process-name")"
     app_path="$(<"$runtime_dir/app-path")"
     executable_path="$(<"$runtime_dir/executable-path")"
-    [[ "$slot" =~ '^[1-4]$' ]] || return 1
+    [[ "$slot" =~ '^[1-9][0-9]*$' ]] || return 1
     [[ -n "$recorded_worktree_dir" ]] || return 1
     [[ "$recorded_worktree_dir" == "$current_worktree_dir" ]] || return 1
     [[ "$process_name" == "SnipSnapDev$slot" ]] || return 1
