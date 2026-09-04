@@ -491,6 +491,37 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(inbox.isSelected)
     }
 
+    func testListEditorLetsTheUserChooseAnIcon() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        guard app.descendants(matching: .any)["composer-text"].waitForExistence(timeout: 5)
+        else {
+            throw XCTSkip("The compact list tabs are limited to iPhone.")
+        }
+
+        let newList = app.buttons["new-list"]
+        XCTAssertTrue(newList.waitForExistence(timeout: 3))
+        newList.tap()
+        let field = app.textFields["list-name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        field.typeText("Starred")
+        let chooseIcon = app.descendants(matching: .any)["choose-list-icon"]
+        XCTAssertTrue(chooseIcon.waitForExistence(timeout: 3))
+        chooseIcon.tap()
+        let star = app.buttons["list-icon-star.fill"].firstMatch
+        XCTAssertTrue(star.waitForExistence(timeout: 5))
+        star.tap()
+        let save = app.buttons["save-list"]
+        XCTAssertTrue(save.waitForExistence(timeout: 3))
+        save.tap()
+
+        let starred = compactListTab(named: "Starred", in: app)
+        XCTAssertTrue(starred.waitForExistence(timeout: 5))
+        XCTAssertTrue(starred.isSelected)
+        XCTAssertTrue(app.navigationBars["Starred"].exists)
+    }
+
     func testLibraryActionsExposeBackupImportWithoutHistoryCommands() {
         continueAfterFailure = false
         let app = launchApp()

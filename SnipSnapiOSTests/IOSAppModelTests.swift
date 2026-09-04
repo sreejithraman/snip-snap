@@ -1656,9 +1656,10 @@ final class IOSAppModelTests: XCTestCase {
         let createdList = await model.createList(name: "Notes")
         XCTAssertTrue(createdList)
         let list = try XCTUnwrap(model.lists.first(where: { $0.name == "Notes" }))
+        XCTAssertEqual(list.systemImage, "list.bullet")
         let createdSnip = await model.createSnip(content: "Keep me", in: list.id)
         XCTAssertTrue(createdSnip)
-        let renamedList = await model.renameList(list, name: "Ideas")
+        let renamedList = await model.renameList(list, name: "Ideas", systemImage: list.systemImage)
         XCTAssertTrue(renamedList)
         XCTAssertEqual(model.lists.first(where: { $0.id == list.id })?.name, "Ideas")
 
@@ -1668,6 +1669,22 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(model.snips.first?.listID, SnipList.inboxID)
         XCTAssertEqual(model.lists.first?.id, SnipList.inboxID)
         XCTAssertEqual(model.lists.first?.name, SnipList.inbox.name)
+    }
+
+    func testListFlowStoresTheChosenIcon() async throws {
+        let library = ModelTestLibrary()
+        let model = makeModel(library: library)
+        await model.load()
+
+        let createdList = await model.createList(name: "Work", systemImage: "star.fill")
+        XCTAssertTrue(createdList)
+        let list = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" }))
+        XCTAssertEqual(list.systemImage, "star.fill")
+
+        let updatedList = await model.renameList(list, name: "Work", systemImage: "flame.fill")
+        XCTAssertTrue(updatedList)
+        XCTAssertEqual(model.lists.first(where: { $0.id == list.id })?.name, "Work")
+        XCTAssertEqual(model.lists.first(where: { $0.id == list.id })?.systemImage, "flame.fill")
     }
 
     func testRecoveryReviewLoadsScopedAttentionRefreshesCurrentAndResolves() async throws {

@@ -291,6 +291,36 @@ final class PanelTests: StoreBackedTestCase {
         XCTAssertTrue(SnipListIconOptions.matches("paperplane.fill", query: "rocket"))
     }
 
+    func testListIconBrowserShowsRecentsThenFiltersByQuery() {
+        let recents = ["star.fill"]
+        let idle = SnipListIconOptions.displayedCategories(query: "  ", recentIcons: recents)
+        XCTAssertEqual(idle.first?.title, "Recent")
+        XCTAssertEqual(idle.first?.icons, recents)
+        XCTAssertEqual(
+            idle.dropFirst().map(\.title),
+            SnipListIconOptions.categories.map(\.title)
+        )
+
+        let byKeyword = SnipListIconOptions.displayedCategories(
+            query: "dinosaur",
+            recentIcons: recents
+        )
+        XCTAssertEqual(byKeyword.map(\.title), ["Animals & Nature"])
+        XCTAssertTrue(byKeyword.first?.icons.contains("lizard.fill") == true)
+
+        let byCategory = SnipListIconOptions.displayedCategories(
+            query: "Smileys",
+            recentIcons: recents
+        )
+        XCTAssertEqual(byCategory.map(\.title), ["Smileys & Emotion"])
+        XCTAssertTrue(
+            SnipListIconOptions.displayedCategories(
+                query: "zzzz-nope",
+                recentIcons: recents
+            ).isEmpty
+        )
+    }
+
     func testDevelopmentBuildIdentityReadsTheSlotFromTheBundleIdentifier() {
         XCTAssertEqual(
             DevelopmentBuildIdentity(bundleIdentifier: "world.sree.snipsnap.dev3")?.slot,

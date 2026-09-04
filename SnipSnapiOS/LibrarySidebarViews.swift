@@ -38,7 +38,7 @@ struct ListSidebarView: View {
                 .accessibilityIdentifier("list-\(list.name)")
                 .contextMenu {
                     if list.id != SnipList.inboxID {
-                        Button("Rename") { sheet = .editList(id: list.id) }
+                        Button("Edit List") { sheet = .editList(id: list.id) }
                         Button("Delete", role: .destructive) {
                             Task { await model.deleteList(id: list.id) }
                         }
@@ -110,7 +110,7 @@ struct LibraryActionsMenu: View {
             Button("Import Backup…", systemImage: "square.and.arrow.down", action: importBackup)
             if model.selectedListID != SnipList.inboxID, let editSelectedList {
                 Divider()
-                Button("Rename List", systemImage: "pencil", action: editSelectedList)
+                Button("Edit List", systemImage: "pencil", action: editSelectedList)
                 Button("Delete List", systemImage: "trash", role: .destructive) {
                     confirmsDeleteList = true
                 }
