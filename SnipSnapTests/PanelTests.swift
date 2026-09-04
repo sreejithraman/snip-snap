@@ -1762,13 +1762,47 @@ final class PanelTests: StoreBackedTestCase {
             text: "Hidden snip"
         )
         snipView.frame = NSRect(x: 0, y: 180, width: 300, height: 100)
-        let headerView = PanelDragBlockingRegionView(controller: controller, id: UUID())
+        let headerView = PanelDragBlockingRegionView(controller: controller)
         headerView.frame = NSRect(x: 0, y: 240, width: 300, height: 40)
         host.addSubview(snipView)
         host.addSubview(headerView)
 
         XCTAssertNil(controller.inspection(atWindowPoint: NSPoint(x: 150, y: 260)))
         XCTAssertNotNil(controller.inspection(atWindowPoint: NSPoint(x: 150, y: 220)))
+    }
+
+    @MainActor
+    func testReplacingStickyHeaderKeepsTheNewHeaderDragBlock() throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 300),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let host = try XCTUnwrap(window.contentView)
+        let controller = PanelDragSessionController()
+        let snipView = snipDragRegionView(
+            controller: controller,
+            id: UUID(),
+            text: "Hidden snip"
+        )
+        snipView.frame = host.bounds
+        host.addSubview(snipView)
+        let oldHeader = PanelDragBlockingRegionView(controller: controller)
+        oldHeader.frame = NSRect(x: 0, y: 240, width: 300, height: 40)
+        host.addSubview(oldHeader)
+        let pinnedHeader = PanelDragBlockingRegionView(controller: controller)
+        pinnedHeader.frame = oldHeader.frame
+        host.addSubview(pinnedHeader)
+
+        oldHeader.removeFromSuperview()
+        oldHeader.removeFromController()
+
+        XCTAssertNil(controller.inspection(atWindowPoint: NSPoint(x: 150, y: 260)))
+        XCTAssertNotNil(controller.inspection(atWindowPoint: NSPoint(x: 150, y: 220)))
+        pinnedHeader.removeFromSuperview()
+        pinnedHeader.removeFromController()
+        XCTAssertNotNil(controller.inspection(atWindowPoint: NSPoint(x: 150, y: 260)))
     }
 
     @MainActor
@@ -1807,7 +1841,7 @@ final class PanelTests: StoreBackedTestCase {
             )
         )
         entryView.frame = NSRect(x: 0, y: 180, width: 300, height: 100)
-        let headerView = PanelDragBlockingRegionView(controller: controller, id: UUID())
+        let headerView = PanelDragBlockingRegionView(controller: controller)
         headerView.frame = NSRect(x: 0, y: 240, width: 300, height: 40)
         host.addSubview(entryView)
         host.addSubview(headerView)
@@ -1832,7 +1866,7 @@ final class PanelTests: StoreBackedTestCase {
             text: "Hidden snip"
         )
         snipView.frame = NSRect(x: 0, y: 0, width: 300, height: 100)
-        let tabBarView = PanelDragBlockingRegionView(controller: controller, id: UUID())
+        let tabBarView = PanelDragBlockingRegionView(controller: controller)
         tabBarView.frame = NSRect(x: 0, y: 0, width: 300, height: 40)
         host.addSubview(snipView)
         host.addSubview(tabBarView)

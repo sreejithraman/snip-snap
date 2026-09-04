@@ -19,9 +19,6 @@ private enum SnipListScrollTarget {
     case top
 }
 
-private let clipboardSectionHeaderID = UUID()
-
-
 @MainActor
 final class SnipListState: ObservableObject {
     fileprivate var anchor: UUID?
@@ -140,7 +137,7 @@ struct SnipListView: View {
                                     )
                                 }
                             } header: {
-                                listSectionHeader(group.listName, listID: group.listID)
+                                listSectionHeader(group.listName)
                             }
                         }
                     } else if showsActiveListHeader {
@@ -156,10 +153,7 @@ struct SnipListView: View {
                                 )
                             }
                         } header: {
-                            listSectionHeader(
-                                model.activeList.displayName,
-                                listID: model.activeListID
-                            )
+                            listSectionHeader(model.activeList.displayName)
                         }
                     }
                     if !clipboardEntries.isEmpty {
@@ -169,7 +163,7 @@ struct SnipListView: View {
                                 clipboardEntryRow(entry)
                             }
                         } header: {
-                            listSectionHeader("Clipboard", listID: clipboardSectionHeaderID)
+                            listSectionHeader("Clipboard")
                         }
                     }
                     bottomSpacer
@@ -359,12 +353,11 @@ struct SnipListView: View {
             && model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private func listSectionHeader(_ title: String, listID: UUID) -> some View {
+    private func listSectionHeader(_ title: String) -> some View {
         PanelListHeader(title, hasScrolledFromTop: hasScrolledFromTop)
             .background {
                 PanelDragBlockingRegion(
-                    controller: dragSessionController,
-                    id: listID
+                    controller: dragSessionController
                 )
             }
     }
