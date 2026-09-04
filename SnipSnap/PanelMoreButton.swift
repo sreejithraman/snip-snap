@@ -16,7 +16,7 @@ struct PanelMoreButton: View {
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 13, weight: .semibold))
-                .panelStandaloneActionControl(edge: .emphasized)
+                .panelStandaloneActionControl()
                 .frame(
                     width: PanelControlMetrics.floatingRowHeight,
                     height: PanelControlMetrics.floatingRowHeight

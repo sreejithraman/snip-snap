@@ -26,6 +26,10 @@ enum PanelControlMetrics {
     static let tabSelectionInset: CGFloat = 4
     static let compactSelectionWidth: CGFloat = 40
     static let compactSelectionHeight = floatingRowHeight - tabSelectionInset * 2
+    static let actionIconLength: CGFloat = 12
+    static let sendInset: CGFloat = 4
+    static let actionHeight = compactComposerHeight - sendInset * 2
+    static let actionWidth = actionHeight + actionIconLength
     static let inlineEntryInset: CGFloat = 4
     static let inlineEntryBaseHeight = compactComposerHeight + inlineEntryInset * 2
     static let expandedInputVerticalPadding = SnipSnapSpacing.relatedContent
@@ -169,7 +173,7 @@ struct PanelListHeader<Actions: View>: View {
             backgroundShape
                 .fill(.clear)
                 .glassEffect(
-                    .clear.tint(SnipSnapColors.elevatedListHeaderGlassTint),
+                    .regular.tint(SnipSnapColors.nestedGlassTint),
                     in: backgroundShape
                 )
                 .visualEffect { content, proxy in
@@ -224,35 +228,6 @@ struct PanelEdgeStyle: Equatable {
     )
 }
 
-enum PanelGlassEdgeState: Equatable {
-    case hidden
-    case standard
-    case emphasized
-    case focused
-
-    var style: PanelEdgeStyle {
-        switch self {
-        case .hidden:
-            .hidden
-        case .standard:
-            PanelEdgeStyle(
-                color: SnipSnapColors.glassEdge,
-                width: PanelEdgeThickness.subtle
-            )
-        case .emphasized:
-            PanelEdgeStyle(
-                color: SnipSnapColors.emphasizedGlassEdge,
-                width: PanelEdgeThickness.regular
-            )
-        case .focused:
-            PanelEdgeStyle(
-                color: SnipSnapColors.focusedGlassEdge,
-                width: PanelEdgeThickness.strong
-            )
-        }
-    }
-}
-
 extension View {
     func panelControlBaseline() -> some View {
         controlSize(.regular)
@@ -276,25 +251,24 @@ extension View {
     }
 
     func panelStandaloneActionControl(
-        edge: PanelGlassEdgeState = .hidden
+        length: CGFloat = PanelControlMetrics.compactControlLength
     ) -> some View {
         let shape = Circle()
         return frame(
-            width: PanelControlMetrics.compactControlLength,
-            height: PanelControlMetrics.compactControlLength
+            width: length,
+            height: length
         )
         .panelGlassSurface(
             in: shape,
             interactive: true,
-            edge: edge
+            tint: SnipSnapColors.nestedGlassTint
         )
         .contentShape(shape)
     }
 
     func panelEmbeddedInputSurface(
         minHeight: CGFloat = PanelControlMetrics.floatingRowHeight,
-        expanded: Bool = false,
-        isFocused: Bool = false
+        expanded: Bool = false
     ) -> some View {
         let shape = RoundedRectangle(
             cornerRadius: expanded ? PanelShapeMetrics.expandedInputCornerRadius : minHeight / 2,
@@ -303,7 +277,7 @@ extension View {
         return frame(minHeight: minHeight)
             .panelGlassSurface(
                 in: shape,
-                edge: isFocused ? .focused : .emphasized
+                tint: SnipSnapColors.nestedGlassTint
             )
             .contentShape(shape)
     }
@@ -311,13 +285,13 @@ extension View {
     func panelGlassSurface<S: InsettableShape>(
         in shape: S,
         interactive: Bool = false,
-        edge: PanelGlassEdgeState = .standard
+        tint: Color? = nil
     ) -> some View {
         modifier(
             PanelGlassSurfaceModifier(
                 shape: shape,
                 interactive: interactive,
-                edge: edge
+                tint: tint
             )
         )
     }
@@ -442,22 +416,51 @@ struct PanelBlankDragRegion: View {
 private struct PanelGlassSurfaceModifier<S: InsettableShape>: ViewModifier {
     let shape: S
     let interactive: Bool
-    let edge: PanelGlassEdgeState
+    let tint: Color?
 
     func body(content: Content) -> some View {
-        let glass: Glass = interactive ? .regular.interactive() : .regular
-        let style = edge.style
+        let glass = Glass.regular.tint(tint)
         content
-            .glassEffect(glass, in: shape)
-            .overlay {
-                if edge != .hidden {
-                    shape
-                        .strokeBorder(
-                            style.color,
-                            lineWidth: style.width
-                        )
-                        .allowsHitTesting(false)
-                }
-            }
+            .glassEffect(interactive ? glass.interactive() : glass, in: shape)
+    }
+}
+
+struct PanelGlassActionButton: View {
+    let systemImage: String
+    let isEnabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+        }
+        .buttonStyle(PanelGlassActionButtonStyle())
+        .disabled(!isEnabled)
+    }
+}
+
+private struct PanelGlassActionButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: PanelControlMetrics.actionIconLength, weight: .semibold))
+            .foregroundStyle(
+                isEnabled
+                    ? SnipSnapColors.actionGlassLabel
+                    : SnipSnapColors.idleActionLabel
+            )
+            .frame(
+                width: PanelControlMetrics.actionWidth,
+                height: PanelControlMetrics.actionHeight
+            )
+            .panelGlassSurface(
+                in: Capsule(),
+                interactive: isEnabled,
+                tint: isEnabled
+                    ? SnipSnapColors.actionGlassTint
+                    : SnipSnapColors.idleActionGlassTint
+            )
+            .contentShape(Capsule())
     }
 }

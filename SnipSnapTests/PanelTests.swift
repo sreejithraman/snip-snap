@@ -1941,10 +1941,6 @@ final class PanelTests: StoreBackedTestCase {
         XCTAssertEqual(PanelEdgeThickness.regular, 0.75)
         XCTAssertEqual(PanelEdgeThickness.strong, 1)
         XCTAssertEqual(PanelEdgeThickness.prominent, 1.5)
-        XCTAssertEqual(PanelGlassEdgeState.hidden.style.width, 0)
-        XCTAssertEqual(PanelGlassEdgeState.standard.style.width, 0.5)
-        XCTAssertEqual(PanelGlassEdgeState.emphasized.style.width, 0.75)
-        XCTAssertEqual(PanelGlassEdgeState.focused.style.width, 1)
         XCTAssertEqual(PanelEdgeStyle.content.width, 0.75)
         XCTAssertEqual(PanelEdgeStyle.media.width, 0.75)
         XCTAssertEqual(PanelEdgeStyle.selected.width, 1)
@@ -1953,32 +1949,10 @@ final class PanelTests: StoreBackedTestCase {
 
     func testPanelEdgeStylesUseSemanticColors() {
         XCTAssertEqual(PanelEdgeStyle.hidden.color, .clear)
-        XCTAssertEqual(PanelGlassEdgeState.hidden.style.color, .clear)
-        XCTAssertEqual(PanelGlassEdgeState.standard.style.color, SnipSnapColors.glassEdge)
-        XCTAssertEqual(
-            PanelGlassEdgeState.emphasized.style.color,
-            SnipSnapColors.emphasizedGlassEdge
-        )
-        XCTAssertEqual(PanelGlassEdgeState.focused.style.color, SnipSnapColors.focusedGlassEdge)
         XCTAssertEqual(PanelEdgeStyle.content.color, SnipSnapColors.contentCardEdge)
         XCTAssertEqual(PanelEdgeStyle.media.color, SnipSnapColors.attachmentEdge)
         XCTAssertEqual(PanelEdgeStyle.selected.color, SnipSnapColors.selectionEdge)
         XCTAssertEqual(PanelEdgeStyle.dropTarget.color, SnipSnapColors.dropTargetEdge)
-        XCTAssertNotEqual(
-            PanelGlassEdgeState.standard.style.color,
-            PanelGlassEdgeState.emphasized.style.color
-        )
-        XCTAssertNotEqual(
-            PanelGlassEdgeState.emphasized.style.color,
-            PanelGlassEdgeState.focused.style.color
-        )
-    }
-
-    func testElevatedListHeaderTintUsesTheInversePrimaryAsset() {
-        XCTAssertEqual(
-            SnipSnapColors.elevatedListHeaderGlassTint,
-            Color("InversePrimary").opacity(0.20)
-        )
     }
 
     func testPinnedListHeaderSurfaceAppearsOnlyAfterScrollingAtTheTopEdge() {

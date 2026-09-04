@@ -288,8 +288,7 @@ struct SnipCardRow: View {
                 editActionIcon("plus")
             }
             .menuIndicator(.hidden)
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
+            .buttonStyle(.plain)
             .disabled(isSaving)
             .help("Add Attachment")
             .accessibilityLabel("Add Attachment")
@@ -299,18 +298,17 @@ struct SnipCardRow: View {
             Button(action: cancelEdit) {
                 editActionIcon("xmark")
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
+            .buttonStyle(.plain)
             .keyboardShortcut(.cancelAction)
             .help("Cancel Editing")
             .accessibilityLabel("Cancel Editing")
 
-            AppProminentActionButton(action: saveEdit) {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 12, weight: .bold))
-            }
+            PanelGlassActionButton(
+                systemImage: "checkmark",
+                isEnabled: canSaveEdit,
+                action: saveEdit
+            )
             .keyboardShortcut("s", modifiers: .command)
-            .disabled(!canSaveEdit)
             .help("Save Snip")
             .accessibilityLabel("Save Snip")
         }
@@ -318,11 +316,9 @@ struct SnipCardRow: View {
 
     private func editActionIcon(_ systemName: String) -> some View {
         Image(systemName: systemName)
-            .font(.body.weight(.semibold))
-            .frame(
-                width: PanelControlMetrics.floatingIconLength,
-                height: PanelControlMetrics.floatingIconLength
-            )
+            .font(.system(size: PanelControlMetrics.actionIconLength, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .panelStandaloneActionControl(length: PanelControlMetrics.actionHeight)
     }
 
     private var canSaveEdit: Bool {

@@ -486,7 +486,7 @@ struct ContentView: View {
                 ) {
                     inlineEntryField
                     inlineSendButton
-                        .padding(.trailing, SnipSnapSpacing.relatedContent)
+                        .padding(.trailing, PanelControlMetrics.sendInset)
                 }
                 .padding(.leading, SnipSnapSpacing.controlContentInset)
                 .padding(.top, inlineEntryTextTopPadding)
@@ -494,8 +494,7 @@ struct ContentView: View {
             }
             .panelEmbeddedInputSurface(
                 minHeight: PanelControlMetrics.compactComposerHeight,
-                expanded: isInlineEntrySurfaceExpanded,
-                isFocused: focusedTarget == .inlineEntry
+                expanded: isInlineEntrySurfaceExpanded
             )
         }
         .frame(maxWidth: .infinity)
@@ -572,20 +571,11 @@ struct ContentView: View {
     }
 
     private var inlineSendButton: some View {
-        AppTintedGlassActionButton(
+        PanelGlassActionButton(
+            systemImage: "arrow.up",
             isEnabled: canSaveInlineEntry,
             action: saveInlineEntry
-        ) {
-            Image(systemName: "arrow.up")
-                .font(.system(size: 12, weight: .semibold))
-                .frame(width: 12, height: 12)
-        }
-        .frame(
-            width: PanelControlMetrics.compactControlLength,
-            height: PanelControlMetrics.compactControlLength
         )
-        .contentShape(Rectangle())
-        .controlSize(.regular)
         .accessibilityLabel("Add to \(model.activeList.displayName)")
         .accessibilityIdentifier("composer-send")
         .help("Add to \(model.activeList.displayName)")
