@@ -48,6 +48,13 @@ private final class PanelTextValue {
 }
 
 final class PanelTests: StoreBackedTestCase {
+    override func setUp() {
+        super.setUp()
+        if name.contains("LargePromptTextDoesNotStallSavedSnipCardOrPanelLayout") {
+            executionTimeAllowance = 15
+        }
+    }
+
     @MainActor
     func testProminentControlThemeHasReadableContrast() throws {
         for appearanceName in [NSAppearance.Name.aqua, .darkAqua] {
@@ -682,6 +689,156 @@ final class PanelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testCommandVAttachesLargeTextAndLeavesTheFieldUnchanged() throws {
+        let pasted = String(repeating: "p", count: LargePastedText.attachmentCharacterLimit)
+        let value = PanelTextValue("keep")
+        var attached: [String] = []
+        let input = PanelMultilineTextInput(
+            "Paste here",
+            text: Binding(
+                get: { value.text },
+                set: { value.text = $0 }
+            ),
+            lineRange: 1...5,
+            isFocused: true,
+            onFocusChange: { _ in },
+            readPastedImages: { [] },
+            readPastedText: { pasted },
+            pastedContentContainsText: { true },
+            onPasteLargeText: { attached.append($0) },
+            onSubmit: {}
+        )
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 320, height: 80),
+            styleMask: .titled,
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = NSHostingView(rootView: input)
+        window.makeKeyAndOrderFront(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let textField = try XCTUnwrap(findTextField(in: window.contentView))
+        XCTAssertTrue(window.makeFirstResponder(textField))
+        let event = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: .command,
+                timestamp: 0,
+                windowNumber: window.windowNumber,
+                context: nil,
+                characters: "v",
+                charactersIgnoringModifiers: "v",
+                isARepeat: false,
+                keyCode: 9
+            )
+        )
+
+        NSApp.sendEvent(event)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+
+        XCTAssertEqual(attached, [pasted])
+        XCTAssertEqual(value.text, "keep")
+    }
+
+    @MainActor
+    func testCommandVDoesNotAttachShortText() throws {
+        var attached: [String] = []
+        let input = PanelMultilineTextInput(
+            "Paste here",
+            text: .constant(""),
+            lineRange: 1...5,
+            isFocused: true,
+            onFocusChange: { _ in },
+            readPastedImages: { [] },
+            readPastedText: { "short" },
+            pastedContentContainsText: { true },
+            onPasteLargeText: { attached.append($0) },
+            onSubmit: {}
+        )
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 320, height: 80),
+            styleMask: .titled,
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = NSHostingView(rootView: input)
+        window.makeKeyAndOrderFront(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let textField = try XCTUnwrap(findTextField(in: window.contentView))
+        XCTAssertTrue(window.makeFirstResponder(textField))
+        let event = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: .command,
+                timestamp: 0,
+                windowNumber: window.windowNumber,
+                context: nil,
+                characters: "v",
+                charactersIgnoringModifiers: "v",
+                isARepeat: false,
+                keyCode: 9
+            )
+        )
+
+        NSApp.sendEvent(event)
+
+        XCTAssertTrue(attached.isEmpty)
+    }
+
+    @MainActor
+    func testCommandVAttachesLargeTextAlongWithImages() throws {
+        let pasted = String(repeating: "p", count: LargePastedText.attachmentCharacterLimit)
+        let image = PanelPastedImage.data(fileName: "Pasted Image.png", data: Data([1]))
+        var pastedImages: [PanelPastedImage] = []
+        var attachedText: [String] = []
+        let input = PanelMultilineTextInput(
+            "Paste here",
+            text: .constant("keep"),
+            lineRange: 1...5,
+            isFocused: true,
+            onFocusChange: { _ in },
+            readPastedImages: { [image] },
+            readPastedText: { pasted },
+            pastedContentContainsText: { true },
+            onPasteImages: { pastedImages = $0 },
+            onPasteLargeText: { attachedText.append($0) },
+            onSubmit: {}
+        )
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 320, height: 80),
+            styleMask: .titled,
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = NSHostingView(rootView: input)
+        window.makeKeyAndOrderFront(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let textField = try XCTUnwrap(findTextField(in: window.contentView))
+        XCTAssertTrue(window.makeFirstResponder(textField))
+        let event = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: .command,
+                timestamp: 0,
+                windowNumber: window.windowNumber,
+                context: nil,
+                characters: "v",
+                charactersIgnoringModifiers: "v",
+                isARepeat: false,
+                keyCode: 9
+            )
+        )
+
+        NSApp.sendEvent(event)
+
+        XCTAssertEqual(pastedImages, [image])
+        XCTAssertEqual(attachedText, [pasted])
+    }
+
+    @MainActor
     func testShiftReturnInsertsNewlineInPanelTextInputAtTheSelection() throws {
         let value = PanelTextValue("firstsecond")
         var submitted = false
@@ -949,6 +1106,81 @@ final class PanelTests: StoreBackedTestCase {
             PanelControlMetrics.regularControlLength,
             accuracy: 0.5
         )
+    }
+
+    @MainActor
+    func testLargePromptTextDoesNotStallSavedSnipCardOrPanelLayout() async throws {
+        var uniqueLines: [String] = []
+        uniqueLines.reserveCapacity(2_500)
+        for index in 0..<2_500 {
+            uniqueLines.append(
+                "Prompt \(index): write a detailed SwiftUI clipboard manager with lists, search, sync, attachments, and recovery. Include code samples and edge cases."
+            )
+        }
+        let hugePrompt = uniqueLines.joined(separator: "\n")
+        XCTAssertGreaterThanOrEqual(hugePrompt.count, 200_000)
+
+        let cardTime = firstLayoutTime(
+            SnipCardText(text: hugePrompt, isDone: false).frame(width: 420)
+        )
+
+        let defaultsName = "SnipSnapLargePromptLayout-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        addTeardownBlock { UserDefaults.standard.removePersistentDomain(forName: defaultsName) }
+        let model = AppModel(
+            library: try JSONSnipLibrary(fileURL: try storeURL()),
+            defaults: defaults,
+            clipboardHistory: ClipboardHistory(
+                pasteboard: NSPasteboard(name: .init(defaultsName)),
+                defaults: defaults,
+                storeURL: try storeURL()
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("clipboard.json")
+            )
+        )
+        let added = await model.add(content: hugePrompt, origin: .quickEntry)
+        XCTAssertTrue(added)
+        let panelTime = firstLayoutTime(
+            ContentView(
+                coordinator: AppCoordinator(
+                    model: model,
+                    shortcutSettings: ShortcutSettings(defaults: defaults)
+                ),
+                fileDropController: PanelFileDropController(),
+                dragSessionController: PanelDragSessionController()
+            )
+            .environmentObject(model)
+            .environmentObject(ShortcutSettings(defaults: defaults))
+            .frame(width: 620, height: 720)
+        )
+
+        let report = "chars=\(hugePrompt.count) card=\(cardTime) panel=\(panelTime)"
+        XCTAssertLessThan(cardTime, 0.08, report)
+        XCTAssertLessThan(panelTime, 0.25, report)
+    }
+
+    @MainActor
+    private func firstLayoutTime<Content: View>(_ view: Content) -> TimeInterval {
+        let hostingView = NSHostingView(rootView: view)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 620, height: 720)
+        let window = NSWindow(
+            contentRect: hostingView.frame,
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        let start = CFAbsoluteTimeGetCurrent()
+        window.orderFrontRegardless()
+        hostingView.layoutSubtreeIfNeeded()
+        hostingView.displayIfNeeded()
+        if let bitmap = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds) {
+            hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+        }
+        let elapsed = CFAbsoluteTimeGetCurrent() - start
+        window.orderOut(nil)
+        processLifetimePanelSearchWindows.append(window)
+        return elapsed
     }
 
     @MainActor

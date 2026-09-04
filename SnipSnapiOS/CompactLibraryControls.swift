@@ -195,6 +195,10 @@ struct CompactLibraryControls: View {
                     draft.text = ""
                     return
                 }
+                if let pasted = LargePastedText.largeInsertion(from: draft.text, to: value) {
+                    stagePastedText(pasted)
+                    return
+                }
                 draft.text = value
                 storage.draftStore.setText(value, for: model.selectedListID)
             }
@@ -236,6 +240,28 @@ struct CompactLibraryControls: View {
         }
         if !saved {
             composerFieldID = UUID()
+        }
+    }
+
+    private func stagePastedText(_ text: String) {
+        guard stagingTask == nil else { return }
+        let listID = model.selectedListID
+        stagingTask = Task {
+            defer { stagingTask = nil }
+            do {
+                let url = try LargePastedText.write(text, to: storage.stagingDirectory)
+                try Task.checkCancellation()
+                storage.draftStore.addTemporary(url, to: listID)
+                if model.selectedListID == listID {
+                    draft = storage.draftStore.draft(for: listID)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                model.errorMessage = String(
+                    localized: "Snip Snap could not prepare the pasted text."
+                )
+            }
         }
     }
 

@@ -418,6 +418,50 @@ final class SnipLibraryBehaviorTests: XCTestCase {
     }
   }
 
+  func testDurableAdaptersStoreLargeNewTextAsAnAttachment() async throws {
+    try await forEachAdapter { adapter, directory, library in
+      let text = String(repeating: "p", count: LargePastedText.attachmentCharacterLimit)
+      let added = try await library.perform(
+        .add(
+          content: text,
+          origin: .selection,
+          source: SnipSource(applicationName: "Safari"),
+          listID: SnipList.inboxID,
+          attachmentURLs: [],
+          requestID: UUID(),
+          now: Date(timeIntervalSince1970: 100)
+        ),
+        sortedBy: .chronological
+      )
+      let snip = try XCTUnwrap(added.snapshot.snips.first)
+      XCTAssertEqual(snip.content, "", adapter.rawValue)
+      XCTAssertEqual(snip.attachments.count, 1, adapter.rawValue)
+      let attachment = try XCTUnwrap(snip.attachments.first)
+      XCTAssertTrue(attachment.fileName.hasPrefix("Pasted Text "), adapter.rawValue)
+      XCTAssertTrue(attachment.fileName.hasSuffix(".txt"), adapter.rawValue)
+      let storedURL = try XCTUnwrap(added.snapshot.attachmentURLs[attachment.id])
+      XCTAssertEqual(
+        String(data: try Data(contentsOf: storedURL), encoding: .utf8),
+        text,
+        adapter.rawValue
+      )
+
+      let short = try await add(
+        String(repeating: "s", count: LargePastedText.attachmentCharacterLimit - 1),
+        requestID: UUID(),
+        at: 200,
+        to: SnipList.inboxID,
+        in: library
+      )
+      XCTAssertEqual(
+        short.content.count,
+        LargePastedText.attachmentCharacterLimit - 1,
+        adapter.rawValue
+      )
+      XCTAssertTrue(short.attachments.isEmpty, adapter.rawValue)
+    }
+  }
+
   func testDurableAdaptersMatchAttachmentRecordsAndReopen() async throws {
     try await forEachAdapter { adapter, directory, library in
       let sourceURL = directory.appendingPathComponent("note.txt")

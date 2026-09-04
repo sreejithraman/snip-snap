@@ -35,17 +35,31 @@ package struct SnipLibraryState {
     switch command {
     case .add(
       let content, let origin, let source, let listID, let attachmentURLs, let requestID, let now):
-      let cleanContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !cleanContent.isEmpty || !attachmentURLs.isEmpty else {
+      let folded: (content: String, attachmentURLs: [URL], stagedFileToRemove: URL?)
+      do {
+        folded = try LargePastedText.foldingIntoAttachments(
+          content: content,
+          attachmentURLs: attachmentURLs
+        )
+      } catch {
+        throw SnipLibraryError.attachmentCopyFailed
+      }
+      defer {
+        if let stagedFileToRemove = folded.stagedFileToRemove {
+          try? FileManager.default.removeItem(at: stagedFileToRemove)
+        }
+      }
+      let cleanContent = folded.content.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !cleanContent.isEmpty || !folded.attachmentURLs.isEmpty else {
         throw SnipLibraryError.emptyContent
       }
       guard !seenRequestIDs.contains(requestID) else { return .add(.duplicate) }
       try validateList(id: listID)
-      let attachments = try prepareAttachments(attachmentURLs, snips)
+      let attachments = try prepareAttachments(folded.attachmentURLs, snips)
       let snip = Snip(
         requestID: requestID,
         createdAt: now,
-        content: origin == .selection ? content : cleanContent,
+        content: origin == .selection ? folded.content : cleanContent,
         origin: origin,
         source: source,
         listID: listID,

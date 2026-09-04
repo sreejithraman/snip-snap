@@ -145,12 +145,13 @@ struct SnipCardRow: View {
 
             PanelMultilineTextInput(
                 "Snip text",
-                text: $editText,
+                text: editTextBinding,
                 lineRange: PanelInlineEditMetrics.textLineRange,
                 lineSpacing: 2,
                 isFocused: editorFocused,
                 onFocusChange: { editorFocused = $0 },
                 onPasteImages: pasteImagesIntoEdit,
+                onPasteLargeText: pasteLargeTextIntoEdit,
                 onSubmit: saveEdit
             )
                 .onKeyPress(.escape) {
@@ -168,6 +169,19 @@ struct SnipCardRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private var editTextBinding: Binding<String> {
+        Binding(
+            get: { editText },
+            set: { value in
+                if let pasted = LargePastedText.largeInsertion(from: editText, to: value) {
+                    pasteLargeTextIntoEdit(pasted)
+                    return
+                }
+                editText = value
+            }
+        )
+    }
+
     private var editAttachmentPreviewItems: [AttachmentPreviewItem] {
         editAttachments.map(AttachmentPreviewItem.init(url:))
     }
@@ -180,6 +194,30 @@ struct SnipCardRow: View {
                 excluding: editAttachments
             )
         )
+    }
+
+    @MainActor
+    private func pasteLargeTextIntoEdit(_ text: String) {
+        guard !isSaving else { return }
+        let sessionID = editSessionID
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try LargePastedText.write(text) }
+            }.value
+            switch result {
+            case .success(let url):
+                guard editSessionID == sessionID else {
+                    removeTemporaryFiles([url])
+                    return
+                }
+                temporaryAttachmentURLs.insert(url)
+                addEditAttachments([url])
+            case .failure:
+                onEditError(
+                    String(localized: "Snip Snap could not prepare the pasted text.")
+                )
+            }
+        }
     }
 
     @MainActor
@@ -306,13 +344,15 @@ struct SnipCardText: View {
     let text: String
     let isDone: Bool
 
+    private static let previewLineLimit = 5
+
     var body: some View {
         if !text.isEmpty {
-            Text(text)
+            Text(SnipTextPreview.displayText(text, lineLimit: Self.previewLineLimit))
                 .foregroundStyle(SnipSnapColors.textPrimary)
                 .strikethrough(isDone, color: SnipSnapColors.doneStrikethrough)
                 .opacity(isDone ? SnipSnapColors.doneTextOpacity : 1)
-                .lineLimit(5)
+                .lineLimit(Self.previewLineLimit)
                 .lineSpacing(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }

@@ -516,6 +516,7 @@ struct ContentView: View {
                 }
             },
             onPasteImages: pasteImagesIntoComposer,
+            onPasteLargeText: pasteLargeTextIntoComposer,
             onSubmit: saveInlineEntry
         )
             .onGeometryChange(for: CGFloat.self) { proxy in
@@ -533,6 +534,13 @@ struct ContentView: View {
         Binding(
             get: { entryDraft.text },
             set: { value in
+                if let pasted = LargePastedText.largeInsertion(
+                    from: entryDraft.text,
+                    to: value
+                ) {
+                    pasteLargeTextIntoComposer(pasted)
+                    return
+                }
                 entryDraft.text = value
                 model.saveComposerText(value, for: entryDraftListID)
             }
@@ -612,6 +620,28 @@ struct ContentView: View {
         entryDraft = model.composerDraft(for: listID)
         focusedTarget = .inlineEntry
         return true
+    }
+
+    @MainActor
+    private func pasteLargeTextIntoComposer(_ text: String) {
+        let listID = model.activeListID
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try LargePastedText.write(text) }
+            }.value
+            switch result {
+            case .success(let url):
+                model.addTemporaryDraftAttachment(url, to: listID)
+                if model.activeListID == listID {
+                    entryDraftListID = listID
+                    entryDraft = model.composerDraft(for: listID)
+                }
+            case .failure:
+                model.presentedError = String(
+                    localized: "Snip Snap could not prepare the pasted text."
+                )
+            }
+        }
     }
 
     @MainActor
