@@ -110,6 +110,8 @@
 		E10000000000000000000030 /* IOSCopyShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000030 /* IOSCopyShare.swift */; };
 		E10000000000000000000033 /* CompactLibraryControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000033 /* CompactLibraryControls.swift */; };
 		E10000000000000000000034 /* ComposerDraftStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000037 /* ComposerDraftStore.swift */; };
+		E10000000000000000000036 /* SnipListIconCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000040 /* SnipListIconCatalog.swift */; };
+		E10000000000000000000037 /* SnipListIconPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000036 /* SnipListIconPicker.swift */; };
 		E10000000000000000000035 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000035 /* PrivacyInfo.xcprivacy */; };
 		A10000000000000000000001 /* SnipSnapTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* SnipSnapTheme.swift */; };
 		A10000000000000000000002 /* SnipSnapTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* SnipSnapTheme.swift */; };
@@ -261,6 +263,7 @@
 		C20000000000000000000004 /* RecoveryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryViews.swift; sourceTree = "<group>"; };
 		C20000000000000000000005 /* MoveSnipMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoveSnipMenu.swift; sourceTree = "<group>"; };
 		E20000000000000000000006 /* EditorViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorViews.swift; sourceTree = "<group>"; };
+		E20000000000000000000036 /* SnipListIconPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListIconPicker.swift; sourceTree = "<group>"; };
 		E20000000000000000000007 /* PreviewSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewSupport.swift; sourceTree = "<group>"; };
 		E20000000000000000000008 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		E20000000000000000000009 /* IOSAppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAppModelTests.swift; sourceTree = "<group>"; };
@@ -495,6 +498,7 @@
 				C20000000000000000000004 /* RecoveryViews.swift */,
 				C20000000000000000000005 /* MoveSnipMenu.swift */,
 				E20000000000000000000006 /* EditorViews.swift */,
+				E20000000000000000000036 /* SnipListIconPicker.swift */,
 				E20000000000000000000020 /* AttachmentViews.swift */,
 				E20000000000000000000021 /* SyncedContentSettingsView.swift */,
 				E20000000000000000000030 /* IOSCopyShare.swift */,
@@ -886,6 +890,8 @@
 				C10000000000000000000004 /* RecoveryViews.swift in Sources */,
 				C10000000000000000000005 /* MoveSnipMenu.swift in Sources */,
 				E10000000000000000000006 /* EditorViews.swift in Sources */,
+				E10000000000000000000036 /* SnipListIconCatalog.swift in Sources */,
+				E10000000000000000000037 /* SnipListIconPicker.swift in Sources */,
 				E10000000000000000000020 /* AttachmentViews.swift in Sources */,
 				E10000000000000000000021 /* SyncedContentSettingsView.swift in Sources */,
 				E10000000000000000000030 /* IOSCopyShare.swift in Sources */,

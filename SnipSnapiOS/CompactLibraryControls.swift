@@ -436,7 +436,7 @@ private struct CompactListTabBar: View {
         .accessibilityIdentifier("list-tab-\(list.id.uuidString)")
         .contextMenu {
             if list.id != SnipList.inboxID {
-                Button("Rename") { sheet = .editList(id: list.id) }
+                Button("Edit List") { sheet = .editList(id: list.id) }
                 Button("Delete", role: .destructive) {
                     Task { await deleteList(list.id) }
                 }

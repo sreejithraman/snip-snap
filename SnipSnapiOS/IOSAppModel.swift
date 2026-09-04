@@ -203,13 +203,17 @@ final class IOSAppModel {
     }
 
     @discardableResult
-    func createList(name: String) async -> Bool {
-        await withSerializedMutation { await createListUnlocked(name: name) }
+    func createList(name: String, systemImage: String = "list.bullet") async -> Bool {
+        await withSerializedMutation {
+            await createListUnlocked(name: name, systemImage: systemImage)
+        }
     }
 
     @discardableResult
-    func renameList(_ list: SnipList, name: String) async -> Bool {
-        await withSerializedMutation { await renameListUnlocked(list, name: name) }
+    func renameList(_ list: SnipList, name: String, systemImage: String) async -> Bool {
+        await withSerializedMutation {
+            await renameListUnlocked(list, name: name, systemImage: systemImage)
+        }
     }
 
     @discardableResult
@@ -469,9 +473,9 @@ final class IOSAppModel {
         return await performUserAction(.setDone(ids: [id], done: !snip.isDone))
     }
 
-    private func createListUnlocked(name: String) async -> Bool {
+    private func createListUnlocked(name: String, systemImage: String) async -> Bool {
         await performUserAction(
-            .createList(name: name, systemImage: "list.bullet")
+            .createList(name: name, systemImage: systemImage)
         ) { outcome in
             if case .listCreated(let list) = outcome {
                 selectedListID = list.id
@@ -481,9 +485,13 @@ final class IOSAppModel {
         }
     }
 
-    private func renameListUnlocked(_ list: SnipList, name: String) async -> Bool {
+    private func renameListUnlocked(
+        _ list: SnipList,
+        name: String,
+        systemImage: String
+    ) async -> Bool {
         await performUserAction(
-            .updateList(id: list.id, name: name, systemImage: list.systemImage)
+            .updateList(id: list.id, name: name, systemImage: systemImage)
         )
     }
 

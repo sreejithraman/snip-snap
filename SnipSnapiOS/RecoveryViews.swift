@@ -248,7 +248,7 @@ struct RecoveredListReviewView: View {
                                     TextField("Name", text: binding.name)
                                 }
                                 if recovery.conflictingFields.contains(.icon) {
-                                    TextField("Symbol", text: binding.systemImage)
+                                    SnipListIconPicker(selection: binding.systemImage)
                                 }
                             }
                         }

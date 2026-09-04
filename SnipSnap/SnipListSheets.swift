@@ -59,21 +59,7 @@ private struct SnipListIconBrowser: View {
     private let columns = [GridItem(.adaptive(minimum: 36, maximum: 36), spacing: 8)]
 
     private var displayedCategories: [SnipListIconCategory] {
-        let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanQuery.isEmpty else {
-            guard !recentIcons.isEmpty else { return SnipListIconOptions.categories }
-            return [SnipListIconCategory(title: String(localized: "Recent"), icons: recentIcons)]
-                + SnipListIconOptions.categories
-        }
-
-        return SnipListIconOptions.categories.compactMap { category in
-            if category.title.localizedCaseInsensitiveContains(cleanQuery) {
-                return category
-            }
-
-            let icons = category.icons.filter { SnipListIconOptions.matches($0, query: cleanQuery) }
-            return icons.isEmpty ? nil : SnipListIconCategory(title: category.title, icons: icons)
-        }
+        SnipListIconOptions.displayedCategories(query: query, recentIcons: recentIcons)
     }
 
     var body: some View {

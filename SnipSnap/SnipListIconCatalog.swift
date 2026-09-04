@@ -287,6 +287,27 @@ enum SnipListIconOptions {
             .localizedCaseInsensitiveContains(query)
     }
 
+    static func displayedCategories(
+        query: String,
+        recentIcons: [String] = []
+    ) -> [SnipListIconCategory] {
+        let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanQuery.isEmpty else {
+            guard !recentIcons.isEmpty else { return categories }
+            return [SnipListIconCategory(title: String(localized: "Recent"), icons: recentIcons)]
+                + categories
+        }
+
+        return categories.compactMap { category in
+            if category.title.localizedCaseInsensitiveContains(cleanQuery) {
+                return category
+            }
+
+            let icons = category.icons.filter { matches($0, query: cleanQuery) }
+            return icons.isEmpty ? nil : SnipListIconCategory(title: category.title, icons: icons)
+        }
+    }
+
     static func recentIcons() -> [String] {
         UserDefaults.standard.stringArray(forKey: recentsDefaultsKey) ?? []
     }

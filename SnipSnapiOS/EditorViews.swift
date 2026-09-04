@@ -238,22 +238,24 @@ struct ListEditorView: View {
     let model: IOSAppModel
     let mode: ListEditorMode
     @State private var name = ""
+    @State private var systemImage = "list.bullet"
     @State private var isSaving = false
 
     private var title: String {
         switch mode {
         case .create: String(localized: "New List")
-        case .edit: String(localized: "Rename List")
+        case .edit: String(localized: "Edit List")
         }
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Name") {
+                Section {
                     TextField("List name", text: $name)
                         .textInputAutocapitalization(.words)
                         .accessibilityIdentifier("list-name")
+                    SnipListIconPicker(selection: $systemImage)
                 }
             }
             .navigationTitle(title)
@@ -271,8 +273,10 @@ struct ListEditorView: View {
                 }
             }
             .onAppear {
-                if case .edit(let id) = mode {
-                    name = model.lists.first(where: { $0.id == id })?.name ?? ""
+                if case .edit(let id) = mode,
+                   let list = model.lists.first(where: { $0.id == id }) {
+                    name = list.name
+                    systemImage = list.systemImage
                 }
             }
         }
@@ -283,13 +287,13 @@ struct ListEditorView: View {
         let succeeded: Bool
         switch mode {
         case .create:
-            succeeded = await model.createList(name: name)
+            succeeded = await model.createList(name: name, systemImage: systemImage)
         case .edit(let id):
             guard let list = model.lists.first(where: { $0.id == id }) else {
                 isSaving = false
                 return
             }
-            succeeded = await model.renameList(list, name: name)
+            succeeded = await model.renameList(list, name: name, systemImage: systemImage)
         }
         isSaving = false
         if succeeded { dismiss() }
