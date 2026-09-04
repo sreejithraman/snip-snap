@@ -38,7 +38,6 @@ struct ContentView: View {
     @State private var isSavingInlineEntry = false
     @State private var previewURLs: [URL] = []
     @State private var selectedPreviewURL: URL?
-    @State private var inlineEntryDragBlockingID = UUID()
     @StateObject private var listState = SnipListState()
     @StateObject private var commandNumberPicker = CommandNumberPicker()
     @FocusState private var focusedTarget: PanelFocusTarget?
@@ -256,8 +255,7 @@ struct ContentView: View {
                         ZStack {
                             PanelDragRegion()
                             PanelDragBlockingRegion(
-                                controller: dragSessionController,
-                                id: inlineEntryDragBlockingID
+                                controller: dragSessionController
                             )
                         }
                     }

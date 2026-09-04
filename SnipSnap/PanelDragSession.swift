@@ -430,10 +430,9 @@ final class PanelDragSessionController: NSObject, NSDraggingSource, NSGestureRec
 
 struct PanelDragBlockingRegion: NSViewRepresentable {
     let controller: PanelDragSessionController
-    let id: UUID
 
     func makeNSView(context: Context) -> PanelDragBlockingRegionView {
-        PanelDragBlockingRegionView(controller: controller, id: id)
+        PanelDragBlockingRegionView(controller: controller)
     }
 
     func updateNSView(_ nsView: PanelDragBlockingRegionView, context: Context) {
@@ -448,11 +447,12 @@ struct PanelDragBlockingRegion: NSViewRepresentable {
 @MainActor
 final class PanelDragBlockingRegionView: NSView {
     private let controller: PanelDragSessionController
-    private let id: UUID
+    // SwiftUI can overlap old and new pinned header views during replacement.
+    // Each view must remove only its own registration.
+    private let id = UUID()
 
-    init(controller: PanelDragSessionController, id: UUID) {
+    init(controller: PanelDragSessionController) {
         self.controller = controller
-        self.id = id
         super.init(frame: .zero)
     }
 

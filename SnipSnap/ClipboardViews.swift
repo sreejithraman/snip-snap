@@ -57,7 +57,6 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
     @State private var contentHeight: CGFloat = 0
     @State private var viewportHeight: CGFloat = 0
     @State private var hasScrolledFromTop = false
-    @State private var headerDragBlockingID = UUID()
 
     var body: some View {
         ScrollView {
@@ -114,8 +113,7 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
                     )
                     .background {
                         PanelDragBlockingRegion(
-                            controller: dragSessionController,
-                            id: headerDragBlockingID
+                            controller: dragSessionController
                         )
                     }
                 }

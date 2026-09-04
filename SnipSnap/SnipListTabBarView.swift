@@ -19,7 +19,6 @@ struct SnipListTabBarView: View {
     @ObservedObject var model: AppModel
     let dragSessionController: PanelDragSessionController
     let createList: () -> Void
-    @State private var dragBlockingID = UUID()
     @State private var dropTargetTab: TabSelection?
     @State private var hoverOpenTask: Task<Void, Never>?
     @State private var editingList: SnipList?
@@ -46,8 +45,7 @@ struct SnipListTabBarView: View {
         }
         .background {
             PanelDragBlockingRegion(
-                controller: dragSessionController,
-                id: dragBlockingID
+                controller: dragSessionController
             )
         }
         .onDisappear { hoverOpenTask?.cancel() }
