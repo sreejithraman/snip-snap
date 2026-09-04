@@ -1653,6 +1653,29 @@ final class PanelTests: StoreBackedTestCase {
         )
     }
 
+    func testBlankDragRegionFillsUnusedViewportBelowContent() {
+        XCTAssertEqual(
+            PanelBlankDragRegion.height(viewportHeight: 480, contentHeight: 160),
+            320
+        )
+        XCTAssertEqual(
+            PanelBlankDragRegion.height(viewportHeight: 480, contentHeight: 480),
+            0
+        )
+        XCTAssertEqual(
+            PanelBlankDragRegion.height(viewportHeight: 480, contentHeight: 600),
+            0
+        )
+        XCTAssertEqual(
+            PanelBlankDragRegion.height(viewportHeight: 480, contentHeight: 0),
+            0
+        )
+        XCTAssertEqual(
+            PanelBlankDragRegion.height(viewportHeight: 0, contentHeight: 160),
+            0
+        )
+    }
+
     func testPanelEdgeStylesUseTheSharedThicknessScale() {
         XCTAssertEqual(PanelEdgeThickness.subtle, 0.5)
         XCTAssertEqual(PanelEdgeThickness.regular, 0.75)

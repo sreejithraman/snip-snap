@@ -150,6 +150,9 @@ struct ContentView: View {
             }
         }
         .panelControlBaseline()
+        .background {
+            PanelDragRegion()
+        }
         .frame(
             minWidth: AppWindowDefaults.minimumContentSize.width,
             minHeight: AppWindowDefaults.minimumContentSize.height

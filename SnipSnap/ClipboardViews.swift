@@ -99,13 +99,7 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
                     }
                 }
             }
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
-                guard PanelGeometryChange.shouldApply(
-                    current: contentHeight,
-                    proposed: $0
-                ) else { return }
-                contentHeight = $0
-            }
+            .panelMeasuredHeight($contentHeight)
         }
         .scrollEdgeEffectStyle(.hard, for: .top)
         .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -113,19 +107,10 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
         } action: { _, hasScrolled in
             hasScrolledFromTop = hasScrolled
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
-            guard PanelGeometryChange.shouldApply(
-                current: viewportHeight,
-                proposed: $0
-            ) else { return }
-            viewportHeight = $0
-        }
-        .overlay(alignment: .bottom) {
-            PanelBlankDragRegion(
-                viewportHeight: viewportHeight,
-                contentHeight: contentHeight
-            )
-        }
+        .panelBlankDragOverlay(
+            viewportHeight: $viewportHeight,
+            contentHeight: contentHeight
+        )
         .frame(maxHeight: maxHeight)
     }
 }
