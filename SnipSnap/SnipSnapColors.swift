@@ -49,14 +49,14 @@ enum SnipSnapColors {
     // MARK: Surfaces
 
     static let compactActionFill = SnipSnapTheme.compactActionFill
-    static let glassEdge = SnipSnapTheme.glassEdge
-    static let emphasizedGlassEdge = SnipSnapTheme.emphasizedGlassEdge
-    static let focusedGlassEdge = SnipSnapTheme.focusedGlassEdge
+    static let nestedGlassTint = Color("NestedGlassTint")
+    static let actionGlassTint = Color("ActionGlassTint")
+    static let actionGlassLabel = Color("InversePrimary")
+    static let idleActionGlassTint = Color(nsColor: .tertiaryLabelColor)
+    static let idleActionLabel = Color(nsColor: .secondaryLabelColor)
     static let attachmentFill = Color.primary.opacity(0.055)
     static let attachmentEdge = Color.primary.opacity(0.12)
     static let contentCardEdge = Color(nsColor: .separatorColor)
-    static let inversePrimary = Color("InversePrimary")
-    static let elevatedListHeaderGlassTint = inversePrimary.opacity(0.20)
 
     static func contentCardShadow(isSelected: Bool) -> Color {
         Color.black.opacity(isSelected ? 0.14 : 0.10)

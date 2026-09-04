@@ -19,7 +19,7 @@ The branch now follows the current Apple path in the areas that had gaps:
 - It no longer starts new network work when the app enters the background.
 - It chooses the iPad layout from the current window size class.
 - It leaves multi-window support off until the app has shared scene state.
-- It uses native glass button styles for true buttons and keeps custom glass only for compound controls.
+- It uses native glass button styles by default. Compact Mac editor actions use the shared glass treatment described in [ADR 0008](adr/0008-use-native-adaptive-panel-chrome.md).
 - It honors Reduce Motion for app-owned motion and uses a 44-point hit area for the small attachment remove control.
 - It uses CloudKit's async record fetch API instead of a hand-built operation and continuation.
 - The Mac live store is SwiftData. JSON is backup import and export only.
@@ -31,7 +31,7 @@ The branch now follows the current Apple path in the areas that had gaps:
 - Use Observation for new SwiftUI model state. Existing Combine models do not need a broad rewrite when they work and still serve AppKit code. [Managing model data](https://developer.apple.com/documentation/swiftui/managing-model-data-in-your-app)
 - Use `NavigationStack` and `NavigationSplitView` for content navigation. Pick a compact layout from the current window, not the device model. [Navigation](https://developer.apple.com/documentation/swiftui/navigation), [Layout](https://developer.apple.com/design/human-interface-guidelines/layout)
 - Keep tabs for a small fixed set of top-level places. User-made lists are content, so the scrollable list selector stays custom. [Tab bars](https://developer.apple.com/design/human-interface-guidelines/tab-bars)
-- Use `.buttonStyle(.glass)` and `.glassProminent` for buttons on the current OS. A custom glass surface still makes sense for the composer and list strip because each groups several actions. [Glass button style](https://developer.apple.com/documentation/swiftui/glassbuttonstyle), [Custom Liquid Glass](https://developer.apple.com/documentation/swiftui/applying-liquid-glass-to-custom-views)
+- Use `.buttonStyle(.glass)` and `.glassProminent` for buttons on the current OS. A custom glass surface still makes sense for the composer and list strip because each groups several actions. Compact Mac editor actions also use a shared treatment to fix their size and keep disabled glass visible; see [ADR 0008](adr/0008-use-native-adaptive-panel-chrome.md). [Glass button style](https://developer.apple.com/documentation/swiftui/glassbuttonstyle), [Custom Liquid Glass](https://developer.apple.com/documentation/swiftui/applying-liquid-glass-to-custom-views)
 - Keep thin AppKit bridges for panels, global shortcuts, pasteboards, file promises, drag sources, window geometry, Accessibility, and screen capture. SwiftUI has no full replacement for those contracts. [AppKit integration](https://developer.apple.com/documentation/swiftui/appkit-integration)
 
 ### SwiftData and CloudKit
