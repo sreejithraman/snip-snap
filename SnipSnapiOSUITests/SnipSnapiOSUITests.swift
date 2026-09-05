@@ -522,6 +522,43 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Starred"].exists)
     }
 
+    func testExistingListKeepsEditsAfterChoosingAnIcon() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        createList("Work", in: app)
+        let work = listControl(named: "Work", in: app)
+        XCTAssertTrue(work.waitForExistence(timeout: 5))
+        work.press(forDuration: 1)
+        app.buttons["Edit List"].tap()
+
+        let field = app.textFields["list-name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        field.typeText(" Updated")
+        let editedName = try XCTUnwrap(field.value as? String)
+        app.buttons["list-color-blue"].tap()
+        let chooseIcon = app.descendants(matching: .any)["choose-list-icon"].firstMatch
+        chooseIcon.tap()
+        let star = app.buttons["list-icon-star.fill"].firstMatch
+        XCTAssertTrue(star.waitForExistence(timeout: 5))
+        star.tap()
+
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        XCTAssertTrue(chooseIcon.label.contains("Star Fill"))
+        XCTAssertEqual(field.value as? String, editedName)
+        XCTAssertTrue(app.buttons["list-color-blue"].isSelected)
+        app.buttons["save-list"].tap()
+
+        let saved = listControl(named: editedName, in: app)
+        XCTAssertTrue(saved.waitForExistence(timeout: 5))
+        saved.press(forDuration: 1)
+        app.buttons["Edit List"].tap()
+        XCTAssertTrue(chooseIcon.waitForExistence(timeout: 3))
+        XCTAssertTrue(chooseIcon.label.contains("Star Fill"))
+        XCTAssertEqual(field.value as? String, editedName)
+        XCTAssertTrue(app.buttons["list-color-blue"].isSelected)
+    }
+
     func testLibraryActionsExposeBackupImportWithoutHistoryCommands() {
         continueAfterFailure = false
         let app = launchApp()
