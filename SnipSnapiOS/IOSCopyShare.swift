@@ -413,16 +413,17 @@ struct CopyShareActions: View {
         }
         .accessibilityIdentifier("copy-\(identifierSuffix)")
 
-        Button("Copy Text", systemImage: "text.page") {
-            coordinator.copyText(snips: snips, model: model)
-        }
-        .accessibilityIdentifier("copy-text-\(identifierSuffix)")
+        if hasAttachments {
+            Button("Copy Text", systemImage: "text.page") {
+                coordinator.copyText(snips: snips, model: model)
+            }
+            .accessibilityIdentifier("copy-text-\(identifierSuffix)")
 
-        Button("Copy Attachments", systemImage: "paperclip") {
-            Task { await coordinator.copyAttachments(snips: snips, model: model) }
+            Button("Copy Attachments", systemImage: "paperclip") {
+                Task { await coordinator.copyAttachments(snips: snips, model: model) }
+            }
+            .accessibilityIdentifier("copy-attachments-\(identifierSuffix)")
         }
-        .disabled(!hasAttachments)
-        .accessibilityIdentifier("copy-attachments-\(identifierSuffix)")
 
         Button("Share", systemImage: "square.and.arrow.up") {
             Task { await coordinator.share(snips: snips, model: model) }

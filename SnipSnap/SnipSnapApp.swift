@@ -642,36 +642,28 @@ private struct SnipCommands: Commands {
                 .keyboardShortcut("f", modifiers: .command)
         }
         CommandMenu("Snips") {
-            Button(String(localized: "Import Backup…")) {
-                model?.beginBackupImport()
-            }
-                .disabled(model == nil)
-            Divider()
-            Button(SnipCommand.copy.title) { perform(.copy) }
+            Button(SnipCommand.copy.title, systemImage: "doc.on.doc") { perform(.copy) }
                 .keyboardShortcut("c", modifiers: .command)
                 .disabled(!isAvailable(.copy))
             Divider()
-            Button(SnipCompletionLanguage.toggle) { perform(.toggleDone) }
-                .appKeyboardShortcut(coordinator.shortcutSettings.chord(for: .toggleDone))
-                .disabled(!isAvailable(.toggleDone))
             Button(SnipCommand.edit.title) { perform(.edit) }
                 .keyboardShortcut(.return, modifiers: [])
                 .disabled(!isAvailable(.edit))
-            Button(SnipCommand.editInNewWindow.title) { perform(.editInNewWindow) }
-                .keyboardShortcut(.return, modifiers: .command)
-                .disabled(!isAvailable(.editInNewWindow))
             Button(SnipCommand.merge.title) { perform(.merge) }
                 .appKeyboardShortcut(coordinator.shortcutSettings.chord(for: .merge))
                 .disabled(!isAvailable(.merge))
+            Button(SnipCompletionLanguage.toggle, systemImage: "checkmark") { perform(.toggleDone) }
+                .appKeyboardShortcut(coordinator.shortcutSettings.chord(for: .toggleDone))
+                .disabled(!isAvailable(.toggleDone))
             Divider()
-            Button("Move Up") { model?.moveSelectionUp() }
-                .disabled(model?.canReorderSelection != true)
-            Button("Move Down") { model?.moveSelectionDown() }
-                .disabled(model?.canReorderSelection != true)
-            Divider()
-            Button(SnipCommand.delete.title) { perform(.delete) }
+            Button(SnipCommand.delete.title, systemImage: "trash", role: .destructive) { perform(.delete) }
                 .keyboardShortcut(.delete, modifiers: [])
                 .disabled(!isAvailable(.delete))
+            Divider()
+            Button(String(localized: "Import Backup…")) {
+                model?.beginBackupImport()
+            }
+            .disabled(model == nil)
             Button("Export JSON Backup…") {
                 exportJSONBackup(from: applicationModel)
             }
@@ -684,7 +676,7 @@ private struct SnipCommands: Commands {
 
     private func perform(_ command: SnipCommand) {
         guard let model else { return }
-        SnipCommandDispatcher(model: model, coordinator: coordinator).perform(command)
+        SnipCommandDispatcher(model: model).perform(command)
     }
 
     private func exportJSONBackup(from model: AppModel) {

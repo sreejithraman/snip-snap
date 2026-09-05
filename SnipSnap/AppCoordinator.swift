@@ -23,7 +23,6 @@ final class AppCoordinator {
     private let hud = CaptureHUDController()
     let panelFocusRequests = PassthroughSubject<PanelFocusRequest, Never>()
     private var hotKeys: (any GlobalHotKeyManaging)?
-    private var editorWindows: [UUID: DetachedEditorWindowController] = [:]
     private weak var panelWindow: NSWindow?
     private var requestedPanelComposerExpansion: CGFloat = 0
     private var appliedPanelComposerExpansion: CGFloat = 0
@@ -176,51 +175,6 @@ final class AppCoordinator {
     @discardableResult
     func copyClipboardEntry(_ entry: ClipboardEntry) -> Bool {
         model.placeOnClipboard(.clipboardEntry(entry), feedback: .notify)
-    }
-
-    func editSelectionInNewWindow() {
-        Task { await editSelectionInNewWindowNow() }
-    }
-
-    func editSelectionInNewWindowNow() async {
-        guard model.selection.count == 1,
-              let snip = model.selectedSnips.first else { return }
-        do {
-            _ = try await model.prepareAttachments(snip.attachments, for: .open)
-        } catch {
-            model.presentedError = error.localizedDescription
-            return
-        }
-        if let existing = editorWindows[snip.id] {
-            existing.show()
-            return
-        }
-        let snipID = snip.id
-        let snipUpdatedAt = snip.updatedAt
-        let controller = DetachedEditorWindowController(
-            snip: snip,
-            onSave: { [weak self] text in
-                guard let self else {
-                    return String(localized: "Snip Snap closed before it could save the snip.")
-                }
-                let result = await self.model.updateResult(
-                    id: snipID,
-                    content: text,
-                    expectedUpdatedAt: snipUpdatedAt
-                )
-                switch result {
-                case .success:
-                    return nil
-                case .failure(let error):
-                    return error.localizedDescription
-                }
-            },
-            onClose: { [weak self] in
-                self?.editorWindows[snipID] = nil
-            }
-        )
-        editorWindows[snipID] = controller
-        controller.show()
     }
 
     func captureSelection() {

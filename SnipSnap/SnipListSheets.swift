@@ -140,7 +140,7 @@ private struct SnipListIconBrowser: View {
 struct NewSnipListSheet: View {
     @ObservedObject var model: AppModel
     @Binding var isPresented: Bool
-    let movesSelection: Bool
+    let movingIDs: Set<UUID>
     @State private var name = ""
     @State private var systemImage = "circle.grid.2x2.fill"
     @State private var color: SnipListColor?
@@ -171,7 +171,6 @@ struct NewSnipListSheet: View {
     private func create() {
         let list = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !list.isEmpty else { return }
-        let movingIDs = movesSelection ? model.selection : []
         Task {
             guard await model.createList(
                 name: list,

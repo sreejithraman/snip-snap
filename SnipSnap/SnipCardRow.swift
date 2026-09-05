@@ -82,8 +82,12 @@ struct SnipCardRow: View {
                     .accessibilityLabel("Recovered Snip")
             }
         }
-        .onTapGesture(count: 2, perform: onOpen)
-        .onTapGesture(count: 1, perform: onSelect)
+        .onTapGesture(count: 2) {
+            if !isEditing { onOpen() }
+        }
+        .onTapGesture(count: 1) {
+            if !isEditing { onSelect() }
+        }
         .animation(reduceMotion ? nil : .snappy(duration: 0.18), value: isEditing)
         .onChange(of: isEditing, initial: true) { _, editing in
             guard editing else {

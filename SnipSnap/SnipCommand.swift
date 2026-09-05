@@ -1,8 +1,9 @@
+import Foundation
+
 enum SnipCommand {
     case copy
     case toggleDone
     case edit
-    case editInNewWindow
     case merge
     case delete
 
@@ -14,8 +15,6 @@ enum SnipCommand {
             SnipCompletionLanguage.done
         case .edit:
             String(localized: "Edit")
-        case .editInNewWindow:
-            String(localized: "Edit in New Window")
         case .merge:
             String(localized: "Merge Snips")
         case .delete:
@@ -30,7 +29,7 @@ enum SnipCommand {
 
     func isAvailable(for selectionCount: Int) -> Bool {
         switch self {
-        case .edit, .editInNewWindow:
+        case .edit:
             selectionCount == 1
         case .merge:
             selectionCount >= 2
@@ -43,22 +42,26 @@ enum SnipCommand {
 @MainActor
 struct SnipCommandDispatcher {
     let model: AppModel
-    let coordinator: AppCoordinator
 
-    func perform(_ command: SnipCommand) {
+    func perform(_ command: SnipCommand, on ids: Set<UUID>? = nil) {
+        let targets = ids ?? model.selection
+        Task { await performNow(command, on: targets) }
+    }
+
+    func performNow(_ command: SnipCommand, on ids: Set<UUID>) async {
+        let snips = model.snips.filter { ids.contains($0.id) }
+        guard command.isAvailable(for: snips.count) else { return }
         switch command {
         case .copy:
-            _ = model.copySelection()
+            _ = await model.placeOnClipboardNow(.snips(snips), feedback: .notify)
         case .toggleDone:
-            model.toggleDoneSelection()
+            await model.toggleDoneNow(ids: ids)
         case .edit:
-            model.beginEditingSelection()
-        case .editInNewWindow:
-            coordinator.editSelectionInNewWindow()
+            if let snip = snips.first { _ = await model.beginEditing(snip.id) }
         case .merge:
-            model.mergeSelection()
+            await model.mergeSelectionNow(ids: ids)
         case .delete:
-            model.deleteSelection()
+            await model.deleteSelectionNow(ids: ids)
         }
     }
 }

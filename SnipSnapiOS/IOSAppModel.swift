@@ -86,7 +86,7 @@ final class IOSAppModel {
     }
 
     var canReorderVisibleSnips: Bool {
-        sortMode == .manual && completionFilter == .all
+        completionFilter == .all
             && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -173,6 +173,20 @@ final class IOSAppModel {
     }
 
     @discardableResult
+    func mergeSelection() async -> Bool {
+        await withSerializedMutation {
+            let ids = selectedVisibleSnipIDs
+            guard ids.count >= 2 else { return false }
+            return await performUserAction(.merge(ids: ids, now: Date())) { outcome in
+                guard case .merged(let snip) = outcome else { return }
+                selectedSnipID = snip.id
+                selectedSnipIDs = [snip.id]
+                if completionFilter == .done { completionFilter = .all }
+            }
+        }
+    }
+
+    @discardableResult
     func moveSnip(id: UUID, to listID: UUID) async -> Bool {
         await withSerializedMutation { await moveSnipUnlocked(id: id, to: listID) }
     }
@@ -185,11 +199,6 @@ final class IOSAppModel {
     @discardableResult
     func placeVisibleSnips(_ orderedIDs: [UUID]) async -> Bool {
         await withSerializedMutation { await placeVisibleSnipsUnlocked(orderedIDs) }
-    }
-
-    @discardableResult
-    func moveSelection(by offset: Int) async -> Bool {
-        await withSerializedMutation { await moveSelectionUnlocked(by: offset) }
     }
 
     @discardableResult
@@ -438,28 +447,13 @@ final class IOSAppModel {
             Set(orderedIDs) == Set(visibleSnips.map(\.id)),
             orderedIDs.count == visibleSnips.count
         else { return false }
+        guard orderedIDs != visibleSnips.map(\.id) else { return true }
         let listID = selectedListID
         return await performUserAction(
-            .place(ids: orderedIDs, in: listID, before: nil, basedOn: .manual)
-        )
-    }
-
-    private func moveSelectionUnlocked(by offset: Int) async -> Bool {
-        guard offset == -1 || offset == 1, canReorderVisibleSnips else { return false }
-        let selected = selectedVisibleSnipIDs
-        let orderedIDs = visibleSnips.map(\.id)
-        guard !selected.isEmpty,
-            let firstSelectedIndex = orderedIDs.firstIndex(where: selected.contains)
-        else { return false }
-        let movingIDs = orderedIDs.filter(selected.contains)
-        let remainingIDs = orderedIDs.filter { !selected.contains($0) }
-        let unselectedBefore = orderedIDs[..<firstSelectedIndex]
-            .filter { !selected.contains($0) }.count
-        let insertionIndex = min(max(unselectedBefore + offset, 0), remainingIDs.count)
-        guard insertionIndex != unselectedBefore else { return false }
-        var reordered = remainingIDs
-        reordered.insert(contentsOf: movingIDs, at: insertionIndex)
-        return await placeVisibleSnipsUnlocked(reordered)
+            .place(ids: orderedIDs, in: listID, before: nil, basedOn: sortMode)
+        ) { _ in
+            sortMode = .manual
+        }
     }
 
     private func setSelectionDoneUnlocked(_ done: Bool) async -> Bool {

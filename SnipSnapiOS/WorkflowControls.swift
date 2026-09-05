@@ -21,9 +21,10 @@ struct SemanticSwipeAction: View {
 
 struct WorkflowOptionsMenu: View {
     let model: IOSAppModel
+    var beginReordering: (() -> Void)? = nil
 
     var body: some View {
-        Menu("View Options", systemImage: "line.3.horizontal.decrease.circle") {
+        Menu("View Options", systemImage: "line.3.horizontal.decrease") {
             Section("Show") {
                 Picker("Show", selection: completionFilter) {
                     ForEach(SnipCompletionFilter.allCases, id: \.self) { filter in
@@ -45,6 +46,12 @@ struct WorkflowOptionsMenu: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.inline)
+            }
+            if let beginReordering {
+                Divider()
+                Button("Reorder Snips", systemImage: "arrow.up.arrow.down", action: beginReordering)
+                    .disabled(!model.canReorderVisibleSnips || model.visibleSnips.count < 2)
+                    .accessibilityIdentifier("reorder-snips")
             }
         }
         .accessibilityIdentifier("workflow-options")
@@ -71,22 +78,51 @@ struct SelectionActionsMenu: View {
     let endSelection: () -> Void
 
     var body: some View {
-        Menu("Selected", systemImage: "ellipsis.circle") {
-            Button(SnipCompletionLanguage.done, systemImage: "checkmark.circle") {
+        Menu("Selected", systemImage: "ellipsis") {
+            actions
+        }
+        .accessibilityIdentifier("selection-actions")
+    }
+
+    @ViewBuilder
+    private var actions: some View {
+        CopyShareActions(
+            snips: model.selectedVisibleSnips,
+            model: model,
+            coordinator: copyShare,
+            identifierSuffix: "selection"
+        )
+
+        Divider()
+        if model.selectedVisibleSnips.count >= 2 {
+            Button("Merge Snips", systemImage: "arrow.triangle.merge") {
+                Task {
+                    if await model.mergeSelection() { endSelection() }
+                }
+            }
+            .accessibilityIdentifier("merge-selection")
+        }
+        if model.selectedVisibleSnips.contains(where: { !$0.isDone }) {
+            Button(SnipCompletionLanguage.menuActionTitle(isDone: false), systemImage: "checkmark") {
                 Task {
                     if await model.setSelectionDone(true) { endSelection() }
                 }
             }
             .accessibilityIdentifier("mark-selection-done")
+        }
 
-            Button(SnipCompletionLanguage.notDone, systemImage: "circle") {
+        if model.selectedVisibleSnips.contains(where: \.isDone) {
+            Button(SnipCompletionLanguage.menuActionTitle(isDone: true), systemImage: "arrow.uturn.backward") {
                 Task {
                     if await model.setSelectionDone(false) { endSelection() }
                 }
             }
             .accessibilityIdentifier("mark-selection-not-done")
+        }
 
-            Menu("Move", systemImage: "folder") {
+        if model.lists.contains(where: { $0.id != model.selectedListID }) {
+            Divider()
+            Menu("Move to List", systemImage: "folder") {
                 ForEach(model.lists.filter { $0.id != model.selectedListID }) { list in
                     Button(list.displayName) {
                         Task {
@@ -97,36 +133,15 @@ struct SelectionActionsMenu: View {
                 }
             }
             .accessibilityIdentifier("move-selection")
-
-            if model.canReorderVisibleSnips {
-                Divider()
-                Button("Move Up", systemImage: "arrow.up") {
-                    Task { _ = await model.moveSelection(by: -1) }
-                }
-                .accessibilityIdentifier("move-selection-up")
-                Button("Move Down", systemImage: "arrow.down") {
-                    Task { _ = await model.moveSelection(by: 1) }
-                }
-                .accessibilityIdentifier("move-selection-down")
-            }
-
-            Divider()
-            CopyShareActions(
-                snips: model.selectedVisibleSnips,
-                model: model,
-                coordinator: copyShare,
-                identifierSuffix: "selection"
-            )
-
-            Divider()
-            Button("Delete", systemImage: "trash", role: .destructive) {
-                Task {
-                    if await model.deleteSelection() { endSelection() }
-                }
-            }
-            .accessibilityIdentifier("delete-selection")
         }
-        .accessibilityIdentifier("selection-actions")
+
+        Divider()
+        Button("Delete", systemImage: "trash", role: .destructive) {
+            Task {
+                if await model.deleteSelection() { endSelection() }
+            }
+        }
+        .accessibilityIdentifier("delete-selection")
     }
 }
 

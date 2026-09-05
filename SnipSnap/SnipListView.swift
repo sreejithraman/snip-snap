@@ -19,52 +19,12 @@ private enum SnipListScrollTarget {
     case top
 }
 
-@MainActor
-final class SnipListState: ObservableObject {
-    fileprivate var anchor: UUID?
-    fileprivate var focus: UUID?
-
-    func selectAllVisible(model: AppModel) {
-        model.selectAllVisible()
-        let ids = orderedIDs(for: model.filteredSnips)
-        anchor = ids.first
-        focus = ids.last
-    }
-
-    fileprivate func orderedIDs(for snips: [Snip]) -> [UUID] {
-        snips.map(\.id)
-    }
-
-    fileprivate func apply(_ update: SnipSelection.Update, to model: AppModel) {
-        model.selection = update.selection
-        anchor = update.anchor
-        focus = update.focus
-    }
-
-    fileprivate func reconcile(model: AppModel) {
-        let selection = model.selection
-        guard !selection.isEmpty else {
-            anchor = nil
-            focus = nil
-            return
-        }
-        if let anchor, !selection.contains(anchor) {
-            self.anchor = nil
-        }
-        if focus.map(selection.contains) != true {
-            focus = orderedIDs(for: model.filteredSnips).first(where: selection.contains)
-        }
-    }
-}
-
 struct SnipListView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var model: AppModel
-    let coordinator: AppCoordinator
     let dragSessionController: PanelDragSessionController
     let fileDropController: PanelFileDropController
     @ObservedObject var commandNumberPicker: CommandNumberPicker
-    @ObservedObject var state: SnipListState
     @FocusState.Binding var focusedTarget: PanelFocusTarget?
     let moveSelectionToNewList: (Set<UUID>) -> Void
     let requestFileImport: (UUID) -> Void
@@ -75,7 +35,6 @@ struct SnipListView: View {
     let onPreviewAttachments: ([URL], URL) -> Void
     let onRemovePreviewURL: (URL) -> Void
 
-    @State private var selectionModifiers: EventModifiers = []
     @State private var contextMenuSelection: Set<UUID>?
     @State private var hasScrolledFromTop = false
     @State private var addedSnipRevealState = AddedSnipRevealState()
@@ -93,11 +52,11 @@ struct SnipListView: View {
     @StateObject private var reorderGeometry = SnipListReorderGeometry()
 
     private var orderedSnipIDs: [UUID] {
-        state.orderedIDs(for: model.filteredSnips)
+        model.filteredSnips.map(\.id)
     }
 
     private var snipCommands: SnipCommandDispatcher {
-        SnipCommandDispatcher(model: model, coordinator: coordinator)
+        SnipCommandDispatcher(model: model)
     }
 
     var body: some View {
@@ -184,9 +143,6 @@ struct SnipListView: View {
             } action: { _, hasScrolled in
                 hasScrolledFromTop = hasScrolled
             }
-            .onModifierKeysChanged(mask: [.command, .shift]) { _, modifiers in
-                selectionModifiers = modifiers
-            }
             .onChange(of: model.sortMode) {
                 if let selectedID = orderedSnipIDs.first(where: model.selection.contains) {
                     animateIfAllowed(.snappy(duration: 0.18)) {
@@ -249,13 +205,10 @@ struct SnipListView: View {
             )
         }
         .onAppear {
-            state.reconcile(model: model)
+            model.reconcileSelection()
             commandNumberPicker.setOrderedTargets(
                 commandNumberTargets(snapshot: snapshot)
             )
-        }
-        .onChange(of: model.selection) {
-            state.reconcile(model: model)
         }
         .onChange(of: snapshot.orderedVisibleIDs) { _, _ in
             commandNumberPicker.setOrderedTargets(
@@ -282,10 +235,9 @@ struct SnipListView: View {
         .background {
             PanelCardInteractionHost(
                 controller: cardInteractionController,
-                onClickAway: { [state, model] in
-                    state.apply(
-                        SnipSelection.Update(selection: [], anchor: nil, focus: nil),
-                        to: model
+                onClickAway: { [model] in
+                    model.applySelection(
+                        SnipSelection.Update(selection: [], anchor: nil, focus: nil)
                     )
                 }
             )
@@ -544,13 +496,11 @@ struct SnipListView: View {
         activeDropTarget = target
         updatePendingOrder(listID: listID, target: target)
         isCommittingDrop = true
-        let selectionBeforeMove = model.selection
         Task { @MainActor in
             _ = await model.move(
                 ids: payload.ids,
                 to: listID,
-                before: target.beforeID,
-                selectionAfterMove: selectionBeforeMove
+                before: target.beforeID
             )
             guard payload == activeDragPayload, isCommittingDrop else { return }
             clearDrag(listID: listID)
@@ -701,7 +651,6 @@ struct SnipListView: View {
                     attachmentURLs: attachments
                 )
                 guard saved else { return false }
-                model.selection = [snip.id]
                 model.editingID = nil
                 focusedTarget = .list
                 return true
@@ -709,35 +658,28 @@ struct SnipListView: View {
             onEditError: { model.presentedError = $0 }
         )
         .overlay {
-            if model.editingID != snip.id {
-                PanelCardInteractionRegion(
-                    controller: cardInteractionController,
-                    id: snip.id,
-                    contextMenu: PanelCardContextMenu(
-                        makeMenu: { makeContextMenu(for: snip.id) },
-                        onOpen: {
-                            contextMenuSelection = contextSelection(for: snip.id)
-                        },
-                        onClose: { contextMenuSelection = nil }
-                    )
+            PanelCardInteractionRegion(
+                controller: cardInteractionController,
+                id: snip.id,
+                contextMenu: model.editingID == snip.id ? nil : PanelCardContextMenu(
+                    makeMenu: { makeContextMenu(for: snip.id) },
+                    onOpen: {
+                        contextMenuSelection = contextSelection(for: snip.id)
+                    },
+                    onClose: { contextMenuSelection = nil }
                 )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .accessibilityAddTraits(model.selection.contains(snip.id) ? .isSelected : [])
         .accessibilityAction(named: "Select") {
             selectExclusively(snip.id)
         }
         .accessibilityAction(named: SnipCommand.copy.title) {
-            selectExclusively(snip.id)
-            snipCommands.perform(.copy)
+            snipCommands.perform(.copy, on: [snip.id])
         }
         .accessibilityAction(named: SnipCommand.edit.title) {
             edit(snip.id)
-        }
-        .accessibilityAction(named: SnipCommand.editInNewWindow.title) {
-            selectExclusively(snip.id)
-            snipCommands.perform(.editInNewWindow)
         }
         .accessibilityAction(
             named: SnipCommand.toggleDone.title(allSelectedAreDone: snip.isDone)
@@ -745,16 +687,15 @@ struct SnipListView: View {
             model.toggleDone(id: snip.id)
         }
         .accessibilityAction(named: "Move Up") {
-            model.selection = contextSelection(for: snip.id)
-            model.moveSelectionUp()
+            let ids = contextSelection(for: snip.id)
+            Task { await model.moveSelectionNow(by: -1, ids: ids) }
         }
         .accessibilityAction(named: "Move Down") {
-            model.selection = contextSelection(for: snip.id)
-            model.moveSelectionDown()
+            let ids = contextSelection(for: snip.id)
+            Task { await model.moveSelectionNow(by: 1, ids: ids) }
         }
         .accessibilityAction(named: SnipCommand.delete.title) {
-            selectExclusively(snip.id)
-            snipCommands.perform(.delete)
+            snipCommands.perform(.delete, on: [snip.id])
         }
     }
 
@@ -815,20 +756,11 @@ struct SnipListView: View {
     }
 
     private func select(_ id: UUID) {
-        let update = SnipSelection.click(
-            id,
-            orderedIDs: orderedSnipIDs,
-            selection: model.selection,
-            anchor: state.anchor,
-            focus: state.focus,
-            modifiers: currentSelectionModifiers
-        )
-        state.apply(update, to: model)
+        model.selectSnip(id, modifiers: selectionModifiers(for: id))
         focusedTarget = .list
     }
 
     private func edit(_ id: UUID) {
-        selectExclusively(id)
         focusedTarget = nil
         Task { @MainActor in
             let opened = await model.beginEditing(id)
@@ -838,9 +770,8 @@ struct SnipListView: View {
 
     private func selectExclusively(_ id: UUID) {
         guard orderedSnipIDs.contains(id) else { return }
-        state.apply(
-            SnipSelection.Update(selection: [id], anchor: id, focus: id),
-            to: model
+        model.applySelection(
+            SnipSelection.Update(selection: [id], anchor: id, focus: id)
         )
         focusedTarget = .list
     }
@@ -854,32 +785,28 @@ struct SnipListView: View {
             by: offset,
             orderedIDs: orderedSnipIDs,
             selection: model.selection,
-            anchor: state.anchor,
-            focus: state.focus,
+            anchor: model.selectionState.anchor,
+            focus: model.selectionState.focus,
             extending: extending
         )
-        let current = SnipSelection.Update(
-            selection: model.selection,
-            anchor: state.anchor,
-            focus: state.focus
-        )
-        guard update != current else { return .handled }
-        state.apply(update, to: model)
+        guard update != model.selectionState else { return .handled }
+        model.applySelection(update)
         if let focus = update.focus {
             proxy.scrollTo(focus, anchor: .center)
         }
         return .handled
     }
 
-    private var currentSelectionModifiers: SnipSelection.Modifiers {
+    private func selectionModifiers(for id: UUID) -> SnipSelection.Modifiers {
+        let flags = cardInteractionController.clickModifiers(for: id)
         var modifiers: SnipSelection.Modifiers = []
-        if selectionModifiers.contains(.command) { modifiers.insert(.command) }
-        if selectionModifiers.contains(.shift) { modifiers.insert(.shift) }
+        if flags.contains(.command) { modifiers.insert(.command) }
+        if flags.contains(.shift) { modifiers.insert(.shift) }
         return modifiers
     }
 
     private func selectAllVisible() {
-        state.selectAllVisible(model: model)
+        model.selectAllVisible()
         focusedTarget = .list
     }
 
@@ -895,51 +822,43 @@ struct SnipListView: View {
         let menu = NSMenu()
         guard !ids.isEmpty else { return menu }
 
-        menu.addPanelAction(SnipCommand.copy.title) { perform(.copy, on: ids) }
+        menu.addPanelAction(SnipCommand.copy.title, systemImage: "doc.on.doc") { perform(.copy, on: ids) }
         menu.addItem(.separator())
-        menu.addPanelAction(doneCommandTitle(for: ids)) {
-            perform(.toggleDone, on: ids)
+        let selectedSnips = model.snips.filter { ids.contains($0.id) }
+        if ids.count == 1 {
+            menu.addPanelAction(SnipCommand.edit.title, systemImage: "pencil") { perform(.edit, on: ids) }
         }
-        menu.addPanelAction(
-            SnipCommand.edit.title,
-            isEnabled: SnipCommand.edit.isAvailable(for: ids.count)
-        ) {
-            perform(.edit, on: ids)
+        if SnipCommand.merge.isAvailable(for: ids.count) {
+            menu.addPanelAction(SnipCommand.merge.title, systemImage: "arrow.triangle.merge") { perform(.merge, on: ids) }
         }
-        menu.addPanelAction(
-            SnipCommand.editInNewWindow.title,
-            isEnabled: SnipCommand.editInNewWindow.isAvailable(for: ids.count)
-        ) {
-            perform(.editInNewWindow, on: ids)
+        if selectedSnips.contains(where: { !$0.isDone }) {
+            menu.addPanelAction(SnipCompletionLanguage.menuActionTitle(isDone: false), systemImage: "checkmark") {
+                model.setDone(true, ids: ids)
+            }
         }
-        menu.addPanelAction(
-            SnipCommand.merge.title,
-            isEnabled: SnipCommand.merge.isAvailable(for: ids.count)
-        ) {
-            perform(.merge, on: ids)
+        if selectedSnips.contains(where: \.isDone) {
+            menu.addPanelAction(SnipCompletionLanguage.menuActionTitle(isDone: true), systemImage: "arrow.uturn.backward") {
+                model.setDone(false, ids: ids)
+            }
         }
-        menu.addPanelSubmenu(String(localized: "Move to")) { submenu in
-            for list in model.lists {
-                submenu.addPanelAction(list.displayName) {
-                    model.selection = ids
-                    model.moveSelection(to: list.id)
+        menu.addItem(.separator())
+        menu.addPanelSubmenu(String(localized: "Move to List"), systemImage: "folder") { submenu in
+            let destinations = model.lists.filter { list in
+                !selectedSnips.allSatisfy { $0.listID == list.id }
+            }
+            for list in destinations {
+                submenu.addPanelAction(list.displayName, systemImage: "folder") {
+                    let orderedIDs = model.snips.filter { ids.contains($0.id) }.map(\.id)
+                    Task { _ = await model.moveToList(ids: orderedIDs, listID: list.id) }
                 }
             }
-            submenu.addItem(.separator())
-            submenu.addPanelAction(String(localized: "New List…")) {
+            if !destinations.isEmpty { submenu.addItem(.separator()) }
+            submenu.addPanelAction(String(localized: "New List…"), systemImage: "folder.badge.plus") {
                 moveSelectionToNewList(ids)
             }
         }
-        menu.addPanelAction(String(localized: "Move Up"), isEnabled: canReorder(ids)) {
-            model.selection = ids
-            model.moveSelectionUp()
-        }
-        menu.addPanelAction(String(localized: "Move Down"), isEnabled: canReorder(ids)) {
-            model.selection = ids
-            model.moveSelectionDown()
-        }
         menu.addItem(.separator())
-        menu.addPanelAction(SnipCommand.delete.title) {
+        menu.addPanelAction(SnipCommand.delete.title, systemImage: "trash", isDestructive: true) {
             perform(.delete, on: ids)
         }
 
@@ -947,23 +866,12 @@ struct SnipListView: View {
     }
 
     private func perform(_ command: SnipCommand, on ids: Set<UUID>) {
-        model.selection = ids
         if command == .edit {
             focusedTarget = nil
         }
-        snipCommands.perform(command)
+        snipCommands.perform(command, on: ids)
     }
 
-    private func doneCommandTitle(for ids: Set<UUID>) -> String {
-        let selectedSnips = model.snips.filter { ids.contains($0.id) }
-        return SnipCommand.toggleDone.title(
-            allSelectedAreDone: selectedSnips.allSatisfy(\.isDone)
-        )
-    }
-
-    private func canReorder(_ ids: Set<UUID>) -> Bool {
-        model.canReorder(ids: ids)
-    }
 }
 
 private extension View {

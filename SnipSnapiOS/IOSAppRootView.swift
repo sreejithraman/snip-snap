@@ -8,6 +8,7 @@ struct IOSAppRootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     private let session: IOSAppSession
+    @AppStorage("snip-sort-mode") private var savedSortMode = SnipSortMode.chronological.rawValue
     @State private var sheet: AppSheet?
     @State private var copyShare = IOSCopyShareCoordinator()
     @State private var compactComposerStorage = CompactComposerStorage()
@@ -24,6 +25,11 @@ struct IOSAppRootView: View {
         seedsCopyShareFixtures: Bool = false,
         shareProcessToken: String? = nil
     ) {
+#if DEBUG
+        if let store = ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_STORE"] {
+            _savedSortMode = AppStorage(wrappedValue: SnipSortMode.chronological.rawValue, "snip-sort-mode-\(store)")
+        }
+#endif
         self.session = session
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         self.seedsCopyShareFixtures = seedsCopyShareFixtures
@@ -172,7 +178,11 @@ struct IOSAppRootView: View {
         } message: {
             Text("Review: \(model.pendingImportPreview?.localizedSummary ?? ""). Snip Snap will merge these records with your saved snips.")
         }
+        .onChange(of: model.sortMode) { _, mode in
+            savedSortMode = mode.rawValue
+        }
         .task {
+            model.sortMode = SnipSortMode(rawValue: savedSortMode) ?? .chronological
             await session.launch()
             if seedsCopyShareFixtures, model.snips.isEmpty {
                 await seedCopyShareFixtures()

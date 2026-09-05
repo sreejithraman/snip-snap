@@ -52,12 +52,11 @@ enum PanelListMetrics {
 
     static let rowInsets = EdgeInsets(
         top: 0,
-        leading: relatedListInset,
+        leading: horizontalContentInset,
         bottom: 0,
-        trailing: relatedListInset
+        trailing: horizontalContentInset
     )
 
-    private static let relatedListInset = horizontalContentInset - SnipSnapSpacing.relatedContent
 }
 
 enum PanelComposerMetrics {

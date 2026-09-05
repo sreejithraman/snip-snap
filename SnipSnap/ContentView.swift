@@ -28,7 +28,7 @@ struct ContentView: View {
     @State private var entryDraft = ComposerDraft()
     @State private var entryDraftListID = SnipList.inboxID
     @State private var showingNewList = false
-    @State private var movesSelectionToNewList = false
+    @State private var newListMovingIDs: Set<UUID> = []
     @State private var showingFileImporter = false
     @State private var fileImportTarget: FileImportTarget?
     @State private var pendingEditAttachmentImport: PendingEditAttachmentImport?
@@ -39,7 +39,6 @@ struct ContentView: View {
     @State private var isSavingInlineEntry = false
     @State private var previewURLs: [URL] = []
     @State private var selectedPreviewURL: URL?
-    @StateObject private var listState = SnipListState()
     @StateObject private var commandNumberPicker = CommandNumberPicker()
     @FocusState private var focusedTarget: PanelFocusTarget?
 
@@ -146,7 +145,7 @@ struct ContentView: View {
                 model: model,
                 dragSessionController: dragSessionController
             ) {
-                movesSelectionToNewList = false
+                newListMovingIDs = []
                 showingNewList = true
             }
         }
@@ -197,14 +196,14 @@ struct ContentView: View {
         .sheet(
             isPresented: $showingNewList,
             onDismiss: {
-                movesSelectionToNewList = false
+                newListMovingIDs = []
                 restoreListFocus()
             }
         ) {
             NewSnipListSheet(
                 model: model,
                 isPresented: $showingNewList,
-                movesSelection: movesSelectionToNewList
+                movingIDs: newListMovingIDs
             )
         }
         .sheet(isPresented: $showingRecoveryReview) {
@@ -305,7 +304,6 @@ struct ContentView: View {
         switch target {
         case .snip(let id):
             guard let snip = model.snips.first(where: { $0.id == id }) else { return }
-            model.selection = [id]
             _ = model.placeOnClipboard(.snips([snip]), feedback: .notify)
         case .clipboardEntry(let id):
             guard let entry = model.clipboardHistory.entry(id: id) else { return }
@@ -339,7 +337,7 @@ struct ContentView: View {
                 accessibilityPermissions: accessibilityPermissions,
                 focusedTarget: $focusedTarget,
                 moveSelectionToNewList: {
-                    movesSelectionToNewList = true
+                    newListMovingIDs = model.selection
                     showingNewList = true
                 },
                 selectAllVisible: selectAllVisible
@@ -393,15 +391,12 @@ struct ContentView: View {
     private var savedSnipList: some View {
         SnipListView(
             model: model,
-            coordinator: coordinator,
             dragSessionController: dragSessionController,
             fileDropController: fileDropController,
             commandNumberPicker: commandNumberPicker,
-            state: listState,
             focusedTarget: $focusedTarget,
             moveSelectionToNewList: { ids in
-                model.selection = ids
-                movesSelectionToNewList = true
+                newListMovingIDs = ids
                 showingNewList = true
             },
             requestFileImport: { snipID in
@@ -767,7 +762,7 @@ struct ContentView: View {
     }
 
     private func selectAllVisible() {
-        listState.selectAllVisible(model: model)
+        model.selectAllVisible()
         focusedTarget = .list
     }
 

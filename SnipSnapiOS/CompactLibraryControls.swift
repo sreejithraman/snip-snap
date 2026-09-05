@@ -474,14 +474,11 @@ private struct CompactListTabBar: View {
         .accessibilityLabel(list.displayName)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("list-tab-\(list.id.uuidString)")
-        .contextMenu {
-            if list.id != SnipList.inboxID {
-                Button("Edit List") { sheet = .editList(id: list.id) }
-                Button("Delete", role: .destructive) {
-                    Task { await deleteList(list.id) }
-                }
-            }
-        }
+        .listContextActions(
+            list: list,
+            edit: { sheet = .editList(id: list.id) },
+            delete: { Task { await deleteList(list.id) } }
+        )
     }
 
     private func scrollToSelection(using proxy: ScrollViewProxy) {
