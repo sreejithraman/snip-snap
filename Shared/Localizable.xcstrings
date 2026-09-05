@@ -1,6 +1,91 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "icon.display.2" : {
+      "comment" : "Accessible name for a list icon.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Multiple Monitors"
+          }
+        }
+      }
+    },
+    "Finance": {},
+    "icon.chart.line.downtrend.xyaxis": {
+      "comment": "Accessible name for a list icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Falling Stock Chart"
+          }
+        }
+      }
+    },
+    "icon.chart.line.flattrend.xyaxis": {
+      "comment": "Accessible name for a list icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flat Stock Chart"
+          }
+        }
+      }
+    },
+    "icon.chart.bar.xaxis": {
+      "comment": "Accessible name for a list icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trading Volume Chart"
+          }
+        }
+      }
+    },
+    "icon.dollarsign.arrow.circlepath": {
+      "comment": "Accessible name for a list icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reinvest Returns"
+          }
+        }
+      }
+    },
+    "icon.sterlingsign.circle.fill": {
+      "comment": "Accessible name for a list icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pound Sterling"
+          }
+        }
+      }
+    },
+    "icon.yensign.circle.fill": {
+      "comment": "Accessible name for a list icon.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yen or Yuan"
+          }
+        }
+      }
+    },
     "Yellow" : {},
     "Indigo" : {},
     "Violet" : {},
