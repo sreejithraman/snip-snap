@@ -22,6 +22,7 @@ struct SnipCollectionView: View {
     @Binding var editMode: EditMode
     var dismissComposerKeyboard: () -> Void = {}
     var libraryActions: LibraryActionsMenu?
+    @State private var isReordering = false
     @State private var inlineEditSession: CompactInlineEditSession?
     @State private var previewURLs: [URL] = []
     @State private var selectedPreviewURL: URL?
@@ -42,7 +43,7 @@ struct SnipCollectionView: View {
                     .accessibilityIdentifier("empty-snips")
                 }
             } else {
-                List(selection: selectedSnipIDs) {
+                List(selection: isSelecting ? selectedSnipIDs : nil) {
                     ForEach(model.recoverySnapshot.pendingSnips.filter { recovery in
                         recovery.recovered.listID == model.selectedListID
                             && !model.snips.contains { $0.id == recovery.id }
@@ -53,6 +54,7 @@ struct SnipCollectionView: View {
                             RecoveredSnipRow(recovery: recovery)
                         }
                         .buttonStyle(.plain)
+                        .listRowSeparator(.hidden)
                         .accessibilityIdentifier("recovered-snip-\(recovery.id)")
                     }
                     ForEach(model.visibleSnips) { snip in
@@ -105,10 +107,11 @@ struct SnipCollectionView: View {
                             }
                         }
                         .tag(snip.id)
+                        .listRowSeparator(.hidden)
                         .swipeActions(edge: .leading) {
                             SemanticSwipeAction(
                                 title: SnipCompletionLanguage.actionTitle(isDone: snip.isDone),
-                                systemImage: snip.isDone ? "circle" : "checkmark",
+                                systemImage: snip.isDone ? "arrow.uturn.backward" : "checkmark",
                                 tint: snip.isDone ? .gray : .green,
                                 role: nil,
                                 accessibilityIdentifier: snip.isDone
@@ -128,33 +131,13 @@ struct SnipCollectionView: View {
                                 Task { await model.deleteSnip(id: snip.id) }
                             }
                         }
-                        .contextMenu {
-                            Button(SnipCompletionLanguage.actionTitle(isDone: snip.isDone)) {
-                                Task { await model.toggleDone(id: snip.id) }
-                            }
-                            Button("Edit") { beginEditing(snip) }
-                            Button("Edit Attachments…", systemImage: "paperclip") {
-                                model.selectedSnipID = snip.id
-                                sheet = .editSnip(id: snip.id)
-                            }
-                            .accessibilityIdentifier("edit-attachments")
-                            MoveSnipMenu(model: model, snip: snip)
-                            Divider()
-                            CopyShareActions(
-                                snips: [snip],
-                                model: model,
-                                coordinator: copyShare,
-                                identifierSuffix: "snip"
-                            )
-                            Divider()
-                            Button("Delete", role: .destructive) {
-                                Task { await model.deleteSnip(id: snip.id) }
-                            }
-                        }
+                        .contextMenu { itemContextActions(for: snip) }
+                        .moveDisabled(!model.canReorderVisibleSnips || inlineEditSession != nil)
                     }
                     .onMove(perform: move)
-                    .moveDisabled(!model.canReorderVisibleSnips)
                 }
+                .listStyle(.plain)
+                .environment(\.editMode, isReordering ? .constant(.active) : $editMode)
                 .scrollDismissesKeyboard(.interactively)
             }
         }
@@ -194,7 +177,11 @@ struct SnipCollectionView: View {
                 .accessibilityIdentifier("search-snips")
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
-                if isSelecting {
+                if isReordering {
+                    Button("Done") { isReordering = false }
+                        .accessibilityIdentifier("finish-reordering")
+                } else if isSelecting {
+                    WorkflowOptionsMenu(model: model)
                     SelectionActionsMenu(
                         model: model,
                         copyShare: copyShare,
@@ -202,26 +189,46 @@ struct SnipCollectionView: View {
                     )
                         .disabled(model.selectedSnipIDs.isEmpty)
                 } else {
-                    WorkflowOptionsMenu(model: model)
+                    WorkflowOptionsMenu(model: model) {
+                        cancelInlineEdit()
+                        dismissComposerKeyboard()
+                        isReordering = true
+                    }
                 }
-                if let libraryActions {
+                if let libraryActions, !isReordering, !isSelecting {
                     libraryActions
+                }
+            }
+            if isSelecting {
+                ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Finish Selecting", systemImage: "xmark", action: endSelection)
+                        .labelStyle(.iconOnly)
+                        .accessibilityIdentifier("finish-selecting")
                 }
             }
         }
         .onChange(of: model.selectedListID) {
+            isReordering = false
             cancelInlineEdit()
             guard isSelecting else { return }
             endSelection()
         }
+        .onChange(of: model.completionFilter) {
+            if isSelecting {
+                model.selectedSnipIDs.formIntersection(model.visibleSnips.map(\.id))
+            }
+        }
         .onChange(of: editMode) { _, mode in
-            model.selectedSnipIDs = []
+            if !mode.isEditing { model.selectedSnipIDs = [] }
             if mode.isEditing {
+                isReordering = false
                 cancelInlineEdit()
                 model.selectedSnipID = nil
             }
         }
         .onChange(of: isSearchPresented) { _, isPresented in
+            if isPresented { isReordering = false }
             if !isPresented {
                 model.searchText = ""
             }
@@ -359,6 +366,56 @@ struct SnipCollectionView: View {
         }
     }
 
+    @ViewBuilder
+    private func itemContextActions(for snip: Snip) -> some View {
+        CopyShareActions(
+            snips: [snip],
+            model: model,
+            coordinator: copyShare,
+            identifierSuffix: "snip"
+        )
+        Divider()
+        Button("Edit", systemImage: "pencil") {
+            model.selectedSnipID = snip.id
+            sheet = .editSnip(id: snip.id)
+        }
+        .accessibilityIdentifier("edit-snip")
+        Button(
+            SnipCompletionLanguage.menuActionTitle(isDone: snip.isDone),
+            systemImage: snip.isDone ? "arrow.uturn.backward" : "checkmark"
+        ) {
+            Task { await model.toggleDone(id: snip.id) }
+        }
+        if !isSelecting || model.lists.contains(where: { $0.id != snip.listID }) {
+            Divider()
+        }
+        if !isSelecting {
+            Button("Select", systemImage: "checkmark.circle") {
+                cancelInlineEdit()
+                dismissComposerKeyboard()
+                isReordering = false
+                model.selectedSnipIDs = [snip.id]
+                editMode = .active
+            }
+            .accessibilityIdentifier("select-snip")
+        }
+        MoveSnipMenu(model: model, snip: snip)
+        Divider()
+        Button(role: .destructive) {
+            Task { await model.deleteSnip(id: snip.id) }
+        } label: {
+            Label {
+                Text("Delete")
+            } icon: {
+                Image(systemName: "trash")
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.red)
+            }
+        }
+        .tint(.red)
+        .accessibilityIdentifier("delete-context-snip")
+    }
+
     private func move(from source: IndexSet, to destination: Int) {
         var orderedIDs = model.visibleSnips.map(\.id)
         orderedIDs.move(fromOffsets: source, toOffset: destination)
@@ -401,7 +458,10 @@ private struct CompactInlineSnipEditor: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: snip.isDone ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(.tertiary)
+                .font(.system(size: 24))
+                .foregroundStyle(snip.isDone
+                    ? AnyShapeStyle(model.selectedList.accent.color)
+                    : AnyShapeStyle(.tertiary))
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 12) {
@@ -515,14 +575,33 @@ private struct SnipRow: View {
     let model: IOSAppModel
     let isRecovered: Bool
     var showsStatusIcon = true
+    @State private var isChangingCompletion = false
     var onPreviewAttachment: ((SnipAttachment) -> Void)? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             if showsStatusIcon {
-                Image(systemName: snip.isDone ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(snip.isDone ? .secondary : .tertiary)
-                    .accessibilityHidden(true)
+                Button {
+                    guard !isChangingCompletion else { return }
+                    isChangingCompletion = true
+                    Task { @MainActor in
+                        _ = await model.toggleDone(id: snip.id)
+                        isChangingCompletion = false
+                    }
+                } label: {
+                    Image(systemName: snip.isDone ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 24))
+                        .foregroundStyle(snip.isDone
+                            ? AnyShapeStyle(model.selectedList.accent.color)
+                            : AnyShapeStyle(.tertiary))
+                        .frame(width: 44, height: 44, alignment: .top)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .disabled(isChangingCompletion)
+                .accessibilityLabel(SnipCompletionLanguage.menuActionTitle(isDone: snip.isDone))
+                .accessibilityValue(SnipCompletionLanguage.stateTitle(isDone: snip.isDone))
+                .accessibilityIdentifier("completion-\(snip.id)")
             }
             VStack(alignment: .leading, spacing: 8) {
                 Text(SnipTextPreview.displayText(snip.content, lineLimit: 3))

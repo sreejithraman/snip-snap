@@ -86,6 +86,9 @@
         }
       }
     },
+    "Mark Done" : {},
+    "Mark Not Done" : {},
+    "Move to List" : {},
     "Yellow" : {},
     "Indigo" : {},
     "Violet" : {},
@@ -642,9 +645,6 @@
     "Edit Snip" : {
 
     },
-    "Edit in New Window" : {
-
-    },
     "Edit list" : {
 
     },
@@ -970,9 +970,6 @@
 
     },
     "Snip Snap Needs Attention" : {
-
-    },
-    "Snip Snap closed before it could save the snip." : {
 
     },
     "Snip Snap could not clear the downloaded files." : {
@@ -7858,9 +7855,6 @@
 
     },
     "⌘ %@" : {
-
-    },
-    "⌘S save" : {
 
     }
   },

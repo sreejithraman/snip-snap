@@ -182,12 +182,10 @@ struct SnipListTabBarView: View {
 
         switch payload {
         case .snip(let payload):
-            let selectionBeforeMove = model.selection
             Task {
                 _ = await model.moveToList(
                     ids: payload.ids,
-                    listID: listID,
-                    selectionAfterMove: selectionBeforeMove
+                    listID: listID
                 )
             }
         }

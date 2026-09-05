@@ -427,6 +427,59 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testTargetedCommandsPreserveCommandClickSelectionAndShiftAnchor() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        for label in ["First", "Second", "Third", "Fourth"] {
+            _ = try await repository.add(content: label, origin: .quickEntry)
+        }
+        let model = AppModel(library: repository, defaults: defaults())
+        await model.reload()
+        let ids = model.filteredSnips.map(\.id)
+        model.selectSnip(ids[0], modifiers: .command)
+        model.selectSnip(ids[1], modifiers: .command)
+        let selectedState = model.selectionState
+        let commands = SnipCommandDispatcher(model: model)
+
+        await commands.performNow(.edit, on: [ids[3]])
+        XCTAssertEqual(model.editingID, ids[3])
+        XCTAssertEqual(model.selectionState, selectedState)
+        model.editingID = nil
+        await commands.performNow(.toggleDone, on: [ids[3]])
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == ids[3] }).isDone)
+        XCTAssertEqual(model.selectionState, selectedState)
+        await commands.performNow(.delete, on: [ids[3]])
+        XCTAssertFalse(model.snips.contains { $0.id == ids[3] })
+        XCTAssertEqual(model.selectionState, selectedState)
+
+        model.selectSnip(ids[2], modifiers: .shift)
+        XCTAssertEqual(model.selection, [ids[1], ids[2]])
+        model.selectSnip(ids[0], modifiers: .command)
+        XCTAssertEqual(model.selection, [ids[0], ids[1], ids[2]])
+        model.selectSnip(ids[1], modifiers: [])
+        XCTAssertTrue(model.selection.isEmpty)
+        XCTAssertNil(model.selectionState.anchor)
+    }
+
+    @MainActor
+    func testFilteringPrunesSelectionAndItsAnchorTogether() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        _ = try await repository.add(content: "Keep", origin: .quickEntry)
+        _ = try await repository.add(content: "Hide", origin: .quickEntry)
+        let model = AppModel(library: repository, defaults: defaults())
+        await model.reload()
+        let keep = try XCTUnwrap(model.snips.first { $0.content == "Keep" })
+        let hide = try XCTUnwrap(model.snips.first { $0.content == "Hide" })
+        model.selectSnip(keep.id, modifiers: .command)
+        model.selectSnip(hide.id, modifiers: .command)
+        model.query = "Keep"
+        XCTAssertEqual(model.selection, [keep.id])
+        XCTAssertEqual(model.selectionState.anchor, keep.id)
+        XCTAssertEqual(model.selectionState.focus, keep.id)
+        model.query = ""
+        XCTAssertEqual(model.selection, [keep.id])
+    }
+
+    @MainActor
     func testToggleDoneItemChangesOnlyThatItemAndKeepsSelection() async throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let firstResult = try await repository.add(content: "First", origin: .quickEntry)
@@ -699,6 +752,32 @@ final class AppModelTests: StoreBackedTestCase {
             ids: [moved.id],
             to: review.id,
             selectionAfterMove: model.selection
+        )
+
+        XCTAssertTrue(didMove)
+        XCTAssertEqual(model.selection, [selected.id])
+        XCTAssertEqual(model.snips.first { $0.id == moved.id }?.listID, review.id)
+    }
+
+    @MainActor
+    func testMovingAnUnselectedItemDoesNotReplaceSelection() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let movedResult = try await repository.add(content: "Moved", origin: .quickEntry)
+        let selectedResult = try await repository.add(content: "Selected", origin: .quickEntry)
+        let moved = try XCTUnwrap(movedResult)
+        let selected = try XCTUnwrap(selectedResult)
+        let review = try await repository.createList(name: "Review", systemImage: "star")
+        let model = AppModel(
+            library: repository,
+            defaults: defaults(),
+            userActions: userActions(for: repository)
+        )
+        await model.reload()
+        model.selection = [selected.id]
+
+        let didMove = await model.moveChronologically(
+            ids: [moved.id],
+            to: review.id
         )
 
         XCTAssertTrue(didMove)

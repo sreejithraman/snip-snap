@@ -41,14 +41,11 @@ struct ListSidebarView: View {
                 .tint(list.accent.color)
                 .tag(list.id)
                 .accessibilityIdentifier("list-\(list.name)")
-                .contextMenu {
-                    if list.id != SnipList.inboxID {
-                        Button("Edit List") { sheet = .editList(id: list.id) }
-                        Button("Delete", role: .destructive) {
-                            Task { await model.deleteList(id: list.id) }
-                        }
-                    }
-                }
+                .listContextActions(
+                    list: list,
+                    edit: { sheet = .editList(id: list.id) },
+                    delete: { Task { await model.deleteList(id: list.id) } }
+                )
             }
         }
         .navigationTitle("Lists")
@@ -91,34 +88,30 @@ struct LibraryActionsMenu: View {
     @State private var confirmsDeleteList = false
 
     var body: some View {
-        Menu("Library Actions", systemImage: "ellipsis.circle") {
-            Button("Settings", systemImage: "gearshape", action: settings)
-                .accessibilityIdentifier("settings")
+        Menu("Library Actions", systemImage: "ellipsis") {
             Button(
                 editMode.isEditing ? "Done Selecting" : "Select Snips",
                 systemImage: editMode.isEditing ? "checkmark" : "checkmark.circle"
             ) {
+                model.selectedSnipIDs = []
                 editMode = editMode.isEditing ? .inactive : .active
             }
             .disabled(!editMode.isEditing && model.visibleSnips.isEmpty)
             .accessibilityIdentifier("select-snips")
             Divider()
-            if let reviewRecoveredEdits {
-                Button {
-                    reviewRecoveredEdits()
-                } label: {
-                    Label("Needs Attention", systemImage: "exclamationmark.bubble")
-                }
-                .accessibilityIdentifier("needs-attention")
-                Divider()
-            }
-            Button("Import Backup…", systemImage: "square.and.arrow.down", action: importBackup)
             if model.selectedListID != SnipList.inboxID, let editSelectedList {
-                Divider()
-                Button("Edit List", systemImage: "pencil", action: editSelectedList)
+                Button("Edit List…", systemImage: "pencil", action: editSelectedList)
                 Button("Delete List", systemImage: "trash", role: .destructive) {
                     confirmsDeleteList = true
                 }
+                Divider()
+            }
+            Button("Import Backup…", systemImage: "square.and.arrow.down", action: importBackup)
+            Button("Settings", systemImage: "gearshape", action: settings)
+                .accessibilityIdentifier("settings")
+            if let reviewRecoveredEdits {
+                Button("Needs Attention", systemImage: "exclamationmark.bubble", action: reviewRecoveredEdits)
+                    .accessibilityIdentifier("needs-attention")
             }
             if includesCloudActions, model.isCloudSyncActive {
                 Divider()
@@ -126,13 +119,8 @@ struct LibraryActionsMenu: View {
             }
         }
         .accessibilityIdentifier("library-actions")
-        .alert("Delete \(model.selectedList.name)?", isPresented: $confirmsDeleteList) {
-            Button("Cancel", role: .cancel) {}
-            Button("Delete List", role: .destructive) {
-                Task { await model.deleteList(id: model.selectedListID) }
-            }
-        } message: {
-            Text("The list will be removed. Its snips will move to Inbox.")
+        .listDeletionConfirmation(list: model.selectedList, isPresented: $confirmsDeleteList) {
+            Task { await model.deleteList(id: model.selectedListID) }
         }
     }
 }
@@ -149,5 +137,41 @@ private struct CloudLibraryActions: View {
             Task { await model.clearDownloadedFiles() }
         }
         .accessibilityIdentifier("clear-icloud-downloads")
+    }
+}
+
+private struct ListContextActions: ViewModifier {
+    let list: SnipList
+    let edit: () -> Void
+    let delete: () -> Void
+    @State private var confirmsDeletion = false
+
+    func body(content: Content) -> some View {
+        content
+            .contextMenu {
+                if list.id != SnipList.inboxID {
+                    Button("Edit List…", systemImage: "pencil", action: edit)
+                    Divider()
+                    Button("Delete List", systemImage: "trash", role: .destructive) {
+                        confirmsDeletion = true
+                    }
+                }
+            }
+            .listDeletionConfirmation(list: list, isPresented: $confirmsDeletion, delete: delete)
+    }
+}
+
+extension View {
+    func listContextActions(list: SnipList, edit: @escaping () -> Void, delete: @escaping () -> Void) -> some View {
+        modifier(ListContextActions(list: list, edit: edit, delete: delete))
+    }
+
+    func listDeletionConfirmation(list: SnipList, isPresented: Binding<Bool>, delete: @escaping () -> Void) -> some View {
+        confirmationDialog("Delete \(list.displayName)?", isPresented: isPresented, titleVisibility: .visible) {
+            Button("Delete List", role: .destructive, action: delete)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Its snips will move to Inbox.")
+        }
     }
 }

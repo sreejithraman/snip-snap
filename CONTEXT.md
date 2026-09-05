@@ -37,8 +37,9 @@ A saved copy created when a three-way merge finds different edits to the same fi
 _Avoid_: Conflict, error copy
 
 **Done / Not Done**:
-The two completion states and action labels for a snip.
-_Avoid_: Mark Done, Mark Not Done, Complete, Incomplete
+The two completion states for a snip. Compact controls use these labels;
+menu actions use **Mark Done / Mark Not Done** to name the next action.
+_Avoid_: Complete, Incomplete
 
 **Sync generation**:
 A random identity for one version of the user's synced collection. Devices must match it before they may upload.

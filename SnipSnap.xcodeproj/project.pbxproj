@@ -12,7 +12,6 @@
 		C10000000000000000000001 /* MacRecoveryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000001 /* MacRecoveryViews.swift */; };
 		100000000000000000000003 /* AppWindowDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* AppWindowDefaults.swift */; };
 		100000000000000000000006 /* SelectionCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000008 /* SelectionCapture.swift */; };
-		100000000000000000000007 /* DetachedEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000009 /* DetachedEditor.swift */; };
 		100000000000000000000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000010 /* Assets.xcassets */; };
 		100000000000000000000009 /* ShortcutModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000011 /* ShortcutModel.swift */; };
 		10000000000000000000000A /* ShortcutSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000012 /* ShortcutSettingsView.swift */; };
@@ -39,7 +38,6 @@
 		100000000000000000000020 /* SnipRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000028 /* SnipRepositoryTests.swift */; };
 		100000000000000000000021 /* AppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000029 /* AppModelTests.swift */; };
 		100000000000000000000022 /* SnipListModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002A /* SnipListModelsTests.swift */; };
-		100000000000000000000023 /* DetachedEditorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002B /* DetachedEditorTests.swift */; };
 		100000000000000000000024 /* ShortcutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002C /* ShortcutTests.swift */; };
 		100000000000000000000025 /* AppCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002D /* AppCoordinatorTests.swift */; };
 		100000000000000000000026 /* SelectionCaptureTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002E /* SelectionCaptureTestSupport.swift */; };
@@ -187,7 +185,6 @@
 		200000000000000000000005 /* Snip Snap.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Snip Snap.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		200000000000000000000006 /* SnipSnapTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SnipSnapTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		200000000000000000000008 /* SelectionCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionCapture.swift; sourceTree = "<group>"; };
-		200000000000000000000009 /* DetachedEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetachedEditor.swift; sourceTree = "<group>"; };
 		200000000000000000000010 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		200000000000000000000011 /* ShortcutModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutModel.swift; sourceTree = "<group>"; };
 		200000000000000000000012 /* ShortcutSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutSettingsView.swift; sourceTree = "<group>"; };
@@ -214,7 +211,6 @@
 		200000000000000000000028 /* SnipRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipRepositoryTests.swift; sourceTree = "<group>"; };
 		200000000000000000000029 /* AppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTests.swift; sourceTree = "<group>"; };
 		20000000000000000000002A /* SnipListModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListModelsTests.swift; sourceTree = "<group>"; };
-		20000000000000000000002B /* DetachedEditorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetachedEditorTests.swift; sourceTree = "<group>"; };
 		20000000000000000000002C /* ShortcutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutTests.swift; sourceTree = "<group>"; };
 		20000000000000000000002D /* AppCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoordinatorTests.swift; sourceTree = "<group>"; };
 		20000000000000000000002E /* SelectionCaptureTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionCaptureTestSupport.swift; sourceTree = "<group>"; };
@@ -391,7 +387,6 @@
 				200000000000000000000014 /* AppCoordinator.swift */,
 				B20000000000000000000001 /* AccessibilityPermissionController.swift */,
 				200000000000000000000015 /* CaptureHUD.swift */,
-				200000000000000000000009 /* DetachedEditor.swift */,
 				200000000000000000000011 /* ShortcutModel.swift */,
 				20000000000000000000001C /* DoubleShiftDetector.swift */,
 				20000000000000000000001D /* GlobalHotKeyManager.swift */,
@@ -439,7 +434,6 @@
 				200000000000000000000028 /* SnipRepositoryTests.swift */,
 				200000000000000000000029 /* AppModelTests.swift */,
 				20000000000000000000002A /* SnipListModelsTests.swift */,
-				20000000000000000000002B /* DetachedEditorTests.swift */,
 				20000000000000000000002C /* ShortcutTests.swift */,
 				AB2000000000000000000002 /* UpdateChannelSettingsTests.swift */,
 				20000000000000000000002D /* AppCoordinatorTests.swift */,
@@ -827,7 +821,6 @@
 				10000000000000000000000C /* AppCoordinator.swift in Sources */,
 				B10000000000000000000001 /* AccessibilityPermissionController.swift in Sources */,
 				10000000000000000000000D /* CaptureHUD.swift in Sources */,
-				100000000000000000000007 /* DetachedEditor.swift in Sources */,
 				100000000000000000000009 /* ShortcutModel.swift in Sources */,
 				100000000000000000000014 /* DoubleShiftDetector.swift in Sources */,
 				100000000000000000000015 /* GlobalHotKeyManager.swift in Sources */,
@@ -877,7 +870,6 @@
 				100000000000000000000020 /* SnipRepositoryTests.swift in Sources */,
 				100000000000000000000021 /* AppModelTests.swift in Sources */,
 				100000000000000000000022 /* SnipListModelsTests.swift in Sources */,
-				100000000000000000000023 /* DetachedEditorTests.swift in Sources */,
 				100000000000000000000024 /* ShortcutTests.swift in Sources */,
 				AB1000000000000000000002 /* UpdateChannelSettingsTests.swift in Sources */,
 				100000000000000000000025 /* AppCoordinatorTests.swift in Sources */,

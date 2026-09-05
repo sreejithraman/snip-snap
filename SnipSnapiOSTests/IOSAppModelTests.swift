@@ -9,6 +9,102 @@ import XCTest
 
 @MainActor
 final class IOSAppModelTests: XCTestCase {
+    func testMergeSelectionPreservesAttachmentsAndShowsTheSavedResult() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("source.txt")
+        try Data("Attachment content".utf8).write(to: file)
+        let library = try JSONSnipLibrary(fileURL: root.appendingPathComponent("library.json"))
+        let model = IOSAppModel(library: library)
+        await model.load()
+        let firstCreated = await model.createSnip(content: "First merge note", in: SnipList.inboxID, attachmentURLs: [file])
+        let secondCreated = await model.createSnip(content: "Second merge note", in: SnipList.inboxID)
+        XCTAssertTrue(firstCreated)
+        XCTAssertTrue(secondCreated)
+        let attachments = model.snips.flatMap(\.attachments).map(\.id)
+        model.selectedSnipIDs = Set(model.snips.map(\.id))
+        let markedDone = await model.setSelectionDone(true)
+        XCTAssertTrue(markedDone)
+        model.completionFilter = .done
+
+        let merged = await model.mergeSelection()
+
+        XCTAssertTrue(merged)
+        XCTAssertEqual(model.snips.count, 1)
+        let result = try XCTUnwrap(model.snips.first)
+        XCTAssertTrue(result.content.contains("First merge note"))
+        XCTAssertTrue(result.content.contains("Second merge note"))
+        XCTAssertEqual(result.attachments.map(\.id), attachments)
+        XCTAssertEqual(model.completionFilter, .all)
+        XCTAssertEqual(model.selectedSnipID, result.id)
+        XCTAssertEqual(model.selectedSnipIDs, [result.id])
+        let saved = try await library.checkedSnapshot(sortedBy: .chronological)
+        XCTAssertEqual(saved.snips.map(\.id), [result.id])
+        let singleMerge = await model.mergeSelection()
+        XCTAssertFalse(singleMerge)
+        XCTAssertEqual(model.snips.map(\.id), [result.id])
+    }
+
+    func testDroppingSnipsUsesManualOrderAndKeepsSelection() async {
+        let older = Snip(createdAt: Date(timeIntervalSince1970: 1), content: "Older", origin: .quickEntry)
+        let newer = Snip(createdAt: Date(timeIntervalSince1970: 2), content: "Newer", origin: .quickEntry)
+        let library = ModelTestLibrary(snips: [older, newer])
+        let model = IOSAppModel(library: library)
+        await model.load()
+        model.selectedSnipIDs = [newer.id]
+        XCTAssertEqual(model.visibleSnips.map(\.id), [newer.id, older.id])
+        XCTAssertTrue(model.canReorderVisibleSnips)
+
+        let moved = await model.placeVisibleSnips([older.id, newer.id])
+
+        XCTAssertTrue(moved)
+        XCTAssertEqual(model.sortMode, .manual)
+        XCTAssertEqual(model.visibleSnips.map(\.id), [older.id, newer.id])
+        XCTAssertEqual(model.selectedSnipIDs, [newer.id])
+        await model.load()
+        XCTAssertEqual(model.visibleSnips.map(\.id), [older.id, newer.id])
+        let saved = await library.snapshot(sortedBy: .manual)
+        XCTAssertEqual(saved.snips.map(\.id), [older.id, newer.id])
+    }
+
+    func testDropRejectsFilteredOrStaleRowsWithoutChangingSort() async {
+        let first = Snip(content: "First", origin: .quickEntry)
+        let second = Snip(content: "Second", origin: .quickEntry)
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [first, second]))
+        await model.load()
+        let order = model.visibleSnips.map(\.id)
+
+        model.searchText = "First"
+        XCTAssertFalse(model.canReorderVisibleSnips)
+        let searched = await model.placeVisibleSnips([first.id])
+        XCTAssertFalse(searched)
+        model.searchText = ""
+        model.completionFilter = .notDone
+        let filtered = await model.placeVisibleSnips(Array(order.reversed()))
+        XCTAssertFalse(filtered)
+        model.completionFilter = .all
+        let missing = await model.placeVisibleSnips([first.id])
+        let duplicate = await model.placeVisibleSnips([first.id, first.id])
+        let foreign = await model.placeVisibleSnips([first.id, UUID()])
+        XCTAssertFalse(missing)
+        XCTAssertFalse(duplicate)
+        XCTAssertFalse(foreign)
+        XCTAssertEqual(model.sortMode, .chronological)
+        XCTAssertEqual(model.visibleSnips.map(\.id), order)
+    }
+
+    func testDroppingAtTheSamePositionKeepsNewestFirst() async {
+        let snip = Snip(content: "Unmoved", origin: .quickEntry)
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [snip]))
+        await model.load()
+
+        let accepted = await model.placeVisibleSnips([snip.id])
+
+        XCTAssertTrue(accepted)
+        XCTAssertEqual(model.sortMode, .chronological)
+    }
+
     func testProminentControlThemeHasReadableContrast() {
         for style in [UIUserInterfaceStyle.light, .dark] {
             let traits = UITraitCollection(userInterfaceStyle: style)

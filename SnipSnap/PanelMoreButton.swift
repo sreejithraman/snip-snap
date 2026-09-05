@@ -32,16 +32,31 @@ struct PanelMoreButton: View {
 
     @ViewBuilder
     private var actions: some View {
-        Picker("Filter: \(completionFilterTitle)", selection: $model.completionFilter) {
+        Picker("Show: \(completionFilterTitle)", selection: $model.completionFilter) {
             Text("All").tag(SnipCompletionFilter.all)
             Text(SnipCompletionLanguage.done).tag(SnipCompletionFilter.done)
             Text(SnipCompletionLanguage.notDone).tag(SnipCompletionFilter.notDone)
         }
 
         Picker("Sort: \(sortModeTitle)", selection: sortModeBinding) {
-            Text("Chronological").tag(SnipSortMode.chronological)
+            Text("Newest First").tag(SnipSortMode.chronological)
             Text("Manual").tag(SnipSortMode.manual)
         }
+
+        Divider()
+
+        Button("Select All") {
+            selectAllVisible()
+        }
+        .disabled(model.filteredSnips.isEmpty)
+
+        Button("Move to New List…") {
+            focusedTarget = nil
+            moveSelectionToNewList()
+        }
+        .disabled(model.selection.isEmpty)
+
+        Divider()
 
         Picker("Appearance", selection: appearanceBinding) {
             Label("System", systemImage: "circle.lefthalf.filled")
@@ -51,21 +66,6 @@ struct PanelMoreButton: View {
             Label("Dark", systemImage: "moon")
                 .tag(AppAppearance.dark)
         }
-
-        Divider()
-
-        Button("Move to New List…") {
-            focusedTarget = nil
-            moveSelectionToNewList()
-        }
-        .disabled(model.selection.isEmpty)
-
-        Button("Select All") {
-            selectAllVisible()
-        }
-        .disabled(model.filteredSnips.isEmpty)
-
-        Divider()
 
         Button(accessibilityPermissions.menuActionTitle) {
             accessibilityPermissions.performMenuAction()
@@ -106,7 +106,7 @@ struct PanelMoreButton: View {
     private var sortModeTitle: String {
         switch model.sortMode {
         case .chronological:
-            String(localized: "Chronological")
+            String(localized: "Newest First")
         case .manual:
             String(localized: "Manual")
         }
