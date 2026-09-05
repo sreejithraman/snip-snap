@@ -117,7 +117,9 @@
 		E10000000000000000000037 /* SnipListIconPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000036 /* SnipListIconPicker.swift */; };
 		E10000000000000000000035 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000035 /* PrivacyInfo.xcprivacy */; };
 		A10000000000000000000001 /* SnipSnapTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* SnipSnapTheme.swift */; };
+		AC1000000000000000000001 /* SnipListAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC2000000000000000000001 /* SnipListAppearance.swift */; };
 		A10000000000000000000002 /* SnipSnapTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* SnipSnapTheme.swift */; };
+		AC1000000000000000000002 /* SnipListAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC2000000000000000000001 /* SnipListAppearance.swift */; };
 		A10000000000000000000003 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* AppIcon.icon */; };
 		A10000000000000000000004 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* AppIcon.icon */; };
 		A10000000000000000000005 /* SnipCompletionLanguage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* SnipCompletionLanguage.swift */; };
@@ -228,6 +230,7 @@
 		200000000000000000000036 /* PreviewImageCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewImageCache.swift; sourceTree = "<group>"; };
 		200000000000000000000037 /* ComposerDraftStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerDraftStore.swift; sourceTree = "<group>"; };
 		A20000000000000000000001 /* SnipSnapTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipSnapTheme.swift; sourceTree = "<group>"; };
+		AC2000000000000000000001 /* SnipListAppearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListAppearance.swift; sourceTree = "<group>"; };
 		A20000000000000000000002 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		A20000000000000000000003 /* SnipCompletionLanguage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipCompletionLanguage.swift; sourceTree = "<group>"; };
 		A20000000000000000000004 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
@@ -488,6 +491,7 @@
 				A20000000000000000000004 /* Localizable.xcstrings */,
 				A20000000000000000000003 /* SnipCompletionLanguage.swift */,
 				A20000000000000000000001 /* SnipSnapTheme.swift */,
+				AC2000000000000000000001 /* SnipListAppearance.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -860,6 +864,7 @@
 				A10000000000000000000005 /* SnipCompletionLanguage.swift in Sources */,
 				A1000000000000000000000D /* AppleAccountNoticeModel.swift in Sources */,
 				A10000000000000000000001 /* SnipSnapTheme.swift in Sources */,
+				AC1000000000000000000001 /* SnipListAppearance.swift in Sources */,
 				10000000000000000000003B /* ComposerDraftStore+ScreenCapture.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -912,6 +917,7 @@
 				A10000000000000000000006 /* SnipCompletionLanguage.swift in Sources */,
 				A1000000000000000000000E /* AppleAccountNoticeModel.swift in Sources */,
 				A10000000000000000000002 /* SnipSnapTheme.swift in Sources */,
+				AC1000000000000000000002 /* SnipListAppearance.swift in Sources */,
 				E10000000000000000000007 /* PreviewSupport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

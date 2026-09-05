@@ -102,7 +102,18 @@ names in that local file.
 
 ## Cloud Dev and physical-device builds
 
-Cloud and physical-device lanes need all of these inputs:
+For a local-only preview on a paired iPhone or iPad with Developer Mode enabled:
+
+```sh
+SNIP_SNAP_DEVELOPMENT_TEAM=<your-team> ./scripts/run.sh ios-device <device-udid>
+```
+
+This command signs, installs, and opens this worktree's Dev slot. It uses a
+separate bundle ID and local store, with no CloudKit or App Group access.
+Xcode needs a signed-in Apple developer account and an Apple Development
+certificate. The command lets Xcode register the device and update its profiles.
+
+Cloud-enabled physical-device builds need all of these inputs:
 
 - An Apple development team
 - A bundle ID registered to that team

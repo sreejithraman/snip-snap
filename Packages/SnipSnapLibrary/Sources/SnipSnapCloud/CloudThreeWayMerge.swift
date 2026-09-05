@@ -41,6 +41,7 @@ package struct CloudListMergeFields: Codable, Equatable, Sendable {
   package var id: UUID
   package var desiredName: String
   package var systemImage: String
+  package var color: SnipListColor?
   package var orderKey: SnipOrderKey
   package var updatedAt: Date
 
@@ -48,12 +49,14 @@ package struct CloudListMergeFields: Codable, Equatable, Sendable {
     id: UUID,
     desiredName: String,
     systemImage: String,
+    color: SnipListColor? = nil,
     orderKey: SnipOrderKey,
     updatedAt: Date
   ) {
     self.id = id
     self.desiredName = desiredName
     self.systemImage = systemImage
+    self.color = color
     self.orderKey = orderKey
     self.updatedAt = updatedAt
   }
@@ -64,7 +67,7 @@ package enum CloudSnipConflictField: String, Codable, Equatable, Hashable, Senda
 }
 
 package enum CloudListConflictField: String, Codable, Equatable, Hashable, Sendable {
-  case desiredName, systemImage
+  case desiredName, systemImage, color
 }
 
 package struct CloudSnipConflictPayload: Codable, Equatable, Sendable {
@@ -208,15 +211,19 @@ package enum CloudThreeWayMerge {
       base: base.desiredName, local: local.desiredName, server: server.desiredName)
     let systemImage = field(
       base: base.systemImage, local: local.systemImage, server: server.systemImage)
+    let color = field(
+      base: base.color, local: local.color, server: server.color)
     let orderKey = order(
       base: base.orderKey, local: local.orderKey, server: server.orderKey)
     var conflictFields: Set<CloudListConflictField> = []
     if desiredName.conflict { conflictFields.insert(.desiredName) }
     if systemImage.conflict { conflictFields.insert(.systemImage) }
+    if color.conflict { conflictFields.insert(.color) }
     let merged = CloudListMergeFields(
       id: server.id,
       desiredName: desiredName.value,
       systemImage: systemImage.value,
+      color: color.value,
       orderKey: orderKey,
       updatedAt: server.updatedAt
     )

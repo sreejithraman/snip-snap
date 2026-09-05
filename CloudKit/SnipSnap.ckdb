@@ -20,6 +20,7 @@ RECORD TYPE List (
     listID STRING,
     desiredName ENCRYPTED STRING,
     systemImage ENCRYPTED STRING,
+    color ENCRYPTED BYTES,
     orderKey ENCRYPTED BYTES,
     updatedAt ENCRYPTED BYTES
 );

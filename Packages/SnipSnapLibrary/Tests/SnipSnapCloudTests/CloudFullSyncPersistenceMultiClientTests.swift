@@ -6,6 +6,52 @@ import XCTest
 @testable import SnipSnapCloud
 
 extension CloudFullSyncPersistenceTests {
+
+  func testListColorSyncsAcrossClientsAlongsideRename() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let namespace = makeNamespace()
+    let zone = try XCTUnwrap(namespace.zones.first)
+    let server = FakeCloudServer()
+    let first = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("first.store"))
+    let second = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("second.store"))
+    let created = try await first.perform(
+      .createList(name: "Work", systemImage: "folder", color: SnipListColorPreset.blue.color), sortedBy: .manual)
+    guard case .listCreated(let list) = created.outcome else { return XCTFail("Expected list") }
+    let firstStore = CloudFullSyncPersistence(library: first, namespace: namespace, dataZone: zone)
+    let secondStore = CloudFullSyncPersistence(library: second, namespace: namespace, dataZone: zone)
+    try await firstStore.approveEnrollment(references: [
+      CloudEntityReference(kind: .list, domainID: SnipList.inboxID),
+      CloudEntityReference(kind: .list, domainID: list.id)
+    ])
+    let firstClient = CloudFullSyncCoordinator(store: firstStore,
+      transport: FakeCloudRecordTransport(server: server, namespace: namespace))
+    let secondClient = CloudFullSyncCoordinator(store: secondStore,
+      transport: FakeCloudRecordTransport(server: server, namespace: namespace))
+    try await firstClient.sync()
+    try await secondClient.fetchRemote()
+    let received = await second.snapshot(sortedBy: .manual)
+    XCTAssertEqual(received.lists.first { $0.id == list.id }?.color, SnipListColorPreset.blue.color)
+    _ = try await first.perform(
+      .updateList(id: list.id, name: "Work", systemImage: "folder", color: .set(SnipListColorPreset.violet.color)), sortedBy: .manual)
+    _ = try await second.perform(
+      .updateList(id: list.id, name: "Projects", systemImage: "folder"), sortedBy: .manual)
+    try await firstClient.sync()
+    try await secondClient.sync()
+    try await firstClient.sync()
+    for library in [first, second] {
+      let snapshot = await library.snapshot(sortedBy: .manual)
+      XCTAssertEqual(snapshot.lists.first { $0.id == list.id }?.color, SnipListColorPreset.violet.color)
+      XCTAssertEqual(snapshot.lists.first { $0.id == list.id }?.name, "Projects")
+    }
+    _ = try await first.perform(
+      .updateList(id: list.id, name: "Projects", systemImage: "folder", color: .set(nil)), sortedBy: .manual)
+    try await firstClient.sync()
+    try await secondClient.fetchRemote()
+    let cleared = await second.snapshot(sortedBy: .manual)
+    XCTAssertNil(cleared.lists.first { $0.id == list.id }?.color)
+  }
+
   func testMoveIntoDeletedListConvergesToInboxForFetchFirstAndSendFirst() async throws {
     for fetchFirst in [true, false] {
       let root = FileManager.default.temporaryDirectory

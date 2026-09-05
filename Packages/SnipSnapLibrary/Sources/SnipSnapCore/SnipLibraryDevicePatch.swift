@@ -118,6 +118,7 @@ package extension SnipList {
     return id == other.id
       && desiredName == other.desiredName
       && systemImage == other.systemImage
+      && color == other.color
       && sortKey == other.sortKey
   }
 }

@@ -239,6 +239,7 @@ struct ListEditorView: View {
     let mode: ListEditorMode
     @State private var name = ""
     @State private var systemImage = "list.bullet"
+    @State private var color: SnipListColor?
     @State private var isSaving = false
 
     private var title: String {
@@ -255,7 +256,11 @@ struct ListEditorView: View {
                     TextField("List name", text: $name)
                         .textInputAutocapitalization(.words)
                         .accessibilityIdentifier("list-name")
-                    SnipListIconPicker(selection: $systemImage)
+                    SnipListIconPicker(
+                        selection: $systemImage,
+                        accent: SnipListAppearance(pair: color).color
+                    )
+                    SnipListColorPicker(selection: $color)
                 }
             }
             .navigationTitle(title)
@@ -277,6 +282,7 @@ struct ListEditorView: View {
                    let list = model.lists.first(where: { $0.id == id }) {
                     name = list.name
                     systemImage = list.systemImage
+                    color = list.color
                 }
             }
         }
@@ -287,13 +293,13 @@ struct ListEditorView: View {
         let succeeded: Bool
         switch mode {
         case .create:
-            succeeded = await model.createList(name: name, systemImage: systemImage)
+            succeeded = await model.createList(name: name, systemImage: systemImage, color: color)
         case .edit(let id):
             guard let list = model.lists.first(where: { $0.id == id }) else {
                 isSaving = false
                 return
             }
-            succeeded = await model.renameList(list, name: name, systemImage: systemImage)
+            succeeded = await model.renameList(list, name: name, systemImage: systemImage, color: .set(color))
         }
         isSaving = false
         if succeeded { dismiss() }

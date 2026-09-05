@@ -203,16 +203,16 @@ final class IOSAppModel {
     }
 
     @discardableResult
-    func createList(name: String, systemImage: String = "list.bullet") async -> Bool {
+    func createList(name: String, systemImage: String = "list.bullet", color: SnipListColor? = nil) async -> Bool {
         await withSerializedMutation {
-            await createListUnlocked(name: name, systemImage: systemImage)
+            await createListUnlocked(name: name, systemImage: systemImage, color: color)
         }
     }
 
     @discardableResult
-    func renameList(_ list: SnipList, name: String, systemImage: String) async -> Bool {
+    func renameList(_ list: SnipList, name: String, systemImage: String, color: SnipListColorChange = .keep) async -> Bool {
         await withSerializedMutation {
-            await renameListUnlocked(list, name: name, systemImage: systemImage)
+            await renameListUnlocked(list, name: name, systemImage: systemImage, color: color)
         }
     }
 
@@ -473,9 +473,9 @@ final class IOSAppModel {
         return await performUserAction(.setDone(ids: [id], done: !snip.isDone))
     }
 
-    private func createListUnlocked(name: String, systemImage: String) async -> Bool {
+    private func createListUnlocked(name: String, systemImage: String, color: SnipListColor?) async -> Bool {
         await performUserAction(
-            .createList(name: name, systemImage: systemImage)
+            .createList(name: name, systemImage: systemImage, color: color)
         ) { outcome in
             if case .listCreated(let list) = outcome {
                 selectedListID = list.id
@@ -488,10 +488,11 @@ final class IOSAppModel {
     private func renameListUnlocked(
         _ list: SnipList,
         name: String,
-        systemImage: String
+        systemImage: String,
+        color: SnipListColorChange
     ) async -> Bool {
         await performUserAction(
-            .updateList(id: list.id, name: name, systemImage: systemImage)
+            .updateList(id: list.id, name: name, systemImage: systemImage, color: color)
         )
     }
 

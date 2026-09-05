@@ -6,6 +6,113 @@ import XCTest
 @testable import SnipSnapPersistence
 
 final class SnipLibraryBehaviorTests: XCTestCase {
+
+  func testListColorsSurviveEditsAndReopenInBothAdapters() async throws {
+    try await forEachAdapter { adapter, directory, library in
+      let created = try await library.perform(
+        .createList(name: "Work", systemImage: "briefcase", color: SnipListColorPreset.blue.color), sortedBy: .manual)
+      guard case .listCreated(let list) = created.outcome else { return XCTFail("Expected list") }
+      XCTAssertEqual(list.color, SnipListColorPreset.blue.color)
+      _ = try await library.perform(
+        .updateList(id: list.id, name: "Projects", systemImage: "folder"), sortedBy: .manual)
+      let renamed = await library.snapshot(sortedBy: .manual)
+      XCTAssertEqual(renamed.lists.first { $0.id == list.id }?.color, SnipListColorPreset.blue.color)
+      _ = try await library.perform(
+        .updateList(id: list.id, name: "Projects", systemImage: "folder", color: .set(SnipListColor(light: "#123456", dark: "#ABCDEF"))),
+        sortedBy: .manual)
+      let reopened = try adapter.open(in: directory)
+      let snapshot = await reopened.snapshot(sortedBy: .manual)
+      XCTAssertEqual(snapshot.lists.first { $0.id == list.id }?.color, SnipListColor(light: "#123456", dark: "#ABCDEF"))
+      XCTAssertEqual(snapshot.lists.first { $0.id == SnipList.inboxID }?.color, nil)
+      _ = try await reopened.perform(
+        .updateList(id: list.id, name: "Projects", systemImage: "folder", color: .set(nil)), sortedBy: .manual)
+      let clearedLibrary = try adapter.open(in: directory)
+      let cleared = await clearedLibrary.snapshot(sortedBy: .manual)
+      XCTAssertNil(cleared.lists.first { $0.id == list.id }?.color)
+    }
+  }
+
+  func testOldListJSONDefaultsToNeutralAndUnknownColorRoundTrips() throws {
+    let list = SnipList(id: UUID(), name: "Work", systemImage: "folder", color: SnipListColor(light: "#123456", dark: "#ABCDEF"), position: 1)
+    let encoded = try JSONEncoder().encode(list)
+    XCTAssertEqual(try JSONDecoder().decode(SnipList.self, from: encoded).color, SnipListColor(light: "#123456", dark: "#ABCDEF"))
+    var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    legacy.removeValue(forKey: "color")
+    let old = try JSONDecoder().decode(SnipList.self, from: JSONSerialization.data(withJSONObject: legacy))
+    XCTAssertEqual(old.color, nil)
+  }
+
+  func testVersion4StoreMigratesListsToNeutralAndCanSaveColor() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("snips.store")
+    let list = SnipList(id: UUID(), name: "Existing", systemImage: "star", position: 1)
+    do {
+      let schema = Schema(versionedSchema: SnipSnapSchemaV4.self)
+      let container = try ModelContainer(for: schema, configurations: [
+        ModelConfiguration("SnipSnapLocal", schema: schema, url: url, cloudKitDatabase: .none)
+      ])
+      let context = ModelContext(container)
+      context.insert(SnipSnapSchemaV4.StoredListRecord(.inbox))
+      context.insert(SnipSnapSchemaV4.StoredListRecord(list))
+      try context.save()
+    }
+    let library = try SwiftDataSnipLibrary(storeURL: url)
+    let migrated = await library.snapshot(sortedBy: .manual)
+    XCTAssertEqual(migrated.lists.first { $0.id == list.id }?.color, nil)
+    _ = try await library.perform(
+      .updateList(id: list.id, name: list.name, systemImage: list.systemImage, color: .set(SnipListColorPreset.violet.color)),
+      sortedBy: .manual)
+    let reopened = try SwiftDataSnipLibrary(storeURL: url)
+    let saved = await reopened.snapshot(sortedBy: .manual)
+    XCTAssertEqual(saved.lists.first { $0.id == list.id }?.color, SnipListColorPreset.violet.color)
+  }
+
+  func testColorValidationAndLegacyJSON() throws {
+    XCTAssertEqual(SnipListColor(light: "#abcdef", dark: "#123abc")?.light, "#ABCDEF")
+    for hex in ["ABCDEF", "#ABC", "#12345678", "#12GG56", " #123456"] {
+      XCTAssertNil(SnipListColor(light: hex, dark: "#ABCDEF"))
+      XCTAssertNil(SnipListColor(light: "#ABCDEF", dark: hex))
+    }
+    XCTAssertThrowsError(try JSONDecoder().decode(SnipListColor.self, from: Data(##"{"light":"#123456"}"##.utf8)))
+    XCTAssertThrowsError(try JSONDecoder().decode(SnipListColor.self, from: Data(##"{"light":"oops","dark":"#ABCDEF"}"##.utf8)))
+    var old = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(SnipList.inbox)) as? [String: Any])
+    old.removeValue(forKey: "color")
+    old["colorID"] = "purple"
+    let decoded = try JSONDecoder().decode(SnipList.self, from: JSONSerialization.data(withJSONObject: old))
+    XCTAssertEqual(decoded.color, SnipListColor(light: "#9822EE", dark: "#AF32FF"))
+    XCTAssertTrue(SnipListColorPreset.allCases.filter { $0 != .neutral }.allSatisfy { $0.color != nil })
+  }
+
+  func testVersion5StoreMigratesColorPairAndClearsLegacyID() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("snips.store")
+    let list = SnipList(id: UUID(), name: "Existing", systemImage: "star", position: 1)
+    do {
+      let schema = Schema(versionedSchema: SnipSnapSchemaV5.self)
+      let container = try ModelContainer(for: schema, configurations: [
+        ModelConfiguration("SnipSnapLocal", schema: schema, url: url, cloudKitDatabase: .none)
+      ])
+      let context = ModelContext(container)
+      context.insert(SnipSnapSchemaV5.StoredListRecord(.inbox, colorID: "neutral"))
+      context.insert(SnipSnapSchemaV5.StoredListRecord(list, colorID: "purple"))
+      try context.save()
+    }
+    let library = try SwiftDataSnipLibrary(storeURL: url)
+    let snapshot = await library.snapshot(sortedBy: .manual)
+    XCTAssertEqual(snapshot.lists.first { $0.id == list.id }?.color, SnipListColor(light: "#9822EE", dark: "#AF32FF"))
+    let schema = Schema(versionedSchema: SnipSnapSchemaV6.self)
+    let container = try ModelContainer(for: schema, configurations: [
+      ModelConfiguration("SnipSnapLocal", schema: schema, url: url, cloudKitDatabase: .none)
+    ])
+    let records = try ModelContext(container).fetch(FetchDescriptor<StoredListRecord>())
+    XCTAssertTrue(records.allSatisfy { $0.colorID == nil })
+    XCTAssertEqual(records.first { $0.id == list.id }?.lightHex, "#9822EE")
+  }
+
   private enum Adapter: String, CaseIterable {
     case json
     case swiftData

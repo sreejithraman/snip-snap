@@ -438,11 +438,12 @@ final class AppModel: ObservableObject {
     func createList(
         name: String,
         systemImage: String,
+        color: SnipListColor? = nil,
         movingIDs: Set<UUID> = []
     ) async -> Bool {
         let result = await performMutation {
             let update = try await session.performLibraryCommand(
-                .createList(name: name, systemImage: systemImage),
+                .createList(name: name, systemImage: systemImage, color: color),
                 sortedBy: sortMode
             )
             guard case .listCreated(let list) = update.outcome else {
@@ -482,10 +483,10 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func updateList(_ list: SnipList, name: String, systemImage: String) async -> Bool {
+    func updateList(_ list: SnipList, name: String, systemImage: String, color: SnipListColorChange = .keep) async -> Bool {
         let result = await performMutation {
             let update = try await session.performLibraryCommand(
-                .updateList(id: list.id, name: name, systemImage: systemImage),
+                .updateList(id: list.id, name: name, systemImage: systemImage, color: color),
                 sortedBy: sortMode
             )
             return (update, ())

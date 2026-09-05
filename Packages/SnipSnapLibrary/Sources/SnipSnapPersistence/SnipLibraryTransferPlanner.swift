@@ -244,6 +244,8 @@ package enum SnipLibraryTransferPlanner {
       append(list.desiredName, to: &bytes)
       append(list.resolvedName, to: &bytes)
       append(list.systemImage, to: &bytes)
+      append(list.color?.light ?? "", to: &bytes)
+      append(list.color?.dark ?? "", to: &bytes)
       append(list.sortKey.data, to: &bytes)
     }
     append(UInt64(snapshot.snips.count), to: &bytes)

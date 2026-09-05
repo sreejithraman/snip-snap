@@ -40,6 +40,19 @@ struct IOSAppRootView: View {
                 .frame(width: 0, height: 0)
         }
 #if DEBUG
+        .overlay(alignment: .bottomLeading) {
+            if let bundleID = Bundle.main.bundleIdentifier,
+               let suffix = bundleID.components(separatedBy: ".dev").last,
+               bundleID.contains(".dev"), let slot = Int(suffix) {
+                Text(verbatim: "DEV \(slot)")
+                    .font(.caption2.bold())
+                    .padding(4)
+                    .background(.yellow, in: Capsule())
+                    .foregroundStyle(.black)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
         .overlay(alignment: .topLeading) {
             if let shareProcessToken {
                 Text(

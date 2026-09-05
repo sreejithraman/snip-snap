@@ -126,7 +126,8 @@ struct SnipListTabBarView: View {
                     )
                     .panelCompactStateSurface(
                         isEmphasized: selected,
-                        isSubdued: remembered
+                        isSubdued: remembered,
+                        tint: model.lists.first(where: { $0.id == tab.listID })?.accent.color
                     )
                     .panelDropTargetState(in: Circle(), isTargeted: targeted)
 
@@ -305,6 +306,7 @@ struct SnipListTabBarView: View {
         case .list(let listID):
             if let list = model.lists.first(where: { $0.id == listID }) {
                 Image(systemName: list.systemImage)
+                    .foregroundStyle(list.accent.color)
                     .accessibilityLabel(list.displayName)
                     .help(list.displayName)
             }

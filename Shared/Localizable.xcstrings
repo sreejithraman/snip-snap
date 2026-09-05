@@ -1,6 +1,30 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Yellow" : {},
+    "Indigo" : {},
+    "Violet" : {},
+    "Custom" : {
+
+    },
+    "Neutral" : {
+
+    },
+    "Red" : {
+
+    },
+    "Orange" : {
+
+    },
+    "Green" : {
+
+    },
+    "Blue" : {
+
+    },
+    "Color" : {
+
+    },
     "A device setting or management rule is blocking iCloud. Your changes will stay on this device." : {
 
     },

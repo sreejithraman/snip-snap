@@ -277,7 +277,7 @@ extension View {
         return frame(minHeight: minHeight)
             .panelGlassSurface(
                 in: shape,
-                tint: SnipSnapColors.nestedGlassTint
+                interactive: true
             )
             .contentShape(shape)
     }
@@ -318,12 +318,14 @@ extension View {
 
     func panelCompactStateSurface(
         isEmphasized: Bool,
-        isSubdued: Bool = false
+        isSubdued: Bool = false,
+        tint: Color? = nil
     ) -> some View {
         modifier(
             PanelCompactStateSurfaceModifier(
                 isEmphasized: isEmphasized,
-                isSubdued: isSubdued
+                isSubdued: isSubdued,
+                tint: tint
             )
         )
     }
@@ -356,6 +358,7 @@ extension View {
 private struct PanelCompactStateSurfaceModifier: ViewModifier {
     let isEmphasized: Bool
     let isSubdued: Bool
+    let tint: Color?
 
     func body(content: Content) -> some View {
         content
@@ -363,7 +366,7 @@ private struct PanelCompactStateSurfaceModifier: ViewModifier {
                 Capsule(style: .continuous)
                     .fill(
                         isEmphasized
-                            ? SnipSnapColors.compactSelectionFill
+                            ? (tint?.opacity(0.18) ?? SnipSnapColors.compactSelectionFill)
                             : isSubdued
                                 ? SnipSnapColors.compactSubduedFill
                                 : .clear
@@ -428,18 +431,22 @@ private struct PanelGlassSurfaceModifier<S: InsettableShape>: ViewModifier {
 struct PanelGlassActionButton: View {
     let systemImage: String
     let isEnabled: Bool
+    var tint: Color = SnipSnapTheme.actionGlassTint
+    var labelColor: Color = SnipSnapTheme.actionGlassLabel
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
         }
-        .buttonStyle(PanelGlassActionButtonStyle())
+        .buttonStyle(PanelGlassActionButtonStyle(tint: tint, labelColor: labelColor))
         .disabled(!isEnabled)
     }
 }
 
 private struct PanelGlassActionButtonStyle: ButtonStyle {
+    let tint: Color
+    let labelColor: Color
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
@@ -447,7 +454,7 @@ private struct PanelGlassActionButtonStyle: ButtonStyle {
             .font(.system(size: PanelControlMetrics.actionIconLength, weight: .semibold))
             .foregroundStyle(
                 isEnabled
-                    ? SnipSnapColors.actionGlassLabel
+                    ? labelColor
                     : SnipSnapColors.idleActionLabel
             )
             .frame(
@@ -458,7 +465,7 @@ private struct PanelGlassActionButtonStyle: ButtonStyle {
                 in: Capsule(),
                 interactive: isEnabled,
                 tint: isEnabled
-                    ? SnipSnapColors.actionGlassTint
+                    ? tint
                     : SnipSnapColors.idleActionGlassTint
             )
             .contentShape(Capsule())

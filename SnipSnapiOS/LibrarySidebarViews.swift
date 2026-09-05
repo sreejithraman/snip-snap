@@ -32,8 +32,13 @@ struct ListSidebarView: View {
             }
             ForEach(model.lists) { list in
                 NavigationLink(value: list.id) {
-                    Label(list.displayName, systemImage: list.systemImage)
+                    Label {
+                        Text(list.displayName)
+                    } icon: {
+                        Image(systemName: list.systemImage).foregroundStyle(list.accent.color)
+                    }
                 }
+                .tint(list.accent.color)
                 .tag(list.id)
                 .accessibilityIdentifier("list-\(list.name)")
                 .contextMenu {

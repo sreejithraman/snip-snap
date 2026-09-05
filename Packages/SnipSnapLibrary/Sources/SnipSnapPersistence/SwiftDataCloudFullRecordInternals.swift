@@ -323,6 +323,7 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
     return record.id == expected.listID
       && (value.desiredName ?? record.name) == expected.desiredName
       && record.systemImage == expected.systemImage
+      && record.color == expected.color
       && orderKey == expected.orderKey
   }
 
@@ -381,6 +382,7 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
       if let record = records.first(where: { $0.id == value.id }) {
         record.name = value.resolvedName
         record.systemImage = value.systemImage
+        record.color = value.color
       } else {
         context.insert(StoredListRecord(value))
       }
@@ -512,6 +514,7 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
         desiredName: value?.desiredName ?? record.name,
         resolvedName: record.name,
         systemImage: record.systemImage,
+        color: record.color,
         sortKey: try value.map { try SnipOrderKey(data: $0.orderKeyData) }
           ?? .legacy(Int64(record.position))
       )

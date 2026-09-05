@@ -64,6 +64,8 @@ struct AppProminentActionButton<Label: View>: View {
 
 struct AppTintedGlassActionButton<Label: View>: View {
     let isEnabled: Bool
+    var tint: Color = SnipSnapTheme.actionGlassTint
+    var labelColor: Color = SnipSnapTheme.prominentControlLabel
     let action: () -> Void
     @ViewBuilder let label: () -> Label
 
@@ -71,17 +73,12 @@ struct AppTintedGlassActionButton<Label: View>: View {
         Button(action: action) {
             label()
         }
-        .buttonStyle(.glass)
+        .buttonStyle(.glass(.regular.tint(
+            isEnabled ? tint.opacity(SnipSnapTheme.listGlassTintOpacity) : SnipSnapTheme.disabledActionGlassTint
+        )))
         .buttonBorderShape(.capsule)
-        .tint(
-            isEnabled
-                ? SnipSnapTheme.actionGlassTint
-                : SnipSnapTheme.disabledActionGlassTint
-        )
         .foregroundStyle(
-            isEnabled
-                ? SnipSnapTheme.actionGlassLabel
-                : SnipSnapTheme.disabledActionGlassLabel
+            isEnabled ? labelColor : SnipSnapTheme.disabledActionGlassLabel
         )
         .disabled(!isEnabled)
     }
@@ -187,8 +184,13 @@ extension View {
 /// Color roles shared by the Mac and iOS app chrome.
 ///
 /// Platform views own their layout, but both apps read these roles so controls
-/// keep the same monochrome Snip Snap look in light and dark mode.
+/// share neutral chrome and list accents in light and dark mode.
 enum SnipSnapTheme {
+    static let listGlassTintOpacity = 0.8
+    static func sendIconColor(tint: Color) -> Color {
+        Color.white.mix(with: tint, by: 0.12)
+    }
+
     static let controlTint = Color.primary
     static let actionGlassTint = Color.primary
     static let disabledActionGlassTint = Color.primary.opacity(0.08)
