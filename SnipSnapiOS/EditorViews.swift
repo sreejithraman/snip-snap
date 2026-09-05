@@ -237,10 +237,25 @@ struct ListEditorView: View {
 
     let model: IOSAppModel
     let mode: ListEditorMode
-    @State private var name = ""
-    @State private var systemImage = "list.bullet"
+    @State private var name: String
+    @State private var systemImage: String
     @State private var color: SnipListColor?
     @State private var isSaving = false
+
+    init(model: IOSAppModel, mode: ListEditorMode) {
+        self.model = model
+        self.mode = mode
+        let list: SnipList?
+        switch mode {
+        case .create:
+            list = nil
+        case .edit(let id):
+            list = model.lists.first(where: { $0.id == id })
+        }
+        _name = State(initialValue: list?.name ?? "")
+        _systemImage = State(initialValue: list?.systemImage ?? "list.bullet")
+        _color = State(initialValue: list?.color)
+    }
 
     private var title: String {
         switch mode {
@@ -275,14 +290,6 @@ struct ListEditorView: View {
                     }
                     .disabled(isSaving || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityIdentifier("save-list")
-                }
-            }
-            .onAppear {
-                if case .edit(let id) = mode,
-                   let list = model.lists.first(where: { $0.id == id }) {
-                    name = list.name
-                    systemImage = list.systemImage
-                    color = list.color
                 }
             }
         }
