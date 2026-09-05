@@ -554,12 +554,14 @@ package struct CloudLocalListMutation: Codable, Equatable, Sendable {
   package let listID: UUID
   package let desiredName: String
   package let systemImage: String
+  package let color: SnipListColor?
   package let orderKey: SnipOrderKey
 
   package init(_ list: SnipList) {
     listID = list.id
     desiredName = list.desiredName
     systemImage = list.systemImage
+    color = list.color
     orderKey = list.sortKey
   }
 }

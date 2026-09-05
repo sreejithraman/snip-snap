@@ -22,6 +22,7 @@ public struct SnipList: Identifiable, Codable, Equatable, Sendable, Hashable {
         }
     }
     public var systemImage: String
+    public var color: SnipListColor?
     public var sortKey: SnipOrderKey
     public var position: Int {
         get { Int(sortKey.legacyProjection) }
@@ -40,6 +41,7 @@ public struct SnipList: Identifiable, Codable, Equatable, Sendable, Hashable {
         id: UUID,
         name: String,
         systemImage: String,
+        color: SnipListColor? = nil,
         position: Int,
         sortKey: SnipOrderKey? = nil
     ) {
@@ -48,6 +50,7 @@ public struct SnipList: Identifiable, Codable, Equatable, Sendable, Hashable {
         desiredName = cleaned
         resolvedName = cleaned
         self.systemImage = systemImage
+        self.color = color
         self.sortKey = sortKey ?? .legacy(Int64(position))
     }
 
@@ -56,17 +59,19 @@ public struct SnipList: Identifiable, Codable, Equatable, Sendable, Hashable {
         desiredName: String,
         resolvedName: String,
         systemImage: String,
+        color: SnipListColor? = nil,
         sortKey: SnipOrderKey
     ) {
         self.id = id
         self.desiredName = desiredName
         self.resolvedName = resolvedName
         self.systemImage = systemImage
+        self.color = color
         self.sortKey = sortKey
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, desiredName, resolvedName, systemImage, position, sortKey
+        case id, name, desiredName, resolvedName, systemImage, color, colorID, position, sortKey
     }
 
     public init(from decoder: any Decoder) throws {
@@ -79,6 +84,12 @@ public struct SnipList: Identifiable, Codable, Equatable, Sendable, Hashable {
         resolvedName = try container.decodeIfPresent(String.self, forKey: .resolvedName)
             ?? legacyName ?? desiredName
         systemImage = try container.decode(String.self, forKey: .systemImage)
+        if container.contains(.color) {
+            color = try container.decodeIfPresent(SnipListColor.self, forKey: .color)
+        } else {
+            let legacyID = try container.decodeIfPresent(String.self, forKey: .colorID)
+            color = legacyID.flatMap { SnipListColorPreset.color(forLegacyID: $0) }
+        }
         sortKey = try container.decodeIfPresent(SnipOrderKey.self, forKey: .sortKey)
             ?? .legacy(Int64(container.decode(Int.self, forKey: .position)))
     }
@@ -90,6 +101,7 @@ public struct SnipList: Identifiable, Codable, Equatable, Sendable, Hashable {
         try container.encode(desiredName, forKey: .desiredName)
         try container.encode(resolvedName, forKey: .resolvedName)
         try container.encode(systemImage, forKey: .systemImage)
+        try container.encode(color, forKey: .color)
         try container.encode(position, forKey: .position)
         try container.encode(sortKey, forKey: .sortKey)
     }

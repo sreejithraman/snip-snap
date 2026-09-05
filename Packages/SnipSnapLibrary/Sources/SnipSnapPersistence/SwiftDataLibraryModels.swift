@@ -52,18 +52,39 @@ final class StoredListRecord {
   @Attribute(.unique) var id: UUID
   var name: String
   var systemImage: String
+  var colorID: String?
+  var lightHex: String?
+  var darkHex: String?
+
+  var color: SnipListColor? {
+    get {
+      guard let lightHex, let darkHex else { return nil }
+      return SnipListColor(light: lightHex, dark: darkHex)
+    }
+    set {
+      lightHex = newValue?.light
+      darkHex = newValue?.dark
+      colorID = nil
+    }
+  }
   var position: Int
 
   init(_ list: SnipList) {
     id = list.id
     name = list.name
     systemImage = list.systemImage
+    lightHex = list.color?.light
+    darkHex = list.color?.dark
+    colorID = nil
     position = list.position
   }
 
   func update(from list: SnipList) {
     name = list.name
     systemImage = list.systemImage
+    lightHex = list.color?.light
+    darkHex = list.color?.dark
+    colorID = nil
     position = list.position
   }
 }

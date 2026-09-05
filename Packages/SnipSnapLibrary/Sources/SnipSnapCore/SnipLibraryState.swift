@@ -70,7 +70,7 @@ package struct SnipLibraryState {
       seenRequestIDs.insert(requestID)
       return .add(.added(snip.id))
 
-    case .createList(let name, let systemImage):
+    case .createList(let name, let systemImage, let color):
       let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !cleanName.isEmpty else { throw SnipLibraryError.invalidList }
       let normalized = SnipListNameAllocator.normalized(cleanName)
@@ -83,6 +83,7 @@ package struct SnipLibraryState {
         id: UUID(),
         name: cleanName,
         systemImage: systemImage.isEmpty ? "circle.grid.2x2.fill" : systemImage,
+        color: color,
         position: 0,
         sortKey: sortKey
       )
@@ -101,7 +102,7 @@ package struct SnipLibraryState {
       lists.append(list)
       return .none
 
-    case .updateList(let id, let name, let systemImage):
+    case .updateList(let id, let name, let systemImage, let color):
       guard id != SnipList.inboxID,
         let index = lists.firstIndex(where: { $0.id == id })
       else { throw SnipLibraryError.invalidList }
@@ -114,6 +115,7 @@ package struct SnipLibraryState {
       else { throw SnipLibraryError.duplicateList }
       lists[index].name = cleanName
       lists[index].systemImage = systemImage
+      if case .set(let value) = color { lists[index].color = value }
       resolveListNames()
       return .none
 
@@ -430,6 +432,7 @@ package struct SnipLibraryState {
       else { throw SnipLibraryError.deviceActionChanged }
       if before.desiredName != after.desiredName { lists[index].desiredName = after.desiredName }
       if before.systemImage != after.systemImage { lists[index].systemImage = after.systemImage }
+      if before.color != after.color { lists[index].color = after.color }
       if before.sortKey != after.sortKey { lists[index].sortKey = after.sortKey }
     }
 
@@ -515,6 +518,7 @@ package struct SnipLibraryState {
       guard before.id == after.id,
         unchangedOrExpected(before.desiredName, after.desiredName, value.desiredName),
         unchangedOrExpected(before.systemImage, after.systemImage, value.systemImage),
+        unchangedOrExpected(before.color, after.color, value.color),
         unchangedOrExpected(before.sortKey, after.sortKey, value.sortKey)
       else { throw SnipLibraryError.deviceActionChanged }
     default:

@@ -84,6 +84,7 @@ package struct CloudTypedListRecord: Codable, Equatable, Sendable {
   package let schemaVersion: Int
   package let desiredName: CloudFieldPresence<String>
   package let systemImage: CloudFieldPresence<String>
+  package let color: CloudFieldPresence<SnipListColor?>?
   package let orderKey: CloudFieldPresence<SnipOrderKey>
   package let updatedAt: CloudFieldPresence<Date>
   package let shadow: CloudRecordShadow
@@ -214,6 +215,7 @@ package enum CloudFullRecordCodec {
       encryptedFields: [
         "desiredName": .string(list.desiredName),
         "systemImage": .string(list.systemImage),
+        "color": .data(try encode(list.color)),
         "orderKey": .data(list.sortKey.data),
         "updatedAt": .data(try encode(updatedAt)),
       ],
@@ -259,6 +261,7 @@ package enum CloudFullRecordCodec {
       schemaVersion: snapshot.schemaVersion,
       desiredName: try stringPresence(snapshot.encryptedFields, key: "desiredName"),
       systemImage: try stringPresence(snapshot.encryptedFields, key: "systemImage"),
+      color: try codablePresence(snapshot.encryptedFields, key: "color", as: SnipListColor?.self),
       orderKey: try orderKeyPresence(snapshot.encryptedFields, key: "orderKey"),
       updatedAt: try codablePresence(snapshot.encryptedFields, key: "updatedAt", as: Date.self),
       shadow: snapshot.shadow

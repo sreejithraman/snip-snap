@@ -25,6 +25,7 @@ private struct CompactGlassCircleButton<Label: View>: View {
 }
 
 struct CompactLibraryControls: View {
+    @Environment(\.colorScheme) private var colorScheme
     let model: IOSAppModel
     let storage: CompactComposerStorage
     let showsListTabs: Bool
@@ -114,29 +115,58 @@ struct CompactLibraryControls: View {
             .accessibilityLabel("Add Attachments")
             .accessibilityIdentifier("composer-add-attachments")
 
-            VStack(spacing: SnipSnapSpacing.relatedContent) {
-                if !draft.attachments.isEmpty {
-                    attachmentStrip
-                        .padding(.horizontal, SnipSnapSpacing.cardContentInset)
-                        .padding(.top, 10)
+            GlassEffectContainer {
+                VStack(spacing: SnipSnapSpacing.relatedContent) {
+                    if !draft.attachments.isEmpty {
+                        attachmentStrip
+                            .padding(.horizontal, SnipSnapSpacing.cardContentInset)
+                            .padding(.top, 10)
+                    }
+
+                    HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
+                        TextField(
+                            "Add to \(model.selectedList.displayName)…",
+                            text: composerText,
+                            axis: .vertical
+                        )
+                            .textFieldStyle(.plain)
+                            .lineLimit(1...5)
+                            .focused($isComposerFocused)
+                            .disabled(storage.isSaving)
+                            .padding(SnipSnapSpacing.relatedContent)
+                            .frame(minHeight: controlLength, alignment: .center)
+                            .accessibilityIdentifier("composer-text")
+
+                        Color.clear
+                            .frame(width: controlLength, height: controlLength)
+                            .allowsHitTesting(false)
+                    }
+                    .padding(.leading, SnipSnapSpacing.relatedContent / 2)
+                    .padding(.trailing, SnipSnapSpacing.relatedContent)
+                    .id(composerFieldID)
                 }
-
-                HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
-                    TextField(
-                        "Add to \(model.selectedList.displayName)…",
-                        text: composerText,
-                        axis: .vertical
-                    )
-                        .textFieldStyle(.plain)
-                        .lineLimit(1...5)
-                        .focused($isComposerFocused)
-                        .disabled(storage.isSaving)
-                        .padding(SnipSnapSpacing.relatedContent)
-                        .frame(minHeight: controlLength, alignment: .center)
-                        .accessibilityIdentifier("composer-text")
-
+                .frame(minHeight: controlLength)
+                .glassEffect(
+                    .regular.interactive(),
+                    in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .strokeBorder(
+                            isComposerFocused
+                                ? SnipSnapTheme.focusedGlassEdge
+                                : SnipSnapTheme.emphasizedGlassEdge,
+                            lineWidth: isComposerFocused ? 1 : 0.75
+                        )
+                }
+            }
+            // Keep Send outside the input's interactive glass subtree.
+            .overlay(alignment: .bottomTrailing) {
+                GlassEffectContainer {
                     AppTintedGlassActionButton(
                         isEnabled: canSend,
+                        tint: model.selectedList.accent.color,
+                        labelColor: model.selectedList.accent.sendIconColor(in: colorScheme),
                         action: { Task { await send() } }
                     ) {
                         Image(systemName: "arrow.up")
@@ -148,24 +178,8 @@ struct CompactLibraryControls: View {
                     .controlSize(.regular)
                     .accessibilityLabel("Send Snip")
                     .accessibilityIdentifier("composer-send")
+                    .padding(.trailing, SnipSnapSpacing.relatedContent)
                 }
-                .padding(.leading, SnipSnapSpacing.relatedContent / 2)
-                .padding(.trailing, SnipSnapSpacing.relatedContent)
-                .id(composerFieldID)
-            }
-            .frame(minHeight: controlLength)
-            .glassEffect(
-                .regular.interactive(),
-                in: RoundedRectangle(cornerRadius: 20, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .strokeBorder(
-                        isComposerFocused
-                            ? SnipSnapTheme.focusedGlassEdge
-                            : SnipSnapTheme.emphasizedGlassEdge,
-                        lineWidth: isComposerFocused ? 1 : 0.75
-                    )
             }
         }
     }
@@ -439,13 +453,13 @@ private struct CompactListTabBar: View {
             Image(systemName: list.systemImage)
                 .symbolVariant(selected ? .fill : .none)
                 .font(.title3.weight(selected ? .semibold : .regular))
-                .foregroundStyle(selected ? Color.primary : Color.secondary)
+                .foregroundStyle(list.accent.color)
                 .frame(
                     width: controlLength,
                     height: selectionHeight
                 )
                 .background(
-                    selected ? SnipSnapTheme.compactSelectionFill : Color.clear,
+                    selected ? list.accent.selectionFill : Color.clear,
                     in: Capsule(style: .continuous)
                 )
                 .frame(

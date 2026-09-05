@@ -1653,15 +1653,17 @@ final class IOSAppModelTests: XCTestCase {
         let model = makeModel(library: library)
         await model.load()
 
-        let createdList = await model.createList(name: "Notes")
+        let createdList = await model.createList(name: "Notes", color: SnipListColorPreset.blue.color)
         XCTAssertTrue(createdList)
         let list = try XCTUnwrap(model.lists.first(where: { $0.name == "Notes" }))
         XCTAssertEqual(list.systemImage, "list.bullet")
+        XCTAssertEqual(list.color, SnipListColorPreset.blue.color)
         let createdSnip = await model.createSnip(content: "Keep me", in: list.id)
         XCTAssertTrue(createdSnip)
-        let renamedList = await model.renameList(list, name: "Ideas", systemImage: list.systemImage)
+        let renamedList = await model.renameList(list, name: "Ideas", systemImage: list.systemImage, color: .set(SnipListColorPreset.violet.color))
         XCTAssertTrue(renamedList)
         XCTAssertEqual(model.lists.first(where: { $0.id == list.id })?.name, "Ideas")
+        XCTAssertEqual(model.lists.first(where: { $0.id == list.id })?.color, SnipListColorPreset.violet.color)
 
         let deletedList = await model.deleteList(id: list.id)
         XCTAssertTrue(deletedList)
@@ -2409,7 +2411,7 @@ private actor ModelTestLibrary: SnipLibrary {
                 snips[index].manualPosition = nextTopPosition(in: listID, excluding: Set(ids))
             }
             outcome = .none
-        case .createList(let name, let systemImage):
+        case .createList(let name, let systemImage, let color):
             guard !lists.contains(where: {
                 $0.name.caseInsensitiveCompare(name) == .orderedSame
             }) else { throw SnipLibraryError.duplicateList }
@@ -2417,6 +2419,7 @@ private actor ModelTestLibrary: SnipLibrary {
                 id: UUID(),
                 name: name,
                 systemImage: systemImage,
+                color: color,
                 position: lists.count
             )
             lists.append(list)
@@ -2432,7 +2435,7 @@ private actor ModelTestLibrary: SnipLibrary {
             }
             lists.append(list)
             outcome = .none
-        case .updateList(let id, let name, let systemImage):
+        case .updateList(let id, let name, let systemImage, let color):
             guard let index = lists.firstIndex(where: { $0.id == id }) else {
                 throw SnipLibraryError.invalidList
             }
@@ -2441,6 +2444,7 @@ private actor ModelTestLibrary: SnipLibrary {
             }) else { throw SnipLibraryError.duplicateList }
             lists[index].name = name
             lists[index].systemImage = systemImage
+            if case .set(let value) = color { lists[index].color = value }
             outcome = .none
         case .deleteList(let id):
             lists.removeAll { $0.id == id }

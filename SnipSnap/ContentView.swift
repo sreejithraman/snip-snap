@@ -18,6 +18,7 @@ struct ContentView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var shortcutSettings: ShortcutSettings
     @Environment(\.controlActiveState) private var controlActiveState
+    @Environment(\.colorScheme) private var colorScheme
     let coordinator: AppCoordinator
     @ObservedObject private var accessibilityPermissions: AccessibilityPermissionController
     @ObservedObject private var fileDropController: PanelFileDropController
@@ -459,43 +460,54 @@ struct ContentView: View {
         HStack(alignment: .top, spacing: SnipSnapSpacing.relatedContent) {
             inlineAttachmentMenu
 
-            VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
-                if !entryDraft.attachments.isEmpty {
-                    AttachmentPreviewStrip(
-                        items: draftAttachmentPreviewItems,
-                        onPreview: { item in
-                            guard let url = item.url else { return }
-                            openAttachmentPreview(entryDraft.attachments, selectedURL: url)
-                        },
-                        onRemove: { item in
-                            guard let url = item.url else { return }
-                            removePreviewURL(url)
-                            model.removeDraftAttachment(url, from: model.activeListID)
-                            entryDraft = model.composerDraft(for: model.activeListID)
-                        }
-                    )
-                    .padding(.horizontal, SnipSnapSpacing.controlContentInset)
-                    .padding(.top, PanelControlMetrics.expandedInputVerticalPadding)
-                }
+            GlassEffectContainer {
+                VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
+                    if !entryDraft.attachments.isEmpty {
+                        AttachmentPreviewStrip(
+                            items: draftAttachmentPreviewItems,
+                            onPreview: { item in
+                                guard let url = item.url else { return }
+                                openAttachmentPreview(entryDraft.attachments, selectedURL: url)
+                            },
+                            onRemove: { item in
+                                guard let url = item.url else { return }
+                                removePreviewURL(url)
+                                model.removeDraftAttachment(url, from: model.activeListID)
+                                entryDraft = model.composerDraft(for: model.activeListID)
+                            }
+                        )
+                        .padding(.horizontal, SnipSnapSpacing.controlContentInset)
+                        .padding(.top, PanelControlMetrics.expandedInputVerticalPadding)
+                    }
 
-                HStack(
-                    alignment: PanelComposerLayout.actionAlignment(
-                        isExpanded: isInlineEntryExpanded
-                    ),
-                    spacing: SnipSnapSpacing.relatedContent
-                ) {
-                    inlineEntryField
+                    HStack(
+                        alignment: PanelComposerLayout.actionAlignment(
+                            isExpanded: isInlineEntryExpanded
+                        ),
+                        spacing: SnipSnapSpacing.relatedContent
+                    ) {
+                        inlineEntryField
+                        Color.clear
+                            .frame(width: PanelControlMetrics.actionWidth, height: PanelControlMetrics.actionHeight)
+                            .padding(.trailing, PanelControlMetrics.sendInset)
+                            .allowsHitTesting(false)
+                    }
+                    .padding(.leading, SnipSnapSpacing.controlContentInset)
+                    .padding(.top, inlineEntryTextTopPadding)
+                    .padding(.bottom, inlineEntryTextBottomPadding)
+                }
+                .panelEmbeddedInputSurface(
+                    minHeight: PanelControlMetrics.compactComposerHeight,
+                    expanded: isInlineEntrySurfaceExpanded
+                )
+            }
+            .overlay(alignment: .bottomTrailing) {
+                GlassEffectContainer {
                     inlineSendButton
                         .padding(.trailing, PanelControlMetrics.sendInset)
+                        .padding(.bottom, max(inlineEntryTextBottomPadding, PanelControlMetrics.sendInset))
                 }
-                .padding(.leading, SnipSnapSpacing.controlContentInset)
-                .padding(.top, inlineEntryTextTopPadding)
-                .padding(.bottom, inlineEntryTextBottomPadding)
             }
-            .panelEmbeddedInputSurface(
-                minHeight: PanelControlMetrics.compactComposerHeight,
-                expanded: isInlineEntrySurfaceExpanded
-            )
         }
         .frame(maxWidth: .infinity)
         .fixedSize(horizontal: false, vertical: true)
@@ -574,6 +586,8 @@ struct ContentView: View {
         PanelGlassActionButton(
             systemImage: "arrow.up",
             isEnabled: canSaveInlineEntry,
+            tint: model.activeList.accent.color.opacity(SnipSnapTheme.listGlassTintOpacity),
+            labelColor: model.activeList.accent.sendIconColor(in: model.appearance.colorScheme ?? colorScheme),
             action: saveInlineEntry
         )
         .accessibilityLabel("Add to \(model.activeList.displayName)")

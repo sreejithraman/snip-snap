@@ -1083,7 +1083,7 @@ extension CloudFullSyncPersistenceTests {
     _ = try await secondLibrary.perform(.delete(ids: [snip.id]), sortedBy: .manual)
     let stagedDelete = try await secondStore.pendingChanges()
     XCTAssertEqual(stagedDelete.operations.map(\.id), [.snip(snip.id, in: zone)])
-    let schema = Schema(versionedSchema: SnipSnapSchemaV4.self)
+    let schema = Schema(versionedSchema: SnipSnapSchemaV6.self)
     let configuration = ModelConfiguration(
       "SnipSnapLocal",
       schema: schema,
