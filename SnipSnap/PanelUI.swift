@@ -46,9 +46,7 @@ enum PanelShapeMetrics {
 enum PanelListMetrics {
     static let horizontalContentInset = SnipSnapSpacing.paneContentInset
     static let rowSpacing = SnipSnapSpacing.relatedContent
-    static let listSpacing = SnipSnapSpacing.paneContentInset
     static let verticalContentInset: CGFloat = 12
-    static let compactVerticalContentInset: CGFloat = 10
 
     static let rowInsets = EdgeInsets(
         top: 0,

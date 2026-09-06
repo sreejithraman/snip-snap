@@ -2848,7 +2848,6 @@ private actor TestCloudCollectionLocalStore: CloudCollectionLocalStore {
   private var cleanup: Set<CloudZoneID> = []
   private var deletionState: CloudCollectionDeletionState = .none
   private var reset: CloudEncryptedDataReset?
-  private var recoveryNamespace: CloudSyncNamespace?
   private var log: [Event] = []
 
   init(active: CloudSyncNamespace?, hasSyncedBefore: Bool) {
@@ -2894,14 +2893,12 @@ private actor TestCloudCollectionLocalStore: CloudCollectionLocalStore {
   func beginEncryptedDataReset(from namespace: CloudSyncNamespace) {
     if reset == nil {
       reset = CloudEncryptedDataReset(priorNamespace: namespace, recoveryStoreID: UUID())
-      recoveryNamespace = namespace
       active = nil
     }
   }
 
   func activeNamespace() -> CloudSyncNamespace? { active }
   func events() -> [Event] { log }
-  func retainedRecoveryNamespace() -> CloudSyncNamespace? { recoveryNamespace }
 }
 
 private actor TerminalSetupControlTransport: CloudCollectionControlTransport {
