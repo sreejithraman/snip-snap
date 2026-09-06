@@ -74,6 +74,7 @@ if [[ "$run_ios_app_tests" == YES ]]; then
         -derivedDataPath "$derived_data/ios" \
         CODE_SIGNING_ALLOWED=NO \
         SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER= \
+        -parallel-testing-enabled NO \
         -only-testing:SnipSnapiOSTests \
         test
 

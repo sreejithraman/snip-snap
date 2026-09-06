@@ -76,6 +76,7 @@ assert_groups 1 1 0
 run_tests --ios-only
 assert_groups 0 0 1
 /usr/bin/grep -F -- '-only-testing:SnipSnapiOSTests test' "$SNIP_SNAP_TEST_CALLS" >/dev/null
+/usr/bin/grep -F -- '-parallel-testing-enabled NO' "$SNIP_SNAP_TEST_CALLS" >/dev/null
 /usr/bin/grep -F -- 'CODE_SIGNING_ALLOWED=NO' "$SNIP_SNAP_TEST_CALLS" >/dev/null
 run_tests --without-mac-app-tests
 assert_groups 1 0 1
