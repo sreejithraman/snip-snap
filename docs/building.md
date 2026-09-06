@@ -17,8 +17,21 @@ certificate, provisioning profile, or CloudKit access. The test command runs
 the package tests, Mac app tests, and iOS unit tests. It stores Mac test data
 and both app test builds under a fresh DerivedData folder. Set
 `SNIP_SNAP_IOS_TEST_DESTINATION` to use another installed iOS Simulator.
+After iOS tests pass, it checks the built app's Share extension and both privacy
+manifests.
 
-Run the full unsigned build matrix before a pull request or release:
+To run either group on its own:
+
+```sh
+./scripts/test.sh --mac-only
+./scripts/test.sh --ios-only
+```
+
+The Mac group includes policy and shared package tests. The iOS group runs
+`SnipSnapiOSTests` with parallel XCTest disabled and checks the same app
+build's bundles. The Mac and iOS CI jobs still run in parallel.
+
+Run the full unsigned build matrix before a release:
 
 ```sh
 ./scripts/build-matrix.sh
@@ -36,9 +49,11 @@ Simulator names, pass overrides:
   --ipad-destination 'platform=iOS Simulator,name=Example iPad'
 ```
 
-CI runs `scripts/test.sh` and a focused iPhone build on a clean checkout. The
-test script includes `SnipSnapiOSTests` on an iPhone Simulator. Both commands
-set `CODE_SIGNING_ALLOWED=NO` for app builds.
+CI runs these two groups in parallel on separate clean checkouts. Both must
+pass the existing required check, `Tests and iOS compile check`. It needs no
+second iPhone build. Both groups set `CODE_SIGNING_ALLOWED=NO` for app builds.
+Beta candidate keeps the full build matrix, including the separate iPhone and
+iPad builds and their extra simulator architecture coverage.
 
 Run the same release tests on an iPhone and iPad Simulator:
 
