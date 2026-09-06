@@ -54,6 +54,18 @@ struct IOSAppRootView: View {
                 .frame(width: 0, height: 0)
         }
 #if DEBUG
+        .overlay(alignment: .topTrailing) {
+            if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_HAPTICS"] == "1" {
+                Text(verbatim: model.haptics.event.map {
+                    "\($0.kind):\($0.id)"
+                } ?? "none")
+                    .font(.caption2)
+                    .frame(width: 1, height: 1)
+                    .opacity(0.01)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("haptic-event")
+            }
+        }
         .overlay(alignment: .bottomLeading) {
             if let bundleID = Bundle.main.bundleIdentifier,
                let suffix = bundleID.components(separatedBy: ".dev").last,

@@ -404,7 +404,7 @@ final class IOSCopyShareCoordinator {
             return false
         }
         errorMessage = nil
-        model.haptics.emit(.success, for: interaction)
+        model.haptics.emit(.copied, for: interaction)
         return true
     }
 }

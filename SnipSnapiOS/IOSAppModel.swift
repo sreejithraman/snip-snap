@@ -187,20 +187,22 @@ final class IOSAppModel {
 
     @discardableResult
     func deleteSnip(id: UUID) async -> Bool {
-        await withUserMutation { _ in await deleteSnips(ids: [id]) }
+        await withUserMutation { interaction in await deleteSnips(ids: [id], feedbackInteraction: interaction) }
     }
 
     @discardableResult
     func deleteSelection() async -> Bool {
-        await withUserMutation { _ in await deleteSnips(ids: selectedVisibleSnipIDs) }
+        await withUserMutation { interaction in
+            await deleteSnips(ids: selectedVisibleSnipIDs, feedbackInteraction: interaction)
+        }
     }
 
     @discardableResult
     func mergeSelection() async -> Bool {
-        await withUserMutation { _ in
+        await withUserMutation { interaction in
             let ids = selectedVisibleSnipIDs
             guard ids.count >= 2 else { return false }
-            return await performUserAction(.merge(ids: ids, now: Date())) { outcome in
+            return await performUserAction(.merge(ids: ids, now: Date()), feedbackInteraction: interaction) { outcome in
                 guard case .merged(let snip) = outcome else { return }
                 selectedSnipID = snip.id
                 selectedSnipIDs = [snip.id]
@@ -211,12 +213,16 @@ final class IOSAppModel {
 
     @discardableResult
     func moveSnip(id: UUID, to listID: UUID) async -> Bool {
-        await withUserMutation { _ in await moveSnipUnlocked(id: id, to: listID) }
+        await withUserMutation { interaction in
+            await moveSnipUnlocked(id: id, to: listID, feedbackInteraction: interaction)
+        }
     }
 
     @discardableResult
     func moveSelection(to listID: UUID) async -> Bool {
-        await withUserMutation { _ in await moveSelectionUnlocked(to: listID) }
+        await withUserMutation { interaction in
+            await moveSelectionUnlocked(to: listID, feedbackInteraction: interaction)
+        }
     }
 
     @discardableResult
@@ -254,7 +260,7 @@ final class IOSAppModel {
 
     @discardableResult
     func deleteList(id: UUID) async -> Bool {
-        await withUserMutation { _ in await deleteListUnlocked(id: id) }
+        await withUserMutation { interaction in await deleteListUnlocked(id: id, feedbackInteraction: interaction) }
     }
 
     func presentToast(_ presentedToast: AppToast) {
@@ -268,8 +274,8 @@ final class IOSAppModel {
 
     func performToastActionNow(_ presentedToast: AppToast) async {
         guard presentedToast.action == .undoDelete else { return }
-        await withUserMutation { _ in
-            await restoreDeletion(token: presentedToast.id)
+        await withUserMutation { interaction in
+            await restoreDeletion(token: presentedToast.id, feedbackInteraction: interaction)
         }
     }
 
@@ -325,7 +331,6 @@ final class IOSAppModel {
                 requestID: UUID(),
                 now: Date()
             ),
-            feedback: .success,
             feedbackInteraction: feedbackInteraction
         ) { outcome in
             if selectCreatedSnip, case .add(.added(let id)) = outcome {
@@ -442,19 +447,19 @@ final class IOSAppModel {
                 now: Date()
             )
         }
-        return await performUserAction(command, feedback: .success, feedbackInteraction: feedbackInteraction)
+        return await performUserAction(command, feedbackInteraction: feedbackInteraction)
     }
 
-    private func moveSnipUnlocked(id: UUID, to listID: UUID) async -> Bool {
+    private func moveSnipUnlocked(id: UUID, to listID: UUID, feedbackInteraction: UUID?) async -> Bool {
         return await performUserAction(
-            .moveChronologically(ids: [id], to: listID)
+            .moveChronologically(ids: [id], to: listID), feedbackInteraction: feedbackInteraction
         ) { _ in
             selectedListID = listID
             selectedSnipID = id
         }
     }
 
-    private func moveSelectionUnlocked(to listID: UUID) async -> Bool {
+    private func moveSelectionUnlocked(to listID: UUID, feedbackInteraction: UUID?) async -> Bool {
         let selected = selectedVisibleSnipIDs
         let ids = visibleSnips.map(\.id).filter(selected.contains)
         guard !ids.isEmpty else { return false }
@@ -469,7 +474,7 @@ final class IOSAppModel {
         } else {
             command = .moveChronologically(ids: ids, to: listID)
         }
-        return await performUserAction(command) { _ in
+        return await performUserAction(command, feedbackInteraction: feedbackInteraction) { _ in
             selectedSnipIDs = []
             selectedSnipID = nil
         }
@@ -490,23 +495,19 @@ final class IOSAppModel {
     }
 
     private func setSelectionDoneUnlocked(_ done: Bool, feedbackInteraction: UUID?) async -> Bool {
-        let ids = selectedVisibleSnipIDs
-        guard !ids.isEmpty else { return false }
-        guard snips.contains(where: { ids.contains($0.id) && $0.isDone != done }) else { return true }
-        return await performUserAction(
-            .setDone(ids: ids, done: done),
-            feedback: done ? .success : .selection,
-            feedbackInteraction: feedbackInteraction
-        )
+        await setDoneUnlocked(ids: selectedVisibleSnipIDs, done: done, feedbackInteraction: feedbackInteraction)
     }
 
     private func toggleDoneUnlocked(id: UUID, feedbackInteraction: UUID?) async -> Bool {
         guard let snip = snips.first(where: { $0.id == id }) else { return false }
-        return await performUserAction(
-            .setDone(ids: [id], done: !snip.isDone),
-            feedback: snip.isDone ? .selection : .success,
-            feedbackInteraction: feedbackInteraction
-        )
+        return await setDoneUnlocked(ids: [id], done: !snip.isDone, feedbackInteraction: feedbackInteraction)
+    }
+
+    // Every completion control reaches this command, including batch actions.
+    private func setDoneUnlocked(ids: Set<UUID>, done: Bool, feedbackInteraction: UUID?) async -> Bool {
+        guard !ids.isEmpty else { return false }
+        guard snips.contains(where: { ids.contains($0.id) && $0.isDone != done }) else { return true }
+        return await performUserAction(.setDone(ids: ids, done: done), feedbackInteraction: feedbackInteraction)
     }
 
     private func createListUnlocked(name: String, systemImage: String, color: SnipListColor?) async -> Bool {
@@ -532,10 +533,10 @@ final class IOSAppModel {
         )
     }
 
-    private func deleteListUnlocked(id: UUID) async -> Bool {
+    private func deleteListUnlocked(id: UUID, feedbackInteraction: UUID?) async -> Bool {
         guard lists.contains(where: { $0.id == id }) else { return false }
         return await performUserAction(
-            .deleteList(id: id)
+            .deleteList(id: id), feedbackInteraction: feedbackInteraction
         ) { _ in
             selectedListID = SnipList.inboxID
             selectedSnipID = nil
@@ -547,25 +548,28 @@ final class IOSAppModel {
         selectedSnipIDs.intersection(visibleSnips.map(\.id))
     }
 
-    private func restoreDeletion(token: UUID) async {
+    private func restoreDeletion(token: UUID, feedbackInteraction: UUID?) async {
         do {
             guard let update = try await session.restoreDeletion(
                 token: token,
                 sortedBy: sortMode
             ) else { return }
             apply(update.snapshot)
+            haptics.emit(.restored, for: feedbackInteraction)
             if toast?.id == token { toast = nil }
             recoverySnapshot = await session.refreshRecovery()
             await refreshAttachmentTransferStates()
             scheduleCloudSync()
         } catch {
+            haptics.emit(.error, for: feedbackInteraction)
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
-    private func deleteSnips(ids: Set<UUID>) async -> Bool {
+    private func deleteSnips(ids: Set<UUID>, feedbackInteraction: UUID?) async -> Bool {
+        let ids = ids.intersection(snips.map(\.id))
         guard !ids.isEmpty else { return false }
-        let count = snips.lazy.filter { ids.contains($0.id) }.count
+        let count = ids.count
         let token = UUID()
         do {
             let update = try await session.delete(
@@ -577,22 +581,38 @@ final class IOSAppModel {
             if let selectedSnipID, ids.contains(selectedSnipID) { self.selectedSnipID = nil }
             selectedSnipIDs.subtract(ids)
             toast = .deleted(count: count, id: token)
+            haptics.emit(.deleted, for: feedbackInteraction)
             recoverySnapshot = await session.refreshRecovery()
             await refreshAttachmentTransferStates()
             scheduleCloudSync()
             return true
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            haptics.emit(.error, for: feedbackInteraction)
             return false
+        }
+    }
+
+    private func feedbackKind(for command: SnipLibraryCommand) -> IOSHapticFeedback.Kind? {
+        switch command {
+        case .add, .update, .editAttachments: .saved
+        case .setDone(_, let done): done ? .markedDone : .selection
+        case .deleteList: .deleted
+        case .merge: .merged
+        case .moveChronologically(let ids, let listID):
+            snips.contains { ids.contains($0.id) && $0.listID != listID } ? .moved : nil
+        case .place(let ids, let listID, _, _):
+            snips.contains { ids.contains($0.id) && $0.listID != listID } ? .moved : nil
+        default: nil
         }
     }
 
     private func performUserAction(
         _ command: SnipLibraryCommand,
-        feedback: IOSHapticFeedback.Kind? = nil,
         feedbackInteraction: UUID? = nil,
         afterSuccess: (SnipLibraryOutcome) -> Void = { _ in }
     ) async -> Bool {
+        let feedback = feedbackKind(for: command)
         do {
             let update = try await session.performUserCommand(
                 command,

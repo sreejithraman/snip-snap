@@ -2041,17 +2041,17 @@ final class IOSHapticFeedbackTests: XCTestCase {
         let created = await model.createSnip(content: "First", in: SnipList.inboxID)
         XCTAssertTrue(created)
         let saved = try XCTUnwrap(feedback.event)
-        XCTAssertEqual(saved.kind, .success)
+        XCTAssertEqual(saved.kind, .saved)
         let snip = try XCTUnwrap(model.snips.first)
         let edited = await model.editSnip(snip, content: "Edited")
         XCTAssertTrue(edited)
-        XCTAssertEqual(feedback.event?.kind, .success)
+        XCTAssertEqual(feedback.event?.kind, .saved)
         XCTAssertNotEqual(feedback.event?.id, saved.id)
 
         let markedDone = await model.toggleDone(id: snip.id)
         XCTAssertTrue(markedDone)
         let done = try XCTUnwrap(feedback.event)
-        XCTAssertEqual(done.kind, .success)
+        XCTAssertEqual(done.kind, .markedDone)
         model.selectedSnipIDs = [snip.id]
         let unchanged = await model.setSelectionDone(true)
         XCTAssertTrue(unchanged)
@@ -2094,9 +2094,9 @@ final class IOSHapticFeedbackTests: XCTestCase {
 
         coordinator.copyText(snips: [snip], model: model)
         let first = try XCTUnwrap(feedback.event)
-        XCTAssertEqual(first.kind, .success)
+        XCTAssertEqual(first.kind, .copied)
         await coordinator.copy(snips: [snip], model: model)
-        XCTAssertEqual(feedback.event?.kind, .success)
+        XCTAssertEqual(feedback.event?.kind, .copied)
         XCTAssertNotEqual(feedback.event?.id, first.id)
         XCTAssertEqual(model.toast?.id, undo.id)
 
@@ -2124,7 +2124,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         XCTAssertEqual(feedback.event, warning)
         await coordinator.copy(snips: [snip], model: model)
         coordinator.copyTextFromNotice(model: model)
-        XCTAssertEqual(feedback.event?.kind, .success)
+        XCTAssertEqual(feedback.event?.kind, .copied)
     }
 
     func testUnavailableShareStaysQuietAndSupersedesOlderFeedback() async throws {
@@ -2140,7 +2140,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         XCTAssertNotNil(coordinator.unavailableFilesNotice)
         XCTAssertNil(coordinator.shareRequest)
         XCTAssertNil(feedback.event)
-        feedback.emit(.success, for: pending)
+        feedback.emit(.saved, for: pending)
         XCTAssertNil(feedback.event)
     }
 
@@ -2165,7 +2165,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         feedback.isEnabled = false
         XCTAssertFalse(IOSHapticFeedback(defaults: defaults).isEnabled)
         feedback.isEnabled = true
-        feedback.emit(.success, for: pending)
+        feedback.emit(.saved, for: pending)
         XCTAssertNil(feedback.event)
         feedback.isEnabled = false
         feedback.emit(.selection, for: feedback.beginInteraction())
@@ -2201,7 +2201,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         let coordinator = IOSCopyShareCoordinator(pasteboard: RecordingPasteboard())
         coordinator.copyText(snips: [Snip(content: "Copy now", origin: .quickEntry)], model: model)
         let copied = try XCTUnwrap(feedback.event)
-        XCTAssertEqual(copied.kind, .success)
+        XCTAssertEqual(copied.kind, .copied)
 
         await library.resumeFirstCommand()
         let saved = await save.value
@@ -2231,7 +2231,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         XCTAssertEqual(model.snips.first(where: { $0.id == first.id })?.content, "Saved first")
     }
 
-    func testQuietActionsSuppressFeedbackFromAPendingAttachmentCopy() async throws {
+    func testNewActionsSuppressFeedbackFromAPendingAttachmentCopy() async throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try Data("Attachment".utf8).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
@@ -2268,19 +2268,211 @@ final class IOSHapticFeedbackTests: XCTestCase {
             await copy.value
 
             XCTAssertEqual(pasteboard.writes.count, 1)
-            XCTAssertNil(feedback.event)
+            if action == 1 { XCTAssertEqual(feedback.event?.kind, .deleted) }
+            else { XCTAssertNil(feedback.event) }
             if action != 3 { XCTAssertTrue(model.selectedSnipIDs.isEmpty) }
         }
     }
 
-    private func makeFeedback() -> IOSHapticFeedback {
+    func testDirectPlaybackHonorsPreferenceAndLifecycle() {
+        let player = RecordingHapticPlayer()
+        let feedback = makeFeedback(player: player)
+        feedback.emit(.copied, for: feedback.beginInteraction())
+        feedback.emit(.markedDone, for: feedback.beginInteraction())
+        XCTAssertEqual(player.played, [.copied, .markedDone])
+        let pending = feedback.beginInteraction()
+        feedback.isEnabled = false
+        feedback.emit(.saved, for: feedback.beginInteraction())
+        feedback.isEnabled = true
+        feedback.emit(.copied, for: pending)
+        XCTAssertEqual(player.played.count, 2)
+        let active = feedback.beginInteraction()
+        feedback.isActive = false
+        feedback.emit(.markedDone, for: active)
+        XCTAssertEqual(player.played.count, 2)
+        feedback.isActive = true
+        feedback.emit(.markedDone, for: feedback.beginInteraction())
+        XCTAssertEqual(player.played, [.copied, .markedDone, .markedDone])
+    }
+
+    func testSingleAndBatchDoneUseTheSameOutcomeAndNoOpStaysQuiet() async throws {
+        let first = Snip(content: "First", origin: .quickEntry)
+        let second = Snip(content: "Second", origin: .quickEntry)
+        let player = RecordingHapticPlayer()
+        let feedback = makeFeedback(player: player)
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [first, second]), haptics: feedback)
+        await model.load()
+        let singleDone = await model.toggleDone(id: first.id)
+        XCTAssertTrue(singleDone)
+        model.selectedSnipIDs = [second.id]
+        let batchDone = await model.setSelectionDone(true)
+        XCTAssertTrue(batchDone)
+        XCTAssertEqual(player.played, [.markedDone, .markedDone])
+        let noOp = await model.setSelectionDone(true)
+        XCTAssertTrue(noOp)
+        XCTAssertEqual(player.played.count, 2)
+        let singleNotDone = await model.toggleDone(id: first.id)
+        XCTAssertTrue(singleNotDone)
+        let batchNotDone = await model.setSelectionDone(false)
+        XCTAssertTrue(batchNotDone)
+        XCTAssertEqual(player.played, [.markedDone, .markedDone, .selection, .selection])
+    }
+
+    func testAllCopyVariantsReachTheSameFeedbackSeam() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("Attachment".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let attachment = try testAttachment(id: UUID(), fileName: "note.txt")
+        var snip = Snip(content: "Copy me", origin: .quickEntry)
+        snip.attachments = [attachment]
+        let player = RecordingHapticPlayer()
+        let feedback = makeFeedback(player: player)
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [snip], attachmentURLs: [attachment.id: file]), haptics: feedback)
+        await model.load()
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+        coordinator.copyText(snips: [snip], model: model)
+        await coordinator.copy(snips: [snip], model: model)
+        await coordinator.copyAttachments(snips: [snip], model: model)
+        XCTAssertEqual(pasteboard.writes.count, 3)
+        XCTAssertEqual(player.played, [.copied, .copied, .copied])
+    }
+
+    func testCombinedOutcomesEmitOnceWithFailurePrecedence() {
+        let player = RecordingHapticPlayer()
+        let feedback = makeFeedback(player: player)
+        let outcomes: [IOSHapticFeedback.Kind] = [.copied, .markedDone]
+        feedback.emit(outcomes, for: feedback.beginInteraction())
+        XCTAssertEqual(player.played, [.markedDone])
+        XCTAssertEqual(feedback.event?.kinds, outcomes)
+        feedback.emit([.error, .copied], for: feedback.beginInteraction())
+        XCTAssertEqual(player.played, [.markedDone, .error])
+        let latest = feedback.event
+        feedback.emit([], for: feedback.beginInteraction())
+        XCTAssertEqual(feedback.event, latest)
+        let stale = feedback.beginInteraction()
+        feedback.isEnabled = false
+        feedback.isEnabled = true
+        feedback.emit(outcomes, for: stale)
+        XCTAssertEqual(player.played.count, 2)
+    }
+
+    func testSingleBatchAndListDeletionEmitAfterSuccessAndMissingIDsStayQuiet() async throws {
+        let first = Snip(content: "First", origin: .quickEntry)
+        let second = Snip(content: "Second", origin: .quickEntry)
+        let third = Snip(content: "Third", origin: .quickEntry)
+        let player = RecordingHapticPlayer()
+        let feedback = makeFeedback(player: player)
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [first, second, third]), haptics: feedback)
+        await model.load()
+        let single = await model.deleteSnip(id: first.id)
+        XCTAssertTrue(single)
+        XCTAssertFalse(model.snips.contains { $0.id == first.id })
+        XCTAssertEqual(player.played, [.deleted])
+        model.selectedSnipIDs = [second.id, third.id]
+        let batch = await model.deleteSelection()
+        XCTAssertTrue(batch)
+        XCTAssertTrue(model.snips.isEmpty)
+        XCTAssertEqual(player.played, [.deleted, .deleted])
+        let missing = await model.deleteSnip(id: first.id)
+        XCTAssertFalse(missing)
+        let empty = await model.deleteSelection()
+        XCTAssertFalse(empty)
+        XCTAssertEqual(player.played.count, 2)
+        let createdList = await model.createList(name: "Temporary")
+        XCTAssertTrue(createdList)
+        let list = try XCTUnwrap(model.lists.first { $0.id != SnipList.inboxID })
+        let deletedList = await model.deleteList(id: list.id)
+        XCTAssertTrue(deletedList)
+        XCTAssertEqual(player.played, [.deleted, .deleted, .deleted])
+    }
+
+    func testFailedDeletionEmitsErrorAndKeepsTheSnip() async {
+        let snip = Snip(content: "Keep me", origin: .quickEntry)
+        let feedback = makeFeedback()
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [snip], failsDeletion: true), haptics: feedback)
+        await model.load()
+        let deleted = await model.deleteSnip(id: snip.id)
+        XCTAssertFalse(deleted)
+        XCTAssertEqual(model.snips.map(\.id), [snip.id])
+        XCTAssertEqual(feedback.event?.kind, .error)
+    }
+
+    func testUndoMoveAndMergeUseSystemFeedbackWithoutAddingReorderFeedback() async throws {
+        for mode in [SnipSortMode.chronological, .manual] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let library = try JSONSnipLibrary(fileURL: root.appendingPathComponent("library.json"))
+            let player = RecordingHapticPlayer()
+            let feedback = makeFeedback(player: player)
+            let model = IOSAppModel(library: library, haptics: feedback)
+            await model.load()
+            let addedFirst = await model.createSnip(content: "First", in: SnipList.inboxID)
+            let addedSecond = await model.createSnip(content: "Second", in: SnipList.inboxID)
+            let addedList = await model.createList(name: "Work")
+            XCTAssertTrue(addedFirst && addedSecond && addedList)
+            let first = try XCTUnwrap(model.snips.first { $0.content == "First" })
+            let second = try XCTUnwrap(model.snips.first { $0.content == "Second" })
+            let work = try XCTUnwrap(model.lists.first { $0.name == "Work" })
+            model.sortMode = mode
+            let deleted = await model.deleteSnip(id: first.id)
+            XCTAssertTrue(deleted)
+            let undo = try XCTUnwrap(model.toast)
+            player.played.removeAll()
+            await model.performToastActionNow(undo)
+            XCTAssertTrue(model.snips.contains { $0.id == first.id })
+            XCTAssertEqual(player.played, [.restored])
+            await model.performToastActionNow(undo)
+            XCTAssertEqual(player.played, [.restored])
+
+            player.played.removeAll()
+            let moved = await model.moveSnip(id: first.id, to: work.id)
+            XCTAssertTrue(moved)
+            XCTAssertEqual(player.played, [.moved])
+            let sameList = await model.moveSnip(id: first.id, to: work.id)
+            XCTAssertTrue(sameList)
+            XCTAssertEqual(player.played, [.moved])
+            model.selectList(SnipList.inboxID)
+            model.selectedSnipIDs = [second.id]
+            let batch = await model.moveSelection(to: work.id)
+            XCTAssertTrue(batch)
+            XCTAssertEqual(player.played, [.moved, .moved])
+            model.selectList(work.id)
+            player.played.removeAll()
+            let reordered = await model.placeVisibleSnips(Array(model.visibleSnips.map(\.id).reversed()))
+            XCTAssertTrue(reordered)
+            XCTAssertTrue(player.played.isEmpty)
+
+            model.selectedSnipIDs = [first.id, second.id]
+            let merged = await model.mergeSelection()
+            XCTAssertTrue(merged)
+            XCTAssertEqual(model.visibleSnips.count, 1)
+            XCTAssertEqual(player.played, [.merged])
+            let tooFew = await model.mergeSelection()
+            XCTAssertFalse(tooFew)
+            XCTAssertEqual(player.played, [.merged])
+            let mergedID = try XCTUnwrap(model.visibleSnips.first?.id)
+            let failedMove = await model.moveSnip(id: mergedID, to: UUID())
+            XCTAssertFalse(failedMove)
+            XCTAssertEqual(player.played.last, .error)
+        }
+    }
+
+    private func makeFeedback(player: RecordingHapticPlayer = RecordingHapticPlayer()) -> IOSHapticFeedback {
         let suite = "haptics-test-" + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
-        let feedback = IOSHapticFeedback(defaults: defaults)
+        let feedback = IOSHapticFeedback(defaults: defaults, player: player)
         feedback.isActive = true
         return feedback
     }
+}
+
+@MainActor
+private final class RecordingHapticPlayer: IOSHapticPlaying {
+    var played: [IOSHapticFeedback.Kind] = []
+    func play(_ kind: IOSHapticFeedback.Kind) { played.append(kind) }
 }
 
 private func writeActivationManifest(
@@ -2560,6 +2752,7 @@ private actor ModelTestLibrary: SnipLibrary {
     private var resolvedChoices: [SnipRecoveryChoice] = []
     private var attachmentRetentionCalls: [Set<UUID>] = []
     private let commandDelay: Duration?
+    private let failsDeletion: Bool
     private var suspendsFirstCommand: Bool
     private var firstCommandStarted = false
     private var firstCommandStartWaiters: [CheckedContinuation<Void, Never>] = []
@@ -2573,13 +2766,15 @@ private actor ModelTestLibrary: SnipLibrary {
         recovery: SnipRecoverySnapshot = .empty,
         attachmentURLs: [UUID: URL] = [:],
         commandDelay: Duration? = nil,
-        suspendsFirstCommand: Bool = false
+        suspendsFirstCommand: Bool = false,
+        failsDeletion: Bool = false
     ) {
         self.snips = snips
         self.recovery = recovery
         self.attachmentURLs = attachmentURLs
         self.commandDelay = commandDelay
         self.suspendsFirstCommand = suspendsFirstCommand
+        self.failsDeletion = failsDeletion
     }
 
     func addedAttachmentURLs() -> [URL] {
@@ -2710,6 +2905,7 @@ private actor ModelTestLibrary: SnipLibrary {
             snips[index].updatedAt = now
             outcome = .none
         case .delete(let ids):
+            if failsDeletion { throw SnipLibraryError.snipNotFound }
             snips.removeAll { ids.contains($0.id) }
             outcome = .none
         case .pruneAttachments(let retainedIDs):

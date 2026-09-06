@@ -582,6 +582,7 @@ private struct NativeCollectionSearchBar: UIViewRepresentable {
 }
 
 private struct SnipRow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let snip: Snip
     let model: IOSAppModel
     let isRecovered: Bool
@@ -601,6 +602,8 @@ private struct SnipRow: View {
                     }
                 } label: {
                     Image(systemName: snip.isDone ? "checkmark.circle.fill" : "circle")
+                        .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: snip.isDone)
                         .font(.system(size: 24))
                         .foregroundStyle(snip.isDone
                             ? AnyShapeStyle(model.selectedList.accent.color)
