@@ -43,6 +43,7 @@ struct ListSidebarView: View {
                 .accessibilityIdentifier("list-\(list.name)")
                 .listContextActions(
                     list: list,
+                    beforeDelete: model.haptics.invalidatePendingFeedback,
                     edit: { sheet = .editList(id: list.id) },
                     delete: { Task { await model.deleteList(id: list.id) } }
                 )
@@ -93,7 +94,7 @@ struct LibraryActionsMenu: View {
                 editMode.isEditing ? "Done Selecting" : "Select Snips",
                 systemImage: editMode.isEditing ? "checkmark" : "checkmark.circle"
             ) {
-                model.selectedSnipIDs = []
+                model.endSelectingSnips()
                 editMode = editMode.isEditing ? .inactive : .active
             }
             .disabled(!editMode.isEditing && model.visibleSnips.isEmpty)
@@ -102,6 +103,7 @@ struct LibraryActionsMenu: View {
             if model.selectedListID != SnipList.inboxID, let editSelectedList {
                 Button("Edit List…", systemImage: "pencil", action: editSelectedList)
                 Button("Delete List", systemImage: "trash", role: .destructive) {
+                    model.haptics.invalidatePendingFeedback()
                     confirmsDeleteList = true
                 }
                 Divider()
@@ -142,6 +144,7 @@ private struct CloudLibraryActions: View {
 
 private struct ListContextActions: ViewModifier {
     let list: SnipList
+    let beforeDelete: () -> Void
     let edit: () -> Void
     let delete: () -> Void
     @State private var confirmsDeletion = false
@@ -153,6 +156,7 @@ private struct ListContextActions: ViewModifier {
                     Button("Edit List…", systemImage: "pencil", action: edit)
                     Divider()
                     Button("Delete List", systemImage: "trash", role: .destructive) {
+                        beforeDelete()
                         confirmsDeletion = true
                     }
                 }
@@ -162,8 +166,8 @@ private struct ListContextActions: ViewModifier {
 }
 
 extension View {
-    func listContextActions(list: SnipList, edit: @escaping () -> Void, delete: @escaping () -> Void) -> some View {
-        modifier(ListContextActions(list: list, edit: edit, delete: delete))
+    func listContextActions(list: SnipList, beforeDelete: @escaping () -> Void, edit: @escaping () -> Void, delete: @escaping () -> Void) -> some View {
+        modifier(ListContextActions(list: list, beforeDelete: beforeDelete, edit: edit, delete: delete))
     }
 
     func listDeletionConfirmation(list: SnipList, isPresented: Binding<Bool>, delete: @escaping () -> Void) -> some View {

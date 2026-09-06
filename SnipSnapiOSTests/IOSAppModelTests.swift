@@ -2030,6 +2030,259 @@ final class IOSAppModelTests: XCTestCase {
     }
 }
 
+@MainActor
+final class IOSHapticFeedbackTests: XCTestCase {
+    func testSaveAndDoneEmitFreshEventsAndUnchangedBatchStaysQuiet() async throws {
+        let feedback = makeFeedback()
+        let model = IOSAppModel(library: ModelTestLibrary(), haptics: feedback)
+        await model.load()
+        XCTAssertNil(feedback.event)
+
+        let created = await model.createSnip(content: "First", in: SnipList.inboxID)
+        XCTAssertTrue(created)
+        let saved = try XCTUnwrap(feedback.event)
+        XCTAssertEqual(saved.kind, .success)
+        let snip = try XCTUnwrap(model.snips.first)
+        let edited = await model.editSnip(snip, content: "Edited")
+        XCTAssertTrue(edited)
+        XCTAssertEqual(feedback.event?.kind, .success)
+        XCTAssertNotEqual(feedback.event?.id, saved.id)
+
+        let markedDone = await model.toggleDone(id: snip.id)
+        XCTAssertTrue(markedDone)
+        let done = try XCTUnwrap(feedback.event)
+        XCTAssertEqual(done.kind, .success)
+        model.selectedSnipIDs = [snip.id]
+        let unchanged = await model.setSelectionDone(true)
+        XCTAssertTrue(unchanged)
+        XCTAssertEqual(feedback.event, done)
+
+        let reopened = await model.setSelectionDone(false)
+        XCTAssertTrue(reopened)
+        XCTAssertEqual(feedback.event?.kind, .selection)
+        XCTAssertNotEqual(feedback.event?.id, done.id)
+        let latest = feedback.event
+        await model.load()
+        XCTAssertEqual(feedback.event, latest)
+    }
+
+    func testSelectionFeedbackExcludesSameSelectionAndProgrammaticResets() {
+        let feedback = makeFeedback()
+        let model = IOSAppModel(library: ModelTestLibrary(), haptics: feedback)
+        let id = UUID()
+        model.selectSnips([id])
+        XCTAssertEqual(feedback.event?.kind, .selection)
+        let selected = feedback.event
+        model.selectSnips([id])
+        XCTAssertEqual(feedback.event, selected)
+        model.selectSnips([])
+        XCTAssertNotEqual(feedback.event, selected)
+        let deselected = feedback.event
+        model.selectedSnipIDs = [id]
+        model.selectList(SnipList.inboxID)
+        XCTAssertEqual(feedback.event, deselected)
+    }
+
+    func testRepeatedCopyWorksWhileUndoToastIsVisibleAndReportsWriteFailures() async throws {
+        let feedback = makeFeedback()
+        let snip = Snip(content: "Copy me", origin: .quickEntry)
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [snip]), haptics: feedback)
+        let undo = AppToast.deleted(count: 1, id: UUID())
+        model.presentToast(undo)
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+
+        coordinator.copyText(snips: [snip], model: model)
+        let first = try XCTUnwrap(feedback.event)
+        XCTAssertEqual(first.kind, .success)
+        await coordinator.copy(snips: [snip], model: model)
+        XCTAssertEqual(feedback.event?.kind, .success)
+        XCTAssertNotEqual(feedback.event?.id, first.id)
+        XCTAssertEqual(model.toast?.id, undo.id)
+
+        pasteboard.succeeds = false
+        coordinator.copyText(snips: [snip], model: model)
+        let failure = try XCTUnwrap(feedback.event)
+        XCTAssertEqual(failure.kind, .error)
+        XCTAssertNotNil(coordinator.errorMessage)
+        coordinator.copyText(snips: [snip], model: model)
+        XCTAssertEqual(feedback.event?.kind, .error)
+        XCTAssertNotEqual(feedback.event?.id, failure.id)
+    }
+
+    func testUnavailableCopyWarnsAndCancelDoesNotEmitCompletion() async throws {
+        let feedback = makeFeedback()
+        var snip = Snip(content: "Text remains", origin: .quickEntry)
+        snip.attachments = [try testAttachment(id: UUID(), fileName: "missing.txt")]
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [snip]), haptics: feedback)
+        let coordinator = IOSCopyShareCoordinator(pasteboard: RecordingPasteboard())
+        await coordinator.copy(snips: [snip], model: model)
+        XCTAssertNotNil(coordinator.unavailableFilesNotice)
+        XCTAssertEqual(feedback.event?.kind, .warning)
+        let warning = feedback.event
+        coordinator.cancelUnavailableFilesNotice()
+        XCTAssertEqual(feedback.event, warning)
+        await coordinator.copy(snips: [snip], model: model)
+        coordinator.copyTextFromNotice(model: model)
+        XCTAssertEqual(feedback.event?.kind, .success)
+    }
+
+    func testUnavailableShareStaysQuietAndSupersedesOlderFeedback() async throws {
+        let feedback = makeFeedback()
+        var snip = Snip(content: "Share me", origin: .quickEntry)
+        snip.attachments = [try testAttachment(id: UUID(), fileName: "missing.txt")]
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [snip]), haptics: feedback)
+        let coordinator = IOSCopyShareCoordinator(pasteboard: RecordingPasteboard())
+        let pending = feedback.beginInteraction()
+
+        await coordinator.share(snips: [snip], model: model)
+
+        XCTAssertNotNil(coordinator.unavailableFilesNotice)
+        XCTAssertNil(coordinator.shareRequest)
+        XCTAssertNil(feedback.event)
+        feedback.emit(.success, for: pending)
+        XCTAssertNil(feedback.event)
+    }
+
+    func testFailedSaveReportsErrorWithoutSuccess() async {
+        let feedback = makeFeedback()
+        let model = IOSAppModel(library: ModelTestLibrary(), haptics: feedback)
+        let missing = Snip(content: "Missing", origin: .quickEntry)
+        let edited = await model.editSnip(missing, content: "New text")
+        XCTAssertFalse(edited)
+        XCTAssertEqual(feedback.event?.kind, .error)
+        XCTAssertNotNil(model.errorMessage)
+    }
+
+    func testPreferencePersistsAndDiscardsWorkStartedBeforeTurningOff() {
+        let suite = "haptics-test-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let feedback = IOSHapticFeedback(defaults: defaults)
+        XCTAssertTrue(feedback.isEnabled)
+        feedback.isActive = true
+        let pending = feedback.beginInteraction()
+        feedback.isEnabled = false
+        XCTAssertFalse(IOSHapticFeedback(defaults: defaults).isEnabled)
+        feedback.isEnabled = true
+        feedback.emit(.success, for: pending)
+        XCTAssertNil(feedback.event)
+        feedback.isEnabled = false
+        feedback.emit(.selection, for: feedback.beginInteraction())
+        XCTAssertNil(feedback.event)
+    }
+
+    func testLeavingOrCancellingASaveSuppressesLateFeedback() async {
+        for reason in 0..<3 {
+            let feedback = makeFeedback()
+            let library = ModelTestLibrary(suspendsFirstCommand: true)
+            let model = IOSAppModel(library: library, haptics: feedback)
+            let save = Task { await model.createSnip(content: "Pending", in: SnipList.inboxID) }
+            await library.waitUntilFirstCommandStarts()
+            switch reason {
+            case 0: model.selectList(UUID())
+            case 1:
+                feedback.isActive = false
+                feedback.isActive = true
+            default: save.cancel()
+            }
+            await library.resumeFirstCommand()
+            _ = await save.value
+            XCTAssertNil(feedback.event, "Pending feedback must stop for reason \(reason)")
+        }
+    }
+
+    func testNewActionSupersedesFeedbackFromAnOlderSave() async throws {
+        let feedback = makeFeedback()
+        let library = ModelTestLibrary(suspendsFirstCommand: true)
+        let model = IOSAppModel(library: library, haptics: feedback)
+        let save = Task { await model.createSnip(content: "Pending", in: SnipList.inboxID) }
+        await library.waitUntilFirstCommandStarts()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: RecordingPasteboard())
+        coordinator.copyText(snips: [Snip(content: "Copy now", origin: .quickEntry)], model: model)
+        let copied = try XCTUnwrap(feedback.event)
+        XCTAssertEqual(copied.kind, .success)
+
+        await library.resumeFirstCommand()
+        let saved = await save.value
+
+        XCTAssertTrue(saved)
+        XCTAssertEqual(feedback.event, copied)
+    }
+
+    func testSwitchingInlineEditorsSuppressesFeedbackFromThePreviousSave() async {
+        let feedback = makeFeedback()
+        let first = Snip(content: "First", origin: .quickEntry)
+        let second = Snip(content: "Second", origin: .quickEntry)
+        let library = ModelTestLibrary(snips: [first, second], suspendsFirstCommand: true)
+        let model = IOSAppModel(library: library, haptics: feedback)
+        await model.load()
+        model.beginEditingSnip(first.id)
+        let save = Task { await model.editSnip(first, content: "Saved first") }
+        await library.waitUntilFirstCommandStarts()
+
+        model.beginEditingSnip(second.id)
+        await library.resumeFirstCommand()
+        let saved = await save.value
+
+        XCTAssertTrue(saved)
+        XCTAssertNil(feedback.event)
+        XCTAssertEqual(model.selectedSnipID, second.id)
+        XCTAssertEqual(model.snips.first(where: { $0.id == first.id })?.content, "Saved first")
+    }
+
+    func testQuietActionsSuppressFeedbackFromAPendingAttachmentCopy() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("Attachment".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        for action in 0..<4 {
+            let feedback = makeFeedback()
+            let attachment = try testAttachment(id: UUID(), fileName: "note.txt")
+            var snip = Snip(content: "Copy me", origin: .quickEntry)
+            snip.attachments = [attachment]
+            let handler = IOSCloudSyncHandlerProbe(states: [attachment.id: .waiting])
+            let model = IOSAppModel(
+                library: ModelTestLibrary(snips: [snip]),
+                cloudSyncHandler: handler,
+                haptics: feedback
+            )
+            await model.load()
+            model.selectedSnipIDs = [snip.id]
+            let pasteboard = RecordingPasteboard()
+            let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+            let copy = Task { await coordinator.copyAttachments(snips: [snip], model: model) }
+            await handler.waitUntilPrepareStarts()
+
+            switch action {
+            case 0:
+                model.endSelectingSnips()
+            case 1:
+                let deleted = await model.deleteSnip(id: snip.id)
+                XCTAssertTrue(deleted)
+            case 2:
+                model.selectList(model.selectedListID)
+            default:
+                await model.syncWhenPossible()
+            }
+            await handler.finishPrepare(with: .success(file))
+            await copy.value
+
+            XCTAssertEqual(pasteboard.writes.count, 1)
+            XCTAssertNil(feedback.event)
+            if action != 3 { XCTAssertTrue(model.selectedSnipIDs.isEmpty) }
+        }
+    }
+
+    private func makeFeedback() -> IOSHapticFeedback {
+        let suite = "haptics-test-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let feedback = IOSHapticFeedback(defaults: defaults)
+        feedback.isActive = true
+        return feedback
+    }
+}
+
 private func writeActivationManifest(
     namespace: ICloudSyncNamespaceBinding,
     to rootURL: URL
@@ -2275,10 +2528,11 @@ private actor IOSCopyShareActionHandlerProbe: OptionalCloudSyncHandling {
 @MainActor
 private final class RecordingPasteboard: IOSPasteboardWriting {
     private(set) var writes: [[IOSCopyItem]] = []
+    var succeeds = true
 
     func write(_ items: [IOSCopyItem]) -> Bool {
         writes.append(items)
-        return true
+        return succeeds
     }
 }
 

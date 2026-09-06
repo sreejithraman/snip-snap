@@ -1,6 +1,7 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Haptics" : {},
     "icon.display.2" : {
       "comment" : "Accessible name for a list icon.",
       "extractionState" : "manual",

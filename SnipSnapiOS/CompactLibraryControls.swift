@@ -106,7 +106,10 @@ struct CompactLibraryControls: View {
         HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
             CompactGlassCircleButton(
                 length: controlLength,
-                action: { isImporting = true }
+                action: {
+                    model.haptics.invalidatePendingFeedback()
+                    isImporting = true
+                }
             ) {
                 Image(systemName: isStaging ? "hourglass" : "plus")
                     .font(.title3.weight(.medium))
@@ -190,7 +193,10 @@ struct CompactLibraryControls: View {
                 ForEach(draft.attachments, id: \.self) { url in
                     CompactDraftAttachment(
                         url: url,
-                        preview: { previewURL = url },
+                        preview: {
+                            model.haptics.invalidatePendingFeedback()
+                            previewURL = url
+                        },
                         remove: { removeAttachment(url) }
                     )
                 }
@@ -205,6 +211,7 @@ struct CompactLibraryControls: View {
             get: { draft.text },
             set: { value in
                 guard fieldID == composerFieldID else { return }
+                model.haptics.invalidatePendingFeedback()
                 guard storage.savingListID != model.selectedListID else {
                     draft.text = ""
                     return
@@ -316,6 +323,7 @@ struct CompactLibraryControls: View {
     }
 
     private func removeAttachment(_ url: URL) {
+        model.haptics.invalidatePendingFeedback()
         storage.draftStore.remove(url, from: model.selectedListID)
         draft = storage.draftStore.draft(for: model.selectedListID)
     }
@@ -476,6 +484,7 @@ private struct CompactListTabBar: View {
         .accessibilityIdentifier("list-tab-\(list.id.uuidString)")
         .listContextActions(
             list: list,
+            beforeDelete: model.haptics.invalidatePendingFeedback,
             edit: { sheet = .editList(id: list.id) },
             delete: { Task { await deleteList(list.id) } }
         )

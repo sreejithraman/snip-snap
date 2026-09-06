@@ -43,6 +43,30 @@ final class SnipSnapiOSUITests: XCTestCase {
         return app
     }
 
+    func testHapticsPreferenceCanChangeAndSurvivesRelaunch() {
+        continueAfterFailure = false
+        let app = launchApp()
+        openSettings(in: app)
+        let haptics = app.switches["haptics-toggle"]
+        XCTAssertTrue(haptics.waitForExistence(timeout: 3))
+        let initial = haptics.value as? String
+        XCTAssertEqual(initial, "1")
+        toggle(haptics)
+        let changed = NSPredicate(format: "value != %@", initial ?? "")
+        expectation(for: changed, evaluatedWith: haptics)
+        waitForExpectations(timeout: 3)
+        let saved = haptics.value as? String
+
+        app.terminate()
+        app.launch()
+        openSettings(in: app)
+        XCTAssertTrue(haptics.waitForExistence(timeout: 3))
+        XCTAssertEqual(haptics.value as? String, saved)
+        if haptics.value as? String != "1" { toggle(haptics) }
+        expectation(for: NSPredicate(format: "value == '1'"), evaluatedWith: haptics)
+        waitForExpectations(timeout: 3)
+    }
+
     func testExplicitEnableKeepsLocalContentAndTurnsSyncOn() {
         continueAfterFailure = false
         let app = launchApp(withSyncEnable: true)

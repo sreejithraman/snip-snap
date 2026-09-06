@@ -38,9 +38,17 @@ struct IOSAppRootView: View {
 
     private var model: IOSAppModel { session.model }
 
+    private func beginBackupImport() {
+        model.haptics.invalidatePendingFeedback()
+        isExplainingBackupImport = true
+    }
+
     var body: some View {
         appNavigation
         .tint(SnipSnapTheme.controlTint)
+        .modifier(IOSHapticFeedbackModifier(feedback: model.haptics))
+        .onChange(of: sheet) { model.haptics.invalidatePendingFeedback() }
+        .onChange(of: model.selectedListID) { model.haptics.invalidatePendingFeedback() }
         .background {
             IOSShareSheetPresenter(request: $copyShare.shareRequest)
                 .frame(width: 0, height: 0)
@@ -89,6 +97,7 @@ struct IOSAppRootView: View {
             case .settings:
                 SyncedContentSettingsView(
                     model: session.syncedContentSettings,
+                    haptics: model.haptics,
                     retryAction: {
                         if session.syncedContentSettings.mode == .localOnly {
                             await session.syncedContentSettings.enableICloudSync()
@@ -230,7 +239,7 @@ struct IOSAppRootView: View {
                     },
                     libraryActions: LibraryActionsMenu(
                         model: model,
-                        importBackup: { isExplainingBackupImport = true },
+                        importBackup: beginBackupImport,
                         settings: { sheet = .settings },
                         editMode: $collectionEditMode,
                         includesCloudActions: true,
@@ -257,7 +266,7 @@ struct IOSAppRootView: View {
                     model: model,
                     sheet: $sheet,
                     editMode: $collectionEditMode,
-                    importBackup: { isExplainingBackupImport = true }
+                    importBackup: beginBackupImport
                 )
             } detail: {
                 NavigationStack {

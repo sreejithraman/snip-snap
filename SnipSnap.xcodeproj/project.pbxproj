@@ -109,6 +109,7 @@
 		F10000000000000000000007 /* SnipSnapShareExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = F20000000000000000000007 /* SnipSnapShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		F10000000000000000000008 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = F2000000000000000000000A /* PrivacyInfo.xcprivacy */; };
 		E10000000000000000000030 /* IOSCopyShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000030 /* IOSCopyShare.swift */; };
+		E10000000000000000000042 /* IOSHapticFeedback.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000042 /* IOSHapticFeedback.swift */; };
 		E10000000000000000000033 /* CompactLibraryControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000033 /* CompactLibraryControls.swift */; };
 		E10000000000000000000034 /* ComposerDraftStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000037 /* ComposerDraftStore.swift */; };
 		E10000000000000000000036 /* SnipListIconCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000040 /* SnipListIconCatalog.swift */; };
@@ -291,6 +292,7 @@
 		F20000000000000000000008 /* SnipSnapiOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SnipSnapiOS.entitlements; sourceTree = "<group>"; };
 		F20000000000000000000009 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		E20000000000000000000030 /* IOSCopyShare.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSCopyShare.swift; sourceTree = "<group>"; };
+		E20000000000000000000042 /* IOSHapticFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSHapticFeedback.swift; sourceTree = "<group>"; };
 		E20000000000000000000033 /* CompactLibraryControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompactLibraryControls.swift; sourceTree = "<group>"; };
 		E20000000000000000000035 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		F2000000000000000000000A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -509,6 +511,7 @@
 				E20000000000000000000020 /* AttachmentViews.swift */,
 				E20000000000000000000021 /* SyncedContentSettingsView.swift */,
 				E20000000000000000000030 /* IOSCopyShare.swift */,
+				E20000000000000000000042 /* IOSHapticFeedback.swift */,
 				E20000000000000000000033 /* CompactLibraryControls.swift */,
 				E20000000000000000000007 /* PreviewSupport.swift */,
 				E20000000000000000000008 /* Assets.xcassets */,
@@ -904,6 +907,7 @@
 				E10000000000000000000020 /* AttachmentViews.swift in Sources */,
 				E10000000000000000000021 /* SyncedContentSettingsView.swift in Sources */,
 				E10000000000000000000030 /* IOSCopyShare.swift in Sources */,
+				E10000000000000000000042 /* IOSHapticFeedback.swift in Sources */,
 				E10000000000000000000033 /* CompactLibraryControls.swift in Sources */,
 				E10000000000000000000034 /* ComposerDraftStore.swift in Sources */,
 				A10000000000000000000006 /* SnipCompletionLanguage.swift in Sources */,

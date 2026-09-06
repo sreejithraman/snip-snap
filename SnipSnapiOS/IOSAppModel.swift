@@ -6,6 +6,7 @@ import SnipSnapCore
 @Observable
 final class IOSAppModel {
     private let session: SavedSnipsSession
+    let haptics: IOSHapticFeedback
     private let cloudSyncHandler: (any OptionalCloudSyncHandling)?
 
     private(set) var snips: [Snip]
@@ -38,7 +39,8 @@ final class IOSAppModel {
             lists: [.inbox]
         ),
         startupError: String? = nil,
-        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil
+        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
+        haptics: IOSHapticFeedback = IOSHapticFeedback()
     ) {
         session = SavedSnipsSession(
             library: library,
@@ -47,6 +49,7 @@ final class IOSAppModel {
             recoveryScope: recoveryScope
         )
         self.cloudSyncHandler = cloudSyncHandler
+        self.haptics = haptics
         hasKnownCloudSyncActivity = cloudSyncHandler == nil
         snips = initialSnapshot.snips
         lists = initialSnapshot.lists
@@ -65,9 +68,26 @@ final class IOSAppModel {
     }
 
     func selectList(_ listID: UUID) {
+        haptics.invalidatePendingFeedback()
         selectedListID = listID
         selectedSnipID = nil
         selectedSnipIDs = []
+    }
+
+    func endSelectingSnips() {
+        haptics.invalidatePendingFeedback()
+        selectedSnipIDs = []
+    }
+
+    func beginEditingSnip(_ id: UUID) {
+        haptics.invalidatePendingFeedback()
+        selectedSnipID = id
+    }
+
+    func selectSnips(_ ids: Set<UUID>) {
+        guard ids != selectedSnipIDs else { return }
+        selectedSnipIDs = ids
+        haptics.emit(.selection, for: haptics.beginInteraction())
     }
 
     var selectedVisibleSnips: [Snip] {
@@ -111,6 +131,7 @@ final class IOSAppModel {
         _ library: any SnipLibrary,
         recoveryScope: SnipRecoveryScope?
     ) async {
+        haptics.invalidatePendingFeedback()
         await withSerializedMutation {
             clearPendingDeletionToast()
             selectedSnipID = nil
@@ -125,7 +146,7 @@ final class IOSAppModel {
 
     @discardableResult
     func resolveRecovery(_ id: UUID, choice: SnipRecoveryChoice) async -> Bool {
-        await withSerializedMutation {
+        await withUserMutation { _ in
             await resolveRecoveryUnlocked(id, choice: choice)
         }
     }
@@ -137,12 +158,13 @@ final class IOSAppModel {
         attachmentURLs: [URL] = [],
         selectCreatedSnip: Bool = true
     ) async -> Bool {
-        await withSerializedMutation {
+        await withUserMutation { interaction in
             await createSnipUnlocked(
                 content: content,
                 in: listID,
                 attachmentURLs: attachmentURLs,
-                selectCreatedSnip: selectCreatedSnip
+                selectCreatedSnip: selectCreatedSnip,
+                feedbackInteraction: interaction
             )
         }
     }
@@ -153,28 +175,29 @@ final class IOSAppModel {
         content: String,
         attachmentEdits: [SnipAttachmentEdit]? = nil
     ) async -> Bool {
-        await withSerializedMutation {
+        await withUserMutation { interaction in
             await editSnipUnlocked(
                 snip,
                 content: content,
-                attachmentEdits: attachmentEdits
+                attachmentEdits: attachmentEdits,
+                feedbackInteraction: interaction
             )
         }
     }
 
     @discardableResult
     func deleteSnip(id: UUID) async -> Bool {
-        await withSerializedMutation { await deleteSnips(ids: [id]) }
+        await withUserMutation { _ in await deleteSnips(ids: [id]) }
     }
 
     @discardableResult
     func deleteSelection() async -> Bool {
-        await withSerializedMutation { await deleteSnips(ids: selectedVisibleSnipIDs) }
+        await withUserMutation { _ in await deleteSnips(ids: selectedVisibleSnipIDs) }
     }
 
     @discardableResult
     func mergeSelection() async -> Bool {
-        await withSerializedMutation {
+        await withUserMutation { _ in
             let ids = selectedVisibleSnipIDs
             guard ids.count >= 2 else { return false }
             return await performUserAction(.merge(ids: ids, now: Date())) { outcome in
@@ -188,46 +211,50 @@ final class IOSAppModel {
 
     @discardableResult
     func moveSnip(id: UUID, to listID: UUID) async -> Bool {
-        await withSerializedMutation { await moveSnipUnlocked(id: id, to: listID) }
+        await withUserMutation { _ in await moveSnipUnlocked(id: id, to: listID) }
     }
 
     @discardableResult
     func moveSelection(to listID: UUID) async -> Bool {
-        await withSerializedMutation { await moveSelectionUnlocked(to: listID) }
+        await withUserMutation { _ in await moveSelectionUnlocked(to: listID) }
     }
 
     @discardableResult
     func placeVisibleSnips(_ orderedIDs: [UUID]) async -> Bool {
-        await withSerializedMutation { await placeVisibleSnipsUnlocked(orderedIDs) }
+        await withUserMutation { _ in await placeVisibleSnipsUnlocked(orderedIDs) }
     }
 
     @discardableResult
     func setSelectionDone(_ done: Bool) async -> Bool {
-        await withSerializedMutation { await setSelectionDoneUnlocked(done) }
+        await withUserMutation { interaction in
+            await setSelectionDoneUnlocked(done, feedbackInteraction: interaction)
+        }
     }
 
     @discardableResult
     func toggleDone(id: UUID) async -> Bool {
-        await withSerializedMutation { await toggleDoneUnlocked(id: id) }
+        await withUserMutation { interaction in
+            await toggleDoneUnlocked(id: id, feedbackInteraction: interaction)
+        }
     }
 
     @discardableResult
     func createList(name: String, systemImage: String = "list.bullet", color: SnipListColor? = nil) async -> Bool {
-        await withSerializedMutation {
+        await withUserMutation { _ in
             await createListUnlocked(name: name, systemImage: systemImage, color: color)
         }
     }
 
     @discardableResult
     func renameList(_ list: SnipList, name: String, systemImage: String, color: SnipListColorChange = .keep) async -> Bool {
-        await withSerializedMutation {
+        await withUserMutation { _ in
             await renameListUnlocked(list, name: name, systemImage: systemImage, color: color)
         }
     }
 
     @discardableResult
     func deleteList(id: UUID) async -> Bool {
-        await withSerializedMutation { await deleteListUnlocked(id: id) }
+        await withUserMutation { _ in await deleteListUnlocked(id: id) }
     }
 
     func presentToast(_ presentedToast: AppToast) {
@@ -241,7 +268,7 @@ final class IOSAppModel {
 
     func performToastActionNow(_ presentedToast: AppToast) async {
         guard presentedToast.action == .undoDelete else { return }
-        await withSerializedMutation {
+        await withUserMutation { _ in
             await restoreDeletion(token: presentedToast.id)
         }
     }
@@ -285,7 +312,8 @@ final class IOSAppModel {
         content: String,
         in listID: UUID,
         attachmentURLs: [URL] = [],
-        selectCreatedSnip: Bool = true
+        selectCreatedSnip: Bool = true,
+        feedbackInteraction: UUID?
     ) async -> Bool {
         return await performUserAction(
             .add(
@@ -296,7 +324,9 @@ final class IOSAppModel {
                 attachmentURLs: attachmentURLs,
                 requestID: UUID(),
                 now: Date()
-            )
+            ),
+            feedback: .success,
+            feedbackInteraction: feedbackInteraction
         ) { outcome in
             if selectCreatedSnip, case .add(.added(let id)) = outcome {
                 selectedListID = listID
@@ -371,6 +401,7 @@ final class IOSAppModel {
     }
 
     func clearDownloadedFiles() async {
+        haptics.invalidatePendingFeedback()
         guard let cloudSyncHandler else { return }
         do {
             try await cloudSyncHandler.clearDownloadedFiles()
@@ -382,6 +413,7 @@ final class IOSAppModel {
     }
 
     func syncWhenPossible() async {
+        haptics.invalidatePendingFeedback()
         await cloudSyncHandler?.syncWhenPossible()
         await load()
     }
@@ -389,7 +421,8 @@ final class IOSAppModel {
     private func editSnipUnlocked(
         _ snip: Snip,
         content: String,
-        attachmentEdits: [SnipAttachmentEdit]?
+        attachmentEdits: [SnipAttachmentEdit]?,
+        feedbackInteraction: UUID?
     ) async -> Bool {
         let command: SnipLibraryCommand
         if let attachmentEdits {
@@ -409,7 +442,7 @@ final class IOSAppModel {
                 now: Date()
             )
         }
-        return await performUserAction(command)
+        return await performUserAction(command, feedback: .success, feedbackInteraction: feedbackInteraction)
     }
 
     private func moveSnipUnlocked(id: UUID, to listID: UUID) async -> Bool {
@@ -456,15 +489,24 @@ final class IOSAppModel {
         }
     }
 
-    private func setSelectionDoneUnlocked(_ done: Bool) async -> Bool {
+    private func setSelectionDoneUnlocked(_ done: Bool, feedbackInteraction: UUID?) async -> Bool {
         let ids = selectedVisibleSnipIDs
         guard !ids.isEmpty else { return false }
-        return await performUserAction(.setDone(ids: ids, done: done))
+        guard snips.contains(where: { ids.contains($0.id) && $0.isDone != done }) else { return true }
+        return await performUserAction(
+            .setDone(ids: ids, done: done),
+            feedback: done ? .success : .selection,
+            feedbackInteraction: feedbackInteraction
+        )
     }
 
-    private func toggleDoneUnlocked(id: UUID) async -> Bool {
+    private func toggleDoneUnlocked(id: UUID, feedbackInteraction: UUID?) async -> Bool {
         guard let snip = snips.first(where: { $0.id == id }) else { return false }
-        return await performUserAction(.setDone(ids: [id], done: !snip.isDone))
+        return await performUserAction(
+            .setDone(ids: [id], done: !snip.isDone),
+            feedback: snip.isDone ? .selection : .success,
+            feedbackInteraction: feedbackInteraction
+        )
     }
 
     private func createListUnlocked(name: String, systemImage: String, color: SnipListColor?) async -> Bool {
@@ -547,6 +589,8 @@ final class IOSAppModel {
 
     private func performUserAction(
         _ command: SnipLibraryCommand,
+        feedback: IOSHapticFeedback.Kind? = nil,
+        feedbackInteraction: UUID? = nil,
         afterSuccess: (SnipLibraryOutcome) -> Void = { _ in }
     ) async -> Bool {
         do {
@@ -556,6 +600,9 @@ final class IOSAppModel {
             )
             clearPendingDeletionToast()
             apply(update.snapshot)
+            if let feedback, update.outcome != .add(.duplicate) {
+                haptics.emit(feedback, for: feedbackInteraction)
+            }
             recoverySnapshot = await session.refreshRecovery()
             await refreshAttachmentTransferStates()
             afterSuccess(update.outcome)
@@ -563,6 +610,7 @@ final class IOSAppModel {
             return true
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            haptics.emit(.error, for: feedbackInteraction)
             return false
         }
     }
@@ -573,6 +621,7 @@ final class IOSAppModel {
     }
 
     func previewBackupImport(from url: URL) async {
+        haptics.invalidatePendingFeedback()
         do {
             let preview = try await session.withExclusiveAccess { session in
                 let didAccess = url.startAccessingSecurityScopedResource()
@@ -601,6 +650,7 @@ final class IOSAppModel {
     }
 
     func confirmBackupImport() async {
+        haptics.invalidatePendingFeedback()
         guard pendingImportPreview != nil, let id = pendingImportPreviewID else { return }
         do {
             guard let (result, recovery) = try await session.withExclusiveAccess({ session in
@@ -667,6 +717,13 @@ final class IOSAppModel {
             if isCloudSyncActive { hasKnownCloudAttachmentStates = false }
             // Keep the last known states while iCloud is unavailable.
         }
+    }
+
+    private func withUserMutation<Result: Sendable>(
+        _ operation: @MainActor @Sendable (UUID?) async -> Result
+    ) async -> Result {
+        let interaction = haptics.beginInteraction()
+        return await withSerializedMutation { await operation(interaction) }
     }
 
     private func withSerializedMutation<Result: Sendable>(
