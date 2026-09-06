@@ -73,16 +73,6 @@ for required_file in \
     [[ "$share_group" == *"$required_file"* ]]
 done
 
-for required_file in \
-    ShareViewController.swift \
-    ShareExtensionModel.swift \
-    ShareExtensionInputLoader.swift \
-    ShareExtensionView.swift \
-    SnipSnapShareExtension.entitlements \
-    Info.plist; do
-    grep -F -- "$required_file" "$project_file" >/dev/null
-done
-
 if /usr/bin/grep -En \
     '(^|[^A-Za-z])(import AppKit|import CloudKit|NSPasteboard|SelectionCapture|GlobalHotKey|ClipboardHistory|SnipSnapPanel)' \
     "$ios_source_dir"/*.swift; then

@@ -277,17 +277,6 @@ package actor SwiftDataSyncModePersistence {
     }
   }
 
-  package nonisolated static func existingCloudNamespace(
-    rootURL: URL
-  ) throws -> ICloudSyncNamespaceBinding? {
-    let manifestURL = rootURL.appendingPathComponent("activation.json", isDirectory: false)
-    guard FileManager.default.fileExists(atPath: manifestURL.path) else { return nil }
-    let stored = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: manifestURL))
-    return stored.accountIsolation?.namespace
-      ?? stored.transition?.namespace
-      ?? stored.stores.first(where: { $0.id == stored.activeStoreID })?.namespace
-  }
-
   package func snapshot() async throws -> SyncModeStorageSnapshot {
     await finishRecoveryQuarantines()
     guard let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID }) else {

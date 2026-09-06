@@ -204,7 +204,6 @@ enum SnipSnapTheme {
     static let selectionFill = Color.primary.opacity(0.10)
     static let compactSelectionFill = Color.primary.opacity(0.18)
     static let compactActionFill = Color.primary.opacity(0.10)
-    static let glassEdge = Color.primary.opacity(0.10)
     static let emphasizedGlassEdge = Color.primary.opacity(0.20)
     static let focusedGlassEdge = Color.primary.opacity(0.32)
 

@@ -418,26 +418,6 @@ final class AppCoordinator {
         }
     }
 
-    private func focusedElementAcceptsText(in application: NSRunningApplication) -> Bool {
-        let app = AXUIElementCreateApplication(application.processIdentifier)
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            app,
-            kAXFocusedUIElementAttribute as CFString,
-            &value
-        ) == .success,
-        let focused = value,
-        CFGetTypeID(focused) == AXUIElementGetTypeID() else { return false }
-        let focusedElement = focused as! AXUIElement
-        return [kAXSelectedTextAttribute, kAXValueAttribute].contains { attribute in
-            var isSettable = DarwinBoolean(false)
-            return AXUIElementIsAttributeSettable(
-                focusedElement,
-                attribute as CFString,
-                &isSettable
-            ) == .success && isSettable.boolValue
-        }
-    }
 }
 
 private extension NSMenu {

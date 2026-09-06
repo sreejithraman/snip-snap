@@ -2862,10 +2862,6 @@ private actor ModelTestLibrary: SnipLibrary {
         return SnipLibraryUpdate(snapshot: makeSnapshot(sortMode: sortMode), outcome: outcome)
     }
 
-    func maximumConcurrentCommands() -> Int {
-        maximumActiveCommandCount
-    }
-
     func maximumConcurrentOperations() -> Int {
         maximumActiveCommandCount
     }
