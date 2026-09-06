@@ -21,6 +21,7 @@ iphone_destination="${SNIP_SNAP_IPHONE_DESTINATION:-generic/platform=iOS Simulat
 ipad_destination="${SNIP_SNAP_IPAD_DESTINATION:-generic/platform=iOS Simulator}"
 xcodebuild_tool="${SNIP_SNAP_XCODEBUILD:-xcodebuild}"
 source_packages="$derived_data_root/SourcePackages"
+source "$script_dir/ios-bundle-check.sh"
 build_mac=YES
 build_ipad=YES
 
@@ -79,30 +80,9 @@ build() {
 
 assert_embedded_share_extension() {
     local derived_data="$1"
-    local app_path="$derived_data/Build/Products/Debug-iphonesimulator/Snip Snap iOS.app"
-    local app_executable="$app_path/Snip Snap iOS"
-    local extension_path="$app_path/PlugIns/SnipSnapShareExtension.appex"
-    local extension_executable="$extension_path/SnipSnapShareExtension"
-    local build_marker="$derived_data/.snip-snap-build-start"
-    [[ -d "$extension_path" ]] || {
-        print -u2 "Build matrix: the iOS app is missing its embedded Share extension: $extension_path"
-        return 1
-    }
-    [[ -f "$app_executable" && -f "$extension_path/Info.plist" && \
-       -f "$extension_executable" ]] || {
-        print -u2 "Build matrix: the iOS app does not contain a built Share extension bundle: $extension_path"
-        return 1
-    }
-    [[ -f "$app_path/PrivacyInfo.xcprivacy" && \
-       -f "$extension_path/PrivacyInfo.xcprivacy" ]] || {
-        print -u2 "Build matrix: the iOS app or Share extension is missing its privacy manifest."
-        return 1
-    }
-    [[ "$app_executable" -nt "$build_marker" && \
-       "$extension_executable" -nt "$build_marker" ]] || {
-        print -u2 "Build matrix: the iOS app or Share extension was not built in this matrix run."
-        return 1
-    }
+    snip_snap_check_ios_bundle \
+        "$derived_data/Build/Products/Debug-iphonesimulator/Snip Snap iOS.app" \
+        "$derived_data/.snip-snap-build-start"
 }
 
 if [[ "$build_mac" == YES ]]; then
