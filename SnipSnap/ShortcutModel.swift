@@ -583,12 +583,9 @@ final class ShortcutSettings: ObservableObject {
         guard globalChords.isDisjoint(with: appChords),
               globalChords.isDisjoint(with: appDefaults)
         else { return false }
-        return !GlobalHotKeyAction.allCases.contains { action in
-            GlobalHotKeyAction.allCases.contains { otherAction in
-                otherAction != action
-                    && global.trigger(for: action) == otherAction.defaultTrigger
-            }
-        }
+        // New defaults must not invalidate distinct saved assignments.
+        // candidate(setting:for:) reserves defaults when assigning shortcuts.
+        return true
     }
 }
 
@@ -611,7 +608,7 @@ enum GlobalHotKeyAction: UInt32, CaseIterable, Identifiable {
         switch self {
         case .captureSelection: .doubleShift(.left)
         case .togglePanel: .doubleShift(.right)
-        case .toggleClipboard: .commandDoubleShift(.right)
+        case .toggleClipboard: .commandDoubleShift(.left)
         }
     }
 }
