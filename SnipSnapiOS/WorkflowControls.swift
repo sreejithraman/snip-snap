@@ -67,7 +67,10 @@ struct WorkflowOptionsMenu: View {
     private var sortMode: Binding<SnipSortMode> {
         Binding(
             get: { model.sortMode },
-            set: { model.sortMode = $0 }
+            set: {
+                model.haptics.invalidatePendingFeedback()
+                model.sortMode = $0
+            }
         )
     }
 }

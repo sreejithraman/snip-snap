@@ -13,10 +13,12 @@ final class SnipSnapiOSUITests: XCTestCase {
         withEncryptedReset: Bool = false,
         accountNotice: Bool = false,
         withCopyShareFixtures: Bool = false,
+        withHapticsTrace: Bool = false,
         syncIssue: String? = nil
     ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["SNIP_SNAP_UI_TESTING"] = "1"
+        if withHapticsTrace { app.launchEnvironment["SNIP_SNAP_UI_TEST_HAPTICS"] = "1" }
         app.launchEnvironment["SNIP_SNAP_UI_TEST_STORE"] = storeName
         if withAttachments { app.launchEnvironment["SNIP_SNAP_UI_TEST_ATTACHMENTS"] = "1" }
         if withRecovery { app.launchEnvironment["SNIP_SNAP_UI_TEST_RECOVERY"] = "1" }
@@ -41,6 +43,63 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
         app.launch()
         return app
+    }
+
+    func testSwipeAndContextActionsPublishHapticOutcomes() {
+        continueAfterFailure = false
+        let app = launchApp(withHapticsTrace: true)
+        func expectHaptic(_ kind: String) {
+            let trace = app.staticTexts["haptic-event"]
+            let expected = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "label BEGINSWITH %@", kind + ":"), object: trace
+            )
+            XCTAssertEqual(XCTWaiter.wait(for: [expected], timeout: 4), .completed)
+        }
+        createSnip("Swipe feedback", in: app)
+        expectHaptic("saved")
+        let swiped = row(named: "Swipe feedback", in: app)
+        swiped.swipeRight()
+        app.buttons["done"].tap()
+        expectHaptic("markedDone")
+        swiped.swipeLeft()
+        app.buttons["delete-snip"].tap()
+        XCTAssertTrue(swiped.waitForNonExistence(timeout: 4))
+        expectHaptic("deleted")
+
+        createSnip("Menu feedback", in: app)
+        expectHaptic("saved")
+        let menuRow = row(named: "Menu feedback", in: app)
+        menuRow.press(forDuration: 1)
+        app.buttons["copy-snip"].tap()
+        expectHaptic("copied")
+        menuRow.press(forDuration: 1)
+        app.buttons["delete-context-snip"].tap()
+        XCTAssertTrue(menuRow.waitForNonExistence(timeout: 4))
+        expectHaptic("deleted")
+    }
+
+    func testHapticsPreferenceCanChangeAndSurvivesRelaunch() {
+        continueAfterFailure = false
+        let app = launchApp()
+        openSettings(in: app)
+        let haptics = app.switches["haptics-toggle"]
+        XCTAssertTrue(haptics.waitForExistence(timeout: 3))
+        let initial = haptics.value as? String
+        XCTAssertEqual(initial, "1")
+        toggle(haptics)
+        let changed = NSPredicate(format: "value != %@", initial ?? "")
+        expectation(for: changed, evaluatedWith: haptics)
+        waitForExpectations(timeout: 3)
+        let saved = haptics.value as? String
+
+        app.terminate()
+        app.launch()
+        openSettings(in: app)
+        XCTAssertTrue(haptics.waitForExistence(timeout: 3))
+        XCTAssertEqual(haptics.value as? String, saved)
+        if haptics.value as? String != "1" { toggle(haptics) }
+        expectation(for: NSPredicate(format: "value == '1'"), evaluatedWith: haptics)
+        waitForExpectations(timeout: 3)
     }
 
     func testExplicitEnableKeepsLocalContentAndTurnsSyncOn() {

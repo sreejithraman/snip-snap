@@ -4,6 +4,7 @@ import SwiftUI
 struct SyncedContentSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var model: SyncedContentSettingsModel
+    @Bindable var haptics: IOSHapticFeedback
     var retryAction: (@MainActor @Sendable () async -> Void)?
     @State private var confirmsDelete = false
     @State private var confirmsUsingDeviceCopy = false
@@ -11,6 +12,11 @@ struct SyncedContentSettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Toggle("Haptics", isOn: $haptics.isEnabled)
+                        .accessibilityIdentifier("haptics-toggle")
+                }
+
                 Section("Sync") {
                     Toggle("Sync with iCloud", isOn: syncEnabled)
                         .disabled(!canChangeSync)
@@ -87,9 +93,11 @@ struct SyncedContentSettingsView: View {
 
     init(
         model: SyncedContentSettingsModel,
+        haptics: IOSHapticFeedback,
         retryAction: (@MainActor @Sendable () async -> Void)? = nil
     ) {
         self.model = model
+        self.haptics = haptics
         self.retryAction = retryAction
     }
 

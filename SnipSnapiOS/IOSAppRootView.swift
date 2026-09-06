@@ -38,14 +38,34 @@ struct IOSAppRootView: View {
 
     private var model: IOSAppModel { session.model }
 
+    private func beginBackupImport() {
+        model.haptics.invalidatePendingFeedback()
+        isExplainingBackupImport = true
+    }
+
     var body: some View {
         appNavigation
         .tint(SnipSnapTheme.controlTint)
+        .modifier(IOSHapticFeedbackModifier(feedback: model.haptics))
+        .onChange(of: sheet) { model.haptics.invalidatePendingFeedback() }
+        .onChange(of: model.selectedListID) { model.haptics.invalidatePendingFeedback() }
         .background {
             IOSShareSheetPresenter(request: $copyShare.shareRequest)
                 .frame(width: 0, height: 0)
         }
 #if DEBUG
+        .overlay(alignment: .topTrailing) {
+            if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_HAPTICS"] == "1" {
+                Text(verbatim: model.haptics.event.map {
+                    "\($0.kind):\($0.id)"
+                } ?? "none")
+                    .font(.caption2)
+                    .frame(width: 1, height: 1)
+                    .opacity(0.01)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("haptic-event")
+            }
+        }
         .overlay(alignment: .bottomLeading) {
             if let bundleID = Bundle.main.bundleIdentifier,
                let suffix = bundleID.components(separatedBy: ".dev").last,
@@ -89,6 +109,7 @@ struct IOSAppRootView: View {
             case .settings:
                 SyncedContentSettingsView(
                     model: session.syncedContentSettings,
+                    haptics: model.haptics,
                     retryAction: {
                         if session.syncedContentSettings.mode == .localOnly {
                             await session.syncedContentSettings.enableICloudSync()
@@ -230,7 +251,7 @@ struct IOSAppRootView: View {
                     },
                     libraryActions: LibraryActionsMenu(
                         model: model,
-                        importBackup: { isExplainingBackupImport = true },
+                        importBackup: beginBackupImport,
                         settings: { sheet = .settings },
                         editMode: $collectionEditMode,
                         includesCloudActions: true,
@@ -257,7 +278,7 @@ struct IOSAppRootView: View {
                     model: model,
                     sheet: $sheet,
                     editMode: $collectionEditMode,
-                    importBackup: { isExplainingBackupImport = true }
+                    importBackup: beginBackupImport
                 )
             } detail: {
                 NavigationStack {

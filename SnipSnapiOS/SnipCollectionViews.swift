@@ -178,7 +178,10 @@ struct SnipCollectionView: View {
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if isReordering {
-                    Button("Done") { isReordering = false }
+                    Button("Done") {
+                        model.haptics.invalidatePendingFeedback()
+                        isReordering = false
+                    }
                         .accessibilityIdentifier("finish-reordering")
                 } else if isSelecting {
                     WorkflowOptionsMenu(model: model)
@@ -190,6 +193,7 @@ struct SnipCollectionView: View {
                         .disabled(model.selectedSnipIDs.isEmpty)
                 } else {
                     WorkflowOptionsMenu(model: model) {
+                        model.haptics.invalidatePendingFeedback()
                         cancelInlineEdit()
                         dismissComposerKeyboard()
                         isReordering = true
@@ -215,19 +219,23 @@ struct SnipCollectionView: View {
             endSelection()
         }
         .onChange(of: model.completionFilter) {
+            model.haptics.invalidatePendingFeedback()
             if isSelecting {
                 model.selectedSnipIDs.formIntersection(model.visibleSnips.map(\.id))
             }
         }
         .onChange(of: editMode) { _, mode in
-            if !mode.isEditing { model.selectedSnipIDs = [] }
+            model.haptics.invalidatePendingFeedback()
+            if !mode.isEditing { model.endSelectingSnips() }
             if mode.isEditing {
                 isReordering = false
                 cancelInlineEdit()
                 model.selectedSnipID = nil
             }
         }
+        .onChange(of: model.searchText) { model.haptics.invalidatePendingFeedback() }
         .onChange(of: isSearchPresented) { _, isPresented in
+            model.haptics.invalidatePendingFeedback()
             if isPresented { isReordering = false }
             if !isPresented {
                 model.searchText = ""
@@ -309,6 +317,7 @@ struct SnipCollectionView: View {
             get: { inlineEditSession?.text ?? "" },
             set: { value in
                 guard var session = inlineEditSession else { return }
+                model.haptics.invalidatePendingFeedback()
                 session.text = value
                 inlineEditSession = session
             }
@@ -316,7 +325,7 @@ struct SnipCollectionView: View {
     }
 
     private func beginEditing(_ snip: Snip) {
-        model.selectedSnipID = snip.id
+        model.beginEditingSnip(snip.id)
         inlineEditSession = CompactInlineEditSession(
             original: snip,
             text: snip.content
@@ -329,6 +338,7 @@ struct SnipCollectionView: View {
 
     private func cancelInlineEdit() {
         guard inlineEditSession?.isSaving != true else { return }
+        if inlineEditSession != nil { model.haptics.invalidatePendingFeedback() }
         isInlineEditorFocused = false
         inlineEditSession = nil
     }
@@ -357,6 +367,7 @@ struct SnipCollectionView: View {
     }
 
     private func previewAttachment(_ attachment: SnipAttachment) {
+        model.haptics.invalidatePendingFeedback()
         Task { @MainActor in
             guard let url = await model.prepareAttachment(attachment.id, for: .preview) else {
                 return
@@ -376,7 +387,7 @@ struct SnipCollectionView: View {
         )
         Divider()
         Button("Edit", systemImage: "pencil") {
-            model.selectedSnipID = snip.id
+            model.beginEditingSnip(snip.id)
             sheet = .editSnip(id: snip.id)
         }
         .accessibilityIdentifier("edit-snip")
@@ -394,7 +405,7 @@ struct SnipCollectionView: View {
                 cancelInlineEdit()
                 dismissComposerKeyboard()
                 isReordering = false
-                model.selectedSnipIDs = [snip.id]
+                model.selectSnips([snip.id])
                 editMode = .active
             }
             .accessibilityIdentifier("select-snip")
@@ -423,8 +434,8 @@ struct SnipCollectionView: View {
     }
 
     private func endSelection() {
+        model.endSelectingSnips()
         editMode = .inactive
-        model.selectedSnipIDs = []
     }
 
     private var isSelecting: Bool {
@@ -434,7 +445,7 @@ struct SnipCollectionView: View {
     private var selectedSnipIDs: Binding<Set<UUID>> {
         Binding(
             get: { model.selectedSnipIDs },
-            set: { model.selectedSnipIDs = $0 }
+            set: { model.selectSnips($0) }
         )
     }
 }
@@ -571,6 +582,7 @@ private struct NativeCollectionSearchBar: UIViewRepresentable {
 }
 
 private struct SnipRow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let snip: Snip
     let model: IOSAppModel
     let isRecovered: Bool
@@ -590,6 +602,8 @@ private struct SnipRow: View {
                     }
                 } label: {
                     Image(systemName: snip.isDone ? "checkmark.circle.fill" : "circle")
+                        .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: snip.isDone)
                         .font(.system(size: 24))
                         .foregroundStyle(snip.isDone
                             ? AnyShapeStyle(model.selectedList.accent.color)

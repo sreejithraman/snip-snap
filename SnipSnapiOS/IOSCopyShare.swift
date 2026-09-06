@@ -320,13 +320,15 @@ final class IOSCopyShareCoordinator {
     }
 
     func copy(snips: [Snip], model: IOSAppModel) async {
+        let interaction = model.haptics.beginInteraction()
         let payload = await makePreparedPayload(snips: snips, model: model, use: .copy)
-        guard requireAllFiles(in: payload) else { return }
-        if write(payload.copyItems) { model.presentToast(.copied(count: snips.count)) }
+        guard requireAllFiles(in: payload, model: model, interaction: interaction) else { return }
+        if write(payload.copyItems, model: model, interaction: interaction) { model.presentToast(.copied(count: snips.count)) }
     }
 
     func copyText(snips: [Snip], model: IOSAppModel) {
-        if write(makePayload(snips: snips, model: model).textItems) {
+        let interaction = model.haptics.beginInteraction()
+        if write(makePayload(snips: snips, model: model).textItems, model: model, interaction: interaction) {
             model.presentToast(
                 AppToast(systemImage: "doc.on.doc", message: String(localized: "Copied Text"))
             )
@@ -334,9 +336,10 @@ final class IOSCopyShareCoordinator {
     }
 
     func copyAttachments(snips: [Snip], model: IOSAppModel) async {
+        let interaction = model.haptics.beginInteraction()
         let payload = await makePreparedPayload(snips: snips, model: model, use: .copy)
-        guard requireAllFiles(in: payload) else { return }
-        if write(payload.attachmentItems) {
+        guard requireAllFiles(in: payload, model: model, interaction: interaction) else { return }
+        if write(payload.attachmentItems, model: model, interaction: interaction) {
             model.presentToast(
                 AppToast(systemImage: "paperclip", message: String(localized: "Copied Attachments"))
             )
@@ -344,15 +347,17 @@ final class IOSCopyShareCoordinator {
     }
 
     func share(snips: [Snip], model: IOSAppModel) async {
+        model.haptics.invalidatePendingFeedback()
         let payload = await makePreparedPayload(snips: snips, model: model, use: .export)
-        guard requireAllFiles(in: payload) else { return }
+        guard requireAllFiles(in: payload, model: model, interaction: nil) else { return }
         shareRequest = IOSShareRequest(items: payload.copyItems)
     }
 
     func copyTextFromNotice(model: IOSAppModel) {
+        let interaction = model.haptics.beginInteraction()
         guard let notice = unavailableFilesNotice else { return }
         unavailableFilesNotice = nil
-        if write(notice.payload.textItems) {
+        if write(notice.payload.textItems, model: model, interaction: interaction) {
             model.presentToast(
                 AppToast(systemImage: "doc.on.doc", message: String(localized: "Copied Text"))
             )
@@ -378,21 +383,28 @@ final class IOSCopyShareCoordinator {
         return makePayload(snips: snips, model: model)
     }
 
-    private func requireAllFiles(in payload: IOSCopySharePayload) -> Bool {
+    private func requireAllFiles(
+        in payload: IOSCopySharePayload,
+        model: IOSAppModel,
+        interaction: UUID?
+    ) -> Bool {
         guard payload.unavailableFileNames.isEmpty else {
             unavailableFilesNotice = IOSUnavailableFilesNotice(payload: payload)
+            model.haptics.emit(.warning, for: interaction)
             return false
         }
         unavailableFilesNotice = nil
         return true
     }
 
-    private func write(_ items: [IOSCopyItem]) -> Bool {
+    private func write(_ items: [IOSCopyItem], model: IOSAppModel, interaction: UUID?) -> Bool {
         guard pasteboard.write(items) else {
             errorMessage = String(localized: "Snip Snap could not copy that content.")
+            model.haptics.emit(.error, for: interaction)
             return false
         }
         errorMessage = nil
+        model.haptics.emit(.copied, for: interaction)
         return true
     }
 }
