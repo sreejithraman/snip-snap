@@ -8,8 +8,18 @@ public struct ClipboardHistoryState: Codable, Equatable, Sendable {
     public private(set) var entries: [ClipboardEntry]
     public private(set) var tombstones: [UUID: Date]
 
-    public init(entries: [ClipboardEntry] = [], tombstones: [UUID: Date] = [:]) {
-        self.entries = entries; self.tombstones = tombstones
+    public private(set) var retentionTombstones: [UUID: Date]
+
+    private enum CodingKeys: String, CodingKey { case entries, tombstones, retentionTombstones }
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(entries: try values.decode([ClipboardEntry].self, forKey: .entries),
+                  tombstones: try values.decodeIfPresent([UUID: Date].self, forKey: .tombstones) ?? [:],
+                  retentionTombstones: try values.decodeIfPresent([UUID: Date].self, forKey: .retentionTombstones) ?? [:])
+    }
+
+    public init(entries: [ClipboardEntry] = [], tombstones: [UUID: Date] = [:], retentionTombstones: [UUID: Date] = [:]) {
+        self.entries = entries; self.tombstones = tombstones; self.retentionTombstones = retentionTombstones
         normalize()
     }
 
@@ -42,13 +52,14 @@ public struct ClipboardHistoryState: Codable, Equatable, Sendable {
 
     public mutating func clearUnpinned(at date: Date = Date()) {
         for entry in entries where !entry.isPinned {
-            for id in [entry.id] + entry.duplicateIDs { tombstones[id] = max(tombstones[id] ?? .distantPast, date) }
+            for id in [entry.id] + entry.duplicateIDs { retentionTombstones[id] = max(retentionTombstones[id] ?? .distantPast, date) }
         }
         entries.removeAll { !$0.isPinned }
     }
 
     public mutating func merge(_ other: ClipboardHistoryState) {
         for (id, date) in other.tombstones { tombstones[id] = max(tombstones[id] ?? .distantPast, date) }
+        for (id, date) in other.retentionTombstones { retentionTombstones[id] = max(retentionTombstones[id] ?? .distantPast, date) }
         entries.append(contentsOf: other.entries)
         normalize()
     }
@@ -89,7 +100,11 @@ public struct ClipboardHistoryState: Codable, Equatable, Sendable {
             }
         }
         // Deletion wins over stale updates, including edits from an offline device.
-        let live = entries.filter { entry in ([entry.id] + entry.duplicateIDs).allSatisfy { tombstones[$0] == nil } }
+        let live = entries.filter { entry in
+            let ids = [entry.id] + entry.duplicateIDs
+            return ids.allSatisfy { tombstones[$0] == nil }
+                && (entry.isPinned || ids.allSatisfy { retentionTombstones[$0] == nil })
+        }
         var byID: [UUID: ClipboardEntry] = [:]
         for entry in live {
             if let old = byID[entry.id] {
@@ -121,11 +136,14 @@ public struct ClipboardHistoryState: Codable, Equatable, Sendable {
             byPayload[key] = merged
         }
         let normalized = Array(byPayload.values)
-        entries = Self.trimmed(Self.ordered(normalized))
+        // Local-only files must not evict shared history on another device.
+        let shared = Self.trimmed(Self.ordered(normalized.filter(\.isSyncEligible)))
+        let local = Self.trimmed(Self.ordered(normalized.filter { !$0.isSyncEligible }))
+        entries = Self.ordered(shared + local)
         let retainedIDs = Set(entries.map(\.id))
         let trimDate = normalized.map(\.capturedAt).max() ?? .distantPast
         for entry in normalized where !retainedIDs.contains(entry.id) {
-            for id in [entry.id] + entry.duplicateIDs { tombstones[id] = max(tombstones[id] ?? .distantPast, trimDate) }
+            for id in [entry.id] + entry.duplicateIDs { retentionTombstones[id] = max(retentionTombstones[id] ?? .distantPast, trimDate) }
         }
     }
 

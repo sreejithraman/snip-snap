@@ -14,7 +14,6 @@ package struct ClipboardCloudPayload: Codable, Sendable {
     public private(set) var pendingEntryIDs: Set<UUID> = []
     public private(set) var lastError: String?
     private let store: ClipboardHistoryStore
-    private let files: ClipboardFileStore
     private let worker: ClipboardPayloadWorker
     private let bindingURL: URL
     private let makeTransport: @Sendable (String) -> any ClipboardCloudTransport
@@ -25,17 +24,17 @@ package struct ClipboardCloudPayload: Codable, Sendable {
     private var cancellation = ClipboardCloudCancellation()
     private var idleWaiters: [CheckedContinuation<Void, Never>] = []
 
-    public convenience init(store: ClipboardHistoryStore, files: ClipboardFileStore,
+    public convenience init(store: ClipboardHistoryStore,
                             containerIdentifier: String, syncRootURL: URL) {
-        self.init(store: store, files: files, syncRootURL: syncRootURL, makeTransport: { scope in
+        self.init(store: store, syncRootURL: syncRootURL, makeTransport: { scope in
             CloudKitClipboardTransport(database: CKContainer(identifier: containerIdentifier).privateCloudDatabase,
                                        generation: scope)
         })
     }
-    package init(store: ClipboardHistoryStore, files: ClipboardFileStore, syncRootURL: URL,
+    package init(store: ClipboardHistoryStore, syncRootURL: URL,
                  makeTransport: @escaping @Sendable (String) -> any ClipboardCloudTransport) {
-        self.store = store; self.files = files
-        worker = ClipboardPayloadWorker(store: store, files: files)
+        self.store = store
+        worker = ClipboardPayloadWorker(store: store, files: store.files)
         bindingURL = syncRootURL.appendingPathComponent("clipboard-account-binding.json")
         self.makeTransport = makeTransport
     }
@@ -67,8 +66,8 @@ package struct ClipboardCloudPayload: Codable, Sendable {
                 pendingEntryIDs = pending
                 try checkEpoch(started)
                 do {
-                    if !pending.isEmpty || outgoing.keys.count != remote.entries.keys.count || shared.tombstones != remote.tombstones {
-                        try await transport.save(ClipboardCloudSnapshot(entries: outgoing, tombstones: shared.tombstones, version: remote.version), cancellation: cancellation)
+                    if !pending.isEmpty || outgoing.keys.count != remote.entries.keys.count || shared.tombstones != remote.tombstones || shared.retentionTombstones != remote.retentionTombstones {
+                        try await transport.save(ClipboardCloudSnapshot(entries: outgoing, tombstones: shared.tombstones, retentionTombstones: shared.retentionTombstones, version: remote.version), cancellation: cancellation)
                     }
                 }
                 catch ClipboardCloudError.conflict { continue }
@@ -179,7 +178,7 @@ package actor ClipboardPayloadWorker {
                     changed.insert(id)
                     return payload
                 }
-                let remoteState = ClipboardHistoryState(entries: decoded.map(\.entry), tombstones: remote.tombstones)
+                let remoteState = ClipboardHistoryState(entries: decoded.map(\.entry), tombstones: remote.tombstones, retentionTombstones: remote.retentionTombstones)
                 try cancellation.check()
                 let local = try await store.merge(remoteState)
                 try cancellation.check()
@@ -196,7 +195,7 @@ package actor ClipboardPayloadWorker {
                 }
                 // Local-only file references do not consume another device's synced history limit.
                 var shared = remoteState
-                shared.merge(ClipboardHistoryState(entries: local.entries.filter { $0.isSyncEligible || remote.entries[$0.id] != nil }, tombstones: local.tombstones))
+                shared.merge(ClipboardHistoryState(entries: local.entries.filter { $0.isSyncEligible || remote.entries[$0.id] != nil }, tombstones: local.tombstones, retentionTombstones: local.retentionTombstones))
                 var outgoing: [UUID: Data] = [:]
                 let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
                 for entry in shared.entries {

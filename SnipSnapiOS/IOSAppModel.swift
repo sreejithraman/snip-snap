@@ -494,6 +494,8 @@ final class IOSAppModel {
             Set(orderedIDs) == Set(visibleSnips.map(\.id)),
             orderedIDs.count == visibleSnips.count
         else { return false }
+        let pinnedIDs = visibleSnips.filter(\.isPinned).map(\.id)
+        guard Array(orderedIDs.prefix(pinnedIDs.count)) == pinnedIDs else { return false }
         guard orderedIDs != visibleSnips.map(\.id) else { return true }
         let listID = selectedListID
         return await performUserAction(

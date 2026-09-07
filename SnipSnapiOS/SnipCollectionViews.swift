@@ -150,7 +150,7 @@ struct SnipCollectionView: View {
                             }
                         }
                         .contextMenu { itemContextActions(for: snip) }
-                        .moveDisabled(!model.canReorderVisibleSnips || inlineEditSession != nil)
+                        .moveDisabled(snip.isPinned || !model.canReorderVisibleSnips || inlineEditSession != nil)
                     }
                     .onMove(perform: move)
                 }

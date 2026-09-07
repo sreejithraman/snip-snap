@@ -4,10 +4,9 @@ import SnipSnapCore
 public struct ClipboardFileStore: Sendable {
     public let rootURL: URL
     public enum Failure: Error, LocalizedError {
-        case fileStoreRequired, missingFile(String), invalidPath, unsupportedDirectory, tooLarge
+        case missingFile(String), invalidPath, unsupportedDirectory, tooLarge
         public var errorDescription: String? {
             switch self {
-            case .fileStoreRequired: String(localized: "Choose a clipboard file store before pinning files.", bundle: .main)
             case .missingFile(let name): String(localized: "The file \(name) is missing or unreadable.", bundle: .main)
             case .invalidPath: String(localized: "The clipboard file path is invalid.", bundle: .main)
             case .unsupportedDirectory: String(localized: "Folders cannot be pinned to clipboard history yet.", bundle: .main)

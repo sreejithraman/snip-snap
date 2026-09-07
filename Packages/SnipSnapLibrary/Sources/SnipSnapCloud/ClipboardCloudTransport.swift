@@ -19,9 +19,10 @@ public enum ClipboardCloudError: Error, Equatable, LocalizedError {
 package struct ClipboardCloudSnapshot: Sendable {
     package var entries: [UUID: Data]
     package var tombstones: [UUID: Date]
+    package var retentionTombstones: [UUID: Date]
     package var version: Data?
-    package init(entries: [UUID: Data] = [:], tombstones: [UUID: Date] = [:], version: Data? = nil) {
-        self.entries = entries; self.tombstones = tombstones; self.version = version
+    package init(entries: [UUID: Data] = [:], tombstones: [UUID: Date] = [:], retentionTombstones: [UUID: Date] = [:], version: Data? = nil) {
+        self.entries = entries; self.tombstones = tombstones; self.retentionTombstones = retentionTombstones; self.version = version
     }
 }
 
@@ -57,6 +58,7 @@ package actor CloudKitClipboardTransport: ClipboardCloudTransport {
     private struct Manifest: Codable {
         var entries: [UUID: String]
         var tombstones: [UUID: Date]
+        var retentionTombstones: [UUID: Date]?
     }
     private let database: CKDatabase
     private let zone: CKRecordZone.ID
@@ -98,7 +100,7 @@ package actor CloudKitClipboardTransport: ClipboardCloudTransport {
             entries[id] = data; cache[digest] = data; uploaded.insert(digest)
         }
         return ClipboardCloudSnapshot(entries: entries, tombstones: manifest.tombstones,
-                                      version: try CloudRecordShadow.archive(record).data)
+                                      retentionTombstones: manifest.retentionTombstones ?? [:], version: try CloudRecordShadow.archive(record).data)
     }
     package func save(_ snapshot: ClipboardCloudSnapshot, cancellation: ClipboardCloudCancellation) async throws {
         try cancellation.check()
@@ -118,7 +120,7 @@ package actor CloudKitClipboardTransport: ClipboardCloudTransport {
         if let version = snapshot.version { record = try CloudRecordShadow(data: version).record() }
         else { record = ClipboardCloudRecordCodec.manifestRecord(id: CKRecord.ID(recordName: "manifest", zoneID: zone)) }
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
-        let data = try encoder.encode(Manifest(entries: references, tombstones: snapshot.tombstones))
+        let data = try encoder.encode(Manifest(entries: references, tombstones: snapshot.tombstones, retentionTombstones: snapshot.retentionTombstones))
         let obsolete = fetchedReferences.subtracting(references.values)
         do {
             try await saveAsset(data, record: record, policy: .ifServerRecordUnchanged,

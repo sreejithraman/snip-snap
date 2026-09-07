@@ -13,3 +13,5 @@ On first enable, explain that existing history will upload, then merge local and
 Files shared directly from iOS will get an app-owned copy on receipt. They remain local until pinned, with “Only on this iPhone” or “Only on this iPad” as appropriate.
 
 After a file has synced, unpinning it keeps its shared identity and syncs that change. It becomes subject to normal history trimming. Pinning grants the file upload; unpinning does not withdraw it or delete other devices’ copies.
+
+Local-only file references use their own retention allowance, so they cannot evict another device’s shared history. Automatic trimming and Clear History record cleanup separately from explicit deletion: an offline pin survives cleanup, while explicit deletion still wins over an offline edit.

@@ -39,7 +39,7 @@ final class IOSClipboardModel {
         syncEnabled = preferences.bool(forKey: "syncClipboardHistory")
         pendingUploadIDs = Set((preferences.stringArray(forKey: "clipboardPendingUploads") ?? []).compactMap(UUID.init(uuidString:)))
         cloud = containerIdentifier.map {
-            ClipboardCloudSyncService(store: store, files: files, containerIdentifier: $0,
+            ClipboardCloudSyncService(store: store, containerIdentifier: $0,
                 syncRootURL: rootURL.appendingPathComponent("SyncMode", isDirectory: true))
         }
     }
@@ -77,6 +77,7 @@ final class IOSClipboardModel {
                     : UTType(filenameExtension: url.pathExtension)
                 if let type, type.conforms(to: .image) {
                     let data = try Data(contentsOf: url)
+                    guard let data else { continue }
                     guard data.count <= ClipboardHistoryState.representationByteLimit else { throw CocoaError(.fileReadTooLarge) }
                     items.append(ClipboardPayloadItem(representations: [ClipboardRepresentation(type: type.identifier, data: data)]))
                 } else {
@@ -137,8 +138,7 @@ final class IOSClipboardModel {
 
     func togglePin(_ entry: ClipboardEntry) async {
         do {
-            guard let current = try await store.load().entries.first(where: { $0.id == entry.id }) else { return }
-            entries = try await store.setPinned(!current.isPinned, id: current.id, fileStore: files).entries
+            entries = try await store.togglePinned(id: entry.id).entries
             if syncEnabled, let updated = entries.first(where: { $0.id == entry.id }), updated.isSyncEligible {
                 pendingUploadIDs.insert(entry.id)
                 savePendingUploads()
@@ -224,12 +224,13 @@ final class IOSClipboardModel {
                 let imageTypes = provider.registeredTypeIdentifiers.compactMap { UTType($0) }
                     .filter { $0.conforms(to: .image) && !types.contains($0) }
                 for type in types + imageTypes where provider.hasItemConformingToTypeIdentifier(type.identifier) {
-                    let data: Data = try await withCheckedThrowingContinuation { continuation in
+                    let data: Data? = try? await withCheckedThrowingContinuation { continuation in
                         provider.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, error in
                             if let data { continuation.resume(returning: data) }
                             else { continuation.resume(throwing: error ?? CocoaError(.fileReadUnknown)) }
                         }
                     }
+                    guard let data else { continue }
                     guard data.count <= ClipboardHistoryState.representationByteLimit else { throw CocoaError(.fileReadTooLarge) }
                     representations.append(ClipboardRepresentation(type: type.identifier, data: data))
                 }

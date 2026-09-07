@@ -38,9 +38,9 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
     let sync: ClipboardCloudSyncService
     init(_ cloud: ClipboardTestCloud) {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        store = ClipboardHistoryStore(url: root.appendingPathComponent("clipboard.json"))
-        files = ClipboardFileStore(rootURL: root.appendingPathComponent("files"))
-        sync = ClipboardCloudSyncService(store: store, files: files, syncRootURL: root, makeTransport: { _ in cloud })
+        files = ClipboardFileStore(rootURL: root.appendingPathComponent("ClipboardFiles"))
+        store = ClipboardHistoryStore(url: root.appendingPathComponent("clipboard.json"), fileStore: files)
+        sync = ClipboardCloudSyncService(store: store, syncRootURL: root, makeTransport: { _ in cloud })
     }
     @discardableResult func run(enabled: Bool = true, scope: String = "account-generation-A") async throws -> ClipboardHistoryState {
         try await sync.synchronize(mainSyncEnabled: true, clipboardSyncEnabled: enabled, generation: scope)
@@ -97,7 +97,7 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
         let clip = ClipboardEntry(items: [.init(representations: [.init(type: "public.file-url", data: Data(source.absoluteString.utf8))])])
         try await a.store.insert(clip); try await a.run()
         #expect(try await b.run().entries.isEmpty)
-        try await a.store.setPinned(true, id: clip.id, fileStore: a.files)
+        try await a.store.setPinned(true, id: clip.id)
         try FileManager.default.removeItem(at: source)
         try await a.run()
         let wire = try #require(try await cloud.fetch().entries[clip.id])
@@ -150,7 +150,7 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
             try Data(folder.utf8).write(to: source)
             let clip = ClipboardEntry(items: [.init(representations: [.init(type: "public.file-url", data: Data(source.absoluteString.utf8))])])
             originals.append(clip)
-            try await a.store.insert(clip); try await a.store.setPinned(true, id: clip.id, fileStore: a.files)
+            try await a.store.insert(clip); try await a.store.setPinned(true, id: clip.id)
         }
         try await a.run()
         let downloaded = try await b.run()
@@ -200,6 +200,21 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
         #expect(await worker.encodeCount == encodes)
         #expect(await worker.importCount == imports)
         #expect(try Data(contentsOf: client.files.url(for: file)) == Data("sample".utf8))
+    }
+
+    @Test func localFileReferencesDoNotEvictSharedHistory() async throws {
+        let cloud = ClipboardTestCloud(); let a = ClipboardClient(cloud); let b = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: a.root); try? FileManager.default.removeItem(at: b.root) }
+        let shared = entry("shared text")
+        try await a.store.insert(shared); try await a.run()
+        for index in 0..<100 {
+            try await b.store.insert(ClipboardEntry(items: [.init(representations: [
+                .init(type: "public.file-url", data: Data("file:///local-\(index).txt".utf8))
+            ])]))
+        }
+        try await b.run()
+        #expect(try await a.run().entries.map(\.id) == [shared.id])
+        #expect(try await b.store.load().entries.count == 101)
     }
 
 }

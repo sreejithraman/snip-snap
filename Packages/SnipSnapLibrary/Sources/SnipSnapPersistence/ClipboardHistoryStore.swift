@@ -3,7 +3,7 @@ import SnipSnapCore
 
 public actor ClipboardHistoryStore {
     public nonisolated let url: URL
-    private let files: ClipboardFileStore
+    public nonisolated let files: ClipboardFileStore
     public init(url: URL, fileStore: ClipboardFileStore? = nil) {
         self.url = url
         files = fileStore ?? ClipboardFileStore(rootURL: url.deletingLastPathComponent().appendingPathComponent("ClipboardFiles", isDirectory: true))
@@ -24,7 +24,7 @@ public actor ClipboardHistoryStore {
             throw DecodingError.dataCorruptedError(in: value, debugDescription: "Invalid clipboard date")
         }
         if let state = try? decoder.decode(ClipboardHistoryState.self, from: data) {
-            return ClipboardHistoryState(entries: state.entries, tombstones: state.tombstones)
+            return ClipboardHistoryState(entries: state.entries, tombstones: state.tombstones, retentionTombstones: state.retentionTombstones)
         }
         // Decode legacy Mac history without rewriting it until a successful save.
         return ClipboardHistoryState(entries: try decoder.decode([ClipboardEntry].self, from: data))
@@ -76,13 +76,17 @@ public actor ClipboardHistoryStore {
         var state = try load(); state.clearUnpinned(at: date); try save(state); return state
     }
 
-    @discardableResult public func setPinned(_ pinned: Bool, id: UUID, at date: Date = Date(),
-                                            fileStore: ClipboardFileStore? = nil) throws -> ClipboardHistoryState {
+    @discardableResult public func togglePinned(id: UUID, at date: Date = Date()) throws -> ClipboardHistoryState {
+        let state = try load()
+        guard let entry = state.entries.first(where: { $0.id == id }) else { return state }
+        return try setPinned(!entry.isPinned, id: id, at: date)
+    }
+
+    @discardableResult public func setPinned(_ pinned: Bool, id: UUID, at date: Date = Date()) throws -> ClipboardHistoryState {
         var state = try load()
         guard var entry = state.entries.first(where: { $0.id == id }) else { return state }
         if pinned && !entry.fileURLs.isEmpty {
-            guard let fileStore else { throw ClipboardFileStore.Failure.fileStoreRequired }
-            entry = try fileStore.preserveFiles(of: entry)
+            entry = try files.preserveFiles(of: entry)
         }
         entry.pinnedAt = pinned ? (entry.pinnedAt ?? date) : nil; entry.modifiedAt = date
         state.replace(entry); try save(state); return state

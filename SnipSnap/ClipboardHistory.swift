@@ -177,10 +177,10 @@ private final class ClipboardCaptureReader {
 
 @MainActor
 final class ClipboardHistory: ObservableObject {
-    nonisolated static let limit = 100
-    nonisolated static let representationByteLimit = 16 * 1_024 * 1_024
-    nonisolated static let entryByteLimit = 32 * 1_024 * 1_024
-    nonisolated static let historyByteLimit = 96 * 1_024 * 1_024
+    nonisolated static let limit = ClipboardHistoryState.limit
+    nonisolated static let representationByteLimit = ClipboardHistoryState.representationByteLimit
+    nonisolated static let entryByteLimit = ClipboardHistoryState.entryByteLimit
+    nonisolated static let historyByteLimit = ClipboardHistoryState.historyByteLimit
     nonisolated static let backgroundProcessingThreshold = 256 * 1_024
 
     @Published private(set) var entries: [ClipboardEntry] = []
@@ -294,7 +294,7 @@ final class ClipboardHistory: ObservableObject {
     func configureSync(containerIdentifier: String, rootURL: URL,
                        mainEnabled: @escaping () -> Bool,
                        generation: @escaping () async throws -> String?) {
-        cloudService = ClipboardCloudSyncService(store: sharedStore, files: ownedFileStore,
+        cloudService = ClipboardCloudSyncService(store: sharedStore,
             containerIdentifier: containerIdentifier, syncRootURL: rootURL)
         mainSyncEnabled = mainEnabled
         syncGeneration = generation
@@ -314,6 +314,8 @@ final class ClipboardHistory: ObservableObject {
         if syncError != nil { return String(localized: "Upload failed") }
         return isSyncing ? String(localized: "Uploading…") : String(localized: "Waiting to sync")
     }
+
+    var syncIsActive: Bool { clipboardSyncEnabled && mainSyncEnabled?() == true }
 
     func setSyncEnabled(_ enabled: Bool) {
         clipboardSyncEnabled = enabled
@@ -550,9 +552,8 @@ final class ClipboardHistory: ObservableObject {
 
     func togglePinned(id: UUID) async {
         await flushPersistence()
-        guard let entry = state.entries.first(where: { $0.id == id }) else { return }
         do {
-            let updated = try await sharedStore.setPinned(!entry.isPinned, id: id, fileStore: ownedFileStore)
+            let updated = try await sharedStore.togglePinned(id: id)
             state.merge(updated)
             entries = state.entries
             pendingUploadIDs.insert(id)

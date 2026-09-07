@@ -24,6 +24,32 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: try files.url(for: file).path))
     }
 
+    func testOfflinePinsSurviveAutomaticTrimAndClearButNotExplicitDelete() {
+        let old = text("old", time: 1)
+        var offline = ClipboardHistoryState(entries: [old])
+        offline.setPinned(true, id: old.id)
+        var active = ClipboardHistoryState(entries: [old] + (0..<110).map { text("new-\($0)", time: Double($0 + 2)) })
+        active.clearUnpinned()
+        active.merge(offline)
+        XCTAssertEqual(active.entries.map(\.id), [old.id])
+        active.delete(id: old.id)
+        active.merge(offline)
+        XCTAssertTrue(active.entries.isEmpty)
+    }
+
+    func testConcurrentPinTogglesUseOneStoreTransactionEach() async throws {
+        let directory = try root()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ClipboardHistoryStore(url: directory.appendingPathComponent("clipboard.json"))
+        let clip = text("toggle")
+        try await store.insert(clip)
+        async let first = store.togglePinned(id: clip.id)
+        async let second = store.togglePinned(id: clip.id)
+        _ = try await (first, second)
+        let result = try await store.load()
+        XCTAssertFalse(result.entries[0].isPinned)
+    }
+
     private func text(_ value: String, id: UUID = UUID(), time: Double = 10, pinned: Double? = nil) -> ClipboardEntry {
         ClipboardEntry(id: id, capturedAt: Date(timeIntervalSince1970: time), items: [
             ClipboardPayloadItem(representations: [ClipboardRepresentation(type: "public.utf8-plain-text", data: Data(value.utf8))])
@@ -43,7 +69,7 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertEqual(state.entries.first?.id, pinned.id)
         state.clearUnpinned(at: Date(timeIntervalSince1970: 600))
         XCTAssertEqual(state.entries.map(\.id), [pinned.id])
-        XCTAssertEqual(state.tombstones.count, 130)
+        XCTAssertEqual(state.retentionTombstones.count, 130)
         state.delete(id: pinned.id)
         XCTAssertTrue(state.entries.isEmpty)
     }
@@ -70,7 +96,7 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertFalse(state.entries[0].isPinned)
         let oldest = text("expired", time: 0)
         var trimmed = ClipboardHistoryState(entries: [oldest] + (0..<100).map { text("\($0)", time: Double($0 + 1)) })
-        XCTAssertNotNil(trimmed.tombstones[oldest.id])
+        XCTAssertNotNil(trimmed.retentionTombstones[oldest.id])
         trimmed.clearUnpinned()
         trimmed.merge(ClipboardHistoryState(entries: [oldest]))
         XCTAssertTrue(trimmed.entries.isEmpty)
@@ -161,16 +187,16 @@ final class ClipboardHistoryTests: XCTestCase {
         let source = directory.appendingPathComponent("source.txt"); try Data("keep".utf8).write(to: source)
         let entry = ClipboardEntry(items: [ClipboardPayloadItem(representations: [ClipboardRepresentation(type: "public.file-url", data: Data(source.absoluteString.utf8))])])
         let files = ClipboardFileStore(rootURL: directory.appendingPathComponent("files"))
-        let store = ClipboardHistoryStore(url: directory.appendingPathComponent("clipboard.json"))
+        let store = ClipboardHistoryStore(url: directory.appendingPathComponent("clipboard.json"), fileStore: files)
         try await store.insert(entry)
-        let pinned = try await store.setPinned(true, id: entry.id, fileStore: files).entries[0]
+        let pinned = try await store.setPinned(true, id: entry.id).entries[0]
         try FileManager.default.removeItem(at: source)
         XCTAssertEqual(try Data(contentsOf: files.resolvedFileURLs(for: pinned)[0]), Data("keep".utf8))
         XCTAssertTrue(pinned.isSyncEligible)
         var missing = entry; missing.items[0].representations = [ClipboardRepresentation(type: "public.file-url", data: Data(directory.appendingPathComponent("missing.txt").absoluteString.utf8))]
         missing = ClipboardEntry(items: missing.items)
         try await store.insert(missing)
-        do { _ = try await store.setPinned(true, id: missing.id, fileStore: files); XCTFail("Pin should fail") } catch { }
+        do { _ = try await store.setPinned(true, id: missing.id); XCTFail("Pin should fail") } catch { }
         let loaded = try await store.load()
         XCTAssertFalse(loaded.entries.first { $0.id == missing.id }!.isPinned)
     }
