@@ -97,9 +97,4 @@ public struct ClipboardFileStore: Sendable {
         try data.write(to: target, options: .atomic)
     }
 
-    @discardableResult public func importOwnedFile(name: String, data: Data, id: UUID = UUID()) throws -> ClipboardOwnedFile {
-        let safeName = URL(fileURLWithPath: name).lastPathComponent
-        let file = ClipboardOwnedFile(id: id, name: safeName, relativePath: id.uuidString + "/" + safeName)
-        try importOwnedFile(file, data: data); return file
-    }
 }

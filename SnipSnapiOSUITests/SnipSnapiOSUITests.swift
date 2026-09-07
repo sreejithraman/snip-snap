@@ -13,10 +13,12 @@ final class SnipSnapiOSUITests: XCTestCase {
         withEncryptedReset: Bool = false,
         accountNotice: Bool = false,
         withCopyShareFixtures: Bool = false,
+        withHapticsTrace: Bool = false,
         syncIssue: String? = nil
     ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["SNIP_SNAP_UI_TESTING"] = "1"
+        if withHapticsTrace { app.launchEnvironment["SNIP_SNAP_UI_TEST_HAPTICS"] = "1" }
         app.launchEnvironment["SNIP_SNAP_UI_TEST_STORE"] = storeName
         if withAttachments { app.launchEnvironment["SNIP_SNAP_UI_TEST_ATTACHMENTS"] = "1" }
         if withRecovery { app.launchEnvironment["SNIP_SNAP_UI_TEST_RECOVERY"] = "1" }
@@ -41,6 +43,63 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
         app.launch()
         return app
+    }
+
+    func testSwipeAndContextActionsPublishHapticOutcomes() {
+        continueAfterFailure = false
+        let app = launchApp(withHapticsTrace: true)
+        func expectHaptic(_ kind: String) {
+            let trace = app.staticTexts["haptic-event"]
+            let expected = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "label BEGINSWITH %@", kind + ":"), object: trace
+            )
+            XCTAssertEqual(XCTWaiter.wait(for: [expected], timeout: 4), .completed)
+        }
+        createSnip("Swipe feedback", in: app)
+        expectHaptic("saved")
+        let swiped = row(named: "Swipe feedback", in: app)
+        swiped.swipeRight()
+        app.buttons["done"].tap()
+        expectHaptic("markedDone")
+        swiped.swipeLeft()
+        app.buttons["delete-snip"].tap()
+        XCTAssertTrue(swiped.waitForNonExistence(timeout: 4))
+        expectHaptic("deleted")
+
+        createSnip("Menu feedback", in: app)
+        expectHaptic("saved")
+        let menuRow = row(named: "Menu feedback", in: app)
+        menuRow.press(forDuration: 1)
+        app.buttons["copy-snip"].tap()
+        expectHaptic("copied")
+        menuRow.press(forDuration: 1)
+        app.buttons["delete-context-snip"].tap()
+        XCTAssertTrue(menuRow.waitForNonExistence(timeout: 4))
+        expectHaptic("deleted")
+    }
+
+    func testHapticsPreferenceCanChangeAndSurvivesRelaunch() {
+        continueAfterFailure = false
+        let app = launchApp()
+        openSettings(in: app)
+        let haptics = app.switches["haptics-toggle"]
+        XCTAssertTrue(haptics.waitForExistence(timeout: 3))
+        let initial = haptics.value as? String
+        XCTAssertEqual(initial, "1")
+        toggle(haptics)
+        let changed = NSPredicate(format: "value != %@", initial ?? "")
+        expectation(for: changed, evaluatedWith: haptics)
+        waitForExpectations(timeout: 3)
+        let saved = haptics.value as? String
+
+        app.terminate()
+        app.launch()
+        openSettings(in: app)
+        XCTAssertTrue(haptics.waitForExistence(timeout: 3))
+        XCTAssertEqual(haptics.value as? String, saved)
+        if haptics.value as? String != "1" { toggle(haptics) }
+        expectation(for: NSPredicate(format: "value == '1'"), evaluatedWith: haptics)
+        waitForExpectations(timeout: 3)
     }
 
     func testExplicitEnableKeepsLocalContentAndTurnsSyncOn() {
@@ -522,6 +581,43 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Starred"].exists)
     }
 
+    func testExistingListKeepsEditsAfterChoosingAnIcon() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        createList("Work", in: app)
+        let work = listControl(named: "Work", in: app)
+        XCTAssertTrue(work.waitForExistence(timeout: 5))
+        work.press(forDuration: 1)
+        app.buttons["Edit List"].tap()
+
+        let field = app.textFields["list-name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        field.typeText(" Updated")
+        let editedName = try XCTUnwrap(field.value as? String)
+        app.buttons["list-color-blue"].tap()
+        let chooseIcon = app.descendants(matching: .any)["choose-list-icon"].firstMatch
+        chooseIcon.tap()
+        let star = app.buttons["list-icon-star.fill"].firstMatch
+        XCTAssertTrue(star.waitForExistence(timeout: 5))
+        star.tap()
+
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        XCTAssertTrue(chooseIcon.label.contains("Star Fill"))
+        XCTAssertEqual(field.value as? String, editedName)
+        XCTAssertTrue(app.buttons["list-color-blue"].isSelected)
+        app.buttons["save-list"].tap()
+
+        let saved = listControl(named: editedName, in: app)
+        XCTAssertTrue(saved.waitForExistence(timeout: 5))
+        saved.press(forDuration: 1)
+        app.buttons["Edit List"].tap()
+        XCTAssertTrue(chooseIcon.waitForExistence(timeout: 3))
+        XCTAssertTrue(chooseIcon.label.contains("Star Fill"))
+        XCTAssertEqual(field.value as? String, editedName)
+        XCTAssertTrue(app.buttons["list-color-blue"].isSelected)
+    }
+
     func testLibraryActionsExposeBackupImportWithoutHistoryCommands() {
         continueAfterFailure = false
         let app = launchApp()
@@ -665,6 +761,33 @@ final class SnipSnapiOSUITests: XCTestCase {
             context.draw(labelArea, in: CGRect(x: 0, y: 0, width: width, height: height))
             return pointer.contains { $0 < 128 }
         }
+    }
+
+    func testTappingCompletionCircleTogglesWithoutEditingOrSelecting() {
+        continueAfterFailure = false
+        let app = launchApp()
+        createSnip("Tap the completion circle", in: app)
+        let snip = row(named: "Tap the completion circle", in: app)
+        snip.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.2)).tap()
+        let becameDone = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Done"), object: snip
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [becameDone], timeout: 3), .completed)
+        XCTAssertFalse(app.buttons["selection-actions"].exists)
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Tappable completion circle"
+        proof.lifetime = .keepAlways
+        add(proof)
+        snip.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.2)).tap()
+        let becameNotDone = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Not Done"), object: snip
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [becameNotDone], timeout: 3), .completed)
+        enterSelection(in: app)
+        row(named: "Tap the completion circle", in: app).tap()
+        XCTAssertTrue(app.buttons["selection-actions"].isEnabled)
+        XCTAssertEqual(row(named: "Tap the completion circle", in: app).value as? String, "Not Done")
+        app.buttons["finish-selecting"].tap()
     }
 
     func testRowSwipeShowsAVisibleDestructiveDeleteAction() {
@@ -855,7 +978,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         ).firstMatch
         XCTAssertTrue(fixtureRow.waitForExistence(timeout: 5))
         fixtureRow.press(forDuration: 1)
-        let editAttachments = app.buttons["edit-attachments"]
+        let editAttachments = app.buttons["edit-snip"]
         XCTAssertTrue(editAttachments.waitForExistence(timeout: 3))
         editAttachments.tap()
         XCTAssertTrue(app.textViews["snip-text"].waitForExistence(timeout: 3))
@@ -1109,6 +1232,129 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     }
 
+    func testMergesSelectedSnips() {
+        continueAfterFailure = false
+        let app = launchApp()
+        createSnip("First merge note", in: app)
+        createSnip("Second merge note", in: app)
+        enterSelection(in: app)
+        row(named: "First merge note", in: app).tap()
+        row(named: "Second merge note", in: app).tap()
+        app.buttons["selection-actions"].tap()
+        XCTAssertTrue(app.buttons["merge-selection"].waitForExistence(timeout: 3))
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "iOS Merge Snips menu"
+        proof.lifetime = .keepAlways
+        add(proof)
+        app.buttons["merge-selection"].tap()
+        XCTAssertTrue(app.buttons["library-actions"].waitForExistence(timeout: 3))
+        let merged = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "snip-"))
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertTrue(merged.firstMatch.label.contains("First merge note"))
+        XCTAssertTrue(merged.firstMatch.label.contains("Second merge note"))
+    }
+
+    func testSelectionFilterClearsHiddenItems() {
+        continueAfterFailure = false
+        let app = launchApp()
+        createSnip("Filter this selection", in: app)
+        enterSelection(in: app)
+        row(named: "Filter this selection", in: app).tap()
+        XCTAssertTrue(app.buttons["selection-actions"].isEnabled)
+
+        app.buttons["workflow-options"].tap()
+        app.buttons["filter-done"].tap()
+        XCTAssertFalse(app.buttons["selection-actions"].isEnabled)
+        XCTAssertTrue(app.buttons["finish-selecting"].exists)
+        app.buttons["workflow-options"].tap()
+        app.buttons["filter-all"].tap()
+        XCTAssertTrue(row(named: "Filter this selection", in: app).exists)
+        XCTAssertFalse(app.buttons["selection-actions"].isEnabled)
+        app.buttons["finish-selecting"].tap()
+        XCTAssertTrue(app.buttons["library-actions"].waitForExistence(timeout: 3))
+    }
+
+    func testLongPressSelectsItemAndShowsSeparateClose() {
+        continueAfterFailure = false
+        let app = launchApp()
+        createSnip("Select this note", in: app)
+        createSnip("Leave this note", in: app)
+
+        row(named: "Select this note", in: app).press(forDuration: 1)
+        XCTAssertTrue(app.buttons["select-snip"].waitForExistence(timeout: 3))
+        let menuProof = XCTAttachment(screenshot: app.screenshot())
+        menuProof.name = "Long press with Select"
+        menuProof.lifetime = .keepAlways
+        add(menuProof)
+        app.buttons["select-snip"].tap()
+        XCTAssertTrue(app.buttons["finish-selecting"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["library-actions"].exists)
+        XCTAssertTrue(app.buttons["workflow-options"].exists)
+        XCTAssertEqual(app.buttons["finish-selecting"].label, "Finish Selecting")
+        XCTAssertTrue(app.buttons["selection-actions"].isEnabled)
+        let selectionProof = XCTAttachment(screenshot: app.screenshot())
+        selectionProof.name = "Selection with separate close"
+        selectionProof.lifetime = .keepAlways
+        add(selectionProof)
+
+        app.buttons["selection-actions"].tap()
+        app.buttons["mark-selection-done"].tap()
+        XCTAssertTrue(app.buttons["library-actions"].waitForExistence(timeout: 3))
+        XCTAssertEqual(row(named: "Select this note", in: app).value as? String, "Done")
+        XCTAssertEqual(row(named: "Leave this note", in: app).value as? String, "Not Done")
+
+        enterSelection(in: app)
+        XCTAssertTrue(app.buttons["finish-selecting"].exists)
+        XCTAssertFalse(app.buttons["selection-actions"].isEnabled)
+        app.buttons["finish-selecting"].tap()
+        XCTAssertTrue(app.buttons["library-actions"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["selection-actions"].exists)
+    }
+
+    func testDragReordersAndPersistsWithoutSelection() {
+        continueAfterFailure = false
+        let storeName = "reorder-\(UUID().uuidString)"
+        var app = launchApp(storeName: storeName)
+        createSnip("First drag sample", in: app)
+        createSnip("Second drag sample", in: app)
+        let first = row(named: "First drag sample", in: app)
+        let second = row(named: "Second drag sample", in: app)
+        XCTAssertFalse(app.buttons["selection-actions"].exists)
+        XCTAssertLessThan(second.frame.minY, first.frame.minY)
+
+        app.buttons["workflow-options"].tap()
+        app.buttons["reorder-snips"].tap()
+        XCTAssertFalse(app.buttons["selection-actions"].exists)
+        app.buttons["Reorder Second drag sample"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(
+            forDuration: 0.3,
+            thenDragTo: app.buttons["Reorder First drag sample"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 1))
+        )
+        let reordered = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in first.frame.minY < second.frame.minY },
+            object: nil
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [reordered], timeout: 5), .completed)
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Direct drag reordered snips"
+        proof.lifetime = .keepAlways
+        add(proof)
+
+        app.buttons["finish-reordering"].tap()
+        app.terminate()
+        app = launchApp(storeName: storeName)
+        let restoredFirst = row(named: "First drag sample", in: app)
+        let restoredSecond = row(named: "Second drag sample", in: app)
+        XCTAssertTrue(restoredFirst.waitForExistence(timeout: 3))
+        XCTAssertLessThan(restoredFirst.frame.minY, restoredSecond.frame.minY)
+        XCTAssertFalse(app.buttons["Reorder First drag sample"].exists)
+        restoredFirst.press(forDuration: 1)
+        XCTAssertTrue(app.buttons["edit-snip"].waitForExistence(timeout: 3))
+        let menuProof = XCTAttachment(screenshot: app.screenshot())
+        menuProof.name = "Item menu after direct drag"
+        menuProof.lifetime = .keepAlways
+        add(menuProof)
+    }
+
     func testSelectsManyMovesThemAndChangesManualOrder() {
         continueAfterFailure = false
         let app = launchApp()
@@ -1131,18 +1377,19 @@ final class SnipSnapiOSUITests: XCTestCase {
         listControl(named: "Work", in: app).tap()
         XCTAssertTrue(app.staticTexts["One"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["Two"].waitForExistence(timeout: 3))
+        let one = row(named: "One", in: app)
+        let two = row(named: "Two", in: app)
         app.buttons["workflow-options"].tap()
-        app.buttons["sort-manual"].tap()
-        enterSelection(in: app)
-        row(named: "One", in: app).tap()
-        app.buttons["selection-actions"].tap()
-        app.buttons["move-selection-up"].tap()
-
-        XCTAssertEqual(
-            app.buttons.matching(NSPredicate(format: "label MATCHES %@", "(One|Two).*"))
-                .element(boundBy: 0).label.components(separatedBy: ",").first,
-            "One"
+        app.buttons["reorder-snips"].tap()
+        app.buttons["Reorder One"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(
+            forDuration: 0.3,
+            thenDragTo: app.buttons["Reorder Two"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
         )
+        let reordered = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in one.frame.minY < two.frame.minY },
+            object: nil
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [reordered], timeout: 5), .completed)
     }
 
     func testChangingListsEndsSelection() {

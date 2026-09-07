@@ -78,11 +78,15 @@ package actor CloudKitClipboardTransport: ClipboardCloudTransport {
         try await prepare()
         let record: CKRecord
         do { record = try await database.record(for: CKRecord.ID(recordName: "manifest", zoneID: zone)) }
-        catch let error as CKError where error.code == .unknownItem { return ClipboardCloudSnapshot() }
+        catch let error as CKError where error.code == .unknownItem {
+            cache = [:]; uploaded = []; fetchedReferences = []
+            return ClipboardCloudSnapshot()
+        }
         guard let asset = record["payload"] as? CKAsset, let url = asset.fileURL else { throw ClipboardCloudError.invalidPayload }
         let manifest = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: url))
         fetchedReferences = Set(manifest.entries.values)
         uploaded = fetchedReferences
+        cache = cache.filter { fetchedReferences.contains($0.key) }
         var entries: [UUID: Data] = [:]
         for (id, digest) in manifest.entries {
             if let data = cache[digest] { entries[id] = data; continue }
@@ -137,8 +141,9 @@ package actor CloudKitClipboardTransport: ClipboardCloudTransport {
         _ = try result.get()
     }
     package func deleteAll() async throws {
-        _ = try await database.deleteRecordZone(withID: zone)
-        zoneReady = false; uploaded = []; cache = [:]
+        do { _ = try await database.deleteRecordZone(withID: zone) }
+        catch let error as CKError where error.code == .zoneNotFound || error.code == .unknownItem { }
+        zoneReady = false; uploaded = []; cache = [:]; fetchedReferences = []
     }
     private static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()

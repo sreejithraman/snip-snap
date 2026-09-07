@@ -140,18 +140,21 @@ private struct SnipListIconBrowser: View {
 struct NewSnipListSheet: View {
     @ObservedObject var model: AppModel
     @Binding var isPresented: Bool
-    let movesSelection: Bool
+    let movingIDs: Set<UUID>
     @State private var name = ""
     @State private var systemImage = "circle.grid.2x2.fill"
+    @State private var color: SnipListColor?
 
     var body: some View {
         VStack(alignment: .leading) {
             Text("New list")
                 .font(.system(size: 15, weight: .semibold))
             SnipListNameAndIconField(name: $name, selection: $systemImage)
+                .tint(SnipListAppearance(pair: color).color)
                 .textFieldStyle(.automatic)
                 .controlSize(.regular)
                 .onSubmit(create)
+            SnipListColorPicker(selection: $color)
             HStack {
                 Spacer()
                 Button("Cancel") { isPresented = false }
@@ -168,11 +171,11 @@ struct NewSnipListSheet: View {
     private func create() {
         let list = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !list.isEmpty else { return }
-        let movingIDs = movesSelection ? model.selection : []
         Task {
             guard await model.createList(
                 name: list,
                 systemImage: systemImage,
+                color: color,
                 movingIDs: movingIDs
             ) else { return }
             name = ""
@@ -187,24 +190,28 @@ struct SnipListEditSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name: String
     @State private var systemImage: String
+    @State private var color: SnipListColor?
 
     init(model: AppModel, list: SnipList) {
         self.model = model
         self.list = list
         _name = State(initialValue: list.name)
         _systemImage = State(initialValue: list.systemImage)
+        _color = State(initialValue: list.color)
     }
 
     var body: some View {
         VStack(alignment: .leading) {
             Text("Edit list").font(.headline)
             SnipListNameAndIconField(name: $name, selection: $systemImage)
+                .tint(SnipListAppearance(pair: color).color)
+            SnipListColorPicker(selection: $color)
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Save") {
                     Task {
-                        if await model.updateList(list, name: name, systemImage: systemImage) {
+                        if await model.updateList(list, name: name, systemImage: systemImage, color: .set(color)) {
                             dismiss()
                         }
                     }

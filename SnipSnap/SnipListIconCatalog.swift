@@ -73,7 +73,7 @@ enum SnipListIconOptions {
             "mappin", "mappin.and.ellipse", "suitcase.fill", "tent.fill",
             "compass.drawing", "signpost.right.fill", "binoculars.fill", "backpack.fill",
             "globe.americas.fill", "globe.europe.africa.fill", "globe.asia.australia.fill", "map.circle.fill",
-            "house.fill", "house.and.flag.fill", "building.fill", "building.columns.fill",
+            "house.fill", "house.and.flag.fill", "building.fill",
             "house.lodge.fill", "storefront.fill", "tent.2.fill", "beach.umbrella.fill",
             "lifepreserver.fill", "clock.fill", "alarm.fill", "stopwatch.fill",
             "timer", "hourglass", "calendar", "calendar.circle.fill",
@@ -144,13 +144,19 @@ enum SnipListIconOptions {
             "circle.grid.2x2.fill", "tray.fill", "archivebox.fill", "folder.badge.plus",
             "tag.fill", "pin.fill", "checklist", "list.bullet",
             "paperplane.fill", "envelope.fill", "message.fill", "phone.fill",
-            "chart.bar.fill", "chart.line.uptrend.xyaxis", "chart.pie.fill", "tablecells.fill",
-            "banknote.fill", "creditcard.fill", "receipt.fill", "cart.fill",
+            "chart.bar.fill", "tablecells.fill",
+            "creditcard.fill", "receipt.fill", "cart.fill",
             "bag.fill", "shippingbox.fill", "circle.dotted", "pause.circle.fill",
             "nosign", "arrow.triangle.2.circlepath", "checkmark.seal.fill", "road.lanes.curved.right",
             "signpost.right.and.left.fill", "flag.checkered", "calendar.badge.checkmark", "square.stack.3d.up.fill",
             "point.3.connected.trianglepath.dotted", "rectangle.3.group.fill", "square.grid.3x3.fill", "list.bullet.indent",
             "square.stack.fill", "app.badge.fill", "rectangle.badge.checkmark", "exclamationmark.arrow.triangle.2.circlepath"
+        ]),
+        SnipListIconCategory(title: String(localized: "Finance"), icons: [
+            "display.2",
+            "chart.line.uptrend.xyaxis", "chart.line.downtrend.xyaxis", "chart.line.flattrend.xyaxis", "chart.bar.xaxis",
+            "chart.pie.fill", "dollarsign.arrow.circlepath", "dollarsign.circle.fill", "eurosign.circle.fill",
+            "sterlingsign.circle.fill", "yensign.circle.fill", "banknote.fill", "building.columns.fill"
         ]),
         SnipListIconCategory(title: String(localized: "Communication"), icons: [
             "envelope.open.fill", "phone.arrow.up.right.fill", "video.bubble.left.fill", "megaphone"
@@ -174,7 +180,7 @@ enum SnipListIconOptions {
             "textformat"
         ]),
         SnipListIconCategory(title: String(localized: "Money, Shopping & Security"), icons: [
-            "dollarsign.circle.fill", "eurosign.circle.fill", "bitcoinsign.circle.fill", "wallet.bifold.fill",
+            "bitcoinsign.circle.fill", "wallet.bifold.fill",
             "basket.fill", "barcode", "qrcode", "scale.3d",
             "plus.forwardslash.minus", "shield.fill", "person.badge.key.fill", "key.viewfinder",
             "firewall.fill",
@@ -183,6 +189,18 @@ enum SnipListIconOptions {
     ]
 
     static let searchKeywords: [String: String] = [
+        "display.2": "stocks stock market trading terminal workstation multiple screens multi-screen monitors finance",
+        "chart.line.uptrend.xyaxis": "stocks stock market trading investing bullish gains growth",
+        "chart.line.downtrend.xyaxis": "stocks stock market trading investing bearish losses decline",
+        "chart.line.flattrend.xyaxis": "stocks stock market trading sideways flat neutral",
+        "chart.bar.xaxis": "stocks stock market trading volume chart",
+        "chart.pie.fill": "stocks stock market portfolio allocation diversification investing",
+        "dollarsign.arrow.circlepath": "stocks stock market trading returns reinvest dividends",
+        "dollarsign.circle.fill": "stocks stock market money dollar currency usd finance",
+        "eurosign.circle.fill": "stocks stock market money euro currency eur finance",
+        "sterlingsign.circle.fill": "stocks stock market money pound sterling currency gbp finance",
+        "yensign.circle.fill": "stocks stock market money yen yuan currency jpy cny finance",
+        "building.columns.fill": "stocks stock market bank exchange finance",
         "circle.grid.2x2.fill": "dashboard overview apps",
         "tray.fill": "inbox collect",
         "archivebox.fill": "archive storage",
@@ -256,7 +274,7 @@ enum SnipListIconOptions {
         "cart.fill": "shop shopping purchase",
         "storefront.fill": "commerce ecommerce marketplace retail",
         "creditcard.fill": "money payment finance",
-        "banknote.fill": "money cash finance",
+        "banknote.fill": "stocks stock market money cash finance",
         "bag.fill": "shop shopping purchase",
         "fork.knife": "food restaurant meal",
         "lizard.fill": "dinosaur dino reptile fun",

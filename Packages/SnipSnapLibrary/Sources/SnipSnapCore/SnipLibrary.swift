@@ -197,9 +197,9 @@ public indirect enum SnipLibraryCommand: Sendable {
         requestID: UUID,
         now: Date
     )
-    case createList(name: String, systemImage: String)
+    case createList(name: String, systemImage: String, color: SnipListColor? = nil)
     case restoreList(SnipList)
-    case updateList(id: UUID, name: String, systemImage: String)
+    case updateList(id: UUID, name: String, systemImage: String, color: SnipListColorChange = .keep)
     case deleteList(id: UUID)
     case update(
         id: UUID,

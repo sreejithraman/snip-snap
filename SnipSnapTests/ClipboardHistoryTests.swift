@@ -191,23 +191,7 @@ final class ClipboardHistoryTests: XCTestCase {
         )
     }
 
-    func testFileStoreKeepsTheNewestRapidReplacement() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Snip SnapClipboardStoreTests-\(UUID().uuidString)", isDirectory: true)
-        let storeURL = directory.appendingPathComponent("clipboard.json")
-        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        let store = ClipboardHistoryFileStore(url: storeURL)
 
-        await store.scheduleReplacement([clipboardEntry("First")])
-        await store.scheduleReplacement([clipboardEntry("Newest")])
-        await store.flush()
-
-        let data = try Data(contentsOf: storeURL)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let entries = try decoder.decode([ClipboardEntry].self, from: data)
-        XCTAssertEqual(entries.map(\.text), ["Newest"])
-    }
 
     func testHistoryReportsPersistenceFailure() async throws {
         let context = try makeContext()

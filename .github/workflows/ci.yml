@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Tests and iOS compile check
+  mac:
+    name: Mac and shared tests
     runs-on: macos-26
     timeout-minutes: 20
 
@@ -25,7 +25,31 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run tests
-        run: ./scripts/test.sh
+        run: ./scripts/test.sh --mac-only
 
-      - name: Build iPhone and Share extension
-        run: ./scripts/build-matrix.sh --iphone-only
+  ios:
+    name: iOS tests and bundle checks
+    runs-on: macos-26
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run tests and check app bundles
+        run: ./scripts/test.sh --ios-only
+
+  test:
+    name: Tests and iOS compile check
+    needs: [mac, ios]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require both test jobs to pass
+        env:
+          MAC_RESULT: ${{ needs.mac.result }}
+          IOS_RESULT: ${{ needs.ios.result }}
+        run: |
+          test "$MAC_RESULT" = success
+          test "$IOS_RESULT" = success

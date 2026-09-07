@@ -8,6 +8,7 @@ struct IOSAppRootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     private let session: IOSAppSession
+    @AppStorage("snip-sort-mode") private var savedSortMode = SnipSortMode.chronological.rawValue
     @State private var sheet: AppSheet?
     @State private var copyShare = IOSCopyShareCoordinator()
     @State private var compactComposerStorage = CompactComposerStorage()
@@ -24,6 +25,11 @@ struct IOSAppRootView: View {
         seedsCopyShareFixtures: Bool = false,
         shareProcessToken: String? = nil
     ) {
+#if DEBUG
+        if let store = ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_STORE"] {
+            _savedSortMode = AppStorage(wrappedValue: SnipSortMode.chronological.rawValue, "snip-sort-mode-\(store)")
+        }
+#endif
         self.session = session
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         self.seedsCopyShareFixtures = seedsCopyShareFixtures
@@ -32,14 +38,47 @@ struct IOSAppRootView: View {
 
     private var model: IOSAppModel { session.model }
 
+    private func beginBackupImport() {
+        model.haptics.invalidatePendingFeedback()
+        isExplainingBackupImport = true
+    }
+
     var body: some View {
         appNavigation
         .tint(SnipSnapTheme.controlTint)
+        .modifier(IOSHapticFeedbackModifier(feedback: model.haptics))
+        .onChange(of: sheet) { model.haptics.invalidatePendingFeedback() }
+        .onChange(of: model.selectedListID) { model.haptics.invalidatePendingFeedback() }
         .background {
             IOSShareSheetPresenter(request: $copyShare.shareRequest)
                 .frame(width: 0, height: 0)
         }
 #if DEBUG
+        .overlay(alignment: .topTrailing) {
+            if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_HAPTICS"] == "1" {
+                Text(verbatim: model.haptics.event.map {
+                    "\($0.kind):\($0.id)"
+                } ?? "none")
+                    .font(.caption2)
+                    .frame(width: 1, height: 1)
+                    .opacity(0.01)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("haptic-event")
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            if let bundleID = Bundle.main.bundleIdentifier,
+               let suffix = bundleID.components(separatedBy: ".dev").last,
+               bundleID.contains(".dev"), let slot = Int(suffix) {
+                Text(verbatim: "DEV \(slot)")
+                    .font(.caption2.bold())
+                    .padding(4)
+                    .background(.yellow, in: Capsule())
+                    .foregroundStyle(.black)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
         .overlay(alignment: .topLeading) {
             if let shareProcessToken {
                 Text(
@@ -71,6 +110,7 @@ struct IOSAppRootView: View {
                 SyncedContentSettingsView(
                     model: session.syncedContentSettings,
                     clipboard: session.clipboard,
+                    haptics: model.haptics,
                     retryAction: {
                         if session.syncedContentSettings.mode == .localOnly {
                             await session.syncedContentSettings.enableICloudSync()
@@ -160,7 +200,11 @@ struct IOSAppRootView: View {
         } message: {
             Text("Review: \(model.pendingImportPreview?.localizedSummary ?? ""). Snip Snap will merge these records with your saved snips.")
         }
+        .onChange(of: model.sortMode) { _, mode in
+            savedSortMode = mode.rawValue
+        }
         .task {
+            model.sortMode = SnipSortMode(rawValue: savedSortMode) ?? .chronological
             await session.launch()
             if seedsCopyShareFixtures, model.snips.isEmpty {
                 await seedCopyShareFixtures()
@@ -179,15 +223,7 @@ struct IOSAppRootView: View {
                 await session.foreground()
             }
         }
-        .task(id: scenePhase) {
-            guard scenePhase == .active else { return }
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(15)) }
-                catch { return }
-                guard !Task.isCancelled else { return }
-                await session.clipboard.synchronize()
-            }
-        }
+        .task(id: scenePhase) { await pollClipboardWhileActive() }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
@@ -199,6 +235,16 @@ struct IOSAppRootView: View {
             @unknown default:
                 break
             }
+        }
+    }
+
+    private func pollClipboardWhileActive() async {
+        guard scenePhase == .active else { return }
+        while !Task.isCancelled {
+            do { try await Task.sleep(for: .seconds(15)) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            await session.clipboard.synchronize()
         }
     }
 
@@ -221,7 +267,7 @@ struct IOSAppRootView: View {
                         },
                         libraryActions: LibraryActionsMenu(
                             model: model,
-                            importBackup: { isExplainingBackupImport = true },
+                            importBackup: beginBackupImport,
                             settings: { sheet = .settings },
                             editMode: $collectionEditMode,
                             includesCloudActions: true,
@@ -250,7 +296,7 @@ struct IOSAppRootView: View {
                     model: model,
                     sheet: $sheet,
                     editMode: $collectionEditMode,
-                    importBackup: { isExplainingBackupImport = true }
+                    importBackup: beginBackupImport
                 )
             } detail: {
                 NavigationStack {

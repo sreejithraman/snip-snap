@@ -396,7 +396,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
   }
 
   private static func makeContainer(storeURL: URL) throws -> ModelContainer {
-    let schema = Schema(versionedSchema: SnipSnapSchemaV5.self)
+    let schema = Schema(versionedSchema: SnipSnapSchemaV7.self)
     let configuration = ModelConfiguration(
       "SnipSnapLocal",
       schema: schema,
@@ -582,6 +582,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
         desiredName: metadata?.desiredName ?? record.name,
         resolvedName: record.name,
         systemImage: record.systemImage,
+        color: record.color,
         sortKey: try metadata.map { try SnipOrderKey(data: $0.orderKeyData) }
           ?? .legacy(Int64(record.position))
       )

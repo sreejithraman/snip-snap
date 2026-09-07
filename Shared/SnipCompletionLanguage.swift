@@ -10,6 +10,10 @@ enum SnipCompletionLanguage {
         stateTitle(isDone: !isDone)
     }
 
+    static func menuActionTitle(isDone: Bool) -> String {
+        isDone ? String(localized: "Mark Not Done") : String(localized: "Mark Done")
+    }
+
     static func stateTitle(isDone: Bool) -> String {
         isDone ? done : notDone
     }

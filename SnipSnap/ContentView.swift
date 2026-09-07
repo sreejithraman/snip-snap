@@ -18,6 +18,7 @@ struct ContentView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var shortcutSettings: ShortcutSettings
     @Environment(\.controlActiveState) private var controlActiveState
+    @Environment(\.colorScheme) private var colorScheme
     let coordinator: AppCoordinator
     @ObservedObject private var accessibilityPermissions: AccessibilityPermissionController
     @ObservedObject private var fileDropController: PanelFileDropController
@@ -27,7 +28,7 @@ struct ContentView: View {
     @State private var entryDraft = ComposerDraft()
     @State private var entryDraftListID = SnipList.inboxID
     @State private var showingNewList = false
-    @State private var movesSelectionToNewList = false
+    @State private var newListMovingIDs: Set<UUID> = []
     @State private var showingFileImporter = false
     @State private var fileImportTarget: FileImportTarget?
     @State private var pendingEditAttachmentImport: PendingEditAttachmentImport?
@@ -38,7 +39,6 @@ struct ContentView: View {
     @State private var isSavingInlineEntry = false
     @State private var previewURLs: [URL] = []
     @State private var selectedPreviewURL: URL?
-    @StateObject private var listState = SnipListState()
     @StateObject private var commandNumberPicker = CommandNumberPicker()
     @FocusState private var focusedTarget: PanelFocusTarget?
 
@@ -145,7 +145,7 @@ struct ContentView: View {
                 model: model,
                 dragSessionController: dragSessionController
             ) {
-                movesSelectionToNewList = false
+                newListMovingIDs = []
                 showingNewList = true
             }
         }
@@ -196,14 +196,14 @@ struct ContentView: View {
         .sheet(
             isPresented: $showingNewList,
             onDismiss: {
-                movesSelectionToNewList = false
+                newListMovingIDs = []
                 restoreListFocus()
             }
         ) {
             NewSnipListSheet(
                 model: model,
                 isPresented: $showingNewList,
-                movesSelection: movesSelectionToNewList
+                movingIDs: newListMovingIDs
             )
         }
         .sheet(isPresented: $showingRecoveryReview) {
@@ -304,7 +304,6 @@ struct ContentView: View {
         switch target {
         case .snip(let id):
             guard let snip = model.snips.first(where: { $0.id == id }) else { return }
-            model.selection = [id]
             _ = model.placeOnClipboard(.snips([snip]), feedback: .notify)
         case .clipboardEntry(let id):
             guard let entry = model.clipboardHistory.entry(id: id) else { return }
@@ -338,7 +337,7 @@ struct ContentView: View {
                 accessibilityPermissions: accessibilityPermissions,
                 focusedTarget: $focusedTarget,
                 moveSelectionToNewList: {
-                    movesSelectionToNewList = true
+                    newListMovingIDs = model.selection
                     showingNewList = true
                 },
                 selectAllVisible: selectAllVisible
@@ -392,15 +391,12 @@ struct ContentView: View {
     private var savedSnipList: some View {
         SnipListView(
             model: model,
-            coordinator: coordinator,
             dragSessionController: dragSessionController,
             fileDropController: fileDropController,
             commandNumberPicker: commandNumberPicker,
-            state: listState,
             focusedTarget: $focusedTarget,
             moveSelectionToNewList: { ids in
-                model.selection = ids
-                movesSelectionToNewList = true
+                newListMovingIDs = ids
                 showingNewList = true
             },
             requestFileImport: { snipID in
@@ -459,44 +455,54 @@ struct ContentView: View {
         HStack(alignment: .top, spacing: SnipSnapSpacing.relatedContent) {
             inlineAttachmentMenu
 
-            VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
-                if !entryDraft.attachments.isEmpty {
-                    AttachmentPreviewStrip(
-                        items: draftAttachmentPreviewItems,
-                        onPreview: { item in
-                            guard let url = item.url else { return }
-                            openAttachmentPreview(entryDraft.attachments, selectedURL: url)
-                        },
-                        onRemove: { item in
-                            guard let url = item.url else { return }
-                            removePreviewURL(url)
-                            model.removeDraftAttachment(url, from: model.activeListID)
-                            entryDraft = model.composerDraft(for: model.activeListID)
-                        }
-                    )
-                    .padding(.horizontal, SnipSnapSpacing.controlContentInset)
-                    .padding(.top, PanelControlMetrics.expandedInputVerticalPadding)
-                }
+            GlassEffectContainer {
+                VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
+                    if !entryDraft.attachments.isEmpty {
+                        AttachmentPreviewStrip(
+                            items: draftAttachmentPreviewItems,
+                            onPreview: { item in
+                                guard let url = item.url else { return }
+                                openAttachmentPreview(entryDraft.attachments, selectedURL: url)
+                            },
+                            onRemove: { item in
+                                guard let url = item.url else { return }
+                                removePreviewURL(url)
+                                model.removeDraftAttachment(url, from: model.activeListID)
+                                entryDraft = model.composerDraft(for: model.activeListID)
+                            }
+                        )
+                        .padding(.horizontal, SnipSnapSpacing.controlContentInset)
+                        .padding(.top, PanelControlMetrics.expandedInputVerticalPadding)
+                    }
 
-                HStack(
-                    alignment: PanelComposerLayout.actionAlignment(
-                        isExpanded: isInlineEntryExpanded
-                    ),
-                    spacing: SnipSnapSpacing.relatedContent
-                ) {
-                    inlineEntryField
-                    inlineSendButton
-                        .padding(.trailing, SnipSnapSpacing.relatedContent)
+                    HStack(
+                        alignment: PanelComposerLayout.actionAlignment(
+                            isExpanded: isInlineEntryExpanded
+                        ),
+                        spacing: SnipSnapSpacing.relatedContent
+                    ) {
+                        inlineEntryField
+                        Color.clear
+                            .frame(width: PanelControlMetrics.actionWidth, height: PanelControlMetrics.actionHeight)
+                            .padding(.trailing, PanelControlMetrics.sendInset)
+                            .allowsHitTesting(false)
+                    }
+                    .padding(.leading, SnipSnapSpacing.controlContentInset)
+                    .padding(.top, inlineEntryTextTopPadding)
+                    .padding(.bottom, inlineEntryTextBottomPadding)
                 }
-                .padding(.leading, SnipSnapSpacing.controlContentInset)
-                .padding(.top, inlineEntryTextTopPadding)
-                .padding(.bottom, inlineEntryTextBottomPadding)
+                .panelEmbeddedInputSurface(
+                    minHeight: PanelControlMetrics.compactComposerHeight,
+                    expanded: isInlineEntrySurfaceExpanded
+                )
             }
-            .panelEmbeddedInputSurface(
-                minHeight: PanelControlMetrics.compactComposerHeight,
-                expanded: isInlineEntrySurfaceExpanded,
-                isFocused: focusedTarget == .inlineEntry
-            )
+            .overlay(alignment: .bottomTrailing) {
+                GlassEffectContainer {
+                    inlineSendButton
+                        .padding(.trailing, PanelControlMetrics.sendInset)
+                        .padding(.bottom, max(inlineEntryTextBottomPadding, PanelControlMetrics.sendInset))
+                }
+            }
         }
         .frame(maxWidth: .infinity)
         .fixedSize(horizontal: false, vertical: true)
@@ -572,20 +578,13 @@ struct ContentView: View {
     }
 
     private var inlineSendButton: some View {
-        AppTintedGlassActionButton(
+        PanelGlassActionButton(
+            systemImage: "arrow.up",
             isEnabled: canSaveInlineEntry,
+            tint: model.activeList.accent.color.opacity(SnipSnapTheme.listGlassTintOpacity),
+            labelColor: model.activeList.accent.sendIconColor(in: model.appearance.colorScheme ?? colorScheme),
             action: saveInlineEntry
-        ) {
-            Image(systemName: "arrow.up")
-                .font(.system(size: 12, weight: .semibold))
-                .frame(width: 12, height: 12)
-        }
-        .frame(
-            width: PanelControlMetrics.compactControlLength,
-            height: PanelControlMetrics.compactControlLength
         )
-        .contentShape(Rectangle())
-        .controlSize(.regular)
         .accessibilityLabel("Add to \(model.activeList.displayName)")
         .accessibilityIdentifier("composer-send")
         .help("Add to \(model.activeList.displayName)")
@@ -763,7 +762,7 @@ struct ContentView: View {
     }
 
     private func selectAllVisible() {
-        listState.selectAllVisible(model: model)
+        model.selectAllVisible()
         focusedTarget = .list
     }
 

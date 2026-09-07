@@ -85,9 +85,9 @@ extension CloudFullRecordPersistenceTests {
         listID: customListID,
         attachments: [attachment]
       )
-      context.insert(StoredListRecord(.inbox))
+      context.insert(SnipSnapSchemaV4.StoredListRecord(.inbox))
       context.insert(
-        StoredListRecord(
+        SnipSnapSchemaV4.StoredListRecord(
           SnipList(
             id: customListID,
             name: "Custom",
@@ -266,8 +266,8 @@ extension CloudFullRecordPersistenceTests {
       )
       let container = try ModelContainer(for: schema, configurations: [configuration])
       let context = ModelContext(container)
-      context.insert(StoredListRecord(.inbox))
-      context.insert(StoredListRecord(customList))
+      context.insert(SnipSnapSchemaV4.StoredListRecord(.inbox))
+      context.insert(SnipSnapSchemaV4.StoredListRecord(customList))
       context.insert(
         try StoredCloudNamespaceState(
           namespaceKey: namespace.rawValue,

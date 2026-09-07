@@ -209,6 +209,9 @@ extension SwiftDataSnipLibrary {
     if recovery.conflictingFields.contains(.icon) {
       state.lists[index].systemImage = candidate.systemImage
     }
+    if recovery.conflictingFields.contains(.color) {
+      state.lists[index].color = candidate.color
+    }
     state = SnipLibraryState(
       snips: state.snips,
       lists: state.lists,

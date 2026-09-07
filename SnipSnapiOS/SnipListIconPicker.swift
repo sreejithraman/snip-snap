@@ -2,12 +2,17 @@ import SwiftUI
 
 struct SnipListIconPicker: View {
     @Binding var selection: String
+    var accent: Color = .primary
 
     var body: some View {
         NavigationLink {
             SnipListIconBrowser(selection: $selection)
         } label: {
-            Label("Icon", systemImage: selection)
+            Label {
+                Text("Icon")
+            } icon: {
+                Image(systemName: selection).foregroundStyle(accent)
+            }
         }
         .accessibilityIdentifier("choose-list-icon")
         .accessibilityLabel(

@@ -22,6 +22,7 @@ struct SnipCollectionView: View {
     @Binding var editMode: EditMode
     var dismissComposerKeyboard: () -> Void = {}
     var libraryActions: LibraryActionsMenu?
+    @State private var isReordering = false
     @State private var inlineEditSession: CompactInlineEditSession?
     @State private var previewURLs: [URL] = []
     @State private var selectedPreviewURL: URL?
@@ -42,7 +43,7 @@ struct SnipCollectionView: View {
                     .accessibilityIdentifier("empty-snips")
                 }
             } else {
-                List(selection: selectedSnipIDs) {
+                List(selection: isSelecting ? selectedSnipIDs : nil) {
                     ForEach(model.recoverySnapshot.pendingSnips.filter { recovery in
                         recovery.recovered.listID == model.selectedListID
                             && !model.snips.contains { $0.id == recovery.id }
@@ -53,8 +54,8 @@ struct SnipCollectionView: View {
                             RecoveredSnipRow(recovery: recovery)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityIdentifier("recovered-snip-\(recovery.id)")
                         .listRowSeparator(.hidden)
+                        .accessibilityIdentifier("recovered-snip-\(recovery.id)")
                     }
                     ForEach(model.visibleSnips) { snip in
                         Group {
@@ -121,13 +122,13 @@ struct SnipCollectionView: View {
                                 }
                             }
                         }
-                        .listRowSeparator(.hidden)
                         .tag(snip.id)
+                        .listRowSeparator(.hidden)
                         .swipeActions(edge: .leading) {
                             if !snip.isPinned {
                                 SemanticSwipeAction(
                                     title: SnipCompletionLanguage.actionTitle(isDone: snip.isDone),
-                                    systemImage: snip.isDone ? "circle" : "checkmark",
+                                    systemImage: snip.isDone ? "arrow.uturn.backward" : "checkmark",
                                     tint: snip.isDone ? .gray : .green,
                                     role: nil,
                                     accessibilityIdentifier: snip.isDone ? "not-done" : "done"
@@ -148,40 +149,13 @@ struct SnipCollectionView: View {
                                 Task { await model.deleteSnip(id: snip.id) }
                             }
                         }
-                        .contextMenu {
-                            Button(snip.isPinned ? "Unpin" : "Pin", systemImage: snip.isPinned ? "pin.slash" : "pin") {
-                                Task { await model.togglePinned(id: snip.id) }
-                            }
-                            if !snip.isPinned {
-                                Button(SnipCompletionLanguage.actionTitle(isDone: snip.isDone)) {
-                                    Task { await model.toggleDone(id: snip.id) }
-                                }
-                            }
-                            Button("Edit") { beginEditing(snip) }
-                            Button("Edit Attachments…", systemImage: "paperclip") {
-                                model.selectedSnipID = snip.id
-                                sheet = .editSnip(id: snip.id)
-                            }
-                            .accessibilityIdentifier("edit-attachments")
-                            MoveSnipMenu(model: model, snip: snip)
-                            Divider()
-                            CopyShareActions(
-                                snips: [snip],
-                                model: model,
-                                coordinator: copyShare,
-                                identifierSuffix: "snip"
-                            )
-                            Divider()
-                            Button("Delete", role: .destructive) {
-                                Task { await model.deleteSnip(id: snip.id) }
-                            }
-                        }
+                        .contextMenu { itemContextActions(for: snip) }
+                        .moveDisabled(!model.canReorderVisibleSnips || inlineEditSession != nil)
                     }
                     .onMove(perform: move)
-                    .moveDisabled(!model.canReorderVisibleSnips)
                 }
                 .listStyle(.plain)
-        .environment(\.defaultMinListRowHeight, 24)
+                .environment(\.editMode, isReordering ? .constant(.active) : $editMode)
                 .scrollDismissesKeyboard(.interactively)
             }
         }
@@ -221,7 +195,14 @@ struct SnipCollectionView: View {
                 .accessibilityIdentifier("search-snips")
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
-                if isSelecting {
+                if isReordering {
+                    Button("Done") {
+                        model.haptics.invalidatePendingFeedback()
+                        isReordering = false
+                    }
+                        .accessibilityIdentifier("finish-reordering")
+                } else if isSelecting {
+                    WorkflowOptionsMenu(model: model)
                     SelectionActionsMenu(
                         model: model,
                         copyShare: copyShare,
@@ -229,26 +210,51 @@ struct SnipCollectionView: View {
                     )
                         .disabled(model.selectedSnipIDs.isEmpty)
                 } else {
-                    WorkflowOptionsMenu(model: model)
+                    WorkflowOptionsMenu(model: model) {
+                        model.haptics.invalidatePendingFeedback()
+                        cancelInlineEdit()
+                        dismissComposerKeyboard()
+                        isReordering = true
+                    }
                 }
-                if let libraryActions {
+                if let libraryActions, !isReordering, !isSelecting {
                     libraryActions
+                }
+            }
+            if isSelecting {
+                ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Finish Selecting", systemImage: "xmark", action: endSelection)
+                        .labelStyle(.iconOnly)
+                        .accessibilityIdentifier("finish-selecting")
                 }
             }
         }
         .onChange(of: model.selectedListID) {
+            isReordering = false
             cancelInlineEdit()
             guard isSelecting else { return }
             endSelection()
         }
+        .onChange(of: model.completionFilter) {
+            model.haptics.invalidatePendingFeedback()
+            if isSelecting {
+                model.selectedSnipIDs.formIntersection(model.visibleSnips.map(\.id))
+            }
+        }
         .onChange(of: editMode) { _, mode in
-            model.selectedSnipIDs = []
+            model.haptics.invalidatePendingFeedback()
+            if !mode.isEditing { model.endSelectingSnips() }
             if mode.isEditing {
+                isReordering = false
                 cancelInlineEdit()
                 model.selectedSnipID = nil
             }
         }
+        .onChange(of: model.searchText) { model.haptics.invalidatePendingFeedback() }
         .onChange(of: isSearchPresented) { _, isPresented in
+            model.haptics.invalidatePendingFeedback()
+            if isPresented { isReordering = false }
             if !isPresented {
                 model.searchText = ""
             }
@@ -329,6 +335,7 @@ struct SnipCollectionView: View {
             get: { inlineEditSession?.text ?? "" },
             set: { value in
                 guard var session = inlineEditSession else { return }
+                model.haptics.invalidatePendingFeedback()
                 session.text = value
                 inlineEditSession = session
             }
@@ -336,7 +343,7 @@ struct SnipCollectionView: View {
     }
 
     private func beginEditing(_ snip: Snip) {
-        model.selectedSnipID = snip.id
+        model.beginEditingSnip(snip.id)
         inlineEditSession = CompactInlineEditSession(
             original: snip,
             text: snip.content
@@ -349,6 +356,7 @@ struct SnipCollectionView: View {
 
     private func cancelInlineEdit() {
         guard inlineEditSession?.isSaving != true else { return }
+        if inlineEditSession != nil { model.haptics.invalidatePendingFeedback() }
         isInlineEditorFocused = false
         inlineEditSession = nil
     }
@@ -377,6 +385,7 @@ struct SnipCollectionView: View {
     }
 
     private func previewAttachment(_ attachment: SnipAttachment) {
+        model.haptics.invalidatePendingFeedback()
         Task { @MainActor in
             guard let url = await model.prepareAttachment(attachment.id, for: .preview) else {
                 return
@@ -386,6 +395,61 @@ struct SnipCollectionView: View {
         }
     }
 
+    @ViewBuilder
+    private func itemContextActions(for snip: Snip) -> some View {
+        CopyShareActions(
+            snips: [snip],
+            model: model,
+            coordinator: copyShare,
+            identifierSuffix: "snip"
+        )
+        Divider()
+        Button("Edit", systemImage: "pencil") {
+            model.beginEditingSnip(snip.id)
+            sheet = .editSnip(id: snip.id)
+        }
+        .accessibilityIdentifier("edit-snip")
+        Button(snip.isPinned ? "Unpin" : "Pin", systemImage: snip.isPinned ? "pin.slash" : "pin") {
+            Task { await model.togglePinned(id: snip.id) }
+        }
+        if !snip.isPinned {
+        Button(
+            SnipCompletionLanguage.menuActionTitle(isDone: snip.isDone),
+            systemImage: snip.isDone ? "arrow.uturn.backward" : "checkmark"
+        ) {
+            Task { await model.toggleDone(id: snip.id) }
+        }
+        }
+        if !isSelecting || model.lists.contains(where: { $0.id != snip.listID }) {
+            Divider()
+        }
+        if !isSelecting {
+            Button("Select", systemImage: "checkmark.circle") {
+                cancelInlineEdit()
+                dismissComposerKeyboard()
+                isReordering = false
+                model.selectSnips([snip.id])
+                editMode = .active
+            }
+            .accessibilityIdentifier("select-snip")
+        }
+        MoveSnipMenu(model: model, snip: snip)
+        Divider()
+        Button(role: .destructive) {
+            Task { await model.deleteSnip(id: snip.id) }
+        } label: {
+            Label {
+                Text("Delete")
+            } icon: {
+                Image(systemName: "trash")
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.red)
+            }
+        }
+        .tint(.red)
+        .accessibilityIdentifier("delete-context-snip")
+    }
+
     private func move(from source: IndexSet, to destination: Int) {
         var orderedIDs = model.visibleSnips.map(\.id)
         orderedIDs.move(fromOffsets: source, toOffset: destination)
@@ -393,8 +457,8 @@ struct SnipCollectionView: View {
     }
 
     private func endSelection() {
+        model.endSelectingSnips()
         editMode = .inactive
-        model.selectedSnipIDs = []
     }
 
     private var isSelecting: Bool {
@@ -404,7 +468,7 @@ struct SnipCollectionView: View {
     private var selectedSnipIDs: Binding<Set<UUID>> {
         Binding(
             get: { model.selectedSnipIDs },
-            set: { model.selectedSnipIDs = $0 }
+            set: { model.selectSnips($0) }
         )
     }
 }
@@ -544,10 +608,12 @@ private struct NativeCollectionSearchBar: UIViewRepresentable {
 }
 
 private struct SnipRow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let snip: Snip
     let model: IOSAppModel
     let isRecovered: Bool
     var showsStatusIcon = true
+    @State private var isChangingCompletion = false
     var onPreviewAttachment: ((SnipAttachment) -> Void)? = nil
     var onCopy: (() -> Void)? = nil
 
@@ -559,9 +625,31 @@ private struct SnipRow: View {
                     .accessibilityLabel("Copy Snip")
                     .accessibilityIdentifier("copy-pinned-snip-\(snip.id)")
                 } else {
+                    Image(systemName: "circle").hidden().overlay {
+                Button {
+                    guard !isChangingCompletion else { return }
+                    isChangingCompletion = true
+                    Task { @MainActor in
+                        _ = await model.toggleDone(id: snip.id)
+                        isChangingCompletion = false
+                    }
+                } label: {
                     Image(systemName: snip.isDone ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(snip.isDone ? .secondary : .tertiary)
-                        .accessibilityHidden(true)
+                        .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: snip.isDone)
+                        .font(.body)
+                        .foregroundStyle(snip.isDone
+                            ? AnyShapeStyle(model.selectedList.accent.color)
+                            : AnyShapeStyle(.tertiary))
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .disabled(isChangingCompletion)
+                .accessibilityLabel(SnipCompletionLanguage.menuActionTitle(isDone: snip.isDone))
+                .accessibilityValue(SnipCompletionLanguage.stateTitle(isDone: snip.isDone))
+                .accessibilityIdentifier("completion-\(snip.id)")
+                    }
                 }
             }
             VStack(alignment: .leading, spacing: 8) {

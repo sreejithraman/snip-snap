@@ -4,6 +4,26 @@ import SnipSnapPersistence
 import XCTest
 
 final class ClipboardHistoryTests: XCTestCase {
+    func testRemovedFilesArePrunedButQuarantineKeepsItsBytes() async throws {
+        let directory = try root()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let files = ClipboardFileStore(rootURL: directory.appendingPathComponent("ClipboardFiles"))
+        let store = ClipboardHistoryStore(url: directory.appendingPathComponent("clipboard.json"))
+        let file = ClipboardOwnedFile(id: UUID(), name: "sample.txt", relativePath: "sample.txt")
+        try files.importOwnedFile(file, data: Data("sample".utf8))
+        var clip = text("file"); clip.ownedFiles = [file]
+        try await store.insert(clip)
+        try await store.clearUnpinned()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try files.url(for: file).path))
+        try files.importOwnedFile(file, data: Data("sample".utf8))
+        clip = text("quarantined"); clip.ownedFiles = [file]
+        try await store.insert(clip)
+        let state = try await store.load()
+        try JSONEncoder().encode(state).write(to: directory.appendingPathComponent("clipboard-quarantine-test.json"))
+        try await store.delete(id: clip.id)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try files.url(for: file).path))
+    }
+
     private func text(_ value: String, id: UUID = UUID(), time: Double = 10, pinned: Double? = nil) -> ClipboardEntry {
         ClipboardEntry(id: id, capturedAt: Date(timeIntervalSince1970: time), items: [
             ClipboardPayloadItem(representations: [ClipboardRepresentation(type: "public.utf8-plain-text", data: Data(value.utf8))])

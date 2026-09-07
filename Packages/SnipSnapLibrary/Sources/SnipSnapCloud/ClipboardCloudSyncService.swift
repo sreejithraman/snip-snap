@@ -15,6 +15,7 @@ package struct ClipboardCloudPayload: Codable, Sendable {
     public private(set) var lastError: String?
     private let store: ClipboardHistoryStore
     private let files: ClipboardFileStore
+    private let worker: ClipboardPayloadWorker
     private let bindingURL: URL
     private let makeTransport: @Sendable (String) -> any ClipboardCloudTransport
     private var transport: (any ClipboardCloudTransport)?
@@ -34,6 +35,7 @@ package struct ClipboardCloudPayload: Codable, Sendable {
     package init(store: ClipboardHistoryStore, files: ClipboardFileStore, syncRootURL: URL,
                  makeTransport: @escaping @Sendable (String) -> any ClipboardCloudTransport) {
         self.store = store; self.files = files
+        worker = ClipboardPayloadWorker(store: store, files: files)
         bindingURL = syncRootURL.appendingPathComponent("clipboard-account-binding.json")
         self.makeTransport = makeTransport
     }
@@ -60,58 +62,15 @@ package struct ClipboardCloudPayload: Codable, Sendable {
             for _ in 0..<4 {
                 let remote = try await transport.fetch()
                 try checkEpoch(started)
-                let decoded = try remote.entries.map { id, data -> ClipboardCloudPayload in
-                    guard data.count <= 64 * 1_024 * 1_024 else { throw ClipboardCloudError.payloadTooLarge }
-                    let payload = try JSONDecoder().decode(ClipboardCloudPayload.self, from: data)
-                    guard payload.entry.byteCount <= ClipboardHistoryState.entryByteLimit else { throw ClipboardCloudError.payloadTooLarge }
-                    var size = payload.entry.byteCount
-                    for bytes in payload.files.values {
-                        guard bytes.count <= ClipboardHistoryState.entryByteLimit - size else { throw ClipboardCloudError.payloadTooLarge }; size += bytes.count
-                    }
-                    guard payload.entry.id == id, (payload.entry.isSyncEligible || !payload.entry.ownedFiles.isEmpty) else { throw ClipboardCloudError.invalidPayload }
-                    return payload
-                }
-                for payload in decoded {
-                    for file in payload.entry.ownedFiles {
-                        guard let data = payload.files[file.id] else { throw ClipboardCloudError.invalidPayload }
-                        try files.importOwnedFile(file, data: data)
-                    }
-                }
-                let remoteState = ClipboardHistoryState(entries: decoded.map(\.entry), tombstones: remote.tombstones)
-                let local = try await store.merge(remoteState)
+                let (local, shared, outgoing, pending) = try await worker.prepare(remote, cancellation: cancellation)
                 try checkEpoch(started)
-                // Local-only file references do not consume another device's synced history limit.
-                var shared = remoteState
-                shared.merge(ClipboardHistoryState(entries: local.entries.filter { $0.isSyncEligible || remote.entries[$0.id] != nil }, tombstones: local.tombstones))
-                var outgoing: [UUID: Data] = [:]
-                let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
-                for entry in shared.entries {
-                    var entry = entry
-                    entry.hasBeenShared = true
-                    var contents: [UUID: Data] = [:]
-                    var total = entry.byteCount
-                    guard total <= ClipboardHistoryState.entryByteLimit else { throw ClipboardCloudError.payloadTooLarge }
-                    for file in entry.ownedFiles {
-                        let url = try files.url(for: file)
-                        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max
-                        guard size <= ClipboardHistoryState.entryByteLimit - total else { throw ClipboardCloudError.payloadTooLarge }
-                        total += size
-                        contents[file.id] = try Data(contentsOf: url)
-                    }
-                    if !entry.ownedFiles.isEmpty {
-                        entry.payloadFingerprint = entry.fingerprint
-                        entry.items = entry.items.map { item in
-                            ClipboardPayloadItem(representations: item.representations.map { representation in
-                                guard representation.type == "public.file-url", let source = String(data: representation.data, encoding: .utf8), let url = URL(string: source) else { return representation }
-                                return ClipboardRepresentation(type: representation.type, data: Data(URL(fileURLWithPath: "/" + url.lastPathComponent).absoluteString.utf8))
-                            })
-                        }
-                    }
-                    outgoing[entry.id] = try encoder.encode(ClipboardCloudPayload(entry: entry, files: contents))
-                }
-                pendingEntryIDs = Set(outgoing.filter { remote.entries[$0.key] != $0.value }.map(\.key))
+                pendingEntryIDs = pending
                 try checkEpoch(started)
-                do { try await transport.save(ClipboardCloudSnapshot(entries: outgoing, tombstones: shared.tombstones, version: remote.version), cancellation: cancellation) }
+                do {
+                    if !pending.isEmpty || outgoing.keys.count != remote.entries.keys.count || shared.tombstones != remote.tombstones {
+                        try await transport.save(ClipboardCloudSnapshot(entries: outgoing, tombstones: shared.tombstones, version: remote.version), cancellation: cancellation)
+                    }
+                }
                 catch ClipboardCloudError.conflict { continue }
                 try checkEpoch(started)
                 pendingEntryIDs = []
@@ -138,14 +97,17 @@ package struct ClipboardCloudPayload: Codable, Sendable {
         transitioning = true; defer { transitioning = false }
         stop()
         await waitUntilIdle()
+        let hadBinding = FileManager.default.fileExists(atPath: bindingURL.path)
         try bind(to: generation)
         try await transport?.deleteAll()
-        try await store.save(ClipboardHistoryState())
+        if hadBinding { try await store.save(ClipboardHistoryState()) }
         try removeBinding()
+        await worker.reset()
     }
 
     /// Keep the previous account's history on disk but never upload it to another account.
     public func resetAccountBinding() async throws {
+        guard FileManager.default.fileExists(atPath: bindingURL.path) else { return }
         guard !transitioning else { throw ClipboardCloudError.busy }
         transitioning = true; defer { transitioning = false }
         stop()
@@ -157,6 +119,7 @@ package struct ClipboardCloudPayload: Codable, Sendable {
         }
         try await store.save(ClipboardHistoryState())
         try removeBinding()
+        await worker.reset()
     }
     private func removeBinding() throws {
         if FileManager.default.fileExists(atPath: bindingURL.path) { try FileManager.default.removeItem(at: bindingURL) }
@@ -177,5 +140,101 @@ package struct ClipboardCloudPayload: Codable, Sendable {
     }
     private func checkEpoch(_ expected: Int) throws {
         guard epoch == expected else { throw CancellationError() }
+    }
+}
+
+/// Keeps large payload and file work off the UI executor.
+package actor ClipboardPayloadWorker {
+    private let store: ClipboardHistoryStore
+    private let files: ClipboardFileStore
+    private var decodedCache: [UUID: (Data, ClipboardCloudPayload)] = [:]
+    private var encodedCache: [UUID: (ClipboardEntry, Data)] = [:]
+    package private(set) var decodeCount = 0
+    package private(set) var encodeCount = 0
+    package private(set) var importCount = 0
+
+    package init(store: ClipboardHistoryStore, files: ClipboardFileStore) {
+        self.store = store; self.files = files
+    }
+
+    package func reset() { decodedCache = [:]; encodedCache = [:] }
+
+    package func prepare(_ remote: ClipboardCloudSnapshot, cancellation: ClipboardCloudCancellation) async throws
+        -> (ClipboardHistoryState, ClipboardHistoryState, [UUID: Data], Set<UUID>) {
+        try cancellation.check()
+        decodedCache = decodedCache.filter { remote.entries[$0.key] != nil }
+        var changed: Set<UUID> = []
+                let decoded = try remote.entries.map { id, data -> ClipboardCloudPayload in
+                    if let cached = decodedCache[id], cached.0 == data { return cached.1 }
+                    decodeCount += 1
+                    guard data.count <= 64 * 1_024 * 1_024 else { throw ClipboardCloudError.payloadTooLarge }
+                    let payload = try JSONDecoder().decode(ClipboardCloudPayload.self, from: data)
+                    guard payload.entry.byteCount <= ClipboardHistoryState.entryByteLimit else { throw ClipboardCloudError.payloadTooLarge }
+                    var size = payload.entry.byteCount
+                    for bytes in payload.files.values {
+                        guard bytes.count <= ClipboardHistoryState.entryByteLimit - size else { throw ClipboardCloudError.payloadTooLarge }; size += bytes.count
+                    }
+                    guard payload.entry.id == id, (payload.entry.isSyncEligible || !payload.entry.ownedFiles.isEmpty) else { throw ClipboardCloudError.invalidPayload }
+                    decodedCache[id] = (data, payload)
+                    changed.insert(id)
+                    return payload
+                }
+                let remoteState = ClipboardHistoryState(entries: decoded.map(\.entry), tombstones: remote.tombstones)
+                try cancellation.check()
+                let local = try await store.merge(remoteState)
+                try cancellation.check()
+                let liveFiles = Set(local.entries.flatMap(\.ownedFiles).map(\.id))
+                for payload in decoded {
+                    for file in payload.entry.ownedFiles where liveFiles.contains(file.id) {
+                        guard let data = payload.files[file.id] else { throw ClipboardCloudError.invalidPayload }
+                        try cancellation.check()
+                        if try changed.contains(payload.entry.id) || !FileManager.default.fileExists(atPath: files.url(for: file).path) {
+                            try files.importOwnedFile(file, data: data)
+                            importCount += 1
+                        }
+                    }
+                }
+                // Local-only file references do not consume another device's synced history limit.
+                var shared = remoteState
+                shared.merge(ClipboardHistoryState(entries: local.entries.filter { $0.isSyncEligible || remote.entries[$0.id] != nil }, tombstones: local.tombstones))
+                var outgoing: [UUID: Data] = [:]
+                let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+                for entry in shared.entries {
+                    if let cached = encodedCache[entry.id], cached.0 == entry,
+                       try entry.ownedFiles.allSatisfy({ FileManager.default.isReadableFile(atPath: try files.url(for: $0).path) }) {
+                        outgoing[entry.id] = cached.1
+                        continue
+                    }
+                    let original = entry
+                    var entry = entry
+                    entry.hasBeenShared = true
+                    var contents: [UUID: Data] = [:]
+                    var total = entry.byteCount
+                    guard total <= ClipboardHistoryState.entryByteLimit else { throw ClipboardCloudError.payloadTooLarge }
+                    for file in entry.ownedFiles {
+                        let url = try files.url(for: file)
+                        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max
+                        guard size <= ClipboardHistoryState.entryByteLimit - total else { throw ClipboardCloudError.payloadTooLarge }
+                        total += size
+                        contents[file.id] = try Data(contentsOf: url)
+                    }
+                    if !entry.ownedFiles.isEmpty {
+                        entry.payloadFingerprint = entry.fingerprint
+                        entry.items = entry.items.map { item in
+                            ClipboardPayloadItem(representations: item.representations.map { representation in
+                                guard representation.type == "public.file-url", let source = String(data: representation.data, encoding: .utf8), let url = URL(string: source) else { return representation }
+                                return ClipboardRepresentation(type: representation.type, data: Data(URL(fileURLWithPath: "/" + url.lastPathComponent).absoluteString.utf8))
+                            })
+                        }
+                    }
+                    try cancellation.check()
+                    let data = try encoder.encode(ClipboardCloudPayload(entry: entry, files: contents))
+                    encodeCount += 1
+                    outgoing[entry.id] = data
+                    encodedCache[entry.id] = (original, data)
+                }
+
+        encodedCache = encodedCache.filter { outgoing[$0.key] != nil }
+        return (local, shared, outgoing, Set(outgoing.filter { remote.entries[$0.key] != $0.value }.map(\.key)))
     }
 }

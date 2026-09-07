@@ -46,10 +46,10 @@ final class ShortcutTests: StoreBackedTestCase {
 
         XCTAssertEqual(defaults.captureSelection, .doubleShift(.left))
         XCTAssertEqual(defaults.togglePanel, .doubleShift(.right))
-        XCTAssertEqual(defaults.toggleClipboard, .commandDoubleShift(.right))
+        XCTAssertEqual(defaults.toggleClipboard, .commandDoubleShift(.left))
         XCTAssertEqual(defaults.captureSelection.displayName, "Left ⇧ ⇧")
         XCTAssertEqual(defaults.togglePanel.displayName, "Right ⇧ ⇧")
-        XCTAssertEqual(defaults.toggleClipboard.displayName, "⌘ Right ⇧ ⇧")
+        XCTAssertEqual(defaults.toggleClipboard.displayName, "⌘ Left ⇧ ⇧")
         XCTAssertTrue(defaults.isValid)
     }
 
@@ -78,6 +78,64 @@ final class ShortcutTests: StoreBackedTestCase {
         )
 
         XCTAssertEqual(decoded, .snipSnapDefaults)
+    }
+
+    @MainActor
+    func testClipboardShortcutCanBeReassignedAndRestored() throws {
+        let suiteName = "Snip SnapClipboardShortcutTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = ShortcutSettings(defaults: defaults)
+        let custom = ShortcutTrigger.keyChord(
+            keyCode: UInt32(kVK_ANSI_K),
+            modifiers: UInt32(controlKey | optionKey),
+            keyLabel: "K"
+        )
+
+        for trigger in [custom, .commandDoubleShift(.right)] {
+            settings.save(try settings.candidate(setting: trigger, for: .toggleClipboard))
+            XCTAssertEqual(
+                ShortcutSettings(defaults: defaults).configuration.toggleClipboard,
+                trigger
+            )
+        }
+
+        settings.save(try settings.candidate(
+            setting: GlobalHotKeyAction.toggleClipboard.defaultTrigger,
+            for: .toggleClipboard
+        ))
+        XCTAssertEqual(
+            ShortcutSettings(defaults: defaults).configuration.toggleClipboard,
+            .commandDoubleShift(.left)
+        )
+    }
+
+    @MainActor
+    func testNewClipboardDefaultPreservesPriorAssignments() throws {
+        let suiteName = "Snip SnapPriorShortcutTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var global = GlobalShortcutConfiguration.snipSnapDefaults
+        global.captureSelection = .commandDoubleShift(.left)
+        global.toggleClipboard = .commandDoubleShift(.right)
+        var app = AppShortcutConfiguration.snipSnapDefaults
+        app.set(.init(keyCode: kVK_ANSI_L, modifiers: cmdKey | shiftKey, keyLabel: "L"), for: .toggleDone)
+        let globalData = try JSONEncoder().encode(global)
+        let appData = try JSONEncoder().encode(app)
+        defaults.set(globalData, forKey: "globalShortcutConfiguration")
+        defaults.set(appData, forKey: "appShortcutConfiguration")
+
+        let settings = ShortcutSettings(defaults: defaults)
+        XCTAssertEqual(settings.configuration, global)
+        XCTAssertEqual(settings.appConfiguration, app)
+        XCTAssertEqual(defaults.data(forKey: "globalShortcutConfiguration"), globalData)
+        XCTAssertEqual(defaults.data(forKey: "appShortcutConfiguration"), appData)
+        XCTAssertThrowsError(try settings.candidate(
+            setting: GlobalHotKeyAction.toggleClipboard.defaultTrigger,
+            for: .toggleClipboard
+        )) { error in
+            XCTAssertEqual(error as? ShortcutSettingsError, .duplicate)
+        }
     }
 
     func testDoubleShiftDetectorRequiresTwoCleanTaps() {
@@ -155,8 +213,8 @@ final class ShortcutTests: StoreBackedTestCase {
     }
 
     func testDoubleShiftRouterKeepsPlainAndCommandGesturesSeparate() {
-        let plain = DoubleShiftGesture(side: .right, modifier: .none)
-        let command = DoubleShiftGesture(side: .right, modifier: .command)
+        let plain = DoubleShiftGesture(side: .left, modifier: .none)
+        let command = DoubleShiftGesture(side: .left, modifier: .command)
         var router = DoubleShiftRouter(gestures: [plain, command])
 
         XCTAssertFalse(router.shiftChanged(gesture: command, isDown: true, timestamp: 1.00))

@@ -240,10 +240,6 @@ signing_policy_preflight() {
         [[ -n "${(P)setting:-}" ]] || missing+=("$setting")
     done
 
-    if [[ -z "$entitlement_setting" && "$lane" == release ]]; then
-        entitlement_setting="$(signing_policy_resolve_setting \
-            "$settings_file" CODE_SIGN_ENTITLEMENTS "$scheme")"
-    fi
     if [[ -n "$entitlement_setting" ]]; then
         entitlement_path="$(signing_policy_entitlement_path \
             "$repo_dir" "$entitlement_setting")"
@@ -251,8 +247,7 @@ signing_policy_preflight() {
             missing+=("CODE_SIGN_ENTITLEMENTS file")
         elif ! /usr/bin/plutil -lint "$entitlement_path" >/dev/null 2>&1; then
             missing+=("valid entitlement plist")
-        elif [[ "$lane" == cloud || "$lane" == device || \
-                "$lane" == testflight || "$lane" == release ]]; then
+        else
             if [[ "$lane" != release ]]; then
                 signing_policy_plist_array_contains \
                     "$entitlement_path" com.apple.security.application-groups \

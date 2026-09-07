@@ -103,69 +103,7 @@ extension ClipboardEntry {
     }
 }
 
-actor ClipboardHistoryFileStore {
-    private let url: URL
-    private var pendingEntries: [ClipboardEntry]?
-    private var writer: Task<Void, Never>?
-    private var writeError: String?
 
-    init(url: URL) {
-        self.url = url
-    }
-
-    func load() -> [ClipboardEntry] {
-        guard let data = try? Data(contentsOf: url) else { return [] }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let decoded = (try? decoder.decode([ClipboardEntry].self, from: data)) ?? []
-        return ClipboardHistory.trimmed(decoded)
-    }
-
-    func scheduleReplacement(_ entries: [ClipboardEntry]) {
-        pendingEntries = entries
-        guard writer == nil else { return }
-        writer = Task { await drainPendingWrites() }
-    }
-
-    func flush() async {
-        while let writer {
-            await writer.value
-        }
-    }
-
-    func currentWriteError() -> String? {
-        return writeError
-    }
-
-    private func drainPendingWrites() async {
-        while let entries = pendingEntries {
-            pendingEntries = nil
-            if let error = await Task.detached(priority: .utility, operation: {
-                Self.write(entries, to: self.url)
-            }).value {
-                writeError = error
-            } else {
-                writeError = nil
-            }
-        }
-        writer = nil
-    }
-
-    nonisolated private static func write(_ entries: [ClipboardEntry], to url: URL) -> String? {
-        do {
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            try encoder.encode(entries).write(to: url, options: .atomic)
-            return nil
-        } catch {
-            return String(localized: "Snip Snap could not save clipboard history. Snip Snap may lose new clipboard items when it quits.")
-        }
-    }
-}
 
 private final class ClipboardPollingTimer: @unchecked Sendable {
     var timer: Timer?
@@ -261,7 +199,6 @@ final class ClipboardHistory: ObservableObject {
     private var lastSyncRequest = Date.distantPast
 
     private let pasteboard: NSPasteboard
-    private let storeURL: URL
     let sharedStore: ClipboardHistoryStore
     let ownedFileStore: ClipboardFileStore
     private var state = ClipboardHistoryState()
@@ -286,7 +223,6 @@ final class ClipboardHistory: ObservableObject {
         self.pasteboard = pasteboard
         self.defaults = defaults
         pendingUploadIDs = Set((defaults.stringArray(forKey: "clipboardPendingUploadIDs") ?? []).compactMap(UUID.init(uuidString:)))
-        self.storeURL = storeURL
         sharedStore = ClipboardHistoryStore(url: storeURL)
         ownedFileStore = ClipboardFileStore(rootURL: storeURL.deletingLastPathComponent().appendingPathComponent("ClipboardFiles", isDirectory: true))
         captureReader = ClipboardCaptureReader(pasteboardName: pasteboard.name)
@@ -604,13 +540,7 @@ final class ClipboardHistory: ObservableObject {
         }
     }
 
-    func refreshFromStore() async {
-        await flushPersistence()
-        do {
-            state.merge(try await sharedStore.load())
-            entries = state.entries
-        } catch { persistenceError = error.localizedDescription }
-    }
+
 
     func delete(id: UUID) {
         state.delete(id: id)

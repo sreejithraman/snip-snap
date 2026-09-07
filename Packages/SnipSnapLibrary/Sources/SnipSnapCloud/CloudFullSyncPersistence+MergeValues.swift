@@ -86,6 +86,7 @@ extension CloudFullSyncPersistence {
       id: record.domainID,
       desiredName: try required(record.desiredName, "desiredName"),
       systemImage: try required(record.systemImage, "systemImage"),
+      color: value(record.color ?? .missing, default: nil),
       orderKey: try required(record.orderKey, "orderKey"),
       updatedAt: value(record.updatedAt, default: Date(timeIntervalSince1970: 0))
     )
@@ -96,6 +97,7 @@ extension CloudFullSyncPersistence {
       id: list.id,
       desiredName: list.desiredName,
       systemImage: list.systemImage,
+      color: list.color,
       orderKey: list.sortKey,
       updatedAt: updatedAt
     )
@@ -123,6 +125,7 @@ extension CloudFullSyncPersistence {
     lhs.id == rhs.id
       && lhs.desiredName == rhs.desiredName
       && lhs.systemImage == rhs.systemImage
+      && lhs.color == rhs.color
       && lhs.orderKey == rhs.orderKey
   }
 
@@ -148,6 +151,7 @@ extension CloudFullSyncPersistence {
       desiredName: value.desiredName,
       resolvedName: value.desiredName,
       systemImage: value.systemImage,
+      color: value.color,
       sortKey: value.orderKey
     )
   }
@@ -200,6 +204,7 @@ extension CloudFullSyncPersistence {
         switch field {
         case .desiredName: .name
         case .systemImage: .icon
+        case .color: .color
         }
       })
     )

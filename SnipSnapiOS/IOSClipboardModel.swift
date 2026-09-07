@@ -221,7 +221,9 @@ final class IOSClipboardModel {
             let types = [UTType.utf8PlainText, .plainText, .url, .rtf, .html, .png, .jpeg, .tiff]
             for provider in providers {
                 var representations: [ClipboardRepresentation] = []
-                for type in types where provider.hasItemConformingToTypeIdentifier(type.identifier) {
+                let imageTypes = provider.registeredTypeIdentifiers.compactMap { UTType($0) }
+                    .filter { $0.conforms(to: .image) && !types.contains($0) }
+                for type in types + imageTypes where provider.hasItemConformingToTypeIdentifier(type.identifier) {
                     let data: Data = try await withCheckedThrowingContinuation { continuation in
                         provider.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, error in
                             if let data { continuation.resume(returning: data) }
@@ -233,7 +235,7 @@ final class IOSClipboardModel {
                 }
                 if !representations.isEmpty { items.append(ClipboardPayloadItem(representations: representations)) }
             }
-            guard !items.isEmpty else { return }
+            guard !items.isEmpty else { throw CocoaError(.fileReadUnknown) }
             let entry = ClipboardEntry(sourceApplication: "Paste", items: items,
                 plainText: Self.previewText(from: items), sourceDeviceName: UIDevice.current.model)
             guard entry.byteCount <= ClipboardHistoryState.entryByteLimit else { throw CocoaError(.fileReadTooLarge) }

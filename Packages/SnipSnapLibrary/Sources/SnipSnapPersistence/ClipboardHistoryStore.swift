@@ -3,7 +3,11 @@ import SnipSnapCore
 
 public actor ClipboardHistoryStore {
     public nonisolated let url: URL
-    public init(url: URL) { self.url = url }
+    private let files: ClipboardFileStore
+    public init(url: URL, fileStore: ClipboardFileStore? = nil) {
+        self.url = url
+        files = fileStore ?? ClipboardFileStore(rootURL: url.deletingLastPathComponent().appendingPathComponent("ClipboardFiles", isDirectory: true))
+    }
 
     public func load() throws -> ClipboardHistoryState {
         guard FileManager.default.fileExists(atPath: url.path) else { return ClipboardHistoryState() }
@@ -27,9 +31,33 @@ public actor ClipboardHistoryStore {
     }
 
     public func save(_ state: ClipboardHistoryState) throws {
+        let previous = try? load()
+        if previous == state { return }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
         try encoder.encode(state).write(to: url, options: .atomic)
+        if let previous { pruneRemovedFiles(previous: previous, current: state) }
+    }
+
+    private func pruneRemovedFiles(previous: ClipboardHistoryState, current: ClipboardHistoryState) {
+        // Only remove files known to the previous committed history. Active imports
+        // and failed saves must not lose bytes, and quarantine keeps its files.
+        var retained = Set(current.entries.flatMap(\.ownedFiles).map(\.relativePath))
+        let directory = url.deletingLastPathComponent()
+        guard let backups = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
+        for backup in backups where backup.lastPathComponent.hasPrefix("clipboard-quarantine-") {
+            guard let data = try? Data(contentsOf: backup),
+                  let state = try? JSONDecoder().decode(ClipboardHistoryState.self, from: data) else { return }
+            retained.formUnion(state.entries.flatMap(\.ownedFiles).map(\.relativePath))
+        }
+        for file in previous.entries.flatMap(\.ownedFiles) where !retained.contains(file.relativePath) {
+            guard let target = try? files.url(for: file) else { continue }
+            try? FileManager.default.removeItem(at: target)
+            let parent = target.deletingLastPathComponent()
+            if parent != files.rootURL, (try? FileManager.default.contentsOfDirectory(atPath: parent.path).isEmpty) == true {
+                try? FileManager.default.removeItem(at: parent)
+            }
+        }
     }
 
     @discardableResult public func merge(_ remote: ClipboardHistoryState) throws -> ClipboardHistoryState {

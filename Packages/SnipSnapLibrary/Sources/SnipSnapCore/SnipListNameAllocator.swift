@@ -24,6 +24,7 @@ package enum SnipListNameAllocator {
         desiredName: cleaned(list.desiredName),
         resolvedName: cleaned(list.desiredName),
         systemImage: list.systemImage,
+        color: list.color,
         sortKey: list.sortKey
       )
     }

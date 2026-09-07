@@ -294,6 +294,9 @@ struct RecoveredListReviewView: View {
     private func listValues(_ list: SnipList, fields: Set<RecoveredListField>) -> some View {
         if fields.contains(.name) { LabeledContent("Name", value: list.name) }
         if fields.contains(.icon) { Label(list.systemImage, systemImage: list.systemImage) }
+        if fields.contains(.color) {
+            Label(list.accent.title, systemImage: "circle.fill").foregroundStyle(list.accent.color)
+        }
     }
 
     private func resolve(_ choice: SnipRecoveryChoice) {

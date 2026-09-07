@@ -25,6 +25,7 @@ private struct CompactGlassCircleButton<Label: View>: View {
 }
 
 struct CompactLibraryControls: View {
+    @Environment(\.colorScheme) private var colorScheme
     let model: IOSAppModel
     let storage: CompactComposerStorage
     let showsListTabs: Bool
@@ -105,7 +106,10 @@ struct CompactLibraryControls: View {
         HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
             CompactGlassCircleButton(
                 length: controlLength,
-                action: { isImporting = true }
+                action: {
+                    model.haptics.invalidatePendingFeedback()
+                    isImporting = true
+                }
             ) {
                 Image(systemName: isStaging ? "hourglass" : "plus")
                     .font(.title3.weight(.medium))
@@ -114,29 +118,58 @@ struct CompactLibraryControls: View {
             .accessibilityLabel("Add Attachments")
             .accessibilityIdentifier("composer-add-attachments")
 
-            VStack(spacing: SnipSnapSpacing.relatedContent) {
-                if !draft.attachments.isEmpty {
-                    attachmentStrip
-                        .padding(.horizontal, SnipSnapSpacing.cardContentInset)
-                        .padding(.top, 10)
+            GlassEffectContainer {
+                VStack(spacing: SnipSnapSpacing.relatedContent) {
+                    if !draft.attachments.isEmpty {
+                        attachmentStrip
+                            .padding(.horizontal, SnipSnapSpacing.cardContentInset)
+                            .padding(.top, 10)
+                    }
+
+                    HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
+                        TextField(
+                            "Add to \(model.selectedList.displayName)…",
+                            text: composerText,
+                            axis: .vertical
+                        )
+                            .textFieldStyle(.plain)
+                            .lineLimit(1...5)
+                            .focused($isComposerFocused)
+                            .disabled(storage.isSaving)
+                            .padding(SnipSnapSpacing.relatedContent)
+                            .frame(minHeight: controlLength, alignment: .center)
+                            .accessibilityIdentifier("composer-text")
+
+                        Color.clear
+                            .frame(width: controlLength, height: controlLength)
+                            .allowsHitTesting(false)
+                    }
+                    .padding(.leading, SnipSnapSpacing.relatedContent / 2)
+                    .padding(.trailing, SnipSnapSpacing.relatedContent)
+                    .id(composerFieldID)
                 }
-
-                HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
-                    TextField(
-                        "Add to \(model.selectedList.displayName)…",
-                        text: composerText,
-                        axis: .vertical
-                    )
-                        .textFieldStyle(.plain)
-                        .lineLimit(1...5)
-                        .focused($isComposerFocused)
-                        .disabled(storage.isSaving)
-                        .padding(SnipSnapSpacing.relatedContent)
-                        .frame(minHeight: controlLength, alignment: .center)
-                        .accessibilityIdentifier("composer-text")
-
+                .frame(minHeight: controlLength)
+                .glassEffect(
+                    .regular.interactive(),
+                    in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .strokeBorder(
+                            isComposerFocused
+                                ? SnipSnapTheme.focusedGlassEdge
+                                : SnipSnapTheme.emphasizedGlassEdge,
+                            lineWidth: isComposerFocused ? 1 : 0.75
+                        )
+                }
+            }
+            // Keep Send outside the input's interactive glass subtree.
+            .overlay(alignment: .bottomTrailing) {
+                GlassEffectContainer {
                     AppTintedGlassActionButton(
                         isEnabled: canSend,
+                        tint: model.selectedList.accent.color,
+                        labelColor: model.selectedList.accent.sendIconColor(in: colorScheme),
                         action: { Task { await send() } }
                     ) {
                         Image(systemName: "arrow.up")
@@ -148,24 +181,8 @@ struct CompactLibraryControls: View {
                     .controlSize(.regular)
                     .accessibilityLabel("Send Snip")
                     .accessibilityIdentifier("composer-send")
+                    .padding(.trailing, SnipSnapSpacing.relatedContent)
                 }
-                .padding(.leading, SnipSnapSpacing.relatedContent / 2)
-                .padding(.trailing, SnipSnapSpacing.relatedContent)
-                .id(composerFieldID)
-            }
-            .frame(minHeight: controlLength)
-            .glassEffect(
-                .regular.interactive(),
-                in: RoundedRectangle(cornerRadius: 20, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .strokeBorder(
-                        isComposerFocused
-                            ? SnipSnapTheme.focusedGlassEdge
-                            : SnipSnapTheme.emphasizedGlassEdge,
-                        lineWidth: isComposerFocused ? 1 : 0.75
-                    )
             }
         }
     }
@@ -176,7 +193,10 @@ struct CompactLibraryControls: View {
                 ForEach(draft.attachments, id: \.self) { url in
                     CompactDraftAttachment(
                         url: url,
-                        preview: { previewURL = url },
+                        preview: {
+                            model.haptics.invalidatePendingFeedback()
+                            previewURL = url
+                        },
                         remove: { removeAttachment(url) }
                     )
                 }
@@ -191,6 +211,7 @@ struct CompactLibraryControls: View {
             get: { draft.text },
             set: { value in
                 guard fieldID == composerFieldID else { return }
+                model.haptics.invalidatePendingFeedback()
                 guard storage.savingListID != model.selectedListID else {
                     draft.text = ""
                     return
@@ -302,6 +323,7 @@ struct CompactLibraryControls: View {
     }
 
     private func removeAttachment(_ url: URL) {
+        model.haptics.invalidatePendingFeedback()
         storage.draftStore.remove(url, from: model.selectedListID)
         draft = storage.draftStore.draft(for: model.selectedListID)
     }
@@ -450,13 +472,13 @@ private struct CompactListTabBar: View {
             Image(systemName: list.systemImage)
                 .symbolVariant(selected ? .fill : .none)
                 .font(.title3.weight(selected ? .semibold : .regular))
-                .foregroundStyle(selected ? Color.primary : Color.secondary)
+                .foregroundStyle(list.accent.color)
                 .frame(
                     width: controlLength,
                     height: selectionHeight
                 )
                 .background(
-                    selected ? SnipSnapTheme.compactSelectionFill : Color.clear,
+                    selected ? list.accent.selectionFill : Color.clear,
                     in: Capsule(style: .continuous)
                 )
                 .frame(
@@ -471,14 +493,12 @@ private struct CompactListTabBar: View {
         .accessibilityLabel(list.displayName)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("list-tab-\(list.id.uuidString)")
-        .contextMenu {
-            if list.id != SnipList.inboxID {
-                Button("Edit List") { sheet = .editList(id: list.id) }
-                Button("Delete", role: .destructive) {
-                    Task { await deleteList(list.id) }
-                }
-            }
-        }
+        .listContextActions(
+            list: list,
+            beforeDelete: model.haptics.invalidatePendingFeedback,
+            edit: { sheet = .editList(id: list.id) },
+            delete: { Task { await deleteList(list.id) } }
+        )
     }
 
     private func scrollToSelection(using proxy: ScrollViewProxy) {

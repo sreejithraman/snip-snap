@@ -162,4 +162,44 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
         #expect(try await a.store.load().entries.count == 2)
     }
 
+    @Test func neverSyncedHistorySurvivesAccountResetAndCloudDeletion() async throws {
+        let client = ClipboardClient(ClipboardTestCloud())
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let local = entry("local pin", pinned: true)
+        try await client.store.insert(local)
+        try await client.sync.resetAccountBinding()
+        #expect(try await client.store.load().entries.map(\.id) == [local.id])
+        try await client.sync.deleteSyncedHistory(generation: "account-generation-A")
+        try await client.sync.deleteSyncedHistory(generation: "account-generation-A")
+        #expect(try await client.store.load().entries.map(\.id) == [local.id])
+    }
+
+    @Test func unchangedSyncDoesNotWriteAnotherManifest() async throws {
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        try await client.store.insert(entry("unchanged"))
+        try await client.run()
+        let first = try await cloud.fetch().version
+        try await client.run(); try await client.run()
+        #expect(try await cloud.fetch().version == first)
+    }
+
+    @Test func payloadWorkerReusesUnchangedFilesAndEncoding() async throws {
+        let client = ClipboardClient(ClipboardTestCloud())
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let file = ClipboardOwnedFile(id: UUID(), name: "sample.txt", relativePath: "sample.txt")
+        var clip = entry("file", pinned: true)
+        clip.ownedFiles = [file]; clip.hasBeenShared = true
+        let bytes = try JSONEncoder().encode(ClipboardCloudPayload(entry: clip, files: [file.id: Data("sample".utf8)]))
+        let remote = ClipboardCloudSnapshot(entries: [clip.id: bytes])
+        let worker = ClipboardPayloadWorker(store: client.store, files: client.files)
+        _ = try await worker.prepare(remote, cancellation: ClipboardCloudCancellation())
+        let decodes = await worker.decodeCount, encodes = await worker.encodeCount, imports = await worker.importCount
+        _ = try await worker.prepare(remote, cancellation: ClipboardCloudCancellation())
+        #expect(await worker.decodeCount == decodes)
+        #expect(await worker.encodeCount == encodes)
+        #expect(await worker.importCount == imports)
+        #expect(try Data(contentsOf: client.files.url(for: file)) == Data("sample".utf8))
+    }
+
 }

@@ -22,6 +22,7 @@ public enum RecoveredSnipField: String, Codable, CaseIterable, Equatable, Hashab
 public enum RecoveredListField: String, Codable, CaseIterable, Equatable, Hashable, Sendable {
   case name
   case icon
+  case color
 }
 
 public enum RecoveredSnipState: String, Codable, Equatable, Sendable {

@@ -6,6 +6,53 @@ import Foundation
 import XCTest
 
 final class CloudFullRecordTests: XCTestCase {
+
+  func testListColorUsesEncryptedFieldAndOldRecordsDefaultToNeutral() throws {
+    let list = SnipList(id: UUID(), name: "Work", systemImage: "folder", color: SnipListColorPreset.blue.color, position: 1)
+    let zone = CloudZoneID(name: "metadata", ownerName: "owner")
+    let record = try CloudKitRecordMapper.record(for: CloudFullRecordCodec.listDraft(
+      list, updatedAt: .distantPast, in: zone))
+    XCTAssertEqual(try JSONDecoder().decode(SnipListColor?.self, from: XCTUnwrap(record.encryptedValues["color"] as? Data)), list.color)
+    XCTAssertNil(record["color"])
+    let decoded = try CloudFullRecordCodec.list(from: CloudKitRecordMapper.snapshot(record))
+    XCTAssertEqual(try CloudFullSyncPersistence.listFields(decoded).color, SnipListColorPreset.blue.color)
+    record.encryptedValues["color"] = nil
+    let legacy = try CloudFullRecordCodec.list(from: CloudKitRecordMapper.snapshot(record))
+    XCTAssertEqual(try CloudFullSyncPersistence.listFields(legacy).color, nil)
+  }
+
+  func testListColorMergesWithRenameAndConflictingColorsKeepRecovery() throws {
+    let base = CloudListMergeFields(id: UUID(), desiredName: "Work", systemImage: "folder",
+      color: nil, orderKey: SnipOrderKey(rawDigits: [64]), updatedAt: .distantPast)
+    var local = base
+    local.color = SnipListColorPreset.blue.color
+    var server = base
+    server.desiredName = "Projects"
+    let result = try CloudThreeWayMerge.list(base: base, local: local, server: server)
+    XCTAssertNil(result.conflict)
+    XCTAssertEqual(result.merged.color, SnipListColorPreset.blue.color)
+    XCTAssertEqual(result.merged.desiredName, "Projects")
+    server.color = SnipListColorPreset.green.color
+    let conflict = try CloudThreeWayMerge.list(base: base, local: local, server: server)
+    XCTAssertEqual(conflict.merged.color, SnipListColorPreset.green.color)
+    XCTAssertEqual(conflict.conflict?.fields, [.color])
+    XCTAssertEqual(conflict.conflict?.local.color, SnipListColorPreset.blue.color)
+  }
+
+  func testLightAndDarkEditsConflictAsOnePair() throws {
+    let base = CloudListMergeFields(id: UUID(), desiredName: "Work", systemImage: "folder",
+      color: SnipListColor(light: "#123456", dark: "#ABCDEF"),
+      orderKey: SnipOrderKey(rawDigits: [64]), updatedAt: .distantPast)
+    var local = base
+    local.color = SnipListColor(light: "#654321", dark: "#ABCDEF")
+    var server = base
+    server.color = SnipListColor(light: "#123456", dark: "#FEDCBA")
+    let result = try CloudThreeWayMerge.list(base: base, local: local, server: server)
+    XCTAssertEqual(result.merged.color, server.color)
+    XCTAssertEqual(result.conflict?.fields, [.color])
+    XCTAssertEqual(result.conflict?.local.color, local.color)
+  }
+
   func testCanonicalIDsAreStableAcrossClientsAndLegacyNamesAreQuarantined() {
     let zone = CloudZoneID(name: "metadata", ownerName: "owner")
     let id = UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!

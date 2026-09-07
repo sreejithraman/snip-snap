@@ -405,6 +405,52 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
     XCTAssertTrue(recoveryAfterEdit.pendingLists.isEmpty)
   }
 
+  func testListColorRecoveryChangesOnlyColor() async throws {
+    let location = temporaryStore()
+    defer { try? FileManager.default.removeItem(at: location.root) }
+    let scope = SnipRecoveryScope("private|account-a|generation-a")
+    let store = try SwiftDataSnipLibrary(storeURL: location.store)
+    let created = try await store.perform(
+      .createList(name: "Server name", systemImage: "server.rack"),
+      sortedBy: .manual
+    )
+    guard case .listCreated(let current) = created.outcome else {
+      return XCTFail("Expected a List")
+    }
+    let member = Snip(content: "Member", origin: .quickEntry, listID: current.id)
+    _ = try await store.perform(.restore(snips: [member]), sortedBy: .manual)
+    var recoveredList = current
+    recoveredList.name = "Local name"
+    recoveredList.systemImage = "folder"
+    recoveredList.color = SnipListColorPreset.blue.color
+    let item = RecoveredListEdit(
+      id: UUID(),
+      currentListID: current.id,
+      recovered: recoveredList,
+      conflictingFields: [.color]
+    )
+    try await store.testStoreCloudConflict(
+      namespaceKey: CloudSyncNamespaceKey(rawValue: scope.rawValue),
+      key: "list-name",
+      reference: CloudEntityReference(kind: .list, domainID: current.id),
+      payload: Data("wire".utf8),
+      recovery: .list(item)
+    )
+    var custom = recoveredList
+    custom.name = "Chosen name"
+    custom.systemImage = "star"
+    custom.color = SnipListColorPreset.violet.color
+
+    _ = try await store.resolveRecovery(item.id, in: scope, choice: .editList(custom))
+    let snapshot = await store.snapshot(sortedBy: .manual)
+    XCTAssertEqual(snapshot.lists.first { $0.id == current.id }?.name, "Server name")
+    XCTAssertEqual(snapshot.lists.first { $0.id == current.id }?.systemImage, "server.rack")
+    XCTAssertEqual(snapshot.lists.first { $0.id == current.id }?.color, SnipListColorPreset.violet.color)
+    XCTAssertEqual(snapshot.snips.first { $0.id == member.id }?.listID, current.id)
+    let recoveryAfterEdit = try await store.recoverySnapshot(in: scope)
+    XCTAssertTrue(recoveryAfterEdit.pendingLists.isEmpty)
+  }
+
   func testResolutionRollsBackFieldChangeAndExactConflictDeletionOnWriteFailure() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }

@@ -12,6 +12,7 @@ struct PanelCardContextMenu {
 final class PanelCardInteractionController: NSObject, ObservableObject, NSGestureRecognizerDelegate {
     private final class Region {
         weak var view: NSView?
+        var clickModifiers: NSEvent.ModifierFlags = []
 
         init(view: NSView) {
             self.view = view
@@ -19,6 +20,7 @@ final class PanelCardInteractionController: NSObject, ObservableObject, NSGestur
     }
 
     private weak var hostView: NSView?
+    private weak var selectionArea: NSView?
     private var regions: [UUID: Region] = [:]
     private var onClickAway: () -> Void = {}
 
@@ -33,7 +35,8 @@ final class PanelCardInteractionController: NSObject, ObservableObject, NSGestur
         return recognizer
     }()
 
-    func attach(to hostView: NSView?) {
+    func attach(to hostView: NSView?, selectionArea: NSView? = nil) {
+        self.selectionArea = selectionArea ?? hostView
         guard self.hostView !== hostView else { return }
         if let current = self.hostView {
             current.removeGestureRecognizer(primaryClickRecognizer)
@@ -55,7 +58,19 @@ final class PanelCardInteractionController: NSObject, ObservableObject, NSGestur
             regions.removeValue(forKey: id)
             return
         }
-        regions[id] = Region(view: view)
+        if let region = regions[id] {
+            region.view = view
+        } else {
+            regions[id] = Region(view: view)
+        }
+    }
+
+    func recordPrimaryClick(id: UUID, modifiers: NSEvent.ModifierFlags) {
+        regions[id]?.clickModifiers = modifiers
+    }
+
+    func clickModifiers(for id: UUID) -> NSEvent.ModifierFlags {
+        regions[id]?.clickModifiers ?? []
     }
 
     func removeRegion(id: UUID) {
@@ -67,7 +82,9 @@ final class PanelCardInteractionController: NSObject, ObservableObject, NSGestur
     }
 
     func clearSelectionIfClickAway(atWindowPoint point: NSPoint) {
-        guard region(atWindowPoint: point) == nil else { return }
+        guard let selectionArea,
+              Self.visibleFrameInWindow(for: selectionArea).contains(point),
+              region(atWindowPoint: point) == nil else { return }
         onClickAway()
     }
 
@@ -185,7 +202,7 @@ final class PanelCardInteractionHostView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        controller.attach(to: window?.contentView)
+        controller.attach(to: window?.contentView, selectionArea: self)
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -204,7 +221,7 @@ final class PanelCardInteractionHostView: NSView {
 struct PanelCardInteractionRegion: NSViewRepresentable {
     let controller: PanelCardInteractionController
     let id: UUID
-    let contextMenu: PanelCardContextMenu
+    let contextMenu: PanelCardContextMenu?
 
     func makeNSView(context: Context) -> PanelCardInteractionRegionView {
         PanelCardInteractionRegionView(
@@ -227,12 +244,12 @@ struct PanelCardInteractionRegion: NSViewRepresentable {
 final class PanelCardInteractionRegionView: NSView {
     private let controller: PanelCardInteractionController
     private let id: UUID
-    private var contextMenu: PanelCardContextMenu
+    private var contextMenu: PanelCardContextMenu?
 
     init(
         controller: PanelCardInteractionController,
         id: UUID,
-        contextMenu: PanelCardContextMenu
+        contextMenu: PanelCardContextMenu?
     ) {
         self.controller = controller
         self.id = id
@@ -246,7 +263,7 @@ final class PanelCardInteractionRegionView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(contextMenu: PanelCardContextMenu) {
+    func configure(contextMenu: PanelCardContextMenu?) {
         self.contextMenu = contextMenu
         updateController()
     }
@@ -263,9 +280,11 @@ final class PanelCardInteractionRegionView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard super.hitTest(point) != nil,
-              let event = NSApp.currentEvent,
-              PanelCardInteractionController.isContextClick(event: event) else { return nil }
-        return self
+              let event = NSApp.currentEvent else { return nil }
+        if PanelCardInteractionController.isPrimaryClick(event: event) {
+            controller.recordPrimaryClick(id: id, modifiers: event.modifierFlags)
+        }
+        return contextMenu != nil && PanelCardInteractionController.isContextClick(event: event) ? self : nil
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -285,6 +304,7 @@ final class PanelCardInteractionRegionView: NSView {
     }
 
     private func showContextMenu(for event: NSEvent) {
+        guard let contextMenu else { return }
         let menu = contextMenu.makeMenu()
         guard !menu.items.isEmpty else { return }
         contextMenu.onOpen()
@@ -334,24 +354,40 @@ extension NSMenu {
     func addPanelAction(
         _ title: String,
         isEnabled: Bool = true,
+        systemImage: String? = nil,
+        isDestructive: Bool = false,
         handler: @escaping () -> Void
     ) {
         autoenablesItems = false
-        addItem(
-            PanelContextMenuActionItem(
-                title: title,
-                isEnabled: isEnabled,
-                handler: handler
-            )
+        let item = PanelContextMenuActionItem(
+            title: title,
+            isEnabled: isEnabled,
+            handler: handler
         )
+        if let systemImage {
+            item.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: nil)
+        }
+        if isDestructive {
+            item.attributedTitle = NSAttributedString(
+                string: title,
+                attributes: [.foregroundColor: NSColor.systemRed]
+            )
+            item.image = item.image?.withSymbolConfiguration(
+                NSImage.SymbolConfiguration(paletteColors: [.systemRed])
+            )
+        }
+        addItem(item)
     }
 
-    func addPanelSubmenu(_ title: String, build: (NSMenu) -> Void) {
+    func addPanelSubmenu(_ title: String, systemImage: String? = nil, build: (NSMenu) -> Void) {
         let submenu = NSMenu(title: title)
         submenu.autoenablesItems = false
         build(submenu)
 
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        if let systemImage {
+            item.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: nil)
+        }
         item.submenu = submenu
         addItem(item)
     }

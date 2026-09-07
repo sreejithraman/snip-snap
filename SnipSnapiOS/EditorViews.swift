@@ -237,9 +237,25 @@ struct ListEditorView: View {
 
     let model: IOSAppModel
     let mode: ListEditorMode
-    @State private var name = ""
-    @State private var systemImage = "list.bullet"
+    @State private var name: String
+    @State private var systemImage: String
+    @State private var color: SnipListColor?
     @State private var isSaving = false
+
+    init(model: IOSAppModel, mode: ListEditorMode) {
+        self.model = model
+        self.mode = mode
+        let list: SnipList?
+        switch mode {
+        case .create:
+            list = nil
+        case .edit(let id):
+            list = model.lists.first(where: { $0.id == id })
+        }
+        _name = State(initialValue: list?.name ?? "")
+        _systemImage = State(initialValue: list?.systemImage ?? "list.bullet")
+        _color = State(initialValue: list?.color)
+    }
 
     private var title: String {
         switch mode {
@@ -255,7 +271,11 @@ struct ListEditorView: View {
                     TextField("List name", text: $name)
                         .textInputAutocapitalization(.words)
                         .accessibilityIdentifier("list-name")
-                    SnipListIconPicker(selection: $systemImage)
+                    SnipListIconPicker(
+                        selection: $systemImage,
+                        accent: SnipListAppearance(pair: color).color
+                    )
+                    SnipListColorPicker(selection: $color)
                 }
             }
             .navigationTitle(title)
@@ -272,13 +292,6 @@ struct ListEditorView: View {
                     .accessibilityIdentifier("save-list")
                 }
             }
-            .onAppear {
-                if case .edit(let id) = mode,
-                   let list = model.lists.first(where: { $0.id == id }) {
-                    name = list.name
-                    systemImage = list.systemImage
-                }
-            }
         }
     }
 
@@ -287,13 +300,13 @@ struct ListEditorView: View {
         let succeeded: Bool
         switch mode {
         case .create:
-            succeeded = await model.createList(name: name, systemImage: systemImage)
+            succeeded = await model.createList(name: name, systemImage: systemImage, color: color)
         case .edit(let id):
             guard let list = model.lists.first(where: { $0.id == id }) else {
                 isSaving = false
                 return
             }
-            succeeded = await model.renameList(list, name: name, systemImage: systemImage)
+            succeeded = await model.renameList(list, name: name, systemImage: systemImage, color: .set(color))
         }
         isSaving = false
         if succeeded { dismiss() }
