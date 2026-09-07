@@ -886,7 +886,7 @@ private struct ClipboardAlertHost: View {
             ) {
                 Button("Clear History", role: .destructive) { history.clear() }
             } message: {
-                Text("This leaves the current Mac clipboard unchanged.")
+                Text("This clears unpinned history on devices with clipboard sync enabled. Pinned entries stay.")
             }
             .alert(
                 "Clipboard History Was Not Saved",

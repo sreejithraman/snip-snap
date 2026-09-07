@@ -63,7 +63,7 @@ struct CompactLibraryControls: View {
     var body: some View {
         GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
             VStack(spacing: SnipSnapSpacing.relatedContent) {
-                composer
+                if !model.showsClipboard { composer }
                 if showsListTabs {
                     CompactListTabBar(
                         model: model,
@@ -412,6 +412,17 @@ private struct CompactListTabBar: View {
 
     private var tabItems: some View {
         HStack(spacing: 0) {
+            Button {
+                model.showsClipboard = true
+            } label: {
+                Image(systemName: "clipboard")
+                    .font(.title3)
+                    .frame(width: itemWidth, height: stripHeight)
+                    .background(model.showsClipboard ? SnipSnapTheme.compactSelectionFill : Color.clear, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Clipboard")
+            .accessibilityIdentifier("clipboard-tab")
             ForEach(model.lists) { list in
                 tab(for: list)
                     .id(list.id)
@@ -432,7 +443,7 @@ private struct CompactListTabBar: View {
     }
 
     private func tab(for list: SnipList) -> some View {
-        let selected = model.selectedListID == list.id
+        let selected = !model.showsClipboard && model.selectedListID == list.id
         return Button {
             model.selectList(list.id)
         } label: {

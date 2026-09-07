@@ -92,6 +92,7 @@ private struct AppSettingsContent: View {
                 }
                 SyncedContentSettingsView(
                     model: syncedContentSettings,
+                    clipboard: model.clipboardHistory,
                     retryAction: {
                         if syncedContentSettings.mode == .localOnly {
                             await syncedContentSettings.enableICloudSync()
@@ -243,6 +244,18 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             ) as? String
         )
 #endif
+        if let container = Bundle.main.object(forInfoDictionaryKey: "SnipSnapCloudKitContainerIdentifier") as? String,
+           !container.isEmpty, cloudServices.syncSession != nil {
+            model.clipboardHistory.configureSync(containerIdentifier: container, rootURL: syncModeRootURL,
+                mainEnabled: {
+                    guard cloudServices.syncedContentSettings.mode == .iCloudSync else { return false }
+                    switch cloudServices.syncedContentSettings.state {
+                    case .disabling, .deleting: return false
+                    default: return true
+                    }
+                },
+                generation: { try await cloudServices.syncSession?.activeLibrary().recoveryScope?.rawValue })
+        }
         let fileDropController = PanelFileDropController()
         let dragSessionController = PanelDragSessionController()
         self.model = model
@@ -285,6 +298,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 case .libraryReplaced:
                     try await reloadActiveLibrary()
                 case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
+                    await model.clipboardHistory.resetCloudAccount()
                     try await reloadActiveLibrary()
                     let issue: SyncedContentSyncIssue
                     switch result {
@@ -312,6 +326,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                     cloudServices.syncedContentSettings.recordRemovalPending(false)
                 }
                 cloudServices.syncedContentSettings.recordSyncCompleted()
+                await model.clipboardHistory.syncNow()
             } catch {
                 cloudServices.syncedContentSettings.recordSyncFailure(
                     SnipSnapCloudSyncIssueMapper.issue(for: error)
@@ -450,7 +465,9 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         case .syncCompleted:
             await model.reload()
             syncedContentSettings.recordOutstandingSyncRecovered()
+            await model.clipboardHistory.syncNow()
         case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
+            await model.clipboardHistory.resetCloudAccount()
             if let active = try? await cloudSyncSession?.activeLibrary() {
                 await model.replaceLibrary(
                     active.library,
@@ -679,7 +696,9 @@ private struct SnipCommands: Commands {
     }
 
     private func isAvailable(_ command: SnipCommand) -> Bool {
-        model.map { command.isAvailable(for: $0.selection.count) } ?? false
+        guard let model else { return false }
+        if command == .toggleDone, model.selectedSnips.contains(where: \.isPinned) { return false }
+        return command.isAvailable(for: model.selection.count)
     }
 
     private func perform(_ command: SnipCommand) {

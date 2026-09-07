@@ -219,6 +219,8 @@ public indirect enum SnipLibraryCommand: Sendable {
     case restore(snips: [Snip])
     case restoreReplacing(snips: [Snip], id: UUID, expectedUpdatedAt: Date)
     case merge(ids: Set<UUID>, now: Date)
+    case setPinned(ids: Set<UUID>, pinned: Bool)
+    case togglePinned(id: UUID)
     case setDone(ids: Set<UUID>, done: Bool)
     case toggleDone(id: UUID)
     case toggleDoneMany(ids: Set<UUID>)

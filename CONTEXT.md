@@ -9,8 +9,16 @@ A saved piece of text with optional file attachments.
 _Avoid_: Clip, item, capture item
 
 **Clipboard entry**:
-A temporary record of content copied through the Mac clipboard.
+A record of content captured from the Mac clipboard or added through Paste or Share on iOS, kept in clipboard history.
 _Avoid_: Snip, clipboard snip
+
+**Pinned snip**:
+A saved snip kept at the top of its list for quick reuse. A pinned snip cannot be Done.
+_Avoid_: Favorite, clipboard entry
+
+**Pinned clipboard entry**:
+A clipboard entry kept at the top of clipboard history for quick reuse. It stays through history trimming and Clear History until the user unpins or deletes it.
+_Avoid_: Pinned snip, saved snip
 
 **List**:
 A named group that owns an ordered set of snips.

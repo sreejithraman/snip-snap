@@ -1,6 +1,156 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "A clipboard item could not be read." : {
+
+    },
+    "Add to Active List" : {
+
+    },
+    "Choose a clipboard file store before pinning files." : {
+
+    },
+    "Clear Clipboard History?" : {
+
+    },
+    "Clipboard Entry" : {
+
+    },
+    "Clipboard Sync Failed" : {
+
+    },
+    "Clipboard content must be 32 MB or less." : {
+
+    },
+    "Clipboard history belongs to a different iCloud account or library." : {
+
+    },
+    "Clipboard history changed on another device. Try syncing again." : {
+
+    },
+    "Clipboard history is syncing." : {
+
+    },
+    "Clipboard sync is unavailable. Try again later." : {
+
+    },
+    "Copy Clipboard Entry" : {
+
+    },
+    "Copy Snip" : {
+
+    },
+    "Enable Sync" : {
+
+    },
+    "Existing clipboard history will upload to your private iCloud and merge with your other devices. Files stay on this Mac until pinned." : {
+
+    },
+    "Existing history on this device will merge with iCloud and upload. Duplicates will combine and pins will stay." : {
+
+    },
+    "Folders cannot be pinned to clipboard history yet." : {
+
+    },
+    "Image" : {
+
+    },
+    "Includes text, images, and pinned files. Turning this off keeps local history and leaves iCloud data intact." : {
+
+    },
+    "No Clipboard Entries" : {
+
+    },
+    "Only on this Mac" : {
+
+    },
+    "Only on this iPad" : {
+
+    },
+    "Only on this iPhone" : {
+
+    },
+    "Open Snip Snap to add this to Clipboard. Files stay on this device until you pin them." : {
+
+    },
+    "Paste here or share content to Clipboard. Turn on clipboard sync in Settings to see your Mac history." : {
+
+    },
+    "Pin" : {
+
+    },
+    "Pin to sync this file" : {
+
+    },
+    "Pin to sync this file when clipboard sync is enabled." : {
+
+    },
+    "Pinned" : {
+
+    },
+    "Retry Clipboard Sync" : {
+
+    },
+    "Retry Sync" : {
+
+    },
+    "Save to" : {
+
+    },
+    "Search Clipboard" : {
+
+    },
+    "Some shared content could not be added. Try again." : {
+
+    },
+    "Sync Clipboard History?" : {
+
+    },
+    "Sync clipboard history" : {
+
+    },
+    "That file is missing. Try syncing again." : {
+
+    },
+    "That file is unavailable. Try syncing again." : {
+
+    },
+    "The clipboard file path is invalid." : {
+
+    },
+    "The file %@ is missing or unreadable." : {
+
+    },
+    "This clears unpinned history across synced devices. Pins stay." : {
+
+    },
+    "This clears unpinned history on devices with clipboard sync enabled. Pinned entries stay." : {
+
+    },
+    "This clears unpinned history on this device. Pins stay." : {
+
+    },
+    "This clipboard entry exceeds the 32 MB size limit." : {
+
+    },
+    "This starts a fresh empty synced collection and removes the old synced snips, attachments, and clipboard history, including pins, from iCloud. This device keeps a local recovery copy. A small control record remains in iCloud to stop old devices from restoring deleted content." : {
+
+    },
+    "This starts a fresh empty synced collection and removes the old synced snips, clipboard history, and attachments from iCloud. This device keeps a local recovery copy. A small control record remains in iCloud to stop old devices from restoring deleted content." : {
+
+    },
+    "Unpin" : {
+
+    },
+    "Upload failed" : {
+
+    },
+    "Uploading…" : {
+
+    },
+    "Waiting to sync" : {
+
+    },
     "A device setting or management rule is blocking iCloud. Your changes will stay on this device." : {
 
     },

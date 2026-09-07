@@ -70,6 +70,7 @@ struct IOSAppRootView: View {
             case .settings:
                 SyncedContentSettingsView(
                     model: session.syncedContentSettings,
+                    clipboard: session.clipboard,
                     retryAction: {
                         if session.syncedContentSettings.mode == .localOnly {
                             await session.syncedContentSettings.enableICloudSync()
@@ -178,6 +179,15 @@ struct IOSAppRootView: View {
                 await session.foreground()
             }
         }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(15)) }
+                catch { return }
+                guard !Task.isCancelled else { return }
+                await session.clipboard.synchronize()
+            }
+        }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
@@ -185,7 +195,7 @@ struct IOSAppRootView: View {
                     await session.foreground()
                 }
             case .background, .inactive:
-                break
+                session.clipboard.stop()
             @unknown default:
                 break
             }
@@ -196,28 +206,34 @@ struct IOSAppRootView: View {
     private var appNavigation: some View {
         if horizontalSizeClass == .compact {
             NavigationStack {
-                SnipCollectionView(
-                    model: model,
-                    copyShare: copyShare,
-                    sheet: $sheet,
-                    layout: .compactStack,
-                    editMode: $collectionEditMode,
-                    dismissComposerKeyboard: {
-                        isCompactComposerFocused = false
-                    },
-                    libraryActions: LibraryActionsMenu(
+                Group {
+                    if model.showsClipboard {
+                        IOSClipboardView(model: session.clipboard)
+                    } else {
+                    SnipCollectionView(
                         model: model,
-                        importBackup: { isExplainingBackupImport = true },
-                        settings: { sheet = .settings },
+                        copyShare: copyShare,
+                        sheet: $sheet,
+                        layout: .compactStack,
                         editMode: $collectionEditMode,
-                        includesCloudActions: true,
-                        reviewRecoveredEdits: model.recoverySnapshot.needsAttentionCount > 0
-                            ? { sheet = .recoveryCenter }
-                            : nil,
-                        editSelectedList: model.selectedListID == SnipList.inboxID
-                            ? nil : { sheet = .editList(id: model.selectedListID) }
+                        dismissComposerKeyboard: {
+                            isCompactComposerFocused = false
+                        },
+                        libraryActions: LibraryActionsMenu(
+                            model: model,
+                            importBackup: { isExplainingBackupImport = true },
+                            settings: { sheet = .settings },
+                            editMode: $collectionEditMode,
+                            includesCloudActions: true,
+                            reviewRecoveredEdits: model.recoverySnapshot.needsAttentionCount > 0
+                                ? { sheet = .recoveryCenter }
+                                : nil,
+                            editSelectedList: model.selectedListID == SnipList.inboxID
+                                ? nil : { sheet = .editList(id: model.selectedListID) }
+                        )
                     )
-                )
+                    }
+                }
                 .libraryToast(model: model)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     CompactLibraryControls(
@@ -238,16 +254,22 @@ struct IOSAppRootView: View {
                 )
             } detail: {
                 NavigationStack {
-                    SnipCollectionView(
-                        model: model,
-                        copyShare: copyShare,
-                        sheet: $sheet,
-                        layout: .inlineList,
-                        editMode: $collectionEditMode,
-                        dismissComposerKeyboard: {
-                            isCompactComposerFocused = false
+                    Group {
+                        if model.showsClipboard {
+                            IOSClipboardView(model: session.clipboard)
+                        } else {
+                        SnipCollectionView(
+                            model: model,
+                            copyShare: copyShare,
+                            sheet: $sheet,
+                            layout: .inlineList,
+                            editMode: $collectionEditMode,
+                            dismissComposerKeyboard: {
+                                isCompactComposerFocused = false
+                            }
+                        )
                         }
-                    )
+                    }
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         CompactLibraryControls(
                             model: model,

@@ -40,6 +40,8 @@ for required_file in \
     EditorViews.swift \
     AttachmentViews.swift \
     IOSCopyShare.swift \
+    IOSClipboardModel.swift \
+    IOSClipboardView.swift \
     SnipSnapiOS.entitlements \
     PrivacyInfo.xcprivacy; do
     grep -F -- "$required_file" "$project_file" >/dev/null
@@ -84,7 +86,7 @@ for required_file in \
 done
 
 if /usr/bin/grep -En \
-    '(^|[^A-Za-z])(import AppKit|import CloudKit|NSPasteboard|SelectionCapture|GlobalHotKey|ClipboardHistory|SnipSnapPanel)' \
+    '(^|[^A-Za-z])(import AppKit|import CloudKit|NSPasteboard|SelectionCapture|GlobalHotKey|ClipboardHistory|SnipSnapPanel)([^A-Za-z0-9_]|$)' \
     "$ios_source_dir"/*.swift; then
     print -u2 "The iOS source tree includes a forbidden Mac or cloud dependency."
     exit 1

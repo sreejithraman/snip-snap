@@ -20,6 +20,7 @@ final class IOSAppModel {
     private(set) var pendingImportPreview: SnipImportPreview?
     private var pendingImportPreviewID: UUID?
     var toast: AppToast?
+    var showsClipboard = false
     var selectedListID: UUID
     var selectedSnipID: UUID?
     var selectedSnipIDs: Set<UUID> = []
@@ -65,6 +66,7 @@ final class IOSAppModel {
     }
 
     func selectList(_ listID: UUID) {
+        showsClipboard = false
         selectedListID = listID
         selectedSnipID = nil
         selectedSnipIDs = []
@@ -200,6 +202,13 @@ final class IOSAppModel {
     @discardableResult
     func toggleDone(id: UUID) async -> Bool {
         await withSerializedMutation { await toggleDoneUnlocked(id: id) }
+    }
+
+    @discardableResult
+    func togglePinned(id: UUID) async -> Bool {
+        await withSerializedMutation {
+            await performUserAction(.togglePinned(id: id))
+        }
     }
 
     @discardableResult
@@ -463,13 +472,13 @@ final class IOSAppModel {
     }
 
     private func setSelectionDoneUnlocked(_ done: Bool) async -> Bool {
-        let ids = selectedVisibleSnipIDs
+        let ids = Set(selectedVisibleSnips.filter { !$0.isPinned }.map(\.id))
         guard !ids.isEmpty else { return false }
         return await performUserAction(.setDone(ids: ids, done: done))
     }
 
     private func toggleDoneUnlocked(id: UUID) async -> Bool {
-        guard let snip = snips.first(where: { $0.id == id }) else { return false }
+        guard let snip = snips.first(where: { $0.id == id }), !snip.isPinned else { return false }
         return await performUserAction(.setDone(ids: [id], done: !snip.isDone))
     }
 

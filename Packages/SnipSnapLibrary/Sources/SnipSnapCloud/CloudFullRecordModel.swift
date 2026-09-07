@@ -67,6 +67,7 @@ package struct CloudTypedSnipRecord: Codable, Equatable, Sendable {
   package let text: CloudFieldPresence<String>
   package let source: CloudFieldPresence<SnipSource?>
   package let isDone: CloudFieldPresence<Bool>
+  package var pinnedAt: Date? = nil
   package let placement: CloudFieldPresence<CloudSnipPlacement>
   package let shadow: CloudRecordShadow
 
@@ -142,6 +143,7 @@ package enum CloudFullRecordCodec {
       "text": .string(snip.content),
       "sourceState": .int64(snip.source == nil ? 0 : 1),
       "isDone": .int64(snip.isDone ? 1 : 0),
+      "pinnedAt": .data(try encode(snip.pinnedAt)),
       "listID": .string(snip.listID.uuidString.lowercased()),
       "orderKey": .data(snip.manualSortKey.data),
     ]
@@ -240,6 +242,7 @@ package enum CloudFullRecordCodec {
       text: try stringPresence(snapshot.encryptedFields, key: "text"),
       source: try sourcePresence(snapshot.encryptedFields),
       isDone: try boolPresence(snapshot.encryptedFields, key: "isDone"),
+      pinnedAt: try codablePresence(snapshot.encryptedFields, key: "pinnedAt", as: Date?.self).value(or: nil),
       placement: try placementPresence(snapshot.encryptedFields),
       shadow: snapshot.shadow
     )

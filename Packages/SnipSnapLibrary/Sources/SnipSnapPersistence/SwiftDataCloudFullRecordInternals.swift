@@ -222,11 +222,11 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
       return
     case (.none, .exactSnip(let expected)):
       guard let record = snips.first(where: { $0.id == expected.snipID }),
-        try matches(record, expected: expected, metadata: metadata)
+        try matches(record, expected: expected, metadata: metadata, context: context)
       else { throw CloudFullStorageError.staleLocalEntity }
     case (.none, .exactList(let expected)):
       guard let record = lists.first(where: { $0.id == expected.listID }),
-        try matches(record, expected: expected, metadata: metadata)
+        try matches(record, expected: expected, metadata: metadata, context: context)
       else { throw CloudFullStorageError.staleLocalEntity }
     case (.upsertSnip(let value), .requireMissing):
       guard !snips.contains(where: { $0.id == value.snipID }) else {
@@ -235,7 +235,7 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
     case (.upsertSnip(let value), .exactSnip(let expected)):
       guard value.snipID == expected.snipID,
         let record = snips.first(where: { $0.id == value.snipID }),
-        try matches(record, expected: expected, metadata: metadata)
+        try matches(record, expected: expected, metadata: metadata, context: context)
       else { throw CloudFullStorageError.staleLocalEntity }
     case (.upsertList(let value), .requireMissing):
       guard !lists.contains(where: { $0.id == value.id }) else {
@@ -244,17 +244,17 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
     case (.upsertList(let value), .exactList(let expected)):
       guard value.id == expected.listID,
         let record = lists.first(where: { $0.id == value.id }),
-        try matches(record, expected: expected, metadata: metadata)
+        try matches(record, expected: expected, metadata: metadata, context: context)
       else { throw CloudFullStorageError.staleLocalEntity }
     case (.removeSnip(let id), .exactSnip(let expected)):
       guard id == expected.snipID,
         let record = snips.first(where: { $0.id == id }),
-        try matches(record, expected: expected, metadata: metadata)
+        try matches(record, expected: expected, metadata: metadata, context: context)
       else { throw CloudFullStorageError.staleLocalEntity }
     case (.removeList(let id), .exactList(let expected)):
       guard id == expected.listID,
         let record = lists.first(where: { $0.id == id }),
-        try matches(record, expected: expected, metadata: metadata)
+        try matches(record, expected: expected, metadata: metadata, context: context)
       else { throw CloudFullStorageError.staleLocalEntity }
     case (
       .recoverDeletedSnip(let original, let recovered, let attachmentIDs),
@@ -267,7 +267,7 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
       guard original == expected,
         let record = snips.first(where: { $0.id == original.snipID }),
         !snips.contains(where: { $0.id == recovered.snipID }),
-        try matches(record, expected: original, metadata: metadata),
+        try matches(record, expected: original, metadata: metadata, context: context),
         Set(references.map(\.attachmentID)) == Set(attachmentIDs)
       else { throw CloudFullStorageError.staleLocalEntity }
     case (.removeListAndMoveSnips(let expected, let movedSnips), .exactList(let precondition)):
@@ -275,13 +275,13 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
       let listSnipsByID = Dictionary(uniqueKeysWithValues: listSnips.map { ($0.id, $0) })
       guard expected == precondition,
         let record = lists.first(where: { $0.id == expected.listID }),
-        try matches(record, expected: expected, metadata: metadata),
+        try matches(record, expected: expected, metadata: metadata, context: context),
         Set(listSnipsByID.keys) == Set(movedSnips.map(\.snipID)),
         try movedSnips.allSatisfy({ expectedSnip in
           guard let snip = listSnipsByID[expectedSnip.snipID] else {
             return false
           }
-          return try matches(snip, expected: expectedSnip, metadata: metadata)
+          return try matches(snip, expected: expectedSnip, metadata: metadata, context: context)
         })
       else { throw CloudFullStorageError.staleLocalEntity }
     default:
@@ -292,13 +292,15 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
   static func matches(
     _ record: StoredSnipRecord,
     expected: CloudLocalSnipMutation,
-    metadata: [StoredLibraryMetadataRecord]
+    metadata: [StoredLibraryMetadataRecord],
+    context: ModelContext
   ) throws -> Bool {
     let metadataID = StoredLibraryMetadataRecord.identifier(kind: .snip, domainID: record.id)
     guard let orderData = metadata.first(where: { $0.id == metadataID })?.orderKeyData else {
       return false
     }
     let orderKey = try SnipOrderKey(data: orderData)
+    let pinnedAt = try context.snipPinnedAt(record.id)
     return record.id == expected.snipID
       && record.requestID == expected.requestID
       && record.createdAt == expected.createdAt
@@ -309,13 +311,15 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
       && record.sourceURL == expected.source?.url
       && record.listID == expected.listID
       && record.isDone == expected.isDone
+      && pinnedAt == expected.pinnedAt
       && orderKey == expected.orderKey
   }
 
   static func matches(
     _ record: StoredListRecord,
     expected: CloudLocalListMutation,
-    metadata: [StoredLibraryMetadataRecord]
+    metadata: [StoredLibraryMetadataRecord],
+    context: ModelContext
   ) throws -> Bool {
     let metadataID = StoredLibraryMetadataRecord.identifier(kind: .list, domainID: record.id)
     guard let value = metadata.first(where: { $0.id == metadataID }) else { return false }
@@ -334,6 +338,7 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
     case .none:
       return
     case .upsertSnip(let value):
+      try context.setSnipPinnedAt(value.pinnedAt, id: value.snipID)
       let records = try context.fetch(FetchDescriptor<StoredSnipRecord>())
       if let record = records.first(where: { $0.id == value.snipID }) {
         record.requestID = value.requestID
@@ -345,7 +350,7 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
         record.sourceWindowTitle = value.source?.windowTitle
         record.sourceURL = value.source?.url
         record.listID = value.listID
-        record.isDone = value.isDone
+        record.isDone = value.pinnedAt == nil && value.isDone
       } else {
         context.insert(
           StoredSnipRecord(
@@ -359,6 +364,7 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
               source: value.source,
               listID: value.listID,
               isDone: value.isDone,
+              pinnedAt: value.pinnedAt,
               manualSortKey: value.orderKey
             )
           )
@@ -392,6 +398,7 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
         context: context
       )
     case .removeSnip(let id):
+      try context.setSnipPinnedAt(nil, id: id)
       let references = try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>())
       guard !references.contains(where: { $0.snipID == id }) else {
         throw CloudFullStorageError.invalidLocalMutation
@@ -412,6 +419,8 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
       )) {
         context.delete(record)
       }
+      try context.setSnipPinnedAt(nil, id: original.snipID)
+      try context.setSnipPinnedAt(recovered.pinnedAt, id: recovered.snipID)
       context.insert(StoredSnipRecord(Snip(
         id: recovered.snipID,
         requestID: recovered.requestID,
@@ -422,6 +431,7 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
         source: recovered.source,
         listID: recovered.listID,
         isDone: recovered.isDone,
+        pinnedAt: recovered.pinnedAt,
         manualSortKey: recovered.orderKey
       )))
       for reference in try context.fetch(FetchDescriptor(

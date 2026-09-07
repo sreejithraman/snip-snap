@@ -11,6 +11,7 @@ package struct CloudSnipMergeFields: Codable, Equatable, Sendable {
   package var text: String
   package var source: SnipSource?
   package var isDone: Bool
+  package var pinnedAt: Date?
   package var placement: CloudSnipPlacement
   package var updatedAt: Date
 
@@ -22,6 +23,7 @@ package struct CloudSnipMergeFields: Codable, Equatable, Sendable {
     text: String,
     source: SnipSource?,
     isDone: Bool,
+    pinnedAt: Date? = nil,
     placement: CloudSnipPlacement,
     updatedAt: Date
   ) {
@@ -31,7 +33,8 @@ package struct CloudSnipMergeFields: Codable, Equatable, Sendable {
     self.originRaw = originRaw
     self.text = text
     self.source = source
-    self.isDone = isDone
+    self.isDone = pinnedAt == nil && isDone
+    self.pinnedAt = pinnedAt
     self.placement = placement
     self.updatedAt = updatedAt
   }
@@ -171,6 +174,7 @@ package enum CloudThreeWayMerge {
 
     let text = field(base: base.text, local: local.text, server: server.text)
     let source = field(base: base.source, local: local.source, server: server.source)
+    let pinnedAt = field(base: base.pinnedAt, local: local.pinnedAt, server: server.pinnedAt)
     let isDone = field(base: base.isDone, local: local.isDone, server: server.isDone)
     let placement = placement(base: base.placement, local: local.placement, server: server.placement)
     var conflictFields: Set<CloudSnipConflictField> = []
@@ -186,6 +190,7 @@ package enum CloudThreeWayMerge {
       text: text.value,
       source: source.value,
       isDone: isDone.value,
+      pinnedAt: pinnedAt.value,
       placement: placement.value,
       updatedAt: server.updatedAt
     )

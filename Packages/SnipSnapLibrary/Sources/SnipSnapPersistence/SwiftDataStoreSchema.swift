@@ -1,7 +1,7 @@
 import SwiftData
 
 public enum SnipSnapStoreSchemaContract {
-  public static let currentVersion = 4
+  public static let currentVersion = 5
 }
 
 package enum SnipSnapSchemaV1: VersionedSchema {
@@ -62,15 +62,23 @@ package enum SnipSnapSchemaV4: VersionedSchema {
   }
 }
 
+package enum SnipSnapSchemaV5: VersionedSchema {
+  package static let versionIdentifier = Schema.Version(5, 0, 0)
+  package static var models: [any PersistentModel.Type] {
+    SnipSnapSchemaV4.models + [StoredSnipPinRecord.self]
+  }
+}
+
 package enum SnipSnapSchemaMigrationPlan: SchemaMigrationPlan {
   package static var schemas: [any VersionedSchema.Type] {
-    [SnipSnapSchemaV1.self, SnipSnapSchemaV2.self, SnipSnapSchemaV3.self, SnipSnapSchemaV4.self]
+    [SnipSnapSchemaV1.self, SnipSnapSchemaV2.self, SnipSnapSchemaV3.self, SnipSnapSchemaV4.self, SnipSnapSchemaV5.self]
   }
   package static var stages: [MigrationStage] {
     [
       .lightweight(fromVersion: SnipSnapSchemaV1.self, toVersion: SnipSnapSchemaV2.self),
       .lightweight(fromVersion: SnipSnapSchemaV2.self, toVersion: SnipSnapSchemaV3.self),
       .lightweight(fromVersion: SnipSnapSchemaV3.self, toVersion: SnipSnapSchemaV4.self),
+      .lightweight(fromVersion: SnipSnapSchemaV4.self, toVersion: SnipSnapSchemaV5.self),
     ]
   }
 

@@ -257,22 +257,39 @@ package struct SnipLibraryState {
       seenRequestIDs.insert(merged.requestID)
       return .merged(merged)
 
+    case .setPinned(let ids, let pinned):
+      let now = Date()
+      update(ids: ids) { snip in
+        if pinned && !snip.isPinned { snip.pinnedAt = now }
+        if !pinned { snip.pinnedAt = nil }
+      }
+      return .none
+
+    case .togglePinned(let id):
+      guard let snip = snips.first(where: { $0.id == id }) else {
+        throw SnipLibraryError.snipNotFound
+      }
+      update(ids: [id]) { $0.pinnedAt = snip.isPinned ? nil : Date() }
+      return .none
+
     case .setDone(let ids, let done):
-      update(ids: ids) { $0.isDone = done }
+      let editableIDs = Set(snips.filter { ids.contains($0.id) && !$0.isPinned }.map(\.id))
+      update(ids: editableIDs) { $0.isDone = done }
       return .none
 
     case .toggleDone(let id):
       guard let snip = snips.first(where: { $0.id == id }) else {
         throw SnipLibraryError.snipNotFound
       }
+      guard !snip.isPinned else { return .none }
       update(ids: [id]) { $0.isDone = !snip.isDone }
       return .none
 
     case .toggleDoneMany(let ids):
-      let selected = snips.filter { ids.contains($0.id) }
+      let selected = snips.filter { ids.contains($0.id) && !$0.isPinned }
       guard !selected.isEmpty else { return .none }
       let done = selected.contains { !$0.isDone }
-      update(ids: ids) { $0.isDone = done }
+      update(ids: Set(selected.map(\.id))) { $0.isDone = done }
       return .none
 
     case .moveChronologically(let ids, let listID):
@@ -448,6 +465,7 @@ package struct SnipLibraryState {
         if before.origin != after.origin { snips[index].origin = after.origin }
         if before.source != after.source { snips[index].source = after.source }
         if before.listID != after.listID { snips[index].listID = after.listID }
+        if before.pinnedAt != after.pinnedAt { snips[index].pinnedAt = after.pinnedAt }
         if before.isDone != after.isDone { snips[index].isDone = after.isDone }
         if before.manualSortKey != after.manualSortKey {
           snips[index].manualSortKey = after.manualSortKey
@@ -491,6 +509,7 @@ package struct SnipLibraryState {
         unchangedOrExpected(before.origin, after.origin, value.origin),
         unchangedOrExpected(before.source, after.source, value.source),
         unchangedOrExpected(before.listID, after.listID, value.listID),
+        unchangedOrExpected(before.pinnedAt, after.pinnedAt, value.pinnedAt),
         unchangedOrExpected(before.isDone, after.isDone, value.isDone),
         unchangedOrExpected(before.manualSortKey, after.manualSortKey, value.manualSortKey),
         unchangedOrExpected(before.attachments, after.attachments, value.attachments)

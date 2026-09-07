@@ -15,6 +15,7 @@ struct SemanticSwipeAction: View {
                 .labelStyle(.titleAndIcon)
         }
         .tint(tint)
+        .accessibilityLabel(title)
         .accessibilityIdentifier(accessibilityIdentifier)
     }
 }
@@ -77,6 +78,7 @@ struct SelectionActionsMenu: View {
                     if await model.setSelectionDone(true) { endSelection() }
                 }
             }
+            .disabled(!model.selectedVisibleSnips.contains { !$0.isPinned })
             .accessibilityIdentifier("mark-selection-done")
 
             Button(SnipCompletionLanguage.notDone, systemImage: "circle") {
@@ -84,6 +86,7 @@ struct SelectionActionsMenu: View {
                     if await model.setSelectionDone(false) { endSelection() }
                 }
             }
+            .disabled(!model.selectedVisibleSnips.contains { !$0.isPinned })
             .accessibilityIdentifier("mark-selection-not-done")
 
             Menu("Move", systemImage: "folder") {

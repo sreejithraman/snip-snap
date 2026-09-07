@@ -101,6 +101,7 @@ package extension Snip {
       && source == other.source
       && listID == other.listID
       && isDone == other.isDone
+      && pinnedAt == other.pinnedAt
       && manualSortKey == other.manualSortKey
       && attachments == other.attachments
   }

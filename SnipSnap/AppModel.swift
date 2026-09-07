@@ -34,7 +34,8 @@ final class AppModel: ObservableObject {
     func canReorder(ids: Set<UUID>) -> Bool {
         guard query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               completionFilter == .all,
-              !ids.isEmpty else { return false }
+              !ids.isEmpty,
+              !snips.contains(where: { ids.contains($0.id) && $0.isPinned }) else { return false }
         return Set(snips.filter { ids.contains($0.id) }.map(\.listID)).count == 1
     }
 
@@ -503,6 +504,7 @@ final class AppModel: ObservableObject {
         before destinationID: UUID? = nil,
         placesManually: Bool = false
     ) async -> Bool {
+        let entry = clipboardHistory.resolvedEntry(entry)
         let materialization: ClipboardSnipMaterialization
         do {
             materialization = try await Task.detached(priority: .utility) {
@@ -665,7 +667,7 @@ final class AppModel: ObservableObject {
     }
 
     func toggleDoneSelection() {
-        let ids = selection
+        let ids = Set(selectedSnips.filter { !$0.isPinned }.map(\.id))
         guard !ids.isEmpty else { return }
         Task {
             await performUserMutation {
@@ -683,10 +685,29 @@ final class AppModel: ObservableObject {
     }
 
     func toggleDoneNow(id: UUID) async {
+        guard snips.contains(where: { $0.id == id && !$0.isPinned }) else { return }
         await performUserMutation {
             let update = try await session.performLibraryCommand(
                 .toggleDone(id: id),
                 sortedBy: sortMode
+            )
+            return (update, ())
+        }
+    }
+
+    func togglePinned(id: UUID) async {
+        await performUserMutation {
+            let update = try await session.performLibraryCommand(
+                .togglePinned(id: id), sortedBy: sortMode
+            )
+            return (update, ())
+        }
+    }
+
+    func setPinned(ids: Set<UUID>, pinned: Bool) async {
+        await performUserMutation {
+            let update = try await session.performLibraryCommand(
+                .setPinned(ids: ids, pinned: pinned), sortedBy: sortMode
             )
             return (update, ())
         }
@@ -699,7 +720,7 @@ final class AppModel: ObservableObject {
     func setDoneAfterExternalDropNow(ids: Set<UUID>) async {
         let unfinishedIDs = Set(
             snips.lazy
-                .filter { ids.contains($0.id) && !$0.isDone }
+                .filter { ids.contains($0.id) && !$0.isDone && !$0.isPinned }
                 .map(\.id)
         )
         guard !unfinishedIDs.isEmpty else { return }
