@@ -77,7 +77,6 @@ final class IOSClipboardModel {
                     : UTType(filenameExtension: url.pathExtension)
                 if let type, type.conforms(to: .image) {
                     let data = try Data(contentsOf: url)
-                    guard let data else { continue }
                     guard data.count <= ClipboardHistoryState.representationByteLimit else { throw CocoaError(.fileReadTooLarge) }
                     items.append(ClipboardPayloadItem(representations: [ClipboardRepresentation(type: type.identifier, data: data)]))
                 } else {

@@ -15,6 +15,8 @@ final class IOSAppModelTests: XCTestCase {
         let model = makeModel(library: ModelTestLibrary(snips: [ordinary, pinned]))
         await model.load()
         XCTAssertEqual(model.visibleSnips.first?.id, pinned.id)
+        let reordered = await model.placeVisibleSnips([ordinary.id, pinned.id])
+        XCTAssertFalse(reordered)
         let changed = await model.toggleDone(id: pinned.id)
         XCTAssertFalse(changed)
         model.selectedSnipIDs = [ordinary.id, pinned.id]
@@ -28,6 +30,10 @@ final class IOSAppModelTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let provider = NSItemProvider()
         let bytes = Data("provider HEIC bytes".utf8)
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.rtf.identifier, visibility: .all) { completion in
+            completion(nil, CocoaError(.fileReadUnknown))
+            return nil
+        }
         provider.registerDataRepresentation(forTypeIdentifier: UTType.heic.identifier, visibility: .all) { completion in
             completion(bytes, nil)
             return nil
