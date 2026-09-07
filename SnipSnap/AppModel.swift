@@ -840,7 +840,7 @@ final class AppModel: ObservableObject {
         guard canReorder(ids: selectedIDs) else { return }
         let lists = Set(snips.filter { selectedIDs.contains($0.id) }.map(\.listID))
         guard let listID = lists.first else { return }
-        let ids = snips.filter { $0.listID == listID }.map(\.id)
+        let ids = snips.filter { $0.listID == listID && !$0.isPinned }.map(\.id)
         guard let firstSelectedIndex = ids.firstIndex(where: selectedIDs.contains) else { return }
         let movingIDs = ids.filter(selectedIDs.contains)
         let remainingIDs = ids.filter { !selectedIDs.contains($0) }

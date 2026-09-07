@@ -17,8 +17,9 @@ public struct ClipboardOwnedFile: Codable, Equatable, Sendable, Identifiable {
     public let id: UUID
     public let name: String
     public let relativePath: String
-    public init(id: UUID = UUID(), name: String, relativePath: String) {
-        self.id = id; self.name = name; self.relativePath = relativePath
+    public var byteCount: Int?
+    public init(id: UUID = UUID(), name: String, relativePath: String, byteCount: Int? = nil) {
+        self.id = id; self.name = name; self.relativePath = relativePath; self.byteCount = byteCount
     }
 }
 
@@ -65,6 +66,12 @@ public struct ClipboardEntry: Identifiable, Codable, Equatable, Sendable {
     }
     public var searchText: String { [text, sourceApplication ?? "", fileURLs.map(\.lastPathComponent).joined(separator: " ")].joined(separator: " ") }
     public var byteCount: Int { items.flatMap(\.representations).reduce(0) { $0 + $1.data.count } }
+    public var retentionByteCount: Int {
+        ownedFiles.reduce(byteCount) { total, file in
+            let (sum, overflow) = total.addingReportingOverflow(max(0, file.byteCount ?? 0))
+            return overflow ? Int.max : sum
+        }
+    }
     public var fingerprint: String { payloadFingerprint ?? cachedPayloadFingerprint }
     private static func makeFingerprint(_ items: [ClipboardPayloadItem]) -> String {
         var hash = SHA256()

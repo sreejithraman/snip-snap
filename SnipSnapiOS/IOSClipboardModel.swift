@@ -19,7 +19,20 @@ final class IOSClipboardModel {
     private(set) var pendingUploadIDs: Set<UUID> = []
     private(set) var isSyncing = false
     private(set) var syncEnabled: Bool
-    var errorMessage: String?
+    private var operationErrorMessage: String?
+    private var loadErrorMessage: String?
+    var errorMessage: String? {
+        get { operationErrorMessage ?? loadErrorMessage }
+        set { operationErrorMessage = newValue }
+    }
+    private(set) var importErrorMessage: String?
+    var syncIsActive: Bool {
+        guard syncEnabled, settings.mode == .iCloudSync else { return false }
+        switch settings.state {
+        case .disabling, .deleting: return false
+        default: return true
+        }
+    }
     var copied = false
     var localDeviceLabel: String {
         UIDevice.current.userInterfaceIdiom == .pad ? String(localized: "Only on this iPad") : String(localized: "Only on this iPhone")
@@ -57,8 +70,10 @@ final class IOSClipboardModel {
     }
 
     func load() async {
-        do { entries = try await store.load().entries }
-        catch { errorMessage = error.localizedDescription }
+        do {
+            entries = try await store.load().entries
+            loadErrorMessage = nil
+        } catch { loadErrorMessage = error.localizedDescription }
     }
 
     func foreground() async {
@@ -94,7 +109,7 @@ final class IOSClipboardModel {
             pendingUploadIDs.formUnion(entries.filter { $0.isSyncEligible && !previousIDs.contains($0.id) }.map(\.id))
             savePendingUploads()
         }
-        if summary.failed > 0 { errorMessage = String(localized: "Some shared content could not be added. Try again.") }
+        importErrorMessage = summary.failed > 0 ? String(localized: "Some shared content could not be added. Try again.") : nil
         await synchronize()
     }
 

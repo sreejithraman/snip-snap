@@ -54,9 +54,18 @@ package enum ClipboardCloudRecordCodec {
     package static func setPayload(_ url: URL, on record: CKRecord) { record["payload"] = CKAsset(fileURL: url) }
 }
 
+package struct ClipboardCloudPayloadReference: Codable, Equatable {
+    package let recordName: String
+    package let digest: String
+    package init(data: Data, recordName: String = UUID().uuidString) {
+        self.recordName = recordName
+        digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
 package actor CloudKitClipboardTransport: ClipboardCloudTransport {
     private struct Manifest: Codable {
-        var entries: [UUID: String]
+        var entries: [UUID: ClipboardCloudPayloadReference]
         var tombstones: [UUID: Date]
         var retentionTombstones: [UUID: Date]?
     }
@@ -86,18 +95,19 @@ package actor CloudKitClipboardTransport: ClipboardCloudTransport {
         }
         guard let asset = record["payload"] as? CKAsset, let url = asset.fileURL else { throw ClipboardCloudError.invalidPayload }
         let manifest = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: url))
-        fetchedReferences = Set(manifest.entries.values)
+        fetchedReferences = Set(manifest.entries.values.map(\.recordName))
         uploaded = fetchedReferences
         cache = cache.filter { fetchedReferences.contains($0.key) }
         var entries: [UUID: Data] = [:]
-        for (id, digest) in manifest.entries {
-            if let data = cache[digest] { entries[id] = data; continue }
-            let payload = try await database.record(for: CKRecord.ID(recordName: digest, zoneID: zone))
+        for (id, reference) in manifest.entries {
+            let recordName = reference.recordName
+            if let data = cache[recordName] { entries[id] = data; continue }
+            let payload = try await database.record(for: CKRecord.ID(recordName: recordName, zoneID: zone))
             guard let asset = payload["payload"] as? CKAsset, let url = asset.fileURL else { throw ClipboardCloudError.invalidPayload }
             guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 64 * 1_024 * 1_024 else { throw ClipboardCloudError.payloadTooLarge }
             let data = try Data(contentsOf: url)
-            guard Self.digest(data) == digest else { throw ClipboardCloudError.invalidPayload }
-            entries[id] = data; cache[digest] = data; uploaded.insert(digest)
+            guard Self.digest(data) == reference.digest else { throw ClipboardCloudError.invalidPayload }
+            entries[id] = data; cache[recordName] = data; uploaded.insert(recordName)
         }
         return ClipboardCloudSnapshot(entries: entries, tombstones: manifest.tombstones,
                                       retentionTombstones: manifest.retentionTombstones ?? [:], version: try CloudRecordShadow.archive(record).data)
@@ -106,28 +116,38 @@ package actor CloudKitClipboardTransport: ClipboardCloudTransport {
         try cancellation.check()
         try await prepare()
         try cancellation.check()
-        var references: [UUID: String] = [:]
+        var references: [UUID: ClipboardCloudPayloadReference] = [:]
         for (id, data) in snapshot.entries {
             try cancellation.check()
-            let digest = Self.digest(data)
-            references[id] = digest
-            guard !uploaded.contains(digest) else { continue }
-            let record = ClipboardCloudRecordCodec.payloadRecord(id: CKRecord.ID(recordName: digest, zoneID: zone))
+            let recordName = cache.first { $0.value == data }?.key ?? UUID().uuidString
+            references[id] = ClipboardCloudPayloadReference(data: data, recordName: recordName)
+            guard !uploaded.contains(recordName) else { continue }
+            let record = ClipboardCloudRecordCodec.payloadRecord(id: CKRecord.ID(recordName: recordName, zoneID: zone))
             try await saveAsset(data, record: record, policy: .allKeys, cancellation: cancellation)
-            cache[digest] = data; uploaded.insert(digest)
+            cache[recordName] = data; uploaded.insert(recordName)
         }
         let record: CKRecord
         if let version = snapshot.version { record = try CloudRecordShadow(data: version).record() }
         else { record = ClipboardCloudRecordCodec.manifestRecord(id: CKRecord.ID(recordName: "manifest", zoneID: zone)) }
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
         let data = try encoder.encode(Manifest(entries: references, tombstones: snapshot.tombstones, retentionTombstones: snapshot.retentionTombstones))
-        let obsolete = fetchedReferences.subtracting(references.values)
+        let obsolete = fetchedReferences.subtracting(references.values.map(\.recordName))
         do {
             try await saveAsset(data, record: record, policy: .ifServerRecordUnchanged,
                                 deleting: obsolete.map { CKRecord.ID(recordName: $0, zoneID: zone) }, cancellation: cancellation)
-        } catch let error as CKError where error.code == .serverRecordChanged { throw ClipboardCloudError.conflict }
-        for digest in obsolete { cache[digest] = nil; uploaded.remove(digest) }
-        fetchedReferences = Set(references.values)
+        } catch let error as CKError {
+            if Self.isConflict(error, recordID: record.recordID) { throw ClipboardCloudError.conflict }
+            throw error
+        }
+        for recordName in obsolete { cache[recordName] = nil; uploaded.remove(recordName) }
+        fetchedReferences = Set(references.values.map(\.recordName))
+    }
+
+    package static func isConflict(_ error: CKError, recordID: CKRecord.ID) -> Bool {
+        if error.code == .serverRecordChanged { return true }
+        guard error.code == .partialFailure,
+              let nested = error.partialErrorsByItemID?[recordID] as? CKError else { return false }
+        return nested.code == .serverRecordChanged
     }
 
     private func saveAsset(_ data: Data, record: CKRecord, policy: CKModifyRecordsOperation.RecordSavePolicy,

@@ -15,6 +15,12 @@ struct IOSClipboardView: View {
 
     var body: some View {
         List {
+            if let error = model.importErrorMessage {
+                Section {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                    Button("Retry") { Task { await model.foreground() } }
+                }
+            }
             if let error = model.errorMessage {
                 Section {
                     Label(error, systemImage: "exclamationmark.icloud")
@@ -35,10 +41,10 @@ struct IOSClipboardView: View {
                         if !entry.isSyncEligible {
                             Label(model.localDeviceLabel, systemImage: "iphone")
                                 .font(.caption).foregroundStyle(.secondary)
-                            if model.syncEnabled {
+                            if model.syncIsActive {
                                 Text("Pin to sync this file").font(.caption).foregroundStyle(.secondary)
                             }
-                        } else if model.syncEnabled && model.pendingUploadIDs.contains(entry.id) {
+                        } else if model.syncIsActive && model.pendingUploadIDs.contains(entry.id) {
                             if model.errorMessage != nil {
                                 Label("Upload failed", systemImage: "exclamationmark.icloud")
                                     .font(.caption).foregroundStyle(.red)
@@ -83,7 +89,7 @@ struct IOSClipboardView: View {
         .listStyle(.plain)
         .environment(\.defaultMinListRowHeight, 24)
         .overlay {
-            if entries.isEmpty && model.errorMessage == nil {
+            if entries.isEmpty && model.errorMessage == nil && model.importErrorMessage == nil {
                 ContentUnavailableView("No Clipboard Entries", systemImage: "clipboard", description: Text("Paste here or share content to Clipboard. Turn on clipboard sync in Settings to see your Mac history."))
             }
         }
@@ -104,7 +110,7 @@ struct IOSClipboardView: View {
         .confirmationDialog("Clear Clipboard History?", isPresented: $confirmsClear, titleVisibility: .visible) {
             Button("Clear History", role: .destructive) { Task { await model.clear() } }
         } message: {
-            Text(model.syncEnabled ? "This clears unpinned history across synced devices. Pins stay." : "This clears unpinned history on this device. Pins stay.")
+            Text(model.syncIsActive ? "This clears unpinned history across synced devices. Pins stay." : "This clears unpinned history on this device. Pins stay.")
         }
         .overlay(alignment: .bottom) {
             if model.copied {

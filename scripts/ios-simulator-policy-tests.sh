@@ -65,4 +65,13 @@ if FAKE_WRONG_ID=1 "$script_dir/run.sh" --ios-simulator > "$test_dir/output" 2>&
  print -u2 'Accepted a build with the wrong bundle ID'; exit 1
 fi
 cmp "$test_dir/before" "$FAKE_SIM_LOG"
+"$script_dir/run.sh" ios-simulator TEST-SIM > "$test_dir/output"
+cp "$FAKE_SIM_LOG" "$test_dir/before"
+mkdir -p "$SNIP_SNAP_DEV_STATE_DIR/locks/ios-slot-1"
+for arguments in '--ios-simulator --simulator-id TEST-SIM' 'ios-simulator TEST-SIM'; do
+ if "$script_dir/run.sh" ${=arguments} > "$test_dir/output" 2>&1; then
+  print -u2 'Accepted a launch while its slot was locked'; exit 1
+ fi
+ cmp "$test_dir/before" "$FAKE_SIM_LOG"
+done
 print 'iOS Simulator Dev policy tests passed.'

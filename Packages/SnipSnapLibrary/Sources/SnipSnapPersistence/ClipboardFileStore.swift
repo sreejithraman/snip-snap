@@ -45,7 +45,14 @@ public struct ClipboardFileStore: Sendable {
         if entry.fileURLs.isEmpty { return entry }
         if entry.ownedFiles.count == entry.fileURLs.count,
            try entry.ownedFiles.allSatisfy({ FileManager.default.isReadableFile(atPath: try url(for: $0).path) }) {
-            try validateSize(of: entry); return entry
+            try validateSize(of: entry)
+            var result = entry
+            result.ownedFiles = try entry.ownedFiles.map { file in
+                var file = file
+                file.byteCount = try url(for: file).resourceValues(forKeys: [.fileSizeKey]).fileSize
+                return file
+            }
+            return result
         }
         let fileManager = FileManager.default
         var totalBytes = entry.byteCount
@@ -71,7 +78,8 @@ public struct ClipboardFileStore: Sendable {
                 let id = UUID()
                 let leaf = id.uuidString + "-" + source.lastPathComponent
                 try fileManager.copyItem(at: source, to: staging.appendingPathComponent(leaf))
-                files.append(ClipboardOwnedFile(id: id, name: source.lastPathComponent, relativePath: directoryName + "/" + leaf))
+                files.append(ClipboardOwnedFile(id: id, name: source.lastPathComponent, relativePath: directoryName + "/" + leaf,
+                    byteCount: try staging.appendingPathComponent(leaf).resourceValues(forKeys: [.fileSizeKey]).fileSize))
             }
             var copiedBytes = entry.byteCount
             for file in files {

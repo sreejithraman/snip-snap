@@ -99,7 +99,10 @@ package struct ClipboardCloudPayload: Codable, Sendable {
         let hadBinding = FileManager.default.fileExists(atPath: bindingURL.path)
         try bind(to: generation)
         try await transport?.deleteAll()
-        if hadBinding { try await store.save(ClipboardHistoryState()) }
+        if hadBinding {
+            try quarantineHistory()
+            try await store.save(ClipboardHistoryState())
+        }
         try removeBinding()
         await worker.reset()
     }
@@ -111,14 +114,17 @@ package struct ClipboardCloudPayload: Codable, Sendable {
         transitioning = true; defer { transitioning = false }
         stop()
         await waitUntilIdle()
-        let source = await store.url
+        try quarantineHistory()
+        try await store.save(ClipboardHistoryState())
+        try removeBinding()
+        await worker.reset()
+    }
+    private func quarantineHistory() throws {
+        let source = store.url
         if FileManager.default.fileExists(atPath: source.path) {
             let backup = source.deletingLastPathComponent().appendingPathComponent("clipboard-quarantine-\(UUID().uuidString).json")
             try FileManager.default.copyItem(at: source, to: backup)
         }
-        try await store.save(ClipboardHistoryState())
-        try removeBinding()
-        await worker.reset()
     }
     private func removeBinding() throws {
         if FileManager.default.fileExists(atPath: bindingURL.path) { try FileManager.default.removeItem(at: bindingURL) }
@@ -167,11 +173,15 @@ package actor ClipboardPayloadWorker {
                     if let cached = decodedCache[id], cached.0 == data { return cached.1 }
                     decodeCount += 1
                     guard data.count <= 64 * 1_024 * 1_024 else { throw ClipboardCloudError.payloadTooLarge }
-                    let payload = try JSONDecoder().decode(ClipboardCloudPayload.self, from: data)
+                    var payload = try JSONDecoder().decode(ClipboardCloudPayload.self, from: data)
                     guard payload.entry.byteCount <= ClipboardHistoryState.entryByteLimit else { throw ClipboardCloudError.payloadTooLarge }
                     var size = payload.entry.byteCount
                     for bytes in payload.files.values {
                         guard bytes.count <= ClipboardHistoryState.entryByteLimit - size else { throw ClipboardCloudError.payloadTooLarge }; size += bytes.count
+                    }
+                    payload.entry.ownedFiles = try payload.entry.ownedFiles.map { file in
+                        guard let bytes = payload.files[file.id] else { throw ClipboardCloudError.invalidPayload }
+                        var file = file; file.byteCount = bytes.count; return file
                     }
                     guard payload.entry.id == id, (payload.entry.isSyncEligible || !payload.entry.ownedFiles.isEmpty) else { throw ClipboardCloudError.invalidPayload }
                     decodedCache[id] = (data, payload)

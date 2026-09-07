@@ -57,7 +57,7 @@ print "Building Snip Snap iOS Dev $slot. Log: $build_log"
 xcodebuild -project "$repo_dir/SnipSnap.xcodeproj" -scheme SnipSnapiOS \
     -configuration Debug -destination "$destination" -derivedDataPath "$derived_data" \
     CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_STYLE=Manual \
-    CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= \
+    CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= "PROVISIONING_PROFILE_SPECIFIER=" \
     "SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS=$repo_dir/SnipSnapiOS/SnipSnapiOS.entitlements" \
     SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER= \
     ASSETCATALOG_COMPILER_APPICON_NAME=AppIconDev \

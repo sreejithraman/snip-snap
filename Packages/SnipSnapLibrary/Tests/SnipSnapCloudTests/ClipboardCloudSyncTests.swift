@@ -1,3 +1,4 @@
+import CloudKit
 import Foundation
 import Testing
 import SnipSnapCore
@@ -48,6 +49,55 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
 }
 
 @Suite @MainActor struct ClipboardCloudSyncTests {
+    @Test func payloadReferencesUseRandomNamesAndDetectManifestConflicts() throws {
+        let data = Data("private clipboard content".utf8)
+        let first = ClipboardCloudPayloadReference(data: data)
+        let second = ClipboardCloudPayloadReference(data: data)
+        #expect(UUID(uuidString: first.recordName) != nil)
+        #expect(first.recordName != second.recordName)
+        #expect(first.digest == second.digest)
+        let id = CKRecord.ID(recordName: "manifest")
+        let partial = CKError(.partialFailure, userInfo: [CKPartialErrorsByItemIDKey: [id: CKError(.serverRecordChanged)]])
+        #expect(CloudKitClipboardTransport.isConflict(partial, recordID: id))
+        #expect(!CloudKitClipboardTransport.isConflict(CKError(.networkFailure), recordID: id))
+    }
+
+    @Test func deleteSyncedHistoryKeepsRecoveryFileBytes() async throws {
+        let client = ClipboardClient(ClipboardTestCloud())
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        try FileManager.default.createDirectory(at: client.root, withIntermediateDirectories: true)
+        let source = client.root.appendingPathComponent("important.txt")
+        let data = Data("Keep recovery bytes".utf8)
+        try data.write(to: source)
+        let clip = ClipboardEntry(items: [.init(representations: [.init(type: "public.file-url", data: Data(source.absoluteString.utf8))])])
+        try await client.store.insert(clip)
+        try await client.store.setPinned(true, id: clip.id)
+        let shared = try await client.run()
+        let owned = try #require(shared.entries.first?.ownedFiles.first)
+        try await client.sync.deleteSyncedHistory(generation: "account-generation-A")
+        #expect(try await client.store.load().entries.isEmpty)
+        #expect(try Data(contentsOf: client.files.url(for: owned)) == data)
+        let backups = try FileManager.default.contentsOfDirectory(at: client.root, includingPropertiesForKeys: nil).filter { $0.lastPathComponent.hasPrefix("clipboard-quarantine-") }
+        #expect(backups.count == 1)
+    }
+
+    @Test func sharedFileSizesSurviveSyncAndUnpinForRetention() async throws {
+        let cloud = ClipboardTestCloud(); let a = ClipboardClient(cloud); let b = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: a.root); try? FileManager.default.removeItem(at: b.root) }
+        try FileManager.default.createDirectory(at: a.root, withIntermediateDirectories: true)
+        let source = a.root.appendingPathComponent("file.txt")
+        let data = Data(repeating: 1, count: 4096)
+        try data.write(to: source)
+        let clip = ClipboardEntry(items: [.init(representations: [.init(type: "public.file-url", data: Data(source.absoluteString.utf8))])])
+        try await a.store.insert(clip); try await a.store.setPinned(true, id: clip.id); try await a.run()
+        try await b.run(); try await b.store.setPinned(false, id: clip.id)
+        let state = try await b.run()
+        let unpinned = try #require(state.entries.first)
+        #expect(unpinned.ownedFiles.first?.byteCount == data.count)
+        #expect(unpinned.retentionByteCount == unpinned.byteCount + data.count)
+        #expect(ClipboardHistoryState.trimmed([unpinned], maximumHistoryBytes: 4096).isEmpty)
+    }
+
     private func entry(_ text: String, pinned: Bool = false) -> ClipboardEntry {
         ClipboardEntry(items: [.init(representations: [.init(type: "public.utf8-plain-text", data: Data(text.utf8))])],
                        pinnedAt: pinned ? Date() : nil)

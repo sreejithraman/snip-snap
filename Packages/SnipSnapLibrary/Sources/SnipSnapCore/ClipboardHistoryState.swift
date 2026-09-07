@@ -44,10 +44,12 @@ public struct ClipboardHistoryState: Codable, Equatable, Sendable {
     }
 
     public mutating func delete(id: UUID, at date: Date = Date()) {
-        for deletedID in [id] + (entries.first { $0.id == id }?.duplicateIDs ?? []) {
+        let entry = entries.first { $0.id == id || $0.duplicateIDs.contains(id) }
+        for deletedID in [id] + (entry.map { [$0.id] + $0.duplicateIDs } ?? []) {
             tombstones[deletedID] = max(tombstones[deletedID] ?? .distantPast, date)
         }
-        entries.removeAll { $0.id == id }
+        entries.removeAll { $0.id == (entry?.id ?? id) }
+        normalize()
     }
 
     public mutating func clearUnpinned(at date: Date = Date()) {
@@ -81,12 +83,12 @@ public struct ClipboardHistoryState: Codable, Equatable, Sendable {
             if entry.isPinned { return true }
             guard !budgetExhausted, examinedCount < maximumCount else { return false }
             examinedCount += 1
-            guard entry.byteCount <= maximumEntryBytes else { return false }
-            guard entry.byteCount <= maximumHistoryBytes - bytes else {
+            guard entry.retentionByteCount <= maximumEntryBytes else { return false }
+            guard entry.retentionByteCount <= maximumHistoryBytes - bytes else {
                 budgetExhausted = true
                 return false
             }
-            bytes += entry.byteCount
+            bytes += entry.retentionByteCount
             return true
         }
     }
@@ -103,7 +105,7 @@ public struct ClipboardHistoryState: Codable, Equatable, Sendable {
         let live = entries.filter { entry in
             let ids = [entry.id] + entry.duplicateIDs
             return ids.allSatisfy { tombstones[$0] == nil }
-                && (entry.isPinned || ids.allSatisfy { retentionTombstones[$0] == nil })
+                && (entry.isPinned || ids.allSatisfy { entry.modifiedAt > (retentionTombstones[$0] ?? .distantPast) })
         }
         var byID: [UUID: ClipboardEntry] = [:]
         for entry in live {

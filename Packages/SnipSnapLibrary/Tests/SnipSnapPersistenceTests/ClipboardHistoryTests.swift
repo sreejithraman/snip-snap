@@ -4,6 +4,43 @@ import SnipSnapPersistence
 import XCTest
 
 final class ClipboardHistoryTests: XCTestCase {
+    func testUnpinnedOwnedFilesCountAgainstHistoryBudget() {
+        let entries = (0..<4).map { index in
+            var entry = text("file-\(index)")
+            entry.ownedFiles = [ClipboardOwnedFile(name: "file", relativePath: "file", byteCount: 30 * 1024 * 1024)]
+            entry.hasBeenShared = true
+            return entry
+        }
+        XCTAssertEqual(ClipboardHistoryState(entries: entries).entries.count, 3)
+    }
+
+    func testRestoredOfflinePinCanBeUnpinnedAfterClear() {
+        let entry = text("reuse", time: 1)
+        var offline = ClipboardHistoryState(entries: [entry])
+        offline.setPinned(true, id: entry.id, at: Date(timeIntervalSince1970: 2))
+        var active = ClipboardHistoryState(entries: [entry])
+        active.clearUnpinned(at: Date(timeIntervalSince1970: 3))
+        let cleared = active
+        active.merge(offline)
+        active.setPinned(false, id: entry.id, at: Date(timeIntervalSince1970: 4))
+        active.merge(cleared)
+        active.merge(offline)
+        XCTAssertEqual(active.entries.map(\.id), [entry.id])
+        XCTAssertFalse(active.entries[0].isPinned)
+    }
+
+    func testDeleteAliasRemovesCanonicalEntryAndStaleCopies() {
+        let first = text("same")
+        let second = text("same")
+        let third = text("same")
+        var state = ClipboardHistoryState(entries: [first, second, third])
+        let canonical = state.entries[0]
+        state.delete(id: canonical.duplicateIDs[0])
+        XCTAssertTrue(state.entries.isEmpty)
+        state.merge(ClipboardHistoryState(entries: [first, second, third]))
+        XCTAssertTrue(state.entries.isEmpty)
+    }
+
     func testRemovedFilesArePrunedButQuarantineKeepsItsBytes() async throws {
         let directory = try root()
         defer { try? FileManager.default.removeItem(at: directory) }

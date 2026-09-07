@@ -226,8 +226,7 @@ final class IOSAppSession {
             syncedContentSettings.recordOutstandingSyncRecovered()
         case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
             clipboard.stop()
-            if case .iCloudAccountChanged = result { await clipboard.resetAccountBinding() }
-            if case .iCloudDataReset = result { await clipboard.resetAccountBinding() }
+            await clipboard.resetAccountBinding()
             if let cloudSyncSession,
                let active = try? await cloudSyncSession.iosActiveLibrary()
             {
@@ -294,8 +293,7 @@ final class IOSAppSession {
                 }
             case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
                 clipboard.stop()
-                if case .iCloudAccountChanged = result { await clipboard.resetAccountBinding() }
-                if case .iCloudDataReset = result { await clipboard.resetAccountBinding() }
+                await clipboard.resetAccountBinding()
                 let active = try await session.iosActiveLibrary()
                 await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
                 let issue: SyncedContentSyncIssue

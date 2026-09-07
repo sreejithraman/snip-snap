@@ -360,7 +360,9 @@ struct SnipListView: View {
                 commandNumberPicker.pick(.clipboardEntry(entry.id))
             },
             copiedPulse: model.clipboardCopyPulse,
-            onPreviewAttachments: onPreviewAttachments
+            onPreviewAttachments: onPreviewAttachments,
+            syncStatus: model.clipboardHistory.status(for: entry),
+            retrySync: { Task { await model.clipboardHistory.syncNow() } }
         ) {
             model.placeOnClipboard(.clipboardEntry(entry), feedback: $0)
         } save: {

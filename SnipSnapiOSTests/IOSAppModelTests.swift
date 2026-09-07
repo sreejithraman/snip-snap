@@ -9,6 +9,37 @@ import XCTest
 
 @MainActor
 final class IOSAppModelTests: XCTestCase {
+    func testClipboardSyncPreferenceDoesNotImplyMainSyncIsActive() {
+        let preferences = UserDefaults(suiteName: UUID().uuidString)!
+        preferences.set(true, forKey: "syncClipboardHistory")
+        let settings = SyncedContentSettingsModel(mode: .localOnly)
+        let model = IOSClipboardModel(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString), settings: settings, preferences: preferences)
+        XCTAssertTrue(model.syncEnabled)
+        XCTAssertFalse(model.syncIsActive)
+    }
+
+    func testClipboardImportFailureStaysVisibleUntilQueueRetrySucceeds() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let imports = ShareClipboardImportStore(sharedRootURL: root)
+        let request = ShareImportRequest(content: "Retry this", destinationListID: SnipList.inboxID)
+        _ = try await imports.save(request)
+        let history = root.appendingPathComponent("clipboard.json")
+        try FileManager.default.createDirectory(at: history, withIntermediateDirectories: true)
+        let model = IOSClipboardModel(rootURL: root, settings: SyncedContentSettingsModel(mode: .localOnly), preferences: UserDefaults(suiteName: UUID().uuidString)!)
+        await model.foreground()
+        XCTAssertNotNil(model.importErrorMessage)
+        await model.synchronize()
+        XCTAssertNotNil(model.importErrorMessage)
+        try FileManager.default.removeItem(at: history)
+        await model.foreground()
+        XCTAssertNil(model.importErrorMessage)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.entries.map(\.text), ["Retry this"])
+        let pending = await imports.pendingImportCount()
+        XCTAssertEqual(pending, 0)
+    }
+
     func testPinnedSnipsStayFirstAndCannotBeMarkedDone() async {
         let pinned = Snip(content: "Reusable", origin: .quickEntry, pinnedAt: Date())
         let ordinary = Snip(content: "Task", origin: .quickEntry)
