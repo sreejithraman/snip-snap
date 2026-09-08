@@ -87,6 +87,7 @@ extension SwiftDataSnipLibrary {
       envelopeData: envelopeData,
       context: context
     )
+    try lock.check()
     try context.save()
   }
 
@@ -102,6 +103,7 @@ extension SwiftDataSnipLibrary {
       context.delete(state)
     }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 
@@ -123,6 +125,7 @@ extension SwiftDataSnipLibrary {
     context.insert(
       StoredCloudStagedBatch(namespaceKey: namespaceKey, batchID: batchID, payload: payload)
     )
+    try lock.check()
     try context.save()
   }
 
@@ -158,6 +161,7 @@ extension SwiftDataSnipLibrary {
       bySnipID[reservation.snipID] = record
     }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 
@@ -181,6 +185,7 @@ extension SwiftDataSnipLibrary {
       context.insert(try StoredCloudNamespaceState(namespaceKey: namespaceKey, value: value))
     }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 
@@ -204,6 +209,7 @@ extension SwiftDataSnipLibrary {
     guard !records.isEmpty else { return false }
     for record in records { context.delete(record) }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
     return true
   }
@@ -305,6 +311,7 @@ extension SwiftDataSnipLibrary {
     )
     do {
       try afterMutationBeforeSave()
+      try lock.check()
       try context.save()
     } catch {
       context.rollback()
@@ -372,6 +379,7 @@ extension SwiftDataSnipLibrary {
     )
     do {
       try afterMutationBeforeSave()
+      try lock.check()
       try context.save()
     } catch {
       context.rollback()
@@ -434,6 +442,7 @@ extension SwiftDataSnipLibrary {
       context.delete(record)
     }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 
@@ -453,6 +462,7 @@ extension SwiftDataSnipLibrary {
       context.delete(event)
     }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 
@@ -480,6 +490,7 @@ extension SwiftDataSnipLibrary {
       }
     }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 

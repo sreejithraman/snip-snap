@@ -19,6 +19,7 @@ extension SwiftDataSnipLibrary {
     var createdDirectories: [URL] = []
     do {
       for attachment in loaded.attachments where attachment.relativePath.hasPrefix("CloudDownloads/") {
+        try lock.check()
         let source = try Self.validatedChild(
           relativePath: attachment.relativePath,
           root: attachmentRootURL
@@ -79,12 +80,14 @@ extension SwiftDataSnipLibrary {
       for row in try context.fetch(FetchDescriptor<StoredCloudPendingDelete>())
         where row.namespaceKey == namespaceKey { context.delete(row) }
       try afterMutationBeforeSave()
+      try lock.check()
       try context.save()
     } catch {
       context.rollback()
       removeAttachmentDirectories(createdDirectories)
       throw error
     }
+    try lock.check()
     try cloudAttachmentFiles.removeNamespaceFiles(namespaceKey: namespaceKey)
   }
 
@@ -93,7 +96,8 @@ extension SwiftDataSnipLibrary {
     metadataZoneName: String,
     metadataOwnerName: String,
     payloadZoneName: String,
-    payloadOwnerName: String
+    payloadOwnerName: String,
+    digestFile: @Sendable (URL) throws -> Data = AttachmentFileIO.digest(at:)
   ) throws {
     let namespaceKey = namespaceKey.rawValue
     guard let container else { throw SnipLibraryError.storeUnavailable }
@@ -105,6 +109,7 @@ extension SwiftDataSnipLibrary {
       namespaceKey: namespaceKey,
       context: context
     )
+    try lock.check()
     try sweepCloudAttachmentUploads(
       namespaceKey: namespaceKey,
       keeping: Set(existing.compactMap { row in
@@ -124,6 +129,7 @@ extension SwiftDataSnipLibrary {
     var uploadFilesToRemove: [URL] = []
     do {
       for (attachmentID, value) in local.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+        try lock.check()
         let localSourcePath = value.2.relativePath.hasPrefix("CloudDownloads/")
           ? nil : value.2.relativePath
         if let row = byAttachment[attachmentID] {
@@ -159,7 +165,9 @@ extension SwiftDataSnipLibrary {
             throw CloudAttachmentStorageError.missingPayload
           }
           let byteCount = Int64(values.fileSize ?? -1)
-          let digest = try Self.sha256(of: sourceURL)
+          try lock.check()
+          let digest = try digestFile(sourceURL)
+          try lock.check()
           let payloadChanged = row.sha256 != digest || row.byteCount != byteCount
           let metadataChanged = payloadChanged
             || row.fileName != value.2.fileName
@@ -187,6 +195,7 @@ extension SwiftDataSnipLibrary {
               uploadFilesToRemove.append(oldUpload)
             }
             let payloadRecordName = UUID().uuidString.lowercased()
+            try lock.check()
             let upload = try stageCloudAttachmentUpload(
               sourceURL: sourceURL,
               namespaceKey: namespaceKey,
@@ -202,6 +211,7 @@ extension SwiftDataSnipLibrary {
             row.payloadSystemFields = nil
             row.metadataAccepted = false
           } else if !row.payloadAccepted {
+            try lock.check()
             let upload = try stageCloudAttachmentUpload(
               sourceURL: sourceURL,
               namespaceKey: namespaceKey,
@@ -230,7 +240,9 @@ extension SwiftDataSnipLibrary {
           relativePath: value.2.relativePath,
           root: attachmentRootURL
         )
-        let digest = try Self.sha256(of: sourceURL)
+        try lock.check()
+        let digest = try digestFile(sourceURL)
+        try lock.check()
         let metadataIdentity = CloudTextStorageIdentity(
           zoneName: metadataZoneName,
           ownerName: metadataOwnerName,
@@ -242,6 +254,7 @@ extension SwiftDataSnipLibrary {
           ownerName: payloadOwnerName,
           recordName: payloadRecordName
         )
+        try lock.check()
         let upload = try stageCloudAttachmentUpload(
           sourceURL: sourceURL,
           namespaceKey: namespaceKey,
@@ -267,6 +280,7 @@ extension SwiftDataSnipLibrary {
       }
 
       for row in existing where local[row.attachmentID] == nil && row.isLocallyPresent {
+        try lock.check()
         row.isLocallyPresent = false
         row.sourceRelativePath = nil
         row.lastFailure = nil
@@ -292,11 +306,15 @@ extension SwiftDataSnipLibrary {
           context.delete(row)
         }
       }
+      try lock.check()
       if changed {
         try afterMutationBeforeSave()
+        try lock.check()
         try context.save()
       }
       for url in uploadFilesToRemove {
+        // The transaction committed; leave remaining cleanup for the next sweep.
+        if (try? lock.check()) == nil { break }
         CloudAttachmentCacheFiles.remove(url, includingParentDirectory: true)
       }
     } catch {
@@ -415,6 +433,7 @@ extension SwiftDataSnipLibrary {
     }
     if changed {
       try afterMutationBeforeSave()
+      try lock.check()
       try context.save()
     }
   }
@@ -456,6 +475,7 @@ extension SwiftDataSnipLibrary {
     }
     if changed {
       try afterMutationBeforeSave()
+      try lock.check()
       try context.save()
     }
   }
@@ -560,6 +580,7 @@ extension SwiftDataSnipLibrary {
       context.delete(entry)
     }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
     didCommit = true
     for url in filesToRemoveAfterCommit where url != destination {
@@ -580,6 +601,7 @@ extension SwiftDataSnipLibrary {
       context: context
     ) { context.delete(entry) }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 
@@ -610,6 +632,7 @@ extension SwiftDataSnipLibrary {
     var filesToRemove: [URL] = []
     var removedEntryIDs: Set<String> = []
     for entry in entries {
+      try lock.check()
       guard let url = try? Self.validatedChild(relativePath: entry.relativePath, root: root) else {
         context.delete(entry)
         removedEntryIDs.insert(entry.id)
@@ -633,6 +656,7 @@ extension SwiftDataSnipLibrary {
     }
     var total = kept.reduce(Int64(0)) { $0 + $1.0.byteCount }
     for (entry, url) in kept where total > maximumBytes {
+      try lock.check()
       total -= entry.byteCount
       context.delete(entry)
       removedEntryIDs.insert(entry.id)
@@ -643,13 +667,19 @@ extension SwiftDataSnipLibrary {
     })
     if !removedEntryIDs.isEmpty {
       try afterMutationBeforeSave()
+      try lock.check()
       try context.save()
     }
-    for url in filesToRemove { CloudAttachmentCacheFiles.remove(url) }
+    for url in filesToRemove {
+      try lock.check()
+      CloudAttachmentCacheFiles.remove(url)
+    }
+    try lock.check()
     try CloudAttachmentCacheFiles.removeOrphans(
       under: root.appendingPathComponent("Files", isDirectory: true),
       keeping: remainingPaths
     )
+    try lock.check()
     try cloudAttachmentFiles.clearStaging(namespaceKey: namespaceKey)
   }
 
@@ -680,12 +710,14 @@ extension SwiftDataSnipLibrary {
         CloudAttachmentCacheFiles.remove(url, includingParentDirectory: true)
       }
       context.delete(row)
+      try lock.check()
       try context.save()
       return nil
     }
     let root = try cloudAttachmentCacheRoot(namespaceKey: namespaceKey)
     guard let url = try? Self.validatedChild(relativePath: row.relativePath, root: root) else {
       context.delete(row)
+      try lock.check()
       try context.save()
       return nil
     }
@@ -697,10 +729,12 @@ extension SwiftDataSnipLibrary {
     else {
       CloudAttachmentCacheFiles.remove(url)
       context.delete(row)
+      try lock.check()
       try context.save()
       return nil
     }
     row.lastAccessedAt = now
+    try lock.check()
     try context.save()
     return url
   }
@@ -802,10 +836,6 @@ extension SwiftDataSnipLibrary {
       shadowData: shadowData,
       blockedByAttachmentID: blockedByAttachmentID
     ))
-  }
-
-  private static func sha256(of url: URL) throws -> Data {
-    try CloudAttachmentCacheFiles.digest(at: url)
   }
 
   static func validatedChild(relativePath: String, root: URL) throws -> URL {
