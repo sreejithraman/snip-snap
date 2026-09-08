@@ -5,7 +5,7 @@ import UIKit
 @Observable
 final class IOSHapticFeedback {
     enum Kind: Equatable {
-        case selection, saved, copied, markedDone, deleted, restored, moved, merged, warning, error
+        case selection, snap, saved, copied, markedDone, deleted, restored, moved, merged, warning, error
     }
 
     struct Event: Equatable {
@@ -105,11 +105,13 @@ final class IOSSystemHapticPlayer: IOSHapticPlaying {
     private let light = UIImpactFeedbackGenerator(style: .light)
     private let rigid = UIImpactFeedbackGenerator(style: .rigid)
     private let medium = UIImpactFeedbackGenerator(style: .medium)
+    private let heavy = UIImpactFeedbackGenerator(style: .heavy)
     private let notification = UINotificationFeedbackGenerator()
 
     func play(_ kind: IOSHapticFeedback.Kind) {
         switch kind {
         case .selection: selection.selectionChanged()
+        case .snap: heavy.impactOccurred()
         case .saved, .restored, .moved: light.impactOccurred()
         case .copied: rigid.impactOccurred()
         case .markedDone, .merged: notification.notificationOccurred(.success)

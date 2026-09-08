@@ -552,7 +552,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         )
         XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 4))
         let event = app.staticTexts["haptic-event"].label
-        XCTAssertTrue(event.hasPrefix("selection:"))
+        XCTAssertTrue(event.hasPrefix("snap:"))
         app.buttons["Cancel"].tap()
         XCTAssertTrue(inbox.waitForExistence(timeout: 3))
         XCTAssertTrue(inbox.isSelected)

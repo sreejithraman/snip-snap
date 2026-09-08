@@ -271,7 +271,7 @@ struct ListSelector: View {
         guard !presentingCreation, sheet == nil else { return }
         let request = UUID()
         creationRequest = request
-        model.haptics.emit(.selection, for: model.haptics.beginInteraction())
+        model.haptics.emit(.snap, for: model.haptics.beginInteraction())
         withAnimation(animation, completionCriteria: .logicallyComplete) {
             presentingCreation = true
         } completion: {

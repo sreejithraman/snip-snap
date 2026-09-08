@@ -127,3 +127,5 @@ For this pass, the plus stays within the strip’s existing edge-fade region unt
 The slow recording confirmed the reveal stays near the outer edge. The pull/cancel/create UI test passed. This version installed as Dev 6 on the iPhone; the phone was locked at launch.
 
 The edge fade now spans 16% of the strip on each side, doubled from 8%. A shared `edgeFadeFraction` sets both the gradient stops and the plus reveal path. The Simulator build passed and the updated Dev 6 app installed and launched on the iPhone.
+
+The add-button commit now emits a dedicated `snap` event mapped to one heavy UIKit impact, replacing the light selection tick. The existing service still owns preference, lifecycle, and cancellation checks. Trigger timing and the creation guard are unchanged. Tactile strength needs a physical-device feel check.
