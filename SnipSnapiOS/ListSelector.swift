@@ -60,6 +60,8 @@ struct ListSelector: View {
         reduceMotion ? nil : .spring(duration: 0.3, bounce: 0.12)
     }
 
+    private let edgeFadeFraction: CGFloat = 0.16
+
     private var direction: CGFloat { layoutDirection == .rightToLeft ? -1 : 1 }
     private var height: CGFloat { max(48, controlLength) }
 
@@ -152,8 +154,8 @@ struct ListSelector: View {
 
     private var edgeFade: some View {
         LinearGradient(stops: [
-            .init(color: .clear, location: 0), .init(color: .black, location: 0.08),
-            .init(color: .black, location: 0.92), .init(color: .clear, location: 1)
+            .init(color: .clear, location: 0), .init(color: .black, location: edgeFadeFraction),
+            .init(color: .black, location: 1 - edgeFadeFraction), .init(color: .clear, location: 1)
         ], startPoint: .leading, endPoint: .trailing)
     }
 
@@ -210,7 +212,7 @@ struct ListSelector: View {
         if presentingCreation { return viewport / 2 }
         // Stay within the edge fade until ready. Only the commit travels inward.
         let halfIcon = fontSize / 2
-        let inset = viewport * 0.08 + halfIcon
+        let inset = viewport * edgeFadeFraction + halfIcon
         guard !reduceMotion else { return viewport / 2 + (viewport / 2 - inset) * direction }
         let distance = viewport / 2 + halfIcon - (inset + halfIcon) * reveal
         return viewport / 2 + distance * direction

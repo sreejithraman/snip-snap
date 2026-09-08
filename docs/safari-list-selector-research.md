@@ -125,3 +125,5 @@ The slow test holds a 110-point pull for one second. The recording shows the plu
 For this pass, the plus stays within the strip’s existing edge-fade region until the commit. Its path runs from just outside the edge to just inside the mask’s fully visible region; it no longer moves toward the center during the pull. The normal-motion path has no extra opacity fade on the plus. Full pull progress still triggers the center snap through the shared threshold. Reduce Motion retains a stationary opacity fade.
 
 The slow recording confirmed the reveal stays near the outer edge. The pull/cancel/create UI test passed. This version installed as Dev 6 on the iPhone; the phone was locked at launch.
+
+The edge fade now spans 16% of the strip on each side, doubled from 8%. A shared `edgeFadeFraction` sets both the gradient stops and the plus reveal path. The Simulator build passed and the updated Dev 6 app installed and launched on the iPhone.
