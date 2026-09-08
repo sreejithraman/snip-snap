@@ -79,3 +79,9 @@ The shader bounds animate with the capsule width. Reduce Transparency disables t
 The prototype showed a sharp center and curved stretching of the final letter. A recording of the integrated selector showed the same curved stretching as text and icons crossed the rim, without the former straight inset cutoff or diffuse backdrop text. The new source requires Apple’s optional Metal compiler (`xcodebuild -downloadComponent MetalToolchain`); the build guide and iOS CI jobs now install it. No third-party shader code or dependency was added.
 
 The final build passed the existing pull-threshold/cancel/create and many-lists/menu UI tests, plus the tracked-input and iOS-target policy checks. It installed as Dev 6 on the iPhone; the locked phone prevented launch, so physical appearance and haptics remain unverified.
+
+## Colored labels and plus reveal
+
+Each list label now shares its icon’s accent color. During overscroll, the plus fades in from beyond the trailing edge and follows an ease-out path toward its pull position. A committed release uses the existing 300 ms spring to center it before opening New List. Short pulls reverse the reveal. Reduce Motion omits the added edge travel and snap spring. This change affects the bottom selector only.
+
+Verified neighbor taps, short-pull return, committed-pull opening, and cancellation in Simulator. The existing repeated pull/cancel/create UI test passed. The updated Dev 6 app installed on the phone, which remained locked at launch.

@@ -170,10 +170,11 @@ struct ListSelector: View {
         ZStack {
             ForEach(Array(model.lists.enumerated()), id: \.element.id) { index, list in
                 HStack(spacing: 8) {
-                    Image(systemName: list.systemImage).foregroundStyle(list.accent.color)
+                    Image(systemName: list.systemImage)
                     Text(list.displayName).lineLimit(1)
                 }
                 .font(.system(size: fontSize, weight: .semibold))
+                .foregroundStyle(list.accent.color)
                 .padding(.horizontal, 16)
                 .frame(width: geometry.widths[index], height: height)
                 .position(x: x(geometry.centers[index], cursor: cursor, viewport: viewport), y: (height + 8) / 2)
@@ -182,10 +183,20 @@ struct ListSelector: View {
                 .font(.system(size: fontSize, weight: .semibold))
                 .frame(width: 48, height: height)
                 .opacity(progress)
-                .position(x: x(geometry.plusCenter, cursor: cursor, viewport: viewport), y: (height + 8) / 2)
+                .position(x: plusX(geometry: geometry, cursor: cursor, viewport: viewport, progress: progress), y: (height + 8) / 2)
         }
         .clipped()
         .accessibilityHidden(true)
+    }
+
+    private func plusX(geometry: ListSelectorGeometry, cursor: CGFloat, viewport: CGFloat, progress: CGFloat) -> CGFloat {
+        let destination = x(geometry.plusCenter, cursor: cursor, viewport: viewport)
+        guard !reduceMotion else { return destination }
+        let outerEdge = viewport / 2 + (viewport / 2 + 24) * direction
+        // Follow the pull from outside the strip; the existing release spring
+        // finishes the move to the center only after a committed pull.
+        let reveal = 1 - (1 - progress) * (1 - progress)
+        return outerEdge + (destination - outerEdge) * reveal
     }
 
     private func hitTargets(geometry: ListSelectorGeometry, cursor: CGFloat, viewport: CGFloat) -> some View {
