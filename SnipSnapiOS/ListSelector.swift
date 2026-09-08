@@ -194,11 +194,8 @@ struct ListSelector: View {
     }
 
     private func plusReveal(progress: CGFloat) -> CGFloat {
-        let entryProgress = min(1, progress / 0.45)
-        let entry = 1 - (1 - entryProgress) * (1 - entryProgress)
-        // Share the same resisted travel between position and opacity:
-        // 56 points reveal the plus, then 12 points yield to the remaining pull.
-        return (56 * entry + 12 * progress) / 68
+        // Spread the reveal across the full pull, with no early opaque plateau.
+        progress * progress * (3 - 2 * progress)
     }
 
     private func plusX(viewport: CGFloat, reveal: CGFloat) -> CGFloat {

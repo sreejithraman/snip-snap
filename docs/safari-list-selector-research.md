@@ -105,3 +105,11 @@ The plus now enters from outside the trailing edge and stays close to it through
 The updated UI test checks that an 80-point pull returns without creating a list or emitting a haptic, while a 110-point pull commits. Geometry tests and the repeated pull/cancel/create UI test passed. Manual pulls confirmed return, committed snap, sheet opening, and cancellation.
 
 The plus fade now uses the same normalized resisted travel as its position. One value drives both the 56-point entry and the final 12-point yield. This preserves the motion path and threshold while making opacity follow the same curve, including when the pull reverses. The build passed; recorded manual pulls verified return and committed sheet opening.
+
+## Visible fade through the full pull
+
+The previous entry curve reached about 91% opacity halfway through the pull, which made the plus look black too soon. The shared reveal now uses smoothstep across the full 96-point pull: opacity is 50% at halfway and reaches 100% at the threshold. Position still uses the same reveal value.
+
+A new slow check starts in the empty edge area, drags 80 points at 40 points per second, and holds for 0.6 seconds before returning. The recorded plus passes through light, medium, and dark grey before release. The pull/cancel/create test passed. Earlier slow presses directly on the native Menu invoked its press-and-select behavior; gesture-priority experiments did not alter that and were removed. Normal native menu behavior remains intact. No extra render layer or timer was added.
+
+The corrected app installed as Dev 6 on the iPhone; the locked phone prevented launch.
