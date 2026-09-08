@@ -528,6 +528,62 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
     }
 
+    func testCenteredClipboardPasteCapturesCopiedText() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        createSnip("Paste button fixture", in: app)
+        row(named: "Paste button fixture", in: app).press(forDuration: 1)
+        app.buttons["copy-snip"].tap()
+        app.buttons["clipboard-tab"].tap()
+        let paste = app.buttons["paste-to-clipboard"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 3))
+        XCTAssertTrue(paste.isEnabled)
+        paste.tap()
+        let entry = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "clipboard-entry-")
+        ).firstMatch
+        XCTAssertTrue(entry.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Paste button fixture"].exists)
+        let selector = app.descendants(matching: .any)["list-selector"]
+        XCTAssertEqual(paste.frame.midX, selector.frame.midX, accuracy: 2)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Centered glass Paste button"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
+    func testClipboardUsesListScreenControls() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        app.buttons["clipboard-tab"].tap()
+        XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["search-snips"].exists)
+        XCTAssertTrue(app.buttons["workflow-options"].exists)
+        XCTAssertTrue(app.buttons["library-actions"].exists)
+        XCTAssertFalse(app.searchFields["Search Clipboard"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["empty-clipboard"].exists)
+        let paste = app.buttons["paste-to-clipboard"]
+        XCTAssertTrue(paste.exists)
+        let selector = app.descendants(matching: .any)["list-selector"]
+        XCTAssertEqual(paste.frame.midX, selector.frame.midX, accuracy: 2)
+        XCTAssertLessThanOrEqual(paste.frame.maxY, selector.frame.minY)
+        app.buttons["search-snips"].tap()
+        let search = app.searchFields["search-snips-field"]
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        search.typeText("Missing entry")
+        XCTAssertTrue(app.staticTexts["No Results"].waitForExistence(timeout: 3))
+        app.buttons["close-search"].tap()
+        XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Clipboard with shared list screen controls"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        app.buttons["library-actions"].tap()
+        XCTAssertTrue(app.buttons["settings"].waitForExistence(timeout: 3))
+    }
+
     func testClipboardAndSelectorPreserveNavigationAndDraft() throws {
         continueAfterFailure = false
         let app = launchApp()

@@ -169,31 +169,13 @@ struct SnipCollectionView: View {
             }
         )
         .quickLookPreview($selectedPreviewURL, in: previewURLs)
-        .navigationTitle(model.selectedList.name)
-        .allowsHitTesting(!isSearchPresented || hasSearchQuery)
-        .overlay {
-            if isSearchPresented && !hasSearchQuery {
-                Color.black.opacity(0.18)
-                    .ignoresSafeArea()
-                    .contentShape(Rectangle())
-                    .onTapGesture(perform: dismissSearch)
-                    .accessibilityHidden(true)
-            }
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if isSearchPresented {
-                collectionSearchBar
-            }
-        }
-        .toolbar(isSearchPresented ? .hidden : .visible, for: .navigationBar)
+        .modifier(CollectionScreenPresentation(
+            title: model.selectedList.name,
+            searchText: Binding(get: { model.searchText }, set: { model.searchText = $0 }),
+            isSearchPresented: $isSearchPresented
+        ))
         .environment(\.editMode, $editMode)
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button("Search", systemImage: "magnifyingglass") {
-                    isSearchPresented = true
-                }
-                .accessibilityIdentifier("search-snips")
-            }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if isReordering {
                     Button("Done") {
@@ -268,32 +250,6 @@ struct SnipCollectionView: View {
         return model.completionFilter.emptyStateTitle
     }
 
-    private var collectionSearchBar: some View {
-        HStack(spacing: 0) {
-            NativeCollectionSearchBar(text: Binding(
-                get: { model.searchText },
-                set: { model.searchText = $0 }
-            ))
-
-            Button(action: dismissSearch) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 20, weight: .medium))
-                    .frame(width: 44, height: 44)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .glassEffect(.regular.interactive(), in: Circle())
-            .accessibilityLabel("Cancel Search")
-            .accessibilityIdentifier("close-search")
-        }
-        .frame(height: 56)
-        .padding(.horizontal, 2)
-    }
-
-    private func dismissSearch() {
-        isSearchPresented = false
-    }
-
     private var hasSearchQuery: Bool {
         !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -312,22 +268,8 @@ struct SnipCollectionView: View {
     }
 
     private var compactEmptyState: some View {
-        VStack(spacing: 8) {
-            Image(systemName: emptySystemImage)
-                .font(.title3.weight(.regular))
-                .foregroundStyle(.tertiary)
-                .accessibilityHidden(true)
-            Text(emptyTitle)
-                .font(.subheadline.weight(.semibold))
-            Text(emptyDescription)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-        }
-        .padding(32)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("empty-snips")
+        CollectionEmptyState(title: emptyTitle, systemImage: emptySystemImage, detail: emptyDescription)
+            .accessibilityIdentifier("empty-snips")
     }
 
     private var inlineEditText: Binding<String> {
@@ -552,6 +494,83 @@ private struct CompactInlineSnipEditor: View {
             }
         }
         .padding(.vertical, 8)
+    }
+}
+
+struct CollectionScreenPresentation: ViewModifier {
+    let title: String
+    @Binding var searchText: String
+    @Binding var isSearchPresented: Bool
+
+    private var hasQuery: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .navigationTitle(title)
+            .allowsHitTesting(!isSearchPresented || hasQuery)
+            .overlay {
+                if isSearchPresented && !hasQuery {
+                    Color.black.opacity(0.18)
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .onTapGesture { isSearchPresented = false }
+                        .accessibilityHidden(true)
+                }
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if isSearchPresented {
+                    HStack(spacing: 0) {
+                        NativeCollectionSearchBar(text: $searchText)
+                        Button { isSearchPresented = false } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 20, weight: .medium))
+                                .frame(width: 44, height: 44)
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .glassEffect(.regular.interactive(), in: Circle())
+                        .accessibilityLabel("Cancel Search")
+                        .accessibilityIdentifier("close-search")
+                    }
+                    .frame(height: 56)
+                    .padding(.horizontal, 2)
+                }
+            }
+            .toolbar(isSearchPresented ? .hidden : .visible, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Search", systemImage: "magnifyingglass") { isSearchPresented = true }
+                        .accessibilityIdentifier("search-snips")
+                }
+            }
+            .onChange(of: isSearchPresented) { _, presented in
+                if !presented { searchText = "" }
+            }
+    }
+}
+
+struct CollectionEmptyState: View {
+    let title: String
+    let systemImage: String
+    let detail: String
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.title3.weight(.regular))
+                .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
+            Text(title).font(.subheadline.weight(.semibold))
+            Text(detail)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
     }
 }
 

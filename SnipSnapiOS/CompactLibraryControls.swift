@@ -3,6 +3,7 @@ import QuickLook
 import SnipSnapCore
 import SwiftUI
 import UniformTypeIdentifiers
+import UIKit
 
 private enum CompactControlMetrics {
     static let minimumInteractiveLength: CGFloat = 44
@@ -27,11 +28,13 @@ private struct CompactGlassCircleButton<Label: View>: View {
 struct CompactLibraryControls: View {
     @Environment(\.colorScheme) private var colorScheme
     let model: IOSAppModel
+    let clipboard: IOSClipboardModel
     let storage: CompactComposerStorage
     let showsListTabs: Bool
     @Binding var sheet: AppSheet?
 
     @State private var draft = ComposerDraft()
+    @State private var clipboardHasContent = false
     @State private var previewURL: URL?
     @State private var isImporting = false
     @State private var composerFieldID = UUID()
@@ -47,12 +50,14 @@ struct CompactLibraryControls: View {
 
     init(
         model: IOSAppModel,
+        clipboard: IOSClipboardModel,
         storage: CompactComposerStorage,
         isComposerFocused: FocusState<Bool>.Binding,
         showsListTabs: Bool = true,
         sheet: Binding<AppSheet?>
     ) {
         self.model = model
+        self.clipboard = clipboard
         self.storage = storage
         self.showsListTabs = showsListTabs
         _isComposerFocused = isComposerFocused
@@ -63,7 +68,18 @@ struct CompactLibraryControls: View {
 
     var body: some View {
         VStack(spacing: SnipSnapSpacing.relatedContent) {
-            if !model.showsClipboard {
+            if model.showsClipboard {
+                Button("Paste", systemImage: "doc.on.clipboard") {
+                    let providers = UIPasteboard.general.itemProviders
+                    Task { await clipboard.capture(providers) }
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.capsule)
+                .controlSize(.large)
+                .frame(maxWidth: .infinity)
+                .disabled(!clipboardHasContent)
+                .accessibilityIdentifier("paste-to-clipboard")
+            } else {
                 GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
                     composer
                 }
@@ -89,9 +105,16 @@ struct CompactLibraryControls: View {
         }
         .quickLookPreview($previewURL, in: draft.attachments)
         .onAppear {
+            updatePasteAvailability()
             if storage.savingListID != model.selectedListID {
                 draft = storage.draftStore.draft(for: model.selectedListID)
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
+            updatePasteAvailability()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            updatePasteAvailability()
         }
         .onChange(of: model.selectedListID) { _, listID in
             draft = storage.savingListID == listID
@@ -102,6 +125,11 @@ struct CompactLibraryControls: View {
             stagingTask?.cancel()
             storage.draftStore.flushText()
         }
+    }
+
+    private func updatePasteAvailability() {
+        let pasteboard = UIPasteboard.general
+        clipboardHasContent = pasteboard.hasStrings || pasteboard.hasURLs || pasteboard.hasImages
     }
 
     private var composer: some View {

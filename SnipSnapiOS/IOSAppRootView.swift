@@ -254,7 +254,11 @@ struct IOSAppRootView: View {
             NavigationStack {
                 Group {
                     if model.showsClipboard {
-                        IOSClipboardView(model: session.clipboard)
+                        IOSClipboardView(
+                            model: session.clipboard,
+                            settings: { sheet = .settings },
+                            dismissComposerKeyboard: { isCompactComposerFocused = false }
+                        )
                     } else {
                     SnipCollectionView(
                         model: model,
@@ -284,6 +288,7 @@ struct IOSAppRootView: View {
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     CompactLibraryControls(
                         model: model,
+                        clipboard: session.clipboard,
                         storage: compactComposerStorage,
                         isComposerFocused: $isCompactComposerFocused,
                         sheet: $sheet
@@ -302,7 +307,11 @@ struct IOSAppRootView: View {
                 NavigationStack {
                     Group {
                         if model.showsClipboard {
-                            IOSClipboardView(model: session.clipboard)
+                            IOSClipboardView(
+                            model: session.clipboard,
+                            settings: { sheet = .settings },
+                            dismissComposerKeyboard: { isCompactComposerFocused = false }
+                        )
                         } else {
                         SnipCollectionView(
                             model: model,
@@ -319,6 +328,7 @@ struct IOSAppRootView: View {
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         CompactLibraryControls(
                             model: model,
+                            clipboard: session.clipboard,
                             storage: compactComposerStorage,
                             isComposerFocused: $isCompactComposerFocused,
                             showsListTabs: false,

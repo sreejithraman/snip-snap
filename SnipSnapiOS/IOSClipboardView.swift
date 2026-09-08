@@ -5,12 +5,23 @@ import UniformTypeIdentifiers
 
 struct IOSClipboardView: View {
     let model: IOSClipboardModel
+    var settings: () -> Void = {}
+    var dismissComposerKeyboard: () -> Void = {}
+    @State private var isSearchPresented = false
+    @State private var onlyPinned = false
+    @State private var newestFirst = true
     @State private var searchText = ""
     @State private var confirmsClear = false
     @State private var previewEntry: ClipboardEntry?
 
     private var entries: [ClipboardEntry] {
-        model.entries.filter { searchText.isEmpty || $0.searchText.localizedCaseInsensitiveContains(searchText) }
+        model.entries.filter {
+            (!onlyPinned || $0.isPinned)
+                && (searchText.isEmpty || $0.searchText.localizedCaseInsensitiveContains(searchText))
+        }.sorted {
+            if $0.isPinned != $1.isPinned { return $0.isPinned }
+            return newestFirst ? $0.capturedAt > $1.capturedAt : $0.capturedAt < $1.capturedAt
+        }
     }
 
     var body: some View {
@@ -87,24 +98,55 @@ struct IOSClipboardView: View {
             }
         }
         .listStyle(.plain)
-        .environment(\.defaultMinListRowHeight, 24)
+        .scrollDismissesKeyboard(.interactively)
+        .contentShape(Rectangle())
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 12).onChanged { value in
+                guard value.translation.height > 8,
+                      abs(value.translation.height) > abs(value.translation.width) else { return }
+                dismissComposerKeyboard()
+            }
+        )
         .overlay {
             if entries.isEmpty && model.errorMessage == nil && model.importErrorMessage == nil {
-                ContentUnavailableView("No Clipboard Entries", systemImage: "clipboard", description: Text("Paste here or share content to Clipboard. Turn on clipboard sync in Settings to see your Mac history."))
+                CollectionEmptyState(
+                    title: searchText.isEmpty ? String(localized: "Nothing captured yet") : String(localized: "No Results"),
+                    systemImage: searchText.isEmpty ? "clipboard" : "magnifyingglass",
+                    detail: searchText.isEmpty ? String(localized: "Paste here or share content to Clipboard.") : String(localized: "Try a different search.")
+                )
+                .accessibilityIdentifier("empty-clipboard")
             }
         }
-        .navigationTitle("Clipboard")
-        .searchable(text: $searchText, prompt: "Search Clipboard")
+        .modifier(CollectionScreenPresentation(
+            title: String(localized: "Clipboard"),
+            searchText: $searchText,
+            isSearchPresented: $isSearchPresented
+        ))
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                PasteButton(supportedContentTypes: [.text, .url, .image]) { providers in
-                    Task { await model.capture(providers) }
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Menu("View Options", systemImage: "line.3.horizontal.decrease") {
+                    Section("Show") {
+                        Picker("Show", selection: $onlyPinned) {
+                            Text("All").tag(false)
+                            Text("Pinned").tag(true)
+                        }.pickerStyle(.inline)
+                    }
+                    Section("Sort") {
+                        Picker("Sort", selection: $newestFirst) {
+                            Text("Newest First").tag(true)
+                            Text("Oldest First").tag(false)
+                        }.pickerStyle(.inline)
+                    }
                 }
-                .accessibilityIdentifier("paste-to-clipboard")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("Clear History", systemImage: "trash") { confirmsClear = true }
-                    .disabled(!model.entries.contains { !$0.isPinned })
+                .accessibilityIdentifier("workflow-options")
+                Menu("Library Actions", systemImage: "ellipsis") {
+                    Button("Clear History", systemImage: "trash", role: .destructive) { confirmsClear = true }
+                        .disabled(!model.entries.contains { !$0.isPinned })
+                    Divider()
+                    Button("Settings", systemImage: "gearshape", action: settings)
+                        .accessibilityIdentifier("settings")
+                }
+                .accessibilityIdentifier("library-actions")
             }
         }
         .confirmationDialog("Clear Clipboard History?", isPresented: $confirmsClear, titleVisibility: .visible) {
