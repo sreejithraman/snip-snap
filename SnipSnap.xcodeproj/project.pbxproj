@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A91000000000000000000002 /* ListLens.metal in Sources */ = {isa = PBXBuildFile; fileRef = A92000000000000000000002 /* ListLens.metal */; };
+		A91000000000000000000001 /* ListSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A92000000000000000000001 /* ListSelector.swift */; };
 		100000000000000000000001 /* SnipSnapApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000001 /* SnipSnapApp.swift */; };
 		100000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000002 /* ContentView.swift */; };
 		C10000000000000000000001 /* MacRecoveryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000001 /* MacRecoveryViews.swift */; };
@@ -181,6 +183,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		A92000000000000000000002 /* ListLens.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = ListLens.metal; sourceTree = "<group>"; };
+		A92000000000000000000001 /* ListSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListSelector.swift; sourceTree = "<group>"; };
 		200000000000000000000001 /* SnipSnapApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipSnapApp.swift; sourceTree = "<group>"; };
 		200000000000000000000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		C20000000000000000000001 /* MacRecoveryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacRecoveryViews.swift; sourceTree = "<group>"; };
@@ -519,6 +523,8 @@
 				E200000000000000000000F1 /* IOSClipboardModel.swift */,
 				E20000000000000000000042 /* IOSHapticFeedback.swift */,
 				E20000000000000000000033 /* CompactLibraryControls.swift */,
+				A92000000000000000000001 /* ListSelector.swift */,
+				A92000000000000000000002 /* ListLens.metal */,
 				E20000000000000000000007 /* PreviewSupport.swift */,
 				E20000000000000000000008 /* Assets.xcassets */,
 				E20000000000000000000035 /* PrivacyInfo.xcprivacy */,
@@ -917,6 +923,8 @@
 				E100000000000000000000F1 /* IOSClipboardModel.swift in Sources */,
 				E10000000000000000000042 /* IOSHapticFeedback.swift in Sources */,
 				E10000000000000000000033 /* CompactLibraryControls.swift in Sources */,
+				A91000000000000000000001 /* ListSelector.swift in Sources */,
+				A91000000000000000000002 /* ListLens.metal in Sources */,
 				E10000000000000000000034 /* ComposerDraftStore.swift in Sources */,
 				A10000000000000000000006 /* SnipCompletionLanguage.swift in Sources */,
 				A1000000000000000000000E /* AppleAccountNoticeModel.swift in Sources */,

@@ -4,8 +4,24 @@ import UIKit
 @MainActor
 @Observable
 final class IOSHapticFeedback {
-    enum Kind: Equatable {
-        case selection, saved, copied, markedDone, deleted, restored, moved, merged, warning, error
+    // Outcomes retain their source; meanings define the shared tactile policy.
+    enum Kind: Equatable, CaseIterable {
+        case selection, snap, saved, copied, markedDone, reopened, deleted, restored, moved, merged, warning, error
+
+        var meaning: Meaning {
+            switch self {
+            case .selection: .selectionChanged
+            case .snap: .gestureCommitted
+            case .saved, .copied, .markedDone, .reopened, .deleted, .restored, .moved: .actionCompleted
+            case .merged: .significantSuccess
+            case .warning: .warning
+            case .error: .error
+            }
+        }
+    }
+
+    enum Meaning: Equatable {
+        case selectionChanged, gestureCommitted, actionCompleted, significantSuccess, warning, error
     }
 
     struct Event: Equatable {
@@ -69,7 +85,7 @@ final class IOSHapticFeedback {
         guard !kinds.isEmpty, let interaction, interaction == interactionID,
               isEnabled, isActive, !Task.isCancelled else { return }
         let result = Event(kinds: kinds)
-        player.play(result.kind)
+        player.play(result.kind.meaning)
         event = result
     }
 
@@ -96,24 +112,22 @@ struct IOSHapticFeedbackModifier: ViewModifier {
 // Actions report outcomes; this adapter makes one direct system feedback call.
 @MainActor
 protocol IOSHapticPlaying {
-    func play(_ kind: IOSHapticFeedback.Kind)
+    func play(_ meaning: IOSHapticFeedback.Meaning)
 }
 
 @MainActor
 final class IOSSystemHapticPlayer: IOSHapticPlaying {
     private let selection = UISelectionFeedbackGenerator()
     private let light = UIImpactFeedbackGenerator(style: .light)
-    private let rigid = UIImpactFeedbackGenerator(style: .rigid)
     private let medium = UIImpactFeedbackGenerator(style: .medium)
     private let notification = UINotificationFeedbackGenerator()
 
-    func play(_ kind: IOSHapticFeedback.Kind) {
-        switch kind {
-        case .selection: selection.selectionChanged()
-        case .saved, .restored, .moved: light.impactOccurred()
-        case .copied: rigid.impactOccurred()
-        case .markedDone, .merged: notification.notificationOccurred(.success)
-        case .deleted: medium.impactOccurred()
+    func play(_ meaning: IOSHapticFeedback.Meaning) {
+        switch meaning {
+        case .selectionChanged: selection.selectionChanged()
+        case .gestureCommitted: medium.impactOccurred()
+        case .actionCompleted: light.impactOccurred()
+        case .significantSuccess: notification.notificationOccurred(.success)
         case .warning: notification.notificationOccurred(.warning)
         case .error: notification.notificationOccurred(.error)
         }

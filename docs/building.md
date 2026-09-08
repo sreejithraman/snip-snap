@@ -5,9 +5,10 @@ not select an Apple team or signing identity.
 
 ## Build and test
 
-Use Xcode 26 or later:
+Use Xcode 26 or later with Apple’s Metal toolchain:
 
 ```sh
+xcodebuild -downloadComponent MetalToolchain
 ./scripts/build.sh
 ./scripts/test.sh
 ```
