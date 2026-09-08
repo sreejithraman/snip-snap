@@ -45,7 +45,7 @@ struct ListSelector: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.self) private var environment
     @ScaledMetric(relativeTo: .body) private var fontSize: CGFloat = 16
-    @GestureState private var translation: CGFloat = 0
+    @GestureState private var dragPosition: CGFloat?
     @State private var presentingCreation = false
     @State private var creationRequest = UUID()
     @State private var deletionTarget: SnipList?
@@ -68,7 +68,7 @@ struct ListSelector: View {
             let geometry = ListSelectorGeometry(widths: model.lists.map { width(for: $0, in: proxy.size.width) })
             let selected = model.lists.firstIndex { $0.id == model.selectedListID } ?? 0
             let origin = geometry.centers.indices.contains(selected) ? geometry.centers[selected] : 0
-            let position = origin - translation * direction
+            let position = dragPosition ?? origin
             let progress = presentingCreation ? 1 : geometry.pullProgress(at: position)
             let cursor = presentingCreation ? geometry.plusCenter : geometry.resisted(position)
             let nearest = geometry.nearestIndex(to: cursor)
@@ -94,10 +94,11 @@ struct ListSelector: View {
             .contentShape(Capsule())
             .simultaneousGesture(
                 DragGesture(minimumDistance: 8)
-                    .updating($translation) { value, state, _ in
+                    .updating($dragPosition) { value, state, transaction in
                         guard !presentingCreation, sheet == nil,
                               abs(value.translation.width) > abs(value.translation.height) else { return }
-                        state = value.translation.width
+                        transaction.animation = nil
+                        state = origin - value.translation.width * direction
                     }
                     .onEnded { value in
                         guard !presentingCreation, sheet == nil,
@@ -108,12 +109,14 @@ struct ListSelector: View {
                         } else {
                             let index = geometry.nearestIndex(to: released)
                             if model.lists.indices.contains(index) {
-                                withAnimation(animation) { model.selectList(model.lists[index].id) }
+                                model.selectList(model.lists[index].id)
                             }
                         }
                     }
             )
-            .animation(animation, value: translation == 0)
+            // Animate only this strip after release, never the shared model update.
+            .animation(dragPosition == nil ? animation : nil, value: dragPosition == nil)
+            .animation(dragPosition == nil ? animation : nil, value: model.selectedListID)
         }
         .frame(height: height + 8)
         .accessibilityElement(children: .contain)
@@ -177,7 +180,7 @@ struct ListSelector: View {
                 .foregroundStyle(list.accent.color)
                 .padding(.horizontal, 16)
                 .frame(width: geometry.widths[index], height: height)
-                .position(x: x(geometry.centers[index], cursor: cursor, viewport: viewport), y: (height + 8) / 2)
+                .modifier(ListLabelPosition(x: x(geometry.centers[index], cursor: cursor, viewport: viewport), y: (height + 8) / 2))
             }
             Image(systemName: "plus")
                 .font(.system(size: fontSize, weight: .semibold))
@@ -219,7 +222,7 @@ struct ListSelector: View {
                         } label: { Color.clear.contentShape(Rectangle()) }
                     } else {
                         Button {
-                            withAnimation(animation) { model.selectList(list.id) }
+                            model.selectList(list.id)
                         } label: { Color.clear.contentShape(Rectangle()) }
                     }
                 }
@@ -318,5 +321,22 @@ nonisolated private struct ListLensEffect: ViewModifier, Animatable {
             maxSampleOffset: CGSize(width: 8, height: 8),
             isEnabled: enabled
         )
+    }
+}
+
+// Animate the whole label as one value. Implicit child layout animation can
+// otherwise let SwiftUI's text rendering lag behind the symbol during a snap.
+nonisolated private struct ListLabelPosition: ViewModifier, Animatable {
+    var x: CGFloat
+    let y: CGFloat
+
+    var animatableData: CGFloat {
+        get { x }
+        set { x = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        content.position(x: x, y: y)
+            .transaction { $0.animation = nil }
     }
 }

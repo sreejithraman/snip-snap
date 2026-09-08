@@ -85,3 +85,15 @@ The final build passed the existing pull-threshold/cancel/create and many-lists/
 Each list label now shares its icon’s accent color. During overscroll, the plus fades in from beyond the trailing edge and follows an ease-out path toward its pull position. A committed release uses the existing 300 ms spring to center it before opening New List. Short pulls reverse the reveal. Reduce Motion omits the added edge travel and snap spring. This change affects the bottom selector only.
 
 Verified neighbor taps, short-pull return, committed-pull opening, and cancellation in Simulator. The existing repeated pull/cancel/create UI test passed. The updated Dev 6 app installed on the phone, which remained locked at launch.
+
+## Tab title motion during swipes
+
+The strip previously started its spring when the drag changed from zero, and derived the label position from the selected list plus a live drag offset. That allowed animation at touch-down and made the drag position depend on the selection changing at release.
+
+The gesture now stores its absolute strip position and updates without animation. The strip applies the snap only after the gesture ends. List selection no longer runs inside a broad animation transaction. The refraction shader, label colors, and plus reveal are unchanged.
+
+A frame-by-frame check then caught a separate fault: the title and symbol changed their spacing during a snap, including outside the refracting rim. A drawing group did not fix it. Disabling implicit child animation fixed the spacing but also removed the snap. The final `ListLabelPosition` interpolates one outer x position while disabling animation within the label. Recorded forward and reverse swipes keep the icon and title together. The native rim still bends them where they cross its edge.
+
+The rendering issue needs a moving-frame check; geometry and action tests alone did not catch it. The local evidence includes before/after recordings and moving-frame strips. The temporary drawing group was removed.
+
+The final tab create/switch and repeated pull/cancel/create UI tests passed. The final Dev 6 build installed on the iPhone; the phone was locked at its launch attempt.
