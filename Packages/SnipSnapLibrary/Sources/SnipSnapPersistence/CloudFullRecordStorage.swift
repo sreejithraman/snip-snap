@@ -510,6 +510,7 @@ package struct CloudLocalSnipMutation: Codable, Equatable, Sendable {
   package let source: SnipSource?
   package let listID: UUID
   package let isDone: Bool
+  package let pinnedAt: Date?
   package let orderKey: SnipOrderKey
 
   package init(
@@ -522,6 +523,7 @@ package struct CloudLocalSnipMutation: Codable, Equatable, Sendable {
     source: SnipSource?,
     listID: UUID,
     isDone: Bool,
+    pinnedAt: Date? = nil,
     orderKey: SnipOrderKey
   ) {
     self.snipID = snipID
@@ -532,7 +534,8 @@ package struct CloudLocalSnipMutation: Codable, Equatable, Sendable {
     self.origin = origin
     self.source = source
     self.listID = listID
-    self.isDone = isDone
+    self.isDone = pinnedAt == nil && isDone
+    self.pinnedAt = pinnedAt
     self.orderKey = orderKey
   }
 
@@ -546,6 +549,7 @@ package struct CloudLocalSnipMutation: Codable, Equatable, Sendable {
     source = snip.source
     listID = snip.listID
     isDone = snip.isDone
+    pinnedAt = snip.pinnedAt
     orderKey = snip.manualSortKey
   }
 }

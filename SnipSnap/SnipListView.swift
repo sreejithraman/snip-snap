@@ -353,18 +353,24 @@ struct SnipListView: View {
 
     private func clipboardEntryRow(_ entry: ClipboardEntry) -> some View {
         ClipboardEntryRow(
-            entry: entry,
+            entry: model.clipboardHistory.resolvedEntry(entry),
             dragSessionController: dragSessionController,
             commandNumber: commandNumberPicker.displayedNumber(for: .clipboardEntry(entry.id)),
             onPickCommandNumber: {
                 commandNumberPicker.pick(.clipboardEntry(entry.id))
             },
             copiedPulse: model.clipboardCopyPulse,
-            onPreviewAttachments: onPreviewAttachments
+            onPreviewAttachments: onPreviewAttachments,
+            syncStatus: model.clipboardHistory.status(for: entry),
+            retrySync: { Task { await model.clipboardHistory.syncNow() } }
         ) {
             model.placeOnClipboard(.clipboardEntry(entry), feedback: $0)
         } save: {
             Task { _ = await model.saveClipboardEntry(entry) }
+        } pin: {
+            Task { await model.clipboardHistory.togglePinned(id: entry.id) }
+        } delete: {
+            model.clipboardHistory.delete(id: entry.id)
         }
         .background {
             SnipListWindowFrameReader { frame, _ in
@@ -635,6 +641,10 @@ struct SnipListView: View {
             onSelect: { select(snip.id) },
             onOpen: { edit(snip.id) },
             onToggleDone: { model.toggleDone(id: snip.id) },
+            onCopy: {
+                selectExclusively(snip.id)
+                return await model.placeOnClipboardNow(.snips([snip]))
+            },
             onChooseFiles: {
                 guard model.editingID == snip.id else { return }
                 requestFileImport(snip.id)
@@ -681,18 +691,23 @@ struct SnipListView: View {
         .accessibilityAction(named: SnipCommand.edit.title) {
             edit(snip.id)
         }
-        .accessibilityAction(
-            named: SnipCommand.toggleDone.title(allSelectedAreDone: snip.isDone)
-        ) {
-            model.toggleDone(id: snip.id)
-        }
-        .accessibilityAction(named: "Move Up") {
-            let ids = contextSelection(for: snip.id)
-            Task { await model.moveSelectionNow(by: -1, ids: ids) }
-        }
-        .accessibilityAction(named: "Move Down") {
-            let ids = contextSelection(for: snip.id)
-            Task { await model.moveSelectionNow(by: 1, ids: ids) }
+        .accessibilityActions {
+            Button(snip.isPinned ? "Unpin" : "Pin") {
+                Task { await model.togglePinned(id: snip.id) }
+            }
+            if !snip.isPinned {
+                Button(SnipCommand.toggleDone.title(allSelectedAreDone: snip.isDone)) {
+                    model.toggleDone(id: snip.id)
+                }
+                Button("Move Up") {
+                    let ids = contextSelection(for: snip.id)
+                    Task { await model.moveSelectionNow(by: -1, ids: ids) }
+                }
+                Button("Move Down") {
+                    let ids = contextSelection(for: snip.id)
+                    Task { await model.moveSelectionNow(by: 1, ids: ids) }
+                }
+            }
         }
         .accessibilityAction(named: SnipCommand.delete.title) {
             snipCommands.perform(.delete, on: [snip.id])
@@ -825,13 +840,17 @@ struct SnipListView: View {
         menu.addPanelAction(SnipCommand.copy.title, systemImage: "doc.on.doc") { perform(.copy, on: ids) }
         menu.addItem(.separator())
         let selectedSnips = model.snips.filter { ids.contains($0.id) }
+        let allPinned = selectedSnips.allSatisfy(\.isPinned)
+        menu.addPanelAction(allPinned ? String(localized: "Unpin") : String(localized: "Pin")) {
+            Task { await model.setPinned(ids: ids, pinned: !allPinned) }
+        }
         if ids.count == 1 {
             menu.addPanelAction(SnipCommand.edit.title, systemImage: "pencil") { perform(.edit, on: ids) }
         }
         if SnipCommand.merge.isAvailable(for: ids.count) {
             menu.addPanelAction(SnipCommand.merge.title, systemImage: "arrow.triangle.merge") { perform(.merge, on: ids) }
         }
-        if selectedSnips.contains(where: { !$0.isDone }) {
+        if selectedSnips.contains(where: { !$0.isDone && !$0.isPinned }) {
             menu.addPanelAction(SnipCompletionLanguage.menuActionTitle(isDone: false), systemImage: "checkmark") {
                 model.setDone(true, ids: ids)
             }

@@ -163,7 +163,7 @@ extension SwiftDataSyncModePersistence {
         else { throw SyncModePersistenceError.invalidManifest }
       }
       let provenance = transition.seedProvenance + (transition.mergeIntent?.seedProvenance ?? [])
-      guard provenance.allSatisfy({ $0.digestVersion == 1 || $0.digestVersion == 2 }) else {
+      guard provenance.allSatisfy({ (1...3).contains($0.digestVersion) }) else {
         throw SyncModePersistenceError.invalidManifest
       }
       if let intent = transition.mergeIntent {

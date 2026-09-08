@@ -104,7 +104,7 @@ final class SnipLibraryBehaviorTests: XCTestCase {
     let library = try SwiftDataSnipLibrary(storeURL: url)
     let snapshot = await library.snapshot(sortedBy: .manual)
     XCTAssertEqual(snapshot.lists.first { $0.id == list.id }?.color, SnipListColor(light: "#9822EE", dark: "#AF32FF"))
-    let schema = Schema(versionedSchema: SnipSnapSchemaV6.self)
+    let schema = Schema(versionedSchema: SnipSnapSchemaV7.self)
     let container = try ModelContainer(for: schema, configurations: [
       ModelConfiguration("SnipSnapLocal", schema: schema, url: url, cloudKitDatabase: .none)
     ])

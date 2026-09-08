@@ -174,7 +174,13 @@ public struct Snip: Identifiable, Codable, Equatable, Sendable {
     public var origin: SnipOrigin
     public var source: SnipSource?
     public var listID: UUID
-    public var isDone: Bool
+    public var isDone: Bool {
+        didSet { if pinnedAt != nil { isDone = false } }
+    }
+    public var pinnedAt: Date? {
+        didSet { if pinnedAt != nil { isDone = false } }
+    }
+    public var isPinned: Bool { pinnedAt != nil }
     public var manualSortKey: SnipOrderKey
     public var manualPosition: Int64 {
         get { manualSortKey.legacyProjection }
@@ -192,6 +198,7 @@ public struct Snip: Identifiable, Codable, Equatable, Sendable {
         source: SnipSource? = nil,
         listID: UUID = SnipList.inboxID,
         isDone: Bool = false,
+        pinnedAt: Date? = nil,
         manualPosition: Int64 = 0,
         manualSortKey: SnipOrderKey? = nil,
         attachments: [SnipAttachment] = []
@@ -204,13 +211,18 @@ public struct Snip: Identifiable, Codable, Equatable, Sendable {
         self.origin = origin
         self.source = source
         self.listID = listID
-        self.isDone = isDone
+        self.isDone = pinnedAt == nil && isDone
+        self.pinnedAt = pinnedAt
         self.manualSortKey = manualSortKey ?? .legacy(manualPosition)
         self.attachments = attachments
     }
 
     public static func sorted(_ snips: [Snip], by mode: SnipSortMode) -> [Snip] {
         snips.sorted { lhs, rhs in
+            if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
+            if let left = lhs.pinnedAt, let right = rhs.pinnedAt, left != right {
+                return left > right
+            }
             switch mode {
             case .chronological:
                 if lhs.isDone != rhs.isDone {
@@ -231,7 +243,7 @@ public struct Snip: Identifiable, Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, requestID, createdAt, updatedAt, content, origin, source, listID, isDone
-        case manualPosition, manualSortKey, attachments
+        case manualPosition, manualSortKey, attachments, pinnedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -244,7 +256,10 @@ public struct Snip: Identifiable, Codable, Equatable, Sendable {
         origin = try container.decode(SnipOrigin.self, forKey: .origin)
         source = try container.decodeIfPresent(SnipSource.self, forKey: .source)
         listID = try container.decode(UUID.self, forKey: .listID)
-        isDone = try container.decode(Bool.self, forKey: .isDone)
+        pinnedAt = try container.decodeIfPresent(Double.self, forKey: .pinnedAt)
+            .map { Date(timeIntervalSinceReferenceDate: $0) }
+        let decodedDone = try container.decode(Bool.self, forKey: .isDone)
+        isDone = pinnedAt == nil && decodedDone
         manualSortKey = try container.decodeIfPresent(SnipOrderKey.self, forKey: .manualSortKey)
             ?? .legacy(container.decode(Int64.self, forKey: .manualPosition))
         attachments = try container.decode([SnipAttachment].self, forKey: .attachments)
@@ -261,6 +276,8 @@ public struct Snip: Identifiable, Codable, Equatable, Sendable {
         try container.encodeIfPresent(source, forKey: .source)
         try container.encode(listID, forKey: .listID)
         try container.encode(isDone, forKey: .isDone)
+        // Keep pin order precise even when an archive uses whole-second ISO dates.
+        try container.encodeIfPresent(pinnedAt?.timeIntervalSinceReferenceDate, forKey: .pinnedAt)
         try container.encode(manualPosition, forKey: .manualPosition)
         try container.encode(manualSortKey, forKey: .manualSortKey)
         try container.encode(attachments, forKey: .attachments)

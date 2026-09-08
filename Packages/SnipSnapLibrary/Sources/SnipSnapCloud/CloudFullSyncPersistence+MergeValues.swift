@@ -53,6 +53,7 @@ extension CloudFullSyncPersistence {
       text: try required(record.text, "text"),
       source: value(record.source, default: nil),
       isDone: value(record.isDone, default: false),
+      pinnedAt: record.pinnedAt,
       placement: try value(record.placement, default: CloudSnipPlacement(
         listID: SnipList.inbox.id,
         orderKey: try legacyOrderKey(record.domainID)
@@ -74,6 +75,7 @@ extension CloudFullSyncPersistence {
       text: snip.content,
       source: snip.source,
       isDone: snip.isDone,
+      pinnedAt: snip.pinnedAt,
       placement: CloudSnipPlacement(listID: snip.listID, orderKey: snip.manualSortKey),
       updatedAt: snip.updatedAt
     )
@@ -112,6 +114,7 @@ extension CloudFullSyncPersistence {
       && lhs.text == rhs.text
       && lhs.source == rhs.source
       && lhs.isDone == rhs.isDone
+      && lhs.pinnedAt == rhs.pinnedAt
       && lhs.placement == rhs.placement
   }
 
@@ -137,6 +140,7 @@ extension CloudFullSyncPersistence {
       source: value.source,
       listID: value.placement.listID,
       isDone: value.isDone,
+      pinnedAt: value.pinnedAt,
       orderKey: value.placement.orderKey
     )
   }
@@ -169,6 +173,7 @@ extension CloudFullSyncPersistence {
       source: value.source,
       listID: value.placement.listID,
       isDone: value.isDone,
+      pinnedAt: value.pinnedAt,
       manualSortKey: value.placement.orderKey,
       attachments: attachments
     )

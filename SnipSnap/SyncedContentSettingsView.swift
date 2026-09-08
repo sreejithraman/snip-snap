@@ -3,6 +3,9 @@ import SwiftUI
 
 struct SyncedContentSettingsView: View {
     @Bindable var model: SyncedContentSettingsModel
+    @ObservedObject var clipboard: ClipboardHistory
+    @State private var confirmsClipboardSync = false
+    @State private var clipboardDeleteError: String?
     var retryAction: (@MainActor @Sendable () async -> Void)?
     @State private var confirmsDelete = false
     @State private var confirmsUsingDeviceCopy = false
@@ -12,6 +15,20 @@ struct SyncedContentSettingsView: View {
             Toggle("Sync with iCloud", isOn: syncEnabled)
                 .disabled(!canChangeSync)
                 .accessibilityIdentifier("icloud-sync-toggle")
+
+            Toggle("Sync clipboard history", isOn: Binding(
+                get: { clipboard.clipboardSyncEnabled },
+                set: { enabled in
+                    if enabled { confirmsClipboardSync = true }
+                    else { clipboard.setSyncEnabled(false) }
+                }
+            ))
+            .disabled(model.mode != .iCloudSync)
+            .accessibilityIdentifier("clipboard-sync-toggle")
+            if let error = clipboard.syncError {
+                Text(error).foregroundStyle(.secondary)
+                Button("Retry Clipboard Sync") { Task { await clipboard.syncNow() } }
+            }
 
             Label(model.statusTitle, systemImage: statusImage)
                 .font(.headline)
@@ -48,15 +65,29 @@ struct SyncedContentSettingsView: View {
             }
         }
         .padding(20)
-        .frame(width: 420, height: 230, alignment: .topLeading)
+        .frame(width: 420, alignment: .topLeading)
         .alert("Delete Synced Content?", isPresented: $confirmsDelete) {
             Button("Cancel", role: .cancel) {}
             Button("Delete Synced Content", role: .destructive) {
-                Task { await model.deleteSyncedContent() }
+                Task {
+                    do {
+                        try await clipboard.deleteSyncedHistory()
+                        await model.deleteSyncedContent()
+                    } catch { clipboardDeleteError = error.localizedDescription }
+                }
             }
         } message: {
-            Text("This starts a fresh empty synced collection and removes the old synced snips and attachments from iCloud. This device keeps a local recovery copy. A small control record remains in iCloud to stop old devices from restoring deleted content.")
+            Text("This starts a fresh empty synced collection and removes the old synced snips, attachments, and clipboard history, including pins, from iCloud. This device keeps a local recovery copy. A small control record remains in iCloud to stop old devices from restoring deleted content.")
         }
+        .alert("Sync Clipboard History?", isPresented: $confirmsClipboardSync) {
+            Button("Cancel", role: .cancel) {}
+            Button("Enable Sync") { clipboard.setSyncEnabled(true) }
+        } message: {
+            Text("Existing clipboard history will upload to your private iCloud and merge with your other devices. Files stay on this Mac until pinned.")
+        }
+        .alert("Clipboard Sync Failed", isPresented: Binding(get: { clipboardDeleteError != nil }, set: { if !$0 { clipboardDeleteError = nil } })) {
+            Button("OK") { clipboardDeleteError = nil }
+        } message: { Text(clipboardDeleteError ?? "") }
         .alert("Use This Mac’s Copy?", isPresented: $confirmsUsingDeviceCopy) {
             Button("Cancel", role: .cancel) {}
             Button("Use Mac Copy") {
@@ -69,9 +100,11 @@ struct SyncedContentSettingsView: View {
 
     init(
         model: SyncedContentSettingsModel,
+        clipboard: ClipboardHistory,
         retryAction: (@MainActor @Sendable () async -> Void)? = nil
     ) {
         self.model = model
+        self.clipboard = clipboard
         self.retryAction = retryAction
     }
 
@@ -88,6 +121,7 @@ struct SyncedContentSettingsView: View {
                     } else if model.canCancelEnable {
                         await model.cancelICloudSyncSetup()
                     } else {
+                        clipboard.stopSync()
                         await model.disableICloudSync(.refreshThenCopy)
                         if model.mode == .iCloudSync, case .failed = model.state {
                             confirmsUsingDeviceCopy = true

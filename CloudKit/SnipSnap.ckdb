@@ -11,6 +11,7 @@ RECORD TYPE Snip (
     sourceState ENCRYPTED INT64,
     sourceValue ENCRYPTED BYTES,
     isDone ENCRYPTED INT64,
+    pinnedAt ENCRYPTED BYTES,
     listID ENCRYPTED STRING,
     orderKey ENCRYPTED BYTES
 );
@@ -51,4 +52,12 @@ RECORD TYPE SnipSnapCollectionControl (
     metadataZoneOwner STRING,
     payloadZoneName STRING,
     payloadZoneOwner STRING
+);
+
+RECORD TYPE SnipSnapClipboardManifest (
+    payload ASSET
+);
+
+RECORD TYPE SnipSnapClipboardPayload (
+    payload ASSET
 );
