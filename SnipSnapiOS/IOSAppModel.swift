@@ -596,7 +596,7 @@ final class IOSAppModel {
     private func feedbackKind(for command: SnipLibraryCommand) -> IOSHapticFeedback.Kind? {
         switch command {
         case .add, .update, .editAttachments: .saved
-        case .setDone(_, let done): done ? .markedDone : .selection
+        case .setDone(_, let done): done ? .markedDone : .reopened
         case .deleteList: .deleted
         case .merge: .merged
         case .moveChronologically(let ids, let listID):

@@ -129,3 +129,7 @@ The slow recording confirmed the reveal stays near the outer edge. The pull/canc
 The edge fade now spans 16% of the strip on each side, doubled from 8%. A shared `edgeFadeFraction` sets both the gradient stops and the plus reveal path. The Simulator build passed and the updated Dev 6 app installed and launched on the iPhone.
 
 The add-button commit now emits a dedicated `snap` event mapped to one heavy UIKit impact, replacing the light selection tick. The existing service still owns preference, lifecycle, and cancellation checks. Trigger timing and the creation guard are unchanged. Tactile strength needs a physical-device feel check.
+
+## Shared haptic policy
+
+The [app haptic policy](haptics.md) supersedes the heavy-impact experiment above. The create snap now uses the shared gesture-commit meaning with a medium impact. Routine completions use light impacts, and merge retains success feedback. Trigger timing and cancellation stay unchanged.

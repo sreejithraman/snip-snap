@@ -2032,6 +2032,32 @@ final class IOSAppModelTests: XCTestCase {
 
 @MainActor
 final class IOSHapticFeedbackTests: XCTestCase {
+    func testEveryOutcomeUsesTheSharedMeaningPolicy() {
+        let groups: [(IOSHapticFeedback.Meaning, [IOSHapticFeedback.Kind])] = [
+            (.selectionChanged, [.selection]),
+            (.gestureCommitted, [.snap]),
+            (.actionCompleted, [.saved, .copied, .markedDone, .reopened, .deleted, .restored, .moved]),
+            (.significantSuccess, [.merged]),
+            (.warning, [.warning]),
+            (.error, [.error])
+        ]
+        let covered = groups.flatMap { $0.1 }
+        XCTAssertEqual(covered.count, IOSHapticFeedback.Kind.allCases.count)
+        for kind in IOSHapticFeedback.Kind.allCases {
+            XCTAssertEqual(covered.filter { $0 == kind }.count, 1)
+        }
+        let player = RecordingHapticPlayer()
+        let feedback = makeFeedback(player: player)
+        for (meaning, outcomes) in groups {
+            for outcome in outcomes {
+                player.played.removeAll()
+                feedback.emit(outcome, for: feedback.beginInteraction())
+                XCTAssertEqual(player.played, [meaning], "Outcome: \(outcome)")
+                XCTAssertEqual(feedback.event?.kind, outcome)
+            }
+        }
+    }
+
     func testSaveAndDoneEmitFreshEventsAndUnchangedBatchStaysQuiet() async throws {
         let feedback = makeFeedback()
         let model = IOSAppModel(library: ModelTestLibrary(), haptics: feedback)
@@ -2059,7 +2085,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
 
         let reopened = await model.setSelectionDone(false)
         XCTAssertTrue(reopened)
-        XCTAssertEqual(feedback.event?.kind, .selection)
+        XCTAssertEqual(feedback.event?.kind, .reopened)
         XCTAssertNotEqual(feedback.event?.id, done.id)
         let latest = feedback.event
         await model.load()
@@ -2279,7 +2305,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         let feedback = makeFeedback(player: player)
         feedback.emit(.copied, for: feedback.beginInteraction())
         feedback.emit(.markedDone, for: feedback.beginInteraction())
-        XCTAssertEqual(player.played, [.copied, .markedDone])
+        XCTAssertEqual(player.played, [.actionCompleted, .actionCompleted])
         let pending = feedback.beginInteraction()
         feedback.isEnabled = false
         feedback.emit(.saved, for: feedback.beginInteraction())
@@ -2292,7 +2318,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         XCTAssertEqual(player.played.count, 2)
         feedback.isActive = true
         feedback.emit(.markedDone, for: feedback.beginInteraction())
-        XCTAssertEqual(player.played, [.copied, .markedDone, .markedDone])
+        XCTAssertEqual(player.played, [.actionCompleted, .actionCompleted, .actionCompleted])
     }
 
     func testSingleAndBatchDoneUseTheSameOutcomeAndNoOpStaysQuiet() async throws {
@@ -2307,7 +2333,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         model.selectedSnipIDs = [second.id]
         let batchDone = await model.setSelectionDone(true)
         XCTAssertTrue(batchDone)
-        XCTAssertEqual(player.played, [.markedDone, .markedDone])
+        XCTAssertEqual(player.played, [.actionCompleted, .actionCompleted])
         let noOp = await model.setSelectionDone(true)
         XCTAssertTrue(noOp)
         XCTAssertEqual(player.played.count, 2)
@@ -2315,7 +2341,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         XCTAssertTrue(singleNotDone)
         let batchNotDone = await model.setSelectionDone(false)
         XCTAssertTrue(batchNotDone)
-        XCTAssertEqual(player.played, [.markedDone, .markedDone, .selection, .selection])
+        XCTAssertEqual(player.played, [.actionCompleted, .actionCompleted, .actionCompleted, .actionCompleted])
     }
 
     func testAllCopyVariantsReachTheSameFeedbackSeam() async throws {
@@ -2335,7 +2361,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         await coordinator.copy(snips: [snip], model: model)
         await coordinator.copyAttachments(snips: [snip], model: model)
         XCTAssertEqual(pasteboard.writes.count, 3)
-        XCTAssertEqual(player.played, [.copied, .copied, .copied])
+        XCTAssertEqual(player.played, [.actionCompleted, .actionCompleted, .actionCompleted])
     }
 
     func testCombinedOutcomesEmitOnceWithFailurePrecedence() {
@@ -2343,10 +2369,10 @@ final class IOSHapticFeedbackTests: XCTestCase {
         let feedback = makeFeedback(player: player)
         let outcomes: [IOSHapticFeedback.Kind] = [.copied, .markedDone]
         feedback.emit(outcomes, for: feedback.beginInteraction())
-        XCTAssertEqual(player.played, [.markedDone])
+        XCTAssertEqual(player.played, [.actionCompleted])
         XCTAssertEqual(feedback.event?.kinds, outcomes)
         feedback.emit([.error, .copied], for: feedback.beginInteraction())
-        XCTAssertEqual(player.played, [.markedDone, .error])
+        XCTAssertEqual(player.played, [.actionCompleted, .error])
         let latest = feedback.event
         feedback.emit([], for: feedback.beginInteraction())
         XCTAssertEqual(feedback.event, latest)
@@ -2368,12 +2394,12 @@ final class IOSHapticFeedbackTests: XCTestCase {
         let single = await model.deleteSnip(id: first.id)
         XCTAssertTrue(single)
         XCTAssertFalse(model.snips.contains { $0.id == first.id })
-        XCTAssertEqual(player.played, [.deleted])
+        XCTAssertEqual(player.played, [.actionCompleted])
         model.selectedSnipIDs = [second.id, third.id]
         let batch = await model.deleteSelection()
         XCTAssertTrue(batch)
         XCTAssertTrue(model.snips.isEmpty)
-        XCTAssertEqual(player.played, [.deleted, .deleted])
+        XCTAssertEqual(player.played, [.actionCompleted, .actionCompleted])
         let missing = await model.deleteSnip(id: first.id)
         XCTAssertFalse(missing)
         let empty = await model.deleteSelection()
@@ -2384,7 +2410,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         let list = try XCTUnwrap(model.lists.first { $0.id != SnipList.inboxID })
         let deletedList = await model.deleteList(id: list.id)
         XCTAssertTrue(deletedList)
-        XCTAssertEqual(player.played, [.deleted, .deleted, .deleted])
+        XCTAssertEqual(player.played, [.actionCompleted, .actionCompleted, .actionCompleted])
     }
 
     func testFailedDeletionEmitsErrorAndKeepsTheSnip() async {
@@ -2422,22 +2448,22 @@ final class IOSHapticFeedbackTests: XCTestCase {
             player.played.removeAll()
             await model.performToastActionNow(undo)
             XCTAssertTrue(model.snips.contains { $0.id == first.id })
-            XCTAssertEqual(player.played, [.restored])
+            XCTAssertEqual(player.played, [.actionCompleted])
             await model.performToastActionNow(undo)
-            XCTAssertEqual(player.played, [.restored])
+            XCTAssertEqual(player.played, [.actionCompleted])
 
             player.played.removeAll()
             let moved = await model.moveSnip(id: first.id, to: work.id)
             XCTAssertTrue(moved)
-            XCTAssertEqual(player.played, [.moved])
+            XCTAssertEqual(player.played, [.actionCompleted])
             let sameList = await model.moveSnip(id: first.id, to: work.id)
             XCTAssertTrue(sameList)
-            XCTAssertEqual(player.played, [.moved])
+            XCTAssertEqual(player.played, [.actionCompleted])
             model.selectList(SnipList.inboxID)
             model.selectedSnipIDs = [second.id]
             let batch = await model.moveSelection(to: work.id)
             XCTAssertTrue(batch)
-            XCTAssertEqual(player.played, [.moved, .moved])
+            XCTAssertEqual(player.played, [.actionCompleted, .actionCompleted])
             model.selectList(work.id)
             player.played.removeAll()
             let reordered = await model.placeVisibleSnips(Array(model.visibleSnips.map(\.id).reversed()))
@@ -2448,10 +2474,10 @@ final class IOSHapticFeedbackTests: XCTestCase {
             let merged = await model.mergeSelection()
             XCTAssertTrue(merged)
             XCTAssertEqual(model.visibleSnips.count, 1)
-            XCTAssertEqual(player.played, [.merged])
+            XCTAssertEqual(player.played, [.significantSuccess])
             let tooFew = await model.mergeSelection()
             XCTAssertFalse(tooFew)
-            XCTAssertEqual(player.played, [.merged])
+            XCTAssertEqual(player.played, [.significantSuccess])
             let mergedID = try XCTUnwrap(model.visibleSnips.first?.id)
             let failedMove = await model.moveSnip(id: mergedID, to: UUID())
             XCTAssertFalse(failedMove)
@@ -2471,8 +2497,8 @@ final class IOSHapticFeedbackTests: XCTestCase {
 
 @MainActor
 private final class RecordingHapticPlayer: IOSHapticPlaying {
-    var played: [IOSHapticFeedback.Kind] = []
-    func play(_ kind: IOSHapticFeedback.Kind) { played.append(kind) }
+    var played: [IOSHapticFeedback.Meaning] = []
+    func play(_ meaning: IOSHapticFeedback.Meaning) { played.append(meaning) }
 }
 
 private func writeActivationManifest(
