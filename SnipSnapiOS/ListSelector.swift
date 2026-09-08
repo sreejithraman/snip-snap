@@ -43,6 +43,7 @@ struct ListSelector: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.layoutDirection) private var layoutDirection
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.self) private var environment
     @ScaledMetric(relativeTo: .body) private var fontSize: CGFloat = 16
     @GestureState private var translation: CGFloat = 0
     @State private var presentingCreation = false
@@ -154,16 +155,14 @@ struct ListSelector: View {
         ], startPoint: .leading, endPoint: .trailing)
     }
 
-    @ViewBuilder
     private func selectionGlass(width: CGFloat, tint: Color) -> some View {
-        if reduceTransparency {
-            Capsule().fill(Color(uiColor: .secondarySystemGroupedBackground))
-                .overlay { Capsule().strokeBorder(tint, lineWidth: 1) }
-                .frame(width: width, height: height)
-        } else {
-            Color.clear.frame(width: width, height: height)
-                .glassEffect(.clear.tint(tint.opacity(0.1)), in: Capsule())
-        }
+        ListSelectionGlass(
+            width: width,
+            height: height,
+            tint: tint.resolve(in: environment),
+            reduceTransparency: reduceTransparency
+        )
+        .animation(.easeInOut(duration: reduceMotion ? 0.12 : 0.2), value: tint)
     }
 
     private func width(for list: SnipList, in viewport: CGFloat) -> CGFloat {
@@ -263,5 +262,38 @@ struct ListSelector: View {
     private func resetCreation() {
         creationRequest = UUID()
         withAnimation(animation) { presentingCreation = false }
+    }
+}
+
+// Interpolate the channels explicitly: the native glass tint itself switches
+// discretely even when its surrounding layout has an animation transaction.
+nonisolated private struct ListSelectionGlass: View, Animatable {
+    let width: CGFloat
+    let height: CGFloat
+    var tint: Color.Resolved
+    let reduceTransparency: Bool
+
+    var animatableData: AnimatablePair<AnimatablePair<Float, Float>, AnimatablePair<Float, Float>> {
+        get { AnimatablePair(AnimatablePair(tint.red, tint.green), AnimatablePair(tint.blue, tint.opacity)) }
+        set {
+            tint = Color.Resolved(
+                red: newValue.first.first,
+                green: newValue.first.second,
+                blue: newValue.second.first,
+                opacity: newValue.second.second
+            )
+        }
+    }
+
+    var body: some View {
+        let color = Color(tint)
+        if reduceTransparency {
+            Capsule().fill(Color(uiColor: .secondarySystemGroupedBackground))
+                .overlay { Capsule().strokeBorder(color, lineWidth: 1) }
+                .frame(width: width, height: height)
+        } else {
+            Color.clear.frame(width: width, height: height)
+                .glassEffect(.clear.tint(color.opacity(0.1)), in: Capsule())
+        }
     }
 }

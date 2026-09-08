@@ -63,3 +63,7 @@ The selector uses content-sized label widths, a direct drag gesture, nearest-cen
 - A broader snip-context-menu test run stalled waiting for system animation completion and was stopped. It is not counted as passing.
 - Manually verified pull-to-create and neighbor taps in a separate local test library. Captured light, dark, largest Dynamic Type with Increase Contrast, and Reduce Transparency states. The selected text remained sharp; the solid fallback kept its outline and list color. Restored the tested Simulator settings afterward.
 - The phone remained locked on the launch retry. Installation succeeded, but physical-device appearance and tactile quality remain unverified. Simulator tests establish haptic event requests, not their physical feel.
+
+## Tint fade
+
+The selection glass now interpolates its resolved color channels over 200 ms with ease-in-out timing, or 120 ms with Reduce Motion. SwiftUI can retarget the fade from its current value when the user changes direction. The same color interpolation applies to the solid fallback outline. A Simulator recording of taps and a drag showed intermediate colors across successive frames, including blue-to-green and green-to-blue transitions. The updated signed Dev build installed on the phone; launch still required unlocking it.
