@@ -117,8 +117,11 @@ jobs = YAML.load_file(ARGV.fetch(0)).fetch('jobs')
   job = jobs.fetch(group)
   abort "#{group} tests must run independently" unless Array(job['needs']).empty?
   commands = job.fetch('steps').map { |step| step['run'] }.compact
-  abort "#{group} must run its test group without a second build" unless
-    commands == ["./scripts/test.sh --#{group}-only"]
+  expected_commands = []
+  expected_commands << 'xcodebuild -downloadComponent MetalToolchain' if group == 'ios'
+  expected_commands << "./scripts/test.sh --#{group}-only"
+  abort "#{group} must install its tools and run its test group without a second build" unless
+    commands == expected_commands
 end
 
 gate = jobs.fetch('test')
