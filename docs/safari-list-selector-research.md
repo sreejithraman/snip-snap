@@ -113,3 +113,9 @@ The previous entry curve reached about 91% opacity halfway through the pull, whi
 A new slow check starts in the empty edge area, drags 80 points at 40 points per second, and holds for 0.6 seconds before returning. The recorded plus passes through light, medium, and dark grey before release. The pull/cancel/create test passed. Earlier slow presses directly on the native Menu invoked its press-and-select behavior; gesture-priority experiments did not alter that and were removed. Normal native menu behavior remains intact. No extra render layer or timer was added.
 
 The corrected app installed as Dev 6 on the iPhone; the locked phone prevented launch.
+
+## Commit when the fade completes
+
+Full reveal now commits during the drag instead of waiting for finger release. The same `pullThreshold` value (96 points) determines both full opacity and the commit. The existing creation guard prevents another haptic or sheet request from the release callback. Partial pulls still return to the prior list. Reduce Motion uses the same commit point.
+
+The slow test holds a 110-point pull for one second. The recording shows the plus become opaque and snap before the finger releases. The test passed return, haptic event, cancellation, repeated creation, and selection checks. The build installed as Dev 6; the locked phone prevented launch.

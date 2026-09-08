@@ -544,7 +544,12 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(inbox.isSelected)
         XCTAssertEqual(app.staticTexts["haptic-event"].label, "none")
 
-        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -110, dy: 0)))
+        edge.press(
+            forDuration: 0.05,
+            thenDragTo: edge.withOffset(CGVector(dx: -110, dy: 0)),
+            withVelocity: XCUIGestureVelocity(rawValue: 40),
+            thenHoldForDuration: 1
+        )
         XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 4))
         let event = app.staticTexts["haptic-event"].label
         XCTAssertTrue(event.hasPrefix("selection:"))
