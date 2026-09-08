@@ -533,7 +533,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         let inbox = compactListTab(named: "Inbox", in: app)
         XCTAssertTrue(inbox.waitForExistence(timeout: 5))
         let start = inbox.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -40, dy: 0)))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -80, dy: 0)))
         XCTAssertFalse(app.textFields["list-name"].exists)
         XCTAssertTrue(inbox.isSelected)
         XCTAssertEqual(app.staticTexts["haptic-event"].label, "none")

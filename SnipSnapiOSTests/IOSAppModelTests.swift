@@ -3290,8 +3290,8 @@ final class ListSelectorGeometryTests: XCTestCase {
     func testPullUsesFingerDistanceAndDoesNotAddAList() {
         let geometry = ListSelectorGeometry(widths: [80])
         XCTAssertEqual(geometry.pullProgress(at: 40), 0)
-        XCTAssertLessThan(geometry.pullProgress(at: 111), 1)
-        XCTAssertEqual(geometry.pullProgress(at: 112), 1)
+        XCTAssertLessThan(geometry.pullProgress(at: 135), 1)
+        XCTAssertEqual(geometry.pullProgress(at: 136), 1)
         XCTAssertEqual(geometry.pullProgress(at: 300), 1)
         XCTAssertLessThan(geometry.resisted(112), 112)
         XCTAssertEqual(geometry.nearestIndex(to: geometry.plusCenter), 0)

@@ -7,7 +7,7 @@ import UIKit
 struct ListSelectorGeometry {
     let widths: [CGFloat]
     static let spacing: CGFloat = 8
-    static let pullThreshold: CGFloat = 72
+    static let pullThreshold: CGFloat = 96
 
     var centers: [CGFloat] {
         var edge: CGFloat = 0
@@ -33,7 +33,7 @@ struct ListSelectorGeometry {
         let first = centers.first ?? 0
         let last = centers.last ?? 0
         if position < first { return first + (position - first) * 0.3 }
-        if position > last { return last + (position - last) * 0.6 }
+        if position > last { return last + (position - last) * 0.35 }
         return position
     }
 }
@@ -186,20 +186,22 @@ struct ListSelector: View {
                 .font(.system(size: fontSize, weight: .semibold))
                 .frame(width: 48, height: height)
                 .opacity(progress)
-                .position(x: plusX(geometry: geometry, cursor: cursor, viewport: viewport, progress: progress), y: (height + 8) / 2)
+                .position(x: plusX(viewport: viewport, progress: progress), y: (height + 8) / 2)
         }
         .clipped()
         .accessibilityHidden(true)
     }
 
-    private func plusX(geometry: ListSelectorGeometry, cursor: CGFloat, viewport: CGFloat, progress: CGFloat) -> CGFloat {
-        let destination = x(geometry.plusCenter, cursor: cursor, viewport: viewport)
-        guard !reduceMotion else { return destination }
-        let outerEdge = viewport / 2 + (viewport / 2 + 24) * direction
-        // Follow the pull from outside the strip; the existing release spring
-        // finishes the move to the center only after a committed pull.
-        let reveal = 1 - (1 - progress) * (1 - progress)
-        return outerEdge + (destination - outerEdge) * reveal
+    private func plusX(viewport: CGFloat, progress: CGFloat) -> CGFloat {
+        if presentingCreation { return viewport / 2 }
+        let edge = viewport / 2 - 32
+        guard !reduceMotion else { return viewport / 2 + edge * direction }
+        // Reveal at the edge, then yield only a little to the rest of the pull.
+        // The release spring carries the plus to the center after commitment.
+        let reveal = min(1, progress / 0.45)
+        let entry = 1 - (1 - reveal) * (1 - reveal)
+        let distance = (viewport / 2 + 24) * (1 - entry) + edge * entry - 12 * progress
+        return viewport / 2 + distance * direction
     }
 
     private func hitTargets(geometry: ListSelectorGeometry, cursor: CGFloat, viewport: CGFloat) -> some View {

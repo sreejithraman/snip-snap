@@ -97,3 +97,9 @@ A frame-by-frame check then caught a separate fault: the title and symbol change
 The rendering issue needs a moving-frame check; geometry and action tests alone did not catch it. The local evidence includes before/after recordings and moving-frame strips. The temporary drawing group was removed.
 
 The final tab create/switch and repeated pull/cancel/create UI tests passed. The final Dev 6 build installed on the iPhone; the phone was locked at its launch attempt.
+
+## Sticky edge before creation
+
+The plus now enters from outside the trailing edge and stays close to it through the pull. After its initial reveal, it yields only 12 points toward the center. A committed release uses the existing snap spring to center it. The commit threshold is now 96 points of finger travel, up from 72, and the strip follows at 35% of excess travel rather than 60%. No timer or extra haptic was added. Reduce Motion uses a fixed edge position with a fade and an instant committed move.
+
+The updated UI test checks that an 80-point pull returns without creating a list or emitting a haptic, while a 110-point pull commits. Geometry tests and the repeated pull/cancel/create UI test passed. Manual pulls confirmed return, committed snap, sheet opening, and cancellation.
