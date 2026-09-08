@@ -43,7 +43,7 @@ Apple permits a mask directly on `UIVisualEffectView` or its `contentView`. The 
 
 Thus a native capsule with only the foreground label copy masked is the simpler first experiment. If it leaves a blurred shadow around letters, a direct UIKit effect mask that keeps the glass rim and opens its center is a public alternative to test. It may also remove center tint or highlights and create a visible seam. Do not assume SwiftUI `.mask` after `.glassEffect` maps to the supported UIKit placement; verify the actual appearance. Do not mask or fade the whole selector's ancestor merely to fade its labels. Fade the label strip alone.
 
-## Observed rendering and chosen composition
+## Initial rendering study (superseded below)
 
 The minimal iOS 26.5 Simulator prototype showed center blur and reflected text above and below the label with native clear glass. Placing a sharp label over that backdrop left the reflected copies visible. Splitting the label strip into complementary regions removed them: only the rim samples text behind glass; the inset center draws sharp text above glass. The glass itself stays intact. The prototype screenshots are `safari-glass-prototype.png` and `safari-glass-proof.png` in the task's local evidence directory.
 
@@ -67,3 +67,15 @@ The selector uses content-sized label widths, a direct drag gesture, nearest-cen
 ## Tint fade
 
 The selection glass now interpolates its resolved color channels over 200 ms with ease-in-out timing, or 120 ms with Reduce Motion. SwiftUI can retarget the fade from its current value when the user changes direction. The same color interpolation applies to the solid fallback outline. A Simulator recording of taps and a drag showed intermediate colors across successive frames, including blue-to-green and green-to-blue transitions. The updated signed Dev build installed on the phone; launch still required unlocking it.
+
+## Sharp refraction after the Safari reference
+
+The user's crossing screenshot exposed a flaw in the split-mask approach: its straight inset boundary cut through a letter. The earlier checks at rest did not catch this. The final selector removes both complementary masks and the backdrop label copy.
+
+A second isolated prototype tested one foreground label with SwiftUI’s public `distortionEffect` and an original Metal function. The center samples the text unchanged. Near the curved capsule rim, the shader moves one sample inward by at most eight points. It uses no blur kernel. Native clear glass remains below the labels for the resting capsule, tint, and highlights. This approximates the supplied reference; it does not establish Safari’s shader or internals. [Apple’s distortion effect API](https://developer.apple.com/documentation/swiftui/visualeffect/distortioneffect(_:maxsampleoffset:isenabled:))
+
+The shader bounds animate with the capsule width. Reduce Transparency disables the refraction and keeps the solid fallback. Reduce Motion retains direct finger tracking and removes the snap spring; the short tint fade remains. The viewport edge fade affects labels only.
+
+The prototype showed a sharp center and curved stretching of the final letter. A recording of the integrated selector showed the same curved stretching as text and icons crossed the rim, without the former straight inset cutoff or diffuse backdrop text. The new source requires Apple’s optional Metal compiler (`xcodebuild -downloadComponent MetalToolchain`); the build guide and iOS CI jobs now install it. No third-party shader code or dependency was added.
+
+The final build passed the existing pull-threshold/cancel/create and many-lists/menu UI tests, plus the tracked-input and iOS-target policy checks. It installed as Dev 6 on the iPhone; the locked phone prevented launch, so physical appearance and haptics remain unverified.

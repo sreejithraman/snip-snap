@@ -74,27 +74,18 @@ struct ListSelector: View {
             let nearest = geometry.nearestIndex(to: cursor)
             let baseWidth = geometry.widths.indices.contains(nearest) ? geometry.widths[nearest] : 96
             let lensWidth = baseWidth + (48 - baseWidth) * progress
-            let centerWidth = max(24, lensWidth - 24)
             let tint = model.lists.indices.contains(nearest) ? model.lists[nearest].accent.color : Color.primary
 
             ZStack {
                 Capsule().fill(.primary.opacity(0.05))
-                labels(geometry: geometry, cursor: cursor, viewport: proxy.size.width, progress: progress)
-                    .mask {
-                        Rectangle().overlay {
-                            Rectangle().frame(width: centerWidth).blendMode(.destinationOut)
-                        }.compositingGroup()
-                    }
-                    .mask(edgeFade)
-
                 selectionGlass(width: lensWidth, tint: tint)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
 
-                // One label layer supplies the native backdrop at the rim; this
-                // complementary layer keeps the center sharp without blurred copies.
+                // Keep text above the material. A single sample bends only the curved rim.
                 labels(geometry: geometry, cursor: cursor, viewport: proxy.size.width, progress: progress)
-                    .mask { Rectangle().frame(width: centerWidth) }
+                    .modifier(ListLensEffect(width: lensWidth, height: height, viewport: proxy.size.width, enabled: !reduceTransparency))
+                    .mask(edgeFade)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
 
@@ -295,5 +286,26 @@ nonisolated private struct ListSelectionGlass: View, Animatable {
             Color.clear.frame(width: width, height: height)
                 .glassEffect(.clear.tint(color.opacity(0.1)), in: Capsule())
         }
+    }
+}
+
+// Interpolate the shader bounds with the capsule while its width snaps.
+nonisolated private struct ListLensEffect: ViewModifier, Animatable {
+    var width: CGFloat
+    let height: CGFloat
+    let viewport: CGFloat
+    let enabled: Bool
+
+    var animatableData: CGFloat {
+        get { width }
+        set { width = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        content.distortionEffect(
+            ShaderLibrary.listLens(.float4((viewport - width) / 2, 4, width, height)),
+            maxSampleOffset: CGSize(width: 8, height: 8),
+            isEnabled: enabled
+        )
     }
 }
