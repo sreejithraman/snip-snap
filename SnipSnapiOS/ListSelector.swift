@@ -194,7 +194,7 @@ struct ListSelector: View {
             Image(systemName: "plus")
                 .font(.system(size: fontSize, weight: .semibold))
                 .frame(width: 48, height: height)
-                .opacity(reveal)
+                .opacity(reduceMotion ? reveal : 1)
                 .position(x: plusX(viewport: viewport, reveal: reveal), y: (height + 8) / 2)
         }
         .clipped()
@@ -202,15 +202,17 @@ struct ListSelector: View {
     }
 
     private func plusReveal(progress: CGFloat) -> CGFloat {
-        // Spread the reveal across the full pull, with no early opaque plateau.
+        // Spread travel through the edge fade across the full pull.
         progress * progress * (3 - 2 * progress)
     }
 
     private func plusX(viewport: CGFloat, reveal: CGFloat) -> CGFloat {
         if presentingCreation { return viewport / 2 }
-        let edge = viewport / 2 - 32
-        guard !reduceMotion else { return viewport / 2 + edge * direction }
-        let distance = viewport / 2 + 24 - 68 * reveal
+        // Stay within the edge fade until ready. Only the commit travels inward.
+        let halfIcon = fontSize / 2
+        let inset = viewport * 0.08 + halfIcon
+        guard !reduceMotion else { return viewport / 2 + (viewport / 2 - inset) * direction }
+        let distance = viewport / 2 + halfIcon - (inset + halfIcon) * reveal
         return viewport / 2 + distance * direction
     }
 

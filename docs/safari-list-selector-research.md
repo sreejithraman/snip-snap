@@ -119,3 +119,9 @@ The corrected app installed as Dev 6 on the iPhone; the locked phone prevented l
 Full reveal now commits during the drag instead of waiting for finger release. The same `pullThreshold` value (96 points) determines both full opacity and the commit. The existing creation guard prevents another haptic or sheet request from the release callback. Partial pulls still return to the prior list. Reduce Motion uses the same commit point.
 
 The slow test holds a 110-point pull for one second. The recording shows the plus become opaque and snap before the finger releases. The test passed return, haptic event, cancellation, repeated creation, and selection checks. The build installed as Dev 6; the locked phone prevented launch.
+
+## Edge-mask-only reveal
+
+For this pass, the plus stays within the strip’s existing edge-fade region until the commit. Its path runs from just outside the edge to just inside the mask’s fully visible region; it no longer moves toward the center during the pull. The normal-motion path has no extra opacity fade on the plus. Full pull progress still triggers the center snap through the shared threshold. Reduce Motion retains a stationary opacity fade.
+
+The slow recording confirmed the reveal stays near the outer edge. The pull/cancel/create UI test passed. This version installed as Dev 6 on the iPhone; the phone was locked at launch.
