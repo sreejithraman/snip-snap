@@ -527,6 +527,27 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
     }
 
+    func testClipboardAndSelectorPreserveNavigationAndDraft() {
+        continueAfterFailure = false
+        let app = launchApp()
+        let composer = app.descendants(matching: .any)["composer-text"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.tap()
+        composer.typeText("Unsent draft")
+        app.swipeDown()
+        let clipboard = app.buttons["clipboard-tab"]
+        clipboard.tap()
+        XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+        XCTAssertFalse(composer.exists)
+        let inbox = compactListTab(named: "Inbox", in: app)
+        XCTAssertFalse(inbox.isSelected)
+        inbox.tap()
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        XCTAssertEqual(composer.value as? String, "Unsent draft")
+        XCTAssertTrue(inbox.isSelected)
+    }
+
     func testSelectorPullThresholdCancelAndCreate() {
         continueAfterFailure = false
         let app = launchApp(withHapticsTrace: true)

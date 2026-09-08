@@ -63,16 +63,30 @@ struct CompactLibraryControls: View {
 
     var body: some View {
         VStack(spacing: SnipSnapSpacing.relatedContent) {
-            GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
-                composer
+            if !model.showsClipboard {
+                GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
+                    composer
+                }
             }
             if showsListTabs {
-                ListSelector(
-                    model: model,
-                    controlLength: controlLength,
-                    sheet: $sheet,
-                    deleteList: deleteList
-                )
+                HStack(spacing: SnipSnapSpacing.relatedContent) {
+                    CompactGlassCircleButton(length: controlLength, action: {
+                        model.showsClipboard = true
+                    }) {
+                        Image(systemName: "clipboard")
+                            .font(.title3)
+                            .symbolVariant(model.showsClipboard ? .fill : .none)
+                    }
+                    .accessibilityLabel("Clipboard")
+                    .accessibilityIdentifier("clipboard-tab")
+                    .accessibilityAddTraits(model.showsClipboard ? .isSelected : [])
+                    ListSelector(
+                        model: model,
+                        controlLength: controlLength,
+                        sheet: $sheet,
+                        deleteList: deleteList
+                    )
+                }
             }
         }
         .padding(.horizontal, SnipSnapSpacing.cardContentInset)
@@ -367,6 +381,7 @@ final class CompactComposerStorage {
         )
     }
 }
+
 
 private struct CompactDraftAttachment: View {
     let url: URL

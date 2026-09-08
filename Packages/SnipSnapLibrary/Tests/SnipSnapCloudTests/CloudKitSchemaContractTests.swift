@@ -17,7 +17,7 @@ final class CloudKitSchemaContractTests: XCTestCase {
     XCTAssertEqual(declared, runtime)
     XCTAssertEqual(Set(declared.keys), [
       "Snip", "List", "AttachmentMetadata", "AttachmentPayload",
-      "SnipSnapCollectionControl",
+      "SnipSnapCollectionControl", "SnipSnapClipboardManifest", "SnipSnapClipboardPayload",
     ])
     XCTAssertFalse(text.contains("QUERYABLE"))
     XCTAssertFalse(text.contains("SORTABLE"))
@@ -95,6 +95,10 @@ final class CloudKitSchemaContractTests: XCTestCase {
       id: controlID,
       replacing: nil
     )
+    let clipboardManifest = ClipboardCloudRecordCodec.manifestRecord(id: CKRecord.ID(recordName: "manifest"))
+    let clipboardPayload = ClipboardCloudRecordCodec.payloadRecord(id: CKRecord.ID(recordName: "payload"))
+    ClipboardCloudRecordCodec.setPayload(payloadURL, on: clipboardManifest)
+    ClipboardCloudRecordCodec.setPayload(payloadURL, on: clipboardPayload)
     let records = [
       try CloudKitRecordMapper.record(for: CloudFullRecordCodec.snipDraft(snip, in: metadataZone)),
       try CloudKitRecordMapper.record(
@@ -102,7 +106,7 @@ final class CloudKitSchemaContractTests: XCTestCase {
       ),
       try CloudKitRecordMapper.record(for: CloudAttachmentRecordCodec.metadataDraft(publication)),
       try CloudKitRecordMapper.record(for: CloudAttachmentRecordCodec.payloadDraft(publication)),
-      control,
+      control, clipboardManifest, clipboardPayload,
     ]
     return try Dictionary(uniqueKeysWithValues: records.map { record in
       (record.recordType, try fieldContracts(record))

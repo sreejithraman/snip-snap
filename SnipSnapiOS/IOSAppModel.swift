@@ -21,6 +21,7 @@ final class IOSAppModel {
     private(set) var pendingImportPreview: SnipImportPreview?
     private var pendingImportPreviewID: UUID?
     var toast: AppToast?
+    var showsClipboard = false
     var selectedListID: UUID
     var selectedSnipID: UUID?
     var selectedSnipIDs: Set<UUID> = []
@@ -68,6 +69,7 @@ final class IOSAppModel {
     }
 
     func selectList(_ listID: UUID) {
+        showsClipboard = false
         haptics.invalidatePendingFeedback()
         selectedListID = listID
         selectedSnipID = nil
@@ -234,6 +236,13 @@ final class IOSAppModel {
     func setSelectionDone(_ done: Bool) async -> Bool {
         await withUserMutation { interaction in
             await setSelectionDoneUnlocked(done, feedbackInteraction: interaction)
+        }
+    }
+
+    @discardableResult
+    func togglePinned(id: UUID) async -> Bool {
+        await withUserMutation { interaction in
+            await performUserAction(.togglePinned(id: id), feedbackInteraction: interaction)
         }
     }
 
@@ -485,6 +494,8 @@ final class IOSAppModel {
             Set(orderedIDs) == Set(visibleSnips.map(\.id)),
             orderedIDs.count == visibleSnips.count
         else { return false }
+        let pinnedIDs = visibleSnips.filter(\.isPinned).map(\.id)
+        guard Array(orderedIDs.prefix(pinnedIDs.count)) == pinnedIDs else { return false }
         guard orderedIDs != visibleSnips.map(\.id) else { return true }
         let listID = selectedListID
         return await performUserAction(
@@ -499,12 +510,13 @@ final class IOSAppModel {
     }
 
     private func toggleDoneUnlocked(id: UUID, feedbackInteraction: UUID?) async -> Bool {
-        guard let snip = snips.first(where: { $0.id == id }) else { return false }
+        guard let snip = snips.first(where: { $0.id == id }), !snip.isPinned else { return false }
         return await setDoneUnlocked(ids: [id], done: !snip.isDone, feedbackInteraction: feedbackInteraction)
     }
 
     // Every completion control reaches this command, including batch actions.
     private func setDoneUnlocked(ids: Set<UUID>, done: Bool, feedbackInteraction: UUID?) async -> Bool {
+        let ids = Set(snips.filter { ids.contains($0.id) && !$0.isPinned }.map(\.id))
         guard !ids.isEmpty else { return false }
         guard snips.contains(where: { ids.contains($0.id) && $0.isDone != done }) else { return true }
         return await performUserAction(.setDone(ids: ids, done: done), feedbackInteraction: feedbackInteraction)

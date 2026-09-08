@@ -224,7 +224,7 @@ package struct SyncModeSeedProvenance: Codable, Equatable, Sendable {
     baseDigest: Data,
     baseRemoteDigest: Data,
     acceptedRecordIdentity: CloudTextStorageIdentity? = nil,
-    digestVersion: Int = 2
+    digestVersion: Int = 3
   ) {
     self.sourceSnipID = sourceSnipID
     self.candidateSnipID = candidateSnipID

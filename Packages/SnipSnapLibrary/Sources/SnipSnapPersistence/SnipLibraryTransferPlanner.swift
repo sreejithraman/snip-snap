@@ -148,6 +148,7 @@ package enum SnipLibraryTransferPlanner {
             source: sourceSnip.source,
             listID: listByID[sourceSnip.listID] == nil ? SnipList.inboxID : sourceSnip.listID,
             isDone: sourceSnip.isDone,
+            pinnedAt: sourceSnip.pinnedAt,
             manualSortKey: sourceSnip.manualSortKey,
             attachments: sourceSnip.attachments
           )
@@ -186,10 +187,10 @@ package enum SnipLibraryTransferPlanner {
     snip: Snip?,
     attachmentData: [UUID: Data],
     attachmentFileDigests: [UUID: Data] = [:],
-    version: Int = 2,
+    version: Int = 3,
     legacyManualPosition: Int64? = nil
   ) -> Data {
-    var bytes = Data(version == 1 ? "snipsnap-mode-seed-v1".utf8 : "snipsnap-mode-seed-v2".utf8)
+    var bytes = Data("snipsnap-mode-seed-v\(version)".utf8)
     guard let snip else {
       bytes.append(0)
       return Data(SHA256.hash(data: bytes))
@@ -211,6 +212,12 @@ package enum SnipLibraryTransferPlanner {
     }
     append(snip.listID.uuidString.lowercased(), to: &bytes)
     bytes.append(snip.isDone ? 1 : 0)
+    if version >= 3 {
+      if let pinnedAt = snip.pinnedAt {
+        bytes.append(1)
+        append(pinnedAt.timeIntervalSince1970.bitPattern, to: &bytes)
+      } else { bytes.append(0) }
+    }
     if version == 1 {
       append(UInt64(bitPattern: legacyManualPosition ?? snip.manualPosition), to: &bytes)
     } else {
@@ -424,6 +431,7 @@ package enum SnipLibraryTransferPlanner {
       source: snip.source,
       listID: snip.listID,
       isDone: snip.isDone,
+      pinnedAt: snip.pinnedAt,
       manualSortKey: snip.manualSortKey,
       attachments: snip.attachments
     )

@@ -81,6 +81,7 @@ struct ListSelector: View {
             ZStack {
                 Capsule().fill(.primary.opacity(0.05))
                 selectionGlass(width: lensWidth, tint: tint)
+                    .opacity(model.showsClipboard ? 0 : 1)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
 
@@ -221,7 +222,7 @@ struct ListSelector: View {
     private func hitTargets(geometry: ListSelectorGeometry, cursor: CGFloat, viewport: CGFloat) -> some View {
         ZStack {
             ForEach(Array(model.lists.enumerated()), id: \.element.id) { index, list in
-                let selected = list.id == model.selectedListID
+                let selected = !model.showsClipboard && list.id == model.selectedListID
                 Group {
                     if selected {
                         Menu {

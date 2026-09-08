@@ -18,12 +18,15 @@ struct SnipCardRow: View {
     let onSelect: () -> Void
     let onOpen: () -> Void
     let onToggleDone: () -> Void
+    let onCopy: () async -> Bool
     let onChooseFiles: () -> Void
     let onCaptureScreenArea: (@escaping @MainActor (URL?) -> Void) -> Void
     let onCancelEdit: () -> Void
     let onSaveEdit: (String, [URL]) async -> Bool
     let onEditError: (String) -> Void
 
+    @State private var isCopied = false
+    @State private var copyConfirmationID = UUID()
     @State private var editText = ""
     @State private var temporaryAttachmentURLs: Set<URL> = []
     @State private var editSessionID = UUID()
@@ -33,24 +36,52 @@ struct SnipCardRow: View {
         PanelContentCard(
             state: PanelContentCardState(
                 isSelected: isSelected,
-                isSubdued: snip.isDone
+                isSubdued: snip.isDone && !snip.isPinned
             )
         ) {
             ZStack {
-                Toggle(
-                    SnipCompletionLanguage.done,
-                    isOn: Binding(
-                        get: { snip.isDone },
-                        set: { _ in onToggleDone() }
-                    )
-                )
-                .toggleStyle(.checkbox)
-                .labelsHidden()
-                .tint(SnipSnapColors.controlTint)
+                Group {
+                    if snip.isPinned {
+                        Button {
+                            Task {
+                                guard await onCopy() else { return }
+                                isCopied = true
+                                copyConfirmationID = UUID()
+                            }
+                        } label: {
+                            Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+                                .frame(
+                                    width: PanelCardLeadingMetrics.controlSide,
+                                    height: PanelCardLeadingMetrics.controlSide
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(SnipSnapColors.controlTint)
+                        .help(isCopied ? "Copied" : "Copy")
+                        .accessibilityLabel(isCopied ? "Copied" : "Copy")
+                        .task(id: copyConfirmationID) {
+                            guard isCopied else { return }
+                            try? await Task.sleep(for: .seconds(1.5))
+                            guard !Task.isCancelled else { return }
+                            isCopied = false
+                        }
+                    } else {
+                        Toggle(
+                            SnipCompletionLanguage.done,
+                            isOn: Binding(
+                                get: { snip.isDone },
+                                set: { _ in onToggleDone() }
+                            )
+                        )
+                        .toggleStyle(.checkbox)
+                        .labelsHidden()
+                        .tint(SnipSnapColors.controlTint)
+                        .help(SnipCompletionLanguage.actionTitle(isDone: snip.isDone))
+                    }
+                }
                 .focusable(false)
                 .disabled(isEditing || commandNumber != nil)
                 .opacity(commandNumber == nil ? 1 : 0)
-                .help(SnipCompletionLanguage.actionTitle(isDone: snip.isDone))
                 if let commandNumber {
                     Button(action: onPickCommandNumber) {
                         CommandNumberBadge(number: commandNumber)
@@ -126,10 +157,17 @@ struct SnipCardRow: View {
                 )
             }
         } content: {
-            SnipCardText(
-                text: snip.content,
-                isDone: snip.isDone
-            )
+            VStack(alignment: .leading, spacing: 4) {
+                if snip.isPinned {
+                    Label("Pinned", systemImage: "pin.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                SnipCardText(
+                    text: snip.content,
+                    isDone: snip.isDone && !snip.isPinned
+                )
+            }
         }
     }
 

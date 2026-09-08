@@ -425,6 +425,7 @@ struct CloudFullBatchPlanner {
           source: snip.source,
           listID: SnipList.inbox.id,
           isDone: snip.isDone,
+          pinnedAt: snip.pinnedAt,
           manualSortKey: snip.manualSortKey,
           attachments: snip.attachments
         )

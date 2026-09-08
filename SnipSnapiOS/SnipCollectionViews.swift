@@ -79,14 +79,16 @@ struct SnipCollectionView: View {
                                         isFocused: $isInlineEditorFocused,
                                         previewAttachment: previewAttachment,
                                         cancel: cancelInlineEdit,
-                                        save: saveInlineEdit
+                                        save: saveInlineEdit,
+                                        copy: { Task { await copyShare.copy(snips: [snip], model: model) } }
                                     )
                                 } else {
                                     SnipRow(
                                         snip: snip,
                                         model: model,
                                         isRecovered: model.isRecoveredSnip(snip.id),
-                                        onPreviewAttachment: previewAttachment
+                                        onPreviewAttachment: previewAttachment,
+                                        onCopy: { Task { await copyShare.copy(snips: [snip], model: model) } }
                                     )
                                     .contentShape(Rectangle())
                                     .highPriorityGesture(
@@ -102,6 +104,20 @@ struct SnipCollectionView: View {
                                     .accessibilityAction(named: "Edit") {
                                         beginEditing(snip)
                                     }
+                                    .accessibilityAction(named: Text(snip.isPinned ? "Unpin" : "Pin")) {
+                                        Task { await model.togglePinned(id: snip.id) }
+                                    }
+                                    .accessibilityActions {
+                                        if snip.isPinned {
+                                            Button("Copy") {
+                                                Task { await copyShare.copy(snips: [snip], model: model) }
+                                            }
+                                        } else {
+                                            Button(SnipCompletionLanguage.actionTitle(isDone: snip.isDone)) {
+                                                Task { await model.toggleDone(id: snip.id) }
+                                            }
+                                        }
+                                    }
                                     .accessibilityIdentifier("snip-\(snip.id)")
                                 }
                             }
@@ -109,15 +125,17 @@ struct SnipCollectionView: View {
                         .tag(snip.id)
                         .listRowSeparator(.hidden)
                         .swipeActions(edge: .leading) {
-                            SemanticSwipeAction(
-                                title: SnipCompletionLanguage.actionTitle(isDone: snip.isDone),
-                                systemImage: snip.isDone ? "arrow.uturn.backward" : "checkmark",
-                                tint: snip.isDone ? .gray : .green,
-                                role: nil,
-                                accessibilityIdentifier: snip.isDone
-                                    ? "not-done" : "done"
-                            ) {
-                                Task { await model.toggleDone(id: snip.id) }
+                            if !snip.isPinned {
+                                SemanticSwipeAction(
+                                    title: SnipCompletionLanguage.actionTitle(isDone: snip.isDone),
+                                    systemImage: snip.isDone ? "arrow.uturn.backward" : "checkmark",
+                                    tint: snip.isDone ? .gray : .green,
+                                    role: nil,
+                                    accessibilityIdentifier: snip.isDone ? "not-done" : "done"
+                                ) {
+                                    Task { await model.toggleDone(id: snip.id) }
+                                }
+                                .id(snip.isDone)
                             }
                         }
                         .swipeActions(edge: .trailing) {
@@ -132,7 +150,7 @@ struct SnipCollectionView: View {
                             }
                         }
                         .contextMenu { itemContextActions(for: snip) }
-                        .moveDisabled(!model.canReorderVisibleSnips || inlineEditSession != nil)
+                        .moveDisabled(snip.isPinned || !model.canReorderVisibleSnips || inlineEditSession != nil)
                     }
                     .onMove(perform: move)
                 }
@@ -391,11 +409,16 @@ struct SnipCollectionView: View {
             sheet = .editSnip(id: snip.id)
         }
         .accessibilityIdentifier("edit-snip")
+        Button(snip.isPinned ? "Unpin" : "Pin", systemImage: snip.isPinned ? "pin.slash" : "pin") {
+            Task { await model.togglePinned(id: snip.id) }
+        }
+        if !snip.isPinned {
         Button(
             SnipCompletionLanguage.menuActionTitle(isDone: snip.isDone),
             systemImage: snip.isDone ? "arrow.uturn.backward" : "checkmark"
         ) {
             Task { await model.toggleDone(id: snip.id) }
+        }
         }
         if !isSelecting || model.lists.contains(where: { $0.id != snip.listID }) {
             Divider()
@@ -459,6 +482,7 @@ private struct CompactInlineSnipEditor: View {
     let previewAttachment: (SnipAttachment) -> Void
     let cancel: () -> Void
     let save: () -> Void
+    let copy: () -> Void
 
     private var canSave: Bool {
         !isSaving
@@ -468,12 +492,14 @@ private struct CompactInlineSnipEditor: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: snip.isDone ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 24))
-                .foregroundStyle(snip.isDone
-                    ? AnyShapeStyle(model.selectedList.accent.color)
-                    : AnyShapeStyle(.tertiary))
-                .accessibilityHidden(true)
+            if snip.isPinned {
+                SnipCopyControl(action: copy)
+                .accessibilityLabel("Copy Snip")
+            } else {
+                Image(systemName: snip.isDone ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
 
             VStack(alignment: .leading, spacing: 12) {
                 TextField("Snip text", text: $text, axis: .vertical)
@@ -589,10 +615,17 @@ private struct SnipRow: View {
     var showsStatusIcon = true
     @State private var isChangingCompletion = false
     var onPreviewAttachment: ((SnipAttachment) -> Void)? = nil
+    var onCopy: (() -> Void)? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             if showsStatusIcon {
+                if snip.isPinned, let onCopy {
+                    SnipCopyControl(action: onCopy)
+                    .accessibilityLabel("Copy Snip")
+                    .accessibilityIdentifier("copy-pinned-snip-\(snip.id)")
+                } else {
+                    Image(systemName: "circle").hidden().overlay {
                 Button {
                     guard !isChangingCompletion else { return }
                     isChangingCompletion = true
@@ -604,11 +637,11 @@ private struct SnipRow: View {
                     Image(systemName: snip.isDone ? "checkmark.circle.fill" : "circle")
                         .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                         .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: snip.isDone)
-                        .font(.system(size: 24))
+                        .font(.body)
                         .foregroundStyle(snip.isDone
                             ? AnyShapeStyle(model.selectedList.accent.color)
                             : AnyShapeStyle(.tertiary))
-                        .frame(width: 44, height: 44, alignment: .top)
+                        .frame(minWidth: 44, minHeight: 44)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)
@@ -616,6 +649,8 @@ private struct SnipRow: View {
                 .accessibilityLabel(SnipCompletionLanguage.menuActionTitle(isDone: snip.isDone))
                 .accessibilityValue(SnipCompletionLanguage.stateTitle(isDone: snip.isDone))
                 .accessibilityIdentifier("completion-\(snip.id)")
+                    }
+                }
             }
             VStack(alignment: .leading, spacing: 8) {
                 Text(SnipTextPreview.displayText(snip.content, lineLimit: 3))
@@ -623,9 +658,7 @@ private struct SnipRow: View {
                     .foregroundStyle(snip.isDone ? .secondary : .primary)
                     .strikethrough(snip.isDone)
                     .lineLimit(3)
-                Text(snip.updatedAt, format: .relative(presentation: .named))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                SnipRowMetadata(date: snip.updatedAt, isPinned: snip.isPinned)
                 if isRecovered {
                     Label("Recovered", systemImage: "arrow.uturn.backward.circle.fill")
                         .font(.caption.weight(.semibold))
@@ -653,12 +686,13 @@ private struct SnipRow: View {
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: onPreviewAttachment == nil ? .combine : .contain)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(
-            SnipCompletionLanguage.stateTitle(isDone: snip.isDone)
+            snip.isPinned ? String(localized: "Pinned") : SnipCompletionLanguage.stateTitle(isDone: snip.isDone)
         )
     }
 
@@ -728,5 +762,44 @@ private struct AttachmentStatusThumbnail: View {
         case .failed: String(localized: "failed")
         case .available: String(localized: "available")
         }
+    }
+}
+
+// Keep the checkbox's layout footprint while allowing a full touch target.
+struct SnipCopyControl: View {
+    let action: () -> Void
+
+    var body: some View {
+        Image(systemName: "circle")
+            .hidden()
+            .overlay {
+                Button(action: action) {
+                    Image(systemName: "doc.on.doc")
+                        .font(.subheadline)
+                        .imageScale(.small)
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+            }
+    }
+}
+
+struct SnipRowMetadata: View {
+    let date: Date
+    let isPinned: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if isPinned {
+                Image(systemName: "pin.fill")
+                    .imageScale(.small)
+                    .accessibilityHidden(true)
+            }
+            Text(date, format: .relative(presentation: .named))
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
 }
