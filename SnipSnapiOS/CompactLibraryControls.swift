@@ -69,24 +69,12 @@ struct CompactLibraryControls: View {
                 }
             }
             if showsListTabs {
-                HStack(spacing: SnipSnapSpacing.relatedContent) {
-                    CompactGlassCircleButton(length: controlLength, action: {
-                        model.showsClipboard = true
-                    }) {
-                        Image(systemName: "clipboard")
-                            .font(.title3)
-                            .symbolVariant(model.showsClipboard ? .fill : .none)
-                    }
-                    .accessibilityLabel("Clipboard")
-                    .accessibilityIdentifier("clipboard-tab")
-                    .accessibilityAddTraits(model.showsClipboard ? .isSelected : [])
-                    ListSelector(
-                        model: model,
-                        controlLength: controlLength,
-                        sheet: $sheet,
-                        deleteList: deleteList
-                    )
-                }
+                ListSelector(
+                    model: model,
+                    controlLength: controlLength,
+                    sheet: $sheet,
+                    deleteList: deleteList
+                )
             }
         }
         .padding(.horizontal, SnipSnapSpacing.cardContentInset)

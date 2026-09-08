@@ -527,6 +527,7 @@ final class IOSAppModel {
             .createList(name: name, systemImage: systemImage, color: color)
         ) { outcome in
             if case .listCreated(let list) = outcome {
+                showsClipboard = false
                 selectedListID = list.id
                 selectedSnipID = nil
                 selectedSnipIDs = []

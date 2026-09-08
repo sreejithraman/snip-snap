@@ -133,3 +133,7 @@ The add-button commit now emits a dedicated `snap` event mapped to one heavy UIK
 ## Shared haptic policy
 
 The [app haptic policy](haptics.md) supersedes the heavy-impact experiment above. The create snap now uses the shared gesture-commit meaning with a medium impact. Routine completions use light impacts, and merge retains success feedback. Trigger timing and cancellation stay unchanged.
+
+## Clipboard in the selector
+
+Clipboard is the first tab in the same strip. It uses the same content sizing, centering, glass, drag and accessibility paths as list tabs. A view-only item enum distinguishes Clipboard from saved lists; it adds no list record. The trailing plus remains transient and follows the last saved list. Clipboard's selected menu offers New List, and cancelling preserves Clipboard selection.

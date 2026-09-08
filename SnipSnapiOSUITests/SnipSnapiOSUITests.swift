@@ -434,7 +434,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         let composer = app.descendants(matching: .any)["composer-text"]
         let addAttachments = app.buttons["composer-add-attachments"]
         let send = app.buttons["composer-send"]
-        let newList = compactListTab(named: "Inbox", in: app)
+        let compactInbox = compactListTab(named: "Inbox", in: app)
+        let newList = compactInbox.exists ? compactInbox : app.buttons["new-list"]
 
         XCTAssertTrue(
             composer.waitForExistence(timeout: 5),
@@ -527,9 +528,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
     }
 
-    func testClipboardAndSelectorPreserveNavigationAndDraft() {
+    func testClipboardAndSelectorPreserveNavigationAndDraft() throws {
         continueAfterFailure = false
         let app = launchApp()
+        try requireCompactSelector(in: app)
         let composer = app.descendants(matching: .any)["composer-text"]
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         composer.tap()
@@ -546,11 +548,33 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         XCTAssertEqual(composer.value as? String, "Unsent draft")
         XCTAssertTrue(inbox.isSelected)
+        clipboard.tap()
+        XCTAssertTrue(clipboard.isSelected)
+        let selector = app.descendants(matching: .any)["list-selector"]
+        XCTAssertEqual(clipboard.frame.midX, selector.frame.midX, accuracy: 2)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Clipboard selected inside list strip"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        clipboard.tap()
+        app.buttons["new-list"].tap()
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(clipboard.isSelected)
+        clipboard.tap()
+        app.buttons["new-list"].tap()
+        let field = app.textFields["list-name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 4))
+        field.tap()
+        field.typeText("From Clipboard")
+        app.buttons["save-list"].tap()
+        XCTAssertTrue(app.navigationBars["From Clipboard"].waitForExistence(timeout: 3))
+        XCTAssertTrue(compactListTab(named: "From Clipboard", in: app).isSelected)
     }
 
-    func testSelectorPullThresholdCancelAndCreate() {
+    func testSelectorPullThresholdCancelAndCreate() throws {
         continueAfterFailure = false
         let app = launchApp(withHapticsTrace: true)
+        try requireCompactSelector(in: app)
         let inbox = compactListTab(named: "Inbox", in: app)
         XCTAssertTrue(inbox.waitForExistence(timeout: 5))
         let start = inbox.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
@@ -596,9 +620,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(inbox.isSelected)
     }
 
-    func testSelectorDeleteListKeepsItsSnips() {
+    func testSelectorDeleteListKeepsItsSnips() throws {
         continueAfterFailure = false
         let app = launchApp()
+        try requireCompactSelector(in: app)
         createList("Work", in: app)
         createSnip("Keep this note", in: app)
         let work = compactListTab(named: "Work", in: app)
@@ -612,9 +637,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertFalse(work.exists)
     }
 
-    func testSelectorManyListsAndSelectedMenu() {
+    func testSelectorManyListsAndSelectedMenu() throws {
         continueAfterFailure = false
         let app = launchApp()
+        try requireCompactSelector(in: app)
         for name in ["Work", "Travel", "Reading", "Ideas", "A long list name for later"] {
             createList(name, in: app)
             XCTAssertTrue(app.navigationBars[name].waitForExistence(timeout: 3))
@@ -696,7 +722,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         createList("Work", in: app)
         let work = listControl(named: "Work", in: app)
         XCTAssertTrue(work.waitForExistence(timeout: 5))
-        work.tap()
+        openListActions(named: "Work", in: app)
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Edit List")).firstMatch.tap()
 
         let field = app.textFields["list-name"]
@@ -719,7 +745,7 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         let saved = listControl(named: editedName, in: app)
         XCTAssertTrue(saved.waitForExistence(timeout: 5))
-        saved.tap()
+        openListActions(named: editedName, in: app)
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Edit List")).firstMatch.tap()
         XCTAssertTrue(chooseIcon.waitForExistence(timeout: 3))
         XCTAssertTrue(chooseIcon.label.contains("Star Fill"))
@@ -1539,6 +1565,21 @@ final class SnipSnapiOSUITests: XCTestCase {
         app.buttons.matching(
             NSPredicate(format: "label BEGINSWITH %@", text)
         ).firstMatch
+    }
+
+    private func requireCompactSelector(in app: XCUIApplication) throws {
+        guard app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) else {
+            throw XCTSkip("The compact selector is limited to iPhone.")
+        }
+    }
+
+    private func openListActions(named name: String, in app: XCUIApplication) {
+        let sidebarList = app.buttons["list-\(name)"]
+        if sidebarList.exists {
+            sidebarList.press(forDuration: 1)
+        } else {
+            compactListTab(named: name, in: app).tap()
+        }
     }
 
     private func listControl(named name: String, in app: XCUIApplication) -> XCUIElement {

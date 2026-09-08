@@ -9,9 +9,12 @@ struct ListSelectorGeometry {
     static let spacing: CGFloat = 8
     static let pullThreshold: CGFloat = 96
 
-    var centers: [CGFloat] {
+    let centers: [CGFloat]
+
+    init(widths: [CGFloat]) {
+        self.widths = widths
         var edge: CGFloat = 0
-        return widths.map { width in
+        centers = widths.map { width in
             defer { edge += width + Self.spacing }
             return edge + width / 2
         }
@@ -35,6 +38,36 @@ struct ListSelectorGeometry {
         if position < first { return first + (position - first) * 0.3 }
         if position > last { return last + (position - last) * 0.35 }
         return position
+    }
+}
+
+private enum ListSelectorItem: Identifiable {
+    case clipboard
+    case list(SnipList)
+
+    var id: String {
+        switch self {
+        case .clipboard: "clipboard-tab"
+        case .list(let list): "list-tab-\(list.id.uuidString)"
+        }
+    }
+    var title: String {
+        switch self {
+        case .clipboard: String(localized: "Clipboard")
+        case .list(let list): list.displayName
+        }
+    }
+    var systemImage: String {
+        switch self {
+        case .clipboard: "clipboard"
+        case .list(let list): list.systemImage
+        }
+    }
+    var color: Color {
+        switch self {
+        case .clipboard: .primary
+        case .list(let list): list.accent.color
+        }
     }
 }
 
@@ -65,23 +98,34 @@ struct ListSelector: View {
     private var direction: CGFloat { layoutDirection == .rightToLeft ? -1 : 1 }
     private var height: CGFloat { max(48, controlLength) }
 
+    private var items: [ListSelectorItem] { [.clipboard] + model.lists.map(ListSelectorItem.list) }
+    private var selectedItemID: String {
+        model.showsClipboard ? "clipboard-tab" : "list-tab-\(model.selectedListID.uuidString)"
+    }
+
+    private func select(_ item: ListSelectorItem) {
+        switch item {
+        case .clipboard: model.showsClipboard = true
+        case .list(let list): model.selectList(list.id)
+        }
+    }
+
     var body: some View {
         GeometryReader { proxy in
-            let geometry = ListSelectorGeometry(widths: model.lists.map { width(for: $0, in: proxy.size.width) })
-            let selected = model.lists.firstIndex { $0.id == model.selectedListID } ?? 0
+            let geometry = ListSelectorGeometry(widths: items.map { width(for: $0, in: proxy.size.width) })
+            let selected = items.firstIndex { $0.id == selectedItemID } ?? 0
             let origin = geometry.centers.indices.contains(selected) ? geometry.centers[selected] : 0
             let position = dragPosition ?? origin
             let progress = presentingCreation ? 1 : geometry.pullProgress(at: position)
             let cursor = presentingCreation ? geometry.plusCenter : geometry.resisted(position)
             let nearest = geometry.nearestIndex(to: cursor)
             let baseWidth = geometry.widths.indices.contains(nearest) ? geometry.widths[nearest] : 96
-            let lensWidth = baseWidth + (48 - baseWidth) * progress
-            let tint = model.lists.indices.contains(nearest) ? model.lists[nearest].accent.color : Color.primary
+            let lensWidth = baseWidth + (height - baseWidth) * progress
+            let tint = items.indices.contains(nearest) ? items[nearest].color : Color.primary
 
             ZStack {
                 Capsule().fill(.primary.opacity(0.05))
                 selectionGlass(width: lensWidth, tint: tint)
-                    .opacity(model.showsClipboard ? 0 : 1)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
 
@@ -119,15 +163,15 @@ struct ListSelector: View {
                             beginCreation()
                         } else {
                             let index = geometry.nearestIndex(to: released)
-                            if model.lists.indices.contains(index) {
-                                model.selectList(model.lists[index].id)
+                            if items.indices.contains(index) {
+                                select(items[index])
                             }
                         }
                     }
             )
             // Animate only this strip after release, never the shared model update.
             .animation(dragPosition == nil ? animation : nil, value: dragPosition == nil)
-            .animation(dragPosition == nil ? animation : nil, value: model.selectedListID)
+            .animation(dragPosition == nil ? animation : nil, value: selectedItemID)
         }
         .frame(height: height + 8)
         .accessibilityElement(children: .contain)
@@ -170,9 +214,9 @@ struct ListSelector: View {
         .animation(.easeInOut(duration: reduceMotion ? 0.12 : 0.2), value: tint)
     }
 
-    private func width(for list: SnipList, in viewport: CGFloat) -> CGFloat {
+    private func width(for item: ListSelectorItem, in viewport: CGFloat) -> CGFloat {
         let font = UIFont.systemFont(ofSize: fontSize, weight: .semibold)
-        let textWidth = (list.displayName as NSString).size(withAttributes: [.font: font]).width
+        let textWidth = (item.title as NSString).size(withAttributes: [.font: font]).width
         return min(max(64, ceil(textWidth) + fontSize * 1.5 + 48), max(64, viewport - 96))
     }
 
@@ -183,20 +227,20 @@ struct ListSelector: View {
     private func labels(geometry: ListSelectorGeometry, cursor: CGFloat, viewport: CGFloat, progress: CGFloat) -> some View {
         let reveal = plusReveal(progress: progress)
         return ZStack {
-            ForEach(Array(model.lists.enumerated()), id: \.element.id) { index, list in
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 HStack(spacing: 8) {
-                    Image(systemName: list.systemImage)
-                    Text(list.displayName).lineLimit(1)
+                    Image(systemName: item.systemImage)
+                    Text(item.title).lineLimit(1)
                 }
                 .font(.system(size: fontSize, weight: .semibold))
-                .foregroundStyle(list.accent.color)
+                .foregroundStyle(item.color)
                 .padding(.horizontal, 16)
                 .frame(width: geometry.widths[index], height: height)
                 .modifier(ListLabelPosition(x: x(geometry.centers[index], cursor: cursor, viewport: viewport), y: (height + 8) / 2))
             }
             Image(systemName: "plus")
                 .font(.system(size: fontSize, weight: .semibold))
-                .frame(width: 48, height: height)
+                .frame(width: height, height: height)
                 .opacity(reduceMotion ? reveal : 1)
                 .position(x: plusX(viewport: viewport, reveal: reveal), y: (height + 8) / 2)
         }
@@ -221,14 +265,14 @@ struct ListSelector: View {
 
     private func hitTargets(geometry: ListSelectorGeometry, cursor: CGFloat, viewport: CGFloat) -> some View {
         ZStack {
-            ForEach(Array(model.lists.enumerated()), id: \.element.id) { index, list in
-                let selected = !model.showsClipboard && list.id == model.selectedListID
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                let selected = item.id == selectedItemID
                 Group {
                     if selected {
                         Menu {
                             Button("New List", systemImage: "plus") { sheet = .newList }
                                 .accessibilityIdentifier("new-list")
-                            if list.id != SnipList.inboxID {
+                            if case .list(let list) = item, list.id != SnipList.inboxID {
                                 Button("Edit List…", systemImage: "pencil") { sheet = .editList(id: list.id) }
                                 Button("Delete List", systemImage: "trash", role: .destructive) {
                                     model.haptics.invalidatePendingFeedback()
@@ -239,33 +283,37 @@ struct ListSelector: View {
                         } label: { Color.clear.contentShape(Rectangle()) }
                     } else {
                         Button {
-                            model.selectList(list.id)
+                            select(item)
                         } label: { Color.clear.contentShape(Rectangle()) }
                     }
                 }
                 .buttonStyle(.plain)
                 .frame(width: geometry.widths[index], height: height + 8)
-                .accessibilityLabel(list.displayName)
+                .accessibilityLabel(item.title)
                 .accessibilityHint(selected ? Text("List actions") : Text("Switch list"))
                 .accessibilityAddTraits(selected ? .isSelected : [])
-                .accessibilityIdentifier("list-tab-\(list.id.uuidString)")
+                .accessibilityIdentifier(item.id)
                 .accessibilityAction(named: Text("New List")) { sheet = .newList }
                 .accessibilityAdjustableAction { adjustment in
-                    let current = model.lists.firstIndex { $0.id == model.selectedListID } ?? 0
-                    let next: Int
-                    switch adjustment {
-                    case .increment: next = current + 1
-                    case .decrement: next = current - 1
-                    @unknown default: return
-                    }
-                    guard model.lists.indices.contains(next) else { return }
-                    model.selectList(model.lists[next].id)
+                    adjustItem(item.id, direction: adjustment)
                 }
                 .position(x: x(geometry.centers[index], cursor: cursor, viewport: viewport), y: (height + 8) / 2)
                 .disabled(presentingCreation)
             }
         }
         .clipped()
+    }
+
+    private func adjustItem(_ id: String, direction: AccessibilityAdjustmentDirection) {
+        guard let current = items.firstIndex(where: { $0.id == id }) else { return }
+        let next: Int
+        switch direction {
+        case .increment: next = current + 1
+        case .decrement: next = current - 1
+        @unknown default: return
+        }
+        guard items.indices.contains(next) else { return }
+        select(items[next])
     }
 
     private func beginCreation() {
