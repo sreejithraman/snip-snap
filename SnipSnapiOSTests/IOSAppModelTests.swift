@@ -3277,3 +3277,24 @@ private actor ActiveLibraryFailureProbe: IOSCloudSyncSessionHandling {
 
     func activeLibraryCallCount() -> Int { activeLibraryCalls }
 }
+
+final class ListSelectorGeometryTests: XCTestCase {
+    func testContentSizedCentersAndNearestSelection() {
+        let geometry = ListSelectorGeometry(widths: [80, 160, 100])
+        XCTAssertEqual(geometry.centers, [40, 168, 306])
+        XCTAssertEqual(geometry.nearestIndex(to: 103), 0)
+        XCTAssertEqual(geometry.nearestIndex(to: 105), 1)
+        XCTAssertEqual(geometry.nearestIndex(to: 500), 2)
+    }
+
+    func testPullUsesFingerDistanceAndDoesNotAddAList() {
+        let geometry = ListSelectorGeometry(widths: [80])
+        XCTAssertEqual(geometry.pullProgress(at: 40), 0)
+        XCTAssertLessThan(geometry.pullProgress(at: 111), 1)
+        XCTAssertEqual(geometry.pullProgress(at: 112), 1)
+        XCTAssertEqual(geometry.pullProgress(at: 300), 1)
+        XCTAssertLessThan(geometry.resisted(112), 112)
+        XCTAssertEqual(geometry.nearestIndex(to: geometry.plusCenter), 0)
+        XCTAssertEqual(geometry.centers.count, 1)
+    }
+}
