@@ -170,7 +170,8 @@ struct ListSelector: View {
     }
 
     private func labels(geometry: ListSelectorGeometry, cursor: CGFloat, viewport: CGFloat, progress: CGFloat) -> some View {
-        ZStack {
+        let reveal = plusReveal(progress: progress)
+        return ZStack {
             ForEach(Array(model.lists.enumerated()), id: \.element.id) { index, list in
                 HStack(spacing: 8) {
                     Image(systemName: list.systemImage)
@@ -185,22 +186,26 @@ struct ListSelector: View {
             Image(systemName: "plus")
                 .font(.system(size: fontSize, weight: .semibold))
                 .frame(width: 48, height: height)
-                .opacity(progress)
-                .position(x: plusX(viewport: viewport, progress: progress), y: (height + 8) / 2)
+                .opacity(reveal)
+                .position(x: plusX(viewport: viewport, reveal: reveal), y: (height + 8) / 2)
         }
         .clipped()
         .accessibilityHidden(true)
     }
 
-    private func plusX(viewport: CGFloat, progress: CGFloat) -> CGFloat {
+    private func plusReveal(progress: CGFloat) -> CGFloat {
+        let entryProgress = min(1, progress / 0.45)
+        let entry = 1 - (1 - entryProgress) * (1 - entryProgress)
+        // Share the same resisted travel between position and opacity:
+        // 56 points reveal the plus, then 12 points yield to the remaining pull.
+        return (56 * entry + 12 * progress) / 68
+    }
+
+    private func plusX(viewport: CGFloat, reveal: CGFloat) -> CGFloat {
         if presentingCreation { return viewport / 2 }
         let edge = viewport / 2 - 32
         guard !reduceMotion else { return viewport / 2 + edge * direction }
-        // Reveal at the edge, then yield only a little to the rest of the pull.
-        // The release spring carries the plus to the center after commitment.
-        let reveal = min(1, progress / 0.45)
-        let entry = 1 - (1 - reveal) * (1 - reveal)
-        let distance = (viewport / 2 + 24) * (1 - entry) + edge * entry - 12 * progress
+        let distance = viewport / 2 + 24 - 68 * reveal
         return viewport / 2 + distance * direction
     }
 
