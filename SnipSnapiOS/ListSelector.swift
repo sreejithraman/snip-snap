@@ -179,8 +179,12 @@ struct ListSelector: View {
                     }
             )
             .animation(animation, value: hoveringAdd)
+            .onChange(of: hoveringAdd) { _, isHovering in
+                guard isHovering, dragPosition != nil, !presentingCreation, sheet == nil else { return }
+                model.haptics.emit(.snap, for: model.haptics.beginInteraction())
+            }
             .onChange(of: nearest) { _, _ in
-                guard dragPosition != nil, !presentingCreation, sheet == nil else { return }
+                guard dragPosition != nil, !hoveringAdd, !presentingCreation, sheet == nil else { return }
                 model.haptics.emit(.selection, for: model.haptics.beginInteraction())
             }
             // Animate only this strip after release, never the shared model update.
@@ -350,7 +354,6 @@ struct ListSelector: View {
         guard !presentingCreation, sheet == nil else { return }
         let request = UUID()
         creationRequest = request
-        model.haptics.emit(.snap, for: model.haptics.beginInteraction())
         withAnimation(animation, completionCriteria: .logicallyComplete) {
             presentingCreation = true
         } completion: {
