@@ -133,7 +133,8 @@ struct ListSelector: View {
             let origin = geometry.centers.indices.contains(selected) ? geometry.centers[selected] : 0
             let position = dragPosition ?? origin
             let progress = presentingCreation ? 1 : geometry.pullProgress(at: position)
-            let cursor = presentingCreation ? geometry.plusCenter : geometry.resisted(position)
+            let hoveringAdd = progress >= 1
+            let cursor = hoveringAdd ? geometry.plusCenter : geometry.resisted(position)
             let nearest = geometry.nearestIndex(to: cursor)
             let baseWidth = geometry.lensWidth(at: cursor)
             let lensWidth = baseWidth + (height - baseWidth) * progress
@@ -177,6 +178,7 @@ struct ListSelector: View {
                         }
                     }
             )
+            .animation(animation, value: hoveringAdd)
             .onChange(of: nearest) { _, _ in
                 guard dragPosition != nil, !presentingCreation, sheet == nil else { return }
                 model.haptics.emit(.selection, for: model.haptics.beginInteraction())
@@ -282,8 +284,8 @@ struct ListSelector: View {
     }
 
     private func plusX(viewport: CGFloat, reveal: CGFloat) -> CGFloat {
-        if presentingCreation { return viewport / 2 }
-        // Stay within the edge fade until ready. Only the commit travels inward.
+        if presentingCreation || reveal >= 1 { return viewport / 2 }
+        // Hover over Add when ready; reversing the pull returns it to the edge.
         let halfIcon = fontSize / 2
         let inset = viewport * edgeFadeFraction + halfIcon
         guard !reduceMotion else { return viewport / 2 + (viewport / 2 - inset) * direction }
