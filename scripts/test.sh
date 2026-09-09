@@ -52,7 +52,7 @@ fi
 if [[ "$run_mac_app_tests" == YES ]]; then
     mac_derived_data="$derived_data/mac"
     mac_store_path="$derived_data/mac-test-store/snips.json"
-    SNIP_SNAP_STORE_PATH="$mac_store_path" xcodebuild \
+    if SNIP_SNAP_STORE_PATH="$mac_store_path" xcodebuild \
         -project "$repo_dir/SnipSnap.xcodeproj" \
         -scheme SnipSnap \
         -configuration Debug \
@@ -60,7 +60,15 @@ if [[ "$run_mac_app_tests" == YES ]]; then
         -derivedDataPath "$mac_derived_data" \
         CODE_SIGNING_ALLOWED=NO \
         SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER= \
-        test
+        test; then
+        :
+    else
+        test_status=$?
+        for result in "$mac_derived_data/Logs/Test/"*.xcresult(N); do
+            xcrun xcresulttool get test-results summary --path "$result" || true
+        done
+        exit "$test_status"
+    fi
 elif [[ "$run_common_tests" == YES ]]; then
     print "Public policy and package tests passed; the iOS release gate omits Mac app-host tests."
 fi
