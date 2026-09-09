@@ -227,88 +227,108 @@ struct SnipEditorView: View {
     }
 }
 
-enum ListEditorMode {
-    case create
-    case edit(id: UUID)
-}
-
-struct ListEditorView: View {
-    @Environment(\.dismiss) private var dismiss
-
+/// Edits the selected list without leaving its snips or composer.
+struct InlineListEditor: View {
     let model: IOSAppModel
-    let mode: ListEditorMode
+    let list: SnipList
     @State private var name: String
     @State private var systemImage: String
     @State private var color: SnipListColor?
     @State private var isSaving = false
+    @State private var showsAppearance = false
+    @State private var showsIcons = false
+    @FocusState private var isNameFocused: Bool
 
-    init(model: IOSAppModel, mode: ListEditorMode) {
+    init(model: IOSAppModel, list: SnipList) {
         self.model = model
-        self.mode = mode
-        let list: SnipList?
-        switch mode {
-        case .create:
-            list = nil
-        case .edit(let id):
-            list = model.lists.first(where: { $0.id == id })
-        }
-        _name = State(initialValue: list?.name ?? "")
-        _systemImage = State(initialValue: list?.systemImage ?? "list.bullet")
-        _color = State(initialValue: list?.color)
-    }
-
-    private var title: String {
-        switch mode {
-        case .create: String(localized: "New List")
-        case .edit: String(localized: "Edit List")
-        }
+        self.list = list
+        _name = State(initialValue: model.newListID == list.id ? "" : list.name)
+        _systemImage = State(initialValue: list.systemImage)
+        _color = State(initialValue: list.color)
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("List name", text: $name)
-                        .textInputAutocapitalization(.words)
-                        .accessibilityIdentifier("list-name")
-                    SnipListIconPicker(
-                        selection: $systemImage,
-                        accent: SnipListAppearance(pair: color).color
-                    )
-                    SnipListColorPicker(selection: $color)
+        VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
+            HStack(spacing: 12) {
+                Button {
+                    isNameFocused = false
+                    showsIcons.toggle()
+                    showsAppearance = false
+                } label: {
+                    Image(systemName: systemImage)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(SnipListAppearance(pair: color).color)
+                        .frame(width: 44, height: 44)
                 }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .accessibilityLabel("Choose list icon, current: \(SnipListIconOptions.title(for: systemImage))")
+                .accessibilityIdentifier("choose-list-icon")
+
+                TextField(list.displayName, text: $name)
+                    .font(.title.bold())
+                    .textFieldStyle(.plain)
+                    .lineLimit(1)
+                    .textInputAutocapitalization(.words)
+                    .focused($isNameFocused)
+                    .submitLabel(.done)
+                    .onSubmit { Task { await save() } }
+                    .accessibilityLabel("List name")
+                    .accessibilityIdentifier("list-name")
+
+                Button {
+                    Task { await save() }
+                } label: {
+                    Image(systemName: "checkmark")
+                        .font(.body.weight(.semibold))
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .disabled(isSaving)
+                .accessibilityLabel("Done")
+                .accessibilityIdentifier("save-list")
             }
-            .navigationTitle(title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(isSaving ? "Saving…" : "Save") {
-                        Task { await save() }
-                    }
-                    .disabled(isSaving || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityIdentifier("save-list")
-                }
+            Button {
+                isNameFocused = false
+                showsAppearance.toggle()
+                showsIcons = false
+            } label: {
+                Label("List color", systemImage: "paintpalette")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(minHeight: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("list-appearance")
+            if showsIcons {
+                InlineListIconPicker(selection: $systemImage)
+            }
+            if showsAppearance {
+                SnipListColorPicker(selection: $color)
             }
         }
+        .disabled(isSaving)
+        .padding(.horizontal, SnipSnapSpacing.paneContentInset)
+        .padding(.bottom, SnipSnapSpacing.relatedContent)
+        .task { isNameFocused = true }
     }
 
     private func save() async {
+        guard !isSaving else { return }
         isSaving = true
-        let succeeded: Bool
-        switch mode {
-        case .create:
-            succeeded = await model.createList(name: name, systemImage: systemImage, color: color)
-        case .edit(let id):
-            guard let list = model.lists.first(where: { $0.id == id }) else {
-                isSaving = false
-                return
-            }
-            succeeded = await model.renameList(list, name: name, systemImage: systemImage, color: .set(color))
-        }
+        let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let succeeded = await model.renameList(
+            list,
+            name: cleaned.isEmpty ? list.name : cleaned,
+            systemImage: systemImage,
+            color: .set(color)
+        )
         isSaving = false
-        if succeeded { dismiss() }
+        if succeeded, model.editingListID == list.id {
+            isNameFocused = false
+            model.editingListID = nil
+            model.newListID = nil
+        }
     }
 }

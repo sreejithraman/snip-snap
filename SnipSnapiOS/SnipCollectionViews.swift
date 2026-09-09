@@ -29,6 +29,8 @@ struct SnipCollectionView: View {
     @State private var isSearchPresented = false
     @FocusState private var isInlineEditorFocused: Bool
 
+    private var isEditingList: Bool { model.editingListID == model.selectedListID }
+
     var body: some View {
         Group {
             if model.visibleSnips.isEmpty {
@@ -151,7 +153,8 @@ struct SnipCollectionView: View {
             }
         )
         .quickLookPreview($selectedPreviewURL, in: previewURLs)
-        .navigationTitle(model.selectedList.name)
+        .navigationTitle(isEditingList ? "" : model.selectedList.name)
+        .navigationBarTitleDisplayMode(isEditingList ? .inline : .large)
         .allowsHitTesting(!isSearchPresented || hasSearchQuery)
         .overlay {
             if isSearchPresented && !hasSearchQuery {
@@ -163,17 +166,30 @@ struct SnipCollectionView: View {
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            if isSearchPresented {
+            if isEditingList {
+                InlineListEditor(model: model, list: model.selectedList)
+                    .id(model.selectedListID)
+            } else if isSearchPresented {
                 collectionSearchBar
             }
         }
         .toolbar(isSearchPresented ? .hidden : .visible, for: .navigationBar)
+        .onChange(of: model.selectedListID) { _, id in
+            if model.editingListID != id { model.editingListID = nil }
+        }
+        .onChange(of: model.editingListID) { _, id in
+            if id != nil {
+                isSearchPresented = false
+                dismissComposerKeyboard()
+            }
+        }
         .environment(\.editMode, $editMode)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button("Search", systemImage: "magnifyingglass") {
                     isSearchPresented = true
                 }
+                .disabled(isEditingList)
                 .accessibilityIdentifier("search-snips")
             }
             ToolbarItemGroup(placement: .topBarTrailing) {

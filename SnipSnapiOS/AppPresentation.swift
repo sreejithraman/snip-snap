@@ -3,8 +3,6 @@ import SnipSnapCore
 
 enum AppSheet: Identifiable, Hashable {
     case editSnip(id: UUID)
-    case newList
-    case editList(id: UUID)
     case settings
     case recoveryCenter
     case recoverSnip(id: UUID)

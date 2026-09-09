@@ -107,3 +107,46 @@ struct SnipListIconBrowser: View {
         .accessibilityIdentifier("list-icon-\(icon)")
     }
 }
+
+struct InlineListIconPicker: View {
+    @Binding var selection: String
+    @State private var query = ""
+
+    var body: some View {
+        VStack(spacing: 8) {
+            TextField("Search icons", text: $query)
+                .textFieldStyle(.roundedBorder)
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 44), spacing: 12)], spacing: 12) {
+                    ForEach(SnipListIconOptions.displayedCategories(
+                        query: query, recentIcons: SnipListIconOptions.recentIcons()
+                    )) { category in
+                        Section {
+                            ForEach(category.icons, id: \.self) { icon in
+                                Button {
+                                    selection = icon
+                                    SnipListIconOptions.recordRecentIcon(icon)
+                                } label: {
+                                    Image(systemName: icon)
+                                        .frame(maxWidth: .infinity, minHeight: 44)
+                                        .background(selection == icon ? SnipSnapTheme.compactSelectionFill : .clear,
+                                                    in: RoundedRectangle(cornerRadius: 12))
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(SnipListIconOptions.title(for: icon))
+                                .accessibilityAddTraits(selection == icon ? .isSelected : [])
+                                .accessibilityIdentifier("list-icon-\(icon)")
+                            }
+                        } header: {
+                            Text(category.title)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+            }
+            .frame(height: 192)
+        }
+    }
+}

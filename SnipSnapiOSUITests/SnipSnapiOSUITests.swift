@@ -564,6 +564,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         let field = app.textFields["list-name"]
         XCTAssertTrue(field.waitForExistence(timeout: 3))
         field.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["composer-text"].exists)
+        XCTAssertTrue(compactListTab(named: "New List", in: app).isSelected)
+        XCTAssertFalse(app.buttons["Cancel"].exists)
         field.typeText("Starred")
         let chooseIcon = app.descendants(matching: .any)["choose-list-icon"]
         XCTAssertTrue(chooseIcon.waitForExistence(timeout: 3))
@@ -595,6 +598,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         field.tap()
         field.typeText(" Updated")
         let editedName = try XCTUnwrap(field.value as? String)
+        app.buttons["list-appearance"].tap()
         app.buttons["list-color-blue"].tap()
         let chooseIcon = app.descendants(matching: .any)["choose-list-icon"].firstMatch
         chooseIcon.tap()
@@ -605,6 +609,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 3))
         XCTAssertTrue(chooseIcon.label.contains("Star Fill"))
         XCTAssertEqual(field.value as? String, editedName)
+        app.buttons["list-appearance"].tap()
         XCTAssertTrue(app.buttons["list-color-blue"].isSelected)
         app.buttons["save-list"].tap()
 
@@ -615,6 +620,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(chooseIcon.waitForExistence(timeout: 3))
         XCTAssertTrue(chooseIcon.label.contains("Star Fill"))
         XCTAssertEqual(field.value as? String, editedName)
+        app.buttons["list-appearance"].tap()
         XCTAssertTrue(app.buttons["list-color-blue"].isSelected)
     }
 

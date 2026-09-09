@@ -444,7 +444,7 @@ private struct CompactListTabBar: View {
     private var newListButton: some View {
         CompactGlassCircleButton(
             length: controlLength,
-            action: { sheet = .newList }
+            action: { Task { await model.openNewList() } }
         ) {
             Image(systemName: "plus")
                 .font(.title3.weight(.semibold))
@@ -485,7 +485,7 @@ private struct CompactListTabBar: View {
         .listContextActions(
             list: list,
             beforeDelete: model.haptics.invalidatePendingFeedback,
-            edit: { sheet = .editList(id: list.id) },
+            edit: { model.editListInline(id: list.id) },
             delete: { Task { await deleteList(list.id) } }
         )
     }

@@ -102,10 +102,6 @@ struct IOSAppRootView: View {
             switch destination {
             case .editSnip(let id):
                 SnipEditorView(model: model, snipID: id)
-            case .newList:
-                ListEditorView(model: model, mode: .create)
-            case .editList(let id):
-                ListEditorView(model: model, mode: .edit(id: id))
             case .settings:
                 SyncedContentSettingsView(
                     model: session.syncedContentSettings,
@@ -259,7 +255,7 @@ struct IOSAppRootView: View {
                             ? { sheet = .recoveryCenter }
                             : nil,
                         editSelectedList: model.selectedListID == SnipList.inboxID
-                            ? nil : { sheet = .editList(id: model.selectedListID) }
+                            ? nil : { model.editListInline(id: model.selectedListID) }
                     )
                 )
                 .libraryToast(model: model)

@@ -22,6 +22,9 @@ final class IOSAppModel {
     private var pendingImportPreviewID: UUID?
     var toast: AppToast?
     var selectedListID: UUID
+    var editingListID: UUID?
+    var newListID: UUID?
+    private(set) var isCreatingList = false
     var selectedSnipID: UUID?
     var selectedSnipIDs: Set<UUID> = []
     var searchText = ""
@@ -242,6 +245,23 @@ final class IOSAppModel {
         await withUserMutation { interaction in
             await toggleDoneUnlocked(id: id, feedbackInteraction: interaction)
         }
+    }
+
+    func openNewList() async {
+        guard !isCreatingList else { return }
+        isCreatingList = true
+        defer { isCreatingList = false }
+        if await createList(name: String(localized: "New List")) {
+            searchText = ""
+            newListID = selectedListID
+            editingListID = selectedListID
+        }
+    }
+
+    func editListInline(id: UUID) {
+        guard id != SnipList.inboxID else { return }
+        selectList(id)
+        editingListID = id
     }
 
     @discardableResult
