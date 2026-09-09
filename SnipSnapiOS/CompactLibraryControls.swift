@@ -27,6 +27,7 @@ private struct CompactGlassCircleButton<Label: View>: View {
 
 struct CompactLibraryControls: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let model: IOSAppModel
     let clipboard: IOSClipboardModel
     let storage: CompactComposerStorage
@@ -68,29 +69,27 @@ struct CompactLibraryControls: View {
 
     var body: some View {
         VStack(spacing: SnipSnapSpacing.relatedContent) {
-            if model.showsClipboard {
-                Button("Paste", systemImage: "doc.on.clipboard") {
-                    let providers = UIPasteboard.general.itemProviders
-                    Task { await clipboard.capture(providers) }
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.capsule)
-                .controlSize(.large)
-                .frame(maxWidth: .infinity)
-                .disabled(!clipboardHasContent)
-                .accessibilityIdentifier("paste-to-clipboard")
-            } else {
+            if !model.showsClipboard {
                 GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
                     composer
                 }
             }
-            if showsListTabs {
-                ListSelector(
-                    model: model,
-                    controlLength: controlLength,
-                    sheet: $sheet,
-                    deleteList: deleteList
-                )
+            if showsListTabs || model.showsClipboard {
+                HStack(spacing: SnipSnapSpacing.relatedContent) {
+                    if showsListTabs {
+                        ListSelector(
+                            model: model,
+                            controlLength: controlLength,
+                            sheet: $sheet,
+                            deleteList: deleteList
+                        )
+                    }
+                    if model.showsClipboard {
+                        pasteButton
+                            .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .trailing)))
+                    }
+                }
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: model.showsClipboard)
             }
         }
         .padding(.horizontal, SnipSnapSpacing.cardContentInset)
@@ -125,6 +124,19 @@ struct CompactLibraryControls: View {
             stagingTask?.cancel()
             storage.draftStore.flushText()
         }
+    }
+
+    private var pasteButton: some View {
+        CompactGlassCircleButton(length: max(48, controlLength)) {
+            let providers = UIPasteboard.general.itemProviders
+            Task { await clipboard.capture(providers) }
+        } label: {
+            Image(systemName: "doc.on.clipboard")
+                .font(.title3.weight(.medium))
+        }
+        .disabled(!clipboardHasContent)
+        .accessibilityLabel("Paste")
+        .accessibilityIdentifier("paste-to-clipboard")
     }
 
     private func updatePasteAvailability() {
