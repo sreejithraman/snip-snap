@@ -141,7 +141,7 @@ struct ListSelector: View {
 
             ZStack {
                 Capsule().fill(.primary.opacity(0.05))
-                selectionGlass(width: lensWidth, tint: tint)
+                selectionGlass(width: lensWidth, tint: tint, addProgress: progress)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
 
@@ -230,11 +230,20 @@ struct ListSelector: View {
         ], startPoint: .leading, endPoint: .trailing)
     }
 
-    private func selectionGlass(width: CGFloat, tint: Color) -> some View {
-        ListSelectionGlass(
+    private func selectionGlass(width: CGFloat, tint: Color, addProgress: CGFloat) -> some View {
+        let listTint = tint.resolve(in: environment)
+        let neutralTint = Color.primary.resolve(in: environment)
+        let blend = Float(addProgress)
+        let resolvedTint = Color.Resolved(
+            red: listTint.red + (neutralTint.red - listTint.red) * blend,
+            green: listTint.green + (neutralTint.green - listTint.green) * blend,
+            blue: listTint.blue + (neutralTint.blue - listTint.blue) * blend,
+            opacity: listTint.opacity + (neutralTint.opacity - listTint.opacity) * blend
+        )
+        return ListSelectionGlass(
             width: width,
             height: height,
-            tint: tint.resolve(in: environment),
+            tint: resolvedTint,
             reduceTransparency: reduceTransparency
         )
         .animation(.easeInOut(duration: reduceMotion ? 0.12 : 0.2), value: tint)
@@ -265,6 +274,7 @@ struct ListSelector: View {
                 .modifier(ListLabelPosition(x: x(geometry.centers[index], cursor: cursor, viewport: viewport), y: (height + 8) / 2))
             }
             Image(systemName: "plus")
+                .foregroundStyle(.primary)
                 .font(.system(size: fontSize, weight: .semibold))
                 .frame(width: height, height: height)
                 .opacity(reduceMotion ? reveal : 1)
