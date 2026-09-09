@@ -7,6 +7,7 @@ import UIKit
 
 private enum CompactControlMetrics {
     static let minimumInteractiveLength: CGFloat = 44
+    static let selectorTransitionDuration: TimeInterval = 0.2
 }
 
 private struct CompactGlassCircleButton<Label: View>: View {
@@ -36,6 +37,8 @@ struct CompactLibraryControls: View {
 
     @State private var draft = ComposerDraft()
     @State private var clipboardHasContent = false
+    @State private var isBrowsingLists = false
+    @State private var pasteIsVisible = false
     @State private var previewURL: URL?
     @State private var isImporting = false
     @State private var composerFieldID = UUID()
@@ -74,22 +77,10 @@ struct CompactLibraryControls: View {
                     composer
                 }
             }
-            if showsListTabs || model.showsClipboard {
-                HStack(spacing: SnipSnapSpacing.relatedContent) {
-                    if showsListTabs {
-                        ListSelector(
-                            model: model,
-                            controlLength: controlLength,
-                            sheet: $sheet,
-                            deleteList: deleteList
-                        )
-                    }
-                    if model.showsClipboard {
-                        pasteButton
-                            .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .trailing)))
-                    }
-                }
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: model.showsClipboard)
+            if showsListTabs {
+                selectorRow
+            } else if model.showsClipboard {
+                pasteButton
             }
         }
         .padding(.horizontal, SnipSnapSpacing.cardContentInset)
@@ -125,6 +116,49 @@ struct CompactLibraryControls: View {
             storage.draftStore.flushText()
         }
     }
+
+    private var selectorRow: some View {
+        GeometryReader { proxy in
+            let actionLength = max(48, controlLength)
+            let restingWidth = max(64, min(256, proxy.size.width - 2 * (actionLength + SnipSnapSpacing.relatedContent)))
+            ZStack {
+                ListSelector(
+                    model: model,
+                    controlLength: controlLength,
+                    sheet: $sheet,
+                    deleteList: deleteList,
+                    labelViewport: restingWidth,
+                    browsingChanged: { isBrowsingLists = $0 }
+                )
+                .frame(width: isBrowsingLists ? proxy.size.width : restingWidth)
+                .frame(maxWidth: .infinity)
+
+                HStack {
+                    Spacer()
+                    if pasteIsVisible {
+                        pasteButton
+                            .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .trailing)))
+                    }
+                }
+            }
+            .animation(reduceMotion ? nil : .easeInOut(duration: CompactControlMetrics.selectorTransitionDuration), value: isBrowsingLists)
+            .animation(reduceMotion ? nil : .easeInOut(duration: CompactControlMetrics.selectorTransitionDuration), value: model.showsClipboard)
+        }
+        .frame(height: max(48, controlLength) + 8)
+        .task(id: showsPasteAction) {
+            if showsPasteAction && !reduceMotion {
+                do {
+                    try await Task.sleep(for: .seconds(CompactControlMetrics.selectorTransitionDuration))
+                } catch { return }
+            }
+            guard !Task.isCancelled else { return }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: CompactControlMetrics.selectorTransitionDuration)) {
+                pasteIsVisible = showsPasteAction
+            }
+        }
+    }
+
+    private var showsPasteAction: Bool { model.showsClipboard && !isBrowsingLists }
 
     private var pasteButton: some View {
         CompactGlassCircleButton(length: max(48, controlLength)) {

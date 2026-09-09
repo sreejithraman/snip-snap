@@ -558,7 +558,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         continueAfterFailure = false
         let app = launchApp()
         try requireCompactSelector(in: app)
-        let fullSelectorWidth = app.descendants(matching: .any)["list-selector"].frame.width
+        let restingSelectorWidth = app.descendants(matching: .any)["list-selector"].frame.width
         app.buttons["clipboard-tab"].tap()
         XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["search-snips"].exists)
@@ -582,10 +582,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         screenshot.name = "Clipboard with shared list screen controls"
         screenshot.lifetime = .keepAlways
         add(screenshot)
-        XCTAssertLessThan(selector.frame.width, fullSelectorWidth - 44)
+        XCTAssertEqual(selector.frame.width, restingSelectorWidth, accuracy: 2)
+        XCTAssertEqual(selector.frame.midX, app.frame.midX, accuracy: 2)
         compactListTab(named: "Inbox", in: app).tap()
         XCTAssertTrue(paste.waitForNonExistence(timeout: 3))
-        XCTAssertEqual(selector.frame.width, fullSelectorWidth, accuracy: 2)
+        XCTAssertEqual(selector.frame.width, restingSelectorWidth, accuracy: 2)
         app.buttons["clipboard-tab"].tap()
         XCTAssertTrue(paste.waitForExistence(timeout: 3))
         app.buttons["library-actions"].tap()
@@ -621,11 +622,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         screenshot.lifetime = .keepAlways
         add(screenshot)
         clipboard.tap()
-        app.buttons["new-list"].tap()
+        app.menuItems["New List"].tap()
         app.buttons["Cancel"].tap()
         XCTAssertTrue(clipboard.isSelected)
         clipboard.tap()
-        app.buttons["new-list"].tap()
+        app.menuItems["New List"].tap()
         let field = app.textFields["list-name"]
         XCTAssertTrue(field.waitForExistence(timeout: 4))
         field.tap()
@@ -633,6 +634,47 @@ final class SnipSnapiOSUITests: XCTestCase {
         app.buttons["save-list"].tap()
         XCTAssertTrue(app.navigationBars["From Clipboard"].waitForExistence(timeout: 3))
         XCTAssertTrue(compactListTab(named: "From Clipboard", in: app).isSelected)
+    }
+
+    func testSelectorSwipeReturnsToCompactWidth() throws {
+        continueAfterFailure = false
+        let app = launchApp(withHapticsTrace: true)
+        try requireCompactSelector(in: app)
+        app.buttons["clipboard-tab"].tap()
+        let initialEvent = app.staticTexts["haptic-event"].label
+        XCTAssertTrue(initialEvent.hasPrefix("selection:"))
+        let selector = app.descendants(matching: .any)["list-selector"]
+        let restingWidth = selector.frame.width
+        let start = selector.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(
+            forDuration: 0.05,
+            thenDragTo: start.withOffset(CGVector(dx: -130, dy: 0)),
+            withVelocity: XCUIGestureVelocity(rawValue: 80),
+            thenHoldForDuration: 1
+        )
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+        XCTAssertEqual(selector.frame.width, restingWidth, accuracy: 2)
+        XCTAssertEqual(selector.frame.midX, app.frame.midX, accuracy: 2)
+        XCTAssertFalse(app.buttons["paste-to-clipboard"].exists)
+        let switchedEvent = app.staticTexts["haptic-event"].label
+        XCTAssertTrue(switchedEvent.hasPrefix("selection:"))
+        XCTAssertNotEqual(switchedEvent, initialEvent)
+        let back = selector.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        back.press(
+            forDuration: 0.05,
+            thenDragTo: back.withOffset(CGVector(dx: 130, dy: 0)),
+            withVelocity: XCUIGestureVelocity(rawValue: 80),
+            thenHoldForDuration: 1
+        )
+        XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["paste-to-clipboard"].waitForExistence(timeout: 3))
+        XCTAssertEqual(selector.frame.width, restingWidth, accuracy: 2)
+        XCTAssertTrue(app.staticTexts["haptic-event"].label.hasPrefix("selection:"))
+        XCTAssertNotEqual(app.staticTexts["haptic-event"].label, switchedEvent)
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Compact centered selector after swiping"
+        proof.lifetime = .keepAlways
+        add(proof)
     }
 
     func testSelectorPullThresholdCancelAndCreate() throws {
@@ -692,8 +734,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         createSnip("Keep this note", in: app)
         let work = compactListTab(named: "Work", in: app)
         work.tap()
-        XCTAssertTrue(app.buttons["Delete List"].waitForExistence(timeout: 3))
-        app.buttons["Delete List"].tap()
+        XCTAssertTrue(app.menuItems["Delete List"].waitForExistence(timeout: 3))
+        app.menuItems["Delete List"].tap()
         XCTAssertTrue(app.staticTexts["Its snips will move to Inbox."].waitForExistence(timeout: 3))
         app.buttons["Delete List"].tap()
         XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
@@ -714,10 +756,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         let selector = app.descendants(matching: .any)["list-selector"]
         XCTAssertEqual(last.frame.midX, selector.frame.midX, accuracy: 2)
         last.tap()
-        XCTAssertTrue(app.buttons["new-list"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["Edit List…"].exists)
-        XCTAssertTrue(app.buttons["Delete List"].exists)
-        app.buttons["new-list"].tap()
+        XCTAssertTrue(app.menuItems["New List"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.menuItems["Edit List…"].exists)
+        XCTAssertTrue(app.menuItems["Delete List"].exists)
+        app.menuItems["New List"].tap()
         XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 3))
         app.buttons["Cancel"].tap()
         XCTAssertTrue(last.waitForExistence(timeout: 3))
@@ -1716,14 +1758,16 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     private func openNewList(in app: XCUIApplication) {
         returnToLists(in: app)
-        if !app.buttons["new-list"].exists {
-            let selected = app.descendants(matching: .any).matching(
-                NSPredicate(format: "identifier BEGINSWITH 'list-tab-' AND selected == true")
-            ).firstMatch
-            selected.tap()
+        if app.buttons["new-list"].exists {
+            app.buttons["new-list"].tap()
+            return
         }
-        XCTAssertTrue(app.buttons["new-list"].waitForExistence(timeout: 3))
-        app.buttons["new-list"].tap()
+        let selected = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'list-tab-' AND selected == true")
+        ).firstMatch
+        selected.tap()
+        XCTAssertTrue(app.menuItems["New List"].waitForExistence(timeout: 3))
+        app.menuItems["New List"].tap()
     }
 
     private func returnToLists(in app: XCUIApplication) {
