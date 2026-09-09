@@ -528,10 +528,83 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
     }
 
+    func testTrailingClipboardPasteCapturesCopiedText() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        createSnip("Paste button fixture", in: app)
+        row(named: "Paste button fixture", in: app).press(forDuration: 1)
+        app.buttons["copy-snip"].tap()
+        app.buttons["clipboard-tab"].tap()
+        let paste = app.buttons["paste-to-clipboard"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 3))
+        XCTAssertTrue(paste.isEnabled)
+        paste.tap()
+        let entry = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "clipboard-entry-")
+        ).firstMatch
+        XCTAssertTrue(entry.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Paste button fixture"].exists)
+        let selector = app.descendants(matching: .any)["list-selector"]
+        XCTAssertEqual(paste.frame.midY, selector.frame.midY, accuracy: 2)
+        XCTAssertGreaterThan(paste.frame.minX, selector.frame.maxX)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Trailing glass Paste button"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
+    func testClipboardUsesListScreenControls() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        let restingSelectorWidth = app.descendants(matching: .any)["list-selector"].frame.width
+        app.buttons["clipboard-tab"].tap()
+        XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["search-snips"].exists)
+        XCTAssertTrue(app.buttons["workflow-options"].exists)
+        XCTAssertTrue(app.buttons["library-actions"].exists)
+        XCTAssertFalse(app.searchFields["Search Clipboard"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["empty-clipboard"].exists)
+        let paste = app.buttons["paste-to-clipboard"]
+        XCTAssertTrue(paste.exists)
+        let selector = app.descendants(matching: .any)["list-selector"]
+        XCTAssertEqual(paste.frame.midY, selector.frame.midY, accuracy: 2)
+        XCTAssertGreaterThan(paste.frame.minX, selector.frame.maxX)
+        app.buttons["search-snips"].tap()
+        let search = app.searchFields["search-snips-field"]
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        XCTAssertEqual(search.placeholderValue, "Search Clipboard")
+        search.typeText("Missing entry")
+        XCTAssertTrue(app.staticTexts["No Results"].waitForExistence(timeout: 3))
+        app.buttons["close-search"].tap()
+        XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+        app.buttons["workflow-options"].tap()
+        app.buttons["Pinned"].tap()
+        XCTAssertTrue(app.staticTexts["No pinned entries"].waitForExistence(timeout: 3))
+        app.buttons["workflow-options"].tap()
+        app.buttons["All"].tap()
+        XCTAssertTrue(app.staticTexts["Nothing captured yet"].waitForExistence(timeout: 3))
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Clipboard with shared list screen controls"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        XCTAssertEqual(selector.frame.width, restingSelectorWidth, accuracy: 2)
+        XCTAssertEqual(selector.frame.midX, app.frame.midX, accuracy: 2)
+        compactListTab(named: "Inbox", in: app).tap()
+        XCTAssertTrue(paste.waitForNonExistence(timeout: 3))
+        XCTAssertEqual(selector.frame.width, restingSelectorWidth, accuracy: 2)
+        app.buttons["clipboard-tab"].tap()
+        XCTAssertTrue(paste.waitForExistence(timeout: 3))
+        app.buttons["library-actions"].tap()
+        XCTAssertTrue(app.buttons["settings"].waitForExistence(timeout: 3))
+    }
+
     func testClipboardAndSelectorPreserveNavigationAndDraft() throws {
         continueAfterFailure = false
         let app = launchApp()
         try requireCompactSelector(in: app)
+        createSnip("Selection fixture", in: app)
         let composer = app.descendants(matching: .any)["composer-text"]
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         composer.tap()
@@ -548,6 +621,14 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         XCTAssertEqual(composer.value as? String, "Unsent draft")
         XCTAssertTrue(inbox.isSelected)
+        let selectorBeforeSelection = app.descendants(matching: .any)["list-selector"].frame
+        enterSelection(in: app)
+        XCTAssertTrue(composer.waitForNonExistence(timeout: 3))
+        XCTAssertEqual(app.descendants(matching: .any)["list-selector"].frame.midY,
+                       selectorBeforeSelection.midY, accuracy: 2)
+        app.buttons["finish-selecting"].tap()
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        XCTAssertEqual(composer.value as? String, "Unsent draft")
         clipboard.tap()
         XCTAssertTrue(clipboard.isSelected)
         let selector = app.descendants(matching: .any)["list-selector"]
@@ -557,11 +638,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         screenshot.lifetime = .keepAlways
         add(screenshot)
         clipboard.tap()
-        app.buttons["new-list"].tap()
+        app.menuItems["New List"].tap()
         app.buttons["Cancel"].tap()
         XCTAssertTrue(clipboard.isSelected)
         clipboard.tap()
-        app.buttons["new-list"].tap()
+        app.menuItems["New List"].tap()
         let field = app.textFields["list-name"]
         XCTAssertTrue(field.waitForExistence(timeout: 4))
         field.tap()
@@ -569,6 +650,55 @@ final class SnipSnapiOSUITests: XCTestCase {
         app.buttons["save-list"].tap()
         XCTAssertTrue(app.navigationBars["From Clipboard"].waitForExistence(timeout: 3))
         XCTAssertTrue(compactListTab(named: "From Clipboard", in: app).isSelected)
+    }
+
+    func testSelectorSwipeReturnsToCompactWidth() throws {
+        continueAfterFailure = false
+        let app = launchApp(withHapticsTrace: true)
+        try requireCompactSelector(in: app)
+        app.buttons["clipboard-tab"].tap()
+        let initialEvent = app.staticTexts["haptic-event"].label
+        XCTAssertTrue(initialEvent.hasPrefix("selection:"))
+        let selector = app.descendants(matching: .any)["list-selector"]
+        let restingWidth = selector.frame.width
+        let start = selector.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(
+            forDuration: 0.05,
+            thenDragTo: start.withOffset(CGVector(dx: -20, dy: 0)),
+            withVelocity: XCUIGestureVelocity(rawValue: 80),
+            thenHoldForDuration: 0.5
+        )
+        XCTAssertEqual(app.staticTexts["haptic-event"].label, initialEvent)
+        XCTAssertTrue(app.navigationBars["Clipboard"].exists)
+        start.press(
+            forDuration: 0.05,
+            thenDragTo: start.withOffset(CGVector(dx: -130, dy: 0)),
+            withVelocity: XCUIGestureVelocity(rawValue: 80),
+            thenHoldForDuration: 1
+        )
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+        XCTAssertEqual(selector.frame.width, restingWidth, accuracy: 2)
+        XCTAssertEqual(selector.frame.midX, app.frame.midX, accuracy: 2)
+        XCTAssertFalse(app.buttons["paste-to-clipboard"].exists)
+        let switchedEvent = app.staticTexts["haptic-event"].label
+        XCTAssertTrue(switchedEvent.hasPrefix("selection:"))
+        XCTAssertNotEqual(switchedEvent, initialEvent)
+        let back = selector.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        back.press(
+            forDuration: 0.05,
+            thenDragTo: back.withOffset(CGVector(dx: 130, dy: 0)),
+            withVelocity: XCUIGestureVelocity(rawValue: 80),
+            thenHoldForDuration: 1
+        )
+        XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["paste-to-clipboard"].waitForExistence(timeout: 3))
+        XCTAssertEqual(selector.frame.width, restingWidth, accuracy: 2)
+        XCTAssertTrue(app.staticTexts["haptic-event"].label.hasPrefix("selection:"))
+        XCTAssertNotEqual(app.staticTexts["haptic-event"].label, switchedEvent)
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Compact centered selector after swiping"
+        proof.lifetime = .keepAlways
+        add(proof)
     }
 
     func testSelectorPullThresholdCancelAndCreate() throws {
@@ -628,8 +758,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         createSnip("Keep this note", in: app)
         let work = compactListTab(named: "Work", in: app)
         work.tap()
-        XCTAssertTrue(app.buttons["Delete List"].waitForExistence(timeout: 3))
-        app.buttons["Delete List"].tap()
+        XCTAssertTrue(app.menuItems["Delete List"].waitForExistence(timeout: 3))
+        app.menuItems["Delete List"].tap()
         XCTAssertTrue(app.staticTexts["Its snips will move to Inbox."].waitForExistence(timeout: 3))
         app.buttons["Delete List"].tap()
         XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
@@ -650,10 +780,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         let selector = app.descendants(matching: .any)["list-selector"]
         XCTAssertEqual(last.frame.midX, selector.frame.midX, accuracy: 2)
         last.tap()
-        XCTAssertTrue(app.buttons["new-list"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["Edit List…"].exists)
-        XCTAssertTrue(app.buttons["Delete List"].exists)
-        app.buttons["new-list"].tap()
+        XCTAssertTrue(app.menuItems["New List"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.menuItems["Edit List…"].exists)
+        XCTAssertTrue(app.menuItems["Delete List"].exists)
+        app.menuItems["New List"].tap()
         XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 3))
         app.buttons["Cancel"].tap()
         XCTAssertTrue(last.waitForExistence(timeout: 3))
@@ -1652,14 +1782,16 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     private func openNewList(in app: XCUIApplication) {
         returnToLists(in: app)
-        if !app.buttons["new-list"].exists {
-            let selected = app.descendants(matching: .any).matching(
-                NSPredicate(format: "identifier BEGINSWITH 'list-tab-' AND selected == true")
-            ).firstMatch
-            selected.tap()
+        if app.buttons["new-list"].exists {
+            app.buttons["new-list"].tap()
+            return
         }
-        XCTAssertTrue(app.buttons["new-list"].waitForExistence(timeout: 3))
-        app.buttons["new-list"].tap()
+        let selected = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'list-tab-' AND selected == true")
+        ).firstMatch
+        selected.tap()
+        XCTAssertTrue(app.menuItems["New List"].waitForExistence(timeout: 3))
+        app.menuItems["New List"].tap()
     }
 
     private func returnToLists(in app: XCUIApplication) {

@@ -26,6 +26,7 @@ final class IOSClipboardModel {
         set { operationErrorMessage = newValue }
     }
     private(set) var importErrorMessage: String?
+    private(set) var pasteErrorMessage: String?
     var syncIsActive: Bool {
         guard syncEnabled, settings.mode == .iCloudSync else { return false }
         switch settings.state {
@@ -229,7 +230,12 @@ final class IOSClipboardModel {
         preferences.set(pendingUploadIDs.map(\.uuidString), forKey: "clipboardPendingUploads")
     }
 
+    func dismissPasteError() { pasteErrorMessage = nil }
+
+    private enum PasteError: Error { case unreadable, tooLarge }
+
     func capture(_ providers: [NSItemProvider]) async {
+        pasteErrorMessage = nil
         do {
             var items: [ClipboardPayloadItem] = []
             let types = [UTType.utf8PlainText, .plainText, .url, .rtf, .html, .png, .jpeg, .tiff]
@@ -245,15 +251,15 @@ final class IOSClipboardModel {
                         }
                     }
                     guard let data else { continue }
-                    guard data.count <= ClipboardHistoryState.representationByteLimit else { throw CocoaError(.fileReadTooLarge) }
+                    guard data.count <= ClipboardHistoryState.representationByteLimit else { throw PasteError.tooLarge }
                     representations.append(ClipboardRepresentation(type: type.identifier, data: data))
                 }
                 if !representations.isEmpty { items.append(ClipboardPayloadItem(representations: representations)) }
             }
-            guard !items.isEmpty else { throw CocoaError(.fileReadUnknown) }
+            guard !items.isEmpty else { throw PasteError.unreadable }
             let entry = ClipboardEntry(sourceApplication: "Paste", items: items,
                 plainText: Self.previewText(from: items), sourceDeviceName: UIDevice.current.model)
-            guard entry.byteCount <= ClipboardHistoryState.entryByteLimit else { throw CocoaError(.fileReadTooLarge) }
+            guard entry.byteCount <= ClipboardHistoryState.entryByteLimit else { throw PasteError.tooLarge }
             entries = try await store.insert(entry).entries
             if syncEnabled {
                 pendingUploadIDs.formUnion(entries.filter { $0.hasSamePayload(as: entry) }.map(\.id))
@@ -261,6 +267,12 @@ final class IOSClipboardModel {
             }
             errorMessage = nil
             await synchronize()
-        } catch { errorMessage = error.localizedDescription }
+        } catch PasteError.unreadable {
+            pasteErrorMessage = String(localized: "Couldn’t read the clipboard. Copy the content again, then tap Paste.")
+        } catch PasteError.tooLarge {
+            pasteErrorMessage = String(localized: "This clipboard content is too large to paste.")
+        } catch {
+            pasteErrorMessage = String(localized: "Couldn’t save the pasted content. Try again.")
+        }
     }
 }

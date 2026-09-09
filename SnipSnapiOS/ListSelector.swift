@@ -28,6 +28,16 @@ struct ListSelectorGeometry {
         centers.indices.min { abs(centers[$0] - position) < abs(centers[$1] - position) } ?? 0
     }
 
+    func lensWidth(at position: CGFloat) -> CGFloat {
+        guard let first = widths.first else { return 96 }
+        guard let upper = centers.firstIndex(where: { $0 > position }) else { return widths.last ?? first }
+        guard upper > 0 else { return first }
+        let lower = upper - 1
+        let fraction = (position - centers[lower]) / (centers[upper] - centers[lower])
+        let blend = fraction * fraction * (3 - 2 * fraction)
+        return widths[lower] + (widths[upper] - widths[lower]) * blend
+    }
+
     func pullProgress(at position: CGFloat) -> CGFloat {
         min(1, max(0, position - (centers.last ?? 0)) / Self.pullThreshold)
     }
@@ -88,6 +98,8 @@ struct ListSelector: View {
     let controlLength: CGFloat
     @Binding var sheet: AppSheet?
     let deleteList: (UUID) async -> Void
+    var labelViewport: CGFloat? = nil
+    var browsingChanged: (Bool) -> Void = { _ in }
 
     private var animation: Animation? {
         reduceMotion ? nil : .spring(duration: 0.3, bounce: 0.12)
@@ -103,29 +115,34 @@ struct ListSelector: View {
         model.showsClipboard ? "clipboard-tab" : "list-tab-\(model.selectedListID.uuidString)"
     }
 
-    private func select(_ item: ListSelectorItem) {
+    private func select(_ item: ListSelectorItem, feedback: Bool = true) {
+        guard item.id != selectedItemID else { return }
         switch item {
         case .clipboard: model.showsClipboard = true
         case .list(let list): model.selectList(list.id)
+        }
+        if feedback {
+            model.haptics.emit(.selection, for: model.haptics.beginInteraction())
         }
     }
 
     var body: some View {
         GeometryReader { proxy in
-            let geometry = ListSelectorGeometry(widths: items.map { width(for: $0, in: proxy.size.width) })
+            let geometry = ListSelectorGeometry(widths: items.map { width(for: $0, in: labelViewport ?? proxy.size.width) })
             let selected = items.firstIndex { $0.id == selectedItemID } ?? 0
             let origin = geometry.centers.indices.contains(selected) ? geometry.centers[selected] : 0
             let position = dragPosition ?? origin
             let progress = presentingCreation ? 1 : geometry.pullProgress(at: position)
-            let cursor = presentingCreation ? geometry.plusCenter : geometry.resisted(position)
+            let hoveringAdd = progress >= 1
+            let cursor = hoveringAdd ? geometry.plusCenter : geometry.resisted(position)
             let nearest = geometry.nearestIndex(to: cursor)
-            let baseWidth = geometry.widths.indices.contains(nearest) ? geometry.widths[nearest] : 96
+            let baseWidth = geometry.lensWidth(at: cursor)
             let lensWidth = baseWidth + (height - baseWidth) * progress
             let tint = items.indices.contains(nearest) ? items[nearest].color : Color.primary
 
             ZStack {
                 Capsule().fill(.primary.opacity(0.05))
-                selectionGlass(width: lensWidth, tint: tint)
+                selectionGlass(width: lensWidth, tint: tint, addProgress: progress)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
 
@@ -136,24 +153,16 @@ struct ListSelector: View {
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
 
-                hitTargets(geometry: geometry, cursor: cursor, viewport: proxy.size.width)
+                hitTargets(geometry: geometry, cursor: cursor)
             }
             .contentShape(Capsule())
             .simultaneousGesture(
-                DragGesture(minimumDistance: 8)
+                DragGesture(minimumDistance: 8, coordinateSpace: .global)
                     .updating($dragPosition) { value, state, transaction in
                         guard !presentingCreation, sheet == nil,
                               abs(value.translation.width) > abs(value.translation.height) else { return }
                         transaction.animation = nil
                         state = origin - value.translation.width * direction
-                    }
-                    .onChanged { value in
-                        guard !presentingCreation, sheet == nil,
-                              abs(value.translation.width) > abs(value.translation.height) else { return }
-                        let position = origin - value.translation.width * direction
-                        if geometry.pullProgress(at: position) >= 1 {
-                            beginCreation()
-                        }
                     }
                     .onEnded { value in
                         guard !presentingCreation, sheet == nil,
@@ -164,11 +173,16 @@ struct ListSelector: View {
                         } else {
                             let index = geometry.nearestIndex(to: released)
                             if items.indices.contains(index) {
-                                select(items[index])
+                                select(items[index], feedback: false)
                             }
                         }
                     }
             )
+            .animation(animation, value: hoveringAdd)
+            .onChange(of: hoveringAdd ? items.count : nearest) { _, destination in
+                guard dragPosition != nil, !presentingCreation, sheet == nil else { return }
+                model.haptics.emit(destination == items.count ? .snap : .selection, for: model.haptics.beginInteraction())
+            }
             // Animate only this strip after release, never the shared model update.
             .animation(dragPosition == nil ? animation : nil, value: dragPosition == nil)
             .animation(dragPosition == nil ? animation : nil, value: selectedItemID)
@@ -177,6 +191,9 @@ struct ListSelector: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("list-selector")
         .accessibilityAction(named: Text("New List")) { sheet = .newList }
+        .onChange(of: dragPosition != nil) { _, isDragging in
+            browsingChanged(isDragging)
+        }
         .onChange(of: sheet) { _, destination in
             if destination == nil { resetCreation() }
         }
@@ -186,7 +203,10 @@ struct ListSelector: View {
         .onChange(of: scenePhase) { _, phase in
             if phase != .active, sheet == nil { resetCreation() }
         }
-        .onDisappear { resetCreation() }
+        .onDisappear {
+            browsingChanged(false)
+            resetCreation()
+        }
         .listDeletionConfirmation(
             list: deletionTarget ?? model.selectedList,
             isPresented: $confirmsDeletion,
@@ -204,11 +224,20 @@ struct ListSelector: View {
         ], startPoint: .leading, endPoint: .trailing)
     }
 
-    private func selectionGlass(width: CGFloat, tint: Color) -> some View {
-        ListSelectionGlass(
+    private func selectionGlass(width: CGFloat, tint: Color, addProgress: CGFloat) -> some View {
+        let listTint = tint.resolve(in: environment)
+        let neutralTint = Color.primary.resolve(in: environment)
+        let blend = Float(addProgress)
+        let resolvedTint = Color.Resolved(
+            red: listTint.red + (neutralTint.red - listTint.red) * blend,
+            green: listTint.green + (neutralTint.green - listTint.green) * blend,
+            blue: listTint.blue + (neutralTint.blue - listTint.blue) * blend,
+            opacity: listTint.opacity + (neutralTint.opacity - listTint.opacity) * blend
+        )
+        return ListSelectionGlass(
             width: width,
             height: height,
-            tint: tint.resolve(in: environment),
+            tint: resolvedTint,
             reduceTransparency: reduceTransparency
         )
         .animation(.easeInOut(duration: reduceMotion ? 0.12 : 0.2), value: tint)
@@ -220,8 +249,8 @@ struct ListSelector: View {
         return min(max(64, ceil(textWidth) + fontSize * 1.5 + 48), max(64, viewport - 96))
     }
 
-    private func x(_ center: CGFloat, cursor: CGFloat, viewport: CGFloat) -> CGFloat {
-        viewport / 2 + (center - cursor) * direction
+    private func labelOffset(_ center: CGFloat, cursor: CGFloat) -> CGFloat {
+        (center - cursor) * direction
     }
 
     private func labels(geometry: ListSelectorGeometry, cursor: CGFloat, viewport: CGFloat, progress: CGFloat) -> some View {
@@ -236,14 +265,16 @@ struct ListSelector: View {
                 .foregroundStyle(item.color)
                 .padding(.horizontal, 16)
                 .frame(width: geometry.widths[index], height: height)
-                .modifier(ListLabelPosition(x: x(geometry.centers[index], cursor: cursor, viewport: viewport), y: (height + 8) / 2))
+                .modifier(ListLabelPosition(x: labelOffset(geometry.centers[index], cursor: cursor)))
             }
             Image(systemName: "plus")
+                .foregroundStyle(.primary)
                 .font(.system(size: fontSize, weight: .semibold))
                 .frame(width: height, height: height)
                 .opacity(reduceMotion ? reveal : 1)
                 .position(x: plusX(viewport: viewport, reveal: reveal), y: (height + 8) / 2)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
         .accessibilityHidden(true)
     }
@@ -254,8 +285,8 @@ struct ListSelector: View {
     }
 
     private func plusX(viewport: CGFloat, reveal: CGFloat) -> CGFloat {
-        if presentingCreation { return viewport / 2 }
-        // Stay within the edge fade until ready. Only the commit travels inward.
+        if presentingCreation || reveal >= 1 { return viewport / 2 }
+        // Hover over Add when ready; reversing the pull returns it to the edge.
         let halfIcon = fontSize / 2
         let inset = viewport * edgeFadeFraction + halfIcon
         guard !reduceMotion else { return viewport / 2 + (viewport / 2 - inset) * direction }
@@ -263,24 +294,24 @@ struct ListSelector: View {
         return viewport / 2 + distance * direction
     }
 
-    private func hitTargets(geometry: ListSelectorGeometry, cursor: CGFloat, viewport: CGFloat) -> some View {
+    private func hitTargets(geometry: ListSelectorGeometry, cursor: CGFloat) -> some View {
         ZStack {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 let selected = item.id == selectedItemID
                 Group {
                     if selected {
-                        Menu {
-                            Button("New List", systemImage: "plus") { sheet = .newList }
-                                .accessibilityIdentifier("new-list")
+                        ListActionsMenu {
+                            var actions = [UIAction(title: String(localized: "New List"), image: UIImage(systemName: "plus"), identifier: UIAction.Identifier("new-list")) { _ in sheet = .newList }]
                             if case .list(let list) = item, list.id != SnipList.inboxID {
-                                Button("Edit List…", systemImage: "pencil") { sheet = .editList(id: list.id) }
-                                Button("Delete List", systemImage: "trash", role: .destructive) {
+                                actions.append(UIAction(title: String(localized: "Edit List…"), image: UIImage(systemName: "pencil")) { _ in sheet = .editList(id: list.id) })
+                                actions.append(UIAction(title: String(localized: "Delete List"), image: UIImage(systemName: "trash"), attributes: .destructive) { _ in
                                     model.haptics.invalidatePendingFeedback()
                                     deletionTarget = list
                                     confirmsDeletion = true
-                                }
+                                })
                             }
-                        } label: { Color.clear.contentShape(Rectangle()) }
+                            return UIMenu(children: actions)
+                        }
                     } else {
                         Button {
                             select(item)
@@ -297,10 +328,11 @@ struct ListSelector: View {
                 .accessibilityAdjustableAction { adjustment in
                     adjustItem(item.id, direction: adjustment)
                 }
-                .position(x: x(geometry.centers[index], cursor: cursor, viewport: viewport), y: (height + 8) / 2)
-                .disabled(presentingCreation)
+                .offset(x: labelOffset(geometry.centers[index], cursor: cursor))
+                .disabled(presentingCreation || dragPosition != nil)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
     }
 
@@ -320,7 +352,6 @@ struct ListSelector: View {
         guard !presentingCreation, sheet == nil else { return }
         let request = UUID()
         creationRequest = request
-        model.haptics.emit(.snap, for: model.haptics.beginInteraction())
         withAnimation(animation, completionCriteria: .logicallyComplete) {
             presentingCreation = true
         } completion: {
@@ -332,6 +363,48 @@ struct ListSelector: View {
     private func resetCreation() {
         creationRequest = UUID()
         withAnimation(animation) { presentingCreation = false }
+    }
+}
+
+// Open only after a completed tap, so a slow swipe cannot open the menu.
+private struct ListActionsMenu: UIViewRepresentable {
+    let menu: () -> UIMenu
+
+    func makeUIView(context: Context) -> UIButton {
+        let button = UIButton(type: .custom)
+        button.addInteraction(context.coordinator.interaction)
+        button.addTarget(context.coordinator, action: #selector(Coordinator.showMenu), for: .touchUpInside)
+        return button
+    }
+
+    func updateUIView(_ button: UIButton, context: Context) {
+        button.isEnabled = context.environment.isEnabled
+        context.coordinator.menu = menu
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(menu: menu) }
+
+    @MainActor
+    final class Coordinator: NSObject, @MainActor UIEditMenuInteractionDelegate {
+        var menu: () -> UIMenu
+        lazy var interaction = UIEditMenuInteraction(delegate: self)
+
+        init(menu: @escaping () -> UIMenu) { self.menu = menu }
+
+        @objc func showMenu(_ button: UIButton) {
+            interaction.presentEditMenu(with: UIEditMenuConfiguration(
+                identifier: nil,
+                sourcePoint: CGPoint(x: button.bounds.midX, y: 0)
+            ))
+        }
+
+        func editMenuInteraction(
+            _ interaction: UIEditMenuInteraction,
+            menuFor configuration: UIEditMenuConfiguration,
+            suggestedActions: [UIMenuElement]
+        ) -> UIMenu? {
+            menu()
+        }
     }
 }
 
@@ -389,11 +462,11 @@ nonisolated private struct ListLensEffect: ViewModifier, Animatable {
     }
 }
 
+// Offset from the layout center so resizing the track cannot move a label.
 // Animate the whole label as one value. Implicit child layout animation can
 // otherwise let SwiftUI's text rendering lag behind the symbol during a snap.
 nonisolated private struct ListLabelPosition: ViewModifier, Animatable {
     var x: CGFloat
-    let y: CGFloat
 
     var animatableData: CGFloat {
         get { x }
@@ -401,7 +474,7 @@ nonisolated private struct ListLabelPosition: ViewModifier, Animatable {
     }
 
     func body(content: Content) -> some View {
-        content.position(x: x, y: y)
+        content.offset(x: x)
             .transaction { $0.animation = nil }
     }
 }

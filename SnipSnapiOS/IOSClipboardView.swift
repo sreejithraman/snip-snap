@@ -5,16 +5,46 @@ import UniformTypeIdentifiers
 
 struct IOSClipboardView: View {
     let model: IOSClipboardModel
+    var settings: () -> Void = {}
+    @State private var isSearchPresented = false
+    @State private var onlyPinned = false
+    @State private var newestFirst = true
     @State private var searchText = ""
     @State private var confirmsClear = false
-    @State private var previewEntry: ClipboardEntry?
 
     private var entries: [ClipboardEntry] {
-        model.entries.filter { searchText.isEmpty || $0.searchText.localizedCaseInsensitiveContains(searchText) }
+        Self.orderedEntries(model.entries.filter {
+            (!onlyPinned || $0.isPinned)
+                && (searchText.isEmpty || $0.searchText.localizedCaseInsensitiveContains(searchText))
+        }, newestFirst: newestFirst)
+    }
+
+    static func orderedEntries(_ entries: [ClipboardEntry], newestFirst: Bool) -> [ClipboardEntry] {
+        let ordered = ClipboardHistoryState.ordered(entries)
+        guard !newestFirst else { return ordered }
+        return ordered.filter(\.isPinned) + ordered.filter { !$0.isPinned }.reversed()
+    }
+
+    private var emptyTitle: String {
+        if !searchText.isEmpty { return String(localized: "No Results") }
+        return onlyPinned ? String(localized: "No pinned entries") : String(localized: "Nothing captured yet")
+    }
+
+    private var emptyDetail: String {
+        if !searchText.isEmpty { return String(localized: "Try a different search.") }
+        return onlyPinned ? String(localized: "Pin a clipboard entry to keep it here.")
+            : String(localized: "Paste here or share content to Clipboard.")
     }
 
     var body: some View {
         List {
+            if let error = model.pasteErrorMessage {
+                Section {
+                    Label(error, systemImage: "clipboard")
+                    Button("Dismiss") { model.dismissPasteError() }
+                }
+                .accessibilityIdentifier("clipboard-paste-error")
+            }
             if let error = model.importErrorMessage {
                 Section {
                     Label(error, systemImage: "exclamationmark.triangle")
@@ -58,7 +88,6 @@ struct IOSClipboardView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
-                    .onTapGesture { previewEntry = entry }
                 }
                 .padding(.vertical, 4)
                 .listRowSeparator(.hidden)
@@ -87,24 +116,48 @@ struct IOSClipboardView: View {
             }
         }
         .listStyle(.plain)
-        .environment(\.defaultMinListRowHeight, 24)
+        .scrollDismissesKeyboard(.interactively)
         .overlay {
-            if entries.isEmpty && model.errorMessage == nil && model.importErrorMessage == nil {
-                ContentUnavailableView("No Clipboard Entries", systemImage: "clipboard", description: Text("Paste here or share content to Clipboard. Turn on clipboard sync in Settings to see your Mac history."))
+            if entries.isEmpty && model.errorMessage == nil && model.importErrorMessage == nil && model.pasteErrorMessage == nil {
+                CollectionEmptyState(
+                    title: emptyTitle,
+                    systemImage: searchText.isEmpty ? (onlyPinned ? "pin" : "clipboard") : "magnifyingglass",
+                    detail: emptyDetail
+                )
+                .accessibilityIdentifier("empty-clipboard")
             }
         }
-        .navigationTitle("Clipboard")
-        .searchable(text: $searchText, prompt: "Search Clipboard")
+        .modifier(CollectionScreenPresentation(
+            title: String(localized: "Clipboard"),
+            searchPrompt: String(localized: "Search Clipboard"),
+            searchText: $searchText,
+            isSearchPresented: $isSearchPresented
+        ))
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                PasteButton(supportedContentTypes: [.text, .url, .image]) { providers in
-                    Task { await model.capture(providers) }
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Menu("View Options", systemImage: "line.3.horizontal.decrease") {
+                    Section("Show") {
+                        Picker("Show", selection: $onlyPinned) {
+                            Text("All").tag(false)
+                            Text("Pinned").tag(true)
+                        }.pickerStyle(.inline)
+                    }
+                    Section("Sort") {
+                        Picker("Sort", selection: $newestFirst) {
+                            Text("Newest First").tag(true)
+                            Text("Oldest First").tag(false)
+                        }.pickerStyle(.inline)
+                    }
                 }
-                .accessibilityIdentifier("paste-to-clipboard")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("Clear History", systemImage: "trash") { confirmsClear = true }
-                    .disabled(!model.entries.contains { !$0.isPinned })
+                .accessibilityIdentifier("workflow-options")
+                Menu("Library Actions", systemImage: "ellipsis") {
+                    Button("Clear History", systemImage: "trash", role: .destructive) { confirmsClear = true }
+                        .disabled(!model.entries.contains { !$0.isPinned })
+                    Divider()
+                    Button("Settings", systemImage: "gearshape", action: settings)
+                        .accessibilityIdentifier("settings")
+                }
+                .accessibilityIdentifier("library-actions")
             }
         }
         .confirmationDialog("Clear Clipboard History?", isPresented: $confirmsClear, titleVisibility: .visible) {
@@ -123,29 +176,6 @@ struct IOSClipboardView: View {
                         try? await Task.sleep(for: .seconds(2))
                         model.copied = false
                     }
-            }
-        }
-        .sheet(item: $previewEntry) { entry in
-            NavigationStack {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        ForEach(Array(entry.imageRepresentations.enumerated()), id: \.offset) { _, representation in
-                            if let image = UIImage(data: representation.data) {
-                                Image(uiImage: image).resizable().scaledToFit()
-                            }
-                        }
-                        Text(entry.text).textSelection(.enabled)
-                    }.padding()
-                }
-                .navigationTitle("Clipboard Entry")
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("Copy") { model.copy(entry) }
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { previewEntry = nil }
-                    }
-                }
             }
         }
         .task { await model.load() }

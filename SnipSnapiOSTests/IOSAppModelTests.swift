@@ -76,6 +76,36 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(model.entries.first?.imageRepresentations.first?.data, bytes)
     }
 
+    func testUnreadableTextPasteDoesNotBecomeCloudOrFileError() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = IOSClipboardModel(rootURL: root, settings: SyncedContentSettingsModel(mode: .localOnly), preferences: UserDefaults(suiteName: UUID().uuidString)!)
+        let text = NSItemProvider(object: "Keep this text" as NSString)
+        await model.capture([text])
+        let savedIDs = model.entries.map(\.id)
+        XCTAssertEqual(model.entries.first?.text, "Keep this text")
+        let unreadableText = NSItemProvider()
+        unreadableText.registerDataRepresentation(forTypeIdentifier: UTType.utf8PlainText.identifier, visibility: .all) { completion in
+            completion(nil, CocoaError(.fileReadUnknown))
+            return nil
+        }
+        await model.capture([unreadableText])
+        XCTAssertNil(model.errorMessage)
+        XCTAssertTrue(model.pasteErrorMessage?.contains("clipboard") == true)
+        XCTAssertEqual(model.entries.map(\.id), savedIDs)
+        await model.synchronize()
+        XCTAssertNotNil(model.pasteErrorMessage)
+        model.dismissPasteError()
+        XCTAssertNil(model.pasteErrorMessage)
+        await model.capture([])
+        XCTAssertNotNil(model.pasteErrorMessage)
+        XCTAssertNil(model.errorMessage)
+        await model.capture([text])
+        XCTAssertNil(model.pasteErrorMessage)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.entries.first?.text, "Keep this text")
+    }
+
     func testRichTextOnlyClipboardPayloadHasTextForPreviewAndSearch() throws {
         let richText = NSAttributedString(string: "Rich clipboard text")
         let rtf = try richText.data(from: NSRange(location: 0, length: richText.length),
@@ -85,6 +115,20 @@ final class IOSAppModelTests: XCTestCase {
         let htmlItem = ClipboardPayloadItem(representations: [ClipboardRepresentation(type: UTType.html.identifier, data: Data("<p>Read <b>this</b></p>".utf8))])
         XCTAssertEqual(IOSClipboardModel.previewText(from: [htmlItem]), "Read this")
         XCTAssertEqual(rtfItem.representations.first?.data, rtf)
+    }
+
+    func testClipboardSortKeepsNewestPinsFirstInBothDirections() {
+        let older = Date(timeIntervalSince1970: 100)
+        let newer = Date(timeIntervalSince1970: 200)
+        let newestPin = ClipboardEntry(capturedAt: older, items: [], pinnedAt: newer)
+        let oldestPin = ClipboardEntry(capturedAt: newer, items: [], pinnedAt: older)
+        let oldestEntry = ClipboardEntry(capturedAt: older, items: [])
+        let newestEntry = ClipboardEntry(capturedAt: newer, items: [])
+        let entries = [oldestPin, newestEntry, newestPin, oldestEntry]
+        XCTAssertEqual(IOSClipboardView.orderedEntries(entries, newestFirst: true).map(\.id),
+                       [newestPin.id, oldestPin.id, newestEntry.id, oldestEntry.id])
+        XCTAssertEqual(IOSClipboardView.orderedEntries(entries, newestFirst: false).map(\.id),
+                       [newestPin.id, oldestPin.id, oldestEntry.id, newestEntry.id])
     }
 
     func testClipboardPinActionUsesCurrentStateAfterRowChanges() async throws {
@@ -3432,6 +3476,21 @@ final class ListSelectorGeometryTests: XCTestCase {
         XCTAssertEqual(geometry.nearestIndex(to: 103), 0)
         XCTAssertEqual(geometry.nearestIndex(to: 105), 1)
         XCTAssertEqual(geometry.nearestIndex(to: 500), 2)
+    }
+
+    func testLensWidthStaysContinuousAcrossSelectionBoundaries() {
+        let geometry = ListSelectorGeometry(widths: [80, 160, 100])
+        for (index, center) in geometry.centers.enumerated() {
+            XCTAssertEqual(geometry.lensWidth(at: center), geometry.widths[index], accuracy: 0.001)
+        }
+        let boundary = (geometry.centers[0] + geometry.centers[1]) / 2
+        XCTAssertNotEqual(geometry.nearestIndex(to: boundary - 0.01), geometry.nearestIndex(to: boundary + 0.01))
+        XCTAssertEqual(geometry.lensWidth(at: boundary - 0.01), geometry.lensWidth(at: boundary + 0.01), accuracy: 0.1)
+        XCTAssertEqual(geometry.lensWidth(at: boundary), 120, accuracy: 0.001)
+        XCTAssertEqual(geometry.lensWidth(at: -100), 80)
+        XCTAssertEqual(geometry.lensWidth(at: 500), 100)
+        XCTAssertEqual(ListSelectorGeometry(widths: [80]).lensWidth(at: 500), 80)
+        XCTAssertEqual(ListSelectorGeometry(widths: []).lensWidth(at: 0), 96)
     }
 
     func testPullUsesFingerDistanceAndDoesNotAddAList() {
