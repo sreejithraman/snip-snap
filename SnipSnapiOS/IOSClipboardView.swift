@@ -12,7 +12,6 @@ struct IOSClipboardView: View {
     @State private var newestFirst = true
     @State private var searchText = ""
     @State private var confirmsClear = false
-    @State private var previewEntry: ClipboardEntry?
 
     private var entries: [ClipboardEntry] {
         model.entries.filter {
@@ -76,7 +75,6 @@ struct IOSClipboardView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
-                    .onTapGesture { previewEntry = entry }
                 }
                 .padding(.vertical, 4)
                 .listRowSeparator(.hidden)
@@ -172,29 +170,6 @@ struct IOSClipboardView: View {
                         try? await Task.sleep(for: .seconds(2))
                         model.copied = false
                     }
-            }
-        }
-        .sheet(item: $previewEntry) { entry in
-            NavigationStack {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        ForEach(Array(entry.imageRepresentations.enumerated()), id: \.offset) { _, representation in
-                            if let image = UIImage(data: representation.data) {
-                                Image(uiImage: image).resizable().scaledToFit()
-                            }
-                        }
-                        Text(entry.text).textSelection(.enabled)
-                    }.padding()
-                }
-                .navigationTitle("Clipboard Entry")
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("Copy") { model.copy(entry) }
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { previewEntry = nil }
-                    }
-                }
             }
         }
         .task { await model.load() }
