@@ -488,6 +488,7 @@ extension CloudFullSyncPersistence {
       source: mutation.source,
       listID: mutation.listID,
       isDone: mutation.isDone,
+      pinnedAt: mutation.pinnedAt,
       manualSortKey: mutation.orderKey,
       attachments: attachments
     )
@@ -504,6 +505,7 @@ extension CloudFullSyncPersistence {
       source: value.source,
       listID: listID,
       isDone: value.isDone,
+      pinnedAt: value.pinnedAt,
       manualSortKey: value.manualSortKey,
       attachments: value.attachments
     )
@@ -523,6 +525,7 @@ extension CloudFullSyncPersistence {
       source: value.source,
       listID: listID,
       isDone: value.isDone,
+      pinnedAt: value.pinnedAt,
       manualSortKey: value.manualSortKey,
       attachments: value.attachments
     )

@@ -54,14 +54,28 @@ struct ShareExtensionView: View {
                     }
                 }
 
-                Section("List") {
-                    Picker("Destination", selection: Bindable(model).destinationListID) {
-                        ForEach(model.lists) { list in
-                            Label(list.displayName, systemImage: list.systemImage)
-                                .tag(list.id)
-                        }
+                Section {
+                    Picker("Save to", selection: Bindable(model).destination) {
+                        Label("Snips", systemImage: "list.bullet")
+                            .tag(ShareExtensionModel.Destination.snips)
+                        Label("Clipboard", systemImage: "clipboard")
+                            .tag(ShareExtensionModel.Destination.clipboard)
                     }
-                    .accessibilityIdentifier("share-list-picker")
+                    .accessibilityIdentifier("share-destination-picker")
+
+                    if model.destination == .snips {
+                        Picker("List", selection: Bindable(model).destinationListID) {
+                            ForEach(model.lists) { list in
+                                Label(list.displayName, systemImage: list.systemImage)
+                                    .tag(list.id)
+                            }
+                        }
+                        .accessibilityIdentifier("share-list-picker")
+                    }
+                } footer: {
+                    if model.destination == .clipboard {
+                        Text("Open Snip Snap to add this to Clipboard. Files stay on this device until you pin them.")
+                    }
                 }
 
                 Section {

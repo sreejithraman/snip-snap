@@ -260,6 +260,7 @@ extension SwiftDataSnipLibrary {
       )
       switch mutation.local {
       case .insert(let snip):
+        try context.setSnipPinnedAt(snip.pinnedAt, id: snip.id)
         context.insert(StoredSnipRecord(snip))
         context.insert(StoredRequestRecord(id: snip.requestID))
       case .replace(let id, _, let text, let updatedAt):
@@ -269,6 +270,7 @@ extension SwiftDataSnipLibrary {
       case .delete(let id, _):
         guard let snip = storedSnips[id] else { throw SnipLibraryError.invalidStore }
         context.delete(snip)
+        try context.setSnipPinnedAt(nil, id: id)
         deletedSnipIDs.insert(id)
         for reference in loaded.references where reference.snipID == id {
           candidateAttachmentIDs.insert(reference.attachmentID)

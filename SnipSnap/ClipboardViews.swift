@@ -1,4 +1,5 @@
 import AppKit
+import SnipSnapCore
 import SwiftUI
 
 struct ClipboardListView: View {
@@ -38,7 +39,11 @@ struct ClipboardListView: View {
                 Button(history.isPaused ? "Resume" : "Pause") {
                     history.setPaused(!history.isPaused)
                 }
-                Button("Clear") { showingClearConfirmation = true }.disabled(history.entries.isEmpty)
+                if history.isSyncing { ProgressView().controlSize(.small) }
+                if history.syncError != nil {
+                    Button("Retry Sync") { Task { await history.syncNow() } }
+                }
+                Button("Clear") { showingClearConfirmation = true }.disabled(!history.entries.contains { !$0.isPinned })
             }
         }
     }
@@ -72,7 +77,7 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
                     ) {
                         ForEach(entries) { entry in
                             ClipboardEntryRow(
-                                entry: entry,
+                                entry: model.clipboardHistory.resolvedEntry(entry),
                                 dragSessionController: dragSessionController,
                                 commandNumber: commandNumberPicker.displayedNumber(
                                     for: .clipboardEntry(entry.id)
@@ -81,11 +86,17 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
                                     commandNumberPicker.pick(.clipboardEntry(entry.id))
                                 },
                                 copiedPulse: model.clipboardCopyPulse,
-                                onPreviewAttachments: onPreviewAttachments
+                                onPreviewAttachments: onPreviewAttachments,
+                                syncStatus: model.clipboardHistory.status(for: entry),
+                                retrySync: { Task { await model.clipboardHistory.syncNow() } }
                             ) {
                                 model.placeOnClipboard(.clipboardEntry(entry), feedback: $0)
                             } save: {
                                 Task { _ = await model.saveClipboardEntry(entry) }
+                            } pin: {
+                                Task { await model.clipboardHistory.togglePinned(id: entry.id) }
+                            } delete: {
+                                model.clipboardHistory.delete(id: entry.id)
                             }
                             .background {
                                 SnipListWindowFrameReader { frame, _ in
@@ -157,8 +168,12 @@ struct ClipboardEntryRow: View {
     let onPickCommandNumber: () -> Void
     let copiedPulse: ClipboardCopyPulse?
     let onPreviewAttachments: ([URL], URL) -> Void
+    var syncStatus: String? = nil
+    var retrySync: (() -> Void)? = nil
     let place: (ClipboardPlacementFeedback) -> Bool
     let save: () -> Void
+    var pin: (() -> Void)? = nil
+    var delete: (() -> Void)? = nil
     @Environment(\.displayScale) private var displayScale
     @State private var previewImages: [NSImage] = []
     @State private var isShowingCopyConfirmation = false
@@ -219,7 +234,15 @@ struct ClipboardEntryRow: View {
                     )
                 }
             } content: {
-                ClipboardEntryCardContent(entry: entry)
+                VStack(alignment: .leading, spacing: 4) {
+                    ClipboardEntryCardContent(entry: entry)
+                    if let syncStatus, entry.isSyncEligible {
+                        Text(syncStatus).font(.caption2).foregroundStyle(.secondary)
+                        if syncStatus == String(localized: "Upload failed"), let retrySync {
+                            Button("Retry", action: retrySync).font(.caption2)
+                        }
+                    }
+                }
             }
         }
         .background {
@@ -229,7 +252,11 @@ struct ClipboardEntryRow: View {
                 adapter: dragAdapter
             )
         }
-        .contextMenu { Button("Add to Active List", action: save) }
+        .contextMenu {
+            Button("Add to Active List", action: save)
+            if let pin { Button(entry.isPinned ? "Unpin" : "Pin", systemImage: entry.isPinned ? "pin.slash" : "pin", action: pin) }
+            if let delete { Button("Delete", role: .destructive, action: delete) }
+        }
         .task(id: entry.id) {
             previewImages = await loadPreviewImages()
         }
@@ -361,7 +388,14 @@ private struct ClipboardEntryCardContent: View {
                 text: entry.text.isEmpty ? "Clipboard item" : entry.text,
                 isDone: false
             )
-            sourceApplication
+            HStack(spacing: 8) {
+                if entry.isPinned { Label("Pinned", systemImage: "pin.fill").font(.caption2) }
+                sourceApplication
+            }
+            if !entry.fileURLs.isEmpty && !entry.isSyncEligible {
+                Text("Only on this Mac").font(.caption2).foregroundStyle(.secondary)
+                    .help("Pin to sync this file when clipboard sync is enabled.")
+            }
         }
     }
 

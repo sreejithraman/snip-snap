@@ -427,7 +427,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
   }
 
   private static func makeContainer(storeURL: URL) throws -> ModelContainer {
-    let schema = Schema(versionedSchema: SnipSnapSchemaV6.self)
+    let schema = Schema(versionedSchema: SnipSnapSchemaV7.self)
     let configuration = ModelConfiguration(
       "SnipSnapLocal",
       schema: schema,
@@ -561,6 +561,8 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     let storedReferences = try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>())
     let storedRequests = try context.fetch(FetchDescriptor<StoredRequestRecord>())
     let storedMetadata = try context.fetch(FetchDescriptor<StoredLibraryMetadataRecord>())
+    let pinsByID = Dictionary(uniqueKeysWithValues:
+      try context.fetch(FetchDescriptor<StoredSnipPinRecord>()).map { ($0.id, $0.pinnedAt) })
     let metadataByID = Dictionary(uniqueKeysWithValues: storedMetadata.map { ($0.id, $0) })
     let attachmentsByID = Dictionary(uniqueKeysWithValues: storedAttachments.map { ($0.id, $0) })
     let referencesBySnip = Dictionary(grouping: storedReferences, by: \.snipID)
@@ -582,6 +584,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
         source: source,
         listID: record.listID,
         isDone: record.isDone,
+        pinnedAt: pinsByID[record.id],
         manualPosition: record.manualPosition,
         manualSortKey: try metadataByID[
           StoredLibraryMetadataRecord.identifier(kind: .snip, domainID: record.id)
@@ -699,8 +702,10 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     let snipRecords = Dictionary(uniqueKeysWithValues: loaded.snips.map { ($0.id, $0) })
     for id in Set(oldSnips.keys).subtracting(newSnips.keys) {
       if let record = snipRecords[id] { context.delete(record) }
+      try context.setSnipPinnedAt(nil, id: id)
     }
     for (id, snip) in newSnips where oldSnips[id] != snip {
+      try context.setSnipPinnedAt(snip.pinnedAt, id: id)
       if let record = snipRecords[id] {
         record.update(from: snip)
       } else {

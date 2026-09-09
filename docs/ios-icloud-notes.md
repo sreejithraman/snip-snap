@@ -11,10 +11,10 @@ These notes record the accepted product direction and the facts that support it.
 - Let the Mac app remain fully useful with local storage only.
 - Let the iOS app remain fully useful with local storage only.
 - Never require a separate sign-in.
-- Keep clipboard history, drafts, shortcuts, panel state, and other device settings local.
-- Sync only saved snips, lists, and attachments that belong to saved snips.
+- Keep drafts, shortcuts, panel state, and other device settings local.
+- Sync saved snips, lists, and saved attachments. Offer clipboard history sync as a separate choice under iCloud sync; see ADR 0025.
 - Sync through the user's private iCloud database. Do not add shared lists or collaboration in the first release.
-- Do not try to copy the Mac's global capture or clipboard history behavior on iOS.
+- Support clipboard history on iOS with explicit Paste and Share capture; see ADR 0025. Global capture remains Mac-only.
 - Include a Share extension in the first release for text, links, images, and files.
 - Do not ship public sync until saved attachments work on Mac, iPhone, and iPad.
 

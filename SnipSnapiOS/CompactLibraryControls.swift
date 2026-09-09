@@ -62,17 +62,19 @@ struct CompactLibraryControls: View {
     private var isStaging: Bool { stagingTask != nil }
 
     var body: some View {
-        GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
-            VStack(spacing: SnipSnapSpacing.relatedContent) {
-                composer
-                if showsListTabs {
-                    CompactListTabBar(
-                        model: model,
-                        controlLength: controlLength,
-                        sheet: $sheet,
-                        deleteList: deleteList
-                    )
+        VStack(spacing: SnipSnapSpacing.relatedContent) {
+            if !model.showsClipboard {
+                GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
+                    composer
                 }
+            }
+            if showsListTabs {
+                ListSelector(
+                    model: model,
+                    controlLength: controlLength,
+                    sheet: $sheet,
+                    deleteList: deleteList
+                )
             }
         }
         .padding(.horizontal, SnipSnapSpacing.cardContentInset)
@@ -368,141 +370,6 @@ final class CompactComposerStorage {
     }
 }
 
-private struct CompactListTabBar: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    let model: IOSAppModel
-    let controlLength: CGFloat
-    @Binding var sheet: AppSheet?
-    let deleteList: (UUID) async -> Void
-
-    private var stripHeight: CGFloat {
-        controlLength + SnipSnapSpacing.cardContentInset
-    }
-
-    private var selectionHeight: CGFloat {
-        controlLength - SnipSnapSpacing.relatedContent
-    }
-
-    private var itemWidth: CGFloat {
-        controlLength + SnipSnapSpacing.relatedContent
-    }
-
-    var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: SnipSnapSpacing.relatedContent) {
-                tabStrip
-                    .fixedSize(horizontal: true, vertical: false)
-                newListButton
-            }
-            .fixedSize(horizontal: true, vertical: false)
-
-            HStack(spacing: SnipSnapSpacing.relatedContent) {
-                scrollingTabStrip
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                newListButton
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var tabStrip: some View {
-        tabItems
-            .padding(.horizontal, 6)
-            .frame(height: stripHeight)
-            .glassEffect(.regular, in: Capsule())
-    }
-
-    private var scrollingTabStrip: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal) {
-                tabItems
-                    .padding(.horizontal, 6)
-            }
-            .scrollIndicators(.hidden)
-            .frame(height: stripHeight)
-            .glassEffect(.regular, in: Capsule())
-            .onAppear { scrollToSelection(using: proxy) }
-            .onChange(of: model.selectedListID) { _, _ in
-                scrollToSelection(using: proxy)
-            }
-            .onChange(of: model.lists) { _, _ in
-                scrollToSelection(using: proxy)
-            }
-        }
-    }
-
-    private var tabItems: some View {
-        HStack(spacing: 0) {
-            ForEach(model.lists) { list in
-                tab(for: list)
-                    .id(list.id)
-            }
-        }
-    }
-
-    private var newListButton: some View {
-        CompactGlassCircleButton(
-            length: controlLength,
-            action: { sheet = .newList }
-        ) {
-            Image(systemName: "plus")
-                .font(.title3.weight(.semibold))
-        }
-        .accessibilityLabel("New List")
-        .accessibilityIdentifier("new-list")
-    }
-
-    private func tab(for list: SnipList) -> some View {
-        let selected = model.selectedListID == list.id
-        return Button {
-            model.selectList(list.id)
-        } label: {
-            Image(systemName: list.systemImage)
-                .symbolVariant(selected ? .fill : .none)
-                .font(.title3.weight(selected ? .semibold : .regular))
-                .foregroundStyle(list.accent.color)
-                .frame(
-                    width: controlLength,
-                    height: selectionHeight
-                )
-                .background(
-                    selected ? list.accent.selectionFill : Color.clear,
-                    in: Capsule(style: .continuous)
-                )
-                .frame(
-                    width: itemWidth,
-                    height: stripHeight
-                )
-                .contentShape(Rectangle())
-                .accessibilityHidden(true)
-        }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(list.displayName)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityIdentifier("list-tab-\(list.id.uuidString)")
-        .listContextActions(
-            list: list,
-            beforeDelete: model.haptics.invalidatePendingFeedback,
-            edit: { sheet = .editList(id: list.id) },
-            delete: { Task { await deleteList(list.id) } }
-        )
-    }
-
-    private func scrollToSelection(using proxy: ScrollViewProxy) {
-        Task { @MainActor in
-            await Task.yield()
-            if reduceMotion {
-                proxy.scrollTo(model.selectedListID, anchor: .center)
-            } else {
-                withAnimation(.easeOut(duration: 0.16)) {
-                    proxy.scrollTo(model.selectedListID, anchor: .center)
-                }
-            }
-        }
-    }
-}
 
 private struct CompactDraftAttachment: View {
     let url: URL

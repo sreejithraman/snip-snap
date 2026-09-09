@@ -9,7 +9,7 @@ struct ListSidebarView: View {
 
     private var selection: Binding<UUID?> {
         Binding(
-            get: { model.selectedListID },
+            get: { model.showsClipboard ? nil : model.selectedListID },
             set: { id in
                 guard let id else { return }
                 model.selectList(id)
@@ -19,6 +19,12 @@ struct ListSidebarView: View {
 
     var body: some View {
         List(selection: selection) {
+            Button {
+                model.showsClipboard = true
+            } label: {
+                Label("Clipboard", systemImage: "clipboard")
+            }
+            .accessibilityIdentifier("clipboard-sidebar")
             if model.recoverySnapshot.needsAttentionCount > 0 {
                 Section {
                     Button {

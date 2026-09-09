@@ -143,6 +143,9 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
+      - name: Install Metal compiler
+        run: xcodebuild -downloadComponent MetalToolchain
+
       - name: Set release paths
         run: |
           release_root="$RUNNER_TEMP/snip-snap-release-${{ github.run_id }}-ios"
