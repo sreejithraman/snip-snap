@@ -237,9 +237,6 @@ struct SnipCollectionView: View {
         .onChange(of: isSearchPresented) { _, isPresented in
             model.haptics.invalidatePendingFeedback()
             if isPresented { isReordering = false }
-            if !isPresented {
-                model.searchText = ""
-            }
         }
     }
 
@@ -499,6 +496,7 @@ private struct CompactInlineSnipEditor: View {
 
 struct CollectionScreenPresentation: ViewModifier {
     let title: String
+    var searchPrompt = String(localized: "Search Snips")
     @Binding var searchText: String
     @Binding var isSearchPresented: Bool
 
@@ -522,7 +520,7 @@ struct CollectionScreenPresentation: ViewModifier {
             .safeAreaInset(edge: .top, spacing: 0) {
                 if isSearchPresented {
                     HStack(spacing: 0) {
-                        NativeCollectionSearchBar(text: $searchText)
+                        NativeCollectionSearchBar(text: $searchText, prompt: searchPrompt)
                         Button { isSearchPresented = false } label: {
                             Image(systemName: "xmark")
                                 .font(.system(size: 20, weight: .medium))
@@ -576,6 +574,7 @@ struct CollectionEmptyState: View {
 
 private struct NativeCollectionSearchBar: UIViewRepresentable {
     @Binding var text: String
+    let prompt: String
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -584,7 +583,7 @@ private struct NativeCollectionSearchBar: UIViewRepresentable {
     func makeUIView(context: Context) -> UISearchBar {
         let searchBar = UISearchBar(frame: .zero)
         searchBar.delegate = context.coordinator
-        searchBar.placeholder = String(localized: "Search Snips")
+        searchBar.placeholder = prompt
         searchBar.searchBarStyle = .minimal
         searchBar.returnKeyType = .search
         searchBar.autocapitalizationType = .none

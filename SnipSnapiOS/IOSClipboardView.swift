@@ -6,7 +6,6 @@ import UniformTypeIdentifiers
 struct IOSClipboardView: View {
     let model: IOSClipboardModel
     var settings: () -> Void = {}
-    var dismissComposerKeyboard: () -> Void = {}
     @State private var isSearchPresented = false
     @State private var onlyPinned = false
     @State private var newestFirst = true
@@ -14,13 +13,27 @@ struct IOSClipboardView: View {
     @State private var confirmsClear = false
 
     private var entries: [ClipboardEntry] {
-        model.entries.filter {
+        Self.orderedEntries(model.entries.filter {
             (!onlyPinned || $0.isPinned)
                 && (searchText.isEmpty || $0.searchText.localizedCaseInsensitiveContains(searchText))
-        }.sorted {
-            if $0.isPinned != $1.isPinned { return $0.isPinned }
-            return newestFirst ? $0.capturedAt > $1.capturedAt : $0.capturedAt < $1.capturedAt
-        }
+        }, newestFirst: newestFirst)
+    }
+
+    static func orderedEntries(_ entries: [ClipboardEntry], newestFirst: Bool) -> [ClipboardEntry] {
+        let ordered = ClipboardHistoryState.ordered(entries)
+        guard !newestFirst else { return ordered }
+        return ordered.filter(\.isPinned) + ordered.filter { !$0.isPinned }.reversed()
+    }
+
+    private var emptyTitle: String {
+        if !searchText.isEmpty { return String(localized: "No Results") }
+        return onlyPinned ? String(localized: "No pinned entries") : String(localized: "Nothing captured yet")
+    }
+
+    private var emptyDetail: String {
+        if !searchText.isEmpty { return String(localized: "Try a different search.") }
+        return onlyPinned ? String(localized: "Pin a clipboard entry to keep it here.")
+            : String(localized: "Paste here or share content to Clipboard.")
     }
 
     var body: some View {
@@ -104,26 +117,19 @@ struct IOSClipboardView: View {
         }
         .listStyle(.plain)
         .scrollDismissesKeyboard(.interactively)
-        .contentShape(Rectangle())
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 12).onChanged { value in
-                guard value.translation.height > 8,
-                      abs(value.translation.height) > abs(value.translation.width) else { return }
-                dismissComposerKeyboard()
-            }
-        )
         .overlay {
             if entries.isEmpty && model.errorMessage == nil && model.importErrorMessage == nil && model.pasteErrorMessage == nil {
                 CollectionEmptyState(
-                    title: searchText.isEmpty ? String(localized: "Nothing captured yet") : String(localized: "No Results"),
-                    systemImage: searchText.isEmpty ? "clipboard" : "magnifyingglass",
-                    detail: searchText.isEmpty ? String(localized: "Paste here or share content to Clipboard.") : String(localized: "Try a different search.")
+                    title: emptyTitle,
+                    systemImage: searchText.isEmpty ? (onlyPinned ? "pin" : "clipboard") : "magnifyingglass",
+                    detail: emptyDetail
                 )
                 .accessibilityIdentifier("empty-clipboard")
             }
         }
         .modifier(CollectionScreenPresentation(
             title: String(localized: "Clipboard"),
+            searchPrompt: String(localized: "Search Clipboard"),
             searchText: $searchText,
             isSearchPresented: $isSearchPresented
         ))

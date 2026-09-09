@@ -301,10 +301,10 @@ struct ListSelector: View {
                 Group {
                     if selected {
                         ListActionsMenu {
-                            var actions = [UIAction(title: "New List", image: UIImage(systemName: "plus"), identifier: UIAction.Identifier("new-list")) { _ in sheet = .newList }]
+                            var actions = [UIAction(title: String(localized: "New List"), image: UIImage(systemName: "plus"), identifier: UIAction.Identifier("new-list")) { _ in sheet = .newList }]
                             if case .list(let list) = item, list.id != SnipList.inboxID {
-                                actions.append(UIAction(title: "Edit List…", image: UIImage(systemName: "pencil")) { _ in sheet = .editList(id: list.id) })
-                                actions.append(UIAction(title: "Delete List", image: UIImage(systemName: "trash"), attributes: .destructive) { _ in
+                                actions.append(UIAction(title: String(localized: "Edit List…"), image: UIImage(systemName: "pencil")) { _ in sheet = .editList(id: list.id) })
+                                actions.append(UIAction(title: String(localized: "Delete List"), image: UIImage(systemName: "trash"), attributes: .destructive) { _ in
                                     model.haptics.invalidatePendingFeedback()
                                     deletionTarget = list
                                     confirmsDeletion = true

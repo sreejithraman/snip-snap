@@ -574,10 +574,17 @@ final class SnipSnapiOSUITests: XCTestCase {
         app.buttons["search-snips"].tap()
         let search = app.searchFields["search-snips-field"]
         XCTAssertTrue(search.waitForExistence(timeout: 3))
+        XCTAssertEqual(search.placeholderValue, "Search Clipboard")
         search.typeText("Missing entry")
         XCTAssertTrue(app.staticTexts["No Results"].waitForExistence(timeout: 3))
         app.buttons["close-search"].tap()
         XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+        app.buttons["workflow-options"].tap()
+        app.buttons["Pinned"].tap()
+        XCTAssertTrue(app.staticTexts["No pinned entries"].waitForExistence(timeout: 3))
+        app.buttons["workflow-options"].tap()
+        app.buttons["All"].tap()
+        XCTAssertTrue(app.staticTexts["Nothing captured yet"].waitForExistence(timeout: 3))
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "Clipboard with shared list screen controls"
         screenshot.lifetime = .keepAlways

@@ -116,6 +116,20 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(rtfItem.representations.first?.data, rtf)
     }
 
+    func testClipboardSortKeepsNewestPinsFirstInBothDirections() {
+        let older = Date(timeIntervalSince1970: 100)
+        let newer = Date(timeIntervalSince1970: 200)
+        let newestPin = ClipboardEntry(capturedAt: older, items: [], pinnedAt: newer)
+        let oldestPin = ClipboardEntry(capturedAt: newer, items: [], pinnedAt: older)
+        let oldestEntry = ClipboardEntry(capturedAt: older, items: [])
+        let newestEntry = ClipboardEntry(capturedAt: newer, items: [])
+        let entries = [oldestPin, newestEntry, newestPin, oldestEntry]
+        XCTAssertEqual(IOSClipboardView.orderedEntries(entries, newestFirst: true).map(\.id),
+                       [newestPin.id, oldestPin.id, newestEntry.id, oldestEntry.id])
+        XCTAssertEqual(IOSClipboardView.orderedEntries(entries, newestFirst: false).map(\.id),
+                       [newestPin.id, oldestPin.id, oldestEntry.id, newestEntry.id])
+    }
+
     func testClipboardPinActionUsesCurrentStateAfterRowChanges() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

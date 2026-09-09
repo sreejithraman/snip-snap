@@ -256,8 +256,7 @@ struct IOSAppRootView: View {
                     if model.showsClipboard {
                         IOSClipboardView(
                             model: session.clipboard,
-                            settings: { sheet = .settings },
-                            dismissComposerKeyboard: { isCompactComposerFocused = false }
+                            settings: { sheet = .settings }
                         )
                     } else {
                     SnipCollectionView(
@@ -310,8 +309,7 @@ struct IOSAppRootView: View {
                         if model.showsClipboard {
                             IOSClipboardView(
                             model: session.clipboard,
-                            settings: { sheet = .settings },
-                            dismissComposerKeyboard: { isCompactComposerFocused = false }
+                            settings: { sheet = .settings }
                         )
                         } else {
                         SnipCollectionView(
