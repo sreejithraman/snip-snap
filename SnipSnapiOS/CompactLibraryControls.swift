@@ -221,51 +221,53 @@ struct CompactLibraryControls: View {
             .glassEffectID("attachments", in: composerGlass)
             .glassEffectTransition(.materialize)
 
-            VStack(spacing: SnipSnapSpacing.relatedContent) {
-                if !draft.attachments.isEmpty {
-                    attachmentStrip
-                        .padding(.horizontal, SnipSnapSpacing.cardContentInset)
-                        .padding(.top, 10)
-                }
+            GlassEffectContainer {
+                VStack(spacing: SnipSnapSpacing.relatedContent) {
+                    if !draft.attachments.isEmpty {
+                        attachmentStrip
+                            .padding(.horizontal, SnipSnapSpacing.cardContentInset)
+                            .padding(.top, 10)
+                    }
 
-                HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
-                    TextField(
-                        "Add to \(model.selectedList.displayName)…",
-                        text: composerText,
-                        axis: .vertical
-                    )
-                        .textFieldStyle(.plain)
-                        .lineLimit(1...5)
-                        .focused($isComposerFocused)
-                        .disabled(storage.isSaving)
-                        .padding(SnipSnapSpacing.relatedContent)
-                        .frame(minHeight: controlLength, alignment: .center)
-                        .accessibilityIdentifier("composer-text")
+                    HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
+                        TextField(
+                            "Add to \(model.selectedList.displayName)…",
+                            text: composerText,
+                            axis: .vertical
+                        )
+                            .textFieldStyle(.plain)
+                            .lineLimit(1...5)
+                            .focused($isComposerFocused)
+                            .disabled(storage.isSaving)
+                            .padding(SnipSnapSpacing.relatedContent)
+                            .frame(minHeight: controlLength, alignment: .center)
+                            .accessibilityIdentifier("composer-text")
 
-                    Color.clear
-                        .frame(width: controlLength, height: controlLength)
-                        .allowsHitTesting(false)
+                        Color.clear
+                            .frame(width: controlLength, height: controlLength)
+                            .allowsHitTesting(false)
+                    }
+                    .padding(.leading, SnipSnapSpacing.relatedContent / 2)
+                    .padding(.trailing, SnipSnapSpacing.relatedContent)
+                    .id(composerFieldID)
                 }
-                .padding(.leading, SnipSnapSpacing.relatedContent / 2)
-                .padding(.trailing, SnipSnapSpacing.relatedContent)
-                .id(composerFieldID)
+                .frame(minHeight: controlLength)
+                .glassEffect(
+                    .regular.interactive(),
+                    in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .strokeBorder(
+                            isComposerFocused
+                                ? SnipSnapTheme.focusedGlassEdge
+                                : SnipSnapTheme.emphasizedGlassEdge,
+                            lineWidth: isComposerFocused ? 1 : 0.75
+                        )
+                }
+                .glassEffectID("input", in: composerGlass)
+                .glassEffectTransition(.materialize)
             }
-            .frame(minHeight: controlLength)
-            .glassEffect(
-                .regular.interactive(),
-                in: RoundedRectangle(cornerRadius: 20, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .strokeBorder(
-                        isComposerFocused
-                            ? SnipSnapTheme.focusedGlassEdge
-                            : SnipSnapTheme.emphasizedGlassEdge,
-                        lineWidth: isComposerFocused ? 1 : 0.75
-                    )
-            }
-            .glassEffectID("input", in: composerGlass)
-            .glassEffectTransition(.materialize)
             // Keep Send outside the input's interactive glass subtree.
             .overlay(alignment: .bottomTrailing) {
                 GlassEffectContainer {
