@@ -597,6 +597,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         continueAfterFailure = false
         let app = launchApp()
         try requireCompactSelector(in: app)
+        createSnip("Selection fixture", in: app)
         let composer = app.descendants(matching: .any)["composer-text"]
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         composer.tap()
@@ -613,6 +614,14 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         XCTAssertEqual(composer.value as? String, "Unsent draft")
         XCTAssertTrue(inbox.isSelected)
+        let selectorBeforeSelection = app.descendants(matching: .any)["list-selector"].frame
+        enterSelection(in: app)
+        XCTAssertTrue(composer.waitForNonExistence(timeout: 3))
+        XCTAssertEqual(app.descendants(matching: .any)["list-selector"].frame.midY,
+                       selectorBeforeSelection.midY, accuracy: 2)
+        app.buttons["finish-selecting"].tap()
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        XCTAssertEqual(composer.value as? String, "Unsent draft")
         clipboard.tap()
         XCTAssertTrue(clipboard.isSelected)
         let selector = app.descendants(matching: .any)["list-selector"]

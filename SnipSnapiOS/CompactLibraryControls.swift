@@ -33,6 +33,8 @@ struct CompactLibraryControls: View {
     let clipboard: IOSClipboardModel
     let storage: CompactComposerStorage
     let showsListTabs: Bool
+    let isSelecting: Bool
+    @Namespace private var composerGlass
     @Binding var sheet: AppSheet?
 
     @State private var draft = ComposerDraft()
@@ -58,25 +60,31 @@ struct CompactLibraryControls: View {
         storage: CompactComposerStorage,
         isComposerFocused: FocusState<Bool>.Binding,
         showsListTabs: Bool = true,
+        isSelecting: Bool = false,
         sheet: Binding<AppSheet?>
     ) {
         self.model = model
         self.clipboard = clipboard
         self.storage = storage
         self.showsListTabs = showsListTabs
+        self.isSelecting = isSelecting
         _isComposerFocused = isComposerFocused
         _sheet = sheet
     }
 
     private var isStaging: Bool { stagingTask != nil }
 
+    private var showsComposer: Bool { !model.showsClipboard && !isSelecting }
+
     var body: some View {
         VStack(spacing: SnipSnapSpacing.relatedContent) {
-            if !model.showsClipboard {
-                GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
+            GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
+                if showsComposer {
                     composer
+                        .transition(reduceMotion ? .opacity : .offset(y: 8).combined(with: .opacity))
                 }
             }
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: showsComposer)
             if showsListTabs {
                 selectorRow
             } else if model.showsClipboard {
@@ -110,6 +118,9 @@ struct CompactLibraryControls: View {
             draft = storage.savingListID == listID
                 ? ComposerDraft()
                 : storage.draftStore.draft(for: listID)
+        }
+        .onChange(of: showsComposer) { _, visible in
+            if !visible { isComposerFocused = false }
         }
         .onDisappear {
             stagingTask?.cancel()
@@ -193,52 +204,54 @@ struct CompactLibraryControls: View {
             .disabled(storage.isSaving || isStaging)
             .accessibilityLabel("Add Attachments")
             .accessibilityIdentifier("composer-add-attachments")
+            .glassEffectID("attachments", in: composerGlass)
+            .glassEffectTransition(.materialize)
 
-            GlassEffectContainer {
-                VStack(spacing: SnipSnapSpacing.relatedContent) {
-                    if !draft.attachments.isEmpty {
-                        attachmentStrip
-                            .padding(.horizontal, SnipSnapSpacing.cardContentInset)
-                            .padding(.top, 10)
-                    }
-
-                    HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
-                        TextField(
-                            "Add to \(model.selectedList.displayName)…",
-                            text: composerText,
-                            axis: .vertical
-                        )
-                            .textFieldStyle(.plain)
-                            .lineLimit(1...5)
-                            .focused($isComposerFocused)
-                            .disabled(storage.isSaving)
-                            .padding(SnipSnapSpacing.relatedContent)
-                            .frame(minHeight: controlLength, alignment: .center)
-                            .accessibilityIdentifier("composer-text")
-
-                        Color.clear
-                            .frame(width: controlLength, height: controlLength)
-                            .allowsHitTesting(false)
-                    }
-                    .padding(.leading, SnipSnapSpacing.relatedContent / 2)
-                    .padding(.trailing, SnipSnapSpacing.relatedContent)
-                    .id(composerFieldID)
+            VStack(spacing: SnipSnapSpacing.relatedContent) {
+                if !draft.attachments.isEmpty {
+                    attachmentStrip
+                        .padding(.horizontal, SnipSnapSpacing.cardContentInset)
+                        .padding(.top, 10)
                 }
-                .frame(minHeight: controlLength)
-                .glassEffect(
-                    .regular.interactive(),
-                    in: RoundedRectangle(cornerRadius: 20, style: .continuous)
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .strokeBorder(
-                            isComposerFocused
-                                ? SnipSnapTheme.focusedGlassEdge
-                                : SnipSnapTheme.emphasizedGlassEdge,
-                            lineWidth: isComposerFocused ? 1 : 0.75
-                        )
+
+                HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
+                    TextField(
+                        "Add to \(model.selectedList.displayName)…",
+                        text: composerText,
+                        axis: .vertical
+                    )
+                        .textFieldStyle(.plain)
+                        .lineLimit(1...5)
+                        .focused($isComposerFocused)
+                        .disabled(storage.isSaving)
+                        .padding(SnipSnapSpacing.relatedContent)
+                        .frame(minHeight: controlLength, alignment: .center)
+                        .accessibilityIdentifier("composer-text")
+
+                    Color.clear
+                        .frame(width: controlLength, height: controlLength)
+                        .allowsHitTesting(false)
                 }
+                .padding(.leading, SnipSnapSpacing.relatedContent / 2)
+                .padding(.trailing, SnipSnapSpacing.relatedContent)
+                .id(composerFieldID)
             }
+            .frame(minHeight: controlLength)
+            .glassEffect(
+                .regular.interactive(),
+                in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(
+                        isComposerFocused
+                            ? SnipSnapTheme.focusedGlassEdge
+                            : SnipSnapTheme.emphasizedGlassEdge,
+                        lineWidth: isComposerFocused ? 1 : 0.75
+                    )
+            }
+            .glassEffectID("input", in: composerGlass)
+            .glassEffectTransition(.materialize)
             // Keep Send outside the input's interactive glass subtree.
             .overlay(alignment: .bottomTrailing) {
                 GlassEffectContainer {

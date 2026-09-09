@@ -291,6 +291,7 @@ struct IOSAppRootView: View {
                         clipboard: session.clipboard,
                         storage: compactComposerStorage,
                         isComposerFocused: $isCompactComposerFocused,
+                        isSelecting: collectionEditMode.isEditing,
                         sheet: $sheet
                     )
                 }
@@ -332,6 +333,7 @@ struct IOSAppRootView: View {
                             storage: compactComposerStorage,
                             isComposerFocused: $isCompactComposerFocused,
                             showsListTabs: false,
+                            isSelecting: collectionEditMode.isEditing,
                             sheet: $sheet
                         )
                     }
