@@ -1,99 +1,11 @@
 import AppKit
 import SnipSnapCore
-import CryptoKit
+import SnipSnapCloud
+import SnipSnapPersistence
 import Foundation
+import UniformTypeIdentifiers
 
-struct ClipboardRepresentation: Codable, Equatable, Sendable {
-    let type: String
-    let data: Data
-}
-
-struct ClipboardPayloadItem: Codable, Equatable, Sendable {
-    var representations: [ClipboardRepresentation]
-}
-
-struct ClipboardEntry: Identifiable, Codable, Equatable, Sendable {
-    let id: UUID
-    var capturedAt: Date
-    var sourceApplication: String?
-    var items: [ClipboardPayloadItem]
-    private let plainText: String
-    private let fingerprint: String
-
-    @MainActor
-    init(
-        id: UUID = UUID(),
-        capturedAt: Date = Date(),
-        sourceApplication: String?,
-        items: [ClipboardPayloadItem]
-    ) {
-        self.id = id
-        self.capturedAt = capturedAt
-        self.sourceApplication = sourceApplication
-        self.items = items
-        plainText = Self.extractText(from: items)
-        fingerprint = Self.makeFingerprint(items)
-    }
-
-    fileprivate init(
-        id: UUID = UUID(),
-        capturedAt: Date = Date(),
-        sourceApplication: String?,
-        items: [ClipboardPayloadItem],
-        plainText: String
-    ) {
-        self.id = id
-        self.capturedAt = capturedAt
-        self.sourceApplication = sourceApplication
-        self.items = items
-        self.plainText = plainText
-        fingerprint = Self.makeFingerprint(items)
-    }
-
-    var text: String {
-        plainText.isEmpty
-            ? fileURLs.map(\.lastPathComponent).joined(separator: ", ")
-            : plainText
-    }
-
-    var fileURLs: [URL] {
-        items
-            .flatMap(\.representations)
-            .filter { $0.type == NSPasteboard.PasteboardType.fileURL.rawValue }
-            .compactMap { String(data: $0.data, encoding: .utf8) }
-            .compactMap(URL.init(string:))
-    }
-
-    var imageRepresentations: [ClipboardRepresentation] {
-        items.compactMap { item in
-            item.representations.first { $0.type == NSPasteboard.PasteboardType.png.rawValue }
-                ?? item.representations.first { $0.type == NSPasteboard.PasteboardType.tiff.rawValue }
-        }
-    }
-
-    var standaloneImageRepresentations: [ClipboardRepresentation] {
-        items.compactMap { item in
-            guard !item.representations.contains(where: {
-                $0.type == NSPasteboard.PasteboardType.fileURL.rawValue
-            }) else { return nil }
-            return item.representations.first { $0.type == NSPasteboard.PasteboardType.png.rawValue }
-                ?? item.representations.first { $0.type == NSPasteboard.PasteboardType.tiff.rawValue }
-        }
-    }
-
-    var searchText: String {
-        [text, sourceApplication ?? "", fileURLs.map(\.lastPathComponent).joined(separator: " ")]
-            .joined(separator: " ")
-    }
-
-    var byteCount: Int {
-        items.flatMap(\.representations).reduce(0) { $0 + $1.data.count }
-    }
-
-    func hasSamePayload(as other: ClipboardEntry) -> Bool {
-        fingerprint == other.fingerprint
-    }
-
+extension ClipboardEntry {
     func write(to pasteboard: NSPasteboard = .general) -> Bool {
         let previous = PasteboardSnapshotStore.snapshot(pasteboard)
         var pasteboardItems: [NSPasteboardItem] = []
@@ -121,31 +33,8 @@ struct ClipboardEntry: Identifiable, Codable, Equatable, Sendable {
         return true
     }
 
-    private enum CodingKeys: String, CodingKey {
-        case id, capturedAt, sourceApplication, items, plainText
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(UUID.self, forKey: .id)
-        capturedAt = try container.decode(Date.self, forKey: .capturedAt)
-        sourceApplication = try container.decodeIfPresent(String.self, forKey: .sourceApplication)
-        items = try container.decode([ClipboardPayloadItem].self, forKey: .items)
-        plainText = try container.decode(String.self, forKey: .plainText)
-        fingerprint = Self.makeFingerprint(items)
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(id, forKey: .id)
-        try container.encode(capturedAt, forKey: .capturedAt)
-        try container.encodeIfPresent(sourceApplication, forKey: .sourceApplication)
-        try container.encode(items, forKey: .items)
-        try container.encode(plainText, forKey: .plainText)
-    }
-
     @MainActor
-    fileprivate static func extractText(from items: [ClipboardPayloadItem]) -> String {
+    fileprivate static func extractMacText(from items: [ClipboardPayloadItem]) -> String {
         items.compactMap { item in
             if let value = item.representations.first(where: {
                 $0.type == NSPasteboard.PasteboardType.string.rawValue
@@ -170,18 +59,6 @@ struct ClipboardEntry: Identifiable, Codable, Equatable, Sendable {
         .joined(separator: "\n")
     }
 
-    private static func makeFingerprint(_ items: [ClipboardPayloadItem]) -> String {
-        var hasher = SHA256()
-        for item in items {
-            for representation in item.representations {
-                hasher.update(data: Data(representation.type.utf8))
-                hasher.update(data: Data([0]))
-                hasher.update(data: representation.data)
-                hasher.update(data: Data([0xff]))
-            }
-        }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
-    }
 }
 
 struct ClipboardSnipMaterialization: Sendable {
@@ -204,9 +81,7 @@ extension ClipboardEntry {
         var temporaryURLs: [URL] = []
         do {
             for image in standaloneImageRepresentations {
-                let fileExtension = image.type == NSPasteboard.PasteboardType.tiff.rawValue
-                    ? "tiff"
-                    : "png"
+                let fileExtension = UTType(image.type)?.preferredFilenameExtension ?? "png"
                 let url = directory
                     .appendingPathComponent("Snip Snap-\(UUID().uuidString).\(fileExtension)")
                 try image.data.write(to: url)
@@ -228,69 +103,7 @@ extension ClipboardEntry {
     }
 }
 
-actor ClipboardHistoryFileStore {
-    private let url: URL
-    private var pendingEntries: [ClipboardEntry]?
-    private var writer: Task<Void, Never>?
-    private var writeError: String?
 
-    init(url: URL) {
-        self.url = url
-    }
-
-    func load() -> [ClipboardEntry] {
-        guard let data = try? Data(contentsOf: url) else { return [] }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let decoded = (try? decoder.decode([ClipboardEntry].self, from: data)) ?? []
-        return ClipboardHistory.trimmed(decoded)
-    }
-
-    func scheduleReplacement(_ entries: [ClipboardEntry]) {
-        pendingEntries = entries
-        guard writer == nil else { return }
-        writer = Task { await drainPendingWrites() }
-    }
-
-    func flush() async {
-        while let writer {
-            await writer.value
-        }
-    }
-
-    func currentWriteError() -> String? {
-        return writeError
-    }
-
-    private func drainPendingWrites() async {
-        while let entries = pendingEntries {
-            pendingEntries = nil
-            if let error = await Task.detached(priority: .utility, operation: {
-                Self.write(entries, to: self.url)
-            }).value {
-                writeError = error
-            } else {
-                writeError = nil
-            }
-        }
-        writer = nil
-    }
-
-    nonisolated private static func write(_ entries: [ClipboardEntry], to url: URL) -> String? {
-        do {
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            try encoder.encode(entries).write(to: url, options: .atomic)
-            return nil
-        } catch {
-            return String(localized: "Snip Snap could not save clipboard history. Snip Snap may lose new clipboard items when it quits.")
-        }
-    }
-}
 
 private final class ClipboardPollingTimer: @unchecked Sendable {
     var timer: Timer?
@@ -339,7 +152,7 @@ private final class ClipboardCaptureReader {
         guard pasteboard.changeCount == changeCount, !items.isEmpty else { return nil }
         return ClipboardCaptureSnapshot(
             items: items,
-            plainText: ClipboardEntry.extractText(from: items)
+            plainText: ClipboardEntry.extractMacText(from: items)
         )
     }
 
@@ -364,25 +177,39 @@ private final class ClipboardCaptureReader {
 
 @MainActor
 final class ClipboardHistory: ObservableObject {
-    nonisolated static let limit = 100
-    nonisolated static let representationByteLimit = 16 * 1_024 * 1_024
-    nonisolated static let entryByteLimit = 32 * 1_024 * 1_024
-    nonisolated static let historyByteLimit = 96 * 1_024 * 1_024
+    nonisolated static let limit = ClipboardHistoryState.limit
+    nonisolated static let representationByteLimit = ClipboardHistoryState.representationByteLimit
+    nonisolated static let entryByteLimit = ClipboardHistoryState.entryByteLimit
+    nonisolated static let historyByteLimit = ClipboardHistoryState.historyByteLimit
     nonisolated static let backgroundProcessingThreshold = 256 * 1_024
 
     @Published private(set) var entries: [ClipboardEntry] = []
     @Published private(set) var isPaused: Bool
     @Published private(set) var persistenceError: String?
+    @Published private(set) var clipboardSyncEnabled: Bool = false
+    @Published private(set) var isSyncing = false
+    @Published private(set) var syncError: String?
+    @Published private(set) var pendingUploadIDs: Set<UUID> = [] {
+        didSet { defaults.set(pendingUploadIDs.map(\.uuidString), forKey: "clipboardPendingUploadIDs") }
+    }
+    private var cloudService: ClipboardCloudSyncService?
+    private var mainSyncEnabled: (() -> Bool)?
+    private var syncGeneration: (() async throws -> String?)?
+    private var syncTask: Task<Void, Never>?
+    private var lastSyncRequest = Date.distantPast
 
     private let pasteboard: NSPasteboard
-    private let storeURL: URL
-    private let fileStore: ClipboardHistoryFileStore
+    let sharedStore: ClipboardHistoryStore
+    let ownedFileStore: ClipboardFileStore
+    private var state = ClipboardHistoryState()
+    var onChange: (() -> Void)?
     private let captureReader: ClipboardCaptureReader
     private var lastChangeCount: Int
     private let pollingTimer = ClipboardPollingTimer()
     private let defaults: UserDefaults
     private var suppressionTokens: Set<UUID> = []
     private var initialLoadTask: Task<Void, Never>?
+    private var clearTask: Task<Void, Never>?
     private var persistenceScheduleTask: Task<Void, Never>?
     private var captureTask: Task<Void, Never>?
     private var inFlightChangeCount: Int?
@@ -395,16 +222,23 @@ final class ClipboardHistory: ObservableObject {
     ) {
         self.pasteboard = pasteboard
         self.defaults = defaults
-        self.storeURL = storeURL
-        fileStore = ClipboardHistoryFileStore(url: storeURL)
+        pendingUploadIDs = Set((defaults.stringArray(forKey: "clipboardPendingUploadIDs") ?? []).compactMap(UUID.init(uuidString:)))
+        sharedStore = ClipboardHistoryStore(url: storeURL)
+        ownedFileStore = ClipboardFileStore(rootURL: storeURL.deletingLastPathComponent().appendingPathComponent("ClipboardFiles", isDirectory: true))
         captureReader = ClipboardCaptureReader(pasteboardName: pasteboard.name)
+        clipboardSyncEnabled = defaults.bool(forKey: "clipboardSyncEnabled")
         isPaused = defaults.bool(forKey: Self.pausedDefaultsKey)
         lastChangeCount = pasteboard.changeCount
         entries = []
-        initialLoadTask = Task { [weak self, fileStore] in
-            let loaded = await fileStore.load()
-            guard !Task.isCancelled else { return }
-            self?.mergeLoadedEntries(loaded)
+        initialLoadTask = Task { [weak self, sharedStore] in
+            do {
+                let loaded = try await sharedStore.load()
+                guard !Task.isCancelled, let self else { return }
+                self.state.merge(loaded)
+                self.entries = self.state.entries
+            } catch {
+                self?.persistenceError = error.localizedDescription
+            }
         }
         pollingTimer.timer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.poll() }
@@ -433,6 +267,9 @@ final class ClipboardHistory: ObservableObject {
     }
 
     func poll() {
+        if cloudService != nil, clipboardSyncEnabled, Date().timeIntervalSince(lastSyncRequest) > 15 {
+            requestSync()
+        }
         guard !isPaused, suppressionTokens.isEmpty else {
             lastChangeCount = pasteboard.changeCount
             return
@@ -442,10 +279,100 @@ final class ClipboardHistory: ObservableObject {
     }
 
     func clear() {
-        initialLoadTask?.cancel()
         captureTask?.cancel()
-        entries = []
-        persist()
+        let previousClear = clearTask
+        clearTask = Task { [weak self] in
+            await previousClear?.value
+            guard let self else { return }
+            await initialLoadTask?.value
+            state.clearUnpinned()
+            entries = state.entries
+            persist()
+        }
+    }
+
+    func configureSync(containerIdentifier: String, rootURL: URL,
+                       mainEnabled: @escaping () -> Bool,
+                       generation: @escaping () async throws -> String?) {
+        cloudService = ClipboardCloudSyncService(store: sharedStore,
+            containerIdentifier: containerIdentifier, syncRootURL: rootURL)
+        mainSyncEnabled = mainEnabled
+        syncGeneration = generation
+        onChange = { [weak self] in self?.requestSync() }
+    }
+
+    func stopSync() {
+        cloudService?.stop()
+        syncTask?.cancel()
+        syncTask = nil
+    }
+
+    func status(for entry: ClipboardEntry) -> String? {
+        guard !entry.fileURLs.isEmpty else { return nil }
+        if !entry.isSyncEligible { return String(localized: "Only on this Mac") }
+        guard clipboardSyncEnabled, mainSyncEnabled?() == true, pendingUploadIDs.contains(entry.id) else { return nil }
+        if syncError != nil { return String(localized: "Upload failed") }
+        return isSyncing ? String(localized: "Uploading…") : String(localized: "Waiting to sync")
+    }
+
+    var syncIsActive: Bool { clipboardSyncEnabled && mainSyncEnabled?() == true }
+
+    func setSyncEnabled(_ enabled: Bool) {
+        clipboardSyncEnabled = enabled
+        defaults.set(enabled, forKey: "clipboardSyncEnabled")
+        if enabled {
+            pendingUploadIDs.formUnion(entries.filter(\.isSyncEligible).map(\.id))
+            requestSync()
+        } else { stopSync(); syncError = nil }
+    }
+
+    func requestSync() {
+        guard clipboardSyncEnabled, mainSyncEnabled?() == true, syncTask == nil else { return }
+        lastSyncRequest = Date()
+        syncTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled, let self else { return }
+            await syncNow()
+            syncTask = nil
+        }
+    }
+
+    func syncNow() async {
+        guard let cloudService, !isSyncing else { return }
+        guard clipboardSyncEnabled, mainSyncEnabled?() == true else { cloudService.stop(); return }
+        isSyncing = true
+        defer { isSyncing = false }
+        do {
+            await flushPersistence()
+            guard let generation = try await syncGeneration?() else { return }
+            let updated = try await cloudService.synchronize(mainSyncEnabled: mainSyncEnabled?() == true,
+                clipboardSyncEnabled: clipboardSyncEnabled, generation: generation)
+            state.merge(updated)
+            entries = state.entries
+            pendingUploadIDs.subtract(updated.entries.map(\.id))
+            syncError = nil
+        } catch is CancellationError { }
+        catch { syncError = error.localizedDescription }
+    }
+
+    func resetCloudAccount() async {
+        cloudService?.stop()
+        let token = beginSuppression()
+        defer { endSuppression(token) }
+        await flushPersistence()
+        do {
+            try await cloudService?.resetAccountBinding()
+            state = try await sharedStore.load()
+            entries = state.entries
+        } catch { syncError = error.localizedDescription }
+    }
+
+    func deleteSyncedHistory() async throws {
+        guard let cloudService, let generation = try await syncGeneration?() else { return }
+        await flushPersistence()
+        try await cloudService.deleteSyncedHistory(generation: generation)
+        state = try await sharedStore.load()
+        entries = state.entries
     }
 
     func setPaused(_ paused: Bool) {
@@ -468,8 +395,18 @@ final class ClipboardHistory: ObservableObject {
     }
 
     func restore(_ entry: ClipboardEntry) -> Bool {
-        guard entry.write(to: pasteboard) else { return false }
-        captureNow(from: pasteboard)
+        let resolved = resolvedEntry(entry)
+        if !entry.ownedFiles.isEmpty,
+           !resolved.fileURLs.allSatisfy({ FileManager.default.isReadableFile(atPath: $0.path) }) {
+            persistenceError = String(localized: "That file is missing. Try syncing again.")
+            return false
+        }
+        guard resolved.write(to: pasteboard) else { return false }
+        lastChangeCount = pasteboard.changeCount
+        var copied = entry
+        copied.capturedAt = Date()
+        copied.modifiedAt = copied.capturedAt
+        insert(copied)
         return true
     }
 
@@ -483,13 +420,11 @@ final class ClipboardHistory: ObservableObject {
     }
 
     func flushPersistence() async {
+        await clearTask?.value
         await initialLoadTask?.value
         await captureTask?.value
         await persistenceScheduleTask?.value
-        await fileStore.flush()
-        if let error = await fileStore.currentWriteError() {
-            persistenceError = error
-        }
+
     }
 
     func dismissPersistenceError() {
@@ -581,40 +516,63 @@ final class ClipboardHistory: ObservableObject {
     }
 
     private func insert(_ entry: ClipboardEntry) {
-        if let index = entries.firstIndex(where: { $0.hasSamePayload(as: entry) }) {
-            let existing = entries.remove(at: index)
-            entries.insert(existing, at: 0)
-        } else {
-            entries.insert(entry, at: 0)
+        state.insert(entry)
+        entries = state.entries
+        if let inserted = entries.first(where: { $0.hasSamePayload(as: entry) }), inserted.isSyncEligible {
+            pendingUploadIDs.insert(inserted.id)
         }
-        entries = Self.trimmed(entries)
         persist()
     }
 
     private func persist() {
         let loadTask = initialLoadTask
         let previousTask = persistenceScheduleTask
-        persistenceScheduleTask = Task { [weak self, fileStore] in
+        persistenceScheduleTask = Task { [weak self, sharedStore] in
             await loadTask?.value
             await previousTask?.value
             guard let self else { return }
-            let snapshot = entries
-            await fileStore.scheduleReplacement(snapshot)
-            Task { [weak self, fileStore] in
-                await fileStore.flush()
-                if let error = await fileStore.currentWriteError() {
-                    self?.persistenceError = error
-                }
+            do {
+                let persisted = try await sharedStore.merge(state)
+                state.merge(persisted)
+                entries = state.entries
+                onChange?()
+            } catch {
+                persistenceError = error.localizedDescription
             }
         }
     }
 
-    private func mergeLoadedEntries(_ loaded: [ClipboardEntry]) {
-        var merged = entries
-        for entry in loaded where !merged.contains(where: { $0.hasSamePayload(as: entry) }) {
-            merged.append(entry)
+
+
+    func delete(id: UUID) {
+        state.delete(id: id)
+        entries = state.entries
+        persist()
+    }
+
+    func togglePinned(id: UUID) async {
+        await flushPersistence()
+        do {
+            let updated = try await sharedStore.togglePinned(id: id)
+            state.merge(updated)
+            entries = state.entries
+            pendingUploadIDs.insert(id)
+            onChange?()
+        } catch { persistenceError = error.localizedDescription }
+    }
+
+    func resolvedEntry(_ entry: ClipboardEntry) -> ClipboardEntry {
+        guard !entry.ownedFiles.isEmpty else { return entry }
+        var result = entry
+        var urls = ownedFileStore.resolvedFileURLs(for: entry).makeIterator()
+        result.items = entry.items.map { item in
+            ClipboardPayloadItem(representations: item.representations.map { representation in
+                guard representation.type == NSPasteboard.PasteboardType.fileURL.rawValue,
+                      let url = urls.next() else { return representation }
+                return ClipboardRepresentation(type: representation.type, data: Data(url.absoluteString.utf8))
+            })
         }
-        entries = Self.trimmed(merged)
+        return result
     }
 
     func waitForInitialLoad() async {
@@ -627,15 +585,7 @@ final class ClipboardHistory: ObservableObject {
         maximumHistoryBytes: Int = historyByteLimit,
         maximumCount: Int = limit
     ) -> [ClipboardEntry] {
-        var result: [ClipboardEntry] = []
-        result.reserveCapacity(min(entries.count, maximumCount))
-        var totalBytes = 0
-        for entry in entries.prefix(maximumCount) {
-            guard entry.byteCount <= maximumEntryBytes else { continue }
-            guard totalBytes + entry.byteCount <= maximumHistoryBytes else { break }
-            result.append(entry)
-            totalBytes += entry.byteCount
-        }
-        return result
+        ClipboardHistoryState.trimmed(entries, maximumEntryBytes: maximumEntryBytes,
+                                      maximumHistoryBytes: maximumHistoryBytes, maximumCount: maximumCount)
     }
 }

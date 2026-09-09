@@ -87,6 +87,7 @@ extension SwiftDataSnipLibrary {
       envelopeData: envelopeData,
       context: context
     )
+    try lock.check()
     try context.save()
   }
 
@@ -102,6 +103,7 @@ extension SwiftDataSnipLibrary {
       context.delete(state)
     }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 
@@ -123,6 +125,7 @@ extension SwiftDataSnipLibrary {
     context.insert(
       StoredCloudStagedBatch(namespaceKey: namespaceKey, batchID: batchID, payload: payload)
     )
+    try lock.check()
     try context.save()
   }
 
@@ -158,6 +161,7 @@ extension SwiftDataSnipLibrary {
       bySnipID[reservation.snipID] = record
     }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 
@@ -181,6 +185,7 @@ extension SwiftDataSnipLibrary {
       context.insert(try StoredCloudNamespaceState(namespaceKey: namespaceKey, value: value))
     }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 
@@ -204,6 +209,7 @@ extension SwiftDataSnipLibrary {
     guard !records.isEmpty else { return false }
     for record in records { context.delete(record) }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
     return true
   }
@@ -254,6 +260,7 @@ extension SwiftDataSnipLibrary {
       )
       switch mutation.local {
       case .insert(let snip):
+        try context.setSnipPinnedAt(snip.pinnedAt, id: snip.id)
         context.insert(StoredSnipRecord(snip))
         context.insert(StoredRequestRecord(id: snip.requestID))
       case .replace(let id, _, let text, let updatedAt):
@@ -263,6 +270,7 @@ extension SwiftDataSnipLibrary {
       case .delete(let id, _):
         guard let snip = storedSnips[id] else { throw SnipLibraryError.invalidStore }
         context.delete(snip)
+        try context.setSnipPinnedAt(nil, id: id)
         deletedSnipIDs.insert(id)
         for reference in loaded.references where reference.snipID == id {
           candidateAttachmentIDs.insert(reference.attachmentID)
@@ -305,6 +313,7 @@ extension SwiftDataSnipLibrary {
     )
     do {
       try afterMutationBeforeSave()
+      try lock.check()
       try context.save()
     } catch {
       context.rollback()
@@ -372,6 +381,7 @@ extension SwiftDataSnipLibrary {
     )
     do {
       try afterMutationBeforeSave()
+      try lock.check()
       try context.save()
     } catch {
       context.rollback()
@@ -434,6 +444,7 @@ extension SwiftDataSnipLibrary {
       context.delete(record)
     }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 
@@ -453,6 +464,7 @@ extension SwiftDataSnipLibrary {
       context.delete(event)
     }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 
@@ -480,6 +492,7 @@ extension SwiftDataSnipLibrary {
       }
     }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 

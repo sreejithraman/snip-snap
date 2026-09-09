@@ -93,7 +93,9 @@ struct SnipSnapiOSApp: App {
             syncedContentSettings: cloudServices.syncedContentSettings,
             cloudSyncSession: cloudServices.syncSession,
             accountNoticeModel: accountNoticeModel,
-            cloudSyncHandler: productionCloudSyncHandler
+            cloudSyncHandler: productionCloudSyncHandler,
+            clipboardRootURL: startup.syncModeRootURL.deletingLastPathComponent(),
+            clipboardContainerIdentifier: Bundle.main.object(forInfoDictionaryKey: "SnipSnapCloudKitContainerIdentifier") as? String
         )
         syncActionBridge.session = session
     }

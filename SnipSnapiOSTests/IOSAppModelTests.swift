@@ -1,3 +1,4 @@
+import Observation
 import SnipSnapCore
 import SnipSnapCloud
 import SnipSnapPersistence
@@ -9,6 +10,166 @@ import XCTest
 
 @MainActor
 final class IOSAppModelTests: XCTestCase {
+    func testClipboardSyncPreferenceDoesNotImplyMainSyncIsActive() {
+        let preferences = UserDefaults(suiteName: UUID().uuidString)!
+        preferences.set(true, forKey: "syncClipboardHistory")
+        let settings = SyncedContentSettingsModel(mode: .localOnly)
+        let model = IOSClipboardModel(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString), settings: settings, preferences: preferences)
+        XCTAssertTrue(model.syncEnabled)
+        XCTAssertFalse(model.syncIsActive)
+    }
+
+    func testClipboardImportFailureStaysVisibleUntilQueueRetrySucceeds() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let imports = ShareClipboardImportStore(sharedRootURL: root)
+        let request = ShareImportRequest(content: "Retry this", destinationListID: SnipList.inboxID)
+        _ = try await imports.save(request)
+        let history = root.appendingPathComponent("clipboard.json")
+        try FileManager.default.createDirectory(at: history, withIntermediateDirectories: true)
+        let model = IOSClipboardModel(rootURL: root, settings: SyncedContentSettingsModel(mode: .localOnly), preferences: UserDefaults(suiteName: UUID().uuidString)!)
+        await model.foreground()
+        XCTAssertNotNil(model.importErrorMessage)
+        await model.synchronize()
+        XCTAssertNotNil(model.importErrorMessage)
+        try FileManager.default.removeItem(at: history)
+        await model.foreground()
+        XCTAssertNil(model.importErrorMessage)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.entries.map(\.text), ["Retry this"])
+        let pending = await imports.pendingImportCount()
+        XCTAssertEqual(pending, 0)
+    }
+
+    func testPinnedSnipsStayFirstAndCannotBeMarkedDone() async {
+        let pinned = Snip(content: "Reusable", origin: .quickEntry, pinnedAt: Date())
+        let ordinary = Snip(content: "Task", origin: .quickEntry)
+        let model = makeModel(library: ModelTestLibrary(snips: [ordinary, pinned]))
+        await model.load()
+        XCTAssertEqual(model.visibleSnips.first?.id, pinned.id)
+        let reordered = await model.placeVisibleSnips([ordinary.id, pinned.id])
+        XCTAssertFalse(reordered)
+        let changed = await model.toggleDone(id: pinned.id)
+        XCTAssertFalse(changed)
+        model.selectedSnipIDs = [ordinary.id, pinned.id]
+        _ = await model.setSelectionDone(true)
+        XCTAssertFalse(model.snips.first { $0.id == pinned.id }!.isDone)
+        XCTAssertTrue(model.snips.first { $0.id == ordinary.id }!.isDone)
+    }
+
+    func testClipboardPasteAcceptsAdvertisedHEICRepresentation() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = NSItemProvider()
+        let bytes = Data("provider HEIC bytes".utf8)
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.rtf.identifier, visibility: .all) { completion in
+            completion(nil, CocoaError(.fileReadUnknown))
+            return nil
+        }
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.heic.identifier, visibility: .all) { completion in
+            completion(bytes, nil)
+            return nil
+        }
+        let model = IOSClipboardModel(rootURL: root, settings: SyncedContentSettingsModel(mode: .localOnly), preferences: UserDefaults(suiteName: UUID().uuidString)!)
+        await model.capture([provider])
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.entries.first?.imageRepresentations.first?.data, bytes)
+    }
+
+    func testUnreadableTextPasteDoesNotBecomeCloudOrFileError() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = IOSClipboardModel(rootURL: root, settings: SyncedContentSettingsModel(mode: .localOnly), preferences: UserDefaults(suiteName: UUID().uuidString)!)
+        let text = NSItemProvider(object: "Keep this text" as NSString)
+        await model.capture([text])
+        let savedIDs = model.entries.map(\.id)
+        XCTAssertEqual(model.entries.first?.text, "Keep this text")
+        let unreadableText = NSItemProvider()
+        unreadableText.registerDataRepresentation(forTypeIdentifier: UTType.utf8PlainText.identifier, visibility: .all) { completion in
+            completion(nil, CocoaError(.fileReadUnknown))
+            return nil
+        }
+        await model.capture([unreadableText])
+        XCTAssertNil(model.errorMessage)
+        XCTAssertTrue(model.pasteErrorMessage?.contains("clipboard") == true)
+        XCTAssertEqual(model.entries.map(\.id), savedIDs)
+        await model.synchronize()
+        XCTAssertNotNil(model.pasteErrorMessage)
+        model.dismissPasteError()
+        XCTAssertNil(model.pasteErrorMessage)
+        await model.capture([])
+        XCTAssertNotNil(model.pasteErrorMessage)
+        XCTAssertNil(model.errorMessage)
+        await model.capture([text])
+        XCTAssertNil(model.pasteErrorMessage)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.entries.first?.text, "Keep this text")
+    }
+
+    func testRichTextOnlyClipboardPayloadHasTextForPreviewAndSearch() throws {
+        let richText = NSAttributedString(string: "Rich clipboard text")
+        let rtf = try richText.data(from: NSRange(location: 0, length: richText.length),
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
+        let rtfItem = ClipboardPayloadItem(representations: [ClipboardRepresentation(type: UTType.rtf.identifier, data: rtf)])
+        XCTAssertEqual(IOSClipboardModel.previewText(from: [rtfItem]), "Rich clipboard text")
+        let htmlItem = ClipboardPayloadItem(representations: [ClipboardRepresentation(type: UTType.html.identifier, data: Data("<p>Read <b>this</b></p>".utf8))])
+        XCTAssertEqual(IOSClipboardModel.previewText(from: [htmlItem]), "Read this")
+        XCTAssertEqual(rtfItem.representations.first?.data, rtf)
+    }
+
+    func testClipboardSortKeepsNewestPinsFirstInBothDirections() {
+        let older = Date(timeIntervalSince1970: 100)
+        let newer = Date(timeIntervalSince1970: 200)
+        let newestPin = ClipboardEntry(capturedAt: older, items: [], pinnedAt: newer)
+        let oldestPin = ClipboardEntry(capturedAt: newer, items: [], pinnedAt: older)
+        let oldestEntry = ClipboardEntry(capturedAt: older, items: [])
+        let newestEntry = ClipboardEntry(capturedAt: newer, items: [])
+        let entries = [oldestPin, newestEntry, newestPin, oldestEntry]
+        XCTAssertEqual(IOSClipboardView.orderedEntries(entries, newestFirst: true).map(\.id),
+                       [newestPin.id, oldestPin.id, newestEntry.id, oldestEntry.id])
+        XCTAssertEqual(IOSClipboardView.orderedEntries(entries, newestFirst: false).map(\.id),
+                       [newestPin.id, oldestPin.id, oldestEntry.id, newestEntry.id])
+    }
+
+    func testClipboardPinActionUsesCurrentStateAfterRowChanges() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ClipboardHistoryStore(url: root.appendingPathComponent("clipboard.json"))
+        let original = ClipboardEntry(items: [ClipboardPayloadItem(representations: [
+            ClipboardRepresentation(type: UTType.utf8PlainText.identifier, data: Data("Reuse".utf8))
+        ])])
+        _ = try await store.insert(original)
+        let model = IOSClipboardModel(rootURL: root, settings: SyncedContentSettingsModel(mode: .localOnly), preferences: UserDefaults(suiteName: UUID().uuidString)!)
+        await model.load()
+        await model.togglePin(original)
+        XCTAssertTrue(model.entries.first!.isPinned)
+        await model.togglePin(original)
+        XCTAssertFalse(model.entries.first!.isPinned)
+    }
+
+    func testClipboardClearKeepsPinsAndDeleteRemovesThem() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ClipboardHistoryStore(url: root.appendingPathComponent("clipboard.json"))
+        let entry = ClipboardEntry(items: [ClipboardPayloadItem(representations: [
+            ClipboardRepresentation(type: UTType.utf8PlainText.identifier, data: Data("Keep".utf8))
+        ])], pinnedAt: Date())
+        _ = try await store.insert(entry)
+        _ = try await store.insert(ClipboardEntry(items: [ClipboardPayloadItem(representations: [
+            ClipboardRepresentation(type: UTType.utf8PlainText.identifier, data: Data("Clear".utf8))
+        ])]))
+        let preferences = UserDefaults(suiteName: UUID().uuidString)!
+        let model = IOSClipboardModel(rootURL: root, settings: SyncedContentSettingsModel(mode: .localOnly), preferences: preferences)
+        await model.load()
+        XCTAssertFalse(model.syncEnabled)
+        await model.clear()
+        XCTAssertEqual(model.entries.map(\.id), [entry.id])
+        await model.delete(entry)
+        XCTAssertTrue(model.entries.isEmpty)
+        let saved = try await store.load()
+        XCTAssertNotNil(saved.tombstones[entry.id])
+    }
+
     func testMergeSelectionPreservesAttachmentsAndShowsTheSavedResult() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -226,12 +387,16 @@ final class IOSAppModelTests: XCTestCase {
         await session.model.load()
 
         await library.replaceText("After", for: snip.id)
-        automatic.continuation.yield(.contentUpdated)
-        for _ in 0..<20 {
-            if session.model.snips.first?.content == "After" { break }
-            await Task.yield()
+        let updated = expectation(description: "Automatic sync updates the visible snips")
+        withObservationTracking {
+            _ = session.model.snips
+        } onChange: {
+            updated.fulfill()
         }
+        automatic.continuation.yield(.contentUpdated)
+        let result = await XCTWaiter.fulfillment(of: [updated], timeout: 2)
 
+        XCTAssertEqual(result, .completed)
         XCTAssertEqual(session.model.snips.first?.content, "After")
     }
 
@@ -2032,6 +2197,32 @@ final class IOSAppModelTests: XCTestCase {
 
 @MainActor
 final class IOSHapticFeedbackTests: XCTestCase {
+    func testEveryOutcomeUsesTheSharedMeaningPolicy() {
+        let groups: [(IOSHapticFeedback.Meaning, [IOSHapticFeedback.Kind])] = [
+            (.selectionChanged, [.selection]),
+            (.gestureCommitted, [.snap]),
+            (.actionCompleted, [.saved, .copied, .markedDone, .reopened, .deleted, .restored, .moved]),
+            (.significantSuccess, [.merged]),
+            (.warning, [.warning]),
+            (.error, [.error])
+        ]
+        let covered = groups.flatMap { $0.1 }
+        XCTAssertEqual(covered.count, IOSHapticFeedback.Kind.allCases.count)
+        for kind in IOSHapticFeedback.Kind.allCases {
+            XCTAssertEqual(covered.filter { $0 == kind }.count, 1)
+        }
+        let player = RecordingHapticPlayer()
+        let feedback = makeFeedback(player: player)
+        for (meaning, outcomes) in groups {
+            for outcome in outcomes {
+                player.played.removeAll()
+                feedback.emit(outcome, for: feedback.beginInteraction())
+                XCTAssertEqual(player.played, [meaning], "Outcome: \(outcome)")
+                XCTAssertEqual(feedback.event?.kind, outcome)
+            }
+        }
+    }
+
     func testSaveAndDoneEmitFreshEventsAndUnchangedBatchStaysQuiet() async throws {
         let feedback = makeFeedback()
         let model = IOSAppModel(library: ModelTestLibrary(), haptics: feedback)
@@ -2059,7 +2250,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
 
         let reopened = await model.setSelectionDone(false)
         XCTAssertTrue(reopened)
-        XCTAssertEqual(feedback.event?.kind, .selection)
+        XCTAssertEqual(feedback.event?.kind, .reopened)
         XCTAssertNotEqual(feedback.event?.id, done.id)
         let latest = feedback.event
         await model.load()
@@ -2279,7 +2470,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         let feedback = makeFeedback(player: player)
         feedback.emit(.copied, for: feedback.beginInteraction())
         feedback.emit(.markedDone, for: feedback.beginInteraction())
-        XCTAssertEqual(player.played, [.copied, .markedDone])
+        XCTAssertEqual(player.played, [.actionCompleted, .actionCompleted])
         let pending = feedback.beginInteraction()
         feedback.isEnabled = false
         feedback.emit(.saved, for: feedback.beginInteraction())
@@ -2292,7 +2483,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         XCTAssertEqual(player.played.count, 2)
         feedback.isActive = true
         feedback.emit(.markedDone, for: feedback.beginInteraction())
-        XCTAssertEqual(player.played, [.copied, .markedDone, .markedDone])
+        XCTAssertEqual(player.played, [.actionCompleted, .actionCompleted, .actionCompleted])
     }
 
     func testSingleAndBatchDoneUseTheSameOutcomeAndNoOpStaysQuiet() async throws {
@@ -2307,7 +2498,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         model.selectedSnipIDs = [second.id]
         let batchDone = await model.setSelectionDone(true)
         XCTAssertTrue(batchDone)
-        XCTAssertEqual(player.played, [.markedDone, .markedDone])
+        XCTAssertEqual(player.played, [.actionCompleted, .actionCompleted])
         let noOp = await model.setSelectionDone(true)
         XCTAssertTrue(noOp)
         XCTAssertEqual(player.played.count, 2)
@@ -2315,7 +2506,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         XCTAssertTrue(singleNotDone)
         let batchNotDone = await model.setSelectionDone(false)
         XCTAssertTrue(batchNotDone)
-        XCTAssertEqual(player.played, [.markedDone, .markedDone, .selection, .selection])
+        XCTAssertEqual(player.played, [.actionCompleted, .actionCompleted, .actionCompleted, .actionCompleted])
     }
 
     func testAllCopyVariantsReachTheSameFeedbackSeam() async throws {
@@ -2335,7 +2526,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         await coordinator.copy(snips: [snip], model: model)
         await coordinator.copyAttachments(snips: [snip], model: model)
         XCTAssertEqual(pasteboard.writes.count, 3)
-        XCTAssertEqual(player.played, [.copied, .copied, .copied])
+        XCTAssertEqual(player.played, [.actionCompleted, .actionCompleted, .actionCompleted])
     }
 
     func testCombinedOutcomesEmitOnceWithFailurePrecedence() {
@@ -2343,10 +2534,10 @@ final class IOSHapticFeedbackTests: XCTestCase {
         let feedback = makeFeedback(player: player)
         let outcomes: [IOSHapticFeedback.Kind] = [.copied, .markedDone]
         feedback.emit(outcomes, for: feedback.beginInteraction())
-        XCTAssertEqual(player.played, [.markedDone])
+        XCTAssertEqual(player.played, [.actionCompleted])
         XCTAssertEqual(feedback.event?.kinds, outcomes)
         feedback.emit([.error, .copied], for: feedback.beginInteraction())
-        XCTAssertEqual(player.played, [.markedDone, .error])
+        XCTAssertEqual(player.played, [.actionCompleted, .error])
         let latest = feedback.event
         feedback.emit([], for: feedback.beginInteraction())
         XCTAssertEqual(feedback.event, latest)
@@ -2368,12 +2559,12 @@ final class IOSHapticFeedbackTests: XCTestCase {
         let single = await model.deleteSnip(id: first.id)
         XCTAssertTrue(single)
         XCTAssertFalse(model.snips.contains { $0.id == first.id })
-        XCTAssertEqual(player.played, [.deleted])
+        XCTAssertEqual(player.played, [.actionCompleted])
         model.selectedSnipIDs = [second.id, third.id]
         let batch = await model.deleteSelection()
         XCTAssertTrue(batch)
         XCTAssertTrue(model.snips.isEmpty)
-        XCTAssertEqual(player.played, [.deleted, .deleted])
+        XCTAssertEqual(player.played, [.actionCompleted, .actionCompleted])
         let missing = await model.deleteSnip(id: first.id)
         XCTAssertFalse(missing)
         let empty = await model.deleteSelection()
@@ -2384,7 +2575,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         let list = try XCTUnwrap(model.lists.first { $0.id != SnipList.inboxID })
         let deletedList = await model.deleteList(id: list.id)
         XCTAssertTrue(deletedList)
-        XCTAssertEqual(player.played, [.deleted, .deleted, .deleted])
+        XCTAssertEqual(player.played, [.actionCompleted, .actionCompleted, .actionCompleted])
     }
 
     func testFailedDeletionEmitsErrorAndKeepsTheSnip() async {
@@ -2422,22 +2613,22 @@ final class IOSHapticFeedbackTests: XCTestCase {
             player.played.removeAll()
             await model.performToastActionNow(undo)
             XCTAssertTrue(model.snips.contains { $0.id == first.id })
-            XCTAssertEqual(player.played, [.restored])
+            XCTAssertEqual(player.played, [.actionCompleted])
             await model.performToastActionNow(undo)
-            XCTAssertEqual(player.played, [.restored])
+            XCTAssertEqual(player.played, [.actionCompleted])
 
             player.played.removeAll()
             let moved = await model.moveSnip(id: first.id, to: work.id)
             XCTAssertTrue(moved)
-            XCTAssertEqual(player.played, [.moved])
+            XCTAssertEqual(player.played, [.actionCompleted])
             let sameList = await model.moveSnip(id: first.id, to: work.id)
             XCTAssertTrue(sameList)
-            XCTAssertEqual(player.played, [.moved])
+            XCTAssertEqual(player.played, [.actionCompleted])
             model.selectList(SnipList.inboxID)
             model.selectedSnipIDs = [second.id]
             let batch = await model.moveSelection(to: work.id)
             XCTAssertTrue(batch)
-            XCTAssertEqual(player.played, [.moved, .moved])
+            XCTAssertEqual(player.played, [.actionCompleted, .actionCompleted])
             model.selectList(work.id)
             player.played.removeAll()
             let reordered = await model.placeVisibleSnips(Array(model.visibleSnips.map(\.id).reversed()))
@@ -2448,10 +2639,10 @@ final class IOSHapticFeedbackTests: XCTestCase {
             let merged = await model.mergeSelection()
             XCTAssertTrue(merged)
             XCTAssertEqual(model.visibleSnips.count, 1)
-            XCTAssertEqual(player.played, [.merged])
+            XCTAssertEqual(player.played, [.significantSuccess])
             let tooFew = await model.mergeSelection()
             XCTAssertFalse(tooFew)
-            XCTAssertEqual(player.played, [.merged])
+            XCTAssertEqual(player.played, [.significantSuccess])
             let mergedID = try XCTUnwrap(model.visibleSnips.first?.id)
             let failedMove = await model.moveSnip(id: mergedID, to: UUID())
             XCTAssertFalse(failedMove)
@@ -2471,8 +2662,8 @@ final class IOSHapticFeedbackTests: XCTestCase {
 
 @MainActor
 private final class RecordingHapticPlayer: IOSHapticPlaying {
-    var played: [IOSHapticFeedback.Kind] = []
-    func play(_ kind: IOSHapticFeedback.Kind) { played.append(kind) }
+    var played: [IOSHapticFeedback.Meaning] = []
+    func play(_ meaning: IOSHapticFeedback.Meaning) { played.append(meaning) }
 }
 
 private func writeActivationManifest(
@@ -3276,4 +3467,40 @@ private actor ActiveLibraryFailureProbe: IOSCloudSyncSessionHandling {
     }
 
     func activeLibraryCallCount() -> Int { activeLibraryCalls }
+}
+
+final class ListSelectorGeometryTests: XCTestCase {
+    func testContentSizedCentersAndNearestSelection() {
+        let geometry = ListSelectorGeometry(widths: [80, 160, 100])
+        XCTAssertEqual(geometry.centers, [40, 168, 306])
+        XCTAssertEqual(geometry.nearestIndex(to: 103), 0)
+        XCTAssertEqual(geometry.nearestIndex(to: 105), 1)
+        XCTAssertEqual(geometry.nearestIndex(to: 500), 2)
+    }
+
+    func testLensWidthStaysContinuousAcrossSelectionBoundaries() {
+        let geometry = ListSelectorGeometry(widths: [80, 160, 100])
+        for (index, center) in geometry.centers.enumerated() {
+            XCTAssertEqual(geometry.lensWidth(at: center), geometry.widths[index], accuracy: 0.001)
+        }
+        let boundary = (geometry.centers[0] + geometry.centers[1]) / 2
+        XCTAssertNotEqual(geometry.nearestIndex(to: boundary - 0.01), geometry.nearestIndex(to: boundary + 0.01))
+        XCTAssertEqual(geometry.lensWidth(at: boundary - 0.01), geometry.lensWidth(at: boundary + 0.01), accuracy: 0.1)
+        XCTAssertEqual(geometry.lensWidth(at: boundary), 120, accuracy: 0.001)
+        XCTAssertEqual(geometry.lensWidth(at: -100), 80)
+        XCTAssertEqual(geometry.lensWidth(at: 500), 100)
+        XCTAssertEqual(ListSelectorGeometry(widths: [80]).lensWidth(at: 500), 80)
+        XCTAssertEqual(ListSelectorGeometry(widths: []).lensWidth(at: 0), 96)
+    }
+
+    func testPullUsesFingerDistanceAndDoesNotAddAList() {
+        let geometry = ListSelectorGeometry(widths: [80])
+        XCTAssertEqual(geometry.pullProgress(at: 40), 0)
+        XCTAssertLessThan(geometry.pullProgress(at: 135), 1)
+        XCTAssertEqual(geometry.pullProgress(at: 136), 1)
+        XCTAssertEqual(geometry.pullProgress(at: 300), 1)
+        XCTAssertLessThan(geometry.resisted(112), 112)
+        XCTAssertEqual(geometry.nearestIndex(to: geometry.plusCenter), 0)
+        XCTAssertEqual(geometry.centers.count, 1)
+    }
 }

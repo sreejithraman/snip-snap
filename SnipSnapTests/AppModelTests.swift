@@ -820,6 +820,21 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testMoveUpStopsAtPinnedBoundary() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let pinnedResult = try await repository.add(content: "Pin", origin: .quickEntry)
+        let ordinaryResult = try await repository.add(content: "Task", origin: .quickEntry)
+        let pinned = try XCTUnwrap(pinnedResult)
+        let ordinary = try XCTUnwrap(ordinaryResult)
+        let model = AppModel(library: repository, defaults: defaults(), userActions: userActions(for: repository))
+        await model.reload()
+        await model.togglePinned(id: pinned.id)
+        let before = model.snips
+        await model.moveSelectionNow(by: -1, ids: [ordinary.id])
+        XCTAssertEqual(model.snips, before)
+    }
+
+    @MainActor
     func testMoveUpDoesNothingWhileAFilterIsActive() async throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let firstResult = try await repository.add(content: "First", origin: .quickEntry)

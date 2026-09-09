@@ -1,4 +1,5 @@
 import AppKit
+import SnipSnapCore
 
 /// Builds the pasteboard items for dragging a Clipboard Entry to another app.
 ///

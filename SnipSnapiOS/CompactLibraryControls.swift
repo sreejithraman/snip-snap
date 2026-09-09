@@ -3,9 +3,12 @@ import QuickLook
 import SnipSnapCore
 import SwiftUI
 import UniformTypeIdentifiers
+import UIKit
 
 private enum CompactControlMetrics {
     static let minimumInteractiveLength: CGFloat = 44
+    static let selectorTransitionDuration: TimeInterval = 0.2
+    static let contentTransitionDuration: TimeInterval = 0.35
 }
 
 private struct CompactGlassCircleButton<Label: View>: View {
@@ -26,12 +29,18 @@ private struct CompactGlassCircleButton<Label: View>: View {
 
 struct CompactLibraryControls: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let model: IOSAppModel
+    let clipboard: IOSClipboardModel
     let storage: CompactComposerStorage
     let showsListTabs: Bool
+    let isSelecting: Bool
+    @Namespace private var composerGlass
     @Binding var sheet: AppSheet?
 
     @State private var draft = ComposerDraft()
+    @State private var clipboardHasContent = false
+    @State private var isBrowsingLists = false
     @State private var previewURL: URL?
     @State private var isImporting = false
     @State private var composerFieldID = UUID()
@@ -47,34 +56,51 @@ struct CompactLibraryControls: View {
 
     init(
         model: IOSAppModel,
+        clipboard: IOSClipboardModel,
         storage: CompactComposerStorage,
         isComposerFocused: FocusState<Bool>.Binding,
         showsListTabs: Bool = true,
+        isSelecting: Bool = false,
         sheet: Binding<AppSheet?>
     ) {
         self.model = model
+        self.clipboard = clipboard
         self.storage = storage
         self.showsListTabs = showsListTabs
+        self.isSelecting = isSelecting
         _isComposerFocused = isComposerFocused
         _sheet = sheet
     }
 
     private var isStaging: Bool { stagingTask != nil }
 
+    private var showsComposer: Bool { !model.showsClipboard && !isSelecting }
+
+    private var contentTransition: Animation? {
+        reduceMotion ? nil : .easeInOut(duration: CompactControlMetrics.contentTransitionDuration)
+    }
+
     var body: some View {
-        GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
-            VStack(spacing: SnipSnapSpacing.relatedContent) {
-                composer
-                if showsListTabs {
-                    CompactListTabBar(
-                        model: model,
-                        controlLength: controlLength,
-                        sheet: $sheet,
-                        deleteList: deleteList
-                    )
+        VStack(spacing: SnipSnapSpacing.relatedContent) {
+            GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
+                if showsComposer {
+                    composer
+                        .transition(reduceMotion ? .opacity : .offset(y: 8).combined(with: .opacity))
+                }
+            }
+            .animation(contentTransition, value: showsComposer)
+            if showsListTabs {
+                selectorRow
+            } else {
+                GlassEffectContainer {
+                    if model.showsClipboard {
+                        pasteButton
+                            .transition(.opacity)
+                    }
                 }
             }
         }
+        .animation(contentTransition, value: model.showsClipboard)
         .padding(.horizontal, SnipSnapSpacing.cardContentInset)
         .padding(.top, SnipSnapSpacing.relatedContent)
         .padding(.bottom, 6)
@@ -87,19 +113,94 @@ struct CompactLibraryControls: View {
         }
         .quickLookPreview($previewURL, in: draft.attachments)
         .onAppear {
+            updatePasteAvailability()
             if storage.savingListID != model.selectedListID {
                 draft = storage.draftStore.draft(for: model.selectedListID)
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
+            updatePasteAvailability()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            updatePasteAvailability()
         }
         .onChange(of: model.selectedListID) { _, listID in
             draft = storage.savingListID == listID
                 ? ComposerDraft()
                 : storage.draftStore.draft(for: listID)
         }
+        .onChange(of: showsComposer) { _, visible in
+            if !visible { isComposerFocused = false }
+        }
         .onDisappear {
             stagingTask?.cancel()
             storage.draftStore.flushText()
         }
+    }
+
+    private var selectorRow: some View {
+        GeometryReader { proxy in
+            let actionLength = max(48, controlLength)
+            let restingWidth = max(64, min(256, proxy.size.width - 2 * (actionLength + SnipSnapSpacing.relatedContent)))
+            ZStack {
+                ListSelector(
+                    model: model,
+                    controlLength: controlLength,
+                    sheet: $sheet,
+                    deleteList: deleteList,
+                    labelViewport: restingWidth,
+                    browsingChanged: { isBrowsingLists = $0 }
+                )
+                .frame(width: isBrowsingLists ? proxy.size.width : restingWidth)
+                .frame(maxWidth: .infinity)
+
+                GlassEffectContainer {
+                    HStack {
+                        Spacer()
+                        if showsPasteAction {
+                            pasteButton
+                                .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .trailing)))
+                        }
+                    }
+                }
+                .animation(pasteBrowsingTransition, value: isBrowsingLists)
+            }
+            .animation(reduceMotion ? nil : .easeInOut(duration: CompactControlMetrics.selectorTransitionDuration), value: isBrowsingLists)
+        }
+        .frame(height: max(48, controlLength) + 8)
+    }
+
+    private var pasteBrowsingTransition: Animation? {
+        guard !reduceMotion else { return nil }
+        let collapseDuration = CompactControlMetrics.selectorTransitionDuration
+        if isBrowsingLists {
+            return .easeInOut(duration: collapseDuration)
+        }
+        // Finish alongside the input after the strip has made room for Paste.
+        return .easeInOut(duration: CompactControlMetrics.contentTransitionDuration - collapseDuration)
+            .delay(collapseDuration)
+    }
+
+    private var showsPasteAction: Bool { model.showsClipboard && !isBrowsingLists }
+
+    private var pasteButton: some View {
+        CompactGlassCircleButton(length: max(48, controlLength)) {
+            let providers = UIPasteboard.general.itemProviders
+            Task { await clipboard.capture(providers) }
+        } label: {
+            Image(systemName: "doc.on.clipboard")
+                .font(.title3.weight(.medium))
+        }
+        .disabled(!clipboardHasContent)
+        .accessibilityLabel("Paste")
+        .accessibilityIdentifier("paste-to-clipboard")
+        .glassEffectID("paste", in: composerGlass)
+        .glassEffectTransition(.materialize)
+    }
+
+    private func updatePasteAvailability() {
+        let pasteboard = UIPasteboard.general
+        clipboardHasContent = pasteboard.hasStrings || pasteboard.hasURLs || pasteboard.hasImages
     }
 
     private var composer: some View {
@@ -117,6 +218,8 @@ struct CompactLibraryControls: View {
             .disabled(storage.isSaving || isStaging)
             .accessibilityLabel("Add Attachments")
             .accessibilityIdentifier("composer-add-attachments")
+            .glassEffectID("attachments", in: composerGlass)
+            .glassEffectTransition(.materialize)
 
             GlassEffectContainer {
                 VStack(spacing: SnipSnapSpacing.relatedContent) {
@@ -162,6 +265,8 @@ struct CompactLibraryControls: View {
                             lineWidth: isComposerFocused ? 1 : 0.75
                         )
                 }
+                .glassEffectID("input", in: composerGlass)
+                .glassEffectTransition(.materialize)
             }
             // Keep Send outside the input's interactive glass subtree.
             .overlay(alignment: .bottomTrailing) {
@@ -368,141 +473,6 @@ final class CompactComposerStorage {
     }
 }
 
-private struct CompactListTabBar: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    let model: IOSAppModel
-    let controlLength: CGFloat
-    @Binding var sheet: AppSheet?
-    let deleteList: (UUID) async -> Void
-
-    private var stripHeight: CGFloat {
-        controlLength + SnipSnapSpacing.cardContentInset
-    }
-
-    private var selectionHeight: CGFloat {
-        controlLength - SnipSnapSpacing.relatedContent
-    }
-
-    private var itemWidth: CGFloat {
-        controlLength + SnipSnapSpacing.relatedContent
-    }
-
-    var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: SnipSnapSpacing.relatedContent) {
-                tabStrip
-                    .fixedSize(horizontal: true, vertical: false)
-                newListButton
-            }
-            .fixedSize(horizontal: true, vertical: false)
-
-            HStack(spacing: SnipSnapSpacing.relatedContent) {
-                scrollingTabStrip
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                newListButton
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var tabStrip: some View {
-        tabItems
-            .padding(.horizontal, 6)
-            .frame(height: stripHeight)
-            .glassEffect(.regular, in: Capsule())
-    }
-
-    private var scrollingTabStrip: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal) {
-                tabItems
-                    .padding(.horizontal, 6)
-            }
-            .scrollIndicators(.hidden)
-            .frame(height: stripHeight)
-            .glassEffect(.regular, in: Capsule())
-            .onAppear { scrollToSelection(using: proxy) }
-            .onChange(of: model.selectedListID) { _, _ in
-                scrollToSelection(using: proxy)
-            }
-            .onChange(of: model.lists) { _, _ in
-                scrollToSelection(using: proxy)
-            }
-        }
-    }
-
-    private var tabItems: some View {
-        HStack(spacing: 0) {
-            ForEach(model.lists) { list in
-                tab(for: list)
-                    .id(list.id)
-            }
-        }
-    }
-
-    private var newListButton: some View {
-        CompactGlassCircleButton(
-            length: controlLength,
-            action: { Task { await model.openNewList() } }
-        ) {
-            Image(systemName: "plus")
-                .font(.title3.weight(.semibold))
-        }
-        .accessibilityLabel("New List")
-        .accessibilityIdentifier("new-list")
-    }
-
-    private func tab(for list: SnipList) -> some View {
-        let selected = model.selectedListID == list.id
-        return Button {
-            model.selectList(list.id)
-        } label: {
-            Image(systemName: list.systemImage)
-                .symbolVariant(selected ? .fill : .none)
-                .font(.title3.weight(selected ? .semibold : .regular))
-                .foregroundStyle(list.accent.color)
-                .frame(
-                    width: controlLength,
-                    height: selectionHeight
-                )
-                .background(
-                    selected ? list.accent.selectionFill : Color.clear,
-                    in: Capsule(style: .continuous)
-                )
-                .frame(
-                    width: itemWidth,
-                    height: stripHeight
-                )
-                .contentShape(Rectangle())
-                .accessibilityHidden(true)
-        }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(list.displayName)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityIdentifier("list-tab-\(list.id.uuidString)")
-        .listContextActions(
-            list: list,
-            beforeDelete: model.haptics.invalidatePendingFeedback,
-            edit: { model.editListInline(id: list.id) },
-            delete: { Task { await deleteList(list.id) } }
-        )
-    }
-
-    private func scrollToSelection(using proxy: ScrollViewProxy) {
-        Task { @MainActor in
-            await Task.yield()
-            if reduceMotion {
-                proxy.scrollTo(model.selectedListID, anchor: .center)
-            } else {
-                withAnimation(.easeOut(duration: 0.16)) {
-                    proxy.scrollTo(model.selectedListID, anchor: .center)
-                }
-            }
-        }
-    }
-}
 
 private struct CompactDraftAttachment: View {
     let url: URL

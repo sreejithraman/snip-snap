@@ -2,6 +2,7 @@ import AppKit
 import SnipSnapCore
 import XCTest
 @testable import SnipSnap
+@testable import SnipSnapPersistence
 
 @MainActor
 final class ClipboardHistoryTests: XCTestCase {
@@ -173,11 +174,8 @@ final class ClipboardHistoryTests: XCTestCase {
 
         await context.history.flushPersistence()
 
-        let data = try Data(contentsOf: context.storeURL)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let entries = try decoder.decode([ClipboardEntry].self, from: data)
-        XCTAssertEqual(entries.map(\.text), ["Second", "First"])
+        let state = try await ClipboardHistoryStore(url: context.storeURL).load()
+        XCTAssertEqual(state.entries.map(\.text), ["Second", "First"])
     }
 
     func testInitialHistoryLoadKeepsNewerCapturedEntries() async throws {
@@ -193,23 +191,7 @@ final class ClipboardHistoryTests: XCTestCase {
         )
     }
 
-    func testFileStoreKeepsTheNewestRapidReplacement() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Snip SnapClipboardStoreTests-\(UUID().uuidString)", isDirectory: true)
-        let storeURL = directory.appendingPathComponent("clipboard.json")
-        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        let store = ClipboardHistoryFileStore(url: storeURL)
 
-        await store.scheduleReplacement([clipboardEntry("First")])
-        await store.scheduleReplacement([clipboardEntry("Newest")])
-        await store.flush()
-
-        let data = try Data(contentsOf: storeURL)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let entries = try decoder.decode([ClipboardEntry].self, from: data)
-        XCTAssertEqual(entries.map(\.text), ["Newest"])
-    }
 
     func testHistoryReportsPersistenceFailure() async throws {
         let context = try makeContext()
@@ -240,6 +222,93 @@ final class ClipboardHistoryTests: XCTestCase {
         )
 
         XCTAssertEqual(result.map(\.text), ["N"])
+    }
+
+    func testPinnedHistorySurvivesTrimmingClearAndRelaunch() async throws {
+        let context = try makeContext()
+        writeText("Keep pinned", to: context.pasteboard)
+        context.history.poll()
+        let id = try XCTUnwrap(context.history.entries.first?.id)
+        await context.history.togglePinned(id: id)
+        let pinnedAt = try XCTUnwrap(context.history.entry(id: id)?.pinnedAt)
+
+        for index in 0..<(ClipboardHistory.limit + 5) {
+            writeText("Entry \(index)", to: context.pasteboard)
+            context.history.poll()
+        }
+        await context.history.flushPersistence()
+        XCTAssertEqual(context.history.entries.count, ClipboardHistory.limit + 1)
+        XCTAssertEqual(context.history.entries.first?.id, id)
+
+        context.history.clear()
+        await context.history.flushPersistence()
+        XCTAssertEqual(context.history.entries.map(\.id), [id])
+
+        let reopened = ClipboardHistory(pasteboard: context.pasteboard,
+            defaults: context.defaults, storeURL: context.storeURL)
+        await reopened.waitForInitialLoad()
+        XCTAssertEqual(reopened.entries.map(\.id), [id])
+        XCTAssertEqual(reopened.entries.first?.pinnedAt, pinnedAt)
+    }
+
+    func testCopyingPinnedHistoryDoesNotChangePinOrder() async throws {
+        let context = try makeContext()
+        writeText("First pin", to: context.pasteboard)
+        context.history.poll()
+        let firstID = try XCTUnwrap(context.history.entries.first?.id)
+        await context.history.togglePinned(id: firstID)
+        writeText("Second pin", to: context.pasteboard)
+        context.history.poll()
+        let secondID = try XCTUnwrap(context.history.entries.first { !$0.isPinned }?.id)
+        await context.history.togglePinned(id: secondID)
+        let order = context.history.entries.map(\.id)
+        let first = try XCTUnwrap(context.history.entry(id: firstID))
+
+        XCTAssertTrue(context.history.restore(first))
+        await context.history.flushPersistence()
+
+        XCTAssertEqual(context.history.entries.map(\.id), order)
+        XCTAssertEqual(context.history.entry(id: firstID)?.pinnedAt, first.pinnedAt)
+        XCTAssertEqual(context.pasteboard.string(forType: .string), "First pin")
+    }
+
+    func testPinnedFileCopyUsesOwnedFileAfterSourceDeletionAndRelaunch() async throws {
+        let context = try makeContext()
+        let directory = context.storeURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("source.txt")
+        let contents = Data("Keep these file bytes".utf8)
+        try contents.write(to: source)
+        writeFileURLs([source], to: context.pasteboard)
+        context.history.poll()
+        let id = try XCTUnwrap(context.history.entries.first?.id)
+        await context.history.togglePinned(id: id)
+        XCTAssertTrue(try XCTUnwrap(context.history.entry(id: id)).isPinned)
+        try FileManager.default.removeItem(at: source)
+
+        let reopened = ClipboardHistory(pasteboard: context.pasteboard,
+            defaults: context.defaults, storeURL: context.storeURL)
+        await reopened.waitForInitialLoad()
+        let pinned = try XCTUnwrap(reopened.entry(id: id))
+        XCTAssertTrue(reopened.restore(pinned))
+        let pastedString = try XCTUnwrap(context.pasteboard.string(forType: .fileURL))
+        let pastedURL = try XCTUnwrap(URL(string: pastedString))
+        XCTAssertNotEqual(pastedURL, source)
+        XCTAssertEqual(try Data(contentsOf: pastedURL), contents)
+        await reopened.flushPersistence()
+    }
+
+    func testMissingFileCannotBecomePinned() async throws {
+        let context = try makeContext()
+        let missing = context.storeURL.deletingLastPathComponent().appendingPathComponent("missing.txt")
+        writeFileURLs([missing], to: context.pasteboard)
+        context.history.poll()
+        let id = try XCTUnwrap(context.history.entries.first?.id)
+
+        await context.history.togglePinned(id: id)
+
+        XCTAssertFalse(try XCTUnwrap(context.history.entry(id: id)).isPinned)
+        XCTAssertNotNil(context.history.persistenceError)
     }
 
     private func makeContext(
@@ -328,5 +397,54 @@ final class ClipboardHistoryTests: XCTestCase {
         }
         pasteboard.clearContents()
         XCTAssertTrue(pasteboard.writeObjects(items))
+    }
+}
+
+final class SnipPinTests: StoreBackedTestCase {
+    @MainActor
+    func testPinningDoneSnipMakesItUndoneAndPersistsAcrossRelaunch() async throws {
+        let url = try storeURL()
+        let repository = try JSONSnipLibrary(fileURL: url)
+        let added = try await repository.add(content: "Reusable", origin: .quickEntry)
+        let snip = try XCTUnwrap(added)
+        let model = AppModel(library: repository)
+        await model.reload()
+        await model.toggleDoneNow(id: snip.id)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first).isDone)
+
+        await model.togglePinned(id: snip.id)
+
+        let pinned = try XCTUnwrap(model.snips.first)
+        XCTAssertTrue(pinned.isPinned)
+        XCTAssertFalse(pinned.isDone)
+        await model.toggleDoneNow(id: snip.id)
+        XCTAssertFalse(try XCTUnwrap(model.snips.first).isDone)
+
+        let reopened = AppModel(library: try JSONSnipLibrary(fileURL: url))
+        await reopened.reload()
+        XCTAssertEqual(reopened.snips.first?.pinnedAt, pinned.pinnedAt)
+        XCTAssertFalse(try XCTUnwrap(reopened.snips.first).isDone)
+        await reopened.togglePinned(id: snip.id)
+        XCTAssertFalse(try XCTUnwrap(reopened.snips.first).isPinned)
+        XCTAssertFalse(try XCTUnwrap(reopened.snips.first).isDone)
+    }
+
+    @MainActor
+    func testBulkPinPreservesSelectionAndMakesDoneSnipsUndone() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let firstResult = try await repository.add(content: "First", origin: .quickEntry)
+        let secondResult = try await repository.add(content: "Second", origin: .quickEntry)
+        let first = try XCTUnwrap(firstResult)
+        let second = try XCTUnwrap(secondResult)
+        let model = AppModel(library: repository)
+        await model.reload()
+        model.selection = [first.id, second.id]
+        await model.toggleDoneNow(id: first.id)
+
+        await model.setPinned(ids: model.selection, pinned: true)
+
+        XCTAssertEqual(model.selection, [first.id, second.id])
+        XCTAssertEqual(model.snips.count, 2)
+        XCTAssertTrue(model.snips.allSatisfy { $0.isPinned && !$0.isDone })
     }
 }

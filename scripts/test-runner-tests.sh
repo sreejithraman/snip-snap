@@ -35,7 +35,10 @@ while (( $# )); do
         *) shift ;;
     esac
 done
-[[ "${SNIP_SNAP_TEST_FAILURE:-}" != "$scheme" ]] || exit 65
+if [[ "${SNIP_SNAP_TEST_FAILURE:-}" == "$scheme" ]]; then
+    /bin/mkdir -p "$derived_data/Logs/Test/Failure.xcresult"
+    exit 65
+fi
 if [[ "$scheme" == SnipSnapiOS ]]; then
     app="$derived_data/Build/Products/Debug-iphonesimulator/Snip Snap iOS.app"
     extension="$app/PlugIns/SnipSnapShareExtension.appex"
@@ -48,7 +51,12 @@ if [[ "$scheme" == SnipSnapiOS ]]; then
     fi
 fi
 XCODEBUILD
-/bin/chmod +x "$test_root/bin/swift" "$test_root/bin/xcodebuild"
+cat > "$test_root/bin/xcrun" <<'XCRUN'
+#!/bin/zsh
+print -r -- "xcrun:$*" >> "$SNIP_SNAP_TEST_CALLS"
+[[ "${SNIP_SNAP_TEST_SUMMARY_FAILURE:-}" != YES ]]
+XCRUN
+/bin/chmod +x "$test_root/bin/swift" "$test_root/bin/xcodebuild" "$test_root/bin/xcrun"
 
 export SNIP_SNAP_TEST_CALLS="$test_root/calls"
 export PATH="$test_root/bin:$PATH"
@@ -96,6 +104,16 @@ for failure in package SnipSnap SnipSnapiOS; do
     fi
 done
 
+for summary_failure in YES NO; do
+    if SNIP_SNAP_TEST_FAILURE=SnipSnap SNIP_SNAP_TEST_SUMMARY_FAILURE="$summary_failure" run_tests --mac-only; then
+        print -u2 "Test runner hid a Mac test failure while reporting it."
+        exit 1
+    else
+        [[ $? == 65 ]]
+    fi
+    /usr/bin/grep -F 'xcrun:xcresulttool get test-results summary --path ' "$SNIP_SNAP_TEST_CALLS" >/dev/null
+done
+
 for missing_file in \
     'Snip Snap iOS' \
     'PrivacyInfo.xcprivacy' \
@@ -117,8 +135,11 @@ jobs = YAML.load_file(ARGV.fetch(0)).fetch('jobs')
   job = jobs.fetch(group)
   abort "#{group} tests must run independently" unless Array(job['needs']).empty?
   commands = job.fetch('steps').map { |step| step['run'] }.compact
-  abort "#{group} must run its test group without a second build" unless
-    commands == ["./scripts/test.sh --#{group}-only"]
+  expected_commands = []
+  expected_commands << 'xcodebuild -downloadComponent MetalToolchain' if group == 'ios'
+  expected_commands << "./scripts/test.sh --#{group}-only"
+  abort "#{group} must install its tools and run its test group without a second build" unless
+    commands == expected_commands
 end
 
 gate = jobs.fetch('test')

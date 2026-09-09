@@ -49,6 +49,7 @@ struct IOSLibraryStartup {
 @MainActor
 final class IOSAppSession {
     let model: IOSAppModel
+    let clipboard: IOSClipboardModel
     let syncedContentSettings: SyncedContentSettingsModel
     let accountNoticeModel: AppleAccountNoticeModel?
 
@@ -74,7 +75,9 @@ final class IOSAppSession {
         cloudSyncSession: (any IOSCloudSyncSessionHandling)? = nil,
         shareImportOperation: (@Sendable () async -> ShareImportSummary)? = nil,
         accountNoticeModel: AppleAccountNoticeModel? = nil,
-        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil
+        cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
+        clipboardRootURL: URL? = nil,
+        clipboardContainerIdentifier: String? = nil
     ) {
         let model = IOSAppModel(
             library: library,
@@ -86,6 +89,16 @@ final class IOSAppSession {
             cloudSyncHandler: cloudSyncHandler
         )
         self.model = model
+        let clipboard = IOSClipboardModel(
+            rootURL: clipboardRootURL ?? FileManager.default.temporaryDirectory.appendingPathComponent("Clipboard-Preview-" + UUID().uuidString),
+            settings: syncedContentSettings,
+            containerIdentifier: clipboardContainerIdentifier,
+            generation: {
+                guard let cloudSyncSession else { return nil }
+                return try await cloudSyncSession.iosActiveLibrary().recoveryScope?.rawValue
+            }
+        )
+        self.clipboard = clipboard
         self.syncedContentSettings = syncedContentSettings
         self.accountNoticeModel = accountNoticeModel
         self.cloudSyncSession = cloudSyncSession
@@ -108,7 +121,8 @@ final class IOSAppSession {
             try await Self.synchronizeCloudSessionOrThrow(
                 cloudSyncSession,
                 model: model,
-                settings: syncedContentSettings
+                settings: syncedContentSettings,
+                clipboard: clipboard
             )
         }
         if let activeShareImportOperation {
@@ -137,7 +151,8 @@ final class IOSAppSession {
             try? await Self.synchronizeCloudSessionOrThrow(
                 cloudSyncSession,
                 model: model,
-                settings: syncedContentSettings
+                settings: syncedContentSettings,
+                clipboard: clipboard
             )
         }
         accountNoticeModel?.setActiveLibraryChangeAction {
@@ -161,6 +176,7 @@ final class IOSAppSession {
 
     func launch() async {
         await cloudLifecycleHooks.launch()
+        await clipboard.foreground()
         if let shareImporter {
             await shareImporter.importPendingAndReload()
         } else {
@@ -171,6 +187,7 @@ final class IOSAppSession {
 
     func foreground() async {
         await cloudLifecycleHooks.foreground()
+        await clipboard.foreground()
         await shareImporter?.importPendingAndReload()
         await accountNoticeModel?.refresh()
     }
@@ -179,8 +196,10 @@ final class IOSAppSession {
         try? await Self.synchronizeCloudSessionOrThrow(
             cloudSyncSession,
             model: model,
-            settings: syncedContentSettings
+            settings: syncedContentSettings,
+            clipboard: clipboard
         )
+        await clipboard.synchronize()
     }
 
     func retrySyncWhenPossible() async {
@@ -188,8 +207,10 @@ final class IOSAppSession {
             cloudSyncSession,
             model: model,
             settings: syncedContentSettings,
+            clipboard: clipboard,
             retryingUserRecoverableFailures: true
         )
+        await clipboard.synchronize()
     }
 
     func scheduleSyncAfterLocalChange() async {
@@ -204,6 +225,8 @@ final class IOSAppSession {
             await model.load()
             syncedContentSettings.recordOutstandingSyncRecovered()
         case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
+            clipboard.stop()
+            await clipboard.resetAccountBinding()
             if let cloudSyncSession,
                let active = try? await cloudSyncSession.iosActiveLibrary()
             {
@@ -234,6 +257,7 @@ final class IOSAppSession {
         _ session: (any IOSCloudSyncSessionHandling)?,
         model: IOSAppModel,
         settings: SyncedContentSettingsModel,
+        clipboard: IOSClipboardModel,
         retryingUserRecoverableFailures: Bool = false
     ) async throws {
         guard let session else { return }
@@ -268,6 +292,8 @@ final class IOSAppSession {
                     settings.recordRemovalPending(false)
                 }
             case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
+                clipboard.stop()
+                await clipboard.resetAccountBinding()
                 let active = try await session.iosActiveLibrary()
                 await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
                 let issue: SyncedContentSyncIssue
