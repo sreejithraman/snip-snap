@@ -3,6 +3,13 @@ import XCTest
 
 @MainActor
 final class SnipSnapiOSUITests: XCTestCase {
+    private var shareAppName = ""
+
+    override func tearDown() {
+        XCUIDevice.shared.orientation = .portrait
+        super.tearDown()
+    }
+
     private func launchApp(
         storeName: String = "ui-\(UUID().uuidString)",
         withAttachments: Bool = false,
@@ -46,6 +53,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             app.launchArguments += ["-UIPreferredContentSizeCategoryName", contentSizeCategory.rawValue]
         }
         app.launch()
+        shareAppName = app.label
         return app
     }
 
@@ -351,7 +359,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         chooseDetailAction("share-snip", in: app)
         XCTAssertTrue(activityView(in: app).waitForExistence(timeout: 5))
 
-        let snipSnap = app.cells["Snip Snap"]
+        let snipSnap = app.cells[shareAppName]
         XCTAssertTrue(snipSnap.waitForExistence(timeout: 5))
         snipSnap.tap()
 
@@ -907,15 +915,13 @@ final class SnipSnapiOSUITests: XCTestCase {
         createList("Work", in: app)
         let work = listControl(named: "Work", in: app)
         XCTAssertTrue(work.waitForExistence(timeout: 5))
-        openListActions(named: "Work", in: app)
-        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Edit List")).firstMatch.tap()
+        openListEditor(named: "Work", in: app)
 
         let field = app.textFields["list-name"]
         XCTAssertTrue(field.waitForExistence(timeout: 3))
         field.tap()
         field.typeText(" Updated")
         let editedName = try XCTUnwrap(field.value as? String)
-        app.buttons["list-appearance"].tap()
         app.buttons["list-color-blue"].tap()
         let chooseIcon = app.descendants(matching: .any)["choose-list-icon"].firstMatch
         chooseIcon.tap()
@@ -926,19 +932,68 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 3))
         XCTAssertTrue(chooseIcon.label.contains("Star Fill"))
         XCTAssertEqual(field.value as? String, editedName)
-        app.buttons["list-appearance"].tap()
         XCTAssertTrue(app.buttons["list-color-blue"].isSelected)
         app.buttons["save-list"].tap()
 
         let saved = listControl(named: editedName, in: app)
         XCTAssertTrue(saved.waitForExistence(timeout: 5))
-        openListActions(named: editedName, in: app)
-        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Edit List")).firstMatch.tap()
+        openListEditor(named: editedName, in: app)
         XCTAssertTrue(chooseIcon.waitForExistence(timeout: 3))
         XCTAssertTrue(chooseIcon.label.contains("Star Fill"))
         XCTAssertEqual(field.value as? String, editedName)
-        app.buttons["list-appearance"].tap()
         XCTAssertTrue(app.buttons["list-color-blue"].isSelected)
+    }
+
+    func testListEditorKeepsDraftAcrossSearch() {
+        continueAfterFailure = false
+        let app = launchApp()
+        createList("Reading", in: app)
+        createSnip("A saved passage", in: app)
+        openListEditor(named: "Reading", in: app)
+
+        let field = app.textFields["list-name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        field.typeText(" Notes")
+        let editedName = field.value as? String
+        app.buttons["list-color-blue"].tap()
+
+        let preview = XCTAttachment(screenshot: app.screenshot())
+        preview.name = "Glass list editor"
+        preview.lifetime = .keepAlways
+        add(preview)
+
+        let search = openSearch(in: app)
+        search.typeText("saved passage")
+        XCTAssertTrue(collectionRow(named: "A saved passage", in: app).waitForExistence(timeout: 3))
+        XCTAssertFalse(field.exists)
+        closeSearch(in: app)
+
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        XCTAssertEqual(field.value as? String, editedName)
+        XCTAssertTrue(app.buttons["list-color-blue"].isSelected)
+        app.buttons["save-list"].tap()
+        XCTAssertTrue(field.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(app.descendants(matching: .any)["composer-text"].isHittable)
+    }
+
+    func testListEditorIconSearchKeepsControlsReachable() {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = launchApp()
+        createList("Reading", in: app)
+        openListEditor(named: "Reading", in: app)
+        app.buttons["choose-list-icon"].tap()
+
+        let search = app.textFields["Search icons"]
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        search.tap()
+        search.typeText("star")
+        let star = app.buttons["list-icon-star.fill"].firstMatch
+        XCTAssertTrue(star.waitForExistence(timeout: 3))
+        star.tap()
+        app.buttons["save-list"].tap()
+        XCTAssertTrue(app.textFields["list-name"].waitForNonExistence(timeout: 3))
     }
 
     func testLibraryActionsExposeBackupImportWithoutHistoryCommands() {
@@ -1385,6 +1440,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             app.launchEnvironment["SNIP_SNAP_UI_TEST_SHARE_STORE_REPAIR"] = "1"
         }
         app.launch()
+        shareAppName = app.label
         return app
     }
 
@@ -1422,7 +1478,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             "Safari did not expose Share after retrying its menu."
         )
         share.tap()
-        let activity = safari.cells["Snip Snap"]
+        let activity = safari.cells[shareAppName]
         XCTAssertTrue(activity.waitForExistence(timeout: 8))
         activity.tap()
         return safari
@@ -1751,6 +1807,15 @@ final class SnipSnapiOSUITests: XCTestCase {
         guard app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) else {
             throw XCTSkip("The compact selector is limited to iPhone.")
         }
+    }
+
+    private func openListEditor(named name: String, in app: XCUIApplication) {
+        openListActions(named: name, in: app)
+        let edit = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Edit List")
+        ).firstMatch
+        XCTAssertTrue(edit.waitForExistence(timeout: 3))
+        edit.tap()
     }
 
     private func openListActions(named name: String, in app: XCUIApplication) {

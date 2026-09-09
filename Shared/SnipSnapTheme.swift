@@ -187,6 +187,8 @@ extension View {
 /// share neutral chrome and list accents in light and dark mode.
 enum SnipSnapTheme {
     static let listGlassTintOpacity = 0.8
+    static let listSelectionGlassTint = Color.primary.opacity(0.12)
+    static let listEditorGlassTint = Color.primary.opacity(0.03)
     static func sendIconColor(tint: Color) -> Color {
         Color.white.mix(with: tint, by: 0.12)
     }
