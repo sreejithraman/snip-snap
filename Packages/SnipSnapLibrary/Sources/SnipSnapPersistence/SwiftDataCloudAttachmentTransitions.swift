@@ -381,7 +381,8 @@ extension SwiftDataSnipLibrary {
 
   package func commitCloudAttachmentTransitions(
     namespaceKey: CloudSyncNamespaceKey,
-    transitions: [CloudAttachmentTransition]
+    transitions: [CloudAttachmentTransition],
+    afterSave: @Sendable () -> Void = {}
   ) throws {
     let namespaceKey = namespaceKey.rawValue
     guard let container else { throw SnipLibraryError.storeUnavailable }
@@ -417,11 +418,11 @@ extension SwiftDataSnipLibrary {
     )
     try materializeCloudAttachments(namespaceKey: namespaceKey, context: context)
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
-    for file in acceptedUploadFiles {
-      CloudAttachmentCacheFiles.remove(file, includingParentDirectory: true)
-    }
-    for file in invalidatedCacheFiles {
+    afterSave()
+    for file in acceptedUploadFiles + invalidatedCacheFiles {
+      if (try? lock.check()) == nil { break }
       CloudAttachmentCacheFiles.remove(file, includingParentDirectory: true)
     }
   }

@@ -32,6 +32,7 @@ extension SwiftDataSnipLibrary {
       )
     )
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 
@@ -117,6 +118,7 @@ extension SwiftDataSnipLibrary {
       )
     )
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 
@@ -145,6 +147,7 @@ extension SwiftDataSnipLibrary {
     else { throw CloudFullStorageError.invalidBatchReplay }
     current.payload = try Self.fullBatchData(batch)
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 
@@ -254,6 +257,7 @@ extension SwiftDataSnipLibrary {
       }
     }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 
@@ -297,6 +301,7 @@ extension SwiftDataSnipLibrary {
     }
     guard !values.isEmpty else { return }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 
@@ -315,6 +320,7 @@ extension SwiftDataSnipLibrary {
       context.delete(event)
     }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 
@@ -373,6 +379,7 @@ extension SwiftDataSnipLibrary {
       context.insert(StoredCloudFullEnrollment(namespaceKey: namespaceKey, referencesData: data))
     }
     try afterMutationBeforeSave()
+    try lock.check()
     try context.save()
   }
 
@@ -461,6 +468,7 @@ extension SwiftDataSnipLibrary {
         }
       }
       try afterMutationBeforeSave()
+      try lock.check()
       try context.save()
     } catch {
       context.rollback()
