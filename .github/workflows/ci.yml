@@ -25,7 +25,18 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run tests
+        env:
+          SNIP_SNAP_DERIVED_DATA: ${{ runner.temp }}/snip-snap-mac-tests
         run: ./scripts/test.sh --mac-only
+
+      - name: Report Mac test failures
+        if: failure()
+        run: |
+          for result in "$RUNNER_TEMP/snip-snap-mac-tests/mac/Logs/Test/"*.xcresult; do
+            if [ -d "$result" ]; then
+              xcrun xcresulttool get test-results summary --path "$result"
+            fi
+          done
 
   ios:
     name: iOS tests and bundle checks
