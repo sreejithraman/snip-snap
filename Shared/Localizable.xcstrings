@@ -1,6 +1,8 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Search All" : {},
+    "Find snips in every list and Clipboard." : {},
     "Couldn’t read the clipboard. Copy the content again, then tap Paste." : {},
     "Couldn’t save the pasted content. Try again." : {},
     "No pinned entries" : {},
