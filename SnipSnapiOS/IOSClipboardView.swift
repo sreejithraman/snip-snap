@@ -26,6 +26,13 @@ struct IOSClipboardView: View {
 
     var body: some View {
         List {
+            if let error = model.pasteErrorMessage {
+                Section {
+                    Label(error, systemImage: "clipboard")
+                    Button("Dismiss") { model.dismissPasteError() }
+                }
+                .accessibilityIdentifier("clipboard-paste-error")
+            }
             if let error = model.importErrorMessage {
                 Section {
                     Label(error, systemImage: "exclamationmark.triangle")
@@ -108,7 +115,7 @@ struct IOSClipboardView: View {
             }
         )
         .overlay {
-            if entries.isEmpty && model.errorMessage == nil && model.importErrorMessage == nil {
+            if entries.isEmpty && model.errorMessage == nil && model.importErrorMessage == nil && model.pasteErrorMessage == nil {
                 CollectionEmptyState(
                     title: searchText.isEmpty ? String(localized: "Nothing captured yet") : String(localized: "No Results"),
                     systemImage: searchText.isEmpty ? "clipboard" : "magnifyingglass",

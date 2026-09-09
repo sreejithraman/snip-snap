@@ -75,6 +75,36 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(model.entries.first?.imageRepresentations.first?.data, bytes)
     }
 
+    func testUnreadableTextPasteDoesNotBecomeCloudOrFileError() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = IOSClipboardModel(rootURL: root, settings: SyncedContentSettingsModel(mode: .localOnly), preferences: UserDefaults(suiteName: UUID().uuidString)!)
+        let text = NSItemProvider(object: "Keep this text" as NSString)
+        await model.capture([text])
+        let savedIDs = model.entries.map(\.id)
+        XCTAssertEqual(model.entries.first?.text, "Keep this text")
+        let unreadableText = NSItemProvider()
+        unreadableText.registerDataRepresentation(forTypeIdentifier: UTType.utf8PlainText.identifier, visibility: .all) { completion in
+            completion(nil, CocoaError(.fileReadUnknown))
+            return nil
+        }
+        await model.capture([unreadableText])
+        XCTAssertNil(model.errorMessage)
+        XCTAssertTrue(model.pasteErrorMessage?.contains("clipboard") == true)
+        XCTAssertEqual(model.entries.map(\.id), savedIDs)
+        await model.synchronize()
+        XCTAssertNotNil(model.pasteErrorMessage)
+        model.dismissPasteError()
+        XCTAssertNil(model.pasteErrorMessage)
+        await model.capture([])
+        XCTAssertNotNil(model.pasteErrorMessage)
+        XCTAssertNil(model.errorMessage)
+        await model.capture([text])
+        XCTAssertNil(model.pasteErrorMessage)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.entries.first?.text, "Keep this text")
+    }
+
     func testRichTextOnlyClipboardPayloadHasTextForPreviewAndSearch() throws {
         let richText = NSAttributedString(string: "Rich clipboard text")
         let rtf = try richText.data(from: NSRange(location: 0, length: richText.length),
