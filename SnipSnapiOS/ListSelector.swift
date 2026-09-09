@@ -179,13 +179,9 @@ struct ListSelector: View {
                     }
             )
             .animation(animation, value: hoveringAdd)
-            .onChange(of: hoveringAdd) { _, isHovering in
-                guard isHovering, dragPosition != nil, !presentingCreation, sheet == nil else { return }
-                model.haptics.emit(.snap, for: model.haptics.beginInteraction())
-            }
-            .onChange(of: nearest) { _, _ in
-                guard dragPosition != nil, !hoveringAdd, !presentingCreation, sheet == nil else { return }
-                model.haptics.emit(.selection, for: model.haptics.beginInteraction())
+            .onChange(of: hoveringAdd ? items.count : nearest) { _, destination in
+                guard dragPosition != nil, !presentingCreation, sheet == nil else { return }
+                model.haptics.emit(destination == items.count ? .snap : .selection, for: model.haptics.beginInteraction())
             }
             // Animate only this strip after release, never the shared model update.
             .animation(dragPosition == nil ? animation : nil, value: dragPosition == nil)
