@@ -3459,6 +3459,21 @@ final class ListSelectorGeometryTests: XCTestCase {
         XCTAssertEqual(geometry.nearestIndex(to: 500), 2)
     }
 
+    func testLensWidthStaysContinuousAcrossSelectionBoundaries() {
+        let geometry = ListSelectorGeometry(widths: [80, 160, 100])
+        for (index, center) in geometry.centers.enumerated() {
+            XCTAssertEqual(geometry.lensWidth(at: center), geometry.widths[index], accuracy: 0.001)
+        }
+        let boundary = (geometry.centers[0] + geometry.centers[1]) / 2
+        XCTAssertNotEqual(geometry.nearestIndex(to: boundary - 0.01), geometry.nearestIndex(to: boundary + 0.01))
+        XCTAssertEqual(geometry.lensWidth(at: boundary - 0.01), geometry.lensWidth(at: boundary + 0.01), accuracy: 0.1)
+        XCTAssertEqual(geometry.lensWidth(at: boundary), 120, accuracy: 0.001)
+        XCTAssertEqual(geometry.lensWidth(at: -100), 80)
+        XCTAssertEqual(geometry.lensWidth(at: 500), 100)
+        XCTAssertEqual(ListSelectorGeometry(widths: [80]).lensWidth(at: 500), 80)
+        XCTAssertEqual(ListSelectorGeometry(widths: []).lensWidth(at: 0), 96)
+    }
+
     func testPullUsesFingerDistanceAndDoesNotAddAList() {
         let geometry = ListSelectorGeometry(widths: [80])
         XCTAssertEqual(geometry.pullProgress(at: 40), 0)

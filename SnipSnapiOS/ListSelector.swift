@@ -28,6 +28,16 @@ struct ListSelectorGeometry {
         centers.indices.min { abs(centers[$0] - position) < abs(centers[$1] - position) } ?? 0
     }
 
+    func lensWidth(at position: CGFloat) -> CGFloat {
+        guard let first = widths.first else { return 96 }
+        guard let upper = centers.firstIndex(where: { $0 > position }) else { return widths.last ?? first }
+        guard upper > 0 else { return first }
+        let lower = upper - 1
+        let fraction = (position - centers[lower]) / (centers[upper] - centers[lower])
+        let blend = fraction * fraction * (3 - 2 * fraction)
+        return widths[lower] + (widths[upper] - widths[lower]) * blend
+    }
+
     func pullProgress(at position: CGFloat) -> CGFloat {
         min(1, max(0, position - (centers.last ?? 0)) / Self.pullThreshold)
     }
@@ -125,7 +135,7 @@ struct ListSelector: View {
             let progress = presentingCreation ? 1 : geometry.pullProgress(at: position)
             let cursor = presentingCreation ? geometry.plusCenter : geometry.resisted(position)
             let nearest = geometry.nearestIndex(to: cursor)
-            let baseWidth = geometry.widths.indices.contains(nearest) ? geometry.widths[nearest] : 96
+            let baseWidth = geometry.lensWidth(at: cursor)
             let lensWidth = baseWidth + (height - baseWidth) * progress
             let tint = items.indices.contains(nearest) ? items[nearest].color : Color.primary
 
