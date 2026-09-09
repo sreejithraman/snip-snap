@@ -8,7 +8,7 @@ import UIKit
 private enum CompactControlMetrics {
     static let minimumInteractiveLength: CGFloat = 44
     static let selectorTransitionDuration: TimeInterval = 0.2
-    static let composerTransitionDuration: TimeInterval = 0.35
+    static let contentTransitionDuration: TimeInterval = 0.35
 }
 
 private struct CompactGlassCircleButton<Label: View>: View {
@@ -41,7 +41,6 @@ struct CompactLibraryControls: View {
     @State private var draft = ComposerDraft()
     @State private var clipboardHasContent = false
     @State private var isBrowsingLists = false
-    @State private var pasteIsVisible = false
     @State private var previewURL: URL?
     @State private var isImporting = false
     @State private var composerFieldID = UUID()
@@ -77,6 +76,10 @@ struct CompactLibraryControls: View {
 
     private var showsComposer: Bool { !model.showsClipboard && !isSelecting }
 
+    private var contentTransition: Animation? {
+        reduceMotion ? nil : .easeInOut(duration: CompactControlMetrics.contentTransitionDuration)
+    }
+
     var body: some View {
         VStack(spacing: SnipSnapSpacing.relatedContent) {
             GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
@@ -85,13 +88,15 @@ struct CompactLibraryControls: View {
                         .transition(reduceMotion ? .opacity : .offset(y: 8).combined(with: .opacity))
                 }
             }
-            .animation(reduceMotion ? nil : .easeInOut(duration: CompactControlMetrics.composerTransitionDuration), value: showsComposer)
+            .animation(contentTransition, value: showsComposer)
             if showsListTabs {
                 selectorRow
             } else if model.showsClipboard {
                 pasteButton
+                    .transition(.opacity)
             }
         }
+        .animation(contentTransition, value: model.showsClipboard)
         .padding(.horizontal, SnipSnapSpacing.cardContentInset)
         .padding(.top, SnipSnapSpacing.relatedContent)
         .padding(.bottom, 6)
@@ -147,27 +152,27 @@ struct CompactLibraryControls: View {
 
                 HStack {
                     Spacer()
-                    if pasteIsVisible {
+                    if showsPasteAction {
                         pasteButton
                             .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .trailing)))
                     }
                 }
+                .animation(pasteBrowsingTransition, value: isBrowsingLists)
             }
             .animation(reduceMotion ? nil : .easeInOut(duration: CompactControlMetrics.selectorTransitionDuration), value: isBrowsingLists)
-            .animation(reduceMotion ? nil : .easeInOut(duration: CompactControlMetrics.selectorTransitionDuration), value: model.showsClipboard)
         }
         .frame(height: max(48, controlLength) + 8)
-        .task(id: showsPasteAction) {
-            if showsPasteAction && !reduceMotion {
-                do {
-                    try await Task.sleep(for: .seconds(CompactControlMetrics.selectorTransitionDuration))
-                } catch { return }
-            }
-            guard !Task.isCancelled else { return }
-            withAnimation(reduceMotion ? nil : .easeInOut(duration: CompactControlMetrics.selectorTransitionDuration)) {
-                pasteIsVisible = showsPasteAction
-            }
+    }
+
+    private var pasteBrowsingTransition: Animation? {
+        guard !reduceMotion else { return nil }
+        let collapseDuration = CompactControlMetrics.selectorTransitionDuration
+        if isBrowsingLists {
+            return .easeInOut(duration: collapseDuration)
         }
+        // Finish alongside the input after the strip has made room for Paste.
+        return .easeInOut(duration: CompactControlMetrics.contentTransitionDuration - collapseDuration)
+            .delay(collapseDuration)
     }
 
     private var showsPasteAction: Bool { model.showsClipboard && !isBrowsingLists }
