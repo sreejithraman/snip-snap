@@ -54,6 +54,26 @@ struct IOSAppRootView: View {
                 .frame(width: 0, height: 0)
         }
 #if DEBUG
+        .overlayPreferenceValue(DevelopmentMenuBoundsKey.self) { anchor in
+            if let anchor,
+               let bundleID = Bundle.main.bundleIdentifier,
+               let suffix = bundleID.components(separatedBy: ".dev").last,
+               bundleID.contains(".dev"), let slot = Int(suffix) {
+                GeometryReader { geometry in
+                    let bounds = geometry[anchor]
+                    Text(verbatim: "DEV \(slot)")
+                        .font(.system(size: 9, weight: .bold))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(.yellow, in: Capsule())
+                        .foregroundStyle(.black)
+                        .fixedSize()
+                        .position(x: bounds.maxX - 4, y: bounds.minY)
+                }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+        }
         .overlay(alignment: .topTrailing) {
             if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_HAPTICS"] == "1" {
                 Text(verbatim: model.haptics.event.map {
@@ -67,7 +87,8 @@ struct IOSAppRootView: View {
             }
         }
         .overlay(alignment: .bottomLeading) {
-            if let bundleID = Bundle.main.bundleIdentifier,
+            if UIDevice.current.userInterfaceIdiom != .phone,
+               let bundleID = Bundle.main.bundleIdentifier,
                let suffix = bundleID.components(separatedBy: ".dev").last,
                bundleID.contains(".dev"), let slot = Int(suffix) {
                 Text(verbatim: "DEV \(slot)")
