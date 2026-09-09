@@ -6,7 +6,8 @@ import SwiftData
 
 extension SwiftDataSnipLibrary {
   package func commitCloudFullBatch(
-    _ batch: CloudFullBatchCommit
+    _ batch: CloudFullBatchCommit,
+    afterSave: @Sendable () -> Void = {}
   ) throws -> CloudFullBatchCommitResult {
     guard batch.storageVersion == 1 else { throw CloudFullStorageError.invalidBatchReplay }
     guard let container else { throw SnipLibraryError.storeUnavailable }
@@ -48,6 +49,7 @@ extension SwiftDataSnipLibrary {
       else { throw CloudFullStorageError.namespaceStateMismatch }
     }
 
+    try lock.check()
     let existing = try context.fetch(FetchDescriptor(
       predicate: #Predicate<StoredCloudEntityRecord> { $0.namespaceKey == namespaceKey }
     ))
@@ -80,6 +82,7 @@ extension SwiftDataSnipLibrary {
       context: context
     )
     for binding in batch.outboundBindings {
+      try lock.check()
       let identityKey = StoredCloudEntityRecord.identityKey(
         namespaceKey: batch.namespaceKey,
         identity: binding.identity
@@ -89,6 +92,7 @@ extension SwiftDataSnipLibrary {
       else { throw CloudFullStorageError.invalidBatchReplay }
     }
     for item in batch.items {
+      try lock.check()
       let domainKey = StoredCloudEntityRecord.domainKey(
         namespaceKey: batch.namespaceKey,
         reference: item.accepted.reference
@@ -125,6 +129,7 @@ extension SwiftDataSnipLibrary {
     var acceptedItems: [CloudFullBatchItem] = []
     var quarantineItems: [CloudQuarantineInput] = []
     for item in batch.items {
+      try lock.check()
       try Self.validateLocalMutation(
         item.localMutation,
         precondition: item.localPrecondition,
@@ -211,6 +216,7 @@ extension SwiftDataSnipLibrary {
     })
     do {
       for recovery in batch.recoveryInputs {
+        try lock.check()
         guard recovery.namespaceKey == batch.namespaceKey,
           recovery.batchID == batch.batchID,
           recovery.storageVersion == 1
@@ -218,6 +224,7 @@ extension SwiftDataSnipLibrary {
         try Self.insertFullRecoveryIfNeeded(recovery, context: context)
       }
       for review in batch.recoveryReviews {
+        try lock.check()
         try Self.insertRecoveryReviewIfNeeded(
           review.recovery,
           namespaceKey: batch.namespaceKey,
@@ -233,6 +240,7 @@ extension SwiftDataSnipLibrary {
         context.delete(record)
       }
       for quarantine in quarantineItems {
+        try lock.check()
         try Self.insertQuarantineIfNeeded(
           quarantine,
           namespaceKey: batch.namespaceKey,
@@ -240,6 +248,7 @@ extension SwiftDataSnipLibrary {
         )
       }
       for item in acceptedItems {
+        try lock.check()
         let value = item.accepted
         let domainKey = StoredCloudEntityRecord.domainKey(
           namespaceKey: batch.namespaceKey,
@@ -303,6 +312,7 @@ extension SwiftDataSnipLibrary {
         }
       }
       for record in byDomain.values where record.isDeferred {
+        try lock.check()
         guard let dependency = record.dependencyListID,
           knownLists.contains(dependency),
           let mutationData = record.deferredMutationData
@@ -330,13 +340,17 @@ extension SwiftDataSnipLibrary {
         record.isDeferred = false
         record.deferredMutationData = nil
       }
+      try lock.check()
       try applyCloudAttachmentTransitions(
         namespaceKey: batch.namespaceKey,
         transitions: batch.attachmentTransitions,
         context: context
       )
+      try lock.check()
       try materializeCloudAttachments(namespaceKey: batch.namespaceKey, context: context)
+      try lock.check()
       try Self.resolveStoredListNames(context: context)
+      try lock.check()
       let final = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
       do {
         try Self.validate(final.state)
@@ -399,25 +413,19 @@ extension SwiftDataSnipLibrary {
         }
       for receipt in receipts.dropFirst(256) { context.delete(receipt) }
       try afterMutationBeforeSave()
+      try lock.check()
       try context.save()
+      afterSave()
+      lastKnownState = final.state
+      seenRequestIDs = final.state.seenRequestIDs
     } catch {
       context.rollback()
       throw error
     }
-    for file in acceptedUploadFiles {
-      try? FileManager.default.removeItem(at: file)
-      try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
+    for file in acceptedUploadFiles + invalidatedCacheFiles {
+      if (try? lock.check()) == nil { break }
+      CloudAttachmentCacheFiles.remove(file, includingParentDirectory: true)
     }
-    for file in invalidatedCacheFiles {
-      try? FileManager.default.removeItem(at: file)
-      try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
-    }
-    let loaded = try Self.load(
-      context: Self.makeContext(container: container),
-      seenRequestIDs: seenRequestIDs
-    )
-    lastKnownState = loaded.state
-    seenRequestIDs = loaded.state.seenRequestIDs
     return .applied
   }
 

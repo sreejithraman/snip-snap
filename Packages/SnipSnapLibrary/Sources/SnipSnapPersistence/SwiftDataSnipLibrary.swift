@@ -6,18 +6,44 @@ import UniformTypeIdentifiers
 
 final class SnipStoreFileLock {
   private let descriptor: Int32
+  private let backgroundActivity: SnipStoreBackgroundActivity?
 
   init(url: URL) throws {
-    descriptor = Darwin.open(url.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
-    guard descriptor >= 0, flock(descriptor, LOCK_EX) == 0 else {
-      if descriptor >= 0 { Darwin.close(descriptor) }
-      throw SnipLibraryError.storeUnavailable
+    let activity = try SnipStoreBackgroundActivity.begin()
+    var opened: Int32 = -1
+    do {
+      opened = Darwin.open(url.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+      guard opened >= 0 else { throw SnipLibraryError.storeUnavailable }
+      if let activity {
+        // Check expiry while waiting for another store instance to unlock.
+        while flock(opened, LOCK_EX | LOCK_NB) != 0 {
+          guard errno == EWOULDBLOCK || errno == EINTR else {
+            throw SnipLibraryError.storeUnavailable
+          }
+          try activity.check()
+          Thread.sleep(forTimeInterval: 0.01)
+        }
+      } else {
+        guard flock(opened, LOCK_EX) == 0 else { throw SnipLibraryError.storeUnavailable }
+      }
+      try activity?.check()
+      descriptor = opened
+      backgroundActivity = activity
+    } catch {
+      if opened >= 0 { Darwin.close(opened) }
+      activity?.finish()
+      throw error
     }
+  }
+
+  func check() throws {
+    try backgroundActivity?.check()
   }
 
   deinit {
     flock(descriptor, LOCK_UN)
     Darwin.close(descriptor)
+    backgroundActivity?.finish()
   }
 }
 
@@ -97,17 +123,20 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     if loaded.lists.isEmpty {
       guard loaded.isEmpty else { throw SnipLibraryError.invalidStore }
       context.insert(StoredListRecord(.inbox))
+      try lock.check()
       try context.save()
       loaded = try Self.load(context: Self.makeContext(container: container), seenRequestIDs: [])
     }
     if try Self.backfillLibraryMetadata(loaded, context: context) {
       try metadataBackfillHook(.beforeSave)
+      try lock.check()
       try context.save()
       try metadataBackfillHook(.afterSave)
       loaded = try Self.load(context: Self.makeContext(container: container), seenRequestIDs: [])
     }
     if try Self.backfillCloudFullRecords(context: context) {
       try cloudFullRecordBackfillHook(.beforeSave)
+      try lock.check()
       try context.save()
       try cloudFullRecordBackfillHook(.afterSave)
     }
@@ -242,6 +271,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     )
     try validate(state)
     try applyChanges(from: loaded, to: state, context: context)
+    try lock.check()
     try context.save()
   }
 
@@ -365,6 +395,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       {
         try Self.applyChanges(from: loaded, to: state, context: context)
         try afterMutationBeforeSave()
+        try lock.check()
         try context.save()
       }
       seenRequestIDs = state.seenRequestIDs

@@ -4,6 +4,7 @@ import SnipSnapCore
 
 public enum SnipSnapCloudSyncIssueMapper {
   public static func issue(for error: any Error) -> SyncedContentSyncIssue {
+    if error is CancellationError { return .someChangesPending }
     if let issueError = error as? CloudSyncIssueError {
       return issueError.issue
     }

@@ -508,6 +508,7 @@ package actor SnipSnapICloudSyncLifecycle {
   }
 
   private nonisolated static func isRetryableSetupError(_ error: Error) -> Bool {
+    if error is CancellationError { return true }
     if let error = error as? ICloudAccountGateError {
       return error == .temporarilyUnavailable || error == .couldNotDetermine
     }

@@ -131,6 +131,7 @@ extension SwiftDataSnipLibrary {
         context.delete(event)
       }
       try afterMutationBeforeSave()
+      try lock.check()
       try context.save()
       seenRequestIDs = state.seenRequestIDs
       lastKnownState = state

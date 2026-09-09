@@ -297,6 +297,53 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     )
   }
 
+  func testBackgroundExpiryKeepsEnablePendingAndResumesOnLaterSync() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("ICloudSyncPendingEnable-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = try JSONSnipLibrary(
+      fileURL: root.appendingPathComponent("source.json", isDirectory: false)
+    )
+    _ = try await source.add(content: "keep local", origin: .quickEntry)
+    let server = FakeCloudServer()
+    let control = FakeCloudControlTransport(server: server)
+    let descriptor = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    let syncRoot = root.appendingPathComponent("SyncMode", isDirectory: true)
+    func lifecycle() -> SnipSnapICloudSyncLifecycle {
+      SnipSnapICloudSyncLifecycle(
+        rootURL: syncRoot,
+        sourceLibrary: source,
+        syncModeStore: nil,
+        cloudScope: "private",
+        accountLineage: "account-a",
+        ownerName: "owner",
+        controlTransport: control,
+        makeRecordTransport: { context in
+          FakeCloudRecordTransport(server: server, namespace: context.namespace)
+        },
+        makeDescriptor: { descriptor }
+      )
+    }
+
+    let first = try await SnipStoreBackgroundActivity.$runner.withValue({ expire in
+      expire()
+      return {}
+    }) {
+      try await lifecycle().enableICloudSync()
+    }
+    XCTAssertEqual(first, .settingUp(.someChangesPending))
+    XCTAssertNil(SyncModeActivationManifestReader.activeCloudNamespace(
+      atSyncModeRootURL: syncRoot
+    ))
+
+    let resumed = try await lifecycle().synchronize()
+
+    XCTAssertEqual(resumed, .iCloudSyncEnabled)
+    XCTAssertNotNil(SyncModeActivationManifestReader.activeCloudNamespace(
+      atSyncModeRootURL: syncRoot
+    ))
+  }
+
   func testOfflineEnableStaysPendingAndResumesOnLaterSync() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("ICloudSyncPendingEnable-\(UUID().uuidString)")

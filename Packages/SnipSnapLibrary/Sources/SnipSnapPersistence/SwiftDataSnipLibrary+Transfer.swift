@@ -15,6 +15,8 @@ extension SwiftDataSnipLibrary {
       }
     }
     guard let container else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
     let context = Self.makeContext(container: container)
     let transferMetadata = try Self.transferMetadata(context: context)
     return SnipLibraryTransferSnapshot(
@@ -37,6 +39,8 @@ extension SwiftDataSnipLibrary {
       digests[id] = try AttachmentFileIO.digest(at: url)
     }
     guard let container else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
     let context = Self.makeContext(container: container)
     let transferMetadata = try Self.transferMetadata(context: context)
     return SnipLibraryTransferSnapshot(
@@ -138,6 +142,7 @@ extension SwiftDataSnipLibrary {
     let currentSnips = loaded.state.allSnips(sortMode: .manual)
     var currentAttachmentData: [UUID: Data] = [:]
     for attachment in currentSnips.flatMap(\.attachments) {
+      try lock.check()
       let url = attachmentRootURL.appendingPathComponent(attachment.relativePath)
       do {
         currentAttachmentData[attachment.id] = try Data(contentsOf: url)
@@ -163,7 +168,9 @@ extension SwiftDataSnipLibrary {
 
     do {
       for snipIndex in transferredSnips.indices {
+        try lock.check()
         for attachmentIndex in transferredSnips[snipIndex].attachments.indices {
+          try lock.check()
           var attachment = transferredSnips[snipIndex].attachments[attachmentIndex]
           let safeName = URL(fileURLWithPath: attachment.fileName).lastPathComponent
           guard !safeName.isEmpty else { throw SnipLibraryError.attachmentCopyFailed }
@@ -206,6 +213,7 @@ extension SwiftDataSnipLibrary {
       try Self.applyChanges(from: loaded, to: state, context: context)
       try Self.replaceDormantBases(with: plan.opaqueSyncStatePayload, context: context)
       try afterMutationBeforeSave()
+      try lock.check()
       try context.save()
       seenRequestIDs = state.seenRequestIDs
       lastKnownState = state
@@ -244,6 +252,7 @@ extension SwiftDataSnipLibrary {
     let currentSnips = loaded.state.allSnips(sortMode: .manual)
     var currentAttachmentData: [UUID: Data] = [:]
     for attachment in currentSnips.flatMap(\.attachments) {
+      try lock.check()
       let url = attachmentRootURL.appendingPathComponent(attachment.relativePath)
       currentAttachmentData[attachment.id] = try Data(contentsOf: url)
     }
@@ -309,7 +318,9 @@ extension SwiftDataSnipLibrary {
     var transferredSnips = plan.snips
     do {
       for snipIndex in transferredSnips.indices {
+        try lock.check()
         for attachmentIndex in transferredSnips[snipIndex].attachments.indices {
+          try lock.check()
           var attachment = transferredSnips[snipIndex].attachments[attachmentIndex]
           guard let bytes = plan.attachmentData[attachment.id] else {
             throw SnipLibraryError.attachmentCopyFailed
@@ -354,6 +365,7 @@ extension SwiftDataSnipLibrary {
         digest: plan.planDigest
       ))
       try afterMutationBeforeSave()
+      try lock.check()
       try context.save()
       seenRequestIDs = state.seenRequestIDs
       lastKnownState = state
