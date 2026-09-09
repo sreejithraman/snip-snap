@@ -91,9 +91,13 @@ struct CompactLibraryControls: View {
             .animation(contentTransition, value: showsComposer)
             if showsListTabs {
                 selectorRow
-            } else if model.showsClipboard {
-                pasteButton
-                    .transition(.opacity)
+            } else {
+                GlassEffectContainer {
+                    if model.showsClipboard {
+                        pasteButton
+                            .transition(.opacity)
+                    }
+                }
             }
         }
         .animation(contentTransition, value: model.showsClipboard)
@@ -150,11 +154,13 @@ struct CompactLibraryControls: View {
                 .frame(width: isBrowsingLists ? proxy.size.width : restingWidth)
                 .frame(maxWidth: .infinity)
 
-                HStack {
-                    Spacer()
-                    if showsPasteAction {
-                        pasteButton
-                            .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .trailing)))
+                GlassEffectContainer {
+                    HStack {
+                        Spacer()
+                        if showsPasteAction {
+                            pasteButton
+                                .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .trailing)))
+                        }
                     }
                 }
                 .animation(pasteBrowsingTransition, value: isBrowsingLists)
@@ -188,6 +194,8 @@ struct CompactLibraryControls: View {
         .disabled(!clipboardHasContent)
         .accessibilityLabel("Paste")
         .accessibilityIdentifier("paste-to-clipboard")
+        .glassEffectID("paste", in: composerGlass)
+        .glassEffectTransition(.materialize)
     }
 
     private func updatePasteAvailability() {
