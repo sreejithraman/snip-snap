@@ -252,9 +252,12 @@ struct IOSAppRootView: View {
     private var appNavigation: some View {
         if horizontalSizeClass == .compact {
             NavigationStack {
-                Group {
+                ZStack {
                     if model.showsClipboard {
-                        IOSClipboardView(model: session.clipboard)
+                        IOSClipboardView(
+                            model: session.clipboard,
+                            settings: { sheet = .settings }
+                        )
                     } else {
                     SnipCollectionView(
                         model: model,
@@ -284,8 +287,10 @@ struct IOSAppRootView: View {
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     CompactLibraryControls(
                         model: model,
+                        clipboard: session.clipboard,
                         storage: compactComposerStorage,
                         isComposerFocused: $isCompactComposerFocused,
+                        isSelecting: collectionEditMode.isEditing,
                         sheet: $sheet
                     )
                 }
@@ -300,9 +305,12 @@ struct IOSAppRootView: View {
                 )
             } detail: {
                 NavigationStack {
-                    Group {
+                    ZStack {
                         if model.showsClipboard {
-                            IOSClipboardView(model: session.clipboard)
+                            IOSClipboardView(
+                            model: session.clipboard,
+                            settings: { sheet = .settings }
+                        )
                         } else {
                         SnipCollectionView(
                             model: model,
@@ -319,9 +327,11 @@ struct IOSAppRootView: View {
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         CompactLibraryControls(
                             model: model,
+                            clipboard: session.clipboard,
                             storage: compactComposerStorage,
                             isComposerFocused: $isCompactComposerFocused,
                             showsListTabs: false,
+                            isSelecting: collectionEditMode.isEditing,
                             sheet: $sheet
                         )
                     }
