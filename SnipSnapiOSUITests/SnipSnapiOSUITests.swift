@@ -648,6 +648,14 @@ final class SnipSnapiOSUITests: XCTestCase {
         let start = selector.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         start.press(
             forDuration: 0.05,
+            thenDragTo: start.withOffset(CGVector(dx: -20, dy: 0)),
+            withVelocity: XCUIGestureVelocity(rawValue: 80),
+            thenHoldForDuration: 0.5
+        )
+        XCTAssertEqual(app.staticTexts["haptic-event"].label, initialEvent)
+        XCTAssertTrue(app.navigationBars["Clipboard"].exists)
+        start.press(
+            forDuration: 0.05,
             thenDragTo: start.withOffset(CGVector(dx: -130, dy: 0)),
             withVelocity: XCUIGestureVelocity(rawValue: 80),
             thenHoldForDuration: 1

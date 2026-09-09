@@ -105,13 +105,15 @@ struct ListSelector: View {
         model.showsClipboard ? "clipboard-tab" : "list-tab-\(model.selectedListID.uuidString)"
     }
 
-    private func select(_ item: ListSelectorItem) {
+    private func select(_ item: ListSelectorItem, feedback: Bool = true) {
         guard item.id != selectedItemID else { return }
         switch item {
         case .clipboard: model.showsClipboard = true
         case .list(let list): model.selectList(list.id)
         }
-        model.haptics.emit(.selection, for: model.haptics.beginInteraction())
+        if feedback {
+            model.haptics.emit(.selection, for: model.haptics.beginInteraction())
+        }
     }
 
     var body: some View {
@@ -168,11 +170,15 @@ struct ListSelector: View {
                         } else {
                             let index = geometry.nearestIndex(to: released)
                             if items.indices.contains(index) {
-                                select(items[index])
+                                select(items[index], feedback: false)
                             }
                         }
                     }
             )
+            .onChange(of: nearest) { _, _ in
+                guard dragPosition != nil, !presentingCreation, sheet == nil else { return }
+                model.haptics.emit(.selection, for: model.haptics.beginInteraction())
+            }
             // Animate only this strip after release, never the shared model update.
             .animation(dragPosition == nil ? animation : nil, value: dragPosition == nil)
             .animation(dragPosition == nil ? animation : nil, value: selectedItemID)
