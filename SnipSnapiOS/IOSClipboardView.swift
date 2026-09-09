@@ -5,17 +5,17 @@ import UniformTypeIdentifiers
 
 struct IOSClipboardView: View {
     let model: IOSClipboardModel
+    let libraryModel: IOSAppModel
+    let copyShare: IOSCopyShareCoordinator
+    @Binding var sheet: AppSheet?
     var settings: () -> Void = {}
-    @State private var isSearchPresented = false
     @State private var onlyPinned = false
     @State private var newestFirst = true
-    @State private var searchText = ""
     @State private var confirmsClear = false
 
     private var entries: [ClipboardEntry] {
         Self.orderedEntries(model.entries.filter {
-            (!onlyPinned || $0.isPinned)
-                && (searchText.isEmpty || $0.searchText.localizedCaseInsensitiveContains(searchText))
+            !onlyPinned || $0.isPinned
         }, newestFirst: newestFirst)
     }
 
@@ -26,17 +26,59 @@ struct IOSClipboardView: View {
     }
 
     private var emptyTitle: String {
-        if !searchText.isEmpty { return String(localized: "No Results") }
         return onlyPinned ? String(localized: "No pinned entries") : String(localized: "Nothing captured yet")
     }
 
     private var emptyDetail: String {
-        if !searchText.isEmpty { return String(localized: "Try a different search.") }
         return onlyPinned ? String(localized: "Pin a clipboard entry to keep it here.")
             : String(localized: "Paste here or share content to Clipboard.")
     }
 
+    @ViewBuilder
+    private var clipboardToolbar: some View {
+        Group {
+            Menu("View Options", systemImage: "line.3.horizontal.decrease") {
+                Section("Show") {
+                    Picker("Show", selection: $onlyPinned) {
+                        Text("All").tag(false)
+                        Text("Pinned").tag(true)
+                    }.pickerStyle(.inline)
+                }
+                Section("Sort") {
+                    Picker("Sort", selection: $newestFirst) {
+                        Text("Newest First").tag(true)
+                        Text("Oldest First").tag(false)
+                    }.pickerStyle(.inline)
+                }
+            }
+            .accessibilityIdentifier("workflow-options")
+            Menu("Library Actions", systemImage: "ellipsis") {
+                Button("Clear History", systemImage: "trash", role: .destructive) { confirmsClear = true }
+                    .disabled(!model.entries.contains { !$0.isPinned })
+                Divider()
+                Button("Settings", systemImage: "gearshape", action: settings)
+                    .accessibilityIdentifier("settings")
+            }
+            .accessibilityIdentifier("library-actions")
+        }
+    }
+
     var body: some View {
+        Group {
+            if libraryModel.isSearchPresented {
+                LibrarySearchView(model: libraryModel, clipboard: model, copyShare: copyShare, sheet: $sheet)
+            } else {
+                clipboardContent
+            }
+        }
+        .modifier(CollectionScreenPresentation(
+            title: String(localized: "Clipboard"),
+            showsControls: !libraryModel.isSearchPresented,
+            trailingControls: clipboardToolbar
+        ))
+    }
+
+    private var clipboardContent: some View {
         List {
             if let error = model.pasteErrorMessage {
                 Section {
@@ -121,43 +163,10 @@ struct IOSClipboardView: View {
             if entries.isEmpty && model.errorMessage == nil && model.importErrorMessage == nil && model.pasteErrorMessage == nil {
                 CollectionEmptyState(
                     title: emptyTitle,
-                    systemImage: searchText.isEmpty ? (onlyPinned ? "pin" : "clipboard") : "magnifyingglass",
+                    systemImage: onlyPinned ? "pin" : "clipboard",
                     detail: emptyDetail
                 )
                 .accessibilityIdentifier("empty-clipboard")
-            }
-        }
-        .modifier(CollectionScreenPresentation(
-            title: String(localized: "Clipboard"),
-            searchPrompt: String(localized: "Search Clipboard"),
-            searchText: $searchText,
-            isSearchPresented: $isSearchPresented
-        ))
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Menu("View Options", systemImage: "line.3.horizontal.decrease") {
-                    Section("Show") {
-                        Picker("Show", selection: $onlyPinned) {
-                            Text("All").tag(false)
-                            Text("Pinned").tag(true)
-                        }.pickerStyle(.inline)
-                    }
-                    Section("Sort") {
-                        Picker("Sort", selection: $newestFirst) {
-                            Text("Newest First").tag(true)
-                            Text("Oldest First").tag(false)
-                        }.pickerStyle(.inline)
-                    }
-                }
-                .accessibilityIdentifier("workflow-options")
-                Menu("Library Actions", systemImage: "ellipsis") {
-                    Button("Clear History", systemImage: "trash", role: .destructive) { confirmsClear = true }
-                        .disabled(!model.entries.contains { !$0.isPinned })
-                    Divider()
-                    Button("Settings", systemImage: "gearshape", action: settings)
-                        .accessibilityIdentifier("settings")
-                }
-                .accessibilityIdentifier("library-actions")
             }
         }
         .confirmationDialog("Clear Clipboard History?", isPresented: $confirmsClear, titleVisibility: .visible) {

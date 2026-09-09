@@ -7,7 +7,6 @@ import UIKit
 
 private enum CompactControlMetrics {
     static let minimumInteractiveLength: CGFloat = 44
-    static let selectorTransitionDuration: TimeInterval = 0.2
     static let contentTransitionDuration: TimeInterval = 0.35
 }
 
@@ -40,7 +39,7 @@ struct CompactLibraryControls: View {
 
     @State private var draft = ComposerDraft()
     @State private var clipboardHasContent = false
-    @State private var isBrowsingLists = false
+    @State private var toolbarWidth: CGFloat = 320
     @State private var previewURL: URL?
     @State private var isImporting = false
     @State private var composerFieldID = UUID()
@@ -89,9 +88,7 @@ struct CompactLibraryControls: View {
                 }
             }
             .animation(contentTransition, value: showsComposer)
-            if showsListTabs {
-                selectorRow
-            } else {
+            if !showsListTabs {
                 GlassEffectContainer {
                     if model.showsClipboard {
                         pasteButton
@@ -101,9 +98,42 @@ struct CompactLibraryControls: View {
             }
         }
         .animation(contentTransition, value: model.showsClipboard)
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, SnipSnapSpacing.cardContentInset)
         .padding(.top, SnipSnapSpacing.relatedContent)
         .padding(.bottom, 6)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
+        .toolbar {
+            if showsListTabs {
+                if !model.isSearchPresented {
+                    if model.showsClipboard {
+                        ToolbarItem(placement: .bottomBar) {
+                            Button("Paste", systemImage: "doc.on.clipboard") {
+                                let providers = UIPasteboard.general.itemProviders
+                                Task { await clipboard.capture(providers) }
+                            }
+                            .disabled(!clipboardHasContent)
+                            .accessibilityIdentifier("paste-to-clipboard")
+                        }
+                        ToolbarSpacer(.fixed, placement: .bottomBar)
+                    }
+                    ToolbarItem(placement: .bottomBar) {
+                        ListSelector(
+                            model: model,
+                            controlLength: controlLength,
+                            sheet: $sheet,
+                            deleteList: deleteList,
+                            labelViewport: listToolbarWidth
+                        )
+                        .frame(width: listToolbarWidth, height: max(48, controlLength) + 8)
+                    }
+                    .sharedBackgroundVisibility(.hidden)
+                    ToolbarSpacer(.flexible, placement: .bottomBar)
+                }
+                DefaultToolbarItem(kind: .search, placement: .bottomBar)
+
+            }
+        }
         .fileImporter(
             isPresented: $isImporting,
             allowedContentTypes: [.data],
@@ -138,50 +168,9 @@ struct CompactLibraryControls: View {
         }
     }
 
-    private var selectorRow: some View {
-        GeometryReader { proxy in
-            let actionLength = max(48, controlLength)
-            let restingWidth = max(64, min(256, proxy.size.width - 2 * (actionLength + SnipSnapSpacing.relatedContent)))
-            ZStack {
-                ListSelector(
-                    model: model,
-                    controlLength: controlLength,
-                    sheet: $sheet,
-                    deleteList: deleteList,
-                    labelViewport: restingWidth,
-                    browsingChanged: { isBrowsingLists = $0 }
-                )
-                .frame(width: isBrowsingLists ? proxy.size.width : restingWidth)
-                .frame(maxWidth: .infinity)
-
-                GlassEffectContainer {
-                    HStack {
-                        Spacer()
-                        if showsPasteAction {
-                            pasteButton
-                                .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .trailing)))
-                        }
-                    }
-                }
-                .animation(pasteBrowsingTransition, value: isBrowsingLists)
-            }
-            .animation(reduceMotion ? nil : .easeInOut(duration: CompactControlMetrics.selectorTransitionDuration), value: isBrowsingLists)
-        }
-        .frame(height: max(48, controlLength) + 8)
+    private var listToolbarWidth: CGFloat {
+        max(120, min(256, toolbarWidth - (model.showsClipboard ? 168 : 112)))
     }
-
-    private var pasteBrowsingTransition: Animation? {
-        guard !reduceMotion else { return nil }
-        let collapseDuration = CompactControlMetrics.selectorTransitionDuration
-        if isBrowsingLists {
-            return .easeInOut(duration: collapseDuration)
-        }
-        // Finish alongside the input after the strip has made room for Paste.
-        return .easeInOut(duration: CompactControlMetrics.contentTransitionDuration - collapseDuration)
-            .delay(collapseDuration)
-    }
-
-    private var showsPasteAction: Bool { model.showsClipboard && !isBrowsingLists }
 
     private var pasteButton: some View {
         CompactGlassCircleButton(length: max(48, controlLength)) {

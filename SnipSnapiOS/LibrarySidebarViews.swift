@@ -50,7 +50,7 @@ struct ListSidebarView: View {
                 .listContextActions(
                     list: list,
                     beforeDelete: model.haptics.invalidatePendingFeedback,
-                    edit: { sheet = .editList(id: list.id) },
+                    edit: { model.editListInline(id: list.id) },
                     delete: { Task { await model.deleteList(id: list.id) } }
                 )
             }
@@ -66,12 +66,12 @@ struct ListSidebarView: View {
                     reviewRecoveredEdits: model.recoverySnapshot.needsAttentionCount > 0
                         ? { sheet = .recoveryCenter }
                         : nil,
-                    editSelectedList: { sheet = .editList(id: model.selectedListID) }
+                    editSelectedList: { model.editListInline(id: model.selectedListID) }
                 )
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("New List", systemImage: "folder.badge.plus") {
-                    sheet = .newList
+                    Task { await model.openNewList() }
                 }
                 .accessibilityIdentifier("new-list")
             }
