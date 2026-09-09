@@ -1,3 +1,4 @@
+import Observation
 import SnipSnapCore
 import SnipSnapCloud
 import SnipSnapPersistence
@@ -342,12 +343,16 @@ final class IOSAppModelTests: XCTestCase {
         await session.model.load()
 
         await library.replaceText("After", for: snip.id)
-        automatic.continuation.yield(.contentUpdated)
-        for _ in 0..<20 {
-            if session.model.snips.first?.content == "After" { break }
-            await Task.yield()
+        let updated = expectation(description: "Automatic sync updates the visible snips")
+        withObservationTracking {
+            _ = session.model.snips
+        } onChange: {
+            updated.fulfill()
         }
+        automatic.continuation.yield(.contentUpdated)
+        let result = await XCTWaiter.fulfillment(of: [updated], timeout: 2)
 
+        XCTAssertEqual(result, .completed)
         XCTAssertEqual(session.model.snips.first?.content, "After")
     }
 
