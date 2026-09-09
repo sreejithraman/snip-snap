@@ -45,12 +45,6 @@ struct IOSAppRootView: View {
 
     private var searchNavigation: some View {
         appNavigation
-        .searchable(
-            text: Binding(get: { model.searchText }, set: { model.searchText = $0 }),
-            isPresented: Binding(get: { model.isSearchPresented }, set: { model.isSearchPresented = $0 }),
-            prompt: "Search All"
-        )
-        .searchToolbarBehavior(.minimize)
         .onChange(of: model.isSearchPresented) { _, presented in
             if presented {
                 isCompactComposerFocused = false
@@ -330,6 +324,11 @@ struct IOSAppRootView: View {
                     }
                 }
                 .libraryToast(model: model)
+                .background {
+                    if model.isSearchPresented {
+                        CompactLibrarySearchHost(model: model)
+                    }
+                }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     libraryControls()
                 }
@@ -373,6 +372,12 @@ struct IOSAppRootView: View {
                 }
             }
             .libraryToast(model: model)
+            .searchable(
+                text: Binding(get: { model.searchText }, set: { model.searchText = $0 }),
+                isPresented: Binding(get: { model.isSearchPresented }, set: { model.isSearchPresented = $0 }),
+                prompt: "Search All"
+            )
+            .searchToolbarBehavior(.minimize)
         }
     }
 
@@ -423,6 +428,29 @@ struct IOSAppRootView: View {
         }
     }
 
+}
+
+// Scope the native search host to the background so opening it keeps screen state alive.
+private struct CompactLibrarySearchHost: View {
+    let model: IOSAppModel
+    @State private var isPresented = false
+
+    var body: some View {
+        Color.clear
+            .searchable(
+                text: Binding(get: { model.searchText }, set: { model.searchText = $0 }),
+                isPresented: $isPresented,
+                prompt: "Search All"
+            )
+            .task {
+                await Task.yield()
+                guard !Task.isCancelled, model.isSearchPresented else { return }
+                isPresented = true
+            }
+            .onChange(of: isPresented) { _, presented in
+                if !presented { model.isSearchPresented = false }
+            }
+    }
 }
 
 private struct AppleAccountNoticeBanner: View {
