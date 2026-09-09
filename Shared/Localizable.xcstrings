@@ -1,6 +1,12 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Couldn’t read the clipboard. Copy the content again, then tap Paste." : {},
+    "Couldn’t save the pasted content. Try again." : {},
+    "No pinned entries" : {},
+    "Paste here or share content to Clipboard." : {},
+    "Pin a clipboard entry to keep it here." : {},
+    "This clipboard content is too large to paste." : {},
     "Haptics" : {},
     "icon.display.2" : {
       "comment" : "Accessible name for a list icon.",
