@@ -94,41 +94,68 @@ struct LibraryActionsMenu: View {
     var editSelectedList: (() -> Void)?
     @State private var confirmsDeleteList = false
 
+    @ViewBuilder
     var body: some View {
-        Menu("Library Actions", systemImage: "ellipsis") {
-            Button(
-                editMode.isEditing ? "Done Selecting" : "Select Snips",
-                systemImage: editMode.isEditing ? "checkmark" : "checkmark.circle"
-            ) {
-                model.endSelectingSnips()
-                editMode = editMode.isEditing ? .inactive : .active
+#if DEBUG
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            Menu {
+                menuActions
+            } label: {
+                Image(systemName: "ellipsis")
+                    .frame(width: 32, height: 32)
+                    .accessibilityLabel("Library Actions")
             }
-            .disabled(!editMode.isEditing && model.visibleSnips.isEmpty)
-            .accessibilityIdentifier("select-snips")
-            Divider()
-            if model.selectedListID != SnipList.inboxID, let editSelectedList {
-                Button("Edit List…", systemImage: "pencil", action: editSelectedList)
-                Button("Delete List", systemImage: "trash", role: .destructive) {
-                    model.haptics.invalidatePendingFeedback()
-                    confirmsDeleteList = true
-                }
-                Divider()
+            .anchorPreference(key: DevelopmentMenuBoundsKey.self, value: .bounds) { $0 }
+            .accessibilityIdentifier("library-actions")
+            .listDeletionConfirmation(list: model.selectedList, isPresented: $confirmsDeleteList) {
+                Task { await model.deleteList(id: model.selectedListID) }
             }
-            Button("Import Backup…", systemImage: "square.and.arrow.down", action: importBackup)
-            Button("Settings", systemImage: "gearshape", action: settings)
-                .accessibilityIdentifier("settings")
-            if let reviewRecoveredEdits {
-                Button("Needs Attention", systemImage: "exclamationmark.bubble", action: reviewRecoveredEdits)
-                    .accessibilityIdentifier("needs-attention")
-            }
-            if includesCloudActions, model.isCloudSyncActive {
-                Divider()
-                CloudLibraryActions(model: model)
-            }
+        } else {
+            standardMenu
         }
-        .accessibilityIdentifier("library-actions")
-        .listDeletionConfirmation(list: model.selectedList, isPresented: $confirmsDeleteList) {
-            Task { await model.deleteList(id: model.selectedListID) }
+#else
+        standardMenu
+#endif
+    }
+
+    private var standardMenu: some View {
+        Menu("Library Actions", systemImage: "ellipsis") { menuActions }
+            .accessibilityIdentifier("library-actions")
+            .listDeletionConfirmation(list: model.selectedList, isPresented: $confirmsDeleteList) {
+                Task { await model.deleteList(id: model.selectedListID) }
+            }
+    }
+
+    @ViewBuilder
+    private var menuActions: some View {
+        Button(
+            editMode.isEditing ? "Done Selecting" : "Select Snips",
+            systemImage: editMode.isEditing ? "checkmark" : "checkmark.circle"
+        ) {
+            model.endSelectingSnips()
+            editMode = editMode.isEditing ? .inactive : .active
+        }
+        .disabled(!editMode.isEditing && model.visibleSnips.isEmpty)
+        .accessibilityIdentifier("select-snips")
+        Divider()
+        if model.selectedListID != SnipList.inboxID, let editSelectedList {
+            Button("Edit List…", systemImage: "pencil", action: editSelectedList)
+            Button("Delete List", systemImage: "trash", role: .destructive) {
+                model.haptics.invalidatePendingFeedback()
+                confirmsDeleteList = true
+            }
+            Divider()
+        }
+        Button("Import Backup…", systemImage: "square.and.arrow.down", action: importBackup)
+        Button("Settings", systemImage: "gearshape", action: settings)
+            .accessibilityIdentifier("settings")
+        if let reviewRecoveredEdits {
+            Button("Needs Attention", systemImage: "exclamationmark.bubble", action: reviewRecoveredEdits)
+                .accessibilityIdentifier("needs-attention")
+        }
+        if includesCloudActions, model.isCloudSyncActive {
+            Divider()
+            CloudLibraryActions(model: model)
         }
     }
 }
@@ -185,3 +212,13 @@ extension View {
         }
     }
 }
+
+#if DEBUG
+struct DevelopmentMenuBoundsKey: PreferenceKey {
+    static var defaultValue: Anchor<CGRect>? { nil }
+
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
+    }
+}
+#endif
