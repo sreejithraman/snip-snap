@@ -99,7 +99,6 @@ struct ListSelector: View {
     @Binding var sheet: AppSheet?
     let deleteList: (UUID) async -> Void
     var labelViewport: CGFloat? = nil
-    var browsingChanged: (Bool) -> Void = { _ in }
 
     private var animation: Animation? {
         reduceMotion ? nil : .spring(duration: 0.3, bounce: 0.12)
@@ -146,9 +145,8 @@ struct ListSelector: View {
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
 
-                // Keep text above the material. A single sample bends only the curved rim.
+                // Keep labels clear above the selection material.
                 labels(geometry: geometry, cursor: cursor, viewport: proxy.size.width, progress: progress)
-                    .modifier(ListLensEffect(width: lensWidth, height: height, viewport: proxy.size.width, enabled: !reduceTransparency))
                     .mask(edgeFade)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
@@ -191,9 +189,6 @@ struct ListSelector: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("list-selector")
         .accessibilityAction(named: Text("New List")) { Task { await model.openNewList() } }
-        .onChange(of: dragPosition != nil) { _, isDragging in
-            browsingChanged(isDragging)
-        }
         .onChange(of: sheet) { _, destination in
             if destination == nil { resetCreation() }
         }
@@ -204,7 +199,6 @@ struct ListSelector: View {
             if phase != .active, sheet == nil { resetCreation() }
         }
         .onDisappear {
-            browsingChanged(false)
             resetCreation()
         }
         .listDeletionConfirmation(
@@ -244,7 +238,7 @@ struct ListSelector: View {
     }
 
     private func width(for item: ListSelectorItem, in viewport: CGFloat) -> CGFloat {
-        let font = UIFont.systemFont(ofSize: fontSize, weight: .semibold)
+        let font = UIFont.rounded(size: fontSize, weight: .semibold)
         let textWidth = (item.title as NSString).size(withAttributes: [.font: font]).width
         return min(max(64, ceil(textWidth) + fontSize * 1.5 + 48), max(64, viewport - 96))
     }
@@ -261,7 +255,7 @@ struct ListSelector: View {
                     Image(systemName: item.systemImage)
                     Text(item.title).lineLimit(1)
                 }
-                .font(.system(size: fontSize, weight: .semibold))
+                .font(.system(size: fontSize, weight: .semibold, design: .rounded))
                 .foregroundStyle(item.color)
                 .padding(.horizontal, 16)
                 .frame(width: geometry.widths[index], height: height)
@@ -269,7 +263,7 @@ struct ListSelector: View {
             }
             Image(systemName: "plus")
                 .foregroundStyle(.primary)
-                .font(.system(size: fontSize, weight: .semibold))
+                .font(.system(size: fontSize, weight: .semibold, design: .rounded))
                 .frame(width: height, height: height)
                 .opacity(reduceMotion ? reveal : 1)
                 .position(x: plusX(viewport: viewport, reveal: reveal), y: (height + 8) / 2)
@@ -441,27 +435,6 @@ nonisolated private struct ListSelectionGlass: View, Animatable {
             Color.clear.frame(width: width, height: height)
                 .glassEffect(.clear.tint(color.opacity(0.1)), in: Capsule())
         }
-    }
-}
-
-// Interpolate the shader bounds with the capsule while its width snaps.
-nonisolated private struct ListLensEffect: ViewModifier, Animatable {
-    var width: CGFloat
-    let height: CGFloat
-    let viewport: CGFloat
-    let enabled: Bool
-
-    var animatableData: CGFloat {
-        get { width }
-        set { width = newValue }
-    }
-
-    func body(content: Content) -> some View {
-        content.distortionEffect(
-            ShaderLibrary.listLens(.float4((viewport - width) / 2, 4, width, height)),
-            maxSampleOffset: CGSize(width: 8, height: 8),
-            isEnabled: enabled
-        )
     }
 }
 

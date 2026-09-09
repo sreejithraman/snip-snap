@@ -231,10 +231,7 @@ struct SnipEditorView: View {
 struct InlineListEditor: View {
     let model: IOSAppModel
     let list: SnipList
-    @State private var name: String
-    @State private var systemImage: String
-    @State private var color: SnipListColor?
-    @State private var isSaving = false
+    @Bindable private var draft: InlineListDraft
     @State private var showsAppearance = false
     @State private var showsIcons = false
     @FocusState private var isNameFocused: Bool
@@ -242,9 +239,7 @@ struct InlineListEditor: View {
     init(model: IOSAppModel, list: SnipList) {
         self.model = model
         self.list = list
-        _name = State(initialValue: model.newListID == list.id ? "" : list.name)
-        _systemImage = State(initialValue: list.systemImage)
-        _color = State(initialValue: list.color)
+        draft = model.listDraft(for: list)
     }
 
     var body: some View {
@@ -255,18 +250,19 @@ struct InlineListEditor: View {
                     showsIcons.toggle()
                     showsAppearance = false
                 } label: {
-                    Image(systemName: systemImage)
+                    Image(systemName: draft.systemImage)
                         .font(.title3.weight(.semibold))
-                        .foregroundStyle(SnipListAppearance(pair: color).color)
+                        .foregroundStyle(SnipListAppearance(pair: draft.color).color)
                         .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)
-                .accessibilityLabel("Choose list icon, current: \(SnipListIconOptions.title(for: systemImage))")
+                .accessibilityLabel("Choose list icon, current: \(SnipListIconOptions.title(for: draft.systemImage))")
                 .accessibilityIdentifier("choose-list-icon")
 
-                TextField(list.displayName, text: $name)
-                    .font(.title.bold())
+                TextField(list.displayName, text: $draft.name)
+                    .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                    .foregroundStyle(SnipListAppearance(pair: draft.color).color)
                     .textFieldStyle(.plain)
                     .lineLimit(1)
                     .textInputAutocapitalization(.words)
@@ -285,7 +281,6 @@ struct InlineListEditor: View {
                 }
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)
-                .disabled(isSaving)
                 .accessibilityLabel("Done")
                 .accessibilityIdentifier("save-list")
             }
@@ -302,33 +297,35 @@ struct InlineListEditor: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("list-appearance")
             if showsIcons {
-                InlineListIconPicker(selection: $systemImage)
+                InlineListIconPicker(selection: $draft.systemImage)
             }
             if showsAppearance {
-                SnipListColorPicker(selection: $color)
+                SnipListColorPicker(selection: $draft.color)
             }
         }
-        .disabled(isSaving)
+        .disabled(draft.isSaving)
         .padding(.horizontal, SnipSnapSpacing.paneContentInset)
         .padding(.bottom, SnipSnapSpacing.relatedContent)
-        .task { isNameFocused = true }
+        .task { isNameFocused = !model.isSearchPresented }
+        .onChange(of: model.isSearchPresented) { _, presented in
+            if presented { isNameFocused = false }
+        }
     }
 
     private func save() async {
-        guard !isSaving else { return }
-        isSaving = true
-        let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !draft.isSaving else { return }
+        draft.isSaving = true
+        let cleaned = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let succeeded = await model.renameList(
             list,
             name: cleaned.isEmpty ? list.name : cleaned,
-            systemImage: systemImage,
-            color: .set(color)
+            systemImage: draft.systemImage,
+            color: .set(draft.color)
         )
-        isSaving = false
-        if succeeded, model.editingListID == list.id {
+        draft.isSaving = false
+        if succeeded {
             isNameFocused = false
-            model.editingListID = nil
-            model.newListID = nil
+            model.finishListEditing(id: list.id)
         }
     }
 }

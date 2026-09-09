@@ -16,6 +16,7 @@ private struct CompactInlineEditSession {
 
 struct SnipCollectionView: View {
     let model: IOSAppModel
+    let clipboard: IOSClipboardModel
     let copyShare: IOSCopyShareCoordinator
     @Binding var sheet: AppSheet?
     let layout: SnipCollectionLayout
@@ -26,14 +27,15 @@ struct SnipCollectionView: View {
     @State private var inlineEditSession: CompactInlineEditSession?
     @State private var previewURLs: [URL] = []
     @State private var selectedPreviewURL: URL?
-    @State private var isSearchPresented = false
     @FocusState private var isInlineEditorFocused: Bool
 
     private var isEditingList: Bool { model.editingListID == model.selectedListID }
 
     var body: some View {
         Group {
-            if model.visibleSnips.isEmpty {
+            if model.isSearchPresented {
+                LibrarySearchView(model: model, clipboard: clipboard, copyShare: copyShare, sheet: $sheet)
+            } else if model.visibleSnips.isEmpty {
                 if layout == .compactStack {
                     compactEmptyState
                 } else {
@@ -173,64 +175,28 @@ struct SnipCollectionView: View {
         .quickLookPreview($selectedPreviewURL, in: previewURLs)
         .modifier(CollectionScreenPresentation(
             title: isEditingList ? "" : model.selectedList.name,
-            allowsSearch: !isEditingList,
-            searchText: Binding(get: { model.searchText }, set: { model.searchText = $0 }),
-            isSearchPresented: $isSearchPresented
+            titleColor: model.selectedList.accent.color,
+            showsControls: !model.isSearchPresented,
+            trailingControls: collectionToolbar
         ))
         .navigationBarTitleDisplayMode(isEditingList ? .inline : .large)
         .safeAreaInset(edge: .top, spacing: 0) {
             if isEditingList {
                 InlineListEditor(model: model, list: model.selectedList)
                     .id(model.selectedListID)
+                    .frame(height: model.isSearchPresented ? 0 : nil)
+                    .clipped()
+                    .allowsHitTesting(!model.isSearchPresented)
+                    .accessibilityHidden(model.isSearchPresented)
             }
-        }
-        .onChange(of: model.selectedListID) { _, id in
-            if model.editingListID != id { model.editingListID = nil }
         }
         .onChange(of: model.editingListID) { _, id in
             if id != nil {
-                isSearchPresented = false
+                model.isSearchPresented = false
                 dismissComposerKeyboard()
             }
         }
         .environment(\.editMode, $editMode)
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                if isReordering {
-                    Button("Done") {
-                        model.haptics.invalidatePendingFeedback()
-                        isReordering = false
-                    }
-                        .accessibilityIdentifier("finish-reordering")
-                } else if isSelecting {
-                    WorkflowOptionsMenu(model: model)
-                    SelectionActionsMenu(
-                        model: model,
-                        copyShare: copyShare,
-                        endSelection: endSelection
-                    )
-                        .disabled(model.selectedSnipIDs.isEmpty)
-                } else {
-                    WorkflowOptionsMenu(model: model) {
-                        model.haptics.invalidatePendingFeedback()
-                        cancelInlineEdit()
-                        dismissComposerKeyboard()
-                        isReordering = true
-                    }
-                }
-                if let libraryActions, !isReordering, !isSelecting {
-                    libraryActions
-                }
-            }
-            if isSelecting {
-                ToolbarSpacer(.fixed, placement: .topBarTrailing)
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Finish Selecting", systemImage: "xmark", action: endSelection)
-                        .labelStyle(.iconOnly)
-                        .accessibilityIdentifier("finish-selecting")
-                }
-            }
-        }
         .onChange(of: model.selectedListID) {
             isReordering = false
             cancelInlineEdit()
@@ -253,7 +219,7 @@ struct SnipCollectionView: View {
             }
         }
         .onChange(of: model.searchText) { model.haptics.invalidatePendingFeedback() }
-        .onChange(of: isSearchPresented) { _, isPresented in
+        .onChange(of: model.isSearchPresented) { _, isPresented in
             model.haptics.invalidatePendingFeedback()
             if isPresented { isReordering = false }
         }
@@ -264,6 +230,36 @@ struct SnipCollectionView: View {
             return String(localized: "No Results")
         }
         return model.completionFilter.emptyStateTitle
+    }
+
+    @ViewBuilder
+    private var collectionToolbar: some View {
+        Group {
+            if isReordering {
+                Button("Done") {
+                    model.haptics.invalidatePendingFeedback()
+                    isReordering = false
+                }
+                .accessibilityIdentifier("finish-reordering")
+            } else if isSelecting {
+                WorkflowOptionsMenu(model: model)
+                SelectionActionsMenu(model: model, copyShare: copyShare, endSelection: endSelection)
+                    .disabled(model.selectedSnipIDs.isEmpty)
+                Button("Finish Selecting", systemImage: "xmark", action: endSelection)
+                    .labelStyle(.iconOnly)
+                    .accessibilityIdentifier("finish-selecting")
+            } else {
+                WorkflowOptionsMenu(model: model) {
+                    model.haptics.invalidatePendingFeedback()
+                    cancelInlineEdit()
+                    dismissComposerKeyboard()
+                    isReordering = true
+                }
+            }
+            if let libraryActions, !isReordering, !isSelecting {
+                libraryActions
+            }
+        }
     }
 
     private var hasSearchQuery: Bool {
@@ -513,60 +509,71 @@ private struct CompactInlineSnipEditor: View {
     }
 }
 
-struct CollectionScreenPresentation: ViewModifier {
+struct CollectionScreenPresentation<TrailingControls: View>: ViewModifier {
     let title: String
-    var allowsSearch = true
-    var searchPrompt = String(localized: "Search Snips")
-    @Binding var searchText: String
-    @Binding var isSearchPresented: Bool
-
-    private var hasQuery: Bool {
-        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
+    var titleColor: Color = .primary
+    var showsControls = true
+    let trailingControls: TrailingControls
 
     func body(content: Content) -> some View {
         content
             .navigationTitle(title)
-            .allowsHitTesting(!isSearchPresented || hasQuery)
-            .overlay {
-                if isSearchPresented && !hasQuery {
-                    Color.black.opacity(0.18)
-                        .ignoresSafeArea()
-                        .contentShape(Rectangle())
-                        .onTapGesture { isSearchPresented = false }
-                        .accessibilityHidden(true)
-                }
+            .background {
+                RoundedNavigationTitle(color: UIColor(titleColor))
+                    .frame(width: 0, height: 0)
             }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                if isSearchPresented {
-                    HStack(spacing: 0) {
-                        NativeCollectionSearchBar(text: $searchText, prompt: searchPrompt)
-                        Button { isSearchPresented = false } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 20, weight: .medium))
-                                .frame(width: 44, height: 44)
-                                .contentShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .glassEffect(.regular.interactive(), in: Circle())
-                        .accessibilityLabel("Cancel Search")
-                        .accessibilityIdentifier("close-search")
-                    }
-                    .frame(height: 56)
-                    .padding(.horizontal, 2)
-                }
-            }
-            .toolbar(isSearchPresented ? .hidden : .visible, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Search", systemImage: "magnifyingglass") { isSearchPresented = true }
-                        .disabled(!allowsSearch)
-                        .accessibilityIdentifier("search-snips")
+                if showsControls {
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        trailingControls
+                    }
                 }
             }
-            .onChange(of: isSearchPresented) { _, presented in
-                if !presented { searchText = "" }
+    }
+}
+
+/// Style this screen's native title while keeping its scroll and accessibility behavior.
+private struct RoundedNavigationTitle: UIViewControllerRepresentable {
+    let color: UIColor
+
+    func makeUIViewController(context: Context) -> TitleController {
+        TitleController()
+    }
+
+    func updateUIViewController(_ controller: TitleController, context: Context) {
+        controller.titleColor = color
+        controller.applyAppearance()
+    }
+
+    final class TitleController: UIViewController {
+        var titleColor: UIColor = .label
+
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+            applyAppearance()
+        }
+
+        override func didMove(toParent parent: UIViewController?) {
+            super.didMove(toParent: parent)
+            applyAppearance()
+        }
+
+        func applyAppearance() {
+            guard let navigationController,
+                  let item = navigationController.topViewController?.navigationItem else { return }
+            let bar = navigationController.navigationBar
+            func styled(_ source: UINavigationBarAppearance) -> UINavigationBarAppearance {
+                let appearance = source.copy() as! UINavigationBarAppearance
+                appearance.titleTextAttributes[.font] = UIFont.rounded(size: 17, weight: .semibold)
+                appearance.largeTitleTextAttributes[.font] = UIFont.rounded(size: 34, weight: .bold)
+                appearance.titleTextAttributes[.foregroundColor] = titleColor
+                appearance.largeTitleTextAttributes[.foregroundColor] = titleColor
+                return appearance
             }
+            item.standardAppearance = styled(bar.standardAppearance)
+            item.scrollEdgeAppearance = styled(bar.scrollEdgeAppearance ?? bar.standardAppearance)
+            item.compactAppearance = styled(bar.compactAppearance ?? bar.standardAppearance)
+        }
     }
 }
 
@@ -590,59 +597,6 @@ struct CollectionEmptyState: View {
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .combine)
-    }
-}
-
-private struct NativeCollectionSearchBar: UIViewRepresentable {
-    @Binding var text: String
-    let prompt: String
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
-
-    func makeUIView(context: Context) -> UISearchBar {
-        let searchBar = UISearchBar(frame: .zero)
-        searchBar.delegate = context.coordinator
-        searchBar.placeholder = prompt
-        searchBar.searchBarStyle = .minimal
-        searchBar.returnKeyType = .search
-        searchBar.autocapitalizationType = .none
-        searchBar.autocorrectionType = .no
-        searchBar.searchTextField.accessibilityIdentifier = "search-snips-field"
-        searchBar.setShowsCancelButton(false, animated: false)
-
-        Task { @MainActor in
-            searchBar.becomeFirstResponder()
-        }
-        return searchBar
-    }
-
-    func updateUIView(_ searchBar: UISearchBar, context: Context) {
-        context.coordinator.parent = self
-        if searchBar.text != text {
-            searchBar.text = text
-        }
-    }
-
-    static func dismantleUIView(_ searchBar: UISearchBar, coordinator: Coordinator) {
-        searchBar.resignFirstResponder()
-    }
-
-    final class Coordinator: NSObject, UISearchBarDelegate {
-        var parent: NativeCollectionSearchBar
-
-        init(parent: NativeCollectionSearchBar) {
-            self.parent = parent
-        }
-
-        func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
-            parent.text = searchText
-        }
-
-        func searchBarSearchButtonClicked(_ searchBar: UISearchBar) {
-            searchBar.resignFirstResponder()
-        }
     }
 }
 
@@ -841,4 +795,153 @@ struct SnipRowMetadata: View {
         .font(.caption)
         .foregroundStyle(.secondary)
     }
+}
+
+struct LibrarySearchView: View {
+    let model: IOSAppModel
+    let clipboard: IOSClipboardModel
+    let copyShare: IOSCopyShareCoordinator
+    @Binding var sheet: AppSheet?
+    @State private var previewURL: URL?
+
+    var body: some View {
+        let query = model.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let results = LibrarySearchResults(
+            query: query,
+            snips: model.snips,
+            lists: model.lists,
+            clipboard: clipboard.entries,
+            sortMode: model.sortMode,
+            sourceLabel: { $0.displaySourceLabel }
+        )
+        Group {
+            if query.isEmpty {
+                CollectionEmptyState(
+                    title: String(localized: "Search All"),
+                    systemImage: "magnifyingglass",
+                    detail: String(localized: "Find snips in every list and Clipboard.")
+                )
+                .accessibilityIdentifier("search-prompt")
+            } else if results.isEmpty {
+                CollectionEmptyState(
+                    title: String(localized: "No Results"),
+                    systemImage: "magnifyingglass",
+                    detail: String(localized: "Try a different search.")
+                )
+                .accessibilityIdentifier("empty-search")
+            } else {
+                List {
+                    ForEach(results.lists) { group in
+                        Section {
+                            ForEach(group.snips) { snip in
+                                snipResult(snip)
+                            }
+                        } header: {
+                            Label(group.list.displayName, systemImage: group.list.systemImage)
+                                .foregroundStyle(group.list.accent.color)
+                                .accessibilityIdentifier("search-section-\(group.list.id)")
+                        }
+                    }
+                    if !results.clipboard.isEmpty {
+                        Section {
+                            ForEach(results.clipboard) { entry in
+                                clipboardResult(entry)
+                            }
+                        } header: {
+                            Label("Clipboard", systemImage: "clipboard")
+                                .foregroundStyle(.primary)
+                                .accessibilityIdentifier("search-section-clipboard")
+                        }
+                    }
+                }
+                .listStyle(.plain)
+                .textCase(nil)
+                .scrollDismissesKeyboard(.interactively)
+                .accessibilityIdentifier("global-search-results")
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.background)
+        .quickLookPreview($previewURL)
+        .task { await clipboard.load() }
+        .overlay(alignment: .bottom) {
+            if clipboard.copied {
+                Label("Copied", systemImage: "checkmark")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(12)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding()
+                    .task {
+                        try? await Task.sleep(for: .seconds(2))
+                        clipboard.copied = false
+                    }
+            }
+        }
+    }
+
+    private func snipResult(_ snip: Snip) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            SnipCopyControl {
+                Task { await copyShare.copy(snips: [snip], model: model) }
+            }
+            .accessibilityLabel("Copy Snip")
+            .accessibilityIdentifier("copy-search-snip-\(snip.id)")
+            SnipRow(
+                snip: snip,
+                model: model,
+                isRecovered: model.isRecoveredSnip(snip.id),
+                showsStatusIcon: false,
+                onPreviewAttachment: { attachment in
+                    Task { previewURL = await model.prepareAttachment(attachment.id, for: .preview) }
+                }
+            )
+            .contentShape(Rectangle())
+            .onTapGesture { sheet = .editSnip(id: snip.id) }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint("Open snip")
+            .accessibilityAction { sheet = .editSnip(id: snip.id) }
+            .accessibilityIdentifier("search-snip-\(snip.id)")
+        }
+        .listRowSeparator(.hidden)
+        .contextMenu {
+            Button("Edit", systemImage: "pencil") { sheet = .editSnip(id: snip.id) }
+            Button("Copy", systemImage: "doc.on.doc") {
+                Task { await copyShare.copy(snips: [snip], model: model) }
+            }
+            MoveSnipMenu(model: model, snip: snip)
+        }
+    }
+
+    private func clipboardResult(_ entry: ClipboardEntry) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            SnipCopyControl { clipboard.copy(entry) }
+                .accessibilityLabel("Copy Clipboard Entry")
+            VStack(alignment: .leading, spacing: 6) {
+                if let image = entry.imageRepresentations.first.flatMap({ UIImage(data: $0.data) }) {
+                    Image(uiImage: image)
+                        .resizable().scaledToFit().frame(maxHeight: 120)
+                }
+                Text(clipboardTitle(entry))
+                    .lineLimit(3)
+                SnipRowMetadata(date: entry.capturedAt, isPinned: entry.isPinned)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 4)
+        .listRowSeparator(.hidden)
+        .accessibilityIdentifier("search-clipboard-\(entry.id)")
+        .contextMenu {
+            Button("Copy", systemImage: "doc.on.doc") { clipboard.copy(entry) }
+            Button(entry.isPinned ? "Unpin" : "Pin", systemImage: "pin") {
+                Task { await clipboard.togglePin(entry) }
+            }
+        }
+    }
+
+    private func clipboardTitle(_ entry: ClipboardEntry) -> String {
+        if !entry.text.isEmpty { return entry.text }
+        if !entry.ownedFiles.isEmpty { return entry.ownedFiles.map(\.name).joined(separator: ", ") }
+        return entry.imageRepresentations.isEmpty ? String(localized: "Clipboard Entry") : String(localized: "Image")
+    }
+
 }

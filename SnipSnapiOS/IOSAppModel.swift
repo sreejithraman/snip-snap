@@ -4,6 +4,21 @@ import SnipSnapCore
 
 @MainActor
 @Observable
+final class InlineListDraft {
+    var name: String
+    var systemImage: String
+    var color: SnipListColor?
+    var isSaving = false
+
+    init(list: SnipList, isNew: Bool) {
+        name = isNew ? "" : list.name
+        systemImage = list.systemImage
+        color = list.color
+    }
+}
+
+@MainActor
+@Observable
 final class IOSAppModel {
     private let session: SavedSnipsSession
     let haptics: IOSHapticFeedback
@@ -25,9 +40,11 @@ final class IOSAppModel {
     var selectedListID: UUID
     var editingListID: UUID?
     var newListID: UUID?
+    private var listDrafts: [UUID: InlineListDraft] = [:]
     private(set) var isCreatingList = false
     var selectedSnipID: UUID?
     var selectedSnipIDs: Set<UUID> = []
+    var isSearchPresented = false
     var searchText = ""
     var completionFilter: SnipCompletionFilter = .all
     var sortMode: SnipSortMode = .chronological
@@ -265,6 +282,19 @@ final class IOSAppModel {
             newListID = selectedListID
             editingListID = selectedListID
         }
+    }
+
+    func listDraft(for list: SnipList) -> InlineListDraft {
+        if let draft = listDrafts[list.id] { return draft }
+        let draft = InlineListDraft(list: list, isNew: newListID == list.id)
+        listDrafts[list.id] = draft
+        return draft
+    }
+
+    func finishListEditing(id: UUID) {
+        listDrafts[id] = nil
+        if editingListID == id { editingListID = nil }
+        if newListID == id { newListID = nil }
     }
 
     func editListInline(id: UUID) {
@@ -571,6 +601,7 @@ final class IOSAppModel {
         return await performUserAction(
             .deleteList(id: id), feedbackInteraction: feedbackInteraction
         ) { _ in
+            finishListEditing(id: id)
             selectedListID = SnipList.inboxID
             selectedSnipID = nil
             selectedSnipIDs = []

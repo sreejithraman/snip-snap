@@ -528,7 +528,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
     }
 
-    func testTrailingClipboardPasteCapturesCopiedText() throws {
+    func testLeadingClipboardPasteCapturesCopiedText() throws {
         continueAfterFailure = false
         let app = launchApp()
         try requireCompactSelector(in: app)
@@ -547,9 +547,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Paste button fixture"].exists)
         let selector = app.descendants(matching: .any)["list-selector"]
         XCTAssertEqual(paste.frame.midY, selector.frame.midY, accuracy: 2)
-        XCTAssertGreaterThan(paste.frame.minX, selector.frame.maxX)
+        XCTAssertLessThan(paste.frame.maxX, selector.frame.minX)
         let screenshot = XCTAttachment(screenshot: app.screenshot())
-        screenshot.name = "Trailing glass Paste button"
+        screenshot.name = "Leading native Paste button"
         screenshot.lifetime = .keepAlways
         add(screenshot)
     }
@@ -561,23 +561,21 @@ final class SnipSnapiOSUITests: XCTestCase {
         let restingSelectorWidth = app.descendants(matching: .any)["list-selector"].frame.width
         app.buttons["clipboard-tab"].tap()
         XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["search-snips"].exists)
+        XCTAssertTrue(app.searchFields["Search All"].exists || app.buttons["Search"].exists)
         XCTAssertTrue(app.buttons["workflow-options"].exists)
         XCTAssertTrue(app.buttons["library-actions"].exists)
-        XCTAssertFalse(app.searchFields["Search Clipboard"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["empty-clipboard"].exists)
         let paste = app.buttons["paste-to-clipboard"]
         XCTAssertTrue(paste.exists)
         let selector = app.descendants(matching: .any)["list-selector"]
         XCTAssertEqual(paste.frame.midY, selector.frame.midY, accuracy: 2)
-        XCTAssertGreaterThan(paste.frame.minX, selector.frame.maxX)
-        app.buttons["search-snips"].tap()
-        let search = app.searchFields["search-snips-field"]
+        XCTAssertLessThan(paste.frame.maxX, selector.frame.minX)
+        let search = openSearch(in: app)
         XCTAssertTrue(search.waitForExistence(timeout: 3))
-        XCTAssertEqual(search.placeholderValue, "Search Clipboard")
+        XCTAssertEqual(search.placeholderValue, "Search All")
         search.typeText("Missing entry")
         XCTAssertTrue(app.staticTexts["No Results"].waitForExistence(timeout: 3))
-        app.buttons["close-search"].tap()
+        closeSearch(in: app)
         XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
         app.buttons["workflow-options"].tap()
         app.buttons["Pinned"].tap()
@@ -589,8 +587,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         screenshot.name = "Clipboard with shared list screen controls"
         screenshot.lifetime = .keepAlways
         add(screenshot)
-        XCTAssertEqual(selector.frame.width, restingSelectorWidth, accuracy: 2)
-        XCTAssertEqual(selector.frame.midX, app.frame.midX, accuracy: 2)
+        XCTAssertLessThanOrEqual(selector.frame.width, restingSelectorWidth + 2)
+        XCTAssertLessThan(selector.frame.maxX, app.buttons["Search"].frame.minX)
         compactListTab(named: "Inbox", in: app).tap()
         XCTAssertTrue(paste.waitForNonExistence(timeout: 3))
         XCTAssertEqual(selector.frame.width, restingSelectorWidth, accuracy: 2)
@@ -674,7 +672,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         )
         XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
         XCTAssertEqual(selector.frame.width, restingWidth, accuracy: 2)
-        XCTAssertEqual(selector.frame.midX, app.frame.midX, accuracy: 2)
+        XCTAssertLessThan(selector.frame.maxX, app.buttons["Search"].frame.minX)
         XCTAssertFalse(app.buttons["paste-to-clipboard"].exists)
         let switchedEvent = app.staticTexts["haptic-event"].label
         XCTAssertTrue(switchedEvent.hasPrefix("selection:"))
@@ -1386,6 +1384,29 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 10), .completed)
     }
 
+    func testSearchFromClipboardFindsSnipsAcrossLists() {
+        continueAfterFailure = false
+        let app = launchApp()
+        createSnip("Alpha inbox", in: app)
+        createList("Work", in: app)
+        createSnip("Alpha work", in: app)
+        returnToCollection(in: app)
+        app.buttons["clipboard-tab"].tap()
+        let search = openSearch(in: app)
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        XCTAssertEqual(search.placeholderValue, "Search All")
+        XCTAssertTrue(app.descendants(matching: .any)["search-prompt"].exists)
+        search.typeText("Alpha")
+        XCTAssertTrue(row(named: "Alpha inbox", in: app).isHittable)
+        XCTAssertTrue(row(named: "Alpha work", in: app).isHittable)
+        XCTAssertTrue(app.staticTexts["Inbox"].exists)
+        XCTAssertTrue(app.staticTexts["Work"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["list-selector"].exists)
+        closeSearch(in: app)
+        XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.descendants(matching: .any)["list-selector"].exists)
+    }
+
     func testSearchDoneFilter() {
         continueAfterFailure = false
         let app = launchApp()
@@ -1394,58 +1415,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         createSnip("Beta note", in: app)
         returnToCollection(in: app)
 
-        let search = app.searchFields["search-snips-field"]
-        XCTAssertFalse(search.exists)
-        let searchButton = app.buttons["search-snips"]
-        XCTAssertTrue(searchButton.waitForExistence(timeout: 3))
-        let filterButton = app.buttons["workflow-options"]
-        let actionsButton = app.buttons["library-actions"]
-        XCTAssertTrue(filterButton.waitForExistence(timeout: 3))
-        XCTAssertTrue(actionsButton.waitForExistence(timeout: 3))
-        XCTAssertLessThan(searchButton.frame.midX, filterButton.frame.midX)
-        XCTAssertLessThan(searchButton.frame.midX, actionsButton.frame.midX)
-        XCTAssertLessThan(filterButton.frame.midX, actionsButton.frame.midX)
-        searchButton.tap()
-        XCTAssertTrue(search.waitForExistence(timeout: 3))
-        let firstSearchFrame = search.frame
-        XCTAssertLessThan(
-            firstSearchFrame.midY,
-            app.frame.height / 3,
-            "The search field should open at the top on the first tap."
-        )
-        let expandedSearch = XCTAttachment(screenshot: app.screenshot())
-        expandedSearch.name = "Expanded search"
-        expandedSearch.lifetime = .keepAlways
-        add(expandedSearch)
-
-        let firstCloseSearch = app.buttons["close-search"]
-        XCTAssertTrue(firstCloseSearch.waitForExistence(timeout: 2))
-        XCTAssertEqual(
-            firstCloseSearch.frame.height,
-            firstSearchFrame.height,
-            accuracy: 2,
-            "The close button should match the search field height."
-        )
-        XCTAssertEqual(
-            firstCloseSearch.frame.width,
-            firstSearchFrame.height,
-            accuracy: 2,
-            "The close button should be a circle that matches the search field height."
-        )
-        firstCloseSearch.tap()
-        XCTAssertTrue(search.waitForNonExistence(timeout: 3))
-
-        XCTAssertTrue(searchButton.waitForExistence(timeout: 3))
-        searchButton.tap()
-        XCTAssertTrue(search.waitForExistence(timeout: 3))
-        XCTAssertEqual(
-            search.frame.midY,
-            firstSearchFrame.midY,
-            accuracy: 20,
-            "Search should use the same top placement every time."
-        )
-
-        search.tap()
+        XCTAssertTrue(app.buttons["workflow-options"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["library-actions"].exists)
+        _ = openSearch(in: app)
+        closeSearch(in: app)
+        let search = openSearch(in: app)
         search.typeText("Alpha")
         let alphaResult = row(named: "Alpha plan", in: app)
         XCTAssertTrue(alphaResult.isHittable, "A matching search result should be usable.")
@@ -1458,9 +1432,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.keyboards.element.waitForNonExistence(timeout: 3))
         let workflowOptions = app.buttons["workflow-options"]
         if !workflowOptions.waitForExistence(timeout: 1) {
-            let closeSearch = app.buttons["close-search"]
-            XCTAssertTrue(closeSearch.waitForExistence(timeout: 1))
-            closeSearch.tap()
+            closeSearch(in: app)
         }
         XCTAssertTrue(workflowOptions.waitForExistence(timeout: 3))
 
@@ -1679,6 +1651,24 @@ final class SnipSnapiOSUITests: XCTestCase {
             app.buttons["save-snip"].tap()
         }
         XCTAssertTrue(collectionRow(named: text, in: app).waitForExistence(timeout: 3))
+    }
+
+    private func openSearch(in app: XCUIApplication) -> XCUIElement {
+        let field = app.searchFields["Search All"]
+        if !field.exists {
+            let button = app.buttons["Search"]
+            XCTAssertTrue(button.waitForExistence(timeout: 3))
+            button.tap()
+        }
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        return field
+    }
+
+    private func closeSearch(in app: XCUIApplication) {
+        let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "Cancel Search"])).firstMatch
+        XCTAssertTrue(cancel.waitForExistence(timeout: 3))
+        cancel.tap()
     }
 
     private func row(named text: String, in app: XCUIApplication) -> XCUIElement {

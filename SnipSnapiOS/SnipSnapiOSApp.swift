@@ -2,6 +2,7 @@ import SnipSnapCloud
 import SnipSnapCore
 import SnipSnapPersistence
 import SwiftUI
+import UIKit
 
 
 @main
@@ -13,6 +14,8 @@ struct SnipSnapiOSApp: App {
     private let shareProcessToken: String?
 
     init() {
+        UINavigationBar.appearance().titleTextAttributes = [.font: UIFont.rounded(size: 17, weight: .semibold)]
+        UINavigationBar.appearance().largeTitleTextAttributes = [.font: UIFont.rounded(size: 34, weight: .bold)]
         let startup = Self.makeLibrary()
         uiTestAttachmentURLs = startup.uiTestAttachmentURLs
         seedsCopyShareFixtures = startup.seedsCopyShareFixtures
@@ -127,6 +130,7 @@ struct SnipSnapiOSApp: App {
                 seedsCopyShareFixtures: seedsCopyShareFixtures,
                 shareProcessToken: shareProcessToken
             )
+            .fontDesign(.rounded)
         }
     }
 
@@ -324,4 +328,12 @@ struct SnipSnapiOSApp: App {
         }
     }
 #endif
+}
+
+
+extension UIFont {
+    static func rounded(size: CGFloat, weight: UIFont.Weight) -> UIFont {
+        let font = UIFont.systemFont(ofSize: size, weight: weight)
+        return UIFont(descriptor: font.fontDescriptor.withDesign(.rounded) ?? font.fontDescriptor, size: size)
+    }
 }

@@ -10,6 +10,27 @@ import XCTest
 
 @MainActor
 final class IOSAppModelTests: XCTestCase {
+    func testInlineListDraftSurvivesNavigationUntilCompletion() async {
+        let model = makeModel(library: ModelTestLibrary())
+        await model.load()
+        await model.openNewList()
+        let list = model.selectedList
+        let draft = model.listDraft(for: list)
+        draft.name = "Reading plans"
+        draft.systemImage = "book"
+        model.showsClipboard = true
+        model.selectList(SnipList.inboxID)
+        model.selectList(list.id)
+        XCTAssertTrue(model.listDraft(for: list) === draft)
+        XCTAssertEqual(model.listDraft(for: list).name, "Reading plans")
+        XCTAssertEqual(model.listDraft(for: list).systemImage, "book")
+        XCTAssertEqual(model.editingListID, list.id)
+        model.finishListEditing(id: list.id)
+        XCTAssertNil(model.editingListID)
+        XCTAssertNil(model.newListID)
+        XCTAssertFalse(model.listDraft(for: list) === draft)
+    }
+
     func testClipboardSyncPreferenceDoesNotImplyMainSyncIsActive() {
         let preferences = UserDefaults(suiteName: UUID().uuidString)!
         preferences.set(true, forKey: "syncClipboardHistory")

@@ -1,5 +1,12 @@
 import SwiftUI
 
+private struct ListGridIcon: Identifiable {
+    let categoryID: String
+    let systemName: String
+
+    var id: String { "\(categoryID):\(systemName)" }
+}
+
 struct SnipListIconPicker: View {
     @Binding var selection: String
     var accent: Color = .primary
@@ -22,57 +29,67 @@ struct SnipListIconPicker: View {
 }
 
 struct SnipListIconBrowser: View {
-    private struct GridIcon: Identifiable {
-        let categoryID: String
-        let systemName: String
-
-        var id: String { "\(categoryID):\(systemName)" }
-    }
-
     @Binding var selection: String
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
-    @State private var recentIcons = SnipListIconOptions.recentIcons()
-
-    private let columns = [GridItem(.adaptive(minimum: 44), spacing: 12)]
-
-    private var displayedCategories: [SnipListIconCategory] {
-        SnipListIconOptions.displayedCategories(query: query, recentIcons: recentIcons)
-    }
 
     var body: some View {
-        Group {
-            if displayedCategories.isEmpty {
-                ContentUnavailableView.search(text: query)
-            } else {
-                ScrollView {
-                    LazyVGrid(columns: columns, alignment: .center, spacing: 12) {
-                        ForEach(displayedCategories) { category in
-                            Section {
-                                ForEach(category.icons.map {
-                                    GridIcon(categoryID: category.id, systemName: $0)
-                                }) { icon in
-                                    iconButton(icon.systemName)
-                                }
-                            } header: {
-                                Text(category.title)
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.top, 8)
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(SnipSnapSpacing.paneContentInset)
-                }
-            }
+        ScrollView {
+            ListIconGrid(selection: $selection, query: query) { dismiss() }
+                .padding(SnipSnapSpacing.paneContentInset)
         }
         .navigationTitle("Choose List Icon")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: "Search icons")
-        .onAppear {
-            recentIcons = SnipListIconOptions.recentIcons()
+    }
+}
+
+struct InlineListIconPicker: View {
+    @Binding var selection: String
+    @State private var query = ""
+
+    var body: some View {
+        VStack(spacing: 8) {
+            TextField("Search icons", text: $query)
+                .textFieldStyle(.roundedBorder)
+            ScrollView {
+                ListIconGrid(selection: $selection, query: query)
+            }
+            .frame(height: 192)
+        }
+    }
+}
+
+private struct ListIconGrid: View {
+    @Binding var selection: String
+    let query: String
+    var didSelect: () -> Void = {}
+    @State private var recentIcons = SnipListIconOptions.recentIcons()
+
+    var body: some View {
+        let categories = SnipListIconOptions.displayedCategories(query: query, recentIcons: recentIcons)
+        if categories.isEmpty {
+            ContentUnavailableView.search(text: query)
+        } else {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 44), spacing: 12)], spacing: 12) {
+                ForEach(categories) { category in
+                    Section {
+                        ForEach(category.icons.map {
+                            ListGridIcon(categoryID: category.id, systemName: $0)
+                        }) { icon in
+                            iconButton(icon.systemName)
+                        }
+                    } header: {
+                        Text(category.title)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 8)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .onAppear { recentIcons = SnipListIconOptions.recentIcons() }
         }
     }
 
@@ -81,7 +98,7 @@ struct SnipListIconBrowser: View {
         return Button {
             selection = icon
             SnipListIconOptions.recordRecentIcon(icon)
-            dismiss()
+            didSelect()
         } label: {
             Image(systemName: icon)
                 .font(.body.weight(.medium))
@@ -105,48 +122,5 @@ struct SnipListIconBrowser: View {
         .accessibilityLabel(SnipListIconOptions.title(for: icon))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier("list-icon-\(icon)")
-    }
-}
-
-struct InlineListIconPicker: View {
-    @Binding var selection: String
-    @State private var query = ""
-
-    var body: some View {
-        VStack(spacing: 8) {
-            TextField("Search icons", text: $query)
-                .textFieldStyle(.roundedBorder)
-            ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 44), spacing: 12)], spacing: 12) {
-                    ForEach(SnipListIconOptions.displayedCategories(
-                        query: query, recentIcons: SnipListIconOptions.recentIcons()
-                    )) { category in
-                        Section {
-                            ForEach(category.icons, id: \.self) { icon in
-                                Button {
-                                    selection = icon
-                                    SnipListIconOptions.recordRecentIcon(icon)
-                                } label: {
-                                    Image(systemName: icon)
-                                        .frame(maxWidth: .infinity, minHeight: 44)
-                                        .background(selection == icon ? SnipSnapTheme.compactSelectionFill : .clear,
-                                                    in: RoundedRectangle(cornerRadius: 12))
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel(SnipListIconOptions.title(for: icon))
-                                .accessibilityAddTraits(selection == icon ? .isSelected : [])
-                                .accessibilityIdentifier("list-icon-\(icon)")
-                            }
-                        } header: {
-                            Text(category.title)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-                }
-            }
-            .frame(height: 192)
-        }
     }
 }

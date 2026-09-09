@@ -43,8 +43,33 @@ struct IOSAppRootView: View {
         isExplainingBackupImport = true
     }
 
-    var body: some View {
+    private var searchNavigation: some View {
         appNavigation
+        .searchable(
+            text: Binding(get: { model.searchText }, set: { model.searchText = $0 }),
+            isPresented: Binding(get: { model.isSearchPresented }, set: { model.isSearchPresented = $0 }),
+            prompt: "Search All"
+        )
+        .searchToolbarBehavior(.minimize)
+        .onChange(of: model.isSearchPresented) { _, presented in
+            if presented {
+                isCompactComposerFocused = false
+            } else {
+                model.searchText = ""
+            }
+        }
+        .onChange(of: model.selectedListID) {
+            model.isSearchPresented = false
+            model.searchText = ""
+        }
+        .onChange(of: model.showsClipboard) {
+            model.isSearchPresented = false
+            model.searchText = ""
+        }
+    }
+
+    var body: some View {
+        searchNavigation
         .tint(SnipSnapTheme.controlTint)
         .modifier(IOSHapticFeedbackModifier(feedback: model.haptics))
         .onChange(of: sheet) { model.haptics.invalidatePendingFeedback() }
@@ -273,11 +298,15 @@ struct IOSAppRootView: View {
                     if model.showsClipboard {
                         IOSClipboardView(
                             model: session.clipboard,
+                            libraryModel: model,
+                            copyShare: copyShare,
+                            sheet: $sheet,
                             settings: { sheet = .settings }
                         )
                     } else {
                     SnipCollectionView(
                         model: model,
+                        clipboard: session.clipboard,
                         copyShare: copyShare,
                         sheet: $sheet,
                         layout: .compactStack,
@@ -302,14 +331,7 @@ struct IOSAppRootView: View {
                 }
                 .libraryToast(model: model)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    CompactLibraryControls(
-                        model: model,
-                        clipboard: session.clipboard,
-                        storage: compactComposerStorage,
-                        isComposerFocused: $isCompactComposerFocused,
-                        isSelecting: collectionEditMode.isEditing,
-                        sheet: $sheet
-                    )
+                    libraryControls()
                 }
             }
         } else {
@@ -326,11 +348,15 @@ struct IOSAppRootView: View {
                         if model.showsClipboard {
                             IOSClipboardView(
                             model: session.clipboard,
+                            libraryModel: model,
+                            copyShare: copyShare,
+                            sheet: $sheet,
                             settings: { sheet = .settings }
                         )
                         } else {
                         SnipCollectionView(
                             model: model,
+                            clipboard: session.clipboard,
                             copyShare: copyShare,
                             sheet: $sheet,
                             layout: .inlineList,
@@ -342,20 +368,28 @@ struct IOSAppRootView: View {
                         }
                     }
                     .safeAreaInset(edge: .bottom, spacing: 0) {
-                        CompactLibraryControls(
-                            model: model,
-                            clipboard: session.clipboard,
-                            storage: compactComposerStorage,
-                            isComposerFocused: $isCompactComposerFocused,
-                            showsListTabs: false,
-                            isSelecting: collectionEditMode.isEditing,
-                            sheet: $sheet
-                        )
+                        libraryControls(showsListTabs: false)
                     }
                 }
             }
             .libraryToast(model: model)
         }
+    }
+
+    private func libraryControls(showsListTabs: Bool = true) -> some View {
+        CompactLibraryControls(
+            model: model,
+            clipboard: session.clipboard,
+            storage: compactComposerStorage,
+            isComposerFocused: $isCompactComposerFocused,
+            showsListTabs: showsListTabs,
+            isSelecting: collectionEditMode.isEditing,
+            sheet: $sheet
+        )
+        .frame(height: model.isSearchPresented ? 0 : nil)
+        .clipped()
+        .allowsHitTesting(!model.isSearchPresented)
+        .accessibilityHidden(model.isSearchPresented)
     }
 
     private func seedCopyShareFixtures() async {
