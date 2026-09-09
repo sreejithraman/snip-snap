@@ -492,7 +492,8 @@ extension SwiftDataSnipLibrary {
     expectedByteCount: Int64,
     expectedSHA256: Data,
     maximumBytes: Int64,
-    now: Date
+    now: Date,
+    afterSave: @Sendable () -> Void = {}
   ) throws -> URL {
     let namespaceKey = namespaceKey.rawValue
     guard maximumBytes >= 0, let container else { throw SnipLibraryError.storeUnavailable }
@@ -583,7 +584,9 @@ extension SwiftDataSnipLibrary {
     try lock.check()
     try context.save()
     didCommit = true
+    afterSave()
     for url in filesToRemoveAfterCommit where url != destination {
+      if (try? lock.check()) == nil { break }
       CloudAttachmentCacheFiles.remove(url)
     }
     return destination

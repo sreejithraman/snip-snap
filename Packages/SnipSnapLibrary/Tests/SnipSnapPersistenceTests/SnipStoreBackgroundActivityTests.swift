@@ -399,3 +399,67 @@ extension CloudFullRecordPersistenceTests {
     }
   }
 }
+
+extension CloudFullRecordPersistenceTests {
+  func testExpiryAfterCacheInstallKeepsCommitAndDefersOldFileCleanup() async throws {
+    let location = temporaryStore()
+    defer { try? FileManager.default.removeItem(at: location.root) }
+    try FileManager.default.createDirectory(at: location.root, withIntermediateDirectories: true)
+    let bytes = Data("payload".utf8)
+    let source = location.root.appendingPathComponent("source.txt")
+    try bytes.write(to: source)
+    let library = try SwiftDataSnipLibrary(storeURL: location.store)
+    _ = try await library.perform(.add(
+      content: "file", origin: .quickEntry, source: nil, listID: SnipList.inbox.id,
+      attachmentURLs: [source], requestID: UUID(), now: .distantPast
+    ), sortedBy: .manual)
+    let namespace = CloudSyncNamespaceKey(rawValue: "cache-after-save")
+    try await library.reconcileCloudAttachments(
+      namespaceKey: namespace, metadataZoneName: "data", metadataOwnerName: "owner",
+      payloadZoneName: "payload", payloadOwnerName: "owner"
+    )
+    let initial = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespace)
+    let publication = try XCTUnwrap(initial.publications.first)
+    let metadata = publication.metadata
+    try await library.commitCloudAttachmentTransitions(
+      namespaceKey: namespace,
+      transitions: [.payloadAccepted(
+        attachmentID: metadata.attachmentID, expectedRevision: publication.revision,
+        shadowData: Data("payload".utf8), systemFields: Data("payload-fields".utf8)
+      ), .metadataAccepted(
+        attachmentID: metadata.attachmentID, expectedRevision: publication.revision + 1,
+        shadowData: Data("shadow".utf8), systemFields: Data("fields".utf8)
+      )]
+    )
+    let stagingRoot = try await library.cloudAttachmentStagingRoot(namespaceKey: namespace)
+    let staged = stagingRoot.appendingPathComponent("download/payload")
+    try FileManager.default.createDirectory(
+      at: staged.deletingLastPathComponent(), withIntermediateDirectories: true
+    )
+    try bytes.write(to: staged)
+    let oldFile = try await library.installCloudAttachmentCacheFile(
+      namespaceKey: namespace, attachmentID: metadata.attachmentID,
+      expectedPayloadIdentity: metadata.payloadIdentity, stagedURL: staged,
+      expectedByteCount: metadata.byteCount, expectedSHA256: metadata.sha256,
+      maximumBytes: 1_024, now: .distantPast
+    )
+    try bytes.write(to: staged)
+    let activity = TestStoreActivity()
+    let installed = try await SnipStoreBackgroundActivity.$runner.withValue(activity.runner) {
+      try await library.installCloudAttachmentCacheFile(
+        namespaceKey: namespace, attachmentID: metadata.attachmentID,
+        expectedPayloadIdentity: metadata.payloadIdentity, stagedURL: staged,
+        expectedByteCount: metadata.byteCount, expectedSHA256: metadata.sha256,
+        maximumBytes: 1_024, now: .distantPast, afterSave: { activity.expire() }
+      )
+    }
+    XCTAssertNotEqual(oldFile, installed)
+    XCTAssertEqual(try Data(contentsOf: installed), bytes)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: oldFile.path), "Defer cleanup after expiry")
+    let committed = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespace)
+    XCTAssertEqual(committed.cacheEntries.map(\.fileURL), [installed])
+    try await library.sweepCloudAttachmentCache(namespaceKey: namespace, maximumBytes: 1_024)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: oldFile.path))
+    XCTAssertEqual(try Data(contentsOf: installed), bytes)
+  }
+}

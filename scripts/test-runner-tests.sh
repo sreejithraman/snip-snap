@@ -35,7 +35,10 @@ while (( $# )); do
         *) shift ;;
     esac
 done
-[[ "${SNIP_SNAP_TEST_FAILURE:-}" != "$scheme" ]] || exit 65
+if [[ "${SNIP_SNAP_TEST_FAILURE:-}" == "$scheme" ]]; then
+    /bin/mkdir -p "$derived_data/Logs/Test/Failure.xcresult"
+    exit 65
+fi
 if [[ "$scheme" == SnipSnapiOS ]]; then
     app="$derived_data/Build/Products/Debug-iphonesimulator/Snip Snap iOS.app"
     extension="$app/PlugIns/SnipSnapShareExtension.appex"
@@ -48,7 +51,12 @@ if [[ "$scheme" == SnipSnapiOS ]]; then
     fi
 fi
 XCODEBUILD
-/bin/chmod +x "$test_root/bin/swift" "$test_root/bin/xcodebuild"
+cat > "$test_root/bin/xcrun" <<'XCRUN'
+#!/bin/zsh
+print -r -- "xcrun:$*" >> "$SNIP_SNAP_TEST_CALLS"
+[[ "${SNIP_SNAP_TEST_SUMMARY_FAILURE:-}" != YES ]]
+XCRUN
+/bin/chmod +x "$test_root/bin/swift" "$test_root/bin/xcodebuild" "$test_root/bin/xcrun"
 
 export SNIP_SNAP_TEST_CALLS="$test_root/calls"
 export PATH="$test_root/bin:$PATH"
@@ -94,6 +102,16 @@ for failure in package SnipSnap SnipSnapiOS; do
         print -u2 "Test runner hid a failure in $failure."
         exit 1
     fi
+done
+
+for summary_failure in YES NO; do
+    if SNIP_SNAP_TEST_FAILURE=SnipSnap SNIP_SNAP_TEST_SUMMARY_FAILURE="$summary_failure" run_tests --mac-only; then
+        print -u2 "Test runner hid a Mac test failure while reporting it."
+        exit 1
+    else
+        [[ $? == 65 ]]
+    fi
+    /usr/bin/grep -F 'xcrun:xcresulttool get test-results summary --path ' "$SNIP_SNAP_TEST_CALLS" >/dev/null
 done
 
 for missing_file in \
