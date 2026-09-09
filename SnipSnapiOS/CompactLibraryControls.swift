@@ -8,6 +8,7 @@ import UIKit
 private enum CompactControlMetrics {
     static let minimumInteractiveLength: CGFloat = 44
     static let selectorTransitionDuration: TimeInterval = 0.2
+    static let composerTransitionDuration: TimeInterval = 0.35
 }
 
 private struct CompactGlassCircleButton<Label: View>: View {
@@ -84,7 +85,7 @@ struct CompactLibraryControls: View {
                         .transition(reduceMotion ? .opacity : .offset(y: 8).combined(with: .opacity))
                 }
             }
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: showsComposer)
+            .animation(reduceMotion ? nil : .easeInOut(duration: CompactControlMetrics.composerTransitionDuration), value: showsComposer)
             if showsListTabs {
                 selectorRow
             } else if model.showsClipboard {

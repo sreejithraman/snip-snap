@@ -252,7 +252,7 @@ struct IOSAppRootView: View {
     private var appNavigation: some View {
         if horizontalSizeClass == .compact {
             NavigationStack {
-                Group {
+                ZStack {
                     if model.showsClipboard {
                         IOSClipboardView(
                             model: session.clipboard,
@@ -306,7 +306,7 @@ struct IOSAppRootView: View {
                 )
             } detail: {
                 NavigationStack {
-                    Group {
+                    ZStack {
                         if model.showsClipboard {
                             IOSClipboardView(
                             model: session.clipboard,
