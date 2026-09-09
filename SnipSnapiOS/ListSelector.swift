@@ -163,14 +163,6 @@ struct ListSelector: View {
                         transaction.animation = nil
                         state = origin - value.translation.width * direction
                     }
-                    .onChanged { value in
-                        guard !presentingCreation, sheet == nil,
-                              abs(value.translation.width) > abs(value.translation.height) else { return }
-                        let position = origin - value.translation.width * direction
-                        if geometry.pullProgress(at: position) >= 1 {
-                            beginCreation()
-                        }
-                    }
                     .onEnded { value in
                         guard !presentingCreation, sheet == nil,
                               abs(value.translation.width) > abs(value.translation.height) else { return }
