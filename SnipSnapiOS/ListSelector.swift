@@ -153,7 +153,7 @@ struct ListSelector: View {
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
 
-                hitTargets(geometry: geometry, cursor: cursor, viewport: proxy.size.width)
+                hitTargets(geometry: geometry, cursor: cursor)
             }
             .contentShape(Capsule())
             .simultaneousGesture(
@@ -249,8 +249,8 @@ struct ListSelector: View {
         return min(max(64, ceil(textWidth) + fontSize * 1.5 + 48), max(64, viewport - 96))
     }
 
-    private func x(_ center: CGFloat, cursor: CGFloat, viewport: CGFloat) -> CGFloat {
-        viewport / 2 + (center - cursor) * direction
+    private func labelOffset(_ center: CGFloat, cursor: CGFloat) -> CGFloat {
+        (center - cursor) * direction
     }
 
     private func labels(geometry: ListSelectorGeometry, cursor: CGFloat, viewport: CGFloat, progress: CGFloat) -> some View {
@@ -265,7 +265,7 @@ struct ListSelector: View {
                 .foregroundStyle(item.color)
                 .padding(.horizontal, 16)
                 .frame(width: geometry.widths[index], height: height)
-                .modifier(ListLabelPosition(x: x(geometry.centers[index], cursor: cursor, viewport: viewport), y: (height + 8) / 2))
+                .modifier(ListLabelPosition(x: labelOffset(geometry.centers[index], cursor: cursor)))
             }
             Image(systemName: "plus")
                 .foregroundStyle(.primary)
@@ -274,6 +274,7 @@ struct ListSelector: View {
                 .opacity(reduceMotion ? reveal : 1)
                 .position(x: plusX(viewport: viewport, reveal: reveal), y: (height + 8) / 2)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
         .accessibilityHidden(true)
     }
@@ -293,7 +294,7 @@ struct ListSelector: View {
         return viewport / 2 + distance * direction
     }
 
-    private func hitTargets(geometry: ListSelectorGeometry, cursor: CGFloat, viewport: CGFloat) -> some View {
+    private func hitTargets(geometry: ListSelectorGeometry, cursor: CGFloat) -> some View {
         ZStack {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 let selected = item.id == selectedItemID
@@ -327,10 +328,11 @@ struct ListSelector: View {
                 .accessibilityAdjustableAction { adjustment in
                     adjustItem(item.id, direction: adjustment)
                 }
-                .position(x: x(geometry.centers[index], cursor: cursor, viewport: viewport), y: (height + 8) / 2)
+                .offset(x: labelOffset(geometry.centers[index], cursor: cursor))
                 .disabled(presentingCreation || dragPosition != nil)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
     }
 
@@ -460,11 +462,11 @@ nonisolated private struct ListLensEffect: ViewModifier, Animatable {
     }
 }
 
+// Offset from the layout center so resizing the track cannot move a label.
 // Animate the whole label as one value. Implicit child layout animation can
 // otherwise let SwiftUI's text rendering lag behind the symbol during a snap.
 nonisolated private struct ListLabelPosition: ViewModifier, Animatable {
     var x: CGFloat
-    let y: CGFloat
 
     var animatableData: CGFloat {
         get { x }
@@ -472,7 +474,7 @@ nonisolated private struct ListLabelPosition: ViewModifier, Animatable {
     }
 
     func body(content: Content) -> some View {
-        content.position(x: x, y: y)
+        content.offset(x: x)
             .transaction { $0.animation = nil }
     }
 }
