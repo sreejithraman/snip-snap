@@ -77,39 +77,23 @@ struct SnipListColorPicker: View {
                 Label("Custom", systemImage: "circle.fill")
                     .foregroundStyle(SnipListAppearance(pair: selection).color)
             }
-            GlassEffectContainer(spacing: 8) {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 44), spacing: 4), count: 4), spacing: 4) {
+            GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.flexible(minimum: 44), spacing: SnipSnapSpacing.cardContentInset), count: 4),
+                    spacing: SnipSnapSpacing.paneContentInset
+                ) {
                     ForEach(SnipListColorPreset.allCases, id: \.rawValue) { accent in
                         let selected = selection == accent.color
                         Button {
                             selection = accent.color
                         } label: {
-                            Image(systemName: "checkmark")
-                                .font(.body.weight(.semibold))
-                                .opacity(selected ? 1 : 0)
-                                .frame(width: 28, height: 28)
-#if os(macOS)
-                                .padding(4)
-                                .glassEffect(
-                                    .regular.tint(
-                                        SnipListAppearance(pair: accent.color).color.opacity(SnipSnapTheme.listGlassTintOpacity)
-                                    ).interactive(),
-                                    in: Circle()
-                                )
-                                .frame(width: 44, height: 44)
-                                .contentShape(Rectangle())
-#endif
+                            SnipListColorSwatch(
+                                color: SnipListAppearance(pair: accent.color).color,
+                                isSelected: selected
+                            )
+                            .contentShape(Rectangle())
                         }
-#if os(macOS)
                         .buttonStyle(.plain)
-#else
-                        .buttonStyle(.glass(.regular.tint(
-                            SnipListAppearance(pair: accent.color).color.opacity(SnipSnapTheme.listGlassTintOpacity)
-                        )))
-                        .buttonBorderShape(.circle)
-#endif
-                        .foregroundStyle(.primary)
-                        .frame(minWidth: 44, minHeight: 44)
                         .accessibilityLabel(accent.title)
                         .accessibilityAddTraits(selected ? .isSelected : [])
                         .accessibilityIdentifier("list-color-\(accent.rawValue)")
@@ -118,5 +102,50 @@ struct SnipListColorPicker: View {
                 }
             }
         }
+    }
+}
+
+/// A tinted glass circle marks selection while keeping the swatch's color visible.
+struct SnipListColorSwatch: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+    let color: Color
+    let isSelected: Bool
+    private let diameter: CGFloat = 32
+
+    var body: some View {
+        Group {
+            if reduceTransparency || contrast == .increased {
+                Circle().fill(color)
+                    .frame(width: diameter, height: diameter)
+            } else {
+                Circle()
+                    .fill(.clear)
+                    .frame(width: diameter, height: diameter)
+                    .glassEffect(
+                        .regular.tint(color.opacity(SnipSnapTheme.listGlassTintOpacity)).interactive(),
+                        in: Circle()
+                    )
+            }
+        }
+            .padding(6)
+            .overlay {
+                if isSelected {
+                    Group {
+                        if reduceTransparency || contrast == .increased {
+                            Circle().strokeBorder(Color.primary, lineWidth: 2)
+                        } else {
+                            // Keep the selection lens separate from the colored glass below it.
+                            GlassEffectContainer {
+                                Color.clear
+                                    .frame(width: diameter + 12, height: diameter + 12)
+                                    .glassEffect(.regular.tint(SnipSnapTheme.listSelectionGlassTint), in: Circle())
+                            }
+                        }
+                    }
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                }
+            }
     }
 }

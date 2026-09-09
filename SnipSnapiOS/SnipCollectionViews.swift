@@ -28,8 +28,10 @@ struct SnipCollectionView: View {
     @State private var previewURLs: [URL] = []
     @State private var selectedPreviewURL: URL?
     @FocusState private var isInlineEditorFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isEditingList: Bool { model.editingListID == model.selectedListID }
+    private var showsListEditor: Bool { isEditingList && !model.isSearchPresented }
 
     var body: some View {
         Group {
@@ -163,6 +165,7 @@ struct SnipCollectionView: View {
                 .scrollDismissesKeyboard(.interactively)
             }
         }
+        .modifier(ListEditorRecession(isActive: showsListEditor))
         .contentShape(Rectangle())
         .simultaneousGesture(
             DragGesture(minimumDistance: 12).onChanged { value in
@@ -177,19 +180,25 @@ struct SnipCollectionView: View {
             title: isEditingList ? "" : model.selectedList.name,
             titleColor: model.selectedList.accent.color,
             showsControls: !model.isSearchPresented,
+            recedesControls: showsListEditor,
             trailingControls: collectionToolbar
         ))
         .navigationBarTitleDisplayMode(isEditingList ? .inline : .large)
-        .safeAreaInset(edge: .top, spacing: 0) {
+        .overlay(alignment: .top) {
             if isEditingList {
                 InlineListEditor(model: model, list: model.selectedList)
                     .id(model.selectedListID)
                     .frame(height: model.isSearchPresented ? 0 : nil)
-                    .clipped()
+                    .opacity(model.isSearchPresented ? 0 : 1)
                     .allowsHitTesting(!model.isSearchPresented)
                     .accessibilityHidden(model.isSearchPresented)
+                    .transition(reduceMotion ? .opacity : .scale(scale: 0.96, anchor: .top).combined(with: .opacity))
             }
         }
+        .animation(
+            reduceMotion ? nil : ListEditorPresentation.animation(reduceMotion: false, isPresented: showsListEditor),
+            value: showsListEditor
+        )
         .onChange(of: model.editingListID) { _, id in
             if id != nil {
                 model.isSearchPresented = false
@@ -513,6 +522,7 @@ struct CollectionScreenPresentation<TrailingControls: View>: ViewModifier {
     let title: String
     var titleColor: Color = .primary
     var showsControls = true
+    var recedesControls = false
     let trailingControls: TrailingControls
 
     func body(content: Content) -> some View {
@@ -526,7 +536,9 @@ struct CollectionScreenPresentation<TrailingControls: View>: ViewModifier {
                 if showsControls {
                     ToolbarItemGroup(placement: .topBarTrailing) {
                         trailingControls
+                            .tint(recedesControls ? Color.secondary : SnipSnapTheme.controlTint)
                     }
+                    .sharedBackgroundVisibility(recedesControls ? .hidden : .automatic)
                 }
             }
     }

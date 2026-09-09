@@ -227,14 +227,41 @@ struct SnipEditorView: View {
     }
 }
 
-/// Edits the selected list without leaving its snips or composer.
+enum ListEditorPresentation {
+    static func animation(reduceMotion: Bool, isPresented: Bool) -> Animation {
+        reduceMotion
+            ? .easeOut(duration: 0.12)
+            : .spring(duration: isPresented ? 0.3 : 0.22, bounce: 0)
+    }
+}
+
+/// Keeps nearby content available while the list editor has focus.
+struct ListEditorRecession: ViewModifier {
+    let isActive: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(isActive ? (contrast == .increased ? 0.7 : 0.4) : 1)
+            .animation(
+                ListEditorPresentation.animation(reduceMotion: reduceMotion, isPresented: isActive),
+                value: isActive
+            )
+    }
+}
+
+/// Edits the selected list in a glass panel above its snips.
 struct InlineListEditor: View {
     let model: IOSAppModel
     let list: SnipList
     @Bindable private var draft: InlineListDraft
-    @State private var showsAppearance = false
     @State private var showsIcons = false
+    @State private var contentHeight: CGFloat?
     @FocusState private var isNameFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
 
     init(model: IOSAppModel, list: SnipList) {
         self.model = model
@@ -243,15 +270,48 @@ struct InlineListEditor: View {
     }
 
     var body: some View {
+        ScrollView {
+            editorContent
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(maxHeight: contentHeight, alignment: .top)
+        .background {
+            let shape = RoundedRectangle(cornerRadius: 28, style: .continuous)
+            if reduceTransparency || contrast == .increased {
+                shape.fill(Color(uiColor: .secondarySystemBackground))
+                    .overlay { shape.strokeBorder(SnipSnapTheme.emphasizedGlassEdge) }
+            } else {
+                GlassEffectContainer {
+                    Color.clear
+                        .glassEffect(.regular.tint(SnipSnapTheme.listEditorGlassTint), in: shape)
+                }
+            }
+        }
+        .padding(.horizontal, SnipSnapSpacing.paneContentInset)
+        .padding(.top, SnipSnapSpacing.relatedContent)
+        .padding(.bottom, SnipSnapSpacing.relatedContent)
+        .task { isNameFocused = model.newListID == list.id && !model.isSearchPresented }
+        .onChange(of: model.isSearchPresented) { _, presented in
+            if presented { isNameFocused = false }
+        }
+    }
+
+    private var editorContent: some View {
         VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
             HStack(spacing: 12) {
                 Button {
                     isNameFocused = false
-                    showsIcons.toggle()
-                    showsAppearance = false
+                    withAnimation(reduceMotion ? nil : ListEditorPresentation.animation(
+                        reduceMotion: false,
+                        isPresented: !showsIcons
+                    )) {
+                        showsIcons.toggle()
+                    }
                 } label: {
                     Image(systemName: draft.systemImage)
                         .font(.title3.weight(.semibold))
+                        .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                         .foregroundStyle(SnipListAppearance(pair: draft.color).color)
                         .frame(width: 44, height: 44)
                 }
@@ -261,7 +321,7 @@ struct InlineListEditor: View {
                 .accessibilityIdentifier("choose-list-icon")
 
                 TextField(list.displayName, text: $draft.name)
-                    .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                    .font(.system(.title, design: .rounded, weight: .bold))
                     .foregroundStyle(SnipListAppearance(pair: draft.color).color)
                     .textFieldStyle(.plain)
                     .lineLimit(1)
@@ -284,32 +344,17 @@ struct InlineListEditor: View {
                 .accessibilityLabel("Done")
                 .accessibilityIdentifier("save-list")
             }
-            Button {
-                isNameFocused = false
-                showsAppearance.toggle()
-                showsIcons = false
-            } label: {
-                Label("List color", systemImage: "paintpalette")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .frame(minHeight: 44)
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("list-appearance")
+            SnipListColorPicker(selection: $draft.color)
+                .padding(.top, SnipSnapSpacing.relatedContent)
+                .onChange(of: draft.color) { isNameFocused = false }
             if showsIcons {
                 InlineListIconPicker(selection: $draft.systemImage)
-            }
-            if showsAppearance {
-                SnipListColorPicker(selection: $draft.color)
+                    .padding(.top, SnipSnapSpacing.relatedContent)
+                    .transition(.opacity)
             }
         }
         .disabled(draft.isSaving)
-        .padding(.horizontal, SnipSnapSpacing.paneContentInset)
-        .padding(.bottom, SnipSnapSpacing.relatedContent)
-        .task { isNameFocused = !model.isSearchPresented }
-        .onChange(of: model.isSearchPresented) { _, presented in
-            if presented { isNameFocused = false }
-        }
+        .padding(SnipSnapSpacing.paneContentInset)
     }
 
     private func save() async {

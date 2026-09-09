@@ -77,6 +77,11 @@ struct CompactLibraryControls: View {
 
     private var showsComposer: Bool { !model.isSearchPresented && !model.showsClipboard && !isSelecting }
 
+    private var showsListEditor: Bool {
+        !model.showsClipboard && !model.isSearchPresented
+            && model.editingListID == model.selectedListID
+    }
+
     private var contentTransition: Animation? {
         reduceMotion ? nil : .easeInOut(duration: CompactControlMetrics.contentTransitionDuration)
     }
@@ -86,6 +91,7 @@ struct CompactLibraryControls: View {
             GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
                 if showsComposer {
                     composer
+                        .modifier(ListEditorRecession(isActive: showsListEditor && !isComposerFocused))
                         .transition(reduceMotion ? .opacity : .offset(y: 8).combined(with: .opacity))
                 }
             }
@@ -99,6 +105,7 @@ struct CompactLibraryControls: View {
                 }
             } else if !model.isSearchPresented {
                 navigationControls
+                    .modifier(ListEditorRecession(isActive: showsListEditor))
             }
         }
         .animation(contentTransition, value: model.showsClipboard)
