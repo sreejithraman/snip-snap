@@ -29,6 +29,7 @@ private struct CompactGlassCircleButton<Label: View>: View {
 struct CompactLibraryControls: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.layoutDirection) private var layoutDirection
     let model: IOSAppModel
     let clipboard: IOSClipboardModel
     let storage: CompactComposerStorage
@@ -40,6 +41,7 @@ struct CompactLibraryControls: View {
     @State private var draft = ComposerDraft()
     @State private var clipboardHasContent = false
     @State private var toolbarWidth: CGFloat = 320
+    @State private var selectorDragDistance: CGFloat = 0
     @State private var previewURL: URL?
     @State private var isImporting = false
     @State private var composerFieldID = UUID()
@@ -73,7 +75,7 @@ struct CompactLibraryControls: View {
 
     private var isStaging: Bool { stagingTask != nil }
 
-    private var showsComposer: Bool { !model.showsClipboard && !isSelecting }
+    private var showsComposer: Bool { !model.isSearchPresented && !model.showsClipboard && !isSelecting }
 
     private var contentTransition: Animation? {
         reduceMotion ? nil : .easeInOut(duration: CompactControlMetrics.contentTransitionDuration)
@@ -95,6 +97,8 @@ struct CompactLibraryControls: View {
                             .transition(.opacity)
                     }
                 }
+            } else if !model.isSearchPresented {
+                navigationControls
             }
         }
         .animation(contentTransition, value: model.showsClipboard)
@@ -104,34 +108,8 @@ struct CompactLibraryControls: View {
         .padding(.bottom, 6)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
         .toolbar {
-            if showsListTabs {
-                if !model.isSearchPresented {
-                    if model.showsClipboard {
-                        ToolbarItem(placement: .bottomBar) {
-                            Button("Paste", systemImage: "doc.on.clipboard") {
-                                let providers = UIPasteboard.general.itemProviders
-                                Task { await clipboard.capture(providers) }
-                            }
-                            .disabled(!clipboardHasContent)
-                            .accessibilityIdentifier("paste-to-clipboard")
-                        }
-                        ToolbarSpacer(.fixed, placement: .bottomBar)
-                    }
-                    ToolbarItem(placement: .bottomBar) {
-                        ListSelector(
-                            model: model,
-                            controlLength: controlLength,
-                            sheet: $sheet,
-                            deleteList: deleteList,
-                            labelViewport: listToolbarWidth
-                        )
-                        .frame(width: listToolbarWidth, height: max(48, controlLength) + 8)
-                    }
-                    .sharedBackgroundVisibility(.hidden)
-                    ToolbarSpacer(.flexible, placement: .bottomBar)
-                }
+            if showsListTabs && model.isSearchPresented {
                 DefaultToolbarItem(kind: .search, placement: .bottomBar)
-
             }
         }
         .fileImporter(
@@ -168,17 +146,77 @@ struct CompactLibraryControls: View {
         }
     }
 
+    private var navigationWidth: CGFloat { max(0, toolbarWidth - 32) }
+
+    private var navigationControlLength: CGFloat {
+        // Let icon buttons grow into the margins without shrinking tab labels.
+        max(48, min(controlLength, (navigationWidth - listToolbarWidth) / 2 - 8))
+    }
+
     private var listToolbarWidth: CGFloat {
-        max(120, min(256, toolbarWidth - (model.showsClipboard ? 168 : 112)))
+        // Reserve the same space on both sides, including when Paste is absent.
+        max(120, min(256, toolbarWidth - 168))
+    }
+
+    private var navigationControls: some View {
+        let length = navigationControlLength
+        let progress = min(1, selectorDragDistance / length)
+        let selectorWidth = listToolbarWidth + (navigationWidth - listToolbarWidth) * progress
+        let direction: CGFloat = layoutDirection == .rightToLeft ? -1 : 1
+        let travel = reduceMotion ? 0 : (length + 24) * progress * direction
+
+        return ZStack {
+            ListSelector(
+                model: model,
+                controlLength: length,
+                sheet: $sheet,
+                deleteList: deleteList,
+                labelViewport: listToolbarWidth,
+                dragDistanceChanged: { distance in
+                    withAnimation(distance == 0 && !reduceMotion ? .spring(duration: 0.3, bounce: 0.12) : nil) {
+                        selectorDragDistance = distance
+                    }
+                }
+            )
+            .frame(width: selectorWidth, height: length + 8)
+
+            HStack {
+                Group {
+                    if model.showsClipboard {
+                        pasteButton
+                    } else {
+                        Color.clear.frame(width: length, height: length)
+                    }
+                }
+                .offset(x: -travel)
+                .allowsHitTesting(selectorDragDistance == 0)
+                .accessibilityHidden(selectorDragDistance != 0)
+
+                Spacer(minLength: 0)
+
+                CompactGlassCircleButton(length: length) {
+                    model.isSearchPresented = true
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: length * 22 / 48, weight: .medium))
+                }
+                .accessibilityLabel("Search")
+                .offset(x: travel)
+                .allowsHitTesting(selectorDragDistance == 0)
+                .accessibilityHidden(selectorDragDistance != 0)
+            }
+            .opacity(1 - progress)
+        }
+        .frame(width: navigationWidth, height: length + 8)
     }
 
     private var pasteButton: some View {
-        CompactGlassCircleButton(length: max(48, controlLength)) {
+        CompactGlassCircleButton(length: showsListTabs ? navigationControlLength : max(48, controlLength)) {
             let providers = UIPasteboard.general.itemProviders
             Task { await clipboard.capture(providers) }
         } label: {
             Image(systemName: "doc.on.clipboard")
-                .font(.title3.weight(.medium))
+                .font(showsListTabs ? .system(size: navigationControlLength * 20 / 48, weight: .medium) : .title3.weight(.medium))
         }
         .disabled(!clipboardHasContent)
         .accessibilityLabel("Paste")

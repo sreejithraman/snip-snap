@@ -99,6 +99,7 @@ struct ListSelector: View {
     @Binding var sheet: AppSheet?
     let deleteList: (UUID) async -> Void
     var labelViewport: CGFloat? = nil
+    var dragDistanceChanged: (CGFloat) -> Void = { _ in }
 
     private var animation: Animation? {
         reduceMotion ? nil : .spring(duration: 0.3, bounce: 0.12)
@@ -184,6 +185,9 @@ struct ListSelector: View {
             // Animate only this strip after release, never the shared model update.
             .animation(dragPosition == nil ? animation : nil, value: dragPosition == nil)
             .animation(dragPosition == nil ? animation : nil, value: selectedItemID)
+            .onChange(of: dragPosition) { _, position in
+                dragDistanceChanged(position.map { abs($0 - origin) } ?? 0)
+            }
         }
         .frame(height: height + 8)
         .accessibilityElement(children: .contain)
@@ -199,6 +203,7 @@ struct ListSelector: View {
             if phase != .active, sheet == nil { resetCreation() }
         }
         .onDisappear {
+            dragDistanceChanged(0)
             resetCreation()
         }
         .listDeletionConfirmation(
