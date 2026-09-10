@@ -1511,7 +1511,20 @@ final class SnipSnapiOSUITests: XCTestCase {
         createList("Work", in: app)
         createSnip("Alpha work", in: app)
         returnToCollection(in: app)
-        app.buttons["clipboard-tab"].tap()
+        let clipboard = app.buttons["clipboard-tab"]
+        let selector = app.descendants(matching: .any)["list-selector"]
+        if selector.exists {
+            // Swipe directly from Work to Clipboard, which lies outside the strip.
+            let start = selector.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5))
+            start.press(
+                forDuration: 0.05,
+                thenDragTo: start.withOffset(CGVector(dx: selector.frame.width, dy: 0))
+            )
+        } else {
+            clipboard.tap()
+        }
+        XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+        XCTAssertTrue(clipboard.isSelected)
         let search = openSearch(in: app)
         XCTAssertTrue(search.waitForExistence(timeout: 3))
         XCTAssertEqual(search.placeholderValue, "Search All")
@@ -1525,6 +1538,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         closeSearch(in: app)
         XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.descendants(matching: .any)["list-selector"].exists)
+        XCTAssertTrue(app.buttons["clipboard-tab"].isSelected)
     }
 
     func testSearchDoneFilter() {
@@ -1690,6 +1704,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(restoredFirst.waitForExistence(timeout: 3))
         XCTAssertLessThan(restoredFirst.frame.minY, restoredSecond.frame.minY)
         XCTAssertFalse(app.buttons["Reorder First drag sample"].exists)
+        XCTAssertTrue(restoredFirst.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "completion-")
+        ).firstMatch.exists)
         restoredFirst.press(forDuration: 1)
         XCTAssertTrue(app.buttons["edit-snip"].waitForExistence(timeout: 3))
         let menuProof = XCTAttachment(screenshot: app.screenshot())
