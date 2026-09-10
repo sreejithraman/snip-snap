@@ -26,6 +26,20 @@ private struct CompactGlassCircleButton<Label: View>: View {
     }
 }
 
+private struct ClipboardPasteButtonStyle: ButtonStyle {
+    let length: CGFloat
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: length * 20 / 48, weight: .medium))
+            .frame(width: length, height: length)
+            .contentShape(Circle())
+            .opacity(isEnabled ? 1 : 0.4)
+            .glassEffect(.regular.interactive(), in: Circle())
+    }
+}
+
 struct CompactLibraryControls: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -39,7 +53,6 @@ struct CompactLibraryControls: View {
     @Binding var sheet: AppSheet?
 
     @State private var draft = ComposerDraft()
-    @State private var clipboardHasContent = false
     @State private var toolbarWidth: CGFloat = 320
     @State private var selectorExpansion = ListSelectorExpansion()
     @State private var previewURL: URL?
@@ -128,16 +141,9 @@ struct CompactLibraryControls: View {
         }
         .quickLookPreview($previewURL, in: draft.attachments)
         .onAppear {
-            updatePasteAvailability()
             if storage.savingListID != model.selectedListID {
                 draft = storage.draftStore.draft(for: model.selectedListID)
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
-            updatePasteAvailability()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
-            updatePasteAvailability()
         }
         .onChange(of: model.selectedListID) { _, listID in
             draft = storage.savingListID == listID
@@ -214,23 +220,18 @@ struct CompactLibraryControls: View {
     }
 
     private var pasteButton: some View {
-        CompactGlassCircleButton(length: showsListTabs ? navigationControlLength : max(48, controlLength)) {
-            let providers = UIPasteboard.general.itemProviders
+        PasteButton(supportedContentTypes: IOSClipboardModel.pasteContentTypes) { providers in
             Task { await clipboard.capture(providers) }
-        } label: {
-            Image(systemName: "doc.on.clipboard")
-                .font(showsListTabs ? .system(size: navigationControlLength * 20 / 48, weight: .medium) : .title3.weight(.medium))
         }
-        .disabled(!clipboardHasContent)
+        .labelStyle(.iconOnly)
+        .buttonStyle(ClipboardPasteButtonStyle(
+            length: showsListTabs ? navigationControlLength : max(48, controlLength)
+        ))
+        .disabled(clipboard.isPasting)
         .accessibilityLabel("Paste")
         .accessibilityIdentifier("paste-to-clipboard")
         .glassEffectID("paste", in: composerGlass)
         .glassEffectTransition(.materialize)
-    }
-
-    private func updatePasteAvailability() {
-        let pasteboard = UIPasteboard.general
-        clipboardHasContent = pasteboard.hasStrings || pasteboard.hasURLs || pasteboard.hasImages
     }
 
     private var composer: some View {
