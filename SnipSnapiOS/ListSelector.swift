@@ -51,6 +51,14 @@ struct ListSelectorGeometry {
     }
 }
 
+struct ListSelectorExpansion {
+    private(set) var distance: CGFloat = 0
+
+    mutating func update(distance: CGFloat?) {
+        self.distance = distance.map { max(self.distance, $0) } ?? 0
+    }
+}
+
 private enum ListSelectorItem: Identifiable {
     case clipboard
     case list(SnipList)
@@ -99,7 +107,7 @@ struct ListSelector: View {
     @Binding var sheet: AppSheet?
     let deleteList: (UUID) async -> Void
     var labelViewport: CGFloat? = nil
-    var dragDistanceChanged: (CGFloat) -> Void = { _ in }
+    var dragDistanceChanged: (CGFloat?) -> Void = { _ in }
 
     private var animation: Animation? {
         reduceMotion ? nil : .spring(duration: 0.3, bounce: 0.12)
@@ -199,7 +207,7 @@ struct ListSelector: View {
             .animation(dragPosition == nil ? animation : nil, value: dragPosition == nil)
             .animation(dragPosition == nil ? animation : nil, value: selectedItemID)
             .onChange(of: dragPosition) { _, position in
-                dragDistanceChanged(position.map { abs($0 - origin) } ?? 0)
+                dragDistanceChanged(position.map { abs($0 - origin) })
             }
         }
         .frame(height: height + 8)
@@ -216,7 +224,7 @@ struct ListSelector: View {
             if phase != .active, sheet == nil { resetCreation() }
         }
         .onDisappear {
-            dragDistanceChanged(0)
+            dragDistanceChanged(nil)
             resetCreation()
         }
         .listDeletionConfirmation(

@@ -26,20 +26,6 @@ private struct CompactGlassCircleButton<Label: View>: View {
     }
 }
 
-private struct ClipboardPasteButtonStyle: ButtonStyle {
-    let length: CGFloat
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: length * 20 / 48, weight: .medium))
-            .frame(width: length, height: length)
-            .contentShape(Circle())
-            .opacity(isEnabled ? 1 : 0.4)
-            .glassEffect(.regular.interactive(), in: Circle())
-    }
-}
-
 struct CompactLibraryControls: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -54,7 +40,7 @@ struct CompactLibraryControls: View {
 
     @State private var draft = ComposerDraft()
     @State private var toolbarWidth: CGFloat = 320
-    @State private var selectorDragDistance: CGFloat = 0
+    @State private var selectorExpansion = ListSelectorExpansion()
     @State private var previewURL: URL?
     @State private var isImporting = false
     @State private var composerFieldID = UUID()
@@ -173,7 +159,7 @@ struct CompactLibraryControls: View {
 
     private var navigationControls: some View {
         let length = navigationControlLength
-        let progress = min(1, selectorDragDistance / length)
+        let progress = min(1, selectorExpansion.distance / length)
         let selectorWidth = listToolbarWidth + (navigationWidth - listToolbarWidth) * progress
         let direction: CGFloat = layoutDirection == .rightToLeft ? -1 : 1
         let travel = reduceMotion ? 0 : (length + 24) * progress * direction
@@ -186,24 +172,20 @@ struct CompactLibraryControls: View {
                 deleteList: deleteList,
                 labelViewport: listToolbarWidth,
                 dragDistanceChanged: { distance in
-                    withAnimation(distance == 0 && !reduceMotion ? .spring(duration: 0.3, bounce: 0.12) : nil) {
-                        selectorDragDistance = distance
+                    withAnimation(distance == nil && !reduceMotion ? .spring(duration: 0.3, bounce: 0.12) : nil) {
+                        selectorExpansion.update(distance: distance)
                     }
                 }
             )
             .frame(width: selectorWidth, height: length + 8)
 
             HStack {
-                Group {
-                    if model.showsClipboard {
-                        pasteButton
-                    } else {
-                        Color.clear.frame(width: length, height: length)
-                    }
-                }
-                .offset(x: -travel)
-                .allowsHitTesting(selectorDragDistance == 0)
-                .accessibilityHidden(selectorDragDistance != 0)
+                pasteButton
+                    .opacity(model.showsClipboard ? 1 : 0)
+                    .animation(model.showsClipboard ? contentTransition : nil, value: model.showsClipboard)
+                    .offset(x: -travel)
+                    .allowsHitTesting(model.showsClipboard && selectorExpansion.distance == 0)
+                    .accessibilityHidden(!model.showsClipboard || selectorExpansion.distance != 0)
 
                 Spacer(minLength: 0)
 
@@ -215,8 +197,8 @@ struct CompactLibraryControls: View {
                 }
                 .accessibilityLabel("Search")
                 .offset(x: travel)
-                .allowsHitTesting(selectorDragDistance == 0)
-                .accessibilityHidden(selectorDragDistance != 0)
+                .allowsHitTesting(selectorExpansion.distance == 0)
+                .accessibilityHidden(selectorExpansion.distance != 0)
             }
             .opacity(1 - progress)
         }
@@ -224,13 +206,13 @@ struct CompactLibraryControls: View {
     }
 
     private var pasteButton: some View {
-        PasteButton(supportedContentTypes: IOSClipboardModel.pasteContentTypes) { providers in
+        CompactGlassCircleButton(length: showsListTabs ? navigationControlLength : max(48, controlLength)) {
+            let providers = UIPasteboard.general.itemProviders
             Task { await clipboard.capture(providers) }
+        } label: {
+            Image(systemName: "doc.on.clipboard")
+                .font(showsListTabs ? .system(size: navigationControlLength * 20 / 48, weight: .medium) : .title3.weight(.medium))
         }
-        .labelStyle(.iconOnly)
-        .buttonStyle(ClipboardPasteButtonStyle(
-            length: showsListTabs ? navigationControlLength : max(48, controlLength)
-        ))
         .disabled(clipboard.isPasting)
         .accessibilityLabel("Paste")
         .accessibilityIdentifier("paste-to-clipboard")
