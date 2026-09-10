@@ -70,9 +70,12 @@ package struct SnipLibraryState {
       seenRequestIDs.insert(requestID)
       return .add(.added(snip.id))
 
-    case .createList(let name, let systemImage, let color):
-      let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    case .createList(let name, let systemImage, let color, let namePolicy):
+      var cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !cleanName.isEmpty else { throw SnipLibraryError.invalidList }
+      if namePolicy == .available {
+        cleanName = SnipListNameAllocator.availableName(startingWith: cleanName, in: lists)
+      }
       let normalized = SnipListNameAllocator.normalized(cleanName)
       guard !lists.contains(where: {
         SnipListNameAllocator.normalized($0.desiredName) == normalized

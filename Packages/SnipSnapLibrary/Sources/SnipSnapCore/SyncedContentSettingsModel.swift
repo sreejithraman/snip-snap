@@ -87,7 +87,7 @@ public enum SyncedContentSyncIssue: Codable, Equatable, Sendable {
     case .signInRequired:
       String(localized: "Sign in to iCloud in Settings to sync your snips. Your changes will stay on this device until then.", bundle: .main)
     case .accountRestricted:
-      String(localized: "A device setting or management rule is blocking iCloud. Your changes will stay on this device.", bundle: .main)
+      String(localized: "Your device or an organization that manages it is blocking iCloud. Your changes will stay on this device.", bundle: .main)
     case .accountTemporarilyUnavailable:
       String(localized: "Your iCloud account is not ready for sync right now. \(safeCopy) Sync will resume when iCloud is available.", bundle: .main)
     case .iCloudStorageFull:
@@ -103,15 +103,15 @@ public enum SyncedContentSyncIssue: Codable, Equatable, Sendable {
     case .attachmentUnavailable:
       String(localized: "One attachment can’t be read from iCloud right now. Your other changes are safe, and Snip Snap will try again.", bundle: .main)
     case .attachmentStorageUnavailable:
-      String(localized: "Snip Snap couldn’t prepare a safe place for one iCloud attachment on this device. Your other changes are safe, and sync will try again.", bundle: .main)
+      String(localized: "Snip Snap couldn’t save one iCloud attachment on this device. Your other changes are safe, and sync will try again.", bundle: .main)
     case .setupBlocked(let message):
       String(localized: "Snip Snap could not finish setting up iCloud Sync. \(safeCopy) \(message)", bundle: .main)
     case .iCloudDataReset:
-      String(localized: "The synced Snip Snap data was removed from iCloud. Snip Snap cleared its old sync copy and will not upload it again. You can turn sync on when you’re ready.", bundle: .main)
+      String(localized: "Synced Snip Snap data was removed from iCloud. Snip Snap cleared its old copy and won’t upload it again. You can turn sync on when you’re ready.", bundle: .main)
     case .iCloudAccountChanged:
       String(localized: "Snip Snap stopped sync for the prior iCloud account and opened a separate local library. Sign in to the account you want to use, then turn sync on.", bundle: .main)
     case .appDataIssue:
-      String(localized: "\(safeCopy) Try sync again. If this keeps happening, update Snip Snap if an update is available or contact support.", bundle: .main)
+      String(localized: "\(safeCopy) Try sync again. If this keeps happening, check for an update or contact support.", bundle: .main)
     }
   }
 
@@ -254,8 +254,8 @@ public final class SyncedContentSettingsModel {
     case (_, .syncing): String(localized: "Syncing with iCloud…", bundle: .main)
     case (_, .disabling): String(localized: "Turning Off iCloud Sync…", bundle: .main)
     case (_, .deleting): String(localized: "Deleting Synced Content…", bundle: .main)
-    case (_, .removalPending): String(localized: "Old Synced Content Removal Pending", bundle: .main)
-    case (_, .deleted): String(localized: "Synced Content Deleted", bundle: .main)
+    case (_, .removalPending): String(localized: "Old Synced Data Needs Removal", bundle: .main)
+    case (_, .deleted): String(localized: "Synced Data Deleted", bundle: .main)
     }
   }
 
@@ -272,15 +272,15 @@ public final class SyncedContentSettingsModel {
     case (.iCloudSync, .disabling):
       String(localized: "Snip Snap is making a local copy of your synced library. Your iCloud copy will stay in place.", bundle: .main)
     case (.localOnly, _):
-      String(localized: "Snip Snap does not send local-only data to CloudKit.", bundle: .main)
+      String(localized: "Snip Snap doesn’t sync local-only data with iCloud.", bundle: .main)
     case (_, .ready):
       String(localized: "Saved snips and attachments sync through your private iCloud database. Snip Snap’s maintainers cannot inspect private records in CloudKit Console. Apple encrypts synced data in transit and at rest; user fields use encrypted values and files use CKAsset data. Those user fields and attachments are end-to-end encrypted only when Advanced Data Protection is on.", bundle: .main)
     case (_, .deleting):
-      String(localized: "Snip Snap is starting a fresh empty synced collection and removing the old data zones.", bundle: .main)
+      String(localized: "Snip Snap is starting a new empty synced library and removing the old synced data.", bundle: .main)
     case (_, .removalPending):
-      String(localized: "Snip Snap started a fresh empty synced collection, but it could not remove all old iCloud data yet. It will retry the next time it syncs. Your local recovery copy remains.", bundle: .main)
+      String(localized: "Snip Snap started a new empty synced library, but it could not remove all old iCloud data yet. It will retry the next time it syncs. Your local recovery copy remains.", bundle: .main)
     case (_, .deleted):
-      String(localized: "Synced content was removed. This device kept a local recovery copy. A small control record remains in iCloud so an old device cannot restore the deleted collection.", bundle: .main)
+      String(localized: "Synced data was removed. This device kept a local recovery copy. A small record remains in iCloud to prevent an old device from restoring the deleted data.", bundle: .main)
     }
   }
 

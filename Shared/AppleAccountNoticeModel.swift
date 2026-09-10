@@ -53,7 +53,7 @@ final class AppleAccountNoticeModel {
             notice = try await handler.refreshAppleAccountNotice()
             errorMessage = nil
         } catch {
-            errorMessage = String(localized: "Snip Snap could not finish that choice. Please try again.")
+            errorMessage = String(localized: "Snip Snap couldn’t save your choice. Try again.")
         }
     }
 

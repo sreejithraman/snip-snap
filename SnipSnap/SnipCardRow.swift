@@ -268,7 +268,7 @@ struct SnipCardRow: View {
                 addEditAttachments([url])
             case .failure:
                 onEditError(
-                    String(localized: "Snip Snap could not prepare the pasted text.")
+                    String(localized: "Couldn’t prepare pasted text. Try again.")
                 )
             }
         }

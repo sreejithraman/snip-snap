@@ -249,7 +249,7 @@ struct SnipSnapiOSApp: App {
                 userActions: assembly.userActions,
                 userActionsRebinder: assembly.userActionsRebinder,
                 shareImports: shareImports,
-                error: String(localized: "Snip Snap could not open its local library. Your saved data was not changed."),
+                error: String(localized: "Snip Snap couldn’t open the local library. It left your saved data unchanged."),
                 uiTestAttachmentURLs: [],
                 seedsCopyShareFixtures: false,
                 recoveryScope: assembly.recoveryScope,

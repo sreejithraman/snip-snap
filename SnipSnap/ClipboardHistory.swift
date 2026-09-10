@@ -237,7 +237,9 @@ final class ClipboardHistory: ObservableObject {
                 self.state.merge(loaded)
                 self.entries = self.state.entries
             } catch {
-                self?.persistenceError = error.localizedDescription
+                self?.persistenceError = String(
+                    localized: "Couldn’t load clipboard history. Try again."
+                )
             }
         }
         pollingTimer.timer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: true) { [weak self] _ in
@@ -287,7 +289,7 @@ final class ClipboardHistory: ObservableObject {
             await initialLoadTask?.value
             state.clearUnpinned()
             entries = state.entries
-            persist()
+            persist(errorMessage: String(localized: "Couldn’t clear clipboard history. Try again."))
         }
     }
 
@@ -352,7 +354,7 @@ final class ClipboardHistory: ObservableObject {
             pendingUploadIDs.subtract(updated.entries.map(\.id))
             syncError = nil
         } catch is CancellationError { }
-        catch { syncError = error.localizedDescription }
+        catch { syncError = ClipboardSyncErrorMessage.sync(for: error) }
     }
 
     func resetCloudAccount() async {
@@ -364,7 +366,10 @@ final class ClipboardHistory: ObservableObject {
             try await cloudService?.resetAccountBinding()
             state = try await sharedStore.load()
             entries = state.entries
-        } catch { syncError = error.localizedDescription }
+            syncError = nil
+        } catch {
+            syncError = ClipboardSyncErrorMessage.accountReset(for: error)
+        }
     }
 
     func deleteSyncedHistory() async throws {
@@ -398,7 +403,7 @@ final class ClipboardHistory: ObservableObject {
         let resolved = resolvedEntry(entry)
         if !entry.ownedFiles.isEmpty,
            !resolved.fileURLs.allSatisfy({ FileManager.default.isReadableFile(atPath: $0.path) }) {
-            persistenceError = String(localized: "That file is missing. Try syncing again.")
+            persistenceError = String(localized: "This file isn’t available on this device. If it synced before, try clipboard sync again.")
             return false
         }
         guard resolved.write(to: pasteboard) else { return false }
@@ -524,7 +529,9 @@ final class ClipboardHistory: ObservableObject {
         persist()
     }
 
-    private func persist() {
+    private func persist(
+        errorMessage: String = String(localized: "Couldn’t save clipboard history. Try again.")
+    ) {
         let loadTask = initialLoadTask
         let previousTask = persistenceScheduleTask
         persistenceScheduleTask = Task { [weak self, sharedStore] in
@@ -537,7 +544,7 @@ final class ClipboardHistory: ObservableObject {
                 entries = state.entries
                 onChange?()
             } catch {
-                persistenceError = error.localizedDescription
+                persistenceError = errorMessage
             }
         }
     }
@@ -547,7 +554,7 @@ final class ClipboardHistory: ObservableObject {
     func delete(id: UUID) {
         state.delete(id: id)
         entries = state.entries
-        persist()
+        persist(errorMessage: String(localized: "Couldn’t delete this clipboard entry. Try again."))
     }
 
     func togglePinned(id: UUID) async {
@@ -558,7 +565,9 @@ final class ClipboardHistory: ObservableObject {
             entries = state.entries
             pendingUploadIDs.insert(id)
             onChange?()
-        } catch { persistenceError = error.localizedDescription }
+        } catch {
+            persistenceError = String(localized: "Couldn’t update the pin. Try again.")
+        }
     }
 
     func resolvedEntry(_ entry: ClipboardEntry) -> ClipboardEntry {

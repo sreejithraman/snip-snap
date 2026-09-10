@@ -430,7 +430,7 @@ enum ShortcutSettingsError: Error, Equatable, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .duplicate: String(localized: "Another action already uses that shortcut.")
-        case .defaultForAnotherAction: String(localized: "That shortcut is another action's default.")
+        case .defaultForAnotherAction: String(localized: "That shortcut is the default for another action.")
         case .reserved: String(localized: "macOS or a fixed Snip Snap command uses that shortcut.")
         }
     }
@@ -620,7 +620,7 @@ enum GlobalHotKeyError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .eventHandler:
-            String(localized: "Snip Snap could not start keyboard shortcut handling.")
+            String(localized: "Couldn’t start keyboard shortcut handling. Try again.")
         case .registration:
             String(localized: "macOS could not register that shortcut. Another app may already use it.")
         }

@@ -180,6 +180,64 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(finished.opacity(for: pages[1], reduceMotion: true), 0)
     }
 
+    func testOpenNewListWithExistingDefaultNamesOpensANewEditor() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = try JSONSnipLibrary(fileURL: root.appendingPathComponent("library.json"))
+        let model = makeModel(library: library)
+        await model.load()
+        let base = String(localized: "New List")
+        let created = await model.createList(name: base)
+        XCTAssertTrue(created)
+        let originalID = model.selectedListID
+
+        for suffix in 2...3 {
+            model.searchText = "a search with no matches"
+            await model.openNewList()
+
+            XCTAssertNil(model.errorMessage)
+            XCTAssertEqual(model.selectedList.name, "\(base) (\(suffix))")
+            XCTAssertNotEqual(model.selectedListID, originalID)
+            XCTAssertEqual(model.newListID, model.selectedListID)
+            XCTAssertEqual(model.editingListID, model.selectedListID)
+            XCTAssertEqual(model.searchText, "")
+            XCTAssertEqual(model.lists.count, suffix + 1)
+            model.finishListEditing(id: model.selectedListID)
+        }
+        XCTAssertEqual(model.lists.first(where: { $0.id == originalID })?.name, base)
+    }
+
+    func testOpenNewListUsesCurrentLibraryWhenTheVisibleSnapshotIsStale() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = try JSONSnipLibrary(fileURL: root.appendingPathComponent("library.json"))
+        let model = makeModel(library: library)
+        await model.load()
+        let base = String(localized: "New List")
+        _ = try await library.perform(.createList(name: base, systemImage: "list.bullet"), sortedBy: .manual)
+        XCTAssertEqual(model.lists.count, 1)
+
+        await model.openNewList()
+
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.selectedList.name, "\(base) (2)")
+        XCTAssertEqual(model.editingListID, model.selectedListID)
+        XCTAssertEqual(model.newListID, model.selectedListID)
+        XCTAssertEqual(model.lists.count, 3)
+    }
+
+    func testDuplicateListErrorUsesASpecificTitleAndResetsForOtherErrors() async {
+        let model = makeModel(library: ModelTestLibrary())
+        await model.load()
+        _ = await model.createList(name: "Work")
+        let created = await model.createList(name: "Work")
+        XCTAssertFalse(created)
+        XCTAssertEqual(model.errorTitle, "Name Already Used")
+        XCTAssertEqual(model.errorMessage, "A list with that name already exists. Choose another name.")
+        model.errorMessage = "A different error"
+        XCTAssertEqual(model.errorTitle, "Something Went Wrong")
+    }
+
     func testInlineListDraftSurvivesNavigationUntilCompletion() async {
         let model = makeModel(library: ModelTestLibrary())
         await model.load()
@@ -1476,7 +1534,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(syncCalls, 0)
         XCTAssertEqual(
             model.errorMessage,
-            "Some shared content could not be added yet. Snip Snap will try again next time."
+            "Some shared items couldn’t be added. Snip Snap will try again when you reopen the app."
         )
     }
 
@@ -3375,7 +3433,15 @@ private actor ModelTestLibrary: SnipLibrary {
                 snips[index].manualPosition = nextTopPosition(in: listID, excluding: Set(ids))
             }
             outcome = .none
-        case .createList(let name, let systemImage, let color):
+        case .createList(let proposedName, let systemImage, let color, let namePolicy):
+            var name = proposedName
+            if namePolicy == .available {
+                var suffix = 2
+                while lists.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+                    name = "\(proposedName) (\(suffix))"
+                    suffix += 1
+                }
+            }
             guard !lists.contains(where: {
                 $0.name.caseInsensitiveCompare(name) == .orderedSame
             }) else { throw SnipLibraryError.duplicateList }

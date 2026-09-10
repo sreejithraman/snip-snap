@@ -190,13 +190,13 @@ package enum CloudCollectionError: LocalizedError, Equatable, Sendable {
   package var errorDescription: String? {
     switch self {
     case .noActiveCollection:
-      String(localized: "iCloud Sync does not have an active collection.", bundle: .main)
+      String(localized: "iCloud sync has no active library.", bundle: .main)
     case .invalidDescriptor:
-      String(localized: "The iCloud Sync collection is not valid.", bundle: .main)
+      String(localized: "This iCloud library can’t be used for sync.", bundle: .main)
     case .operationInProgress:
-      String(localized: "Another iCloud Sync task is still running.", bundle: .main)
+      String(localized: "Another iCloud sync task is still running.", bundle: .main)
     case .syncNeedsAttention:
-      String(localized: "iCloud Sync needs attention before setup can finish.", bundle: .main)
+      String(localized: "iCloud sync needs attention before setup can finish.", bundle: .main)
     }
   }
 }

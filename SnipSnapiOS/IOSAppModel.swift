@@ -48,7 +48,20 @@ final class IOSAppModel {
     var searchText = ""
     var completionFilter: SnipCompletionFilter = .all
     var sortMode: SnipSortMode = .chronological
-    var errorMessage: String?
+    private struct PresentedError {
+        let title: String
+        let message: String
+    }
+    private var presentedError: PresentedError?
+    var errorMessage: String? {
+        get { presentedError?.message }
+        set {
+            presentedError = newValue.map {
+                PresentedError(title: String(localized: "Something Went Wrong"), message: $0)
+            }
+        }
+    }
+    var errorTitle: String { presentedError?.title ?? String(localized: "Something Went Wrong") }
 
     init(
         library: any SnipLibrary,
@@ -281,7 +294,11 @@ final class IOSAppModel {
         guard !isCreatingList else { return }
         isCreatingList = true
         defer { isCreatingList = false }
-        if await createList(name: String(localized: "New List")) {
+        await withUserMutation { _ in
+            guard await createListUnlocked(
+                name: String(localized: "New List"), systemImage: "list.bullet", color: nil,
+                namePolicy: .available
+            ) else { return }
             searchText = ""
             newListID = selectedListID
             editingListID = selectedListID
@@ -371,7 +388,7 @@ final class IOSAppModel {
             scheduleCloudSync()
             return true
         } catch {
-            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            presentError(error)
             await loadUnlocked()
             return false
     }
@@ -451,7 +468,7 @@ final class IOSAppModel {
             attachmentTransferStates[attachmentID] = .failed
             switch use {
             case .preview, .open:
-                errorMessage = String(localized: "Snip Snap could not download that attachment. Please try again.")
+                errorMessage = String(localized: "Couldn’t download this file. Try again.")
             case .copy, .export:
                 break
             }
@@ -476,7 +493,7 @@ final class IOSAppModel {
             apply(await session.state(sortedBy: .chronological))
             await refreshAttachmentTransferStates()
         } catch {
-            errorMessage = String(localized: "Snip Snap could not clear the downloaded files.")
+            errorMessage = String(localized: "Couldn’t clear downloaded files. Try again.")
         }
     }
 
@@ -576,9 +593,12 @@ final class IOSAppModel {
         return await performUserAction(.setDone(ids: ids, done: done), feedbackInteraction: feedbackInteraction)
     }
 
-    private func createListUnlocked(name: String, systemImage: String, color: SnipListColor?) async -> Bool {
+    private func createListUnlocked(
+        name: String, systemImage: String, color: SnipListColor?,
+        namePolicy: SnipListNamePolicy = .exact
+    ) async -> Bool {
         await performUserAction(
-            .createList(name: name, systemImage: systemImage, color: color)
+            .createList(name: name, systemImage: systemImage, color: color, namePolicy: namePolicy)
         ) { outcome in
             if case .listCreated(let list) = outcome {
                 showsClipboard = false
@@ -630,7 +650,7 @@ final class IOSAppModel {
             scheduleCloudSync()
         } catch {
             haptics.emit(.error, for: feedbackInteraction)
-            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            presentError(error)
         }
     }
 
@@ -655,7 +675,7 @@ final class IOSAppModel {
             scheduleCloudSync()
             return true
         } catch {
-            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            presentError(error)
             haptics.emit(.error, for: feedbackInteraction)
             return false
         }
@@ -697,10 +717,19 @@ final class IOSAppModel {
             scheduleCloudSync()
             return true
         } catch {
-            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            presentError(error)
             haptics.emit(.error, for: feedbackInteraction)
             return false
         }
+    }
+
+    private func presentError(_ error: any Error) {
+        presentedError = PresentedError(
+            title: error as? SnipLibraryError == .duplicateList
+                ? String(localized: "Name Already Used")
+                : String(localized: "Something Went Wrong"),
+            message: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        )
     }
 
     private func clearPendingDeletionToast() {
@@ -721,7 +750,7 @@ final class IOSAppModel {
         } catch {
             pendingImportPreviewID = nil
             pendingImportPreview = nil
-            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            presentError(error)
         }
     }
 
@@ -752,7 +781,7 @@ final class IOSAppModel {
         } catch {
             pendingImportPreviewID = nil
             pendingImportPreview = nil
-            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            presentError(error)
             await load()
         }
     }

@@ -110,7 +110,7 @@ struct ContentView: View {
                 }
             case .failure(let error):
                 if (error as NSError).code != NSUserCancelledError {
-                    model.presentedError = error.localizedDescription
+                    model.presentError(error)
                 }
             }
             fileImportTarget = nil
@@ -217,19 +217,19 @@ struct ContentView: View {
             }
             Button("Cancel", role: .cancel) { model.cancelBackupImport() }
         } message: {
-            Text("Review: \(model.importPreviewSummary). Snip Snap will merge these records with your saved snips.")
+            Text("This backup contains \(model.importPreviewSummary). Snip Snap will merge this backup with your saved snips.")
         }
         .sheet(isPresented: $accessibilityPermissions.isRepairPresented) {
             AccessibilityRepairView(controller: accessibilityPermissions)
         }
         .alert(
-            "Snip Snap",
+            model.presentedErrorTitle ?? String(localized: "Something Went Wrong"),
             isPresented: Binding(
                 get: { model.presentedError != nil },
-                set: { if !$0 { model.presentedError = nil } }
+                set: { if !$0 { model.dismissPresentedError() } }
             )
         ) {
-            Button("OK") { model.presentedError = nil }
+            Button("OK") { model.dismissPresentedError() }
         } message: {
             Text(model.presentedError ?? "")
         }
@@ -744,9 +744,9 @@ struct ContentView: View {
                 model.addTemporaryDraftAttachment(url, to: listID)
                 cacheComposerDraft(for: listID)
             case .failure:
-                model.presentedError = String(
-                    localized: "Snip Snap could not prepare the pasted text."
-                )
+                model.presentError(String(
+                    localized: "Couldn’t prepare pasted text. Try again."
+                ))
             }
         }
     }
@@ -764,7 +764,7 @@ struct ContentView: View {
                 }
                 cacheComposerDraft(for: listID)
             case .failure(let error):
-                model.presentedError = error.localizedDescription
+                model.presentError(error)
             }
         }
     }
@@ -833,7 +833,7 @@ struct ContentView: View {
         }
         do { try process.run() } catch {
             completion(false)
-            model.presentedError = String(localized: "Snip Snap could not start screen capture.")
+            model.presentError(String(localized: "Couldn’t start screen capture. Try again."))
         }
     }
 
@@ -958,15 +958,15 @@ private struct ClipboardAlertHost: View {
         Color.clear
             .frame(width: 0, height: 0)
             .confirmationDialog(
-                "Clear clipboard history?",
+                "Clear Clipboard History?",
                 isPresented: $showingClearConfirmation
             ) {
                 Button("Clear History", role: .destructive) { history.clear() }
             } message: {
-                Text(history.syncIsActive ? "This clears unpinned history across synced devices. Pins stay." : "This clears unpinned history on this device. Pins stay.")
+                Text(history.syncIsActive ? "This clears unpinned history across synced devices. Pinned items stay." : "This clears unpinned history on this device. Pinned items stay.")
             }
             .alert(
-                "Clipboard History Was Not Saved",
+                "Couldn’t Save Clipboard History",
                 isPresented: persistenceErrorPresented
             ) {
                 Button("OK") { history.dismissPersistenceError() }

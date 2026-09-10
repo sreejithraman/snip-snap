@@ -78,7 +78,7 @@ final class AppCoordinator {
             try manager.register(configuration: shortcutSettings.configuration)
             hotKeys = manager
         } catch {
-            model.presentedError = String(localized: "Snip Snap could not register its keyboard shortcuts.")
+            model.presentError(String(localized: "Couldn’t enable keyboard shortcuts. Try again."))
         }
         if accessibilityPermissions.isSetupCardVisible, let panelWindow {
             showPanel(panelWindow, focusing: nil)
@@ -209,8 +209,8 @@ final class AppCoordinator {
                         )
                     }.value
                     guard case .success(let temporaryAttachments) = staging else {
-                        let message = String(localized: "Snip Snap could not prepare the captured images.")
-                        self.model.presentedError = message
+                        let message = String(localized: "Couldn’t prepare the captured images. Try again.")
+                        self.model.presentError(message)
                         self.hud.show(message: message, symbol: "exclamationmark")
                         return
                     }
@@ -232,7 +232,7 @@ final class AppCoordinator {
                     case .success(.duplicate):
                         self.hud.show(message: String(localized: "Already captured"), symbol: "minus")
                     case .failure(let error):
-                        self.model.presentedError = error.localizedDescription
+                        self.model.presentError(error)
                         self.hud.show(
                             message: error.localizedDescription,
                             symbol: "exclamationmark"
@@ -263,9 +263,9 @@ final class AppCoordinator {
         do {
             try installShortcuts(shortcutSettings.configuration)
         } catch {
-            model.presentedError = String(
-                localized: "Snip Snap could not restart its keyboard shortcuts."
-            )
+            model.presentError(String(
+                localized: "Couldn’t restart keyboard shortcuts. Try again."
+            ))
         }
     }
 

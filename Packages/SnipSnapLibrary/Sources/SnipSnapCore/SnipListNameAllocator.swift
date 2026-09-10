@@ -16,6 +16,18 @@ package enum SnipListNameAllocator {
       .lowercased(with: locale)
   }
 
+  package static func availableName(startingWith proposedName: String, in lists: [SnipList]) -> String {
+    let base = cleaned(proposedName)
+    let used = Set(lists.flatMap { [normalized($0.desiredName), normalized($0.resolvedName)] })
+    var candidate = base
+    var suffix = 2
+    while used.contains(normalized(candidate)) {
+      candidate = "\(base) (\(suffix))"
+      suffix += 1
+    }
+    return candidate
+  }
+
   package static func resolving<S: Sequence>(_ input: S) -> [SnipList]
   where S.Element == SnipList {
     var lists = Array(input).map { list in

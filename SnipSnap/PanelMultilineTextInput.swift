@@ -51,7 +51,7 @@ enum PanelPastedImageStagingError: Error, LocalizedError, Sendable {
     case writeFailed
 
     var errorDescription: String? {
-        String(localized: "Snip Snap could not prepare the pasted images.")
+        String(localized: "Couldn’t prepare the pasted images. Try again.")
     }
 }
 

@@ -81,7 +81,9 @@ final class IOSClipboardModel {
         do {
             entries = try await store.load().entries
             loadErrorMessage = nil
-        } catch { loadErrorMessage = error.localizedDescription }
+        } catch {
+            loadErrorMessage = String(localized: "Couldn’t load clipboard history. Try again.")
+        }
     }
 
     func foreground() async {
@@ -117,7 +119,7 @@ final class IOSClipboardModel {
             pendingUploadIDs.formUnion(entries.filter { $0.isSyncEligible && !previousIDs.contains($0.id) }.map(\.id))
             savePendingUploads()
         }
-        importErrorMessage = summary.failed > 0 ? String(localized: "Some shared content could not be added. Try again.") : nil
+        importErrorMessage = summary.failed > 0 ? String(localized: "Some shared items couldn’t be added. Try again.") : nil
         await synchronize()
     }
 
@@ -141,7 +143,7 @@ final class IOSClipboardModel {
             if error is CancellationError { return }
             pendingUploadIDs.formUnion(cloud.pendingEntryIDs)
             savePendingUploads()
-            errorMessage = error.localizedDescription
+            errorMessage = ClipboardSyncErrorMessage.sync(for: error)
         }
     }
 
@@ -154,8 +156,13 @@ final class IOSClipboardModel {
     }
 
     func resetAccountBinding() async {
-        do { try await cloud?.resetAccountBinding(); await load() }
-        catch { errorMessage = error.localizedDescription }
+        do {
+            try await cloud?.resetAccountBinding()
+            await load()
+            errorMessage = nil
+        } catch {
+            errorMessage = ClipboardSyncErrorMessage.accountReset(for: error)
+        }
     }
 
     func togglePin(_ entry: ClipboardEntry) async {
@@ -167,7 +174,9 @@ final class IOSClipboardModel {
             }
             errorMessage = nil
             await synchronize()
-        } catch { errorMessage = error.localizedDescription }
+        } catch {
+            errorMessage = String(localized: "Couldn’t update the pin. Try again.")
+        }
     }
 
     func delete(_ entry: ClipboardEntry) async {
@@ -177,7 +186,9 @@ final class IOSClipboardModel {
             savePendingUploads()
             await synchronize()
         }
-        catch { errorMessage = error.localizedDescription }
+        catch {
+            errorMessage = String(localized: "Couldn’t delete this clipboard entry. Try again.")
+        }
     }
 
     func clear() async {
@@ -187,7 +198,9 @@ final class IOSClipboardModel {
             savePendingUploads()
             await synchronize()
         }
-        catch { errorMessage = error.localizedDescription }
+        catch {
+            errorMessage = String(localized: "Couldn’t clear clipboard history. Try again.")
+        }
     }
 
     func copy(_ entry: ClipboardEntry) {
@@ -196,7 +209,7 @@ final class IOSClipboardModel {
         }.filter { !$0.isEmpty }
         for url in files.resolvedFileURLs(for: entry) {
             guard let data = try? Data(contentsOf: url) else {
-                errorMessage = String(localized: "That file is unavailable. Try syncing again.")
+                errorMessage = String(localized: "This file isn’t available on this device. If it synced before, try clipboard sync again.")
                 return
             }
             let type = UTType(filenameExtension: url.pathExtension)?.identifier ?? UTType.data.identifier

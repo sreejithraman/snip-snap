@@ -60,7 +60,7 @@ extension CloudAttachmentSetupError: LocalizedError {
           comment: "A file name followed by the reason that attachment cannot sync."
         )
       }.joined(separator: "; ")
-      return String(localized: "These attachments cannot sync. \(details)", bundle: .main)
+      return String(localized: "These attachments can’t sync: \(details)", bundle: .main)
     }
   }
 }
@@ -69,13 +69,13 @@ private extension CloudAttachmentUnsupportedReason {
   var errorDescription: String {
     switch self {
     case .fileTooLarge(let maximumBytes):
-      String(localized: "larger than Snip Snap’s \(formatSnipSnapByteLimit(maximumBytes)) per-file limit", bundle: .main)
+      String(localized: "over Snip Snap’s \(formatSnipSnapByteLimit(maximumBytes)) per-file limit", bundle: .main)
     case .snipTotalTooLarge(let maximumBytes):
-      String(localized: "part of a snip above Snip Snap’s \(formatSnipSnapByteLimit(maximumBytes)) attachment limit", bundle: .main)
+      String(localized: "part of a snip with more than \(formatSnipSnapByteLimit(maximumBytes)) of attachments", bundle: .main)
     case .contentType(let value):
-      String(localized: "unsupported file type \(value ?? String(localized: "unknown", bundle: .main))", bundle: .main)
+      String(localized: "file type \(value ?? String(localized: "unknown", bundle: .main)) isn’t supported", bundle: .main)
     case .missingLocalFile:
-      String(localized: "local file is missing or changed", bundle: .main)
+      String(localized: "file is missing or has changed", bundle: .main)
     }
   }
 }

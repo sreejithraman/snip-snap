@@ -711,7 +711,7 @@ struct SnipListView: View {
                 focusedTarget = .list
                 return true
             },
-            onEditError: { model.presentedError = $0 }
+            onEditError: { model.presentError($0) }
         )
         .overlay {
             PanelCardInteractionRegion(
@@ -772,7 +772,7 @@ struct SnipListView: View {
                 ) else { return }
                 onPreviewAttachments(preview.urls, preview.selectedURL)
             } catch {
-                model.presentedError = error.localizedDescription
+                model.presentError(error)
             }
         }
     }
