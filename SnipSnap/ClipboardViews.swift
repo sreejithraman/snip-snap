@@ -6,6 +6,7 @@ struct ClipboardListView: View {
     @ObservedObject var model: AppModel
     let dragSessionController: PanelDragSessionController
     @ObservedObject var commandNumberPicker: CommandNumberPicker
+    let isInteractive: Bool
     @Binding var showingClearConfirmation: Bool
     let onPreviewAttachments: ([URL], URL) -> Void
     @ObservedObject private var history: ClipboardHistory
@@ -14,12 +15,14 @@ struct ClipboardListView: View {
         model: AppModel,
         dragSessionController: PanelDragSessionController,
         commandNumberPicker: CommandNumberPicker,
+        isInteractive: Bool,
         showingClearConfirmation: Binding<Bool>,
         onPreviewAttachments: @escaping ([URL], URL) -> Void
     ) {
         self.model = model
         self.dragSessionController = dragSessionController
         self.commandNumberPicker = commandNumberPicker
+        self.isInteractive = isInteractive
         _showingClearConfirmation = showingClearConfirmation
         self.onPreviewAttachments = onPreviewAttachments
         history = model.clipboardHistory
@@ -31,6 +34,7 @@ struct ClipboardListView: View {
             model: model,
             dragSessionController: dragSessionController,
             commandNumberPicker: commandNumberPicker,
+            isInteractive: isInteractive,
             verticalContentPadding: PanelListMetrics.verticalContentInset,
             maxHeight: .infinity,
             onPreviewAttachments: onPreviewAttachments
@@ -55,12 +59,14 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
     @ObservedObject var model: AppModel
     let dragSessionController: PanelDragSessionController
     @ObservedObject var commandNumberPicker: CommandNumberPicker
+    let isInteractive: Bool
     let verticalContentPadding: CGFloat
     let maxHeight: CGFloat
     let onPreviewAttachments: ([URL], URL) -> Void
     @ViewBuilder let headerActions: () -> HeaderActions
     @State private var contentHeight: CGFloat = 0
     @State private var viewportHeight: CGFloat = 0
+    @State private var commandNumberOwner = CommandNumberOwner()
     @State private var hasScrolledFromTop = false
 
     var body: some View {
@@ -102,14 +108,16 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
                                 SnipListWindowFrameReader { frame, _ in
                                     commandNumberPicker.setRowFrame(
                                         .clipboardEntry(entry.id),
-                                        frame: frame
+                                        frame: frame,
+                                        owner: commandNumberOwner
                                     )
                                 }
                             }
                             .onDisappear {
                                 commandNumberPicker.setRowFrame(
                                     .clipboardEntry(entry.id),
-                                    frame: nil
+                                    frame: nil,
+                                    owner: commandNumberOwner
                                 )
                             }
                         }
@@ -144,19 +152,36 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
         .frame(maxHeight: maxHeight)
         .background {
             SnipListWindowFrameReader { frame, _ in
-                commandNumberPicker.setViewport(frame)
+                commandNumberPicker.setViewport(frame, owner: commandNumberOwner)
             }
         }
         .onAppear {
+            guard isInteractive else { return }
             commandNumberPicker.setOrderedTargets(
-                entries.map { .clipboardEntry($0.id) }
+                entries.map { .clipboardEntry($0.id) },
+                owner: commandNumberOwner
+            )
+        }
+        .onChange(of: isInteractive) { _, isInteractive in
+            guard isInteractive else { return }
+            commandNumberPicker.setOrderedTargets(
+                entries.map { .clipboardEntry($0.id) },
+                owner: commandNumberOwner
             )
         }
         .onChange(of: entries.map(\.id)) { _, ids in
-            commandNumberPicker.setOrderedTargets(ids.map(CommandNumberTarget.clipboardEntry))
+            guard isInteractive else { return }
+            commandNumberPicker.setOrderedTargets(
+                ids.map(CommandNumberTarget.clipboardEntry),
+                owner: commandNumberOwner
+            )
         }
         .onKeyPress(phases: .down) { press in
-            commandNumberPicker.handleKeyPress(press)
+            guard isInteractive else { return .ignored }
+            return commandNumberPicker.handleKeyPress(press)
+        }
+        .onDisappear {
+            commandNumberPicker.releaseOwner(commandNumberOwner)
         }
     }
 }

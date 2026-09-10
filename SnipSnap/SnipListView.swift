@@ -22,6 +22,9 @@ private enum SnipListScrollTarget {
 struct SnipListView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var model: AppModel
+    let displayedListID: UUID
+    let isInteractive: Bool
+    let ownsSharedEvents: Bool
     let dragSessionController: PanelDragSessionController
     let fileDropController: PanelFileDropController
     @ObservedObject var commandNumberPicker: CommandNumberPicker
@@ -48,11 +51,16 @@ struct SnipListView: View {
     @State private var activeDragRowFrames: [UUID: CGRect] = [:]
     @State private var contentHeight: CGFloat = 0
     @State private var viewportHeight: CGFloat = 0
+    @State private var commandNumberOwner = CommandNumberOwner()
     @StateObject private var cardInteractionController = PanelCardInteractionController()
     @StateObject private var reorderGeometry = SnipListReorderGeometry()
 
     private var orderedSnipIDs: [UUID] {
-        model.filteredSnips.map(\.id)
+        model.filteredSnips(in: displayedListID).map(\.id)
+    }
+
+    private var displayedList: SnipList {
+        model.lists.first(where: { $0.id == displayedListID }) ?? .inbox
     }
 
     private var snipCommands: SnipCommandDispatcher {
@@ -61,13 +69,13 @@ struct SnipListView: View {
 
     var body: some View {
         let snapshot = SnipListSnapshot(
-            visibleSnips: model.filteredSnips,
+            visibleSnips: model.filteredSnips(in: displayedListID),
             allSnips: model.snips,
             lists: model.lists,
             selection: model.selection,
             keepsEmptyListID: model.query.trimmingCharacters(
                 in: .whitespacesAndNewlines
-            ).isEmpty ? model.activeListID : nil,
+            ).isEmpty ? displayedListID : nil,
             attachmentURL: model.attachmentURL
         )
         let showsSearchLists = snapshot.groups.count > 1
@@ -107,12 +115,12 @@ struct SnipListView: View {
                                 reorderableSnipCard(
                                     snip,
                                     snapshot: snapshot,
-                                    listID: model.activeListID,
+                                    listID: displayedListID,
                                     snips: displayedSnips
                                 )
                             }
                         } header: {
-                            listSectionHeader(model.activeList.displayName)
+                            listSectionHeader(displayedList.displayName)
                         }
                     }
                     if !clipboardEntries.isEmpty {
@@ -133,7 +141,7 @@ struct SnipListView: View {
             .background {
                 SnipListWindowFrameReader { frame, _ in
                     reorderGeometry.listFrame = frame
-                    commandNumberPicker.setViewport(frame)
+                    commandNumberPicker.setViewport(frame, owner: commandNumberOwner)
                 }
             }
             .scrollEdgeEffectStyle(.soft, for: .bottom)
@@ -152,7 +160,7 @@ struct SnipListView: View {
             }
             .onChange(of: model.latestAddedSnipID) { _, snipID in
                 let isVisibleInModel = snipID.map { addedID in
-                    model.filteredSnips.contains(where: { $0.id == addedID })
+                    model.filteredSnips(in: displayedListID).contains(where: { $0.id == addedID })
                 } ?? false
                 if let destination = addedSnipRevealState.record(
                     snipID: snipID,
@@ -197,7 +205,9 @@ struct SnipListView: View {
                 }
             }
             .overlay(alignment: .topLeading) {
-                selectionFocusTarget(proxy: proxy)
+                if isInteractive {
+                    selectionFocusTarget(proxy: proxy)
+                }
             }
             .panelBlankDragOverlay(
                 viewportHeight: $viewportHeight,
@@ -205,26 +215,42 @@ struct SnipListView: View {
             )
         }
         .onAppear {
+            guard isInteractive else { return }
             model.reconcileSelection()
             commandNumberPicker.setOrderedTargets(
-                commandNumberTargets(snapshot: snapshot)
+                commandNumberTargets(snapshot: snapshot),
+                owner: commandNumberOwner
+            )
+        }
+        .onChange(of: isInteractive) { _, isInteractive in
+            guard isInteractive else { return }
+            model.reconcileSelection()
+            commandNumberPicker.setOrderedTargets(
+                commandNumberTargets(snapshot: snapshot),
+                owner: commandNumberOwner
             )
         }
         .onChange(of: snapshot.orderedVisibleIDs) { _, _ in
+            guard isInteractive else { return }
             commandNumberPicker.setOrderedTargets(
-                commandNumberTargets(snapshot: snapshot)
+                commandNumberTargets(snapshot: snapshot),
+                owner: commandNumberOwner
             )
         }
         .onChange(of: clipboardEntries.map(\.id)) { _, _ in
+            guard isInteractive else { return }
             commandNumberPicker.setOrderedTargets(
-                commandNumberTargets(snapshot: snapshot)
+                commandNumberTargets(snapshot: snapshot),
+                owner: commandNumberOwner
             )
         }
         .onReceive(fileDropController.fileDrops) { urls in
+            guard ownsSharedEvents else { return }
             guard let editingID = model.editingID else { return }
             addEditAttachments(urls, to: editingID)
         }
         .onChange(of: pendingEditAttachmentImport?.id, initial: true) {
+            guard ownsSharedEvents else { return }
             guard let pendingEditAttachmentImport else { return }
             self.pendingEditAttachmentImport = nil
             addEditAttachments(
@@ -232,10 +258,14 @@ struct SnipListView: View {
                 to: pendingEditAttachmentImport.snipID
             )
         }
+        .onDisappear {
+            commandNumberPicker.releaseOwner(commandNumberOwner)
+        }
         .background {
             PanelCardInteractionHost(
                 controller: cardInteractionController,
                 onClickAway: { [model] in
+                    guard isInteractive else { return }
                     model.applySelection(
                         SnipSelection.Update(selection: [], anchor: nil, focus: nil)
                     )
@@ -342,12 +372,20 @@ struct SnipListView: View {
                     SnipListWindowFrameReader { frame, scrollOffsetY in
                         reorderGeometry.rowFrames[snip.id] = frame
                         reorderGeometry.scrollOffsetY = scrollOffsetY
-                        commandNumberPicker.setRowFrame(.snip(snip.id), frame: frame)
+                        commandNumberPicker.setRowFrame(
+                            .snip(snip.id),
+                            frame: frame,
+                            owner: commandNumberOwner
+                        )
                     }
                 }
                 .onDisappear {
                     reorderGeometry.rowFrames[snip.id] = nil
-                    commandNumberPicker.setRowFrame(.snip(snip.id), frame: nil)
+                    commandNumberPicker.setRowFrame(
+                        .snip(snip.id),
+                        frame: nil,
+                        owner: commandNumberOwner
+                    )
                 }
     }
 
@@ -374,11 +412,19 @@ struct SnipListView: View {
         }
         .background {
             SnipListWindowFrameReader { frame, _ in
-                commandNumberPicker.setRowFrame(.clipboardEntry(entry.id), frame: frame)
+                commandNumberPicker.setRowFrame(
+                    .clipboardEntry(entry.id),
+                    frame: frame,
+                    owner: commandNumberOwner
+                )
             }
         }
         .onDisappear {
-            commandNumberPicker.setRowFrame(.clipboardEntry(entry.id), frame: nil)
+            commandNumberPicker.setRowFrame(
+                .clipboardEntry(entry.id),
+                frame: nil,
+                owner: commandNumberOwner
+            )
         }
         .panelListRowLayout()
     }

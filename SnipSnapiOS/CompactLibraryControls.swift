@@ -7,7 +7,6 @@ import UIKit
 
 private enum CompactControlMetrics {
     static let minimumInteractiveLength: CGFloat = 44
-    static let contentTransitionDuration: TimeInterval = 0.35
 }
 
 private struct CompactGlassCircleButton<Label: View>: View {
@@ -35,13 +34,17 @@ struct CompactLibraryControls: View {
     let storage: CompactComposerStorage
     let showsListTabs: Bool
     let isSelecting: Bool
+    @Binding var motion: ListPageMotion
+    let pageFrame: ListPageFrame?
+    let pageWidth: CGFloat
     @Namespace private var composerGlass
     @Binding var sheet: AppSheet?
 
     @State private var draft = ComposerDraft()
+    @State private var draftListID: UUID?
     @State private var clipboardHasContent = false
     @State private var toolbarWidth: CGFloat = 320
-    @State private var selectorDragDistance: CGFloat = 0
+    @State private var composerHeights: [LibraryPage: CGFloat] = [:]
     @State private var previewURL: URL?
     @State private var isImporting = false
     @State private var composerFieldID = UUID()
@@ -62,13 +65,19 @@ struct CompactLibraryControls: View {
         isComposerFocused: FocusState<Bool>.Binding,
         showsListTabs: Bool = true,
         isSelecting: Bool = false,
-        sheet: Binding<AppSheet?>
+        sheet: Binding<AppSheet?>,
+        motion: Binding<ListPageMotion> = .constant(ListPageMotion()),
+        pageFrame: ListPageFrame? = nil,
+        pageWidth: CGFloat = 0
     ) {
         self.model = model
         self.clipboard = clipboard
         self.storage = storage
         self.showsListTabs = showsListTabs
         self.isSelecting = isSelecting
+        _motion = motion
+        self.pageFrame = pageFrame
+        self.pageWidth = pageWidth
         _isComposerFocused = isComposerFocused
         _sheet = sheet
     }
@@ -82,20 +91,12 @@ struct CompactLibraryControls: View {
             && model.editingListID == model.selectedListID
     }
 
-    private var contentTransition: Animation? {
-        reduceMotion ? nil : .easeInOut(duration: CompactControlMetrics.contentTransitionDuration)
-    }
-
     var body: some View {
         VStack(spacing: SnipSnapSpacing.relatedContent) {
             GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
-                if showsComposer {
-                    composer
-                        .modifier(ListEditorRecession(isActive: showsListEditor && !isComposerFocused))
-                        .transition(reduceMotion ? .opacity : .offset(y: 8).combined(with: .opacity))
-                }
+                composerPages
             }
-            .animation(contentTransition, value: showsComposer)
+
             if !showsListTabs {
                 GlassEffectContainer {
                     if model.showsClipboard {
@@ -108,17 +109,12 @@ struct CompactLibraryControls: View {
                     .modifier(ListEditorRecession(isActive: showsListEditor))
             }
         }
-        .animation(contentTransition, value: model.showsClipboard)
+
         .frame(maxWidth: .infinity)
         .padding(.horizontal, SnipSnapSpacing.cardContentInset)
         .padding(.top, SnipSnapSpacing.relatedContent)
         .padding(.bottom, 6)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
-        .toolbar {
-            if showsListTabs && model.isSearchPresented {
-                DefaultToolbarItem(kind: .search, placement: .bottomBar)
-            }
-        }
         .fileImporter(
             isPresented: $isImporting,
             allowedContentTypes: [.data],
@@ -128,6 +124,7 @@ struct CompactLibraryControls: View {
         }
         .quickLookPreview($previewURL, in: draft.attachments)
         .onAppear {
+            draftListID = model.selectedListID
             updatePasteAvailability()
             if storage.savingListID != model.selectedListID {
                 draft = storage.draftStore.draft(for: model.selectedListID)
@@ -140,6 +137,8 @@ struct CompactLibraryControls: View {
             updatePasteAvailability()
         }
         .onChange(of: model.selectedListID) { _, listID in
+            composerFieldID = UUID()
+            draftListID = listID
             draft = storage.savingListID == listID
                 ? ComposerDraft()
                 : storage.draftStore.draft(for: listID)
@@ -167,7 +166,7 @@ struct CompactLibraryControls: View {
 
     private var navigationControls: some View {
         let length = navigationControlLength
-        let progress = min(1, selectorDragDistance / length)
+        let progress = min(1, motion.dragDistance / length)
         let selectorWidth = listToolbarWidth + (navigationWidth - listToolbarWidth) * progress
         let direction: CGFloat = layoutDirection == .rightToLeft ? -1 : 1
         let travel = reduceMotion ? 0 : (length + 24) * progress * direction
@@ -179,11 +178,8 @@ struct CompactLibraryControls: View {
                 sheet: $sheet,
                 deleteList: deleteList,
                 labelViewport: listToolbarWidth,
-                dragDistanceChanged: { distance in
-                    withAnimation(distance == 0 && !reduceMotion ? .spring(duration: 0.3, bounce: 0.12) : nil) {
-                        selectorDragDistance = distance
-                    }
-                }
+                motion: $motion,
+                pageFrame: frame
             )
             .frame(width: selectorWidth, height: length + 8)
 
@@ -196,8 +192,8 @@ struct CompactLibraryControls: View {
                     }
                 }
                 .offset(x: -travel)
-                .allowsHitTesting(selectorDragDistance == 0)
-                .accessibilityHidden(selectorDragDistance != 0)
+                .allowsHitTesting(!motion.isDragging)
+                .accessibilityHidden(motion.isDragging)
 
                 Spacer(minLength: 0)
 
@@ -209,8 +205,8 @@ struct CompactLibraryControls: View {
                 }
                 .accessibilityLabel("Search")
                 .offset(x: travel)
-                .allowsHitTesting(selectorDragDistance == 0)
-                .accessibilityHidden(selectorDragDistance != 0)
+                .allowsHitTesting(!motion.isDragging)
+                .accessibilityHidden(motion.isDragging)
             }
             .opacity(1 - progress)
         }
@@ -237,45 +233,100 @@ struct CompactLibraryControls: View {
         clipboardHasContent = pasteboard.hasStrings || pasteboard.hasURLs || pasteboard.hasImages
     }
 
-    private var composer: some View {
+    private var currentPage: LibraryPage {
+        model.showsClipboard ? .clipboard : .list(model.selectedListID)
+    }
+
+    private var frame: ListPageFrame {
+        pageFrame ?? ListPageFrame(
+            pages: [currentPage], position: 0, retainedPages: [currentPage], isMoving: false
+        )
+    }
+
+    private var visibleComposerPages: [LibraryPage] {
+        guard !model.isSearchPresented, !isSelecting else { return [] }
+        return frame.retainedPages.filter { if case .list = $0 { true } else { false } }
+    }
+
+    private var composerHeight: CGFloat {
+        guard !model.isSearchPresented, !isSelecting else { return 0 }
+        // Interpolate the occupied height as Clipboard (which has no composer)
+        // enters, keeping the last frame identical to the resting layout.
+        return frame.pages.enumerated().reduce(0) { result, element in
+            let (index, page) = element
+            guard case .list = page else { return result }
+            let weight = max(0, 1 - abs(CGFloat(index) - frame.position))
+            return result + weight * (composerHeights[page] ?? controlLength)
+        }
+    }
+
+    private var composerPages: some View {
+        ZStack(alignment: .bottom) {
+            ForEach(visibleComposerPages, id: \.self) { page in
+                if case .list(let id) = page,
+                   let list = model.lists.first(where: { $0.id == id }) {
+                    let isPreview = page != currentPage
+                    composer(
+                        for: list,
+                        draft: draft(for: id),
+                        isPreview: isPreview
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
+                    .modifier(ListEditorRecession(isActive: model.editingListID == id && !isComposerFocused))
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeights[page] = $0 }
+                    .offset(x: frame.offset(
+                        for: page, width: pageWidth > 0 ? pageWidth : toolbarWidth,
+                        layoutDirection: layoutDirection, reduceMotion: reduceMotion
+                    ))
+                    .opacity(frame.opacity(for: page, reduceMotion: reduceMotion))
+                    .accessibilityHidden(isPreview || frame.isMoving)
+                    .allowsHitTesting(!isPreview && !frame.isMoving)
+                }
+            }
+        }
+        .frame(height: composerHeight, alignment: .bottom)
+        .clipped()
+    }
+
+    private func composer(for list: SnipList, draft: ComposerDraft, isPreview: Bool) -> some View {
         HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
             CompactGlassCircleButton(
                 length: controlLength,
                 action: {
+                    guard !isPreview else { return }
                     model.haptics.invalidatePendingFeedback()
                     isImporting = true
                 }
             ) {
-                Image(systemName: isStaging ? "hourglass" : "plus")
+                Image(systemName: isPreview ? "plus" : (isStaging ? "hourglass" : "plus"))
                     .font(.title3.weight(.medium))
             }
             .disabled(storage.isSaving || isStaging)
             .accessibilityLabel("Add Attachments")
-            .accessibilityIdentifier("composer-add-attachments")
-            .glassEffectID("attachments", in: composerGlass)
-            .glassEffectTransition(.materialize)
+            .modifier(ComposerAccessibility(isPreview: isPreview, identifier: "composer-add-attachments"))
+            .modifier(ComposerGlassID(isPreview: isPreview, id: "attachments", namespace: composerGlass))
 
             GlassEffectContainer {
                 VStack(spacing: SnipSnapSpacing.relatedContent) {
                     if !draft.attachments.isEmpty {
-                        attachmentStrip
+                        attachmentStrip(for: draft, isPreview: isPreview)
                             .padding(.horizontal, SnipSnapSpacing.cardContentInset)
                             .padding(.top, 10)
                     }
 
                     HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
                         TextField(
-                            "Add to \(model.selectedList.displayName)…",
-                            text: composerText,
+                            "Add to \(list.displayName)…",
+                            text: isPreview ? .constant(draft.text) : composerText(for: list.id),
                             axis: .vertical
                         )
                             .textFieldStyle(.plain)
                             .lineLimit(1...5)
-                            .focused($isComposerFocused)
+                            .modifier(ComposerFieldFocus(isPreview: isPreview, isFocused: $isComposerFocused))
                             .disabled(storage.isSaving)
                             .padding(SnipSnapSpacing.relatedContent)
                             .frame(minHeight: controlLength, alignment: .center)
-                            .accessibilityIdentifier("composer-text")
+                            .modifier(ComposerAccessibility(isPreview: isPreview, identifier: "composer-text"))
 
                         Color.clear
                             .frame(width: controlLength, height: controlLength)
@@ -283,7 +334,7 @@ struct CompactLibraryControls: View {
                     }
                     .padding(.leading, SnipSnapSpacing.relatedContent / 2)
                     .padding(.trailing, SnipSnapSpacing.relatedContent)
-                    .id(composerFieldID)
+                    .id(isPreview ? "preview-\(list.id.uuidString)" : composerFieldID.uuidString)
                 }
                 .frame(minHeight: controlLength)
                 .glassEffect(
@@ -293,23 +344,22 @@ struct CompactLibraryControls: View {
                 .overlay {
                     RoundedRectangle(cornerRadius: 20, style: .continuous)
                         .strokeBorder(
-                            isComposerFocused
+                            !isPreview && isComposerFocused
                                 ? SnipSnapTheme.focusedGlassEdge
                                 : SnipSnapTheme.emphasizedGlassEdge,
-                            lineWidth: isComposerFocused ? 1 : 0.75
+                            lineWidth: !isPreview && isComposerFocused ? 1 : 0.75
                         )
                 }
-                .glassEffectID("input", in: composerGlass)
-                .glassEffectTransition(.materialize)
+                .modifier(ComposerGlassID(isPreview: isPreview, id: "input", namespace: composerGlass))
             }
             // Keep Send outside the input's interactive glass subtree.
             .overlay(alignment: .bottomTrailing) {
                 GlassEffectContainer {
                     AppTintedGlassActionButton(
-                        isEnabled: canSend,
-                        tint: model.selectedList.accent.color,
-                        labelColor: model.selectedList.accent.sendIconColor(in: colorScheme),
-                        action: { Task { await send() } }
+                        isEnabled: canSend(draft: draft),
+                        tint: list.accent.color,
+                        labelColor: list.accent.sendIconColor(in: colorScheme),
+                        action: { if !isPreview { Task { await send() } } }
                     ) {
                         Image(systemName: "arrow.up")
                             .font(.system(size: sendIconLength, weight: .semibold))
@@ -319,24 +369,28 @@ struct CompactLibraryControls: View {
                     .contentShape(Rectangle())
                     .controlSize(.regular)
                     .accessibilityLabel("Send Snip")
-                    .accessibilityIdentifier("composer-send")
+                    .modifier(ComposerAccessibility(isPreview: isPreview, identifier: "composer-send"))
                     .padding(.trailing, SnipSnapSpacing.relatedContent)
                 }
             }
         }
     }
 
-    private var attachmentStrip: some View {
+    private func attachmentStrip(for draft: ComposerDraft, isPreview: Bool) -> some View {
         ScrollView(.horizontal) {
             HStack(spacing: 8) {
                 ForEach(draft.attachments, id: \.self) { url in
                     CompactDraftAttachment(
                         url: url,
                         preview: {
+                            guard !isPreview else { return }
                             model.haptics.invalidatePendingFeedback()
                             previewURL = url
                         },
-                        remove: { removeAttachment(url) }
+                        remove: {
+                            guard !isPreview else { return }
+                            removeAttachment(url)
+                        }
                     )
                 }
             }
@@ -344,14 +398,20 @@ struct CompactLibraryControls: View {
         .scrollIndicators(.hidden)
     }
 
-    private var composerText: Binding<String> {
+    private func draft(for listID: UUID) -> ComposerDraft {
+        if draftListID == listID { return draft }
+        return storage.savingListID == listID ? ComposerDraft() : storage.draftStore.draft(for: listID)
+    }
+
+    private func composerText(for listID: UUID) -> Binding<String> {
         let fieldID = composerFieldID
         return Binding(
-            get: { draft.text },
+            get: { draft(for: listID).text },
             set: { value in
-                guard fieldID == composerFieldID else { return }
+                guard fieldID == composerFieldID, listID == model.selectedListID,
+                      draftListID == listID else { return }
                 model.haptics.invalidatePendingFeedback()
-                guard storage.savingListID != model.selectedListID else {
+                guard storage.savingListID != listID else {
                     draft.text = ""
                     return
                 }
@@ -360,12 +420,12 @@ struct CompactLibraryControls: View {
                     return
                 }
                 draft.text = value
-                storage.draftStore.setText(value, for: model.selectedListID)
+                storage.draftStore.setText(value, for: listID)
             }
         )
     }
 
-    private var canSend: Bool {
+    private func canSend(draft: ComposerDraft) -> Bool {
         AttachmentDraftLifecycle.allowsSaving(
             isSaving: storage.isSaving,
             isStaging: isStaging,
@@ -377,7 +437,7 @@ struct CompactLibraryControls: View {
     }
 
     private func send() async {
-        guard canSend else { return }
+        guard canSend(draft: draft(for: model.selectedListID)) else { return }
         let snapshot = storage.draftStore.beginSave(listID: model.selectedListID)
         storage.savingListID = snapshot.listID
         storage.isSaving = true
@@ -470,6 +530,51 @@ struct CompactLibraryControls: View {
     private func deleteList(_ listID: UUID) async {
         if await model.deleteList(id: listID) {
             storage.draftStore.clear(listID: listID)
+        }
+    }
+}
+
+private struct ComposerFieldFocus: ViewModifier {
+    let isPreview: Bool
+    @FocusState.Binding var isFocused: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isPreview {
+            content
+        } else {
+            content.focused($isFocused)
+        }
+    }
+}
+
+private struct ComposerAccessibility: ViewModifier {
+    let isPreview: Bool
+    let identifier: String
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isPreview {
+            content.accessibilityHidden(true)
+        } else {
+            content.accessibilityIdentifier(identifier)
+        }
+    }
+}
+
+private struct ComposerGlassID: ViewModifier {
+    let isPreview: Bool
+    let id: String
+    let namespace: Namespace.ID
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isPreview {
+            content
+        } else {
+            content
+                .glassEffectID(id, in: namespace)
+                .glassEffectTransition(.materialize)
         }
     }
 }

@@ -1,7 +1,15 @@
+import Observation
 import SnipSnapCore
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+
+@MainActor
+@Observable
+final class ClipboardViewState {
+    var onlyPinned = false
+    var newestFirst = true
+}
 
 struct IOSClipboardView: View {
     let model: IOSClipboardModel
@@ -9,14 +17,13 @@ struct IOSClipboardView: View {
     let copyShare: IOSCopyShareCoordinator
     @Binding var sheet: AppSheet?
     var settings: () -> Void = {}
-    @State private var onlyPinned = false
-    @State private var newestFirst = true
+    @State var viewState = ClipboardViewState()
     @State private var confirmsClear = false
 
     private var entries: [ClipboardEntry] {
         Self.orderedEntries(model.entries.filter {
-            !onlyPinned || $0.isPinned
-        }, newestFirst: newestFirst)
+            !viewState.onlyPinned || $0.isPinned
+        }, newestFirst: viewState.newestFirst)
     }
 
     static func orderedEntries(_ entries: [ClipboardEntry], newestFirst: Bool) -> [ClipboardEntry] {
@@ -26,11 +33,11 @@ struct IOSClipboardView: View {
     }
 
     private var emptyTitle: String {
-        return onlyPinned ? String(localized: "No pinned entries") : String(localized: "Nothing captured yet")
+        return viewState.onlyPinned ? String(localized: "No pinned entries") : String(localized: "Nothing captured yet")
     }
 
     private var emptyDetail: String {
-        return onlyPinned ? String(localized: "Pin a clipboard entry to keep it here.")
+        return viewState.onlyPinned ? String(localized: "Pin a clipboard entry to keep it here.")
             : String(localized: "Paste here or share content to Clipboard.")
     }
 
@@ -39,13 +46,13 @@ struct IOSClipboardView: View {
         Group {
             Menu("View Options", systemImage: "line.3.horizontal.decrease") {
                 Section("Show") {
-                    Picker("Show", selection: $onlyPinned) {
+                    Picker("Show", selection: $viewState.onlyPinned) {
                         Text("All").tag(false)
                         Text("Pinned").tag(true)
                     }.pickerStyle(.inline)
                 }
                 Section("Sort") {
-                    Picker("Sort", selection: $newestFirst) {
+                    Picker("Sort", selection: $viewState.newestFirst) {
                         Text("Newest First").tag(true)
                         Text("Oldest First").tag(false)
                     }.pickerStyle(.inline)
@@ -163,7 +170,7 @@ struct IOSClipboardView: View {
             if entries.isEmpty && model.errorMessage == nil && model.importErrorMessage == nil && model.pasteErrorMessage == nil {
                 CollectionEmptyState(
                     title: emptyTitle,
-                    systemImage: onlyPinned ? "pin" : "clipboard",
+                    systemImage: viewState.onlyPinned ? "pin" : "clipboard",
                     detail: emptyDetail
                 )
                 .accessibilityIdentifier("empty-clipboard")

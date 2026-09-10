@@ -749,6 +749,105 @@ final class SnipSnapiOSUITests: XCTestCase {
         add(proof)
     }
 
+    func testTabDragKeepsEachListsContentDraftAndRowActions() throws {
+        continueAfterFailure = false
+        let originalAppearance = XCUIDevice.shared.appearance
+        XCUIDevice.shared.appearance = .dark
+        defer { XCUIDevice.shared.appearance = originalAppearance }
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        createSnip("Inbox page note", in: app)
+        let composer = app.descendants(matching: .any)["composer-text"]
+        composer.tap()
+        composer.typeText("Inbox unsent draft")
+        app.swipeDown()
+        createList("Work", in: app)
+        createSnip("Work page note", in: app)
+        composer.tap()
+        composer.typeText("Work unsent draft")
+        app.swipeDown()
+
+        func dragTabs(_ distance: CGFloat) {
+            let selector = app.descendants(matching: .any)["list-selector"]
+            let start = selector.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            start.press(
+                forDuration: 0.05,
+                thenDragTo: start.withOffset(CGVector(dx: distance, dy: 0)),
+                withVelocity: XCUIGestureVelocity(rawValue: 100),
+                thenHoldForDuration: 0.2
+            )
+        }
+
+        // A short pull returns to the current page and keeps its unsent text.
+        dragTabs(20)
+        XCTAssertTrue(compactListTab(named: "Work", in: app).isSelected)
+        XCTAssertEqual(composer.value as? String, "Work unsent draft")
+        dragTabs(140)
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+        XCTAssertTrue(collectionRow(named: "Inbox page note", in: app).exists)
+        XCTAssertFalse(collectionRow(named: "Work page note", in: app).exists)
+        XCTAssertEqual(composer.value as? String, "Inbox unsent draft")
+
+        dragTabs(-140)
+        XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
+        XCTAssertTrue(collectionRow(named: "Work page note", in: app).exists)
+        XCTAssertFalse(collectionRow(named: "Inbox page note", in: app).exists)
+        XCTAssertEqual(composer.value as? String, "Work unsent draft")
+
+        let workRow = row(named: "Work page note", in: app)
+        workRow.swipeRight()
+        XCTAssertTrue(app.buttons["done"].waitForExistence(timeout: 3))
+        app.buttons["done"].tap()
+        XCTAssertTrue(compactListTab(named: "Work", in: app).isSelected)
+        XCTAssertEqual(composer.value as? String, "Work unsent draft")
+
+        // Cross Inbox in one continuous pull to Clipboard, then return to Work.
+        func dragAcrossTabs(_ distance: CGFloat) {
+            let selector = app.descendants(matching: .any)["list-selector"]
+            let start = selector.coordinate(withNormalizedOffset: CGVector(
+                dx: distance > 0 ? 0.05 : 0.95, dy: 0.5
+            ))
+            start.press(
+                forDuration: 0.05,
+                thenDragTo: start.withOffset(CGVector(dx: distance, dy: 0)),
+                withVelocity: XCUIGestureVelocity(rawValue: 100),
+                thenHoldForDuration: 0.3
+            )
+        }
+        dragAcrossTabs(260)
+        XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+        XCTAssertFalse(composer.exists)
+        dragAcrossTabs(-260)
+        XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.navigationBars["Work"].staticTexts["Work"].isHittable)
+        XCTAssertTrue(
+            hasVisibleTitlePixels(app.navigationBars["Work"].staticTexts["Work"].screenshot()),
+            "The native title must be drawn after returning across several tabs."
+        )
+        XCTAssertEqual(composer.value as? String, "Work unsent draft")
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Work page and draft after tab drag and row action"
+        proof.lifetime = .keepAlways
+        add(proof)
+    }
+
+    private func hasVisibleTitlePixels(_ screenshot: XCUIScreenshot) -> Bool {
+        guard let image = screenshot.image.cgImage else { return false }
+        let width = image.width
+        let height = image.height
+        var pixels = [UInt8](repeating: 0, count: width * height)
+        return pixels.withUnsafeMutableBytes { pointer in
+            guard let context = CGContext(
+                data: pointer.baseAddress, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return pointer.filter { $0 > 150 }.count > 100
+        }
+    }
+
     func testSelectorFitsBesideControlsAtLargestTextSize() throws {
         continueAfterFailure = false
         let app = launchApp(contentSizeCategory: .accessibilityExtraExtraExtraLarge)
@@ -1511,7 +1610,20 @@ final class SnipSnapiOSUITests: XCTestCase {
         createList("Work", in: app)
         createSnip("Alpha work", in: app)
         returnToCollection(in: app)
-        app.buttons["clipboard-tab"].tap()
+        let selector = app.descendants(matching: .any)["list-selector"]
+        if selector.exists {
+            // Clipboard is offscreen when Work is centered; use the visible picker.
+            let start = selector.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5))
+            start.press(
+                forDuration: 0.05,
+                thenDragTo: start.withOffset(CGVector(dx: 260, dy: 0)),
+                withVelocity: XCUIGestureVelocity(rawValue: 100),
+                thenHoldForDuration: 0.3
+            )
+        } else {
+            app.buttons["clipboard-tab"].tap()
+        }
+        XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
         let search = openSearch(in: app)
         XCTAssertTrue(search.waitForExistence(timeout: 3))
         XCTAssertEqual(search.placeholderValue, "Search All")

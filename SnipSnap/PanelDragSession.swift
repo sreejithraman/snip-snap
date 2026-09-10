@@ -131,6 +131,7 @@ struct PanelDragSessionInspection: Equatable {
 /// Content-specific views only build the adapter; this view owns registration,
 /// window attachment, hit testing, updates, and teardown.
 struct PanelDragSourceRegion: NSViewRepresentable {
+    @Environment(\.isEnabled) private var isEnabled
     let controller: PanelDragSessionController
     let regionID: PanelDragSessionRegionID
     let adapter: PanelDragSessionAdapter
@@ -139,12 +140,13 @@ struct PanelDragSourceRegion: NSViewRepresentable {
         PanelDragSourceRegionView(
             controller: controller,
             regionID: regionID,
-            adapter: adapter
+            adapter: adapter,
+            isEnabled: isEnabled
         )
     }
 
     func updateNSView(_ nsView: PanelDragSourceRegionView, context: Context) {
-        nsView.configure(adapter: adapter)
+        nsView.configure(adapter: adapter, isEnabled: isEnabled)
     }
 
     static func dismantleNSView(_ nsView: PanelDragSourceRegionView, coordinator: ()) {
@@ -157,15 +159,18 @@ final class PanelDragSourceRegionView: NSView {
     private let controller: PanelDragSessionController
     private let regionID: PanelDragSessionRegionID
     private var adapter: PanelDragSessionAdapter
+    private var isEnabled: Bool
 
     init(
         controller: PanelDragSessionController,
         regionID: PanelDragSessionRegionID,
-        adapter: PanelDragSessionAdapter
+        adapter: PanelDragSessionAdapter,
+        isEnabled: Bool = true
     ) {
         self.controller = controller
         self.regionID = regionID
         self.adapter = adapter
+        self.isEnabled = isEnabled
         super.init(frame: .zero)
     }
 
@@ -174,8 +179,9 @@ final class PanelDragSourceRegionView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(adapter: PanelDragSessionAdapter) {
+    func configure(adapter: PanelDragSessionAdapter, isEnabled: Bool = true) {
         self.adapter = adapter
+        self.isEnabled = isEnabled
         updateController()
     }
 
@@ -189,15 +195,15 @@ final class PanelDragSourceRegionView: NSView {
     }
 
     func removeFromController() {
-        controller.unregisterRegion(id: regionID)
+        controller.unregisterRegion(id: regionID, view: self)
     }
 
     private func updateController() {
-        controller.registerRegion(
-            id: regionID,
-            view: window == nil ? nil : self,
-            adapter: adapter
-        )
+        guard window != nil, isEnabled else {
+            controller.unregisterRegion(id: regionID, view: self)
+            return
+        }
+        controller.registerRegion(id: regionID, view: self, adapter: adapter)
     }
 }
 
@@ -258,16 +264,10 @@ final class PanelDragSessionController: NSObject, NSDraggingSource, NSGestureRec
 
     func registerRegion(
         id: PanelDragSessionRegionID,
-        view: NSView?,
+        view: NSView,
         adapter: PanelDragSessionAdapter
     ) {
-        guard let view, view.window != nil else {
-            regions.removeValue(forKey: id)
-            if pendingRegion?.id == id {
-                pendingRegion = nil
-            }
-            return
-        }
+        guard view.window != nil else { return }
         regions[id] = Region(
             id: id,
             view: view,
@@ -275,7 +275,8 @@ final class PanelDragSessionController: NSObject, NSDraggingSource, NSGestureRec
         )
     }
 
-    func unregisterRegion(id: PanelDragSessionRegionID) {
+    func unregisterRegion(id: PanelDragSessionRegionID, view: NSView) {
+        guard let registeredView = regions[id]?.view, registeredView === view else { return }
         regions.removeValue(forKey: id)
         if pendingRegion?.id == id {
             pendingRegion = nil

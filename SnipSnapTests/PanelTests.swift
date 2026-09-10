@@ -10,6 +10,51 @@ import SwiftUI
 @MainActor
 private var processLifetimePanelSearchWindows: [NSWindow] = []
 
+@MainActor
+private final class PanelPagerProbe: ObservableObject {
+    @Published var selection = PanelTabPage.clipboard
+    @Published var pages = [PanelTabPage.clipboard, .list(SnipList.inboxID)]
+    var interactions: [PanelTabPage: Bool] = [:]
+    let picker = CommandNumberPicker()
+    let clipboardID = UUID()
+    let snipID = UUID()
+    let dragController = PanelDragSessionController()
+    let entry = ClipboardEntry(sourceApplication: "Tests", items: [])
+}
+
+private struct PanelPagerTestView: View {
+    @ObservedObject var probe: PanelPagerProbe
+
+    var body: some View {
+        PanelTabPager(
+            selectedPage: probe.selection,
+            pages: probe.pages,
+            onSelectionChange: { probe.picker.setOrderedTargets([]) }
+        ) { identity, interactive in
+            Color.clear
+                .background {
+                    PanelDragSourceRegion(
+                        controller: probe.dragController,
+                        regionID: identity == .clipboard ? .clipboardEntry(probe.clipboardID) : .snip(probe.snipID),
+                        adapter: .exporting(
+                            makeExport: { ClipboardEntryDragExportPackage(entry: probe.entry) },
+                            previewImage: { _, context in NSImage(size: context.sourceFrame.size) }
+                        )
+                    )
+                }
+                .onChange(of: interactive, initial: true) { _, value in
+                    probe.interactions[identity] = value
+                    if value {
+                        probe.picker.setOrderedTargets([
+                            identity == .clipboard ? .clipboardEntry(probe.clipboardID) : .snip(probe.snipID)
+                        ])
+                    }
+                }
+                .onDisappear { probe.interactions[identity] = nil }
+        }
+    }
+}
+
 private final class PanelResizeTrackingEvent: NSEvent {
     private let generatingTrackingArea: NSTrackingArea
 
@@ -48,6 +93,65 @@ private final class PanelTextValue {
 }
 
 final class PanelTests: StoreBackedTestCase {
+    @MainActor
+    func testTabPagerDisablesDepartingPagesAndRecoversAfterReversal() async throws {
+        let probe = PanelPagerProbe()
+        let host = NSHostingView(rootView: PanelPagerTestView(probe: probe))
+        host.frame = NSRect(x: 0, y: 0, width: 400, height: 500)
+        let window = NSWindow(contentRect: host.frame, styleMask: [], backing: .buffered, defer: false)
+        window.contentView = host
+        processLifetimePanelSearchWindows.append(window)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(probe.picker.target(forNumber: 1), .clipboardEntry(probe.clipboardID))
+        XCTAssertNotNil(probe.dragController.inspection(atWindowPoint: NSPoint(x: 200, y: 250)))
+        probe.selection = .list(SnipList.inboxID)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNotEqual(probe.interactions[.clipboard], true)
+        XCTAssertNil(probe.picker.target(forNumber: 1))
+        XCTAssertNil(probe.dragController.inspection(atWindowPoint: NSPoint(x: 200, y: 250)))
+        probe.selection = .clipboard
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(400))
+        host.layoutSubtreeIfNeeded()
+        XCTAssertEqual(probe.interactions, [.clipboard: true])
+        XCTAssertEqual(probe.picker.target(forNumber: 1), .clipboardEntry(probe.clipboardID))
+        XCTAssertNotNil(probe.dragController.inspection(atWindowPoint: NSPoint(x: 200, y: 250)))
+    }
+
+    func testTabSlideDirectionMatchesClipboardAndListOrder() {
+        let work = SnipList(id: UUID(), name: "Work", systemImage: "briefcase", position: 1)
+        let pages = PanelTabPage.ordered(lists: [.inbox, work])
+        XCTAssertEqual(pages, [.clipboard, .list(SnipList.inboxID), .list(work.id)])
+        for (index, source) in pages.enumerated() {
+            for (otherIndex, target) in pages.enumerated() where source != target {
+                XCTAssertEqual(source.precedes(target, in: pages), index < otherIndex)
+            }
+        }
+        XCTAssertFalse(PanelTabPage.list(work.id).precedes(.clipboard, in: pages))
+    }
+
+    @MainActor
+    func testTabPagerDoesNotAnimateFromARemovedPage() async throws {
+        let probe = PanelPagerProbe()
+        let host = NSHostingView(rootView: PanelPagerTestView(probe: probe))
+        host.frame = NSRect(x: 0, y: 0, width: 400, height: 500)
+        let window = NSWindow(contentRect: host.frame, styleMask: [], backing: .buffered, defer: false)
+        window.contentView = host
+        processLifetimePanelSearchWindows.append(window)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+
+        probe.pages = [.list(SnipList.inboxID)]
+        probe.selection = .list(SnipList.inboxID)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertEqual(probe.interactions, [.list(SnipList.inboxID): true])
+        XCTAssertEqual(probe.picker.target(forNumber: 1), .snip(probe.snipID))
+    }
+
     override func setUp() {
         super.setUp()
         if name.contains("LargePromptTextDoesNotStallSavedSnipCardOrPanelLayout") {
@@ -1083,6 +1187,26 @@ final class PanelTests: StoreBackedTestCase {
         )
     }
 
+    func testComposerHeightCacheRetainsAHiddenListHeightForActivation() {
+        let first = UUID()
+        let second = UUID()
+        var heights: [UUID: CGFloat] = [:]
+
+        XCTAssertTrue(
+            PanelComposerHeightCache.update(
+                96,
+                for: second,
+                in: &heights
+            )
+        )
+
+        XCTAssertEqual(
+            PanelComposerHeightCache.height(for: first, in: heights),
+            PanelControlMetrics.inlineEntryBaseHeight
+        )
+        XCTAssertEqual(PanelComposerHeightCache.height(for: second, in: heights), 96)
+    }
+
     @MainActor
     func testCompactPanelTextInputUsesCompactMacHeight() {
         let input = PanelMultilineTextInput(
@@ -1848,6 +1972,34 @@ final class PanelTests: StoreBackedTestCase {
 
         XCTAssertNil(controller.inspection(atWindowPoint: NSPoint(x: 150, y: 260)))
         XCTAssertNotNil(controller.inspection(atWindowPoint: NSPoint(x: 150, y: 220)))
+    }
+
+    @MainActor
+    func testDepartingDuplicateDragRegionCannotUnregisterTheActiveRegion() throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 300),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let host = try XCTUnwrap(window.contentView)
+        let controller = PanelDragSessionController()
+        controller.attach(to: host)
+        let id = UUID()
+        let departing = snipDragRegionView(controller: controller, id: id, text: "Shared")
+        let active = snipDragRegionView(controller: controller, id: id, text: "Shared")
+        departing.frame = host.bounds
+        active.frame = host.bounds
+        host.addSubview(departing)
+        host.addSubview(active)
+
+        departing.removeFromSuperview()
+        departing.removeFromController()
+
+        XCTAssertEqual(
+            controller.inspection(atWindowPoint: NSPoint(x: 150, y: 150))?.regionID,
+            .snip(id)
+        )
     }
 
     @MainActor

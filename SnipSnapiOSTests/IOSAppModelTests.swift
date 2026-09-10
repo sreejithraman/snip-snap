@@ -10,6 +10,171 @@ import XCTest
 
 @MainActor
 final class IOSAppModelTests: XCTestCase {
+    func testListPagingFollowsEveryVariableWidthSegmentAndReversal() throws {
+        let geometry = ListSelectorGeometry(widths: [80, 160, 100, 200])
+        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID()), .list(UUID())]
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        var motion = ListPageMotion()
+        let positions: [CGFloat] = [0.25, 0.75, 1, 1.5, 2, 2.75, 1.5, 0.25]
+        for position in positions {
+            let cursor = geometry.cursor(at: position)
+            motion.updateDrag(
+                translation: CGSize(width: geometry.centers[0] - cursor, height: 0),
+                selectedPage: pages[0], pages: pages, geometry: geometry,
+                layoutDirection: .leftToRight, at: now
+            )
+            let frame = motion.frame(pages: pages, selectedPage: pages[0], at: now)
+            XCTAssertEqual(frame.position, position, accuracy: 0.0001)
+            XCTAssertEqual(geometry.pagePosition(at: cursor), position, accuracy: 0.0001)
+            XCTAssertTrue(frame.retainedPages.contains(pages[0]))
+            XCTAssertTrue(frame.retainedPages.contains(pages[Int(floor(position))]))
+            XCTAssertTrue(frame.retainedPages.contains(pages[Int(ceil(position))]))
+            XCTAssertLessThanOrEqual(frame.retainedPages.count, 3)
+        }
+        XCTAssertTrue(motion.isDragging)
+    }
+
+    func testListPagingMirrorsDragAndOffsetsInRTL() {
+        let geometry = ListSelectorGeometry(widths: [80, 160, 100])
+        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID())]
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        for direction in [LayoutDirection.leftToRight, .rightToLeft] {
+            var motion = ListPageMotion()
+            let sign: CGFloat = direction == .leftToRight ? -1 : 1
+            motion.updateDrag(
+                translation: CGSize(width: sign * 197, height: 0),
+                selectedPage: pages[0], pages: pages, geometry: geometry,
+                layoutDirection: direction, at: now
+            )
+            let frame = motion.frame(pages: pages, selectedPage: pages[0], at: now)
+            XCTAssertEqual(frame.position, 1.5, accuracy: 0.0001)
+            XCTAssertEqual(frame.offset(for: pages[1], width: 400, layoutDirection: direction, reduceMotion: false), sign * 200)
+            XCTAssertEqual(frame.offset(for: pages[2], width: 400, layoutDirection: direction, reduceMotion: false), -sign * 200)
+        }
+    }
+
+    func testCancelledListDragReturnsToSourceAndClearsSettlement() throws {
+        let geometry = ListSelectorGeometry(widths: [80, 160, 100])
+        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID())]
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        var motion = ListPageMotion()
+        motion.updateDrag(
+            translation: CGSize(width: -197, height: 0), selectedPage: pages[0],
+            pages: pages, geometry: geometry, layoutDirection: .leftToRight, at: now
+        )
+        motion.cancelDrag(reduceMotion: false, at: now)
+        XCTAssertFalse(motion.isDragging)
+        let settlement = try XCTUnwrap(motion.transition?.settlement)
+        XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[0], at: now).position, 1.5)
+        XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[0], at: now.addingTimeInterval(1)).position, 0)
+        motion.finishSettlement(settlement.id)
+        XCTAssertNil(motion.transition)
+        XCTAssertFalse(motion.frame(pages: pages, selectedPage: pages[0], at: now).isMoving)
+    }
+
+    func testDiagonalReleaseStillCompletesAnAcceptedHorizontalDrag() throws {
+        let geometry = ListSelectorGeometry(widths: [80, 160, 100])
+        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID())]
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        var motion = ListPageMotion()
+        motion.updateDrag(
+            translation: CGSize(width: -100, height: 0), selectedPage: pages[0],
+            pages: pages, geometry: geometry, layoutDirection: .leftToRight, at: now
+        )
+        XCTAssertEqual(motion.release(translation: CGSize(width: -128, height: 200), geometry: geometry, reduceMotion: false, at: now), .select(1))
+        XCTAssertFalse(motion.isDragging)
+        let settlement = try XCTUnwrap(motion.transition?.settlement)
+        motion.cancelDrag(reduceMotion: false, at: now)
+        XCTAssertEqual(motion.transition?.settlement?.id, settlement.id, "A later GestureState reset must not cancel a released drag")
+        motion.finishSettlement(settlement.id)
+        XCTAssertNil(motion.transition)
+    }
+
+    func testNewDragStartsFromVisibleSettlingPositionAndIgnoresOldCompletion() throws {
+        let geometry = ListSelectorGeometry(widths: [80, 160, 100])
+        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID())]
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        var motion = ListPageMotion()
+        motion.select(2, selectedPage: pages[0], pages: pages, reduceMotion: false, at: now)
+        let previous = try XCTUnwrap(motion.transition?.settlement)
+        let interruptedAt = now.addingTimeInterval(previous.duration / 2)
+        let visible = motion.frame(pages: pages, selectedPage: pages[2], at: interruptedAt).position
+        XCTAssertGreaterThan(visible, 0)
+        XCTAssertLessThan(visible, 2)
+        motion.updateDrag(
+            translation: CGSize(width: 10, height: 0), selectedPage: pages[2],
+            pages: pages, geometry: geometry, layoutDirection: .leftToRight, at: interruptedAt
+        )
+        XCTAssertEqual(
+            motion.frame(pages: pages, selectedPage: pages[2], at: interruptedAt).position,
+            geometry.pagePosition(at: geometry.cursor(at: visible) - 10), accuracy: 0.0001
+        )
+        motion.finishSettlement(previous.id)
+        XCTAssertTrue(motion.isDragging)
+        XCTAssertNotNil(motion.transition)
+        motion.cancelDrag(reduceMotion: false, at: interruptedAt)
+        XCTAssertEqual(motion.transition?.settlement?.destination, 2)
+    }
+
+    func testRepeatedTabSelectionRetargetsFromVisiblePosition() throws {
+        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID()), .list(UUID())]
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        var motion = ListPageMotion()
+        motion.select(3, selectedPage: pages[0], pages: pages, reduceMotion: false, at: now)
+        let previous = try XCTUnwrap(motion.transition?.settlement)
+        let interruptedAt = now.addingTimeInterval(previous.duration / 2)
+        let before = motion.frame(pages: pages, selectedPage: pages[3], at: interruptedAt)
+        motion.select(1, selectedPage: pages[3], pages: pages, reduceMotion: false, at: interruptedAt)
+        let after = motion.frame(pages: pages, selectedPage: pages[1], at: interruptedAt)
+        XCTAssertEqual(after.position, before.position)
+        XCTAssertLessThanOrEqual(after.retainedPages.count, 4)
+        motion.finishSettlement(previous.id)
+        XCTAssertNotNil(motion.transition)
+        XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[1], at: interruptedAt.addingTimeInterval(1)).position, 1)
+    }
+
+    func testInterruptedListMotionClearsGestureAndSettlingState() throws {
+        let geometry = ListSelectorGeometry(widths: [80, 160])
+        let pages: [LibraryPage] = [.clipboard, .list(UUID())]
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        var motion = ListPageMotion()
+        motion.updateDrag(
+            translation: CGSize(width: -50, height: 0), selectedPage: pages[0],
+            pages: pages, geometry: geometry, layoutDirection: .leftToRight, at: now
+        )
+        motion.interrupt()
+        XCTAssertFalse(motion.isDragging)
+        XCTAssertNil(motion.transition)
+        XCTAssertNil(motion.release(translation: CGSize(width: -50, height: 0), geometry: geometry, reduceMotion: false, at: now))
+        motion.select(1, selectedPage: pages[0], pages: pages, reduceMotion: false, at: now)
+        let settlement = try XCTUnwrap(motion.transition?.settlement)
+        motion.interrupt()
+        motion.finishSettlement(settlement.id)
+        XCTAssertNil(motion.transition)
+    }
+
+    func testReducedMotionFadesTheSamePagesWithoutSidewaysMovement() {
+        let geometry = ListSelectorGeometry(widths: [80, 160, 100])
+        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID())]
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        var motion = ListPageMotion()
+        motion.updateDrag(
+            translation: CGSize(width: -64, height: 0), selectedPage: pages[0],
+            pages: pages, geometry: geometry, layoutDirection: .leftToRight, at: now
+        )
+        let frame = motion.frame(pages: pages, selectedPage: pages[0], at: now)
+        for page in frame.retainedPages {
+            XCTAssertEqual(frame.offset(for: page, width: 400, layoutDirection: .leftToRight, reduceMotion: true), 0)
+            XCTAssertEqual(frame.offset(for: page, width: 400, layoutDirection: .rightToLeft, reduceMotion: true), 0)
+            XCTAssertEqual(frame.opacity(for: page, reduceMotion: true), 0.5)
+        }
+        motion.cancelDrag(reduceMotion: true, at: now)
+        XCTAssertEqual(motion.transition?.settlement?.duration, 0.12)
+        let finished = motion.frame(pages: pages, selectedPage: pages[0], at: now.addingTimeInterval(1))
+        XCTAssertEqual(finished.opacity(for: pages[0], reduceMotion: true), 1)
+        XCTAssertEqual(finished.opacity(for: pages[1], reduceMotion: true), 0)
+    }
+
     func testInlineListDraftSurvivesNavigationUntilCompletion() async {
         let model = makeModel(library: ModelTestLibrary())
         await model.load()

@@ -1509,6 +1509,27 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testFilteredSnipsCanRenderAnInactiveList() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let review = try await repository.createList(name: "Review", systemImage: "star")
+        let inboxSnip = try await repository.add(content: "Inbox", origin: .quickEntry)
+        let reviewSnip = try await repository.add(
+            content: "Review",
+            origin: .quickEntry,
+            listID: review.id
+        )
+        let model = AppModel(library: repository, defaults: defaults())
+        await model.reload()
+
+        XCTAssertEqual(model.activeListID, SnipList.inboxID)
+        XCTAssertEqual(model.filteredSnips.map(\.id), [try XCTUnwrap(inboxSnip).id])
+        XCTAssertEqual(
+            model.filteredSnips(in: review.id).map(\.id),
+            [try XCTUnwrap(reviewSnip).id]
+        )
+    }
+
+    @MainActor
     func testComposerDraftKeepsNewAttachmentsWhenAnEarlierSaveFinishes() throws {
         let store = ComposerDraftStore(defaults: defaults(), textDefaultsKey: "drafts")
         let listID = UUID()

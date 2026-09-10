@@ -20,6 +20,8 @@ struct SnipCollectionView: View {
     let copyShare: IOSCopyShareCoordinator
     @Binding var sheet: AppSheet?
     let layout: SnipCollectionLayout
+    var listID: UUID? = nil
+    var isActivePage = true
     @Binding var editMode: EditMode
     var dismissComposerKeyboard: () -> Void = {}
     var libraryActions: LibraryActionsMenu?
@@ -30,14 +32,21 @@ struct SnipCollectionView: View {
     @FocusState private var isInlineEditorFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var isEditingList: Bool { model.editingListID == model.selectedListID }
+    private var displayedListID: UUID { listID ?? model.selectedListID }
+    private var displayedList: SnipList {
+        model.lists.first(where: { $0.id == displayedListID }) ?? .inbox
+    }
+    private var displayedSnips: [Snip] { model.visibleSnips(in: displayedListID) }
+    private var isEditingList: Bool {
+        model.editingListID == displayedListID
+    }
     private var showsListEditor: Bool { isEditingList && !model.isSearchPresented }
 
     var body: some View {
         Group {
             if model.isSearchPresented {
                 LibrarySearchView(model: model, clipboard: clipboard, copyShare: copyShare, sheet: $sheet)
-            } else if model.visibleSnips.isEmpty {
+            } else if displayedSnips.isEmpty {
                 if layout == .compactStack {
                     compactEmptyState
                 } else {
@@ -51,7 +60,7 @@ struct SnipCollectionView: View {
             } else {
                 List(selection: isSelecting ? selectedSnipIDs : nil) {
                     ForEach(model.recoverySnapshot.pendingSnips.filter { recovery in
-                        recovery.recovered.listID == model.selectedListID
+                        recovery.recovered.listID == displayedListID
                             && !model.snips.contains { $0.id == recovery.id }
                     }) { recovery in
                         Button {
@@ -63,7 +72,7 @@ struct SnipCollectionView: View {
                         .listRowSeparator(.hidden)
                         .accessibilityIdentifier("recovered-snip-\(recovery.id)")
                     }
-                    ForEach(model.visibleSnips) { snip in
+                    ForEach(displayedSnips) { snip in
                         Group {
                             if isSelecting {
                                 SnipRow(
@@ -177,17 +186,16 @@ struct SnipCollectionView: View {
         )
         .quickLookPreview($selectedPreviewURL, in: previewURLs)
         .modifier(CollectionScreenPresentation(
-            title: isEditingList ? "" : model.selectedList.name,
-            titleColor: model.selectedList.accent.color,
+            title: isEditingList ? "" : displayedList.name,
+            titleColor: displayedList.accent.color,
             showsControls: !model.isSearchPresented,
             recedesControls: showsListEditor,
             trailingControls: collectionToolbar
         ))
-        .navigationBarTitleDisplayMode(isEditingList ? .inline : .large)
         .overlay(alignment: .top) {
             if isEditingList {
-                InlineListEditor(model: model, list: model.selectedList)
-                    .id(model.selectedListID)
+                InlineListEditor(model: model, list: displayedList)
+                    .id(displayedListID)
                     .frame(height: model.isSearchPresented ? 0 : nil)
                     .opacity(model.isSearchPresented ? 0 : 1)
                     .allowsHitTesting(!model.isSearchPresented)
@@ -200,25 +208,28 @@ struct SnipCollectionView: View {
             value: showsListEditor
         )
         .onChange(of: model.editingListID) { _, id in
-            if id != nil {
+            if isActivePage && id != nil {
                 model.isSearchPresented = false
                 dismissComposerKeyboard()
             }
         }
         .environment(\.editMode, $editMode)
+        .onChange(of: isActivePage) { _, isActive in
+            if !isActive { isInlineEditorFocused = false }
+        }
         .onChange(of: model.selectedListID) {
+            guard isActivePage else { return }
             isReordering = false
             cancelInlineEdit()
-            guard isSelecting else { return }
-            endSelection()
         }
         .onChange(of: model.completionFilter) {
             model.haptics.invalidatePendingFeedback()
-            if isSelecting {
-                model.selectedSnipIDs.formIntersection(model.visibleSnips.map(\.id))
+            if isActivePage && isSelecting {
+                model.selectedSnipIDs.formIntersection(displayedSnips.map(\.id))
             }
         }
         .onChange(of: editMode) { _, mode in
+            guard isActivePage else { return }
             model.haptics.invalidatePendingFeedback()
             if !mode.isEditing { model.endSelectingSnips() }
             if mode.isEditing {
@@ -414,7 +425,7 @@ struct SnipCollectionView: View {
     }
 
     private func move(from source: IndexSet, to destination: Int) {
-        var orderedIDs = model.visibleSnips.map(\.id)
+        var orderedIDs = displayedSnips.map(\.id)
         orderedIDs.move(fromOffsets: source, toOffset: destination)
         Task { _ = await model.placeVisibleSnips(orderedIDs) }
     }
@@ -518,77 +529,6 @@ private struct CompactInlineSnipEditor: View {
     }
 }
 
-struct CollectionScreenPresentation<TrailingControls: View>: ViewModifier {
-    let title: String
-    var titleColor: Color = .primary
-    var showsControls = true
-    var recedesControls = false
-    let trailingControls: TrailingControls
-
-    func body(content: Content) -> some View {
-        content
-            .navigationTitle(title)
-            .background {
-                RoundedNavigationTitle(color: UIColor(titleColor))
-                    .frame(width: 0, height: 0)
-            }
-            .toolbar {
-                if showsControls {
-                    ToolbarItemGroup(placement: .topBarTrailing) {
-                        trailingControls
-                            .tint(recedesControls ? Color.secondary : SnipSnapTheme.controlTint)
-                    }
-                    .sharedBackgroundVisibility(recedesControls ? .hidden : .automatic)
-                }
-            }
-    }
-}
-
-/// Style this screen's native title while keeping its scroll and accessibility behavior.
-private struct RoundedNavigationTitle: UIViewControllerRepresentable {
-    let color: UIColor
-
-    func makeUIViewController(context: Context) -> TitleController {
-        TitleController()
-    }
-
-    func updateUIViewController(_ controller: TitleController, context: Context) {
-        controller.titleColor = color
-        controller.applyAppearance()
-    }
-
-    final class TitleController: UIViewController {
-        var titleColor: UIColor = .label
-
-        override func viewWillAppear(_ animated: Bool) {
-            super.viewWillAppear(animated)
-            applyAppearance()
-        }
-
-        override func didMove(toParent parent: UIViewController?) {
-            super.didMove(toParent: parent)
-            applyAppearance()
-        }
-
-        func applyAppearance() {
-            guard let navigationController,
-                  let item = navigationController.topViewController?.navigationItem else { return }
-            let bar = navigationController.navigationBar
-            func styled(_ source: UINavigationBarAppearance) -> UINavigationBarAppearance {
-                let appearance = source.copy() as! UINavigationBarAppearance
-                appearance.titleTextAttributes[.font] = UIFont.rounded(size: 17, weight: .semibold)
-                appearance.largeTitleTextAttributes[.font] = UIFont.rounded(size: 34, weight: .bold)
-                appearance.titleTextAttributes[.foregroundColor] = titleColor
-                appearance.largeTitleTextAttributes[.foregroundColor] = titleColor
-                return appearance
-            }
-            item.standardAppearance = styled(bar.standardAppearance)
-            item.scrollEdgeAppearance = styled(bar.scrollEdgeAppearance ?? bar.standardAppearance)
-            item.compactAppearance = styled(bar.compactAppearance ?? bar.standardAppearance)
-        }
-    }
-}
-
 struct CollectionEmptyState: View {
     let title: String
     let systemImage: String
@@ -644,7 +584,7 @@ private struct SnipRow: View {
                         .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: snip.isDone)
                         .font(.body)
                         .foregroundStyle(snip.isDone
-                            ? AnyShapeStyle(model.selectedList.accent.color)
+                            ? AnyShapeStyle((model.lists.first { $0.id == snip.listID } ?? .inbox).accent.color)
                             : AnyShapeStyle(.tertiary))
                         .frame(minWidth: 44, minHeight: 44)
                         .contentShape(Rectangle())

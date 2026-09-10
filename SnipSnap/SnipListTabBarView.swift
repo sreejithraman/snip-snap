@@ -4,17 +4,7 @@ import SwiftUI
 
 struct SnipListTabBarView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private enum TabSelection: Hashable {
-        case clipboard
-        case list(UUID)
-
-        var listID: UUID? {
-            switch self {
-            case .clipboard: nil
-            case .list(let listID): listID
-            }
-        }
-    }
+    private typealias TabSelection = PanelTabPage
 
     @ObservedObject var model: AppModel
     let dragSessionController: PanelDragSessionController
@@ -243,7 +233,7 @@ struct SnipListTabBarView: View {
     }
 
     private var tabs: [TabSelection] {
-        [.clipboard] + model.lists.map { .list($0.id) }
+        PanelTabPage.ordered(lists: model.lists)
     }
 
     private var currentTab: TabSelection {
