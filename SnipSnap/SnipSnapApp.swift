@@ -144,7 +144,7 @@ private struct AppSettingsContent: View {
                         do {
                             try await model.clearDownloadedFiles()
                         } catch {
-                            clearDownloadsError = String(localized: "Snip Snap could not clear the downloaded files.")
+                            clearDownloadsError = String(localized: "Couldn’t clear downloaded files. Try again.")
                         }
                         isClearingDownloads = false
                     }
@@ -714,7 +714,7 @@ private struct SnipCommands: Commands {
                     try JSONSnipArchiveTransfer.write(archive, to: url)
                 }.value
             } catch {
-                model.presentedError = error.localizedDescription
+                model.presentError(error)
             }
         }
     }

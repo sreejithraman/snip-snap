@@ -53,7 +53,7 @@ struct SnipListTabBarView: View {
             }
             Button("Cancel", role: .cancel) { listPendingDeletion = nil }
         } message: {
-            Text("Its snips will move to Inbox.")
+            Text("The snips in this list will move to Inbox.")
         }
     }
 

@@ -468,7 +468,7 @@ struct CompactLibraryControls: View {
                 return
             } catch {
                 model.errorMessage = String(
-                    localized: "Snip Snap could not prepare the pasted text."
+                    localized: "Couldn’t prepare pasted text. Try again."
                 )
             }
         }

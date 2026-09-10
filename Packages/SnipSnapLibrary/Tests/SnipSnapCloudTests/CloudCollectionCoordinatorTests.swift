@@ -819,11 +819,11 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
   func testCollectionErrorsHaveUserFacingMessages() {
     XCTAssertEqual(
       CloudCollectionError.noActiveCollection.errorDescription,
-      "iCloud Sync does not have an active collection."
+      "iCloud sync has no active library."
     )
     XCTAssertEqual(
       CloudCollectionError.invalidDescriptor.errorDescription,
-      "The iCloud Sync collection is not valid."
+      "This iCloud library can’t be used for sync."
     )
   }
 

@@ -172,7 +172,7 @@ struct IOSAppRootView: View {
             }
         }
         .alert(
-            "Snip Snap Needs Attention",
+            model.errorTitle,
             isPresented: Binding(
                 get: { model.errorMessage != nil },
                 set: { if !$0 { model.errorMessage = nil } }
@@ -180,7 +180,7 @@ struct IOSAppRootView: View {
         ) {
             Button("OK") { model.errorMessage = nil }
         } message: {
-            Text(model.errorMessage ?? String(localized: "Please try again."))
+            Text(model.errorMessage ?? String(localized: "Try again."))
         }
         .alert(
             "Some Files Are Unavailable",
@@ -193,10 +193,10 @@ struct IOSAppRootView: View {
             Button("Cancel", role: .cancel) { copyShare.cancelUnavailableFilesNotice() }
         } message: {
             Text(copyShare.unavailableFilesNotice?.message
-                ?? String(localized: "One or more files could not be read."))
+                ?? String(localized: "Snip Snap couldn’t read one or more files."))
         }
         .alert(
-            "Copy Failed",
+            "Couldn’t Copy",
             isPresented: Binding(
                 get: { copyShare.errorMessage != nil },
                 set: { if !$0 { copyShare.errorMessage = nil } }
@@ -204,10 +204,10 @@ struct IOSAppRootView: View {
         ) {
             Button("OK") { copyShare.errorMessage = nil }
         } message: {
-            Text(copyShare.errorMessage ?? String(localized: "Please try again."))
+            Text(copyShare.errorMessage ?? String(localized: "Try again."))
         }
         .confirmationDialog(
-            "Choose a backup",
+            "Choose a Backup",
             isPresented: $isExplainingBackupImport,
             titleVisibility: .visible
         ) {
@@ -242,7 +242,7 @@ struct IOSAppRootView: View {
             Button("Import Backup") { Task { await model.confirmBackupImport() } }
             Button("Cancel", role: .cancel) { model.cancelBackupImport() }
         } message: {
-            Text("Review: \(model.pendingImportPreview?.localizedSummary ?? ""). Snip Snap will merge these records with your saved snips.")
+            Text("This backup contains \(model.pendingImportPreview?.localizedSummary ?? ""). Snip Snap will merge this backup with your saved snips.")
         }
         .onChange(of: model.sortMode) { _, mode in
             savedSortMode = mode.rawValue

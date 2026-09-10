@@ -3,12 +3,12 @@ import XCTest
 
 final class SyncedContentSettingsModelTests: XCTestCase {
   @MainActor
-  func testLocalOnlyCopyNamesTheCloudKitBoundaryWithoutClaimingDeviceOnlyStorage() {
+  func testLocalOnlyCopyNamesTheSyncBoundaryWithoutClaimingDeviceOnlyStorage() {
     let model = SyncedContentSettingsModel(mode: .localOnly)
 
     XCTAssertEqual(
       model.detail,
-      "Snip Snap does not send local-only data to CloudKit."
+      "Snip Snap doesn’t sync local-only data with iCloud."
     )
     XCTAssertFalse(model.detail.contains("stay on this device"))
     XCTAssertFalse(model.detail.contains("Nothing is uploaded"))
@@ -47,7 +47,7 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     XCTAssertEqual(model.state, .deleted)
     XCTAssertFalse(model.canDelete)
     XCTAssertTrue(model.detail.contains("local recovery copy"))
-    XCTAssertTrue(model.detail.contains("control record"))
+    XCTAssertTrue(model.detail.contains("prevent an old device from restoring the deleted data"))
   }
 
   @MainActor
@@ -103,10 +103,10 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     await model.deleteSyncedContent()
 
     XCTAssertEqual(model.state, .removalPending)
-    XCTAssertEqual(model.statusTitle, "Old Synced Content Removal Pending")
+    XCTAssertEqual(model.statusTitle, "Old Synced Data Needs Removal")
     XCTAssertEqual(
       model.detail,
-      "Snip Snap started a fresh empty synced collection, but it could not remove all old iCloud data yet. It will retry the next time it syncs. Your local recovery copy remains."
+      "Snip Snap started a new empty synced library, but it could not remove all old iCloud data yet. It will retry the next time it syncs. Your local recovery copy remains."
     )
     XCTAssertFalse(model.canDelete)
   }
@@ -320,7 +320,7 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     model.recordSyncStopped(.iCloudDataReset)
     XCTAssertEqual(model.mode, .localOnly)
     XCTAssertEqual(model.statusTitle, "iCloud Sync Was Turned Off")
-    XCTAssertTrue(model.detail.contains("will not upload it again"))
+    XCTAssertTrue(model.detail.contains("won’t upload it again"))
 
     model.recordSyncStopped(.iCloudAccountChanged)
     XCTAssertEqual(model.statusTitle, "iCloud Account Changed")
@@ -334,7 +334,7 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     model.recordSyncFailure(.attachmentStorageUnavailable)
 
     XCTAssertEqual(model.statusTitle, "An Attachment Couldn’t Be Saved")
-    XCTAssertTrue(model.detail.contains("safe place"))
+    XCTAssertTrue(model.detail.contains("couldn’t save one iCloud attachment on this device"))
     XCTAssertFalse(model.detail.contains("error 7"))
   }
 }

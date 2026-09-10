@@ -208,7 +208,7 @@ extension View {
             Button("Delete List", role: .destructive, action: delete)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Its snips will move to Inbox.")
+            Text("The snips in this list will move to Inbox.")
         }
     }
 }

@@ -1,3 +1,4 @@
+import SnipSnapCloud
 import SnipSnapCore
 import SwiftUI
 
@@ -73,19 +74,21 @@ struct SyncedContentSettingsView: View {
                     do {
                         try await clipboard.deleteSyncedHistory()
                         await model.deleteSyncedContent()
-                    } catch { clipboardDeleteError = error.localizedDescription }
+                    } catch {
+                        clipboardDeleteError = ClipboardSyncErrorMessage.deleteSyncedHistory(for: error)
+                    }
                 }
             }
         } message: {
-            Text("This starts a fresh empty synced collection and removes the old synced snips, attachments, and clipboard history, including pins, from iCloud. This device keeps a local recovery copy. A small control record remains in iCloud to stop old devices from restoring deleted content.")
+            Text("This starts a new, empty synced library. It deletes synced snips, attachments, and clipboard history—including pins—from iCloud. This Mac keeps a local recovery copy. A small iCloud record remains so older devices cannot restore deleted content.")
         }
         .alert("Sync Clipboard History?", isPresented: $confirmsClipboardSync) {
             Button("Cancel", role: .cancel) {}
             Button("Enable Sync") { clipboard.setSyncEnabled(true) }
         } message: {
-            Text("Existing clipboard history will upload to your private iCloud and merge with your other devices. Files stay on this Mac until pinned.")
+            Text("Text and image entries, pinned files, and files that synced before will upload to your private iCloud and merge with your other devices. Other files stay on this Mac until pinned.")
         }
-        .alert("Clipboard Sync Failed", isPresented: Binding(get: { clipboardDeleteError != nil }, set: { if !$0 { clipboardDeleteError = nil } })) {
+        .alert("Couldn’t Delete Synced Content", isPresented: Binding(get: { clipboardDeleteError != nil }, set: { if !$0 { clipboardDeleteError = nil } })) {
             Button("OK") { clipboardDeleteError = nil }
         } message: { Text(clipboardDeleteError ?? "") }
         .alert("Use This Mac’s Copy?", isPresented: $confirmsUsingDeviceCopy) {
@@ -94,7 +97,7 @@ struct SyncedContentSettingsView: View {
                 Task { await model.disableICloudSync(.useCurrentCache) }
             }
         } message: {
-            Text("Snip Snap could not refresh iCloud. You can keep sync on and try again, or turn it off with the copy already on this Mac. That copy may not include recent changes from other devices. Your iCloud data will not be deleted.")
+            Text("Snip Snap couldn’t get the latest changes from iCloud. Keep sync on and try again, or turn it off and use the copy on this Mac. That copy may not include recent changes from other devices. This does not delete iCloud data.")
         }
     }
 

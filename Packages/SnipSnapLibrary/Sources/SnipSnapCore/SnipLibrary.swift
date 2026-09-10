@@ -79,29 +79,29 @@ public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {
         case .snipNotFound:
             String(localized: "That snip no longer exists.", bundle: .main)
         case .invalidStore:
-            String(localized: "Snip Snap could not read its saved snips.", bundle: .main)
+            String(localized: "Snip Snap couldn’t open your saved snips.", bundle: .main)
         case .storeUnavailable:
-            String(localized: "Snip Snap cannot save changes until its snip store is available.", bundle: .main)
+            String(localized: "Snip Snap can’t save changes right now. Try again soon.", bundle: .main)
         case .requiresMultipleSnips:
             String(localized: "Select at least two snips to merge.", bundle: .main)
         case .snipChanged:
             String(localized: "This snip changed in another window. Copy your edits, reopen it, and try again.", bundle: .main)
         case .duplicateList:
-            String(localized: "A list with that name already exists.", bundle: .main)
+            String(localized: "A list with that name already exists. Choose another name.", bundle: .main)
         case .invalidList:
             String(localized: "That list is not available.", bundle: .main)
         case .invalidCommand:
-            String(localized: "That change cannot run with other changes.", bundle: .main)
+            String(localized: "These changes can’t be made together.", bundle: .main)
         case .attachmentCopyFailed:
-            String(localized: "Snip Snap could not copy one of the files.", bundle: .main)
+            String(localized: "Snip Snap couldn’t copy an attachment.", bundle: .main)
         case .modeTransitionInProgress:
-            String(localized: "This device is changing its storage choice. Try again when setup finishes.", bundle: .main)
+            String(localized: "Snip Snap is changing where it stores your snips. Try again when setup finishes.", bundle: .main)
         case .readOnlyRecovery:
             String(localized: "This is a recovery copy. Restore it to an active library before making changes.", bundle: .main)
         case .transferUnsupported:
-            String(localized: "This snip store cannot change storage modes.", bundle: .main)
+            String(localized: "This library can’t change where it stores your snips.", bundle: .main)
         case .transferConflict:
-            String(localized: "Snip Snap found records it could not copy safely.", bundle: .main)
+            String(localized: "Snip Snap found items it can’t copy safely.", bundle: .main)
         case .recoveryNotFound:
             String(localized: "That recovered edit is no longer available.", bundle: .main)
         case .recoveryChanged:
@@ -187,6 +187,11 @@ public struct SnipLibraryExpectation: Sendable {
     }
 }
 
+public enum SnipListNamePolicy: Equatable, Sendable {
+    case exact
+    case available
+}
+
 public indirect enum SnipLibraryCommand: Sendable {
     case add(
         content: String,
@@ -197,7 +202,10 @@ public indirect enum SnipLibraryCommand: Sendable {
         requestID: UUID,
         now: Date
     )
-    case createList(name: String, systemImage: String, color: SnipListColor? = nil)
+    case createList(
+        name: String, systemImage: String, color: SnipListColor? = nil,
+        namePolicy: SnipListNamePolicy = .exact
+    )
     case restoreList(SnipList)
     case updateList(id: UUID, name: String, systemImage: String, color: SnipListColorChange = .keep)
     case deleteList(id: UUID)

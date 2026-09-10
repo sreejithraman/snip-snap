@@ -47,6 +47,7 @@ final class AppModel: ObservableObject {
     }
     @Published var editingID: UUID?
     @Published var presentedError: String?
+    @Published private(set) var presentedErrorTitle: String?
     @Published private(set) var latestAddedSnipID: UUID?
     @Published private(set) var sortMode: SnipSortMode
     @Published private(set) var appearance: AppAppearance
@@ -145,8 +146,27 @@ final class AppModel: ObservableObject {
             cloudSyncHandler: cloudSyncHandler
         )
         self.cloudSyncHandler = cloudSyncHandler
-        presentedError = initialError
+        presentError(initialError)
         Task { await reload() }
+    }
+
+    func presentError(_ error: any Error) {
+        presentError(
+            error.localizedDescription,
+            title: (error as? SnipLibraryError) == .duplicateList
+                ? String(localized: "Name Already Used")
+                : nil
+        )
+    }
+
+    func presentError(_ message: String?, title: String? = nil) {
+        presentedErrorTitle = title
+        presentedError = message
+    }
+
+    func dismissPresentedError() {
+        presentedErrorTitle = nil
+        presentedError = nil
     }
 
     func setCloudSyncHandler(_ handler: (any OptionalCloudSyncHandling)?) {
@@ -178,7 +198,7 @@ final class AppModel: ObservableObject {
             _ = try await prepareAttachments(attachments, for: .export)
             return true
         } catch {
-            presentedError = error.localizedDescription
+            presentError(error)
             return false
         }
     }
@@ -259,7 +279,7 @@ final class AppModel: ObservableObject {
                 scheduleCloudSync()
                 return true
             } catch {
-                presentedError = error.localizedDescription
+                presentError(error)
                 await reloadUnlocked()
                 return false
             }
@@ -317,7 +337,7 @@ final class AppModel: ObservableObject {
         case .success(.duplicate):
             return false
         case .failure(let error):
-            presentedError = error.localizedDescription
+            presentError(error)
             return false
         }
     }
@@ -379,7 +399,7 @@ final class AppModel: ObservableObject {
         case .success:
             return true
         case .failure(let error):
-            presentedError = error.localizedDescription
+            presentError(error)
             return false
         }
     }
@@ -494,7 +514,7 @@ final class AppModel: ObservableObject {
                 selectionAfterMove: selectedMovingIDs
             )
         case .failure(let error):
-            presentedError = error.localizedDescription
+            presentError(error)
             return false
         }
     }
@@ -509,7 +529,7 @@ final class AppModel: ObservableObject {
             return (update, ())
         }
         if case .failure(let error) = result {
-            presentedError = error.localizedDescription
+            presentError(error)
         } else {
             clearDraft(for: list.id)
         }
@@ -524,7 +544,7 @@ final class AppModel: ObservableObject {
             return (update, ())
         }
         if case .failure(let error) = result {
-            presentedError = error.localizedDescription
+            presentError(error)
             return false
         }
         return true
@@ -543,7 +563,7 @@ final class AppModel: ObservableObject {
                 try entry.materializeForSnip()
             }.value
         } catch {
-            presentedError = String(localized: "Snip Snap could not prepare the clipboard image.")
+            presentError(String(localized: "Couldn’t prepare the clipboard image. Try again."))
             return false
         }
         defer { materialization.removeTemporaryFiles() }
@@ -562,7 +582,7 @@ final class AppModel: ObservableObject {
         case .success(.duplicate):
             return false
         case .failure(let error):
-            presentedError = error.localizedDescription
+            presentError(error)
             return false
         }
     }
@@ -583,7 +603,7 @@ final class AppModel: ObservableObject {
                 toast = .deleted(count: snipsToDelete.count, id: token)
                 scheduleCloudSync()
             } catch {
-                presentedError = error.localizedDescription
+                presentError(error)
             }
         }
     }
@@ -618,7 +638,7 @@ final class AppModel: ObservableObject {
                 if toast?.id == token { toast = nil }
                 scheduleCloudSync()
             } catch {
-                presentedError = error.localizedDescription
+                presentError(error)
             }
         }
     }
@@ -653,7 +673,7 @@ final class AppModel: ObservableObject {
             } catch {
                 pendingImportPreviewID = nil
                 pendingImportPreview = nil
-                presentedError = error.localizedDescription
+                presentError(error)
             }
         }
     }
@@ -687,7 +707,7 @@ final class AppModel: ObservableObject {
             } catch {
                 pendingImportPreviewID = nil
                 pendingImportPreview = nil
-                presentedError = error.localizedDescription
+                presentError(error)
                 await reloadUnlocked()
             }
         }
@@ -816,7 +836,7 @@ final class AppModel: ObservableObject {
         if case .success = result {
             return true
         }
-        if case .failure(let error) = result { presentedError = error.localizedDescription }
+        if case .failure(let error) = result { presentError(error) }
         return false
     }
 
@@ -834,7 +854,7 @@ final class AppModel: ObservableObject {
         if case .success = result {
             return true
         }
-        if case .failure(let error) = result { presentedError = error.localizedDescription }
+        if case .failure(let error) = result { presentError(error) }
         return false
     }
 
@@ -871,7 +891,7 @@ final class AppModel: ObservableObject {
             editingID = id
             return true
         } catch {
-            presentedError = error.localizedDescription
+            presentError(error)
             return false
         }
     }
@@ -926,7 +946,7 @@ final class AppModel: ObservableObject {
         feedback: ClipboardPlacementFeedback = .notify
     ) -> Bool {
         guard clipboardHistory.restore(entry) else {
-            presentedError = String(localized: "Snip Snap could not set the clipboard.")
+            presentError(String(localized: "Couldn’t set the clipboard. Try again."))
             return false
         }
         if feedback == .notify {
@@ -946,7 +966,7 @@ final class AppModel: ObservableObject {
         do {
             prepared = try await prepareAttachments(attachments, for: .copy)
         } catch {
-            presentedError = error.localizedDescription
+            presentError(error)
             return false
         }
         let text = SnipFormatter.formatForClipboard(snips: snips)
@@ -983,7 +1003,7 @@ final class AppModel: ObservableObject {
         case .success:
             preconditionFailure("The library returned the wrong merge outcome.")
         case .failure(let error):
-            presentedError = error.localizedDescription
+            presentError(error)
         }
     }
 
@@ -1013,7 +1033,7 @@ final class AppModel: ObservableObject {
         _ mutation: () async throws -> (SnipLibraryUpdate, Void)
     ) async {
         if case .failure(let error) = await performMutation(mutation) {
-            presentedError = error.localizedDescription
+            presentError(error)
         }
     }
 

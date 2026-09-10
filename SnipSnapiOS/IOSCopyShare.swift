@@ -291,8 +291,8 @@ struct IOSUnavailableFilesNotice: Identifiable {
     var message: String {
         let names = payload.unavailableFileNames.joined(separator: ", ")
         return names.isEmpty
-            ? String(localized: "One or more files could not be read.")
-            : String(localized: "These files could not be read: \(names)")
+            ? String(localized: "Snip Snap couldn’t read one or more files.")
+            : String(localized: "Snip Snap couldn’t read these files: \(names)")
     }
 }
 
@@ -399,7 +399,7 @@ final class IOSCopyShareCoordinator {
 
     private func write(_ items: [IOSCopyItem], model: IOSAppModel, interaction: UUID?) -> Bool {
         guard pasteboard.write(items) else {
-            errorMessage = String(localized: "Snip Snap could not copy that content.")
+            errorMessage = String(localized: "Couldn’t copy that content. Try again.")
             model.haptics.emit(.error, for: interaction)
             return false
         }

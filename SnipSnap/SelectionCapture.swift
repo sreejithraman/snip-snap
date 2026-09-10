@@ -20,23 +20,23 @@ enum SelectionCaptureFailure: Error, Equatable, LocalizedError, Sendable {
         case .accessibilityPermissionRequired:
             String(localized: "Allow Accessibility access to capture the selection.")
         case .sourceUnavailable:
-            String(localized: "Snip Snap could not reach the frontmost app.")
+            String(localized: "Couldn’t find the frontmost app. Try again.")
         case .selectionUnavailable:
-            String(localized: "Snip Snap could not copy the selection from this app.")
+            String(localized: "Couldn’t copy the selection from this app. Try again.")
         case .noSelection:
             String(localized: "Select text or an image, then try again.")
         case .copyTimedOut:
-            String(localized: "Snip Snap timed out while copying the selection.")
+            String(localized: "Copying the selection took too long. Try again.")
         case .clipboardUnavailable:
-            String(localized: "Snip Snap could not preserve the clipboard.")
+            String(localized: "Couldn’t save your current clipboard. Try again.")
         case .clipboardSnapshotTimedOut:
-            String(localized: "Snip Snap timed out while reading the clipboard. Snip Snap changed nothing.")
+            String(localized: "Reading the clipboard took too long. Snip Snap did not change it.")
         case .clipboardChanged:
-            String(localized: "The clipboard changed before Snip Snap could copy.")
+            String(localized: "The clipboard changed before Snip Snap could copy the selection.")
         case .clipboardRestoreFailed:
-            String(localized: "Snip Snap could not restore the clipboard, so it did not save the capture.")
+            String(localized: "Snip Snap couldn’t restore your clipboard and did not save the capture.")
         case .sourceChanged:
-            String(localized: "The source app is no longer active.")
+            String(localized: "The source app is no longer active. Try again.")
         case .duplicateSelection:
             String(localized: "Already captured")
         }

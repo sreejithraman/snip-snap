@@ -40,7 +40,7 @@ public enum MacLocalSnipLibraryBootstrap {
       return LocalSnipLibraryOpenResult(
         library: SwiftDataSnipLibrary.unavailable(storeURL: storeURL),
         errorMessage: String(
-          localized: "Snip Snap could not open its SwiftData store, so it cannot save new snips.",
+          localized: "Snip Snap couldn’t open your local library, so it can’t save new snips.",
           bundle: .main
         )
       )

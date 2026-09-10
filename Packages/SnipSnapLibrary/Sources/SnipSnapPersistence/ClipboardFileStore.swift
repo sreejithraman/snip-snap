@@ -9,7 +9,7 @@ public struct ClipboardFileStore: Sendable {
             switch self {
             case .missingFile(let name): String(localized: "The file \(name) is missing or unreadable.", bundle: .main)
             case .invalidPath: String(localized: "The clipboard file path is invalid.", bundle: .main)
-            case .unsupportedDirectory: String(localized: "Folders cannot be pinned to clipboard history yet.", bundle: .main)
+            case .unsupportedDirectory: String(localized: "Folders can’t be added to clipboard history yet.", bundle: .main)
             case .tooLarge: String(localized: "Clipboard content must be 32 MB or less.", bundle: .main)
             }
         }

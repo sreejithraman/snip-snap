@@ -8,6 +8,24 @@ import UniformTypeIdentifiers
 
 final class AppModelTests: StoreBackedTestCase {
     @MainActor
+    func testDuplicateListErrorTitleResetsForOtherErrorsAndDismissal() throws {
+        let library = try JSONSnipLibrary(fileURL: storeURL())
+        let model = AppModel(library: library, defaults: defaults())
+        model.presentError(SnipLibraryError.duplicateList)
+        XCTAssertEqual(model.presentedErrorTitle, "Name Already Used")
+        XCTAssertEqual(model.presentedError, "A list with that name already exists. Choose another name.")
+        model.presentError(SnipLibraryError.snipNotFound)
+        XCTAssertNil(model.presentedErrorTitle)
+        model.presentError(SnipLibraryError.duplicateList)
+        model.presentError("Another error")
+        XCTAssertNil(model.presentedErrorTitle)
+        model.presentError(SnipLibraryError.duplicateList)
+        model.dismissPresentedError()
+        XCTAssertNil(model.presentedErrorTitle)
+        XCTAssertNil(model.presentedError)
+    }
+
+    @MainActor
     func testMacDelayedCancelDoesNotClearNewerBackupPreview() async throws {
         let root = try storeURL().deletingLastPathComponent()
         let firstURL = root.appendingPathComponent("cancel-first.json")

@@ -209,6 +209,26 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(saved.waitForExistence(timeout: 3))
     }
 
+    func testClipboardSyncConsentExplainsPreviouslySyncedFiles() {
+        continueAfterFailure = false
+        let app = launchApp(withSyncedContent: true)
+        openSettings(in: app)
+        let clipboardSync = app.switches["clipboard-sync-toggle"]
+        XCTAssertTrue(clipboardSync.waitForExistence(timeout: 3))
+        if clipboardSync.value as? String == "1" { toggle(clipboardSync) }
+        toggle(clipboardSync)
+        let alert = app.alerts["Sync Clipboard History?"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 3))
+        XCTAssertTrue(alert.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@", "files that synced before"
+        )).firstMatch.exists)
+        XCTAssertTrue(alert.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@", "private iCloud"
+        )).firstMatch.exists)
+        alert.buttons["Cancel"].tap()
+        XCTAssertEqual(clipboardSync.value as? String, "0")
+    }
+
     func testDeleteSyncedContentExplainsAndConfirmsReset() {
         continueAfterFailure = false
         let app = launchApp(withSyncedContent: true)
@@ -224,9 +244,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.alerts["Delete Synced Content?"].waitForExistence(timeout: 3))
         app.alerts.buttons["Delete Synced Content"].tap()
 
-        XCTAssertTrue(app.staticTexts["Synced Content Deleted"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Synced Data Deleted"].waitForExistence(timeout: 3))
         let controlRecordNote = app.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS %@", "control record remains")
+            NSPredicate(format: "label CONTAINS %@", "record remains in iCloud")
         ).firstMatch
         XCTAssertTrue(controlRecordNote.exists)
         XCTAssertFalse(app.buttons["delete-synced-content"].exists)
@@ -920,7 +940,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         work.tap()
         XCTAssertTrue(app.menuItems["Delete List"].waitForExistence(timeout: 3))
         app.menuItems["Delete List"].tap()
-        XCTAssertTrue(app.staticTexts["Its snips will move to Inbox."].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["The snips in this list will move to Inbox."].waitForExistence(timeout: 3))
         app.buttons["Delete List"].tap()
         XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
         XCTAssertTrue(row(named: "Keep this note", in: app).exists)
@@ -976,6 +996,45 @@ final class SnipSnapiOSUITests: XCTestCase {
         inbox.tap()
         XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
         XCTAssertTrue(inbox.isSelected)
+    }
+
+    func testNewListNameCollisionStillOpensEditorAndExplainsRenameConflict() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        openNewList(in: app)
+        XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 3))
+        app.buttons["save-list"].tap()
+        XCTAssertTrue(app.navigationBars["New List"].waitForExistence(timeout: 3))
+
+        openNewList(in: app)
+        let field = app.textFields["list-name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.alerts.firstMatch.exists)
+        XCTAssertTrue(compactListTab(named: "New List (2)", in: app).isSelected)
+        let editor = XCTAttachment(screenshot: app.screenshot())
+        editor.name = "Add List with an existing New List"
+        editor.lifetime = .keepAlways
+        add(editor)
+
+        field.tap()
+        field.typeText("New List")
+        app.buttons["save-list"].tap()
+        let alert = app.alerts["Name Already Used"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 3))
+        XCTAssertTrue(alert.staticTexts["A list with that name already exists. Choose another name."].exists)
+        let error = XCTAttachment(screenshot: app.screenshot())
+        error.name = "Clear duplicate list name error"
+        error.lifetime = .keepAlways
+        add(error)
+        alert.buttons["OK"].tap()
+        XCTAssertTrue(field.exists)
+        XCTAssertEqual(field.value as? String, "New List")
+        field.tap()
+        field.typeText(" for Work")
+        app.buttons["save-list"].tap()
+        XCTAssertTrue(app.navigationBars["New List for Work"].waitForExistence(timeout: 3))
+        XCTAssertTrue(compactListTab(named: "New List", in: app).exists)
     }
 
     func testListEditorLetsTheUserChooseAnIcon() throws {

@@ -179,7 +179,7 @@ struct IOSClipboardView: View {
         .confirmationDialog("Clear Clipboard History?", isPresented: $confirmsClear, titleVisibility: .visible) {
             Button("Clear History", role: .destructive) { Task { await model.clear() } }
         } message: {
-            Text(model.syncIsActive ? "This clears unpinned history across synced devices. Pins stay." : "This clears unpinned history on this device. Pins stay.")
+            Text(model.syncIsActive ? "This clears unpinned history across synced devices. Pinned items stay." : "This clears unpinned history on this device. Pinned items stay.")
         }
         .overlay(alignment: .bottom) {
             if model.copied {
