@@ -1,6 +1,8 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "There’s nothing to paste. Copy text or an image, then try again." : {},
+    "This clipboard content isn’t supported. Try copying text or an image." : {},
     "Search All" : {},
     "Find snips in every list and Clipboard." : {},
     "Couldn’t read the clipboard. Copy the content again, then tap Paste." : {},
