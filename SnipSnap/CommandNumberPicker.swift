@@ -7,6 +7,13 @@ enum CommandNumberTarget: Hashable {
     case clipboardEntry(UUID)
 }
 
+@MainActor
+final class CommandNumberOwner {
+    var orderedTargets: [CommandNumberTarget] = []
+    var frames: [CommandNumberTarget: CGRect] = [:]
+    var viewport: CGRect = .zero
+}
+
 enum CommandNumberLayout {
     static let maxCount = 9
     static let revealDelay: Duration = .milliseconds(200)
@@ -96,9 +103,8 @@ final class CommandNumberPicker: ObservableObject {
     private var isEnabled = true
     private var commandIsDown = false
     private var suppressUntilCommandUp = false
-    private var orderedTargets: [CommandNumberTarget] = []
-    private var frames: [CommandNumberTarget: CGRect] = [:]
-    private var viewport: CGRect = .zero
+    private let legacyOwner = CommandNumberOwner()
+    private var activeOwner: CommandNumberOwner?
     private var visibleTargets: [CommandNumberTarget] = []
     private var revealTask: Task<Void, Never>?
     private var monitor: Any?
@@ -116,21 +122,56 @@ final class CommandNumberPicker: ObservableObject {
         }
     }
 
-    func setOrderedTargets(_ targets: [CommandNumberTarget]) {
-        orderedTargets = targets
-        frames = frames.filter { targets.contains($0.key) }
+    private var selectedOwner: CommandNumberOwner { activeOwner ?? legacyOwner }
+
+    private var orderedTargets: [CommandNumberTarget] {
+        selectedOwner.orderedTargets
+    }
+
+    private var frames: [CommandNumberTarget: CGRect] {
+        selectedOwner.frames
+    }
+
+    private var viewport: CGRect {
+        selectedOwner.viewport
+    }
+
+    func setOrderedTargets(
+        _ targets: [CommandNumberTarget],
+        owner: CommandNumberOwner? = nil
+    ) {
+        let owner = owner ?? legacyOwner
+        activeOwner = owner
+        owner.orderedTargets = targets
+        owner.frames = owner.frames.filter {
+            targets.contains($0.key)
+        }
         refreshVisibleTargets()
     }
 
-    func setViewport(_ frame: CGRect) {
-        guard viewport != frame else { return }
-        viewport = frame
+    func setViewport(_ frame: CGRect, owner: CommandNumberOwner? = nil) {
+        let owner = owner ?? legacyOwner
+        guard owner.viewport != frame else { return }
+        owner.viewport = frame
+        guard owner === selectedOwner else { return }
         refreshVisibleTargets()
     }
 
-    func setRowFrame(_ target: CommandNumberTarget, frame: CGRect?) {
-        if frames[target] == frame { return }
-        frames[target] = frame
+    func setRowFrame(
+        _ target: CommandNumberTarget,
+        frame: CGRect?,
+        owner: CommandNumberOwner? = nil
+    ) {
+        let owner = owner ?? legacyOwner
+        if owner.frames[target] == frame { return }
+        owner.frames[target] = frame
+        guard owner === selectedOwner else { return }
+        refreshVisibleTargets()
+    }
+
+    func releaseOwner(_ owner: CommandNumberOwner) {
+        guard activeOwner === owner else { return }
+        activeOwner = nil
         refreshVisibleTargets()
     }
 

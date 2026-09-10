@@ -73,6 +73,10 @@ final class AppModel: ObservableObject {
     let clipboardHistory: ClipboardHistory
 
     var filteredSnips: [Snip] {
+        filteredSnips(in: activeListID)
+    }
+
+    func filteredSnips(in listID: UUID) -> [Snip] {
         let matches = SnipFilter.apply(
             snips: snips,
             query: query,
@@ -81,7 +85,7 @@ final class AppModel: ObservableObject {
             sourceLabel: { $0.displaySourceLabel }
         )
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return matches.filter { $0.listID == activeList.id }
+            return matches.filter { $0.listID == listID }
         }
         return matches
     }

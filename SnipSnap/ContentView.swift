@@ -25,8 +25,7 @@ struct ContentView: View {
     private let accountNoticeModel: AppleAccountNoticeModel?
     private let dragSessionController: PanelDragSessionController
 
-    @State private var entryDraft = ComposerDraft()
-    @State private var entryDraftListID = SnipList.inboxID
+    @State private var entryDrafts: [UUID: ComposerDraft] = [:]
     @State private var showingNewList = false
     @State private var newListMovingIDs: Set<UUID> = []
     @State private var showingFileImporter = false
@@ -34,8 +33,8 @@ struct ContentView: View {
     @State private var pendingEditAttachmentImport: PendingEditAttachmentImport?
     @State private var showingClearClipboard = false
     @State private var showingRecoveryReview = false
-    @State private var measuredInlineEntryHeight = PanelControlMetrics.inlineEntryBaseHeight
-    @State private var inlineEntryFieldHeight: CGFloat = 0
+    @State private var inlineEntryHeights: [UUID: CGFloat] = [:]
+    @State private var inlineEntryFieldHeights: [UUID: CGFloat] = [:]
     @State private var isSavingInlineEntry = false
     @State private var previewURLs: [URL] = []
     @State private var selectedPreviewURL: URL?
@@ -105,9 +104,7 @@ struct ContentView: View {
                     )
                 case .composer(let listID):
                     model.addDraftAttachments(urls, to: listID)
-                    if model.activeListID == listID {
-                        entryDraft = model.composerDraft(for: listID)
-                    }
+                    cacheComposerDraft(for: listID)
                 case .edit, .none:
                     break
                 }
@@ -158,8 +155,7 @@ struct ContentView: View {
             minHeight: AppWindowDefaults.minimumContentSize.height
         )
         .onAppear {
-            entryDraftListID = model.activeListID
-            entryDraft = model.composerDraft(for: model.activeListID)
+            cacheComposerDraft(for: model.activeListID)
             focusedTarget = .list
             commandNumberPicker.startMonitoring(onPick: pickCommandNumber)
             commandNumberPicker.setEnabled(hasCommandNumberFocus)
@@ -171,11 +167,10 @@ struct ContentView: View {
             commandNumberPicker.setEnabled(isEnabled)
         }
         .onChange(of: model.activeListID) { _, listID in
-            entryDraftListID = listID
-            entryDraft = model.composerDraft(for: listID)
+            cacheComposerDraft(for: listID)
         }
         .onChange(of: model.isShowingClipboard) { _, _ in
-            updatePanelComposerExpansion(for: measuredInlineEntryHeight)
+            updatePanelComposerExpansion(for: inlineEntryHeight(for: model.activeListID))
         }
         .onReceive(coordinator.panelFocusRequests) { request in
             switch request {
@@ -245,33 +240,13 @@ struct ContentView: View {
             cornerRadius: PanelShapeMetrics.paneCornerRadius,
             style: .continuous
         )
-        return ZStack(alignment: .bottom) {
-            mainContent
-
-            if !model.isShowingClipboard {
-                inlineEntry
-                    .padding(PanelControlMetrics.inlineEntryInset)
-                    .background {
-                        ZStack {
-                            PanelDragRegion()
-                            PanelDragBlockingRegion(
-                                controller: dragSessionController
-                            )
-                        }
-                    }
-                    .onGeometryChange(for: CGFloat.self) { proxy in
-                        proxy.size.height
-                    } action: { height in
-                        let height = PanelComposerLayout.clampedEntryHeight(height)
-                        guard PanelGeometryChange.shouldApply(
-                            current: measuredInlineEntryHeight,
-                            proposed: height
-                        ) else { return }
-                        measuredInlineEntryHeight = height
-                        updatePanelComposerExpansion(for: height)
-                    }
-                    .zIndex(1)
-            }
+        return PanelTabPager(
+            selectedPage: selectedPage,
+            pages: PanelTabPage.ordered(lists: model.lists),
+            animatesChanges: model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            onSelectionChange: { commandNumberPicker.setOrderedTargets([]) }
+        ) { page, isInteractive in
+            tabPage(page, isInteractive: isInteractive)
         }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background {
@@ -294,6 +269,10 @@ struct ContentView: View {
 
     private var hasSnipCommandFocus: Bool {
         focusedTarget == .list && model.editingID == nil && controlActiveState == .key
+    }
+
+    private var selectedPage: PanelTabPage {
+        model.isShowingClipboard ? .clipboard : .list(model.activeListID)
     }
 
     private var hasCommandNumberFocus: Bool {
@@ -355,42 +334,95 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private var mainContent: some View {
-        if !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            globalSearchResults
-        } else if model.isShowingClipboard {
-            ClipboardListView(
-                model: model,
-                dragSessionController: dragSessionController,
-                commandNumberPicker: commandNumberPicker,
-                showingClearConfirmation: $showingClearClipboard,
-                onPreviewAttachments: openAttachmentPreview
-            )
-        } else {
-            if model.filteredSnips.isEmpty {
-                ZStack {
-                    savedSnipList
-                    emptyState
-                        .allowsHitTesting(false)
-                }
-            } else {
-                savedSnipList
+    private func tabPage(_ page: PanelTabPage, isInteractive: Bool) -> some View {
+        ZStack(alignment: .bottom) {
+            pageContent(for: page, isInteractive: isInteractive)
+
+            if case .list(let listID) = page {
+                inlineEntry(for: listID, isInteractive: isInteractive)
+                    .padding(PanelControlMetrics.inlineEntryInset)
+                    .background {
+                        ZStack {
+                            PanelDragRegion()
+                            PanelDragBlockingRegion(
+                                controller: dragSessionController
+                            )
+                        }
+                    }
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.height
+                    } action: { height in
+                        cacheInlineEntryHeight(
+                            height,
+                            for: listID,
+                            updatePanel: isInteractive
+                        )
+                    }
+                    .onChange(of: isInteractive, initial: true) { _, isInteractive in
+                        guard isInteractive, page == selectedPage else { return }
+                        updatePanelComposerExpansion(for: inlineEntryHeight(for: listID))
+                    }
+                    .zIndex(1)
             }
         }
     }
 
     @ViewBuilder
-    private var globalSearchResults: some View {
-        if model.filteredSnips.isEmpty && model.clipboardSearchMatches.isEmpty {
-            emptyState
-        } else {
-            savedSnipList
+    private func pageContent(
+        for page: PanelTabPage,
+        isInteractive: Bool
+    ) -> some View {
+        if !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            globalSearchResults(for: page, isInteractive: isInteractive)
+        } else if case .clipboard = page {
+            ClipboardListView(
+                model: model,
+                dragSessionController: dragSessionController,
+                commandNumberPicker: commandNumberPicker,
+                isInteractive: isInteractive,
+                showingClearConfirmation: $showingClearClipboard,
+                onPreviewAttachments: openAttachmentPreview
+            )
+        } else if case .list(let listID) = page {
+            if model.filteredSnips(in: listID).isEmpty {
+                ZStack {
+                    savedSnipList(for: listID, isInteractive: isInteractive, ownsSharedEvents: page == selectedPage)
+                    emptyState
+                        .allowsHitTesting(false)
+                }
+            } else {
+                savedSnipList(for: listID, isInteractive: isInteractive, ownsSharedEvents: page == selectedPage)
+            }
         }
     }
 
-    private var savedSnipList: some View {
+    @ViewBuilder
+    private func globalSearchResults(
+        for page: PanelTabPage,
+        isInteractive: Bool
+    ) -> some View {
+        if model.filteredSnips.isEmpty && model.clipboardSearchMatches.isEmpty {
+            emptyState
+        } else {
+            switch page {
+            case .list(let listID):
+                savedSnipList(for: listID, isInteractive: isInteractive, ownsSharedEvents: page == selectedPage)
+            case .clipboard:
+                savedSnipList(for: model.activeListID, isInteractive: isInteractive, ownsSharedEvents: page == selectedPage)
+            }
+        }
+    }
+
+    private func savedSnipList(
+        for listID: UUID,
+        isInteractive: Bool,
+        ownsSharedEvents: Bool
+    ) -> some View {
         SnipListView(
             model: model,
+            displayedListID: listID,
+            isInteractive: isInteractive,
+            ownsSharedEvents: ownsSharedEvents,
             dragSessionController: dragSessionController,
             fileDropController: fileDropController,
             commandNumberPicker: commandNumberPicker,
@@ -405,7 +437,7 @@ struct ContentView: View {
             },
             pendingEditAttachmentImport: $pendingEditAttachmentImport,
             captureScreenAreaForEdit: captureScreenAreaForEdit,
-            bottomContentInset: model.isShowingClipboard ? 0 : measuredInlineEntryHeight,
+            bottomContentInset: inlineEntryHeight(for: listID),
             clipboardEntries: model.clipboardSearchMatches,
             onPreviewAttachments: openAttachmentPreview,
             onRemovePreviewURL: removePreviewURL
@@ -451,24 +483,26 @@ struct ContentView: View {
         return model.completionFilter.emptyStateTitle
     }
 
-    private var inlineEntry: some View {
-        HStack(alignment: .top, spacing: SnipSnapSpacing.relatedContent) {
-            inlineAttachmentMenu
+    private func inlineEntry(for listID: UUID, isInteractive: Bool) -> some View {
+        let draft = composerDraft(for: listID)
+        let list = model.lists.first(where: { $0.id == listID }) ?? .inbox
+        return HStack(alignment: .top, spacing: SnipSnapSpacing.relatedContent) {
+            inlineAttachmentMenu(for: listID)
 
             GlassEffectContainer {
                 VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
-                    if !entryDraft.attachments.isEmpty {
+                    if !draft.attachments.isEmpty {
                         AttachmentPreviewStrip(
-                            items: draftAttachmentPreviewItems,
+                            items: draftAttachmentPreviewItems(for: listID),
                             onPreview: { item in
                                 guard let url = item.url else { return }
-                                openAttachmentPreview(entryDraft.attachments, selectedURL: url)
+                                openAttachmentPreview(draft.attachments, selectedURL: url)
                             },
                             onRemove: { item in
                                 guard let url = item.url else { return }
                                 removePreviewURL(url)
-                                model.removeDraftAttachment(url, from: model.activeListID)
-                                entryDraft = model.composerDraft(for: model.activeListID)
+                                model.removeDraftAttachment(url, from: listID)
+                                cacheComposerDraft(for: listID)
                             }
                         )
                         .padding(.horizontal, SnipSnapSpacing.controlContentInset)
@@ -477,30 +511,44 @@ struct ContentView: View {
 
                     HStack(
                         alignment: PanelComposerLayout.actionAlignment(
-                            isExpanded: isInlineEntryExpanded
+                            isExpanded: isInlineEntryExpanded(for: listID)
                         ),
                         spacing: SnipSnapSpacing.relatedContent
                     ) {
-                        inlineEntryField
+                        inlineEntryField(
+                            for: listID,
+                            list: list,
+                            isInteractive: isInteractive
+                        )
                         Color.clear
                             .frame(width: PanelControlMetrics.actionWidth, height: PanelControlMetrics.actionHeight)
                             .padding(.trailing, PanelControlMetrics.sendInset)
                             .allowsHitTesting(false)
                     }
                     .padding(.leading, SnipSnapSpacing.controlContentInset)
-                    .padding(.top, inlineEntryTextTopPadding)
-                    .padding(.bottom, inlineEntryTextBottomPadding)
+                    .padding(.top, inlineEntryTextTopPadding(for: listID))
+                    .padding(.bottom, inlineEntryTextBottomPadding(for: listID))
                 }
                 .panelEmbeddedInputSurface(
                     minHeight: PanelControlMetrics.compactComposerHeight,
-                    expanded: isInlineEntrySurfaceExpanded
+                    expanded: isInlineEntrySurfaceExpanded(for: listID)
                 )
             }
             .overlay(alignment: .bottomTrailing) {
                 GlassEffectContainer {
-                    inlineSendButton
+                    inlineSendButton(
+                        for: listID,
+                        list: list,
+                        isInteractive: isInteractive
+                    )
                         .padding(.trailing, PanelControlMetrics.sendInset)
-                        .padding(.bottom, max(inlineEntryTextBottomPadding, PanelControlMetrics.sendInset))
+                        .padding(
+                            .bottom,
+                            max(
+                                inlineEntryTextBottomPadding(for: listID),
+                                PanelControlMetrics.sendInset
+                            )
+                        )
                 }
             }
         }
@@ -509,13 +557,13 @@ struct ContentView: View {
         .contentShape(.rect)
     }
 
-    private var inlineAttachmentMenu: some View {
+    private func inlineAttachmentMenu(for listID: UUID) -> some View {
         Menu {
             Button("Choose Files…") {
-                fileImportTarget = .composer(model.activeListID)
+                fileImportTarget = .composer(listID)
                 showingFileImporter = true
             }
-            Button("Capture Screen Area…") { captureScreenArea() }
+            Button("Capture Screen Area…") { captureScreenArea(for: listID) }
         } label: {
             Image(systemName: "plus")
                 .font(.body.weight(.semibold))
@@ -531,93 +579,134 @@ struct ContentView: View {
         .accessibilityLabel("Add Attachment")
     }
 
-    private var inlineEntryField: some View {
+    private func inlineEntryField(
+        for listID: UUID,
+        list: SnipList,
+        isInteractive: Bool
+    ) -> some View {
         PanelMultilineTextInput(
-            "Add to \(model.activeList.displayName)…",
-            text: entryText,
+            "Add to \(list.displayName)…",
+            text: entryText(for: listID),
             lineRange: PanelComposerMetrics.textLineRange,
             lineSpacing: PanelComposerMetrics.textLineSpacing,
-            isFocused: focusedTarget == .inlineEntry,
+            isFocused: isInteractive && focusedTarget == .inlineEntry,
             onFocusChange: { isFocused in
+                guard isInteractive, selectedPage == .list(listID) else { return }
                 if isFocused {
                     focusedTarget = .inlineEntry
                 } else if focusedTarget == .inlineEntry {
                     focusedTarget = nil
                 }
             },
-            onPasteImages: pasteImagesIntoComposer,
-            onPasteLargeText: pasteLargeTextIntoComposer,
-            onSubmit: saveInlineEntry
+            onPasteImages: { pasteImagesIntoComposer($0, for: listID) },
+            onPasteLargeText: { pasteLargeTextIntoComposer($0, for: listID) },
+            onSubmit: { saveInlineEntry(for: listID) }
         )
             .onGeometryChange(for: CGFloat.self) { proxy in
                 proxy.size.height
             } action: { height in
                 guard PanelGeometryChange.shouldApply(
-                    current: inlineEntryFieldHeight,
+                    current: inlineEntryFieldHeights[listID] ?? 0,
                     proposed: height
                 ) else { return }
-                inlineEntryFieldHeight = height
+                inlineEntryFieldHeights[listID] = height
             }
     }
 
-    private var entryText: Binding<String> {
+    private func entryText(for listID: UUID) -> Binding<String> {
         Binding(
-            get: { entryDraft.text },
+            get: { composerDraft(for: listID).text },
             set: { value in
+                let draft = composerDraft(for: listID)
                 if let pasted = LargePastedText.largeInsertion(
-                    from: entryDraft.text,
+                    from: draft.text,
                     to: value
                 ) {
-                    pasteLargeTextIntoComposer(pasted)
+                    pasteLargeTextIntoComposer(pasted, for: listID)
                     return
                 }
-                entryDraft.text = value
-                model.saveComposerText(value, for: entryDraftListID)
+                entryDrafts[listID] = ComposerDraft(
+                    text: value,
+                    attachments: draft.attachments
+                )
+                model.saveComposerText(value, for: listID)
             }
         )
     }
 
-    private var inlineSendButton: some View {
+    private func inlineSendButton(
+        for listID: UUID,
+        list: SnipList,
+        isInteractive: Bool
+    ) -> some View {
         PanelGlassActionButton(
             systemImage: "arrow.up",
-            isEnabled: canSaveInlineEntry,
-            tint: model.activeList.accent.color.opacity(SnipSnapTheme.listGlassTintOpacity),
-            labelColor: model.activeList.accent.sendIconColor(in: model.appearance.colorScheme ?? colorScheme),
-            action: saveInlineEntry
+            isEnabled: isInteractive && canSaveInlineEntry(for: listID),
+            tint: list.accent.color.opacity(SnipSnapTheme.listGlassTintOpacity),
+            labelColor: list.accent.sendIconColor(in: model.appearance.colorScheme ?? colorScheme),
+            action: { saveInlineEntry(for: listID) }
         )
-        .accessibilityLabel("Add to \(model.activeList.displayName)")
+        .accessibilityLabel("Add to \(list.displayName)")
         .accessibilityIdentifier("composer-send")
-        .help("Add to \(model.activeList.displayName)")
+        .help("Add to \(list.displayName)")
     }
 
-    private var isInlineEntryExpanded: Bool {
-        PanelComposerLayout.isExpanded(fieldHeight: inlineEntryFieldHeight)
+    private func isInlineEntryExpanded(for listID: UUID) -> Bool {
+        PanelComposerLayout.isExpanded(fieldHeight: inlineEntryFieldHeights[listID] ?? 0)
     }
 
-    private var isInlineEntrySurfaceExpanded: Bool {
-        isInlineEntryExpanded || !entryDraft.attachments.isEmpty
+    private func inlineEntryHeight(for listID: UUID) -> CGFloat {
+        PanelComposerHeightCache.height(for: listID, in: inlineEntryHeights)
     }
 
-    private var inlineEntryTextTopPadding: CGFloat {
-        isInlineEntryExpanded && entryDraft.attachments.isEmpty
+    private func cacheInlineEntryHeight(
+        _ height: CGFloat,
+        for listID: UUID,
+        updatePanel: Bool
+    ) {
+        guard PanelComposerHeightCache.update(
+            height,
+            for: listID,
+            in: &inlineEntryHeights
+        ) else { return }
+        let height = inlineEntryHeight(for: listID)
+        guard updatePanel, selectedPage == .list(listID) else { return }
+        updatePanelComposerExpansion(for: height)
+    }
+
+    private func isInlineEntrySurfaceExpanded(for listID: UUID) -> Bool {
+        isInlineEntryExpanded(for: listID) || !composerDraft(for: listID).attachments.isEmpty
+    }
+
+    private func inlineEntryTextTopPadding(for listID: UUID) -> CGFloat {
+        isInlineEntryExpanded(for: listID) && composerDraft(for: listID).attachments.isEmpty
             ? PanelControlMetrics.expandedInputVerticalPadding
             : 0
     }
 
-    private var inlineEntryTextBottomPadding: CGFloat {
-        isInlineEntrySurfaceExpanded
+    private func inlineEntryTextBottomPadding(for listID: UUID) -> CGFloat {
+        isInlineEntrySurfaceExpanded(for: listID)
             ? PanelControlMetrics.expandedInputVerticalPadding
             : 0
     }
 
-    private var canSaveInlineEntry: Bool {
-        !isSavingInlineEntry
-            && (!entryDraft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || !entryDraft.attachments.isEmpty)
+    private func canSaveInlineEntry(for listID: UUID) -> Bool {
+        let draft = composerDraft(for: listID)
+        return !isSavingInlineEntry
+            && (!draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !draft.attachments.isEmpty)
     }
 
-    private var draftAttachmentPreviewItems: [AttachmentPreviewItem] {
-        entryDraft.attachments.map(AttachmentPreviewItem.init(url:))
+    private func draftAttachmentPreviewItems(for listID: UUID) -> [AttachmentPreviewItem] {
+        composerDraft(for: listID).attachments.map(AttachmentPreviewItem.init(url:))
+    }
+
+    private func composerDraft(for listID: UUID) -> ComposerDraft {
+        entryDrafts[listID] ?? model.composerDraft(for: listID)
+    }
+
+    private func cacheComposerDraft(for listID: UUID) {
+        entryDrafts[listID] = model.composerDraft(for: listID)
     }
 
     private func openAttachmentPreview(_ urls: [URL], selectedURL: URL) {
@@ -639,15 +728,13 @@ struct ContentView: View {
 
         let listID = model.activeListID
         model.addDraftAttachments(files, to: listID)
-        entryDraftListID = listID
-        entryDraft = model.composerDraft(for: listID)
+        cacheComposerDraft(for: listID)
         focusedTarget = .inlineEntry
         return true
     }
 
     @MainActor
-    private func pasteLargeTextIntoComposer(_ text: String) {
-        let listID = model.activeListID
+    private func pasteLargeTextIntoComposer(_ text: String, for listID: UUID) {
         Task {
             let result = await Task.detached(priority: .userInitiated) {
                 Result { try LargePastedText.write(text) }
@@ -655,10 +742,7 @@ struct ContentView: View {
             switch result {
             case .success(let url):
                 model.addTemporaryDraftAttachment(url, to: listID)
-                if model.activeListID == listID {
-                    entryDraftListID = listID
-                    entryDraft = model.composerDraft(for: listID)
-                }
+                cacheComposerDraft(for: listID)
             case .failure:
                 model.presentedError = String(
                     localized: "Snip Snap could not prepare the pasted text."
@@ -668,8 +752,7 @@ struct ContentView: View {
     }
 
     @MainActor
-    private func pasteImagesIntoComposer(_ images: [PanelPastedImage]) {
-        let listID = model.activeListID
+    private func pasteImagesIntoComposer(_ images: [PanelPastedImage], for listID: UUID) {
         Task {
             let result = await Task.detached(priority: .userInitiated) {
                 PanelPastedImageStaging.write(images)
@@ -679,10 +762,7 @@ struct ContentView: View {
                 for url in urls {
                     model.addTemporaryDraftAttachment(url, to: listID)
                 }
-                if model.activeListID == listID {
-                    entryDraftListID = listID
-                    entryDraft = model.composerDraft(for: listID)
-                }
+                cacheComposerDraft(for: listID)
             case .failure(let error):
                 model.presentedError = error.localizedDescription
             }
@@ -696,33 +776,29 @@ struct ContentView: View {
         coordinator.updatePanelComposerExpansion(expansion)
     }
 
-    private func saveInlineEntry() {
-        let text = entryDraft.text
-        guard canSaveInlineEntry else { return }
+    private func saveInlineEntry(for listID: UUID) {
+        let text = composerDraft(for: listID).text
+        guard canSaveInlineEntry(for: listID) else { return }
         isSavingInlineEntry = true
-        let listID = model.activeListID
         Task {
             defer { isSavingInlineEntry = false }
             let saved = await model.saveComposerDraft(content: text, listID: listID)
             guard saved else {
-                focusedTarget = .inlineEntry
+                if model.activeListID == listID { focusedTarget = .inlineEntry }
                 return
             }
+            cacheComposerDraft(for: listID)
             if model.activeListID == listID {
-                entryDraft = model.composerDraft(for: listID)
                 focusedTarget = .inlineEntry
             }
         }
     }
 
-    private func captureScreenArea() {
-        let listID = model.activeListID
+    private func captureScreenArea(for listID: UUID) {
         let url = model.stageScreenCapture()
         runScreenCapture(to: url) { succeeded in
             model.finishScreenCapture(url, in: listID, succeeded: succeeded)
-            if succeeded, model.activeListID == listID {
-                entryDraft = model.composerDraft(for: listID)
-            }
+            if succeeded { cacheComposerDraft(for: listID) }
         }
     }
 
@@ -774,11 +850,13 @@ struct ContentView: View {
         if focusedTarget == .search {
             focusedTarget = .list
         } else if focusedTarget == .inlineEntry {
-            if entryDraft.text.isEmpty && entryDraft.attachments.isEmpty {
+            let listID = model.activeListID
+            let draft = composerDraft(for: listID)
+            if draft.text.isEmpty && draft.attachments.isEmpty {
                 coordinator.hidePanel()
             } else {
-                entryDraft = ComposerDraft()
-                model.clearDraft(for: model.activeListID)
+                entryDrafts[listID] = ComposerDraft()
+                model.clearDraft(for: listID)
             }
         } else if !model.selection.isEmpty {
             model.selection = []

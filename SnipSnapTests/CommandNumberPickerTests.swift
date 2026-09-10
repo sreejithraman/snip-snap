@@ -140,6 +140,60 @@ final class CommandNumberPickerTests: XCTestCase {
         picker.stopMonitoring()
     }
 
+    func testDepartingOwnerCannotClearTheActiveOwnerFrame() {
+        let picker = CommandNumberPicker()
+        let target = CommandNumberTarget.snip(uuid(0))
+        let departingOwner = CommandNumberOwner()
+        let activeOwner = CommandNumberOwner()
+
+        picker.setOrderedTargets([target], owner: departingOwner)
+        picker.setViewport(CGRect(x: 0, y: 0, width: 100, height: 100), owner: departingOwner)
+        picker.setRowFrame(target, frame: CGRect(x: 0, y: 0, width: 100, height: 40), owner: departingOwner)
+
+        picker.setOrderedTargets([target], owner: activeOwner)
+        picker.setViewport(CGRect(x: 0, y: 0, width: 100, height: 100), owner: activeOwner)
+        picker.setRowFrame(target, frame: CGRect(x: 0, y: 0, width: 100, height: 40), owner: activeOwner)
+        picker.setRowFrame(target, frame: nil, owner: departingOwner)
+
+        XCTAssertEqual(picker.target(forNumber: 1), target)
+    }
+
+    func testReleasingDepartingOwnerPreservesTheActiveOwnerFrame() {
+        let picker = CommandNumberPicker()
+        let target = CommandNumberTarget.snip(uuid(0))
+        let departingOwner = CommandNumberOwner()
+        let activeOwner = CommandNumberOwner()
+
+        picker.setOrderedTargets([target], owner: departingOwner)
+        picker.setViewport(CGRect(x: 0, y: 0, width: 100, height: 100), owner: departingOwner)
+        picker.setRowFrame(target, frame: CGRect(x: 0, y: 0, width: 100, height: 40), owner: departingOwner)
+
+        picker.setOrderedTargets([target], owner: activeOwner)
+        picker.setViewport(CGRect(x: 0, y: 0, width: 100, height: 100), owner: activeOwner)
+        picker.setRowFrame(target, frame: CGRect(x: 0, y: 0, width: 100, height: 40), owner: activeOwner)
+        picker.releaseOwner(departingOwner)
+        picker.setRowFrame(target, frame: nil, owner: departingOwner)
+
+        XCTAssertEqual(picker.target(forNumber: 1), target)
+    }
+
+    func testReleasedOwnerCanBecomeActiveAgainWithItsCachedFrame() {
+        let picker = CommandNumberPicker()
+        let target = CommandNumberTarget.snip(uuid(0))
+        let owner = CommandNumberOwner()
+
+        picker.setOrderedTargets([target], owner: owner)
+        picker.setViewport(CGRect(x: 0, y: 0, width: 100, height: 100), owner: owner)
+        picker.setRowFrame(target, frame: CGRect(x: 0, y: 0, width: 100, height: 40), owner: owner)
+        picker.releaseOwner(owner)
+
+        XCTAssertNil(picker.target(forNumber: 1))
+
+        picker.setOrderedTargets([target], owner: owner)
+
+        XCTAssertEqual(picker.target(forNumber: 1), target)
+    }
+
     func testDragPlacementIgnoresInListDropsAndCancelledDrags() {
         XCTAssertTrue(
             ClipboardDragPlacement.shouldPlace(outcome: .copy, droppedInList: false)

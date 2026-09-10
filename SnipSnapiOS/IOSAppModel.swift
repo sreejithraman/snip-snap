@@ -117,7 +117,11 @@ final class IOSAppModel {
     }
 
     var visibleSnips: [Snip] {
-        let selected = snips.filter { $0.listID == selectedListID }
+        visibleSnips(in: selectedListID)
+    }
+
+    func visibleSnips(in listID: UUID) -> [Snip] {
+        let selected = snips.filter { $0.listID == listID }
         let matches = SnipFilter.apply(
             snips: selected,
             query: searchText,

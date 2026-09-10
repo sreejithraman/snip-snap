@@ -115,6 +115,26 @@ enum PanelComposerLayout {
     }
 }
 
+enum PanelComposerHeightCache {
+    static func height(for listID: UUID, in heights: [UUID: CGFloat]) -> CGFloat {
+        heights[listID] ?? PanelControlMetrics.inlineEntryBaseHeight
+    }
+
+    static func update(
+        _ reportedHeight: CGFloat,
+        for listID: UUID,
+        in heights: inout [UUID: CGFloat]
+    ) -> Bool {
+        let height = PanelComposerLayout.clampedEntryHeight(reportedHeight)
+        guard PanelGeometryChange.shouldApply(
+            current: self.height(for: listID, in: heights),
+            proposed: height
+        ) else { return false }
+        heights[listID] = height
+        return true
+    }
+}
+
 enum PinnedListHeaderSurface {
     static func isVisible(hasScrolledFromTop: Bool, headerMinY: CGFloat) -> Bool {
         hasScrolledFromTop

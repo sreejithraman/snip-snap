@@ -7,12 +7,15 @@ import UniformTypeIdentifiers
 struct IOSAppRootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let session: IOSAppSession
     @AppStorage("snip-sort-mode") private var savedSortMode = SnipSortMode.chronological.rawValue
     @State private var sheet: AppSheet?
     @State private var copyShare = IOSCopyShareCoordinator()
     @State private var compactComposerStorage = CompactComposerStorage()
     @State private var collectionEditMode: EditMode = .inactive
+    @State private var listPageMotion = ListPageMotion()
+    @State private var clipboardViewState = ClipboardViewState()
     @State private var isImportingBackup = false
     @State private var isExplainingBackupImport = false
     @FocusState private var isCompactComposerFocused: Bool
@@ -59,6 +62,11 @@ struct IOSAppRootView: View {
         .onChange(of: model.showsClipboard) {
             model.isSearchPresented = false
             model.searchText = ""
+        }
+        .onChange(of: currentPage) {
+            guard collectionEditMode.isEditing else { return }
+            model.endSelectingSnips()
+            collectionEditMode = .inactive
         }
     }
 
@@ -287,51 +295,51 @@ struct IOSAppRootView: View {
     @ViewBuilder
     private var appNavigation: some View {
         if horizontalSizeClass == .compact {
-            NavigationStack {
-                ZStack {
-                    if model.showsClipboard {
-                        IOSClipboardView(
-                            model: session.clipboard,
-                            libraryModel: model,
-                            copyShare: copyShare,
-                            sheet: $sheet,
-                            settings: { sheet = .settings }
-                        )
-                    } else {
-                    SnipCollectionView(
+            TimelineView(.animation(paused: listPageMotion.transition?.settlement == nil)) { context in
+                let frame = listPageMotion.frame(
+                    pages: [.clipboard] + model.lists.map { .list($0.id) },
+                    selectedPage: currentPage,
+                    at: context.date
+                )
+                GeometryReader { proxy in
+                    CompactLibraryPageStack(
                         model: model,
                         clipboard: session.clipboard,
+                        clipboardViewState: clipboardViewState,
                         copyShare: copyShare,
                         sheet: $sheet,
-                        layout: .compactStack,
                         editMode: $collectionEditMode,
-                        dismissComposerKeyboard: {
-                            isCompactComposerFocused = false
-                        },
-                        libraryActions: LibraryActionsMenu(
-                            model: model,
-                            importBackup: beginBackupImport,
-                            settings: { sheet = .settings },
-                            editMode: $collectionEditMode,
-                            includesCloudActions: true,
-                            reviewRecoveredEdits: model.recoverySnapshot.needsAttentionCount > 0
-                                ? { sheet = .recoveryCenter }
-                                : nil,
-                            editSelectedList: model.selectedListID == SnipList.inboxID
-                                ? nil : { model.editListInline(id: model.selectedListID) }
-                        )
+                        frame: frame,
+                        dismissComposerKeyboard: { isCompactComposerFocused = false },
+                        libraryActions: compactLibraryActions
                     )
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        libraryControls(pageFrame: frame, pageWidth: proxy.size.width)
                     }
                 }
-                .libraryToast(model: model)
-                .background {
-                    if model.isSearchPresented {
-                        CompactLibrarySearchHost(model: model)
-                    }
+            }
+            .libraryToast(model: model)
+            .task(id: listPageMotion.transition?.settlement?.id) {
+                guard let settlement = listPageMotion.transition?.settlement else { return }
+                do { try await Task.sleep(for: .seconds(settlement.duration)) }
+                catch { return }
+                listPageMotion.finishSettlement(settlement.id)
+            }
+            .onChange(of: currentPage) { _, page in
+                guard let transition = listPageMotion.transition else { return }
+                let destination = transition.settlement.map { Int($0.destination) }
+                guard let destination, transition.pages.indices.contains(destination),
+                      transition.pages[destination] == page else {
+                    listPageMotion.interrupt()
+                    return
                 }
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    libraryControls()
-                }
+            }
+            .onChange(of: sheet) { _, _ in listPageMotion.interrupt() }
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active { listPageMotion.interrupt() }
+            }
+            .onChange(of: model.isSearchPresented) { _, isPresented in
+                if isPresented { listPageMotion.interrupt() }
             }
         } else {
             NavigationSplitView {
@@ -381,7 +389,30 @@ struct IOSAppRootView: View {
         }
     }
 
-    private func libraryControls(showsListTabs: Bool = true) -> some View {
+    private var compactLibraryActions: LibraryActionsMenu {
+        LibraryActionsMenu(
+            model: model,
+            importBackup: beginBackupImport,
+            settings: { sheet = .settings },
+            editMode: $collectionEditMode,
+            includesCloudActions: true,
+            reviewRecoveredEdits: model.recoverySnapshot.needsAttentionCount > 0
+                ? { sheet = .recoveryCenter }
+                : nil,
+            editSelectedList: model.selectedListID == SnipList.inboxID
+                ? nil : { model.editListInline(id: model.selectedListID) }
+        )
+    }
+
+    private var currentPage: LibraryPage {
+        model.showsClipboard ? .clipboard : .list(model.selectedListID)
+    }
+
+    private func libraryControls(
+        showsListTabs: Bool = true,
+        pageFrame: ListPageFrame? = nil,
+        pageWidth: CGFloat = 0
+    ) -> some View {
         CompactLibraryControls(
             model: model,
             clipboard: session.clipboard,
@@ -389,7 +420,10 @@ struct IOSAppRootView: View {
             isComposerFocused: $isCompactComposerFocused,
             showsListTabs: showsListTabs,
             isSelecting: collectionEditMode.isEditing,
-            sheet: $sheet
+            sheet: $sheet,
+            motion: $listPageMotion,
+            pageFrame: pageFrame,
+            pageWidth: pageWidth
         )
         .frame(height: model.isSearchPresented ? 0 : nil)
         .clipped()
@@ -424,6 +458,86 @@ struct IOSAppRootView: View {
                 let storedURL = model.attachmentURL(for: attachmentID)
             {
                 try? FileManager.default.removeItem(at: storedURL)
+            }
+        }
+    }
+
+}
+
+private struct CompactLibraryPageStack: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.layoutDirection) private var layoutDirection
+    let model: IOSAppModel
+    let clipboard: IOSClipboardModel
+    let clipboardViewState: ClipboardViewState
+    let copyShare: IOSCopyShareCoordinator
+    @Binding var sheet: AppSheet?
+    @Binding var editMode: EditMode
+    let frame: ListPageFrame
+    let dismissComposerKeyboard: () -> Void
+    let libraryActions: LibraryActionsMenu
+
+    private var currentPage: LibraryPage {
+        model.showsClipboard ? .clipboard : .list(model.selectedListID)
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                ForEach(frame.retainedPages, id: \.self) { page in
+                    libraryPage(page, isActivePage: page == currentPage)
+                        .offset(x: frame.offset(
+                            for: page, width: proxy.size.width,
+                            layoutDirection: layoutDirection, reduceMotion: reduceMotion
+                        ))
+                        .opacity(frame.opacity(for: page, reduceMotion: reduceMotion))
+                        .accessibilityHidden(page != currentPage)
+                        .disabled(frame.isMoving || page != currentPage)
+                        .allowsHitTesting(!frame.isMoving && page == currentPage)
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
+        }
+    }
+
+    private func libraryPage(_ page: LibraryPage, isActivePage: Bool) -> some View {
+        NavigationStack {
+            Group {
+                switch page {
+                case .clipboard:
+                    IOSClipboardView(
+                        model: clipboard,
+                        libraryModel: model,
+                        copyShare: copyShare,
+                        sheet: $sheet,
+                        settings: { sheet = .settings },
+                        viewState: clipboardViewState
+                    )
+                case .list(let listID):
+                    SnipCollectionView(
+                        model: model,
+                        clipboard: clipboard,
+                        copyShare: copyShare,
+                        sheet: $sheet,
+                        layout: .compactStack,
+                        listID: listID,
+                        isActivePage: isActivePage,
+                        editMode: $editMode,
+                        dismissComposerKeyboard: dismissComposerKeyboard,
+                        libraryActions: libraryActions
+                    )
+                }
+            }
+            .background {
+                if isActivePage && model.isSearchPresented {
+                    CompactLibrarySearchHost(model: model)
+                }
+            }
+            .toolbar {
+                if isActivePage && model.isSearchPresented {
+                    DefaultToolbarItem(kind: .search, placement: .bottomBar)
+                }
             }
         }
     }
