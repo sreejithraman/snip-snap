@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import OSLog
 import SnipSnapCloud
 import SnipSnapCore
 import SnipSnapPersistence
@@ -27,6 +28,10 @@ final class IOSClipboardModel {
     }
     private(set) var importErrorMessage: String?
     private(set) var pasteErrorMessage: String?
+    private(set) var isPasting = false
+    private static let representationTypes: [UTType] = [.utf8PlainText, .plainText, .url, .rtf, .html, .png, .jpeg, .tiff]
+    static let pasteContentTypes: [UTType] = representationTypes + [.image]
+    private static let pasteLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "SnipSnap", category: "ClipboardPaste")
     var syncIsActive: Bool {
         guard syncEnabled, settings.mode == .iCloudSync else { return false }
         switch settings.state {
@@ -232,31 +237,44 @@ final class IOSClipboardModel {
 
     func dismissPasteError() { pasteErrorMessage = nil }
 
-    private enum PasteError: Error { case unreadable, tooLarge }
+    private enum PasteError: Error { case empty, unsupported, unreadable, tooLarge }
 
     func capture(_ providers: [NSItemProvider]) async {
+        guard !isPasting else { return }
+        isPasting = true
+        defer { isPasting = false }
         pasteErrorMessage = nil
         do {
+            guard !providers.isEmpty else { throw PasteError.empty }
+            var attemptedRead = false
             var items: [ClipboardPayloadItem] = []
-            let types = [UTType.utf8PlainText, .plainText, .url, .rtf, .html, .png, .jpeg, .tiff]
+            let types = Self.representationTypes
             for provider in providers {
                 var representations: [ClipboardRepresentation] = []
                 let imageTypes = provider.registeredTypeIdentifiers.compactMap { UTType($0) }
                     .filter { $0.conforms(to: .image) && !types.contains($0) }
                 for type in types + imageTypes where provider.hasItemConformingToTypeIdentifier(type.identifier) {
-                    let data: Data? = try? await withCheckedThrowingContinuation { continuation in
-                        provider.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, error in
-                            if let data { continuation.resume(returning: data) }
-                            else { continuation.resume(throwing: error ?? CocoaError(.fileReadUnknown)) }
+                    attemptedRead = true
+                    let data: Data
+                    do {
+                        data = try await withCheckedThrowingContinuation { continuation in
+                            provider.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, error in
+                                if let data { continuation.resume(returning: data) }
+                                else { continuation.resume(throwing: error ?? CocoaError(.fileReadUnknown)) }
+                            }
                         }
+                    } catch {
+                        // Record codes only; provider descriptions can contain copied content or file paths.
+                        let failure = error as NSError
+                        Self.pasteLogger.error("Clipboard read failed: code=\(failure.code)")
+                        continue
                     }
-                    guard let data else { continue }
                     guard data.count <= ClipboardHistoryState.representationByteLimit else { throw PasteError.tooLarge }
                     representations.append(ClipboardRepresentation(type: type.identifier, data: data))
                 }
                 if !representations.isEmpty { items.append(ClipboardPayloadItem(representations: representations)) }
             }
-            guard !items.isEmpty else { throw PasteError.unreadable }
+            guard !items.isEmpty else { throw attemptedRead ? PasteError.unreadable : PasteError.unsupported }
             let entry = ClipboardEntry(sourceApplication: "Paste", items: items,
                 plainText: Self.previewText(from: items), sourceDeviceName: UIDevice.current.model)
             guard entry.byteCount <= ClipboardHistoryState.entryByteLimit else { throw PasteError.tooLarge }
@@ -267,6 +285,10 @@ final class IOSClipboardModel {
             }
             errorMessage = nil
             await synchronize()
+        } catch PasteError.empty {
+            pasteErrorMessage = String(localized: "There’s nothing to paste. Copy text or an image, then try again.")
+        } catch PasteError.unsupported {
+            pasteErrorMessage = String(localized: "This clipboard content isn’t supported. Try copying text or an image.")
         } catch PasteError.unreadable {
             pasteErrorMessage = String(localized: "Couldn’t read the clipboard. Copy the content again, then tap Paste.")
         } catch PasteError.tooLarge {

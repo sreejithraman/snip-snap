@@ -127,6 +127,46 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(model.entries.first?.text, "Keep this text")
     }
 
+    func testClipboardEmptyAndUnsupportedPasteHaveDistinctMessages() async {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = IOSClipboardModel(rootURL: root, settings: SyncedContentSettingsModel(mode: .localOnly), preferences: UserDefaults(suiteName: UUID().uuidString)!)
+        await model.capture([])
+        XCTAssertEqual(model.pasteErrorMessage, "There’s nothing to paste. Copy text or an image, then try again.")
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.pdf.identifier, visibility: .all) { completion in
+            completion(Data("PDF".utf8), nil)
+            return nil
+        }
+        await model.capture([provider])
+        XCTAssertEqual(model.pasteErrorMessage, "This clipboard content isn’t supported. Try copying text or an image.")
+        XCTAssertTrue(model.entries.isEmpty)
+    }
+
+    func testClipboardIgnoresAnotherPasteWhileProviderIsLoading() async {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = IOSClipboardModel(rootURL: root, settings: SyncedContentSettingsModel(mode: .localOnly), preferences: UserDefaults(suiteName: UUID().uuidString)!)
+        let started = expectation(description: "Provider began loading")
+        let release = DispatchSemaphore(value: 0)
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.html.identifier, visibility: .all) { completion in
+            started.fulfill()
+            DispatchQueue.global().async {
+                release.wait()
+                completion(Data("<p>First paste</p>".utf8), nil)
+            }
+            return nil
+        }
+        let firstPaste = Task { await model.capture([provider]) }
+        await fulfillment(of: [started], timeout: 2)
+        await model.capture([NSItemProvider(object: "Second paste" as NSString)])
+        release.signal()
+        await firstPaste.value
+        XCTAssertEqual(model.entries.count, 1)
+        XCTAssertEqual(model.entries.first?.text, "First paste")
+    }
+
     func testRichTextOnlyClipboardPayloadHasTextForPreviewAndSearch() throws {
         let richText = NSAttributedString(string: "Rich clipboard text")
         let rtf = try richText.data(from: NSRange(location: 0, length: richText.length),
