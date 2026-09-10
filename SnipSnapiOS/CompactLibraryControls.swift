@@ -26,20 +26,6 @@ private struct CompactGlassCircleButton<Label: View>: View {
     }
 }
 
-private struct ClipboardPasteButtonStyle: ButtonStyle {
-    let length: CGFloat
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: length * 20 / 48, weight: .medium))
-            .frame(width: length, height: length)
-            .contentShape(Circle())
-            .opacity(isEnabled ? 1 : 0.4)
-            .glassEffect(.regular.interactive(), in: Circle())
-    }
-}
-
 struct CompactLibraryControls: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -220,13 +206,13 @@ struct CompactLibraryControls: View {
     }
 
     private var pasteButton: some View {
-        PasteButton(supportedContentTypes: IOSClipboardModel.pasteContentTypes) { providers in
+        CompactGlassCircleButton(length: showsListTabs ? navigationControlLength : max(48, controlLength)) {
+            let providers = UIPasteboard.general.itemProviders
             Task { await clipboard.capture(providers) }
+        } label: {
+            Image(systemName: "doc.on.clipboard")
+                .font(showsListTabs ? .system(size: navigationControlLength * 20 / 48, weight: .medium) : .title3.weight(.medium))
         }
-        .labelStyle(.iconOnly)
-        .buttonStyle(ClipboardPasteButtonStyle(
-            length: showsListTabs ? navigationControlLength : max(48, controlLength)
-        ))
         .disabled(clipboard.isPasting)
         .accessibilityLabel("Paste")
         .accessibilityIdentifier("paste-to-clipboard")
