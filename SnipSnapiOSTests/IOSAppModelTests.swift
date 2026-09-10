@@ -16,6 +16,7 @@ final class IOSAppModelTests: XCTestCase {
         let now = Date(timeIntervalSinceReferenceDate: 100)
         var motion = ListPageMotion()
         let positions: [CGFloat] = [0.25, 0.75, 1, 1.5, 2, 2.75, 1.5, 0.25]
+        var peakDistance: CGFloat = 0
         for position in positions {
             let cursor = geometry.cursor(at: position)
             motion.updateDrag(
@@ -23,6 +24,8 @@ final class IOSAppModelTests: XCTestCase {
                 selectedPage: pages[0], pages: pages, geometry: geometry,
                 layoutDirection: .leftToRight, at: now
             )
+            peakDistance = max(peakDistance, abs(cursor - geometry.centers[0]))
+            XCTAssertEqual(motion.dragDistance, peakDistance)
             let frame = motion.frame(pages: pages, selectedPage: pages[0], at: now)
             XCTAssertEqual(frame.position, position, accuracy: 0.0001)
             XCTAssertEqual(geometry.pagePosition(at: cursor), position, accuracy: 0.0001)
@@ -63,6 +66,7 @@ final class IOSAppModelTests: XCTestCase {
             pages: pages, geometry: geometry, layoutDirection: .leftToRight, at: now
         )
         motion.cancelDrag(reduceMotion: false, at: now)
+        XCTAssertEqual(motion.dragDistance, 0)
         XCTAssertFalse(motion.isDragging)
         let settlement = try XCTUnwrap(motion.transition?.settlement)
         XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[0], at: now).position, 1.5)
@@ -83,6 +87,7 @@ final class IOSAppModelTests: XCTestCase {
         )
         XCTAssertEqual(motion.release(translation: CGSize(width: -128, height: 200), geometry: geometry, reduceMotion: false, at: now), .select(1))
         XCTAssertFalse(motion.isDragging)
+        XCTAssertEqual(motion.dragDistance, 0)
         let settlement = try XCTUnwrap(motion.transition?.settlement)
         motion.cancelDrag(reduceMotion: false, at: now)
         XCTAssertEqual(motion.transition?.settlement?.id, settlement.id, "A later GestureState reset must not cancel a released drag")
@@ -290,6 +295,46 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertNil(model.pasteErrorMessage)
         XCTAssertNil(model.errorMessage)
         XCTAssertEqual(model.entries.first?.text, "Keep this text")
+    }
+
+    func testClipboardEmptyAndUnsupportedPasteHaveDistinctMessages() async {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = IOSClipboardModel(rootURL: root, settings: SyncedContentSettingsModel(mode: .localOnly), preferences: UserDefaults(suiteName: UUID().uuidString)!)
+        await model.capture([])
+        XCTAssertEqual(model.pasteErrorMessage, "There’s nothing to paste. Copy text or an image, then try again.")
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.pdf.identifier, visibility: .all) { completion in
+            completion(Data("PDF".utf8), nil)
+            return nil
+        }
+        await model.capture([provider])
+        XCTAssertEqual(model.pasteErrorMessage, "This clipboard content isn’t supported. Try copying text or an image.")
+        XCTAssertTrue(model.entries.isEmpty)
+    }
+
+    func testClipboardIgnoresAnotherPasteWhileProviderIsLoading() async {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = IOSClipboardModel(rootURL: root, settings: SyncedContentSettingsModel(mode: .localOnly), preferences: UserDefaults(suiteName: UUID().uuidString)!)
+        let started = expectation(description: "Provider began loading")
+        let release = DispatchSemaphore(value: 0)
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.html.identifier, visibility: .all) { completion in
+            started.fulfill()
+            DispatchQueue.global().async {
+                release.wait()
+                completion(Data("<p>First paste</p>".utf8), nil)
+            }
+            return nil
+        }
+        let firstPaste = Task { await model.capture([provider]) }
+        await fulfillment(of: [started], timeout: 2)
+        await model.capture([NSItemProvider(object: "Second paste" as NSString)])
+        release.signal()
+        await firstPaste.value
+        XCTAssertEqual(model.entries.count, 1)
+        XCTAssertEqual(model.entries.first?.text, "First paste")
     }
 
     func testRichTextOnlyClipboardPayloadHasTextForPreviewAndSearch() throws {
@@ -3688,5 +3733,27 @@ final class ListSelectorGeometryTests: XCTestCase {
         XCTAssertLessThan(geometry.resisted(112), 112)
         XCTAssertEqual(geometry.nearestIndex(to: geometry.plusCenter), 0)
         XCTAssertEqual(geometry.centers.count, 1)
+    }
+}
+
+final class ListSelectorExpansionTests: XCTestCase {
+    func testReturningToStartingTabKeepsBarExpanded() {
+        var expansion = ListSelectorExpansion()
+        expansion.update(distance: 8)
+        XCTAssertEqual(expansion.distance, 8)
+        expansion.update(distance: 64)
+        for distance: CGFloat in [24, 0, 16] {
+            expansion.update(distance: distance)
+            XCTAssertEqual(expansion.distance, 64)
+        }
+    }
+
+    func testReleaseOrCancellationResetsExpansionForNextPan() {
+        var expansion = ListSelectorExpansion()
+        expansion.update(distance: 64)
+        expansion.update(distance: nil)
+        XCTAssertEqual(expansion.distance, 0)
+        expansion.update(distance: 8)
+        XCTAssertEqual(expansion.distance, 8)
     }
 }

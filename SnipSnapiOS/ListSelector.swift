@@ -42,10 +42,11 @@ struct ListPageMotion: Equatable {
 
     private(set) var transition: Transition?
     private var drag: Drag?
+    private var expansion = ListSelectorExpansion()
 
     var isDragging: Bool { drag != nil }
     var dragCursor: CGFloat? { drag?.cursor }
-    var dragDistance: CGFloat { drag.map { abs($0.cursor - $0.originCursor) } ?? 0 }
+    var dragDistance: CGFloat { expansion.distance }
 
     mutating func updateDrag(
         translation: CGSize,
@@ -71,6 +72,7 @@ struct ListPageMotion: Equatable {
         guard var drag else { return }
         drag.cursor = drag.originCursor - translation.width * drag.direction
         self.drag = drag
+        expansion.update(distance: abs(drag.cursor - drag.originCursor))
         transition?.position = geometry.pagePosition(at: drag.cursor)
     }
 
@@ -122,6 +124,7 @@ struct ListPageMotion: Equatable {
     }
 
     private mutating func settle(to destination: Int, reduceMotion: Bool, at date: Date) {
+        expansion.update(distance: nil)
         guard var transition else { return }
         transition.position = transition.position(at: date)
         transition.settlement = Settlement(
@@ -138,6 +141,7 @@ struct ListPageMotion: Equatable {
     }
 
     mutating func interrupt() {
+        expansion.update(distance: nil)
         drag = nil
         transition = nil
     }
@@ -247,6 +251,14 @@ struct ListSelectorGeometry {
     }
 }
 
+struct ListSelectorExpansion: Equatable {
+    private(set) var distance: CGFloat = 0
+
+    mutating func update(distance: CGFloat?) {
+        self.distance = distance.map { max(self.distance, $0) } ?? 0
+    }
+}
+
 private enum ListSelectorItem: Identifiable {
     case clipboard
     case list(SnipList)
@@ -349,17 +361,30 @@ struct ListSelector: View {
             let tint = items.indices.contains(nearest) ? items[nearest].color : Color.primary
 
             ZStack {
-                Capsule().fill(.primary.opacity(0.05))
-                selectionGlass(width: lensWidth, tint: tint, addProgress: progress)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+                // Render each glass surface separately so the pill keeps its own edge.
+                GlassEffectContainer(spacing: 0) {
+                    selectionGlass(width: lensWidth, tint: tint, addProgress: progress)
+                }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
 
-                // Keep labels clear above the selection material.
+                // Foreground labels need their own refraction at the glass rim.
                 labels(geometry: geometry, cursor: cursor, viewport: proxy.size.width, progress: progress)
+                    .modifier(ListLensEffect(width: lensWidth, height: height, viewport: proxy.size.width, enabled: !reduceTransparency))
                     .mask(edgeFade)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
-
+            }
+            .background {
+                if reduceTransparency {
+                    Capsule().fill(Color(uiColor: .systemBackground))
+                } else {
+                    GlassEffectContainer(spacing: 0) {
+                        Color.clear.glassEffect(.regular, in: Capsule())
+                    }
+                }
+            }
+            .overlay {
                 hitTargets(geometry: geometry, cursor: cursor)
             }
             .contentShape(Capsule())
@@ -642,8 +667,7 @@ private struct ListActionsMenu: UIViewRepresentable {
     }
 }
 
-// Interpolate the channels explicitly: the native glass tint itself switches
-// discretely even when its surrounding layout has an animation transaction.
+// Keep the selection color smooth as the strip moves between lists.
 nonisolated private struct ListSelectionGlass: View, Animatable {
     let width: CGFloat
     let height: CGFloat
@@ -672,6 +696,27 @@ nonisolated private struct ListSelectionGlass: View, Animatable {
             Color.clear.frame(width: width, height: height)
                 .glassEffect(.clear.tint(color.opacity(0.1)), in: Capsule())
         }
+    }
+}
+
+// Interpolate the shader bounds with the capsule while its width snaps.
+nonisolated private struct ListLensEffect: ViewModifier, Animatable {
+    var width: CGFloat
+    let height: CGFloat
+    let viewport: CGFloat
+    let enabled: Bool
+
+    var animatableData: CGFloat {
+        get { width }
+        set { width = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        content.distortionEffect(
+            ShaderLibrary.listLens(.float4((viewport - width) / 2, 4, width, height)),
+            maxSampleOffset: CGSize(width: 8, height: 8),
+            isEnabled: enabled
+        )
     }
 }
 

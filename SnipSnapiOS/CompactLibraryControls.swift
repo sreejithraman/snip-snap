@@ -7,6 +7,7 @@ import UIKit
 
 private enum CompactControlMetrics {
     static let minimumInteractiveLength: CGFloat = 44
+    static let contentTransitionDuration: TimeInterval = 0.35
 }
 
 private struct CompactGlassCircleButton<Label: View>: View {
@@ -42,7 +43,6 @@ struct CompactLibraryControls: View {
 
     @State private var draft = ComposerDraft()
     @State private var draftListID: UUID?
-    @State private var clipboardHasContent = false
     @State private var toolbarWidth: CGFloat = 320
     @State private var composerHeights: [LibraryPage: CGFloat] = [:]
     @State private var previewURL: URL?
@@ -125,16 +125,9 @@ struct CompactLibraryControls: View {
         .quickLookPreview($previewURL, in: draft.attachments)
         .onAppear {
             draftListID = model.selectedListID
-            updatePasteAvailability()
             if storage.savingListID != model.selectedListID {
                 draft = storage.draftStore.draft(for: model.selectedListID)
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
-            updatePasteAvailability()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
-            updatePasteAvailability()
         }
         .onChange(of: model.selectedListID) { _, listID in
             composerFieldID = UUID()
@@ -164,6 +157,10 @@ struct CompactLibraryControls: View {
         max(120, min(256, toolbarWidth - 168))
     }
 
+    private var contentTransition: Animation? {
+        reduceMotion ? nil : .easeInOut(duration: CompactControlMetrics.contentTransitionDuration)
+    }
+
     private var navigationControls: some View {
         let length = navigationControlLength
         let progress = min(1, motion.dragDistance / length)
@@ -184,16 +181,12 @@ struct CompactLibraryControls: View {
             .frame(width: selectorWidth, height: length + 8)
 
             HStack {
-                Group {
-                    if model.showsClipboard {
-                        pasteButton
-                    } else {
-                        Color.clear.frame(width: length, height: length)
-                    }
-                }
-                .offset(x: -travel)
-                .allowsHitTesting(!motion.isDragging)
-                .accessibilityHidden(motion.isDragging)
+                pasteButton
+                    .opacity(model.showsClipboard ? 1 : 0)
+                    .animation(model.showsClipboard ? contentTransition : nil, value: model.showsClipboard)
+                    .offset(x: -travel)
+                    .allowsHitTesting(model.showsClipboard && !motion.isDragging)
+                    .accessibilityHidden(!model.showsClipboard || motion.isDragging)
 
                 Spacer(minLength: 0)
 
@@ -211,6 +204,7 @@ struct CompactLibraryControls: View {
             .opacity(1 - progress)
         }
         .frame(width: navigationWidth, height: length + 8)
+        .animation(motion.isDragging || reduceMotion ? nil : .spring(duration: 0.3, bounce: 0.12), value: motion.dragDistance)
     }
 
     private var pasteButton: some View {
@@ -221,16 +215,11 @@ struct CompactLibraryControls: View {
             Image(systemName: "doc.on.clipboard")
                 .font(showsListTabs ? .system(size: navigationControlLength * 20 / 48, weight: .medium) : .title3.weight(.medium))
         }
-        .disabled(!clipboardHasContent)
+        .disabled(clipboard.isPasting || !model.showsClipboard || motion.isDragging)
         .accessibilityLabel("Paste")
         .accessibilityIdentifier("paste-to-clipboard")
         .glassEffectID("paste", in: composerGlass)
         .glassEffectTransition(.materialize)
-    }
-
-    private func updatePasteAvailability() {
-        let pasteboard = UIPasteboard.general
-        clipboardHasContent = pasteboard.hasStrings || pasteboard.hasURLs || pasteboard.hasImages
     }
 
     private var currentPage: LibraryPage {

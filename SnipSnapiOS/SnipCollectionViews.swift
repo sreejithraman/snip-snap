@@ -102,6 +102,7 @@ struct SnipCollectionView: View {
                                         snip: snip,
                                         model: model,
                                         isRecovered: model.isRecoveredSnip(snip.id),
+                                        isReordering: isReordering,
                                         onPreviewAttachment: previewAttachment,
                                         onCopy: { Task { await copyShare.copy(snips: [snip], model: model) } }
                                     )
@@ -558,6 +559,7 @@ private struct SnipRow: View {
     let model: IOSAppModel
     let isRecovered: Bool
     var showsStatusIcon = true
+    var isReordering = false
     @State private var isChangingCompletion = false
     var onPreviewAttachment: ((SnipAttachment) -> Void)? = nil
     var onCopy: (() -> Void)? = nil
@@ -634,7 +636,8 @@ private struct SnipRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 4)
-        .accessibilityElement(children: onPreviewAttachment == nil ? .combine : .contain)
+        // Give the native reorder handle the snip's name.
+        .accessibilityElement(children: isReordering ? .ignore : (onPreviewAttachment == nil ? .combine : .contain))
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(
             snip.isPinned ? String(localized: "Pinned") : SnipCompletionLanguage.stateTitle(isDone: snip.isDone)

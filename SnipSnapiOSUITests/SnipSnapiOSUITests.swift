@@ -632,7 +632,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(selector.frame.midX, app.frame.midX, accuracy: 2)
         XCTAssertLessThan(selector.frame.maxX, app.buttons["Search"].frame.minX)
         compactListTab(named: "Inbox", in: app).tap()
-        XCTAssertTrue(paste.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(compactListTab(named: "Inbox", in: app).isSelected)
+        XCTAssertFalse(paste.isEnabled)
         XCTAssertEqual(selector.frame.width, restingSelectorWidth, accuracy: 2)
         XCTAssertEqual(selector.frame.midX, restingSelector.midX, accuracy: 2)
         app.buttons["clipboard-tab"].tap()
@@ -726,7 +727,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(selector.frame.width, restingWidth, accuracy: 2)
         XCTAssertEqual(selector.frame.midX, restingFrame.midX, accuracy: 2)
         XCTAssertLessThan(selector.frame.maxX, app.buttons["Search"].frame.minX)
-        XCTAssertFalse(app.buttons["paste-to-clipboard"].exists)
+        XCTAssertTrue(compactListTab(named: "Inbox", in: app).isSelected)
+        XCTAssertFalse(app.buttons["paste-to-clipboard"].isEnabled)
         let switchedEvent = app.staticTexts["haptic-event"].label
         XCTAssertTrue(switchedEvent.hasPrefix("selection:"))
         XCTAssertNotEqual(switchedEvent, initialEvent)
@@ -1610,20 +1612,20 @@ final class SnipSnapiOSUITests: XCTestCase {
         createList("Work", in: app)
         createSnip("Alpha work", in: app)
         returnToCollection(in: app)
+        let clipboard = app.buttons["clipboard-tab"]
         let selector = app.descendants(matching: .any)["list-selector"]
         if selector.exists {
-            // Clipboard is offscreen when Work is centered; use the visible picker.
-            let start = selector.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5))
+            // Swipe directly from Work to Clipboard, which lies outside the strip.
+            let start = selector.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5))
             start.press(
                 forDuration: 0.05,
-                thenDragTo: start.withOffset(CGVector(dx: 260, dy: 0)),
-                withVelocity: XCUIGestureVelocity(rawValue: 100),
-                thenHoldForDuration: 0.3
+                thenDragTo: start.withOffset(CGVector(dx: selector.frame.width, dy: 0))
             )
         } else {
-            app.buttons["clipboard-tab"].tap()
+            clipboard.tap()
         }
         XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+        XCTAssertTrue(clipboard.isSelected)
         let search = openSearch(in: app)
         XCTAssertTrue(search.waitForExistence(timeout: 3))
         XCTAssertEqual(search.placeholderValue, "Search All")
@@ -1637,6 +1639,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         closeSearch(in: app)
         XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.descendants(matching: .any)["list-selector"].exists)
+        XCTAssertTrue(app.buttons["clipboard-tab"].isSelected)
     }
 
     func testSearchDoneFilter() {
@@ -1802,6 +1805,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(restoredFirst.waitForExistence(timeout: 3))
         XCTAssertLessThan(restoredFirst.frame.minY, restoredSecond.frame.minY)
         XCTAssertFalse(app.buttons["Reorder First drag sample"].exists)
+        XCTAssertTrue(restoredFirst.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "completion-")
+        ).firstMatch.exists)
         restoredFirst.press(forDuration: 1)
         XCTAssertTrue(app.buttons["edit-snip"].waitForExistence(timeout: 3))
         let menuProof = XCTAttachment(screenshot: app.screenshot())
