@@ -57,8 +57,10 @@ final class IOSClipboardModel {
         self.preferences = preferences
         syncEnabled = preferences.bool(forKey: "syncClipboardHistory")
         pendingUploadIDs = Set((preferences.stringArray(forKey: "clipboardPendingUploads") ?? []).compactMap(UUID.init(uuidString:)))
-        cloud = containerIdentifier.map {
-            ClipboardCloudSyncService(store: store, containerIdentifier: $0,
+        cloud = containerIdentifier.flatMap {
+            let identifier = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !identifier.isEmpty else { return nil }
+            return ClipboardCloudSyncService(store: store, containerIdentifier: identifier,
                 syncRootURL: rootURL.appendingPathComponent("SyncMode", isDirectory: true))
         }
     }
