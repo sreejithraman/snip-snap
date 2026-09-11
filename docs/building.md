@@ -160,6 +160,46 @@ App Group and CloudKit capabilities and select the Development CloudKit
 environment. Do not reuse them for an official release. Do not put a team ID,
 profile name, device ID, certificate, or local path in a tracked file.
 
+### Copy local signing settings into worktrees
+
+Keep your local signing files in `Config` in the primary checkout—the original
+clone, rather than a temporary worktree. Git ignores these files. Use regular
+files, not symlinks, so each worktree gets its own copy.
+
+The tracked `.codex/environments/environment.toml` configures Codex's macOS
+worktree setup to run:
+
+```sh
+./scripts/setup-local-signing.sh
+```
+
+The script finds the primary checkout through Git and copies `Local.xcconfig`
+and any of these files that exist: `Local.entitlements`, `LocalMac.entitlements`,
+`LocalIOS.entitlements`, `MacRelease.entitlements`, and `TestFlight.entitlements`.
+It checks that source and destination paths are ignored and untracked. It refuses
+symlinks and conflicting files, and leaves matching copies alone on repeat runs.
+Edits in one worktree do not change the primary checkout or other worktrees.
+To refresh an edited copy, compare it with the primary copy and move it aside
+before running setup again.
+
+If the primary checkout has no `Local.xcconfig`, setup does nothing. Unsigned
+contributors need no local signing files. CI still supplies its own protected
+inputs. Certificates and private keys stay in Keychain; profiles stay in Xcode.
+Only the setup script and Codex environment file belong in Git.
+
+Codex's desktop app runs the configured setup when it creates a worktree. Other
+clients must call the script themselves: in T3, add it as a project script and
+turn on **Run on worktree create**. T3 does not share Codex's environment runner.
+For an existing worktree, run the command above by hand. See the
+[Codex local environment docs](https://learn.chatgpt.com/docs/environments/local-environment).
+
+Setup copies files; it does not check Apple access. Check the chosen lane after
+setup:
+
+```sh
+./scripts/signed-lane-preflight.sh cloud --destination 'platform=macOS'
+```
+
 Cloud Dev uses a separate installed-app identity. By default, the build adds
 `.dev` to the resolved iOS app identifier and configured App Group. For example:
 

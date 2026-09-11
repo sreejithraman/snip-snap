@@ -1,0 +1,9 @@
+version = 1
+name = "Snip Snap"
+
+[setup]
+script = '''
+if [ "$(uname -s)" = "Darwin" ]; then
+  ./scripts/setup-local-signing.sh
+fi
+'''
