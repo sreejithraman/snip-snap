@@ -30,6 +30,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
 
       - name: Check current main
         id: source
@@ -53,6 +54,21 @@ jobs:
           build="$(./scripts/release-build-number.sh "$GITHUB_RUN_NUMBER")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "build=$build" >> "$GITHUB_OUTPUT"
+
+      - name: Write platform release notes
+        if: steps.source.outputs.current == 'true'
+        run: |
+          /usr/bin/ruby scripts/release-notes.rb generate "$PWD" "${{ github.event.workflow_run.head_sha }}" \
+            "${{ steps.release.outputs.version }}" "${{ steps.release.outputs.build }}" beta artifacts/release-notes
+
+      - name: Keep platform release notes
+        if: steps.source.outputs.current == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-notes-${{ steps.release.outputs.build }}
+          path: artifacts/release-notes/
+          if-no-files-found: error
+          retention-days: 30
 
   mac-build:
     name: Build signed Mac beta
@@ -116,6 +132,8 @@ jobs:
     if: needs.prepare.outputs.current == 'true' && vars.SNIP_SNAP_BETA_DELIVERY_ENABLED == 'true'
     runs-on: macos-26
     environment: apple-release
+    outputs:
+      bundle_identifier: ${{ steps.upload.outputs.bundle_identifier }}
     env:
       GH_TOKEN: ${{ github.token }}
       SHOWROOM_APPLE_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
@@ -156,15 +174,49 @@ jobs:
         run: ./scripts/ci-apple-setup.sh setup ios
 
       - name: Upload iOS beta
+        id: upload
         run: ./scripts/testflight.sh upload --build-number "${{ needs.prepare.outputs.build }}"
 
       - name: Remove protected Apple inputs
         if: always()
         run: ./scripts/ci-apple-setup.sh cleanup
 
+  ios-notes:
+    name: Publish iOS beta notes
+    needs: [prepare, ios-upload]
+    runs-on: macos-26
+    environment: apple-release
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Download platform release notes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-notes-${{ needs.prepare.outputs.build }}
+          path: artifacts/release-notes
+
+      - name: Set TestFlight What to Test
+        env:
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          SHOWROOM_APPLE_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          SHOWROOM_APPLE_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          IOS_BUNDLE_IDENTIFIER: ${{ needs.ios-upload.outputs.bundle_identifier }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_BUILD: ${{ needs.prepare.outputs.build }}
+        run: |
+          umask 077
+          export SHOWROOM_APPLE_KEY_PATH="$RUNNER_TEMP/testflight-notes-key.p8"
+          trap 'rm -f "$SHOWROOM_APPLE_KEY_PATH"' EXIT
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$SHOWROOM_APPLE_KEY_PATH"
+          /usr/bin/ruby scripts/testflight-notes.rb "$IOS_BUNDLE_IDENTIFIER" "$RELEASE_VERSION" "$RELEASE_BUILD" \
+            "artifacts/release-notes/Snip-Snap-$RELEASE_VERSION-beta.$RELEASE_BUILD-ios.txt"
+
   mac-publish:
     name: Publish Mac beta channels
-    needs: [prepare, mac-build, ios-upload]
+    needs: [prepare, mac-build, ios-upload, ios-notes]
     runs-on: macos-26
     environment: apple-release
     env:
@@ -189,6 +241,12 @@ jobs:
         with:
           name: mac-beta-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.build }}
           path: artifacts/release-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.build }}
+
+      - name: Download platform release notes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-notes-${{ needs.prepare.outputs.build }}
+          path: artifacts/release-notes-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.build }}
 
       - name: Resolve Sparkle tools
         run: |

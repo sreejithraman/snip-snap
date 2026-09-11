@@ -113,6 +113,61 @@ legacy_record="$test_root/Snip-Snap-0.5.0-beta.7-legacy.json"
 release_automation_verify_record "$legacy_record" 0.5.0 7 "$zip" "$dmg" "$commit"
 release_automation_verify_workflow_run "$legacy_record" test/repo "$commit"
 unset SNIP_SNAP_GH
+
+notes_asset="$test_root/Snip-Snap-0.5.0-ios.txt"
+notes_remote="$test_root/notes-remote"
+notes_download="$test_root/notes-download"
+notes_gh="$test_root/notes-gh"
+/bin/mkdir -p "$notes_remote" "$notes_download"
+print 'iOS changes' > "$notes_asset"
+for note_form in github.md mac.txt ios.txt; do
+    expected_note="$test_root/expected-$note_form"
+    published_note="$test_root/published-$note_form"
+    print 'published notes' > "$expected_note"
+    release_automation_require_matching_notes_file "$published_note" "$expected_note"
+    /bin/cp "$expected_note" "$published_note"
+    release_automation_require_matching_notes_file "$published_note" "$expected_note"
+    print 'changed notes' > "$expected_note"
+    assert_fails release_automation_require_matching_notes_file "$published_note" "$expected_note"
+done
+body_gh="$test_root/body-gh"
+print '#!/bin/zsh' > "$body_gh"
+print 'print -r -- "$SNIP_SNAP_TEST_NOTES_BODY"' >> "$body_gh"
+/bin/chmod +x "$body_gh"
+export SNIP_SNAP_TEST_NOTES_BODY='iOS changes'
+release_automation_require_matching_notes_body "$body_gh" v0.5.0 test/repo "$notes_asset"
+SNIP_SNAP_TEST_NOTES_BODY='old body'
+assert_fails release_automation_require_matching_notes_body "$body_gh" v0.5.0 test/repo "$notes_asset"
+unset SNIP_SNAP_TEST_NOTES_BODY
+cat > "$notes_gh" <<'GH'
+#!/bin/zsh
+set -euo pipefail
+case "$2" in
+    view) /bin/ls "$SNIP_SNAP_TEST_NOTES_REMOTE" ;;
+    upload)
+        [[ ! -e "$SNIP_SNAP_TEST_NOTES_REMOTE/${4:t}" ]]
+        /bin/cp "$4" "$SNIP_SNAP_TEST_NOTES_REMOTE/"
+        ;;
+    download)
+        /bin/cp "$SNIP_SNAP_TEST_NOTES_REMOTE/$7" "$9/"
+        ;;
+    *) exit 1 ;;
+esac
+GH
+/bin/chmod +x "$notes_gh"
+export SNIP_SNAP_TEST_NOTES_REMOTE="$notes_remote"
+# A missing asset after partial release creation is uploaded, then verified.
+release_automation_ensure_notes_asset "$notes_gh" v0.5.0 test/repo "$notes_asset" "$notes_download"
+/usr/bin/cmp "$notes_asset" "$notes_download/${notes_asset:t}"
+/bin/rm "$notes_download/${notes_asset:t}"
+# An unchanged asset is reused. A changed asset fails without replacement.
+release_automation_ensure_notes_asset "$notes_gh" v0.5.0 test/repo "$notes_asset" "$notes_download"
+/bin/rm "$notes_download/${notes_asset:t}"
+print 'different notes' > "$notes_remote/${notes_asset:t}"
+assert_fails release_automation_ensure_notes_asset "$notes_gh" v0.5.0 test/repo "$notes_asset" "$notes_download"
+[[ "$(<"$notes_remote/${notes_asset:t}")" == 'different notes' ]] || fail_test "replaced existing notes"
+unset SNIP_SNAP_TEST_NOTES_REMOTE
+
 print -n 'changed' >> "$zip"
 assert_fails release_automation_verify_record "$record" 0.5.0 7 "$zip" "$dmg" "$commit"
 print -n 'zip bytes' > "$zip"
@@ -190,7 +245,7 @@ for required in \
     'IOS_SHARE_APP_STORE_PROFILE_BASE64' \
     'IOS_APP_STORE_PROFILE_NAME' \
     'IOS_SHARE_APP_STORE_PROFILE_NAME' \
-    'needs: [prepare, mac-build, ios-upload]' \
+    'needs: [prepare, mac-build, ios-upload, ios-notes]' \
     'SNIP_SNAP_GENERATE_APPCAST=' \
     'gh auth setup-git --hostname github.com' \
     'export SNIP_SNAP_RUNNER_PATH="$PATH"' \
@@ -359,5 +414,8 @@ for protected_name in Local.xcconfig TestFlight.entitlements MacRelease.entitlem
         fail_test "CI cleanup kept $protected_name"
 done
 [[ -f "$ci_repo/Config/keep.txt" ]] || fail_test "CI cleanup removed an unrelated file"
+
+/usr/bin/ruby "$script_dir/release-notes-tests.rb"
+/usr/bin/ruby "$script_dir/testflight-notes-tests.rb"
 
 print "Release automation checks passed."

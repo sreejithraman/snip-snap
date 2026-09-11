@@ -39,6 +39,9 @@ The workflows:
    offset, then build iOS and Mac from the same clean commit and number. Local
    release commands still test by default.
 4. Upload iOS to internal TestFlight.
+   A separate job waits for that exact iOS version and build to finish processing,
+   writes its English What to Test notes, then reads them back. Rerun failed jobs
+   if notes fail; the successful upload job does not need to run again.
 5. Sign and notarize the Mac app.
 6. Create a GitHub prerelease such as `v0.5.0-beta.7`.
 7. Add the Mac update to the Sparkle `beta` channel.
@@ -48,6 +51,48 @@ The workflows:
    results, and TestFlight upload result as release evidence. Keep that asset
    unchanged. GitHub keeps later delivery rerun attempts and their job results
    on the same workflow run.
+
+### Release notes
+
+The prepare job writes notes once from the tested commit and keeps them as a
+workflow artifact for both platforms. Beta notes use changes since the nearest
+earlier release tag. Stable notes include all changes since the previous stable
+tag, rather than just the last beta's changes.
+
+Notes use commit titles for changes to app source. Mac source changes appear in
+the Mac list, iOS and Share extension changes in the iOS list, and shared source
+changes in both. A title that names only Mac or iOS narrows shared changes to
+that platform. Mac- and IOS-prefixed package files also stay with their platform;
+localization edits alone do not add the other platform to an app change.
+Tests, docs, and publishing commits without app changes do not become notes.
+Keep app-change commit titles useful to users and name the platform when needed.
+
+GitHub release notes contain Mac and iOS sections. Sparkle embeds the Mac text
+in the appcast, so the update window does not need to fetch a notes file.
+TestFlight receives only the iOS text. Each release also saves separate
+`-mac.txt` and `-ios.txt` files. The stable release attaches the iOS text and
+links it in the workflow summary for the existing App Store handoff: paste it
+into What's New when selecting the tested build. Stable promotion does not
+submit App Store metadata or send a release for review.
+
+For local beta publishing, `SNIP_SNAP_RELEASE_NOTES_FILE` overrides the GitHub
+text. The note generator accepts `SNIP_SNAP_MAC_RELEASE_NOTES_FILE` and
+`SNIP_SNAP_IOS_RELEASE_NOTES_FILE` for authored platform text, including shorter
+iOS notes when a stable release exceeds Apple's 4,000-character limit. Without
+overrides, the script generates notes from the full release checkout. Retries
+compare the files, GitHub body, and embedded Mac text with published notes and
+stop on a mismatch; they do not rewrite release history.
+TestFlight notes follow the same rule: fill missing or blank English notes,
+reuse an exact match, and stop if nonempty published text differs.
+To set TestFlight notes after a local upload, use the same Apple API key inputs
+as `testflight.sh` and run:
+
+```sh
+/usr/bin/ruby scripts/testflight-notes.rb BUNDLE_ID VERSION BUILD_NUMBER IOS_NOTES_FILE
+```
+
+The helper changes only English TestFlight notes for that exact iOS build. It
+does not change tester groups or submit a build for review.
 
 Rerunning a delivery keeps its build number and files. Rerunning a candidate
 starts a new delivery run and therefore gets a new build number.
