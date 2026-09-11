@@ -37,9 +37,11 @@ generate_beta_appcast() {
         --download-url-prefix "https://github.com/$release_repo/releases/download/$beta_tag/" \
         --link "https://github.com/$release_repo/releases/tag/$beta_tag" \
         --full-release-notes-url \
-            "https://raw.githubusercontent.com/$release_repo/main/$notes_name" \
+            "https://raw.githubusercontent.com/$release_repo/main/$mac_notes_name" \
         --versions "$build_number" \
         "$target_dir"
+    /usr/bin/ruby "$script_dir/release-notes.rb" appcast \
+        "$target_dir/appcast.xml" "$version" "$build_number" "$mac_notes_path"
 }
 
 while (( $# )); do
@@ -117,18 +119,24 @@ tap_checkout="$(release_automation_tap_checkout "$brew_tool" "$working_tap_name"
 release_policy_require_build_not_older "$release_checkout/appcast.xml"
 
 notes_name="Snip-Snap-$version-beta.$build_number.md"
-notes_path="$release_root/$notes_name"
+mac_notes_name="Snip-Snap-$version-beta.$build_number-mac.txt"
+ios_notes_name="Snip-Snap-$version-beta.$build_number-ios.txt"
+notes_dir="${SNIP_SNAP_RELEASE_NOTES_DIR:-$repo_dir/artifacts/release-notes-$version-$build_number}"
+notes_path="$notes_dir/$notes_name"
+mac_notes_path="$notes_dir/$mac_notes_name"
+/usr/bin/ruby "$script_dir/release-notes.rb" prepare \
+    "$release_checkout" "$source_commit" "$version" "$build_number" beta "$notes_dir"
 if [[ -n "${SNIP_SNAP_RELEASE_NOTES_FILE:-}" ]]; then
     [[ -f "$SNIP_SNAP_RELEASE_NOTES_FILE" ]] || fail "missing release notes"
     /bin/cp -p "$SNIP_SNAP_RELEASE_NOTES_FILE" "$notes_path"
-elif [[ ! -f "$notes_path" ]]; then
-    print "Snip Snap $version Beta $build_number" > "$notes_path"
 fi
+for published_note in "$notes_name" "$mac_notes_name" "$ios_notes_name"; do
+    release_automation_require_matching_notes_file \
+        "$release_checkout/$published_note" "$notes_dir/$published_note"
+done
 
 /bin/cp -p "$release_zip" "$feed_dir/"
-/bin/cp -p "$notes_path" "$feed_dir/Snip-Snap-$version.md"
 /bin/cp -p "$release_zip" "$expected_feed_dir/"
-/bin/cp -p "$notes_path" "$expected_feed_dir/Snip-Snap-$version.md"
 [[ ! -f "$release_checkout/appcast.xml" ]] || \
     /bin/cp -p "$release_checkout/appcast.xml" "$feed_dir/appcast.xml"
 
@@ -142,6 +150,8 @@ if [[ -f "$release_checkout/appcast.xml" ]] &&
         "$release_checkout/appcast.xml" "$expected_feed_dir/appcast.xml"
     release_automation_require_appcast_channel \
         "$release_checkout/appcast.xml" "$version" "$build_number" beta
+    /usr/bin/ruby "$script_dir/release-notes.rb" verify-appcast \
+        "$release_checkout/appcast.xml" "$version" "$build_number" "$mac_notes_path"
     /bin/cp -p "$release_checkout/appcast.xml" "$feed_dir/appcast.xml"
 else
     generate_beta_appcast "$feed_dir"
@@ -163,6 +173,7 @@ if "$gh_tool" release view "$beta_tag" --repo "$release_repo" >/dev/null 2>&1; t
     release_exists=1
     [[ "$(release_automation_remote_tag_commit "$release_repo" "$beta_tag")" == \
        "$source_commit" ]] || fail "the existing beta tag points at another commit"
+    release_automation_require_matching_notes_body "$gh_tool" "$beta_tag" "$release_repo" "$notes_path"
     for asset in \
         "Snip-Snap-$version.zip" "Snip-Snap-$version.zip.sha256" \
         "Snip-Snap-$version.dmg" "Snip-Snap-$version.dmg.sha256" "$record_name"; do
@@ -216,8 +227,10 @@ fi
 
 /bin/cp "$feed_dir/appcast.xml" "$release_checkout/appcast.xml"
 /bin/cp "$notes_path" "$release_checkout/$notes_name"
+/bin/cp "$mac_notes_path" "$release_checkout/$mac_notes_name"
+/bin/cp "$notes_dir/$ios_notes_name" "$release_checkout/$ios_notes_name"
 if [[ -n "$(git -C "$release_checkout" status --short)" ]]; then
-    git -C "$release_checkout" add appcast.xml "$notes_name"
+    git -C "$release_checkout" add appcast.xml "$notes_name" "$mac_notes_name" "$ios_notes_name"
     git -C "$release_checkout" commit -m "Publish Snip Snap $version beta $build_number"
     git -C "$release_checkout" push origin main
 fi

@@ -427,6 +427,42 @@ release_automation_require_appcast_channel() {
     }
 }
 
+release_automation_require_matching_notes_file() {
+    local published="$1" expected="$2"
+    [[ ! -f "$published" ]] || /usr/bin/cmp -s "$published" "$expected" || {
+        release_automation_fail "published release notes differ: ${published:t}"
+        return 1
+    }
+}
+
+release_automation_require_matching_notes_body() {
+    local gh_command="$1" tag="$2" release_repo="$3" notes_file="$4"
+    local body
+    body="$("$gh_command" release view "$tag" --repo "$release_repo" --json body --jq '.body')" || return 1
+    [[ "$body" == "$(<"$notes_file")" ]] || {
+        release_automation_fail "the existing GitHub release notes differ"
+        return 1
+    }
+}
+
+release_automation_ensure_notes_asset() {
+    local gh_command="$1" tag="$2" release_repo="$3" notes_file="$4" download_dir="$5"
+    local asset_name="${notes_file:t}"
+    local assets
+    assets="$("$gh_command" release view "$tag" --repo "$release_repo" \
+        --json assets --jq '.assets[].name')" || return 1
+    if ! print -r -- "$assets" | /usr/bin/grep -Fxq "$asset_name"; then
+        # Resume a partial release creation, but never replace an existing asset.
+        "$gh_command" release upload "$tag" "$notes_file" --repo "$release_repo" || return 1
+    fi
+    "$gh_command" release download "$tag" --repo "$release_repo" \
+        --pattern "$asset_name" --dir "$download_dir" || return 1
+    /usr/bin/cmp -s "$notes_file" "$download_dir/$asset_name" || {
+        release_automation_fail "the existing iOS release notes differ"
+        return 1
+    }
+}
+
 release_automation_promote_appcast() {
     local input_path="$1"
     local output_path="$2"
@@ -439,8 +475,8 @@ release_automation_promote_appcast() {
       input, output, version, build, beta_tag, stable_tag = ARGV
       xml = File.read(input)
       matches = 0
-      beta_notes = "Snip-Snap-#{version}-beta.#{build}.md"
-      stable_notes = "Snip-Snap-#{version}.md"
+      beta_notes = "Snip-Snap-#{version}-beta.#{build}"
+      stable_notes = "Snip-Snap-#{version}"
       promoted = xml.gsub(/<item\b.*?<\/item>/m) do |item|
         matching = item.match?(/sparkle:version(?:="|>)#{Regexp.escape(build)}(?:"|<)/) &&
           item.match?(/sparkle:shortVersionString(?:="|>)#{Regexp.escape(version)}(?:"|<)/)

@@ -241,5 +241,8 @@ case "$action" in
             report_xcodebuild_failure upload "$upload_log"
         fi
         print "Apple received Snip Snap $version ($build_number) for processing."
+        if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+            print -r -- "bundle_identifier=$app_bundle_identifier" >> "$GITHUB_OUTPUT"
+        fi
         ;;
 esac

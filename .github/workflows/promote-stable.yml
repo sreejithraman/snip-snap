@@ -53,3 +53,4 @@ jobs:
       - name: Record Apple handoff
         run: |
           echo "Select TestFlight build ${{ inputs.version }} (${{ inputs.build }}) in App Store Connect." >> "$GITHUB_STEP_SUMMARY"
+          echo "Paste the [iOS release notes](https://github.com/${{ github.repository }}/releases/download/v${{ inputs.version }}/Snip-Snap-${{ inputs.version }}-ios.txt) into the App Store What's New field." >> "$GITHUB_STEP_SUMMARY"

@@ -126,19 +126,33 @@ elif git ls-remote --exit-code "https://github.com/$release_repo.git" \
 fi
 
 notes_name="Snip-Snap-$version.md"
-beta_notes="$temp_root/beta-notes.md"
-"$gh_tool" release view "$beta_tag" --repo "$release_repo" --json body --jq '.body' > "$beta_notes" || \
-    fail "could not read beta notes"
+mac_notes_name="Snip-Snap-$version-mac.txt"
+ios_notes_name="Snip-Snap-$version-ios.txt"
+git clone --quiet "https://github.com/$release_repo.git" "$release_checkout"
+/usr/bin/ruby "$script_dir/release-notes.rb" generate \
+    "$release_checkout" "$source_commit" "$version" "$build_number" stable "$temp_root/notes"
+stable_notes="$temp_root/notes/$notes_name"
+mac_notes="$temp_root/notes/$mac_notes_name"
+ios_notes="$temp_root/notes/$ios_notes_name"
+for published_note in "$notes_name" "$mac_notes_name" "$ios_notes_name"; do
+    release_automation_require_matching_notes_file \
+        "$release_checkout/$published_note" "$temp_root/notes/$published_note"
+done
+if (( release_exists )); then
+    release_automation_require_matching_notes_body "$gh_tool" "$stable_tag" "$release_repo" "$stable_notes"
+fi
 if (( ! release_exists )); then
     "$gh_tool" release create "$stable_tag" \
-        "$release_zip" "$zip_checksum_file" "$release_dmg" "$dmg_checksum_file" \
+        "$release_zip" "$zip_checksum_file" "$release_dmg" "$dmg_checksum_file" "$ios_notes" \
         --repo "$release_repo" \
         --target "$source_commit" \
         --title "Snip Snap $version" \
-        --notes-file "$beta_notes"
+        --notes-file "$stable_notes"
 fi
+release_automation_ensure_notes_asset \
+    "$gh_tool" "$stable_tag" "$release_repo" "$ios_notes" "$existing_dir" || \
+    fail "could not verify the stable iOS release notes"
 
-git clone --quiet "https://github.com/$release_repo.git" "$release_checkout"
 tap_checkout="$(release_automation_tap_checkout "$brew_tool" "$working_tap_name" "$tap_repo")" || \
     fail "could not open a working copy of Homebrew tap $tap_name"
 [[ -f "$release_checkout/appcast.xml" ]] || fail "the beta appcast is missing"
@@ -156,14 +170,20 @@ elif release_automation_require_appcast_channel \
     >/dev/null 2>&1; then
     release_automation_verify_record_appcast \
         "$record_path" "$release_checkout/appcast.xml" "$version" "$build_number" default
+    /usr/bin/ruby "$script_dir/release-notes.rb" verify-appcast \
+        "$release_checkout/appcast.xml" "$version" "$build_number" "$mac_notes"
     /bin/cp "$release_checkout/appcast.xml" "$promoted_appcast"
 else
     fail "the appcast has no matching beta or stable item"
 fi
 release_automation_require_appcast_channel \
     "$promoted_appcast" "$version" "$build_number" default
+/usr/bin/ruby "$script_dir/release-notes.rb" appcast \
+    "$promoted_appcast" "$version" "$build_number" "$mac_notes"
 /bin/cp "$promoted_appcast" "$release_checkout/appcast.xml"
-/bin/cp "$beta_notes" "$release_checkout/$notes_name"
+/bin/cp "$stable_notes" "$release_checkout/$notes_name"
+/bin/cp "$mac_notes" "$release_checkout/$mac_notes_name"
+/bin/cp "$ios_notes" "$release_checkout/$ios_notes_name"
 
 checksum="$(/usr/bin/awk 'NR == 1 { print $1 }' "$zip_checksum_file")"
 cask_path="$tap_checkout/Casks/snip-snap.rb"
@@ -193,7 +213,7 @@ fi
 "$brew_tool" style --cask "$cask_path"
 
 if [[ -n "$(git -C "$release_checkout" status --short)" ]]; then
-    git -C "$release_checkout" add appcast.xml "$notes_name"
+    git -C "$release_checkout" add appcast.xml "$notes_name" "$mac_notes_name" "$ios_notes_name"
     git -C "$release_checkout" commit -m "Promote Snip Snap $version"
     git -C "$release_checkout" push origin main
 fi
@@ -205,3 +225,4 @@ fi
 
 print "Promoted $beta_tag to $stable_tag with the same Mac files."
 print "Select TestFlight build $version ($build_number) in App Store Connect."
+print "App Store What's New: https://github.com/$release_repo/releases/download/$stable_tag/$ios_notes_name"
