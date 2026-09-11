@@ -1,0 +1,29 @@
+Snip Snap 0.5.0 — Mac
+
+- Fix reentrant panel resizing
+- Fix crash on long composer paste
+- Add iOS app and optional iCloud sync
+- Automate beta and stable releases
+- Migrate stores with older schema markers
+- Refine composer control sizing
+- Standardize compact composer controls
+- Fix toast contrast and sizing
+- Align composer glass controls
+- Improve iCloud sync recovery and status
+- Add iOS list icon picker
+- Let the Mac panel move from empty chrome
+- Keep huge snip text out of cards and the composer
+- Add Command-number copy and one clipboard write path
+- Open the Mac live store as SwiftData only
+- Fix Mac header drags picking up cards underneath
+- Unify Mac panel glass and compact editor actions
+- Share list colors and glass controls across Mac and iOS
+- Add Finance icons for stocks and trading terminals
+- Align snip menus and make Mac selection explicit
+- Remove unused code and redundant checks
+- Use Command double Left Shift for Clipboard
+- Add reusable pins and opt-in clipboard sync across Mac and iOS
+- Refine Edit List with shared glass controls
+- Slide lists and drafts with tab navigation
+- Fix Add List name collisions and clarify dialog copy
+- Fix Accessibility button contrast in active and inactive windows
