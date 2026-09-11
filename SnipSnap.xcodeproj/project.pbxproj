@@ -268,6 +268,7 @@
 		D00000000000000000000001 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
 		D00000000000000000000002 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
 		D00000000000000000000003 /* Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Shared.xcconfig; sourceTree = "<group>"; };
+		D00000000000000000000006 /* MacTests.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = MacTests.xcconfig; sourceTree = "<group>"; };
 		D00000000000000000000004 /* Local.example.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Local.example.xcconfig; sourceTree = "<group>"; };
 		E20000000000000000000001 /* SnipSnapiOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipSnapiOSApp.swift; sourceTree = "<group>"; };
 		E20000000000000000000040 /* IOSAppSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAppSession.swift; sourceTree = "<group>"; };
@@ -486,6 +487,7 @@
 				D00000000000000000000002 /* Release.xcconfig */,
 				D00000000000000000000003 /* Shared.xcconfig */,
 				D00000000000000000000004 /* Local.example.xcconfig */,
+				D00000000000000000000006 /* MacTests.xcconfig */,
 				E2000000000000000000000E /* iOSDebug.xcconfig */,
 				E2000000000000000000000F /* iOSRelease.xcconfig */,
 				E20000000000000000000010 /* iOSShared.xcconfig */,
@@ -1016,6 +1018,7 @@
 		};
 		C00000000000000000000003 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = D00000000000000000000006 /* MacTests.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
@@ -1030,6 +1033,7 @@
 		};
 		C00000000000000000000004 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = D00000000000000000000006 /* MacTests.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
