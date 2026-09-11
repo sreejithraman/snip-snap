@@ -1,0 +1,6 @@
+// Share local signing settings without inheriting the app build settings.
+#include? "Local.xcconfig"
+
+CODE_SIGN_ENTITLEMENTS =
+INFOPLIST_FILE =
+PRODUCT_MODULE_NAME = SnipSnapTests

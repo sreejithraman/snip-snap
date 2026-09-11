@@ -30,6 +30,7 @@ if [[ "$run_common_tests" == YES ]]; then
     "$script_dir/release-policy-tests.sh"
     "$script_dir/release-automation-tests.sh"
     "$script_dir/signing-policy-tests.sh"
+    "$script_dir/mac-test-signing-tests.sh"
     "$script_dir/setup-local-signing-tests.sh"
     "$script_dir/testflight-policy-tests.sh"
     "$script_dir/testflight-tests.sh"
