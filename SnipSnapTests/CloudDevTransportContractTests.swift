@@ -14,8 +14,10 @@ final class CloudDevTransportContractTests: XCTestCase {
         forInfoDictionaryKey: "SnipSnapCloudKitContainerIdentifier"
       ) as? String
     )
-    try await CloudDevelopmentTransportContract.run(
-      containerIdentifier: identifier
-    )
+    do {
+      try await CloudDevelopmentTransportContract.run(containerIdentifier: identifier)
+    } catch {
+      XCTFail(error.localizedDescription)
+    }
   }
 }

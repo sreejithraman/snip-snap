@@ -2,6 +2,37 @@
 import XCTest
 
 final class CloudTextSyncCoordinatorTests: XCTestCase {
+    func testLegacyTransfersCommitIdleCheckpointsInRecordOrder() async throws {
+        let transport = OrderedTextTransport()
+        let store = TestCloudTextPersistence(pending: CloudOutboundBatch(
+            operations: [.delete(transport.recordID, base: nil)]
+        ))
+        let coordinator = CloudTextSyncCoordinator(store: store, transport: transport)
+        try await coordinator.sync()
+        let commits = await store.commitOrder()
+        XCTAssertEqual(commits, ["checkpoint-before-fetch", "fetch", "checkpoint-before-send", "send"])
+        let pending = await transport.pendingEvent()
+        XCTAssertNil(pending)
+    }
+
+    func testFailedLegacyCheckpointRetainsFollowingRecordsForRetry() async throws {
+        let transport = OrderedTextTransport()
+        let store = TestCloudTextPersistence()
+        let coordinator = CloudTextSyncCoordinator(store: store, transport: transport)
+        await store.failNextCheckpoint()
+        do {
+            try await coordinator.fetchRemote()
+            XCTFail("Expected checkpoint save to fail")
+        } catch TestStoreError.applyFailed {}
+        let beforeRetry = await store.commitOrder()
+        XCTAssertTrue(beforeRetry.isEmpty)
+        try await coordinator.fetchRemote()
+        let commits = await store.commitOrder()
+        XCTAssertEqual(commits, ["checkpoint-before-fetch", "fetch"])
+        let pending = await transport.pendingEvent()
+        XCTAssertNil(pending)
+    }
+
     func testConcurrentSyncIsRejectedWhileTheFirstRunIsSuspended() async throws {
         let transport = BlockingCloudRecordTransport()
         let coordinator = CloudTextSyncCoordinator(
@@ -131,6 +162,8 @@ private enum TestStoreError: Error {
 }
 
 private actor TestCloudTextPersistence: CloudTextSyncPersistence {
+    private var commitHistory: [String] = []
+    private var failCheckpoint = false
     private var failApply = false
     private var failSentApply = false
     private var attempts = 0
@@ -155,6 +188,18 @@ private actor TestCloudTextPersistence: CloudTextSyncPersistence {
     func loadEngineState() -> CloudEngineStateEnvelope? {
         nil
     }
+
+    func failNextCheckpoint() { failCheckpoint = true }
+
+    func saveEngineState(_ state: CloudEngineStateEnvelope) throws {
+        if failCheckpoint {
+            failCheckpoint = false
+            throw TestStoreError.applyFailed
+        }
+        commitHistory.append(String(decoding: state.serialization, as: UTF8.self))
+    }
+
+    func commitOrder() -> [String] { commitHistory }
 
     func stagedBatches() -> [CloudSyncBatch] {
         staged
@@ -198,6 +243,10 @@ private actor TestCloudTextPersistence: CloudTextSyncPersistence {
             acceptedSent = true
             pending = CloudOutboundBatch(operations: [])
         }
+        switch batch {
+        case .fetched: commitHistory.append("fetch")
+        case .sent: commitHistory.append("send")
+        }
         staged.remove(at: index)
     }
 
@@ -217,5 +266,44 @@ private actor TestCloudTextPersistence: CloudTextSyncPersistence {
 
     func hasAcceptedSentResult() -> Bool {
         acceptedSent
+    }
+}
+
+private actor OrderedTextTransport: CloudRecordTransport {
+    nonisolated let recordID = CloudRecordID(
+        zone: CloudZoneID(name: "metadata", ownerName: "owner"), name: "legacy-text"
+    )
+    private let mailbox = CloudRecordTransportMailbox()
+    private var fetched: CloudFetchedBatch?
+
+    func start(state: CloudEngineStateEnvelope?) {}
+
+    func fetch(scope: CloudFetchScope) -> CloudFetchedBatch {
+        if let fetched { return fetched }
+        appendCheckpoint("checkpoint-before-fetch")
+        let batch = CloudFetchedBatch(id: UUID(), items: [], engineState: nil)
+        fetched = batch
+        mailbox.append(.batch(CloudPendingBatch(batch: .fetched(batch), outbound: nil)))
+        return batch
+    }
+
+    func send(_ outbound: CloudOutboundBatch) -> CloudSentBatch {
+        appendCheckpoint("checkpoint-before-send")
+        let batch = CloudSentBatch(id: UUID(), items: [.deleted(recordID)], engineState: nil)
+        mailbox.append(.batch(CloudPendingBatch(batch: .sent(batch), outbound: outbound)))
+        return batch
+    }
+
+    func pendingEvent() -> CloudRecordTransportEvent? { mailbox.first }
+    func confirmApplied(_ id: UUID) throws { _ = try mailbox.confirm(id) }
+    func fetchRecord(_ id: CloudRecordID, fields: Set<String>) -> CloudRecordSnapshot? { nil }
+    func fetchAsset(_ id: CloudRecordID, field: String,
+                    destination: CloudAssetDestination) -> CloudAssetReceipt? { nil }
+
+    private func appendCheckpoint(_ value: String) {
+        let namespace = CloudSyncNamespace(cloudScope: "private", accountLineage: "account",
+            generation: UUID(), zones: [recordID.zone])
+        mailbox.append(.checkpoint(UUID(), CloudEngineStateEnvelope(
+            namespace: namespace, serialization: Data(value.utf8))))
     }
 }

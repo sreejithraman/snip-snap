@@ -38,7 +38,8 @@ extension CloudFullBatchPlanner {
       )]
     } ?? []
     return NormalizedBatch(
-      results: seen.values.sorted { ($0.id?.name ?? "") < ($1.id?.name ?? "") },
+      results: seen.values.sorted { ($0.id?.name ?? "") < ($1.id?.name ?? "") }
+        .map(NormalizedItem.init),
       nextEngine: fetched.engineState,
       attachmentOperationIDs: [],
       outboundBindings: [],
@@ -111,7 +112,7 @@ extension CloudFullBatchPlanner {
   static func normalizeSentResult(
     _ result: CloudSendItemResult,
     operation: CloudOutboundOperation?
-  ) throws -> CloudFetchItemResult {
+  ) throws -> NormalizedItem {
     guard let operation else { throw CloudTransportError.invalidRecord }
     switch result {
     case .saved(let value):
@@ -121,7 +122,7 @@ extension CloudFullBatchPlanner {
       guard value.recordType == draft.recordType else {
         return .failed(value.id, .invalidRecord)
       }
-      return .record(value)
+      return .saved(value)
     case .deleted(let id):
       guard case .delete = operation else { throw CloudTransportError.invalidRecord }
       return .deleted(id)
@@ -129,7 +130,7 @@ extension CloudFullBatchPlanner {
       if case .save(let draft) = operation, value.recordType != draft.recordType {
         return .failed(id, .invalidRecord)
       }
-      return .record(value)
+      return .conflict(value)
     case .unknownItem(let id):
       if case .save(let draft) = operation,
         draft.recordType == CloudAttachmentRecordCodec.metadataRecordType
@@ -157,14 +158,16 @@ extension CloudFullBatchPlanner {
       guard case .failed(_, let failure) = event else { return nil }
       return failure
     }
-    let relevant = failures.filter { $0 != .zoneMissing }
+    let relevant = failures.filter { $0 != .zoneMissing } + batch.items.compactMap { item in
+      if case .failed(.some, .zoneMissing) = item { CloudOperationFailure.zoneMissing } else { nil }
+    }
     guard !relevant.isEmpty else { return nil }
     return relevant.allSatisfy(\.isRetryable) ? .retryableFetch : .terminalFetch
   }
 
   static func sendRecoveryKind(
     _ batch: CloudSentBatch,
-    normalized: [CloudFetchItemResult],
+    normalized: [NormalizedItem],
     attachmentOperationIDs: Set<CloudRecordID>
   ) -> CloudFullRecoveryKind? {
     if batch.databaseEvents.contains(where: isDestructiveReset) { return .destructiveReset }

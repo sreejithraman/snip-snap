@@ -56,7 +56,7 @@ extension CloudFullSyncPersistence {
     candidates: [SyncModeSeedSettlementCandidate],
     namespace expectedNamespace: ICloudSyncNamespaceBinding
   ) async throws -> SyncModeSeedSettlementProof {
-    let actual = Self.binding(namespace)
+    let actual = namespace.binding
     guard actual == expectedNamespace else { throw SyncModePersistenceError.namespaceMismatch }
     let local = try await library.checkedSnapshot(sortedBy: .manual)
     let localByID = Dictionary(uniqueKeysWithValues: local.snips.map { ($0.id, $0) })
@@ -95,7 +95,7 @@ extension CloudFullSyncPersistence {
     for outbound: CloudOutboundBatch,
     namespace expectedNamespace: ICloudSyncNamespaceBinding
   ) async throws -> SyncModeSendAttempt {
-    let actual = Self.binding(namespace)
+    let actual = namespace.binding
     guard actual == expectedNamespace else { throw SyncModePersistenceError.namespaceMismatch }
     var operations: [SyncModeSendOperation] = []
     for operation in outbound.operations {
@@ -422,19 +422,10 @@ extension CloudFullSyncPersistence {
   }
 
   package func clearRetryableEvents(_ keys: Set<String>) async throws {
-    try await library.clearCloudFullRecoveryEvents(namespaceKey: namespaceKey, keys: keys)
+    let retained = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
+      .filter(Self.hasFailedFetchRecords).map(Self.recoveryKey)
+    try await library.clearCloudFullRecoveryEvents(namespaceKey: namespaceKey, keys: keys.subtracting(retained))
   }
-  private static func binding(_ namespace: CloudSyncNamespace) -> ICloudSyncNamespaceBinding {
-    ICloudSyncNamespaceBinding(
-      scope: namespace.cloudScope,
-      accountLineage: namespace.accountLineage,
-      generation: namespace.generation,
-      zones: Set(namespace.zones.map {
-        ICloudSyncZoneBinding(name: $0.name, ownerName: $0.ownerName)
-      })
-    )
-  }
-
   private static func reference(for id: CloudRecordID) -> CloudEntityReference? {
     let kind: CloudEntityKind
     let suffix: Substring

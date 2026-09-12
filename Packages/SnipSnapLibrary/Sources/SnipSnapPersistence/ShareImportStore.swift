@@ -9,9 +9,9 @@ public enum ShareImportError: Error, Equatable, LocalizedError, Sendable {
   public var errorDescription: String? {
     switch self {
     case .invalidStaging:
-      String(localized: "Snip Snap could not keep the shared files.", bundle: .main)
+      String(localized: "Couldn’t add the shared files. Share them again.", bundle: .main)
     case .noSharedContainer:
-      String(localized: "This build does not have access to the shared Snip Snap container.", bundle: .main)
+      String(localized: "Snip Snap can’t receive shared files. Contact support for help.", bundle: .main)
     }
   }
 }

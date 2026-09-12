@@ -60,7 +60,7 @@ struct SnipSnapiOSApp: App {
         )
 #endif
         let syncActionBridge = IOSCloudSyncActionBridge()
-        let productionCloudSyncHandler = Self.makeAccountCacheHandler(
+        let productionCloudSyncHandler = cloudServices.makeAccountCacheHandler(
             syncWhenPossible: { await syncActionBridge.syncWhenPossible() },
             retrySyncWhenPossible: { await syncActionBridge.retrySyncWhenPossible() },
             scheduleSyncAfterLocalChange: {
@@ -103,24 +103,7 @@ struct SnipSnapiOSApp: App {
         syncActionBridge.session = session
     }
 
-    private static func makeAccountCacheHandler(
-        syncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
-        retrySyncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
-        scheduleSyncAfterLocalChange: @escaping AppleAccountCacheCoordinatorHandler.ScheduleAction
-    ) -> AppleAccountCacheCoordinatorHandler? {
-        guard let sharedRootURL = SnipSnapAppGroupContainer.resolve()?.url,
-              let containerIdentifier = Bundle.main.object(
-                forInfoDictionaryKey: "SnipSnapCloudKitContainerIdentifier"
-              ) as? String
-        else { return nil }
-        return AppleAccountCacheCoordinatorHandler(
-            syncRootURL: sharedRootURL.appendingPathComponent("SyncMode", isDirectory: true),
-            containerIdentifier: containerIdentifier,
-            syncWhenPossible: syncWhenPossible,
-            retrySyncWhenPossible: retrySyncWhenPossible,
-            scheduleSyncAfterLocalChange: scheduleSyncAfterLocalChange
-        )
-    }
+
 
     var body: some Scene {
         WindowGroup {

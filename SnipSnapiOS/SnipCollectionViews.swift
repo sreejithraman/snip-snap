@@ -248,7 +248,7 @@ struct SnipCollectionView: View {
 
     private var emptyTitle: String {
         if hasSearchQuery {
-            return String(localized: "No Results")
+            return String(localized: "No results")
         }
         return model.completionFilter.emptyStateTitle
     }
@@ -296,7 +296,7 @@ struct SnipCollectionView: View {
             return String(localized: "Try a different search.")
         }
         return model.completionFilter == .all
-            ? String(localized: "Save text here when you want to keep it close.")
+            ? String(localized: "Type or paste text below.")
             : String(localized: "Change the filter to see other snips.")
     }
 
@@ -772,16 +772,16 @@ struct LibrarySearchView: View {
         Group {
             if query.isEmpty {
                 CollectionEmptyState(
-                    title: String(localized: "Search All"),
+                    title: String(localized: "Search"),
                     systemImage: "magnifyingglass",
-                    detail: String(localized: "Find snips in every list and Clipboard.")
+                    detail: String(localized: "Search every list and Clipboard.")
                 )
                 .accessibilityIdentifier("search-prompt")
             } else if results.isEmpty {
                 CollectionEmptyState(
-                    title: String(localized: "No Results"),
+                    title: String(localized: "No results"),
                     systemImage: "magnifyingglass",
-                    detail: String(localized: "Try a different search.")
+                    detail: String(localized: "Try another search.")
                 )
                 .accessibilityIdentifier("empty-search")
             } else {

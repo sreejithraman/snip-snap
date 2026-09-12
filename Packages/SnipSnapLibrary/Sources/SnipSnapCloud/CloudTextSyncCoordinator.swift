@@ -2,6 +2,7 @@ import Foundation
 
 package protocol CloudTextSyncPersistence: Sendable {
     func loadEngineState() async throws -> CloudEngineStateEnvelope?
+    func saveEngineState(_ state: CloudEngineStateEnvelope) async throws
     func stagedBatches() async throws -> [CloudSyncBatch]
     func stage(_ batch: CloudSyncBatch) async throws
     func applyStaged(_ id: UUID) async throws
@@ -68,7 +69,7 @@ package actor CloudTextSyncCoordinator {
     ) async throws {
         let fetched = try await transport.fetch(scope: .all)
         try await beforeApply()
-        try await commit(.fetched(fetched))
+        try await commitThrough(.fetched(fetched))
     }
 
     private func sendAndCommit(
@@ -78,7 +79,7 @@ package actor CloudTextSyncCoordinator {
         guard !outbound.operations.isEmpty || !outbound.zonesToSave.isEmpty else { return }
         try await beforeSend(outbound)
         let sent = try await transport.send(outbound)
-        try await commit(.sent(sent))
+        try await commitThrough(.sent(sent))
     }
 
     private func recoverStagedBatches() async throws {
@@ -86,6 +87,25 @@ package actor CloudTextSyncCoordinator {
             try await store.applyStaged(batch.id)
             try await transport.confirmApplied(batch.id)
         }
+    }
+
+    // Explicit transfers still receive idle checkpoints from CKSyncEngine. Consume
+    // them in the same order as records; never acknowledge past an earlier event.
+    private func commitThrough(_ batch: CloudSyncBatch) async throws {
+        while let event = await transport.pendingEvent() {
+            switch event {
+            case .batch(let pending):
+                try await commit(pending.batch)
+            case .checkpoint(let id, let state):
+                try await store.saveEngineState(state)
+                try await transport.confirmApplied(id)
+            case .accountChange:
+                throw ICloudAccountGateError.accountChanged
+            }
+            if event.id == batch.id { return }
+        }
+        // Direct adapters may return a batch without retaining an event queue.
+        try await commit(batch)
     }
 
     private func commit(_ batch: CloudSyncBatch) async throws {

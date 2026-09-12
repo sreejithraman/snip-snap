@@ -1,38 +1,156 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "This file isn’t on this Mac. Find the original file and copy it again." : {},
+    "%@ Remove or replace these attachments, then retry sync." : {},
+    "Clipboard history belongs to another iCloud account or library." : {},
+    "Connect to the internet to finish setup." : {},
+    "Couldn’t delete synced content" : {},
+    "Export backup" : {},
+    "Export backup…" : {},
+    "Retry sync. If it still fails, update Snip Snap or contact support." : {},
+    "Sync will resume when iCloud is ready." : {},
+    "Sync will resume when your iCloud account is available." : {},
+    "This device keeps a recovery copy." : {},
+    "Update Snip Snap to keep syncing." : {},
+    "iCloud deleted Snip Snap’s synced content. Sync is off so old data won’t upload again." : {},
+    "No results" : {},
+    "Type or paste text below." : {},
+    "Can’t read a clipboard file. Try again or contact support." : {},
+    "A clipboard file isn’t available from iCloud. Try again later." : {},
+    "Can’t read clipboard data. Try again or contact support." : {},
+    "Add files" : {},
+    "Add text or an attachment to save a snip." : {},
+    "Adding files…" : {},
+    "Can’t read an attachment. Retry sync. If it still fails, contact support." : {},
+    "Attachment unavailable" : {},
+    "Can’t access iCloud" : {},
+    "Can’t check your iCloud account right now. Sync will try again." : {},
+    "Can’t check your iCloud account. Try again later." : {},
+    "Can’t undo this action. The same details changed on another device." : {},
+    "Retry sync. If it still fails, contact support." : {},
+    "Couldn’t save a clipboard file. Try again or contact support." : {},
+    "Check your device’s iCloud permissions for Snip Snap." : {},
+    "Check your device’s iCloud restrictions or ask your administrator." : {},
+    "Checking for changes…" : {},
+    "Choose a backup folder that includes attachments, or a JSON file without attachments." : {},
+    "Choose backup" : {},
+    "Clear unpinned history" : {},
+    "Clear unpinned history?" : {},
+    "Couldn’t copy an attachment. Try again." : {},
+    "Couldn’t add the shared files. Share them again." : {},
+    "Couldn’t get the latest iCloud changes. Turning off sync uses this Mac’s copy, which may be out of date. Your iCloud data stays." : {},
+    "Couldn’t get the latest iCloud changes. Turning off sync uses this device’s copy, which may be out of date. Your iCloud data stays." : {},
+    "Couldn’t save an attachment" : {},
+    "Couldn’t save your choice. Try again." : {},
+    "Couldn’t set up sync" : {},
+    "Couldn’t sync" : {},
+    "Couldn’t sync an attachment" : {},
+    "Current version" : {},
+    "Delete synced content" : {},
+    "Delete synced content?" : {},
+    "Delete synced content…" : {},
+    "Deletes synced snips, attachments, and clipboard history, including pins, from iCloud and your synced devices. This Mac keeps a recovery copy." : {},
+    "Deletes synced snips, attachments, and clipboard history, including pins, from iCloud and your synced devices. This device keeps a recovery copy." : {},
+    "Deletion incomplete" : {},
+    "Download and preview" : {},
+    "Edit differences" : {},
+    "Finishing sync setup…" : {},
+    "Free up iCloud storage, then retry sync." : {},
+    "Getting your snips from iCloud…" : {},
+    "Import backup" : {},
+    "Import backup…" : {},
+    "Clipboard entries over 32 MB can’t sync. Contact support for help." : {},
+    "Keep both" : {},
+    "Keep current" : {},
+    "Keep on this Mac" : {},
+    "Keep on this device" : {},
+    "Library actions" : {},
+    "Needs attention" : {},
+    "Newest first" : {},
+    "Nothing to review" : {},
+    "Oldest first" : {},
+    "Privacy policy" : {},
+    "Recovered list" : {},
+    "Recovered lists" : {},
+    "Recovered snip" : {},
+    "Recovered snips" : {},
+    "Recovered version" : {},
+    "Recovered version unavailable" : {},
+    "Remove from this Mac" : {},
+    "Remove from this device" : {},
+    "Removing synced content from iCloud…" : {},
+    "You can’t edit this recovery copy." : {},
+    "Retry clipboard sync" : {},
+    "Retry import" : {},
+    "Retry sync" : {},
+    "Review backup" : {},
+    "Review recovered versions" : {},
+    "Saving a copy on this device. Your iCloud data stays." : {},
+    "Saving a copy…" : {},
+    "Search every list and Clipboard." : {},
+    "Setting up sync…" : {},
+    "Sign in to iCloud" : {},
+    "Sign in to iCloud in your device settings to sync your snips." : {},
+    "Signed out of iCloud" : {},
+    "Snip Snap can’t receive shared files. Contact support for help." : {},
+    "Snip Snap kept your previous account’s snips separate." : {},
+    "Some changes haven’t synced" : {},
+    "Some changes haven’t synced. Try again." : {},
+    "Sync will retry the deletion. This device keeps a recovery copy." : {},
+    "Sync clipboard history?" : {},
+    "Your previous account’s snips stay separate. Choose whether to keep them before syncing again." : {},
+    "Can’t change your snips right now. Try again in a moment. If it still fails, contact support." : {},
+    "Sync off" : {},
+    "Sync on" : {},
+    "Sync paused" : {},
+    "Sync text, images, and pinned files across your devices. Files that have synced keep syncing after you unpin them." : {},
+    "Sync turned off" : {},
+    "Sync will retry the remaining changes." : {},
+    "Synced content deleted" : {},
+    "This clears unpinned history on this Mac. Pinned items stay." : {},
+    "This file isn’t on this device. If it synced before, sync your clipboard and try again." : {},
+    "Try again. If it still fails, update Snip Snap or contact support." : {},
+    "Try another search." : {},
+    "Turn off sync" : {},
+    "Turn off sync?" : {},
+    "Turning off sync…" : {},
+    "Turning this off doesn’t delete your history." : {},
+    "Update Snip Snap" : {},
+    "Use edited version" : {},
+    "Use recovered" : {},
+    "View options" : {},
+    "Wait for sync to finish." : {},
+    "Waiting for connection" : {},
+    "Your changes will sync when you’re back online." : {},
+    "Your iCloud account is unavailable. Try again later." : {},
+    "Your snips and attachments sync through iCloud." : {},
+    "Your snips aren’t syncing with iCloud." : {},
+    "Your synced snips stay on this Mac. Snip Snap will try again when iCloud is available." : {},
+    "Your synced snips stay on this device. Snip Snap will try again when iCloud is available." : {},
+    "iCloud account changed" : {},
+    "iCloud can’t provide this attachment yet. Sync will try again." : {},
+    "iCloud is unavailable. Try again later." : {},
+    "iCloud isn’t available right now. Setup will try again." : {},
+    "iCloud isn’t available right now. Sync will try again." : {},
+    "iCloud needs more time. Try again later." : {},
+    "iCloud restricted" : {},
+    "iCloud storage full" : {},
+    "iCloud unavailable" : {},
     "Check your connection, then try again." : {},
     "Clipboard history changed on another device. Try again." : {},
-    "Clipboard history is already syncing." : {},
     "Couldn’t clear clipboard history. Try again." : {},
     "Couldn’t delete this clipboard entry. Try again." : {},
     "Couldn’t load clipboard history. Try again." : {},
     "Couldn’t save clipboard history. Try again." : {},
     "Couldn’t update the pin. Try again." : {},
-    "Includes text, images, pinned files, and files synced before. Turning this off keeps local history and leaves iCloud data intact." : {},
     "Sign in to iCloud, then try again." : {},
-    "Snip Snap can’t access iCloud. Check your device and iCloud restrictions." : {},
-    "Snip Snap can’t check your iCloud account. Try again." : {},
-    "Snip Snap can’t read a clipboard file on this device." : {},
-    "Snip Snap can’t read a clipboard item." : {},
-    "Snip Snap can’t save a clipboard file on this device." : {},
-    "Snip Snap can’t sync a clipboard entry larger than 32 MB." : {},
-    "Snip Snap couldn’t delete synced clipboard history. %@" : {},
-    "Snip Snap couldn’t sync clipboard history. %@" : {},
-    "Snip Snap couldn’t update clipboard history for this iCloud account. %@" : {},
-    "Some iCloud changes are pending. Try again." : {},
-    "Text and image entries, pinned files, and files that synced before will upload to your private iCloud and merge with your other devices. Other files stay on this Mac until pinned." : {},
-    "Text and image entries, pinned files, and files that synced before will upload to your private iCloud and merge with your other devices. Other files stay on this device until pinned." : {},
-    "This file isn’t available on this device. If it synced before, try clipboard sync again." : {},
-    "Try again. If this keeps happening, check for an update or contact support." : {},
+    "Couldn’t delete synced clipboard history. %@" : {},
+    "Couldn’t sync clipboard history. %@" : {},
+    "Couldn’t update clipboard history for this account. %@" : {},
     "Update Snip Snap, then try again." : {},
-    "Your iCloud account is unavailable right now. Try again." : {},
     "iCloud access is restricted on this device." : {},
-    "iCloud can’t provide a clipboard file right now." : {},
-    "iCloud is unavailable right now. Try again." : {},
-    "iCloud paused the request. Try again shortly." : {},
     "iCloud storage is full. Free up space, then try again." : {},
-    "%@ Try sync again. If this keeps happening, check for an update or contact support." : {},
     "Snip Snap couldn’t open the local library. It left your saved data unchanged." : {},
     "Snip Snap couldn’t open your local library, so it can’t save new snips." : {},
     "Snip Snap couldn’t read one or more files." : {},
@@ -43,11 +161,9 @@
     "Add to %@…" : {},
     "Another iCloud sync task is still running." : {},
     "Capture Selection and global Shift shortcuts need Accessibility access. You can keep using other parts of Snip Snap without it." : {},
-    "Choose a Backup" : {},
     "Copy %lld" : {},
     "Copying the selection took too long. Try again." : {},
     "Couldn’t Copy" : {},
-    "Couldn’t Delete Synced Content" : {},
     "Couldn’t Save Clipboard History" : {},
     "Couldn’t clear downloaded files. Try again." : {},
     "Couldn’t copy that content. Try again." : {},
@@ -69,49 +185,30 @@
     "Folders can’t be added to clipboard history yet." : {},
     "Later" : {},
     "Name Already Used" : {},
-    "Old Synced Data Needs Removal" : {},
-    "Oldest First" : {},
     "Paste" : {},
-    "Privacy Policy" : {},
     "Reading the clipboard took too long. Snip Snap did not change it." : {},
     "Retry" : {},
     "Select Snips" : {},
     "Snip Snap can’t save changes right now. Try again soon." : {},
-    "Snip Snap couldn’t copy an attachment." : {},
-    "Snip Snap couldn’t get the latest changes from iCloud. Keep sync on and try again, or turn it off and use the copy on this Mac. That copy may not include recent changes from other devices. This does not delete iCloud data." : {},
-    "Snip Snap couldn’t get the latest changes from iCloud. Keep sync on and try again, or turn it off and use the copy on this device. That copy may not include recent changes from other devices. This does not delete iCloud data." : {},
     "Snip Snap couldn’t open your saved snips." : {},
     "Snip Snap couldn’t restore your clipboard and did not save the capture." : {},
-    "Snip Snap couldn’t save one iCloud attachment on this device. Your other changes are safe, and sync will try again." : {},
-    "Snip Snap couldn’t save your choice. Try again." : {},
-    "Snip Snap doesn’t sync local-only data with iCloud." : {},
     "Snip Snap found items it can’t copy safely." : {},
-    "Snip Snap is changing where it stores your snips. Try again when setup finishes." : {},
-    "Snip Snap is starting a new empty synced library and removing the old synced data." : {},
-    "Snip Snap started a new empty synced library, but it could not remove all old iCloud data yet. It will retry the next time it syncs. Your local recovery copy remains." : {},
     "Some shared items couldn’t be added. Snip Snap will try again when you reopen the app." : {},
     "Some shared items couldn’t be added. Try again." : {},
     "Something Went Wrong" : {},
-    "Synced Data Deleted" : {},
-    "Synced Snip Snap data was removed from iCloud. Snip Snap cleared its old copy and won’t upload it again. You can turn sync on when you’re ready." : {},
-    "Synced data was removed. This device kept a local recovery copy. A small record remains in iCloud to prevent an old device from restoring the deleted data." : {},
     "That shortcut is the default for another action." : {},
     "The clipboard changed before Snip Snap could copy the selection." : {},
     "The snips in this list will move to Inbox." : {},
     "The source app is no longer active. Try again." : {},
     "These attachments can’t sync: %@" : {},
     "These changes can’t be made together." : {},
-    "This backup contains %@. Snip Snap will merge this backup with your saved snips." : {},
+    "Merge this backup with your library.\n\n%@" : {},
     "This clears unpinned history across synced devices. Pinned items stay." : {},
     "This clears unpinned history on this device. Pinned items stay." : {},
     "This iCloud library can’t be used for sync." : {},
     "This library can’t change where it stores your snips." : {},
-    "This starts a new, empty synced library. It deletes synced snips, attachments, and clipboard history—including pins—from iCloud. This Mac keeps a local recovery copy. A small iCloud record remains so older devices cannot restore deleted content." : {},
-    "This starts a new, empty synced library. It deletes synced snips, attachments, and clipboard history—including pins—from iCloud. This device keeps a local recovery copy. A small iCloud record remains so older devices cannot restore deleted content." : {},
-    "Try Again" : {},
     "Try again." : {},
     "Updates" : {},
-    "Your device or an organization that manages it is blocking iCloud. Your changes will stay on this device." : {},
     "file is missing or has changed" : {},
     "file type %@ isn’t supported" : {},
     "iCloud sync has no active library." : {},
@@ -120,8 +217,6 @@
     "part of a snip with more than %@ of attachments" : {},
     "There’s nothing to paste. Copy text or an image, then try again." : {},
     "This clipboard content isn’t supported. Try copying text or an image." : {},
-    "Search All" : {},
-    "Find snips in every list and Clipboard." : {},
     "Couldn’t read the clipboard. Copy the content again, then tap Paste." : {},
     "Couldn’t save the pasted content. Try again." : {},
     "No pinned entries" : {},
@@ -250,15 +345,6 @@
     "Another iCloud Sync task is still running." : {
 
     },
-    "An Attachment Couldn’t Be Saved" : {
-
-    },
-    "An Attachment Couldn’t Sync" : {
-
-    },
-    "An Attachment Isn’t Available" : {
-
-    },
     "Captured Selection" : {
 
     },
@@ -266,33 +352,6 @@
 
     },
     "Choose how to handle the iCloud encrypted-data reset before turning sync on." : {
-
-    },
-    "Deleting Synced Content…" : {
-
-    },
-    "iCloud Access Is Restricted" : {
-
-    },
-    "iCloud Access Was Denied" : {
-
-    },
-    "iCloud Account Changed" : {
-
-    },
-    "iCloud Is Unavailable" : {
-
-    },
-    "iCloud Storage Is Full" : {
-
-    },
-    "iCloud Sync Setup Stopped" : {
-
-    },
-    "iCloud Sync Was Turned Off" : {
-
-    },
-    "Local Only" : {
 
     },
     "No done snips" : {
@@ -307,22 +366,7 @@
     "Old Synced Content Removal Pending" : {
 
     },
-    "One attachment can’t be read from iCloud right now. Your other changes are safe, and Snip Snap will try again." : {
-
-    },
-    "Saved snips and attachments sync through your private iCloud database. Snip Snap’s maintainers cannot inspect private records in CloudKit Console. Apple encrypts synced data in transit and at rest; user fields use encrypted values and files use CKAsset data. Those user fields and attachments are end-to-end encrypted only when Advanced Data Protection is on." : {
-
-    },
     "Select at least two snips to merge." : {
-
-    },
-    "Setting Up iCloud Sync…" : {
-
-    },
-    "Sign In to iCloud" : {
-
-    },
-    "Sign in to iCloud in Settings to sync your snips. Your changes will stay on this device until then." : {
 
     },
     "Shared" : {
@@ -334,25 +378,10 @@
     "Snip Snap could not copy one of the files." : {
 
     },
-    "Snip Snap could not keep the shared files." : {
-
-    },
     "Snip Snap could not open its SwiftData store, so it cannot save new snips." : {
 
     },
     "Snip Snap could not read its saved snips." : {
-
-    },
-    "Snip Snap Couldn’t Sync" : {
-
-    },
-    "Snip Snap can’t find or read one attachment on this device. Your other changes are safe." : {
-
-    },
-    "Snip Snap can’t reach iCloud right now. Your changes are safe on this device, and sync will try again." : {
-
-    },
-    "Snip Snap can’t reach iCloud right now. Your local library remains available, and setup will try again." : {
 
     },
     "Snip Snap couldn’t prepare a safe place for one iCloud attachment on this device. Your other changes are safe, and sync will try again." : {
@@ -367,46 +396,7 @@
     "Snip Snap is checking iCloud before it starts or joins the new synced collection." : {
 
     },
-    "Snip Snap is checking iCloud for changes." : {
-
-    },
-    "Snip Snap is fetching iCloud data and preparing a safe merged copy." : {
-
-    },
-    "Snip Snap stopped sync for the prior iCloud account and opened a separate local library. Sign in to the account you want to use, then turn sync on." : {
-
-    },
-    "Some changes did not reach iCloud. Your other changes are safe, and Snip Snap will retry." : {
-
-    },
-    "Some Changes Haven’t Synced" : {
-
-    },
     "The synced Snip Snap data was removed from iCloud. Snip Snap cleared its old sync copy and will not upload it again. You can turn sync on when you’re ready." : {
-
-    },
-    "Update Snip Snap to Sync" : {
-
-    },
-    "Waiting for a Connection" : {
-
-    },
-    "You appear to be offline. Your changes are safe on this device and will sync when you’re back online." : {
-
-    },
-    "You appear to be offline. Your local library remains available, and Snip Snap will finish setup when you’re back online." : {
-
-    },
-    "Your changes are safe on this device." : {
-
-    },
-    "Your local library remains available." : {
-
-    },
-    "Snip Snap is finishing iCloud Sync setup." : {
-
-    },
-    "Snip Snap is making a local copy of your synced library. Your iCloud copy will stay in place." : {
 
     },
     "Snip Snap is starting a fresh empty synced collection and removing the old data zones." : {
@@ -436,22 +426,19 @@
     "Synced content was removed. This device kept a local recovery copy. A small control record remains in iCloud so an old device cannot restore the deleted collection." : {
 
     },
-    "That action cannot be undone because the same fields changed on another device." : {
-
-    },
     "That change cannot run with other changes." : {
 
     },
-    "That choice does not apply to this recovered edit." : {
+    "That choice doesn’t apply to this recovered version." : {
 
     },
     "That list is not available." : {
 
     },
-    "That recovered edit changed. Refresh the review and try again." : {
+    "That recovered version changed. Reopen it and try again." : {
 
     },
-    "That recovered edit is no longer available." : {
+    "That recovered version is no longer available." : {
 
     },
     "That snip no longer exists." : {
@@ -463,16 +450,7 @@
     "The iCloud Sync collection is not valid." : {
 
     },
-    "There is nothing to save." : {
-
-    },
-    "This build does not have access to the shared Snip Snap container." : {
-
-    },
     "This device is changing its storage choice. Try again when setup finishes." : {
-
-    },
-    "This is a recovery copy. Restore it to an active library before making changes." : {
 
     },
     "This snip changed in another window. Copy your edits, reopen it, and try again." : {
@@ -481,13 +459,7 @@
     "This snip store cannot change storage modes." : {
 
     },
-    "Turning Off iCloud Sync…" : {
-
-    },
     "iCloud Encrypted Data Was Reset" : {
-
-    },
-    "iCloud Sync On" : {
 
     },
     "iCloud Sync needs attention before setup can finish." : {
@@ -499,7 +471,7 @@
     "local file is missing or changed" : {
 
     },
-    "%@ captures the selection" : {
+    "Select text, then press %@ to save it." : {
 
     },
     "%@, %@" : {
@@ -521,7 +493,7 @@
     "%lld new lists" : {
 
     },
-    "%lld recovered edits" : {
+    "%lld recovered snips" : {
 
     },
     "%lld snips" : {
@@ -539,7 +511,7 @@
     "1 new list" : {
 
     },
-    "1 recovered edit" : {
+    "1 recovered snip" : {
 
     },
     "1 snip" : {
@@ -552,9 +524,6 @@
 
     },
     "Add Attachments" : {
-
-    },
-    "Add Files" : {
 
     },
     "Add to %@" : {
@@ -579,9 +548,6 @@
 
     },
     "Appearance" : {
-
-    },
-    "Apple Account Changed" : {
 
     },
     "Attachments" : {
@@ -614,9 +580,6 @@
     "Check for Updates…" : {
 
     },
-    "Choose Backup" : {
-
-    },
     "Choose Files…" : {
 
     },
@@ -629,25 +592,13 @@
     "Choose a backup" : {
 
     },
-    "Choose a backup folder to include attachments, or a plain JSON file for a text-only backup." : {
-
-    },
-    "Choose a backup folder to include attachments. A plain JSON file can contain text and metadata only." : {
-
-    },
     "Choose list icon, current: %@" : {
 
     },
     "Chronological" : {
 
     },
-    "Clear" : {
-
-    },
     "Clear Downloaded Files" : {
-
-    },
-    "Clear History" : {
 
     },
     "Clear clipboard history?" : {
@@ -701,16 +652,10 @@
     "Copy Text Only" : {
 
     },
-    "Copying files…" : {
-
-    },
     "Could Not Save" : {
 
     },
     "Create" : {
-
-    },
-    "Current List" : {
 
     },
     "Dark" : {
@@ -723,15 +668,6 @@
 
     },
     "Delete List" : {
-
-    },
-    "Delete Synced Content" : {
-
-    },
-    "Delete Synced Content?" : {
-
-    },
-    "Delete Synced Content…" : {
 
     },
     "Deleting synced content…" : {
@@ -752,16 +688,10 @@
     "Double tap to edit. Touch and hold for actions." : {
 
     },
-    "Download to Preview" : {
-
-    },
     "Downloaded files can be fetched again when you open them." : {
 
     },
     "Edit" : {
-
-    },
-    "Edit Conflicting Fields" : {
 
     },
     "Edit List" : {
@@ -776,15 +706,6 @@
     "Edit list" : {
 
     },
-    "Export" : {
-
-    },
-    "Export JSON Backup" : {
-
-    },
-    "Export JSON Backup…" : {
-
-    },
     "Filter: %@" : {
 
     },
@@ -794,12 +715,6 @@
     "Forward Delete" : {
 
     },
-    "Import Backup" : {
-
-    },
-    "Import Backup…" : {
-
-    },
     "Import this backup?" : {
 
     },
@@ -807,15 +722,6 @@
 
     },
     "Its snips will move to Inbox." : {
-
-    },
-    "Keep Both" : {
-
-    },
-    "Keep Current" : {
-
-    },
-    "Keep Local Copy" : {
 
     },
     "Keep Sync Off" : {
@@ -828,9 +734,6 @@
 
     },
     "Left ⇧ ⇧" : {
-
-    },
-    "Library Actions" : {
 
     },
     "Light" : {
@@ -846,9 +749,6 @@
 
     },
     "Loading shared content…" : {
-
-    },
-    "Making a local copy…" : {
 
     },
     "Manual" : {
@@ -884,10 +784,7 @@
     "Name" : {
 
     },
-    "Needs Attention" : {
-
-    },
-    "Needs Attention (%lld)" : {
+    "Needs attention (%lld)" : {
 
     },
     "New List" : {
@@ -900,18 +797,6 @@
 
     },
     "New snip" : {
-
-    },
-    "Newest First" : {
-
-    },
-    "No Edits Need Review" : {
-
-    },
-    "No Results" : {
-
-    },
-    "No matches" : {
 
     },
     "None" : {
@@ -965,22 +850,7 @@
     "Recovered" : {
 
     },
-    "Recovered Edit" : {
-
-    },
-    "Recovered Edit Is Gone" : {
-
-    },
-    "Recovered List Edit" : {
-
-    },
-    "Recovered List Edits" : {
-
-    },
     "Recovered Snip" : {
-
-    },
-    "Recovered Snips" : {
 
     },
     "Remove" : {
@@ -1010,12 +880,6 @@
     "Return" : {
 
     },
-    "Review Backup" : {
-
-    },
-    "Review recovered edits" : {
-
-    },
     "Review: %@. Snip Snap will merge these records with your saved snips." : {
 
     },
@@ -1026,9 +890,6 @@
 
     },
     "Save Snip" : {
-
-    },
-    "Save text here when you want to keep it close." : {
 
     },
     "Save to Active List" : {
@@ -1064,9 +925,6 @@
     "Send Snip" : {
 
     },
-    "Setting up iCloud Sync…" : {
-
-    },
     "Settings" : {
 
     },
@@ -1083,9 +941,6 @@
 
     },
     "Shows a Quick Look preview" : {
-
-    },
-    "Signed Out of iCloud" : {
 
     },
     "Smileys & Emotion" : {
@@ -1161,12 +1016,6 @@
 
     },
     "Snip Snap could not start screen capture." : {
-
-    },
-    "Snip Snap kept the prior account’s cache apart. Keep it as a local copy or remove it from this Mac." : {
-
-    },
-    "Snip Snap kept the prior account’s cache apart. Keep it as a local copy or remove it from this device." : {
 
     },
     "Snip Snap set the clipboard but could not return to the prior app." : {
@@ -1286,37 +1135,10 @@
     "Use Default" : {
 
     },
-    "Use Device Copy" : {
-
-    },
-    "Use Edited" : {
-
-    },
-    "Use Mac Copy" : {
-
-    },
-    "Use Recovered" : {
-
-    },
-    "Use This Device’s Copy?" : {
-
-    },
-    "Use This Mac’s Copy?" : {
-
-    },
-    "View Options" : {
-
-    },
     "Waiting for iCloud" : {
 
     },
     "Work & Planning" : {
-
-    },
-    "Your synced cache is still on this Mac. Snip Snap will try again when iCloud is available." : {
-
-    },
-    "Your synced cache is still on this device. Snip Snap will try again when iCloud is available." : {
 
     },
     "available" : {
@@ -1326,9 +1148,6 @@
 
     },
     "iCloud Attachments" : {
-
-    },
-    "iCloud Sync Paused" : {
 
     },
     "icon.accessibility" : {
@@ -7987,7 +7806,6 @@
     },
     "A clipboard item could not be read." : {},
     "Add to Active List" : {},
-    "Clear Clipboard History?" : {},
     "Clipboard Entry" : {},
     "Clipboard Sync Failed" : {},
     "Clipboard content must be 32 MB or less." : {},
@@ -7997,7 +7815,6 @@
     "Clipboard sync is unavailable. Try again later." : {},
     "Copy Clipboard Entry" : {},
     "Copy Snip" : {},
-    "Enable Sync" : {},
     "Existing clipboard history will upload to your private iCloud and merge with your other devices. Files stay on this Mac until pinned." : {},
     "Existing history on this device will merge with iCloud and upload. Duplicates will combine and pins will stay." : {},
     "Folders cannot be pinned to clipboard history yet." : {},
@@ -8013,12 +7830,9 @@
     "Pin to sync this file" : {},
     "Pin to sync this file when clipboard sync is enabled." : {},
     "Pinned" : {},
-    "Retry Clipboard Sync" : {},
-    "Retry Sync" : {},
     "Save to" : {},
     "Search Clipboard" : {},
     "Some shared content could not be added. Try again." : {},
-    "Sync Clipboard History?" : {},
     "Sync clipboard history" : {},
     "That file is missing. Try syncing again." : {},
     "That file is unavailable. Try syncing again." : {},

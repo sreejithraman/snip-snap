@@ -209,7 +209,7 @@ final class IOSClipboardModel {
         }.filter { !$0.isEmpty }
         for url in files.resolvedFileURLs(for: entry) {
             guard let data = try? Data(contentsOf: url) else {
-                errorMessage = String(localized: "This file isn’t available on this device. If it synced before, try clipboard sync again.")
+                errorMessage = String(localized: "This file isn’t on this device. If it synced before, sync your clipboard and try again.")
                 return
             }
             let type = UTType(filenameExtension: url.pathExtension)?.identifier ?? UTType.data.identifier

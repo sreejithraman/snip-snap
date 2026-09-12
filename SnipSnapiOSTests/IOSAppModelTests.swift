@@ -618,6 +618,32 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(syncCount, 1)
     }
 
+    func testGenerationAdoptionReloadsTheLibraryWithoutReportingTheQueuedSyncAsComplete() async {
+        let oldLibrary = ModelTestLibrary(
+            snips: [Snip(content: "Old collection", origin: .quickEntry)]
+        )
+        let adoptedLibrary = ModelTestLibrary(
+            snips: [Snip(content: "Adopted collection", origin: .quickEntry)]
+        )
+        let cloudSession = IOSCloudSyncSessionProbe(
+            result: .libraryReplacedAndSyncScheduled,
+            activeLibrary: adoptedLibrary
+        )
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+        settings.recordSyncFailure(.retryingSoon)
+        let session = IOSAppSession(
+            library: oldLibrary,
+            syncedContentSettings: settings,
+            cloudSyncSession: cloudSession
+        )
+        await session.model.load()
+
+        await session.syncWhenPossible()
+
+        XCTAssertEqual(session.model.snips.map(\.content), ["Adopted collection"])
+        XCTAssertEqual(settings.state, .failed(.retryingSoon))
+    }
+
     func testPurgeReplacesTheLibraryAndExplainsWhySyncStopped() async {
         let oldLibrary = ModelTestLibrary(
             snips: [Snip(content: "Old collection", origin: .quickEntry)]
@@ -640,7 +666,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertTrue(session.model.snips.isEmpty)
         XCTAssertEqual(settings.mode, .localOnly)
         XCTAssertEqual(settings.state, .failed(.iCloudDataReset))
-        XCTAssertEqual(settings.statusTitle, "iCloud Sync Was Turned Off")
+        XCTAssertEqual(settings.statusTitle, "Sync turned off")
     }
 
     func testManualSyncRecordsFailureInSettingsWithoutShowingGeneralError() async {
@@ -689,7 +715,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(session.model.snips.first?.content, "After")
     }
 
-    func testAutomaticFetchKeepsWarningUntilASettledSendRecoversIt() async {
+    func testAutomaticFetchKeepsWarningUntilTheSyncEngineSettlesIt() async {
         let automatic = AsyncStream.makeStream(of: SnipSnapCloudSyncResult.self)
         let settings = SyncedContentSettingsModel(mode: .iCloudSync)
         let cloudSession = IOSCloudSyncSessionProbe(
@@ -714,6 +740,30 @@ final class IOSAppModelTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertEqual(session.syncedContentSettings.state, .ready)
+    }
+
+    func testScheduledSyncDoesNotReportCompletionBeforeTheEngineFinishes() async {
+        let automatic = AsyncStream.makeStream(of: SnipSnapCloudSyncResult.self)
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+        let cloudSession = IOSCloudSyncSessionProbe(
+            result: .syncScheduled,
+            activeLibrary: ModelTestLibrary(),
+            automaticSyncResults: automatic.stream
+        )
+        let session = IOSAppSession(
+            library: ModelTestLibrary(),
+            syncedContentSettings: settings,
+            cloudSyncSession: cloudSession
+        )
+
+        await session.syncWhenPossible()
+
+        XCTAssertEqual(settings.state, .syncing)
+
+        settings.recordSyncFailure(.retryingSoon)
+        automatic.continuation.yield(.syncScheduled)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(settings.state, .failed(.retryingSoon))
     }
 
     func testIOSDelayedCancelDoesNotClearNewerBackupPreview() async throws {
@@ -988,8 +1038,8 @@ final class IOSAppModelTests: XCTestCase {
             handler: IOSAppleAccountCacheHandlerProbe()
         )
 
-        XCTAssertEqual(model.title, "iCloud Sync Paused")
-        XCTAssertTrue(model.message.contains("still on this device"))
+        XCTAssertEqual(model.title, "Sync paused")
+        XCTAssertTrue(model.message.contains("stay on this device"))
         XCTAssertFalse(model.showsResolutionActions)
     }
 

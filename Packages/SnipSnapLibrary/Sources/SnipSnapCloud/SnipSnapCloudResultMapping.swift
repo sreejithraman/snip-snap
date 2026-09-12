@@ -16,6 +16,8 @@ func automaticSyncResult(for error: any Error) -> SnipSnapCloudSyncResult {
 
 func syncResult(for status: CloudCollectionStatus) -> SnipSnapCloudSyncResult {
   switch status {
+  case .scheduled:
+    .syncScheduled
   case .on:
     .contentUpdated
   case .requiresEnable:
@@ -26,6 +28,8 @@ func syncResult(for status: CloudCollectionStatus) -> SnipSnapCloudSyncResult {
     .oldSyncedContentRemovalCompleted
   case .enabled, .adoptedRemoteCollection:
     .libraryReplaced
+  case .adoptedRemoteCollectionScheduled:
+    .libraryReplacedAndSyncScheduled
   case .purged:
     .iCloudDataReset
   }
@@ -38,7 +42,7 @@ func deleteOutcome(for status: CloudCollectionStatus) -> SyncedContentDeleteOutc
 
 struct NoopCloudCollectionSyncDriver: CloudCollectionSyncDriver {
   func fetch(_ context: CloudCollectionSyncContext) async throws -> CloudCollectionFetchResult {
-    .fetched
+    .fetched(nil)
   }
   func send(_ context: CloudCollectionSyncContext) async throws -> CloudCollectionSendResult {
     .sent

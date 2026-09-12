@@ -44,7 +44,7 @@ struct IOSClipboardView: View {
     @ViewBuilder
     private var clipboardToolbar: some View {
         Group {
-            Menu("View Options", systemImage: "line.3.horizontal.decrease") {
+            Menu("View options", systemImage: "line.3.horizontal.decrease") {
                 Section("Show") {
                     Picker("Show", selection: $viewState.onlyPinned) {
                         Text("All").tag(false)
@@ -53,14 +53,14 @@ struct IOSClipboardView: View {
                 }
                 Section("Sort") {
                     Picker("Sort", selection: $viewState.newestFirst) {
-                        Text("Newest First").tag(true)
-                        Text("Oldest First").tag(false)
+                        Text("Newest first").tag(true)
+                        Text("Oldest first").tag(false)
                     }.pickerStyle(.inline)
                 }
             }
             .accessibilityIdentifier("workflow-options")
-            Menu("Library Actions", systemImage: "ellipsis") {
-                Button("Clear History", systemImage: "trash", role: .destructive) { confirmsClear = true }
+            Menu("Library actions", systemImage: "ellipsis") {
+                Button("Clear unpinned history", systemImage: "trash", role: .destructive) { confirmsClear = true }
                     .disabled(!model.entries.contains { !$0.isPinned })
                 Divider()
                 Button("Settings", systemImage: "gearshape", action: settings)
@@ -97,13 +97,13 @@ struct IOSClipboardView: View {
             if let error = model.importErrorMessage {
                 Section {
                     Label(error, systemImage: "exclamationmark.triangle")
-                    Button("Retry") { Task { await model.foreground() } }
+                    Button("Retry import") { Task { await model.foreground() } }
                 }
             }
             if let error = model.errorMessage {
                 Section {
                     Label(error, systemImage: "exclamationmark.icloud")
-                    Button("Retry") { Task { await model.synchronize() } }
+                    Button("Retry clipboard sync") { Task { await model.synchronize() } }
                 }
             }
             ForEach(entries) { entry in
@@ -127,7 +127,7 @@ struct IOSClipboardView: View {
                             if model.errorMessage != nil {
                                 Label("Upload failed", systemImage: "exclamationmark.icloud")
                                     .font(.caption).foregroundStyle(.red)
-                                Button("Retry") { Task { await model.synchronize() } }
+                                Button("Retry clipboard sync") { Task { await model.synchronize() } }
                                     .buttonStyle(.borderless)
                             } else {
                                 Label(model.isSyncing ? "Uploading…" : "Waiting for sync", systemImage: "icloud.and.arrow.up")
@@ -176,8 +176,8 @@ struct IOSClipboardView: View {
                 .accessibilityIdentifier("empty-clipboard")
             }
         }
-        .confirmationDialog("Clear Clipboard History?", isPresented: $confirmsClear, titleVisibility: .visible) {
-            Button("Clear History", role: .destructive) { Task { await model.clear() } }
+        .confirmationDialog("Clear unpinned history?", isPresented: $confirmsClear, titleVisibility: .visible) {
+            Button("Clear unpinned history", role: .destructive) { Task { await model.clear() } }
         } message: {
             Text(model.syncIsActive ? "This clears unpinned history across synced devices. Pinned items stay." : "This clears unpinned history on this device. Pinned items stay.")
         }

@@ -138,6 +138,7 @@ extension SwiftDataSnipLibrary {
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
     let context = Self.makeContext(container: container)
+    try requireContentWritesAllowed(context: context)
     let loaded = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
     let currentSnips = loaded.state.allSnips(sortMode: .manual)
     var currentAttachmentData: [UUID: Data] = [:]
@@ -236,6 +237,7 @@ extension SwiftDataSnipLibrary {
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
     let context = Self.makeContext(container: container)
+    try requireContentWritesAllowed(context: context)
     let receiptID = StoredCloudFullBatchReceipt.key(
       namespaceKey: plan.namespaceKey,
       batchID: plan.transitionID

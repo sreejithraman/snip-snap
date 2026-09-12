@@ -128,9 +128,9 @@ final class SnipSnapiOSUITests: XCTestCase {
             .firstMatch
         XCTAssertTrue(privacyPolicy.waitForExistence(timeout: 3))
 
-        XCTAssertTrue(app.staticTexts["Local Only"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Sync off"].waitForExistence(timeout: 3))
         toggle(app.switches["icloud-sync-toggle"])
-        XCTAssertTrue(app.staticTexts["iCloud Sync On"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["Sync on"].waitForExistence(timeout: 8))
         app.buttons["Done"].tap()
         let inbox = listControl(named: "Inbox", in: app)
         if inbox.waitForExistence(timeout: 2) {
@@ -147,7 +147,7 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         toggle(app.switches["icloud-sync-toggle"])
 
-        XCTAssertTrue(app.staticTexts["iCloud Sync Setup Stopped"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["Couldn’t set up sync"].waitForExistence(timeout: 8))
         let firstDetail = app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS %@", "over-limit-a.bin")
         ).firstMatch
@@ -157,7 +157,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(firstDetail.waitForExistence(timeout: 3))
         XCTAssertTrue(secondDetail.waitForExistence(timeout: 3))
         XCTAssertTrue(app.switches["icloud-sync-toggle"].exists)
-        XCTAssertFalse(app.staticTexts["iCloud Sync On"].exists)
+        XCTAssertFalse(app.staticTexts["Sync on"].exists)
     }
 
     func testInternalSyncIssueUsesCalmCopyWithoutRawErrorCodes() {
@@ -166,11 +166,11 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         openSettings(in: app)
 
-        XCTAssertTrue(app.staticTexts["Snip Snap Couldn’t Sync"].waitForExistence(timeout: 3))
-        let safeCopy = app.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS %@", "Your changes are safe on this device")
+        XCTAssertTrue(app.staticTexts["Couldn’t sync"].waitForExistence(timeout: 3))
+        let retryGuidance = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "Retry sync")
         ).firstMatch
-        XCTAssertTrue(safeCopy.exists)
+        XCTAssertTrue(retryGuidance.exists)
         XCTAssertFalse(app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS %@", "CloudRecordError")
         ).firstMatch.exists)
@@ -193,12 +193,12 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["delete-synced-content"].exists)
         toggle(sync)
 
-        let staleCopyAlert = app.alerts["Use This Device’s Copy?"]
+        let staleCopyAlert = app.alerts["Turn off sync?"]
         if staleCopyAlert.waitForExistence(timeout: 3) {
-            staleCopyAlert.buttons["Use Device Copy"].tap()
+            staleCopyAlert.buttons["Turn off sync"].tap()
         }
 
-        XCTAssertTrue(app.staticTexts["Local Only"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["Sync off"].waitForExistence(timeout: 8))
         XCTAssertEqual(sync.value as? String, "0")
         XCTAssertFalse(app.buttons["delete-synced-content"].exists)
         let proof = XCTAttachment(screenshot: app.screenshot())
@@ -217,13 +217,13 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(clipboardSync.waitForExistence(timeout: 3))
         if clipboardSync.value as? String == "1" { toggle(clipboardSync) }
         toggle(clipboardSync)
-        let alert = app.alerts["Sync Clipboard History?"]
+        let alert = app.alerts["Sync clipboard history?"]
         XCTAssertTrue(alert.waitForExistence(timeout: 3))
         XCTAssertTrue(alert.staticTexts.matching(NSPredicate(
-            format: "label CONTAINS %@", "files that synced before"
+            format: "label CONTAINS %@", "Files that have synced"
         )).firstMatch.exists)
         XCTAssertTrue(alert.staticTexts.matching(NSPredicate(
-            format: "label CONTAINS %@", "private iCloud"
+            format: "label CONTAINS %@", "across your devices"
         )).firstMatch.exists)
         alert.buttons["Cancel"].tap()
         XCTAssertEqual(clipboardSync.value as? String, "0")
@@ -239,16 +239,16 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(priorSnip.waitForExistence(timeout: 3))
         openSettings(in: app)
 
-        XCTAssertTrue(app.staticTexts["iCloud Sync On"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Sync on"].waitForExistence(timeout: 3))
         app.buttons["delete-synced-content"].tap()
-        XCTAssertTrue(app.alerts["Delete Synced Content?"].waitForExistence(timeout: 3))
-        app.alerts.buttons["Delete Synced Content"].tap()
+        XCTAssertTrue(app.alerts["Delete synced content?"].waitForExistence(timeout: 3))
+        app.alerts.buttons["Delete synced content"].tap()
 
-        XCTAssertTrue(app.staticTexts["Synced Data Deleted"].waitForExistence(timeout: 3))
-        let controlRecordNote = app.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS %@", "record remains in iCloud")
+        XCTAssertTrue(app.staticTexts["Synced content deleted"].waitForExistence(timeout: 3))
+        let recoveryCopyNote = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "recovery copy")
         ).firstMatch
-        XCTAssertTrue(controlRecordNote.exists)
+        XCTAssertTrue(recoveryCopyNote.exists)
         XCTAssertFalse(app.buttons["delete-synced-content"].exists)
         app.buttons["Done"].tap()
         XCTAssertFalse(priorSnip.waitForExistence(timeout: 3))
@@ -259,7 +259,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         let app = launchApp(withSyncedContent: true, withEncryptedReset: true)
         openSettings(in: app)
 
-        XCTAssertTrue(app.staticTexts["iCloud Sync Was Turned Off"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Sync turned off"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["encrypted-reset-restore"].exists)
         XCTAssertFalse(app.buttons["encrypted-reset-start-empty"].exists)
         XCTAssertFalse(app.buttons["encrypted-reset-keep-off"].exists)
@@ -293,18 +293,18 @@ final class SnipSnapiOSUITests: XCTestCase {
         ).firstMatch
         XCTAssertTrue(recoveredSnip.waitForExistence(timeout: 3))
         recoveredSnip.tap()
-        XCTAssertTrue(app.navigationBars["Recovered Snip"].waitForExistence(timeout: 3))
-        app.buttons["Use Recovered"].tap()
+        XCTAssertTrue(app.navigationBars["Recovered snip"].waitForExistence(timeout: 3))
+        app.buttons["Use recovered"].tap()
 
-        XCTAssertTrue(app.navigationBars["Needs Attention"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.navigationBars["Needs attention"].waitForExistence(timeout: 3))
         let recoveredList = app.buttons.matching(
             NSPredicate(format: "label CONTAINS %@", "Recovered Notes")
         ).firstMatch
         XCTAssertTrue(recoveredList.waitForExistence(timeout: 3))
         recoveredList.tap()
-        XCTAssertTrue(app.navigationBars["Recovered List Edit"].waitForExistence(timeout: 3))
-        app.buttons["Use Recovered"].tap()
-        XCTAssertTrue(app.navigationBars["Needs Attention"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.navigationBars["Recovered list"].waitForExistence(timeout: 3))
+        app.buttons["Use recovered"].tap()
+        XCTAssertTrue(app.navigationBars["Needs attention"].waitForExistence(timeout: 3))
         app.buttons["Done"].tap()
         XCTAssertFalse(attention.waitForExistence(timeout: 2))
     }
@@ -617,10 +617,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         let restingSelectorWidth = restingSelector.width
         XCTAssertEqual(restingSelector.midX, app.frame.midX, accuracy: 2)
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == 'Search'")).count, 1)
-        XCTAssertFalse(app.searchFields["Search All"].exists)
+        XCTAssertFalse(app.searchFields["Search"].exists)
         app.buttons["clipboard-tab"].tap()
         XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.searchFields["Search All"].exists || app.buttons["Search"].exists)
+        XCTAssertTrue(app.searchFields["Search"].exists || app.buttons["Search"].exists)
         XCTAssertTrue(app.buttons["workflow-options"].exists)
         XCTAssertTrue(app.buttons["library-actions"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["empty-clipboard"].exists)
@@ -634,12 +634,12 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["No pinned entries"].waitForExistence(timeout: 3))
         let search = openSearch(in: app)
         XCTAssertTrue(search.waitForExistence(timeout: 3))
-        XCTAssertEqual(search.placeholderValue, "Search All")
+        XCTAssertEqual(search.placeholderValue, "Search")
         search.typeText("Missing entry")
-        XCTAssertTrue(app.staticTexts["No Results"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["No results"].waitForExistence(timeout: 3))
         closeSearch(in: app)
         XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.searchFields["Search All"].waitForNonExistence(timeout: 3))
+        XCTAssertTrue(app.searchFields["Search"].waitForNonExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["No pinned entries"].waitForExistence(timeout: 3))
         app.buttons["workflow-options"].tap()
         app.buttons["All"].tap()
@@ -885,7 +885,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(selector.frame.width, min(256, app.frame.width - 168), accuracy: 2)
         XCTAssertGreaterThanOrEqual(selector.frame.minX - paste.frame.maxX, 7)
         XCTAssertGreaterThanOrEqual(search.frame.minX - selector.frame.maxX, 7)
-        XCTAssertFalse(app.searchFields["Search All"].exists)
+        XCTAssertFalse(app.searchFields["Search"].exists)
     }
 
     func testSelectorPullThresholdCancelAndCreate() throws {
@@ -1175,12 +1175,12 @@ final class SnipSnapiOSUITests: XCTestCase {
             let more = app.buttons["More"]
             XCTAssertTrue(more.waitForExistence(timeout: 3))
             more.tap()
-            actions = app.buttons["Library Actions"]
+            actions = app.buttons["Library actions"]
         }
 
         XCTAssertTrue(actions.waitForExistence(timeout: 3))
         actions.tap()
-        XCTAssertTrue(app.buttons["Import Backup…"].exists)
+        XCTAssertTrue(app.buttons["Import backup…"].exists)
         XCTAssertFalse(app.buttons["Undo"].exists)
         XCTAssertFalse(app.buttons["Redo"].exists)
     }
@@ -1687,7 +1687,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(clipboard.isSelected)
         let search = openSearch(in: app)
         XCTAssertTrue(search.waitForExistence(timeout: 3))
-        XCTAssertEqual(search.placeholderValue, "Search All")
+        XCTAssertEqual(search.placeholderValue, "Search")
         XCTAssertTrue(app.descendants(matching: .any)["search-prompt"].exists)
         search.typeText("Alpha")
         XCTAssertTrue(row(named: "Alpha inbox", in: app).isHittable)
@@ -1951,7 +1951,7 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     private func openSearch(in app: XCUIApplication) -> XCUIElement {
-        let field = app.searchFields["Search All"]
+        let field = app.searchFields["Search"]
         if !field.exists {
             let button = app.buttons["Search"]
             XCTAssertTrue(button.waitForExistence(timeout: 3))

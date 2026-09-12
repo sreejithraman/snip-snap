@@ -109,14 +109,14 @@ struct AttachmentEditorSection: View {
                 .padding(.vertical, 8)
             }
 
-            Button("Add Files", systemImage: "paperclip", action: add)
+            Button("Add files", systemImage: "paperclip", action: add)
                 .disabled(isDisabled)
                 .accessibilityIdentifier("add-attachments")
 
             if isStaging {
                 HStack(spacing: 8) {
                     ProgressView()
-                    Text("Copying files…")
+                    Text("Adding files…")
                         .foregroundStyle(.secondary)
                 }
                 .accessibilityIdentifier("copying-attachments")
@@ -151,7 +151,7 @@ private struct AttachmentEditorTile: View {
                     ContentUnavailableView(
                         attachment.fileName,
                         systemImage: "icloud.and.arrow.down",
-                        description: Text("Download to Preview")
+                        description: Text("Download and preview")
                     )
                     .aspectRatio(1, contentMode: .fit)
                 }

@@ -3,220 +3,154 @@ import Foundation
 import SnipSnapCore
 import SnipSnapPersistence
 
-/// Builds a namespace-bound record driver only after the control coordinator authorizes it.
+package struct CloudRecordWorkContext: Equatable, Sendable {
+  let collection: CloudCollectionSyncContext
+  let storeID: UUID
+
+  var binding: ICloudSyncNamespaceBinding { collection.namespace.binding }
+}
+
+package enum CloudRecordWorkError: Error { case replaced }
+
+/// Binds every record operation and result to the active store that created it.
 package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
-  package typealias TransportFactory = @Sendable (
-    CloudCollectionSyncContext
-  ) -> any CloudRecordTransport
+  package typealias TransportFactory = @Sendable (CloudCollectionSyncContext) -> any CloudRecordTransport
+  private struct Owner {
+    let context: CloudRecordWorkContext
+    let coordinator: CloudFullSyncCoordinator
+    let transport: any CloudRecordTransport
+  }
 
   private let persistence: SwiftDataSyncModePersistence
   private let makeTransport: TransportFactory
-  private let beforeAutomaticApply: @Sendable () async throws -> Void
-  private let beforeAutomaticSchedule: @Sendable (CloudCollectionSyncContext) async throws -> Void
-  private let beforeEngineStateSave: @Sendable (CloudCollectionSyncContext) async throws -> Void
-  private let automaticResultHandler: @Sendable (SnipSnapCloudSyncResult) async throws -> Void
-  private var activeContext: CloudCollectionSyncContext?
-  private var activeCoordinator: CloudFullSyncCoordinator?
-  private var activeStore: CloudFullSyncPersistence?
-  private var pendingIssue: SyncedContentSyncIssue?
+  private let beforeRecordWork: @Sendable (CloudRecordWorkContext) async throws -> Void
+  private let automaticResultHandler: @Sendable (CloudRecordWorkContext, SnipSnapCloudSyncResult) async throws -> Void
+  private var active: Owner?
 
   package init(
     persistence: SwiftDataSyncModePersistence,
     makeTransport: @escaping TransportFactory,
-    beforeAutomaticApply: @escaping @Sendable () async throws -> Void = {},
-    beforeAutomaticSchedule: @escaping @Sendable (CloudCollectionSyncContext) async throws -> Void = { _ in },
-    beforeEngineStateSave: @escaping @Sendable (CloudCollectionSyncContext) async throws -> Void = { _ in },
-    automaticResultHandler: @escaping @Sendable (SnipSnapCloudSyncResult) async throws -> Void = { _ in }
+    beforeRecordWork: @escaping @Sendable (CloudRecordWorkContext) async throws -> Void = { _ in },
+    automaticResultHandler: @escaping @Sendable (CloudRecordWorkContext, SnipSnapCloudSyncResult) async throws -> Void = { _, _ in }
   ) {
     self.persistence = persistence
     self.makeTransport = makeTransport
-    self.beforeAutomaticApply = beforeAutomaticApply
-    self.beforeAutomaticSchedule = beforeAutomaticSchedule
-    self.beforeEngineStateSave = beforeEngineStateSave
+    self.beforeRecordWork = beforeRecordWork
     self.automaticResultHandler = automaticResultHandler
   }
 
-  package func fetch(
-    _ context: CloudCollectionSyncContext
-  ) async throws -> CloudCollectionFetchResult {
-    let (coordinator, store) = try await recordCoordinator(context)
-    pendingIssue = nil
-    if try await store.destructiveResetSignal() != nil { return .purged }
-    try await coordinator.fetchRemote(beforeApply: beforeAutomaticApply)
-    if try await store.destructiveResetSignal() != nil {
-      _ = await coordinator.takeSyncIssue()
-      pendingIssue = nil
-      return .purged
-    }
-    let blocksOutbound = await coordinator.isOutboundBlocked()
-    if let issue = await coordinator.takeSyncIssue() {
-      if blocksOutbound { throw CloudSyncIssueError(issue) }
-      pendingIssue = issue
-    } else {
-      _ = try await store.clearRetryableRecoveryEvents(kind: .retryableFetch)
-    }
-    return try await store.destructiveResetSignal() == nil ? .fetched : .purged
+  package func invalidate() async {
+    let prior = active
+    active = nil
+    await prior?.transport.reset()
   }
 
-  package func prepareAutomaticSync(
-    _ context: CloudCollectionSyncContext
-  ) async throws {
-    try await beforeAutomaticSchedule(context)
-    let (coordinator, store) = try await recordCoordinator(context)
-    pendingIssue = nil
-    if try await store.destructiveResetSignal() != nil {
-      try await automaticResultHandler(.iCloudDataReset)
-      return
+  package func fetch(_ context: CloudCollectionSyncContext) async throws -> CloudCollectionFetchResult {
+    let owner = try await recordOwner(context)
+    let outcome = try await owner.coordinator.fetchRemote {
+      try await self.requireCurrent(owner.context)
     }
-    try await coordinator.prepareAutomaticSync(beforeApply: beforeAutomaticApply)
-    if try await store.destructiveResetSignal() != nil {
-      _ = await coordinator.takeSyncIssue()
-      pendingIssue = nil
-      try await automaticResultHandler(.iCloudDataReset)
-      return
-    }
-    if let issue = await coordinator.takeSyncIssue() {
-      try await automaticResultHandler(.syncIssue(issue))
-    }
+    try await requireActive(owner.context)
+    if outcome.result == .iCloudDataReset { return .purged }
+    if let issue = outcome.issue, outcome.blocksOutbound { throw CloudSyncIssueError(issue) }
+    return .fetched(outcome.issue)
   }
 
-  package func send(
-    _ context: CloudCollectionSyncContext
-  ) async throws -> CloudCollectionSendResult {
-    let (coordinator, store) = try await recordCoordinator(context)
-    if try await store.destructiveResetSignal() != nil { return .purged }
-    try await coordinator.sendPending { [beforeAutomaticApply] _ in
-      try await beforeAutomaticApply()
-    }
-    if try await store.destructiveResetSignal() != nil {
-      _ = await coordinator.takeSyncIssue()
-      pendingIssue = nil
-      return .purged
-    }
-    let issue = await coordinator.takeSyncIssue() ?? pendingIssue
-    pendingIssue = nil
-    if let issue { throw CloudSyncIssueError(issue) }
-    _ = try await store.clearRetryableRecoveryEvents(kind: .retryableSend)
-    if let issue = try await store.unresolvedSyncIssue() {
-      throw CloudSyncIssueError(issue)
-    }
-    return try await store.destructiveResetSignal() == nil ? .sent : .purged
-  }
-
-  package func prepareManualRetry(
-    _ context: CloudCollectionSyncContext
-  ) async throws {
-    let (_, store) = try await recordCoordinator(context)
-    try await store.prepareManualRetry()
-  }
-
-  private func recordCoordinator(
-    _ context: CloudCollectionSyncContext
-  ) async throws -> (CloudFullSyncCoordinator, CloudFullSyncPersistence) {
-    if activeContext == context, let activeCoordinator, let activeStore {
-      return (activeCoordinator, activeStore)
-    }
-    let storage = try await persistence.snapshot()
-    guard storage.activeStore.namespace == binding(context.namespace),
-      storage.activeStore.kind == .iCloudSync
-    else { throw SyncModePersistenceError.namespaceMismatch }
-    let library = try await persistence.libraryForTransition(storeID: storage.activeStore.id)
-    let store = CloudFullSyncPersistence(
-      library: library,
-      namespace: context.namespace,
-      dataZone: context.metadataZone,
-      payloadZone: context.payloadZone
+  package func prepareAutomaticSync(_ context: CloudCollectionSyncContext) async throws {
+    let owner = try await recordOwner(context)
+    try await requireActive(owner.context)
+    try await owner.coordinator.prepareAutomaticSync(
+      beforeApply: { try await self.requireCurrent(owner.context) },
+      beforeStateSave: { try await self.requireActive(owner.context) }
     )
-    let transport = makeTransport(context)
-    let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
+  }
+
+  package func send(_ context: CloudCollectionSyncContext) async throws -> CloudCollectionSendResult {
+    let owner = try await recordOwner(context)
+    let outcome = try await owner.coordinator.sendPending(
+      beforeApply: { try await self.requireCurrent(owner.context) },
+      beforeSend: { _ in try await self.requireCurrent(owner.context) }
+    )
+    try await requireActive(owner.context)
+    if outcome.result == .iCloudDataReset { return .purged }
+    if let issue = outcome.issue { throw CloudSyncIssueError(issue) }
+    return .sent
+  }
+
+  package func prepareManualRetry(_ context: CloudCollectionSyncContext) async throws {
+    let owner = try await recordOwner(context)
+    try await owner.coordinator.prepareManualRetry(
+      beforeApply: { try await self.requireCurrent(owner.context) },
+      beforeStateSave: { try await self.requireActive(owner.context) }
+    )
+  }
+
+  private func recordOwner(_ collection: CloudCollectionSyncContext) async throws -> Owner {
+    let storage = try await persistence.snapshot()
+    let context = CloudRecordWorkContext(collection: collection, storeID: storage.activeStore.id)
+    guard storage.activeStore.namespace == context.binding,
+      storage.activeStore.kind == .iCloudSync, storage.accountIsolation == nil
+    else { throw CloudRecordWorkError.replaced }
+    if let active, active.context == context { return active }
+    let previous = active
+    active = nil
+    await previous?.transport.reset()
+    let library = try await persistence.libraryForTransition(storeID: context.storeID)
+    let lease = try await persistence.activeCloudMutationLease(storeID: context.storeID)
+    let store = CloudFullSyncPersistence(
+      library: library, namespace: collection.namespace,
+      dataZone: collection.metadataZone, payloadZone: collection.payloadZone, mutationLease: lease
+    )
+    let transport = makeTransport(collection)
+    let coordinator = CloudFullSyncCoordinator(store: store, transport: transport) { [weak self] result in
+      guard let self else { return }
+      try await self.deliver(result, from: context)
+    }
     if let automatic = transport as? any CloudAutomaticSyncConfiguring {
       await automatic.configureAutomaticSync(
-        batchHandler: {
-          [weak coordinator, weak store, beforeAutomaticApply, automaticResultHandler]
-          batch, outbound in
-          do {
-            guard let coordinator else { return }
-            try await coordinator.applyAutomatically(
-              batch,
-              outbound: outbound,
-              beforeApply: beforeAutomaticApply
-            )
-            guard let store else { return }
-            if try await store.destructiveResetSignal() != nil {
-              _ = await coordinator.takeSyncIssue()
-              try await automaticResultHandler(.iCloudDataReset)
-              return
-            }
-            if let issue = await coordinator.takeSyncIssue() {
-              try await automaticResultHandler(.syncIssue(issue))
-              return
-            }
-            switch batch {
-            case .fetched:
-              try await automaticResultHandler(
-                try await Self.automaticFetchedResult(store: store)
-              )
-            case .sent:
-              try await automaticResultHandler(try await Self.automaticSentResult(store: store))
-            }
-          } catch {
-            try? await automaticResultHandler(
-              Self.automaticFailureResult(error)
-            )
-            throw error
-          }
+        workAvailableHandler: { [weak self, weak coordinator] in
+          guard let self, let coordinator else { return }
+          _ = try? await coordinator.processAutomaticChanges(
+            beforeApply: { try await self.requireCurrent(context) },
+            beforeStateSave: { try await self.requireActive(context) }
+          )
         },
-        accountChangeHandler: { [beforeAutomaticApply, automaticResultHandler] in
-          do {
-            try await beforeAutomaticApply()
-          } catch {
-            try? await automaticResultHandler(Self.automaticFailureResult(error))
-          }
-        },
-        recordSendGate: beforeAutomaticApply,
-        engineStateHandler: { [weak coordinator, beforeEngineStateSave] state in
-          try await beforeEngineStateSave(context)
-          guard let coordinator else { return }
-          try await coordinator.persistEngineState(state)
+        recordSendGate: { [weak self] in
+          guard let self else { throw CloudRecordWorkError.replaced }
+          try await self.requireCurrent(context)
         }
       )
     }
-    activeContext = context
-    activeCoordinator = coordinator
-    activeStore = store
-    pendingIssue = nil
-    return (coordinator, store)
+    let owner = Owner(context: context, coordinator: coordinator, transport: transport)
+    active = owner
+    return owner
   }
 
-  package static func automaticSentResult(
-    store: CloudFullSyncPersistence
-  ) async throws -> SnipSnapCloudSyncResult {
-    _ = try await store.clearRetryableRecoveryEvents(kind: .retryableSend)
-    let settled = try await store.isSyncSettled()
-    return settled ? .syncCompleted : .noChange
+  private func requireActive(_ context: CloudRecordWorkContext) async throws {
+    let storage = try await persistence.snapshot()
+    guard active?.context == context, storage.activeStore.id == context.storeID,
+      storage.activeStore.namespace == context.binding, storage.activeStore.kind == .iCloudSync,
+      storage.accountIsolation == nil, storage.transition == nil
+    else { throw CloudRecordWorkError.replaced }
   }
 
-  package static func automaticFetchedResult(
-    store: CloudFullSyncPersistence
-  ) async throws -> SnipSnapCloudSyncResult {
-    let recovered = try await store.clearRetryableRecoveryEvents(kind: .retryableFetch)
-    let settled = try await store.isSyncSettled()
-    return recovered && settled ? .syncCompleted : .contentUpdated
+  private func requireCurrent(_ context: CloudRecordWorkContext) async throws {
+    try await requireActive(context)
+    try await beforeRecordWork(context)
+    try await requireActive(context)
   }
 
-  package static func automaticFailureResult(_ error: any Error) -> SnipSnapCloudSyncResult {
-    automaticSyncResult(for: error)
-  }
-
-  private func binding(_ namespace: CloudSyncNamespace) -> ICloudSyncNamespaceBinding {
-    ICloudSyncNamespaceBinding(
-      scope: namespace.cloudScope,
-      accountLineage: namespace.accountLineage,
-      generation: namespace.generation,
-      zones: Set(namespace.zones.map {
-        ICloudSyncZoneBinding(name: $0.name, ownerName: $0.ownerName)
-      })
-    )
+  private func deliver(_ result: SnipSnapCloudSyncResult, from context: CloudRecordWorkContext) async throws {
+    guard active?.context == context else { return }
+    do { try await requireActive(context) }
+    catch CloudRecordWorkError.replaced {
+      guard result == .iCloudAccountChanged || result == .iCloudSignedOut,
+        try await persistence.snapshot().accountIsolation?.storeID == context.storeID
+      else { return }
+    }
+    try await automaticResultHandler(context, result)
+    if [.iCloudDataReset, .iCloudAccountChanged, .iCloudSignedOut].contains(result),
+      active?.context == context { await invalidate() }
   }
 }
 

@@ -215,6 +215,10 @@ extension SwiftDataSnipLibrary {
         ? $0.accepted.reference.domainID : nil
     })
     do {
+      for change in batch.recoveryChanges {
+        try lock.check()
+        try Self.applyFullRecoveryChange(change, namespaceKey: batch.namespaceKey, context: context)
+      }
       for recovery in batch.recoveryInputs {
         try lock.check()
         guard recovery.namespaceKey == batch.namespaceKey,

@@ -164,6 +164,39 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
     )
   }
 
+  static func applyFullRecoveryChange(
+    _ change: CloudFullRecoveryChange,
+    namespaceKey: String,
+    context: ModelContext
+  ) throws {
+    let expected = change.expected
+    guard expected.namespaceKey == namespaceKey, expected.storageVersion == 1,
+      expected.kind == .retryableFetch || expected.kind == .terminalFetch
+    else { throw CloudFullStorageError.invalidBatchReplay }
+    if let replacement = change.replacement {
+      guard replacement.namespaceKey == namespaceKey,
+        replacement.batchID == expected.batchID, replacement.storageVersion == 1,
+        replacement.kind == .retryableFetch || replacement.kind == .terminalFetch
+      else { throw CloudFullStorageError.invalidBatchReplay }
+    }
+    let key = "full-recovery-\(expected.batchID.uuidString.lowercased())"
+    guard let current = try context.fetch(FetchDescriptor<StoredCloudRecoveryEvent>())
+      .first(where: { $0.namespaceKey == namespaceKey && $0.eventKey == key }),
+      let envelope = CloudWirePayloadEnvelope.decode(current.payload),
+      envelope.format == .fullRecordV1,
+      try JSONDecoder().decode(CloudFullRecoveryInput.self, from: envelope.payload) == expected
+    else { throw CloudFullStorageError.invalidBatchReplay }
+    if let replacement = change.replacement {
+      let encoder = JSONEncoder()
+      encoder.outputFormatting = [.sortedKeys]
+      current.payload = try CloudWirePayloadEnvelope(
+        format: .fullRecordV1, payload: encoder.encode(replacement)
+      ).encoded()
+    } else {
+      context.delete(current)
+    }
+  }
+
   static func fullBatchData(_ value: CloudFullBatchCommit) throws -> Data {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]

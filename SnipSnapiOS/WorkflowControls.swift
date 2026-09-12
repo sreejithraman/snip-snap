@@ -25,7 +25,7 @@ struct WorkflowOptionsMenu: View {
     var beginReordering: (() -> Void)? = nil
 
     var body: some View {
-        Menu("View Options", systemImage: "line.3.horizontal.decrease") {
+        Menu("View options", systemImage: "line.3.horizontal.decrease") {
             Section("Show") {
                 Picker("Show", selection: completionFilter) {
                     ForEach(SnipCompletionFilter.allCases, id: \.self) { filter in
@@ -154,7 +154,7 @@ struct SelectionActionsMenu: View {
 private extension SnipSortMode {
     var title: String {
         switch self {
-        case .chronological: String(localized: "Newest First")
+        case .chronological: String(localized: "Newest first")
         case .manual: String(localized: "Manual")
         }
     }

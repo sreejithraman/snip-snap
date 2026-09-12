@@ -26,15 +26,23 @@ extension CloudFullRecordPersistenceTests {
       format: .listMergeV1,
       payload: Data("conflict".utf8)
     )
+    let recoveryID = SnipLibraryTransferPlanner.derivedUUID(
+      transitionID: transitionID,
+      sourceID: listID
+    )
     let recovery = CloudFullRecoveryInput(
       namespaceKey: namespace.rawValue,
-      batchID: SnipLibraryTransferPlanner.derivedUUID(
-        transitionID: transitionID,
-        sourceID: listID
-      ),
+      batchID: recoveryID,
       kind: .terminalFetch,
       outboundData: Data(),
-      resultData: Data("recovered".utf8)
+      resultData: try JSONSerialization.data(withJSONObject: [
+        "storageVersion": 1, "batch": ["fetched": ["_0": [
+          "id": recoveryID.uuidString, "items": [], "zoneEvents": [],
+          "databaseEvents": [["failed": [
+            "_0": ["name": "text", "ownerName": "owner"], "_1": "quotaExceeded",
+          ]]],
+        ]]],
+      ])
     )
     let plan = try CloudFullReenableApplyPlan(
       transitionID: transitionID,

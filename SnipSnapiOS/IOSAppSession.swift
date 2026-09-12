@@ -224,6 +224,17 @@ final class IOSAppSession {
         case .syncCompleted:
             await model.load()
             syncedContentSettings.recordOutstandingSyncRecovered()
+        case .syncScheduled:
+            break
+        case .libraryReplacedAndSyncScheduled:
+            if let cloudSyncSession,
+               let active = try? await cloudSyncSession.iosActiveLibrary()
+            {
+                await model.replaceLibrary(
+                    active.library,
+                    recoveryScope: active.recoveryScope
+                )
+            }
         case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
             clipboard.stop()
             await clipboard.resetAccountBinding()
@@ -276,6 +287,8 @@ final class IOSAppSession {
                 await model.load()
             case .syncCompleted:
                 settings.recordOutstandingSyncRecovered()
+            case .syncScheduled:
+                return
             case .iCloudSyncSettingUp(let issue):
                 settings.recordEnableSettingUp(issue)
             case .iCloudSyncEnabled:
@@ -291,6 +304,10 @@ final class IOSAppSession {
                 } else if case .oldSyncedContentRemovalCompleted = result {
                     settings.recordRemovalPending(false)
                 }
+            case .libraryReplacedAndSyncScheduled:
+                let active = try await session.iosActiveLibrary()
+                await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+                return
             case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
                 clipboard.stop()
                 await clipboard.resetAccountBinding()

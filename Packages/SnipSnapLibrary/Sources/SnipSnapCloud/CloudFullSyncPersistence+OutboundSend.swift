@@ -3,12 +3,19 @@ import SnipSnapCore
 import SnipSnapPersistence
 
 extension CloudFullSyncPersistence {
+  package func outboundAdmission() async throws -> CloudRecordOutboundAdmission {
+    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
+    let recovery = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
+    return CloudRecordOutboundAdmission(blockedRecordIDs: try Self.failedFetchRecordIDs(recovery),
+      blocksAll: stored.namespaceState.phase == .blocked || recovery.contains { $0.kind == .destructiveReset })
+  }
+
   package func clearRetryableRecoveryEvents(
     kind: CloudFullRecoveryKind
   ) async throws -> Bool {
     guard kind == .retryableFetch || kind == .retryableSend else { return false }
     let recovery = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
-      .filter { $0.kind == kind }
+      .filter { $0.kind == kind && !Self.hasFailedFetchRecords($0) }
     guard !recovery.isEmpty else { return false }
     let keys = Set(recovery.map {
       "full-recovery-\($0.batchID.uuidString.lowercased())"
@@ -39,10 +46,17 @@ extension CloudFullSyncPersistence {
     return CloudSyncIssueError.preferredIssue(from: issues)
   }
 
-  package func prepareManualRetry() async throws {
+  @discardableResult
+  package func prepareManualRetry() async throws -> Bool {
+    try await mutate { try await self.prepareManualRetryWithinMutation() }
+  }
+
+  private func prepareManualRetryWithinMutation() async throws -> Bool {
     let recovery = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
     let keys = Set(recovery.compactMap { event -> String? in
-      guard event.kind == .terminalFetch || event.kind == .terminalSend else { return nil }
+      guard event.kind == .terminalFetch || event.kind == .terminalSend,
+        !Self.hasFailedFetchRecords(event)
+      else { return nil }
       guard let issues = Self.storedSyncIssues(for: event),
         issues.allSatisfy(\.canRetry)
       else { return nil }
@@ -52,6 +66,7 @@ extension CloudFullSyncPersistence {
       try await library.clearCloudFullRecoveryEvents(namespaceKey: namespaceKey, keys: keys)
     }
     try await library.clearManuallyRetryableCloudAttachmentFailures(namespaceKey: namespaceKey)
+    return recovery.contains(where: Self.hasFailedFetchRecords)
   }
 
   private static func syncIssue(for failure: CloudAttachmentFailure) -> SyncedContentSyncIssue {
@@ -68,6 +83,10 @@ extension CloudFullSyncPersistence {
   }
 
   package func pendingChanges() async throws -> CloudOutboundBatch {
+    try await mutate { try await self.pendingChangesWithinMutation() }
+  }
+
+  private func pendingChangesWithinMutation() async throws -> CloudOutboundBatch {
     // The durable local rows and request ledger, compared with the durable accepted shadows,
     // are the change-history seam. Share imports use this same path; keep one sync driver and
     // do not add a second Share-only queue or cursor.
@@ -132,9 +151,9 @@ extension CloudFullSyncPersistence {
         CloudEntityReference(kind: .snip, domainID: $0.id)
       })
     }
-    let deletedListPlacements = try await library.cloudFullRecoveryEvents(
-      namespaceKey: namespaceKey
-    ).filter { $0.kind == .deletedListPlacement }
+    let recovery = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
+    let failedFetchIDs = try Self.failedFetchRecordIDs(recovery)
+    let deletedListPlacements = try recovery.filter { $0.kind == .deletedListPlacement }
       .reduce(into: [UUID: Set<UUID>]()) { result, recovery in
         let decoder = JSONDecoder()
         let deletedListID = try decoder.decode(UUID.self, from: recovery.outboundData)
@@ -241,6 +260,7 @@ extension CloudFullSyncPersistence {
       }
       operations.append(contentsOf: attachmentPlan.operations)
       hasEligiblePayloadSave = attachmentPlan.operations.contains { operation in
+        guard !failedFetchIDs.contains(operation.id) else { return false }
         guard case .save(let draft) = operation else { return false }
         return draft.recordType == CloudAttachmentRecordCodec.payloadRecordType
       }
@@ -251,7 +271,8 @@ extension CloudFullSyncPersistence {
       zonesToSave.insert(payloadZone)
     }
     return CloudOutboundBatch(
-      operations: operations.sorted { Self.operationOrder($0) < Self.operationOrder($1) },
+      operations: operations.filter { !failedFetchIDs.contains($0.id) }
+        .sorted { Self.operationOrder($0) < Self.operationOrder($1) },
       zonesToSave: zonesToSave
     )
   }

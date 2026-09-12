@@ -207,14 +207,14 @@ struct IOSAppRootView: View {
             Text(copyShare.errorMessage ?? String(localized: "Try again."))
         }
         .confirmationDialog(
-            "Choose a Backup",
+            "Choose a backup",
             isPresented: $isExplainingBackupImport,
             titleVisibility: .visible
         ) {
-            Button("Choose Backup") { isImportingBackup = true }
+            Button("Choose backup") { isImportingBackup = true }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Choose a backup folder to include attachments. A plain JSON file can contain text and metadata only.")
+            Text("Choose a backup folder that includes attachments, or a JSON file without attachments.")
         }
         .fileImporter(
             isPresented: $isImportingBackup,
@@ -239,10 +239,10 @@ struct IOSAppRootView: View {
             ),
             titleVisibility: .visible
         ) {
-            Button("Import Backup") { Task { await model.confirmBackupImport() } }
+            Button("Import backup") { Task { await model.confirmBackupImport() } }
             Button("Cancel", role: .cancel) { model.cancelBackupImport() }
         } message: {
-            Text("This backup contains \(model.pendingImportPreview?.localizedSummary ?? ""). Snip Snap will merge this backup with your saved snips.")
+            Text("Merge this backup with your library.\n\n\(model.pendingImportPreview?.localizedSummary ?? "")")
         }
         .onChange(of: model.sortMode) { _, mode in
             savedSortMode = mode.rawValue
@@ -383,7 +383,7 @@ struct IOSAppRootView: View {
             .searchable(
                 text: Binding(get: { model.searchText }, set: { model.searchText = $0 }),
                 isPresented: Binding(get: { model.isSearchPresented }, set: { model.isSearchPresented = $0 }),
-                prompt: "Search All"
+                prompt: "Search"
             )
             .searchToolbarBehavior(.minimize)
         }
@@ -554,7 +554,7 @@ private struct CompactLibrarySearchHost: View {
             .searchable(
                 text: Binding(get: { model.searchText }, set: { model.searchText = $0 }),
                 isPresented: $isPresented,
-                prompt: "Search All"
+                prompt: "Search"
             )
             .task {
                 await Task.yield()
@@ -588,12 +588,12 @@ private struct AppleAccountNoticeBanner: View {
             }
             if model.showsResolutionActions {
                 HStack(spacing: 12) {
-                    Button("Keep Local Copy") {
+                    Button("Keep on this device") {
                         Task { await model.resolve(.keepLocalCopy) }
                     }
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("keep-account-cache")
-                    Button("Remove", role: .destructive) {
+                    Button("Remove from this device", role: .destructive) {
                         Task { await model.resolve(.remove) }
                     }
                     .buttonStyle(.bordered)

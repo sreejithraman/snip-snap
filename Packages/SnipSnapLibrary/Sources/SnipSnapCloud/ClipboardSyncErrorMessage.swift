@@ -4,21 +4,21 @@ import SnipSnapCore
 public enum ClipboardSyncErrorMessage {
   public static func sync(for error: any Error) -> String {
     String(
-      localized: "Snip Snap couldn’t sync clipboard history. \(reason(for: error))",
+      localized: "Couldn’t sync clipboard history. \(reason(for: error))",
       bundle: .main
     )
   }
 
   public static func accountReset(for error: any Error) -> String {
     String(
-      localized: "Snip Snap couldn’t update clipboard history for this iCloud account. \(reason(for: error))",
+      localized: "Couldn’t update clipboard history for this account. \(reason(for: error))",
       bundle: .main
     )
   }
 
   public static func deleteSyncedHistory(for error: any Error) -> String {
     String(
-      localized: "Snip Snap couldn’t delete synced clipboard history. \(reason(for: error))",
+      localized: "Couldn’t delete synced clipboard history. \(reason(for: error))",
       bundle: .main
     )
   }
@@ -29,15 +29,15 @@ public enum ClipboardSyncErrorMessage {
       case .conflict:
         String(localized: "Clipboard history changed on another device. Try again.", bundle: .main)
       case .accountChanged:
-        String(localized: "Clipboard history belongs to a different iCloud account or library.", bundle: .main)
+        String(localized: "Clipboard history belongs to another iCloud account or library.", bundle: .main)
       case .unavailable:
         String(localized: "Clipboard sync is unavailable. Try again later.", bundle: .main)
       case .invalidPayload:
-        String(localized: "Snip Snap can’t read a clipboard item.", bundle: .main)
+        String(localized: "Can’t read clipboard data. Try again or contact support.", bundle: .main)
       case .busy:
-        String(localized: "Clipboard history is already syncing.", bundle: .main)
+        String(localized: "Wait for sync to finish.", bundle: .main)
       case .payloadTooLarge:
-        String(localized: "Snip Snap can’t sync a clipboard entry larger than 32 MB.", bundle: .main)
+        String(localized: "Clipboard entries over 32 MB can’t sync. Contact support for help.", bundle: .main)
       }
     }
 
@@ -45,33 +45,33 @@ public enum ClipboardSyncErrorMessage {
     case .waitingForConnection:
       String(localized: "Check your connection, then try again.", bundle: .main)
     case .iCloudUnavailable:
-      String(localized: "iCloud is unavailable right now. Try again.", bundle: .main)
+      String(localized: "iCloud is unavailable. Try again later.", bundle: .main)
     case .retryingSoon:
-      String(localized: "iCloud paused the request. Try again shortly.", bundle: .main)
+      String(localized: "iCloud needs more time. Try again later.", bundle: .main)
     case .checkingAccount:
-      String(localized: "Snip Snap can’t check your iCloud account. Try again.", bundle: .main)
+      String(localized: "Can’t check your iCloud account. Try again later.", bundle: .main)
     case .signInRequired:
       String(localized: "Sign in to iCloud, then try again.", bundle: .main)
     case .accountRestricted:
       String(localized: "iCloud access is restricted on this device.", bundle: .main)
     case .accountTemporarilyUnavailable:
-      String(localized: "Your iCloud account is unavailable right now. Try again.", bundle: .main)
+      String(localized: "Your iCloud account is unavailable. Try again later.", bundle: .main)
     case .iCloudStorageFull:
       String(localized: "iCloud storage is full. Free up space, then try again.", bundle: .main)
     case .updateRequired:
       String(localized: "Update Snip Snap, then try again.", bundle: .main)
     case .accessDenied:
-      String(localized: "Snip Snap can’t access iCloud. Check your device and iCloud restrictions.", bundle: .main)
+      String(localized: "Check your device’s iCloud permissions for Snip Snap.", bundle: .main)
     case .someChangesPending:
-      String(localized: "Some iCloud changes are pending. Try again.", bundle: .main)
+      String(localized: "Some changes haven’t synced. Try again.", bundle: .main)
     case .attachmentMissing:
-      String(localized: "Snip Snap can’t read a clipboard file on this device.", bundle: .main)
+      String(localized: "Can’t read a clipboard file. Try again or contact support.", bundle: .main)
     case .attachmentUnavailable:
-      String(localized: "iCloud can’t provide a clipboard file right now.", bundle: .main)
+      String(localized: "A clipboard file isn’t available from iCloud. Try again later.", bundle: .main)
     case .attachmentStorageUnavailable:
-      String(localized: "Snip Snap can’t save a clipboard file on this device.", bundle: .main)
+      String(localized: "Couldn’t save a clipboard file. Try again or contact support.", bundle: .main)
     case .setupBlocked, .iCloudDataReset, .iCloudAccountChanged, .appDataIssue:
-      String(localized: "Try again. If this keeps happening, check for an update or contact support.", bundle: .main)
+      String(localized: "Try again. If it still fails, update Snip Snap or contact support.", bundle: .main)
     }
   }
 }

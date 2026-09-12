@@ -39,7 +39,7 @@ struct PanelMoreButton: View {
         }
 
         Picker("Sort: \(sortModeTitle)", selection: sortModeBinding) {
-            Text("Newest First").tag(SnipSortMode.chronological)
+            Text("Newest first").tag(SnipSortMode.chronological)
             Text("Manual").tag(SnipSortMode.manual)
         }
 
@@ -106,7 +106,7 @@ struct PanelMoreButton: View {
     private var sortModeTitle: String {
         switch model.sortMode {
         case .chronological:
-            String(localized: "Newest First")
+            String(localized: "Newest first")
         case .manual:
             String(localized: "Manual")
         }

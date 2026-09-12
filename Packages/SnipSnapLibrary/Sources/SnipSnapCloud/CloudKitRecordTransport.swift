@@ -9,25 +9,25 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
     private var engine: CKSyncEngine?
     private var currentSerialization: Data?
     private var currentFetchZones: [CKRecordZone.ID] = []
+    private var fetchedBatchID = UUID()
+    private var sentBatchID = UUID()
     private var fetchedItems: [CloudFetchItemResult] = []
     private var fetchedDatabaseEvents: [CloudDatabaseEvent] = []
     private var fetchedZoneEvents: [CloudZoneEvent] = []
-    private var outbound: [CloudRecordID: CloudOutboundOperation] = [:]
-    private var outboundOrder: [CloudRecordID] = []
+    private var outboundQueue = CloudRecordOutboundQueue()
     private var sendResults: [CloudRecordID: CloudSendItemResult] = [:]
     private var sentDatabaseEvents: [CloudDatabaseEvent] = []
     private var sentZoneEvents: [CloudZoneEvent] = []
-    private var currentOutboundBatch: CloudOutboundBatch?
-    private var pending: CloudSyncBatch?
+    private let mailbox = CloudRecordTransportMailbox()
+    private var explicitFetchedBatch: CloudFetchedBatch?
+    private var explicitSentBatch: CloudSentBatch?
+    private var cycleCompletion: CloudRecordCycleCompletion?
     private var isPerformingSyncOperation = false
-    private var automaticBatchHandler: BatchHandler?
-    private var accountChangeHandler: AccountChangeHandler?
+    private var automaticallySync = false
     private var recordSendGate: RecordSendGate?
-    private var engineStateHandler: EngineStateHandler?
-    private var automaticFetchReady = false
-    private var automaticSendReady = false
     private var fetchCycleInProgress = false
     private var sendCycleInProgress = false
+    private var requiresInitialFetch = true
 
     package init(
         database: CKDatabase,
@@ -47,53 +47,63 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         state: CloudEngineStateEnvelope?,
         initialOutbound: CloudOutboundBatch?
     ) throws {
+        try start(state: state, initialOutbound: initialOutbound, outboundAdmission: .open)
+    }
+
+    package func start(
+        state: CloudEngineStateEnvelope?,
+        initialOutbound: CloudOutboundBatch?,
+        outboundAdmission: CloudRecordOutboundAdmission
+    ) throws {
         guard engine == nil else { return }
         let serialization = try Self.validate(namespace: namespace, state: state)
+        outboundQueue.restoreAdmission(outboundAdmission)
         currentSerialization = state?.serialization
+        requiresInitialFetch = state == nil || state?.requiresInitialFetch == true
         var configuration = CKSyncEngine.Configuration(
             database: database,
             stateSerialization: serialization,
             delegate: self
         )
-        configuration.automaticallySync = automaticBatchHandler != nil
+        configuration.automaticallySync = automaticallySync && !outboundAdmission.blocksAll
         currentFetchZones = automaticallyFetchedZones.map(CloudKitRecordMapper.zoneID(for:))
         engine = CKSyncEngine(configuration)
+        observePendingAdmission()
         if let initialOutbound {
             try schedule(initialOutbound)
         }
     }
 
     package func configureAutomaticSync(
-        batchHandler: @escaping BatchHandler,
-        accountChangeHandler: @escaping AccountChangeHandler,
-        recordSendGate: @escaping RecordSendGate,
-        engineStateHandler: @escaping EngineStateHandler
+        workAvailableHandler: @escaping WorkAvailableHandler,
+        recordSendGate: @escaping RecordSendGate
     ) {
-        automaticBatchHandler = batchHandler
-        self.accountChangeHandler = accountChangeHandler
+        automaticallySync = true
+        mailbox.configure(workAvailable: workAvailableHandler)
         self.recordSendGate = recordSendGate
-        self.engineStateHandler = engineStateHandler
     }
 
     package func reset() {
         engine = nil
         currentSerialization = nil
         currentFetchZones = []
+        fetchedBatchID = UUID()
+        sentBatchID = UUID()
         fetchedItems = []
         fetchedDatabaseEvents = []
         fetchedZoneEvents = []
-        outbound = [:]
-        outboundOrder = []
+        outboundQueue = CloudRecordOutboundQueue()
         sendResults = [:]
         sentDatabaseEvents = []
         sentZoneEvents = []
-        currentOutboundBatch = nil
-        pending = nil
+        mailbox.reset()
+        explicitFetchedBatch = nil
+        explicitSentBatch = nil
         isPerformingSyncOperation = false
-        automaticFetchReady = false
-        automaticSendReady = false
         fetchCycleInProgress = false
         sendCycleInProgress = false
+        requiresInitialFetch = true
+        resumeCycleWaiters()
     }
 
     package nonisolated static func validate(
@@ -115,103 +125,83 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
     }
 
     package func fetch(scope: CloudFetchScope) async throws -> CloudFetchedBatch {
-        if case .fetched(let batch)? = pending { return batch }
-        if pending != nil { throw CloudTransportError.wrongBatchConfirmation }
         guard let engine else { throw CloudTransportError.notStarted }
-        guard !isPerformingSyncOperation, !fetchCycleInProgress, !sendCycleInProgress else {
-            throw CloudTransportError.syncAlreadyRunning
-        }
+        try await waitForCurrentCycle()
+        guard self.engine === engine else { throw CloudTransportError.notStarted }
+        guard !isPerformingSyncOperation else { throw CloudTransportError.syncAlreadyRunning }
         isPerformingSyncOperation = true
-        defer { isPerformingSyncOperation = false }
-        currentFetchZones = automaticallyFetchedZones
-            .filter { scope.contains($0) }
+        defer { if self.engine === engine { isPerformingSyncOperation = false } }
+        explicitFetchedBatch = nil
+        currentFetchZones = automaticallyFetchedZones.filter { scope.contains($0) }
             .map(CloudKitRecordMapper.zoneID(for:))
         defer {
-            currentFetchZones = automaticallyFetchedZones.map(CloudKitRecordMapper.zoneID(for:))
+            if self.engine === engine {
+                currentFetchZones = automaticallyFetchedZones.map(CloudKitRecordMapper.zoneID(for:))
+            }
         }
-        fetchedItems = []
-        fetchedDatabaseEvents = []
-        fetchedZoneEvents = []
         do {
             try await engine.fetchChanges(
                 CKSyncEngine.FetchChangesOptions(scope: .zoneIDs(currentFetchZones))
             )
         } catch {
+            guard self.engine === engine else { throw CloudTransportError.notStarted }
             CloudSyncDiagnostics.record(error, operation: "record fetch")
             fetchedDatabaseEvents.append(.failed(nil, Self.failure(error)))
+            finishFetchCycle()
         }
-        let batch = CloudFetchedBatch(
-            id: UUID(),
-            items: fetchedItems,
-            databaseEvents: fetchedDatabaseEvents,
-            zoneEvents: fetchedZoneEvents,
-            engineState: envelope()
-        )
-        fetchedItems = []
-        fetchedDatabaseEvents = []
-        fetchedZoneEvents = []
-        pending = .fetched(batch)
-        return batch
+        guard self.engine === engine else { throw CloudTransportError.notStarted }
+        if explicitFetchedBatch == nil { finishFetchCycle() }
+        return explicitFetchedBatch!
     }
 
     package func send(_ batch: CloudOutboundBatch) async throws -> CloudSentBatch {
         guard Set(batch.operations.map(\.id)).count == batch.operations.count else {
             throw CloudTransportError.invalidRecord
         }
-        if case .sent(let result)? = pending { return result }
-        if pending != nil { throw CloudTransportError.wrongBatchConfirmation }
         guard let engine else { throw CloudTransportError.notStarted }
-        guard !isPerformingSyncOperation, !fetchCycleInProgress, !sendCycleInProgress else {
-            throw CloudTransportError.syncAlreadyRunning
-        }
+        try await waitForCurrentCycle()
+        guard self.engine === engine else { throw CloudTransportError.notStarted }
+        guard !isPerformingSyncOperation else { throw CloudTransportError.syncAlreadyRunning }
         isPerformingSyncOperation = true
-        defer { isPerformingSyncOperation = false }
+        defer { if self.engine === engine { isPerformingSyncOperation = false } }
+        explicitSentBatch = nil
         try schedule(batch)
-        sendResults = [:]
-        sentDatabaseEvents = []
-        sentZoneEvents = []
-
         do {
             try await engine.sendChanges(CKSyncEngine.SendChangesOptions(scope: .all))
         } catch {
+            guard self.engine === engine else { throw CloudTransportError.notStarted }
             CloudSyncDiagnostics.record(error, operation: "record send")
             sentDatabaseEvents.append(.failed(nil, Self.failure(error)))
+            if outboundQueue.cycle == nil { outboundQueue.beginCycle() }
+            finishSendCycle()
         }
-        let items = outboundOrder.map { id in
-            sendResults[id] ?? .failed(id, .retryable)
+        guard self.engine === engine else { throw CloudTransportError.notStarted }
+        if explicitSentBatch == nil {
+            if outboundQueue.cycle == nil { outboundQueue.beginCycle() }
+            finishSendCycle()
         }
-        let result = CloudSentBatch(
-            id: UUID(),
-            items: items,
-            databaseEvents: sentDatabaseEvents,
-            zoneEvents: sentZoneEvents,
-            engineState: envelope()
-        )
-        sendResults = [:]
-        sentDatabaseEvents = []
-        sentZoneEvents = []
-        pending = .sent(result)
-        return result
+        return explicitSentBatch!
     }
 
     package func confirmApplied(_ batchID: UUID) async throws {
-        guard let pending else { return }
-        guard pending.id == batchID else {
-            throw CloudTransportError.wrongBatchConfirmation
+        try confirmApplied(batchID, durableAdmission: nil)
+    }
+
+    package func confirmApplied(_ batchID: UUID, outboundAdmission: CloudRecordOutboundAdmission) async throws {
+        try confirmApplied(batchID, durableAdmission: outboundAdmission)
+    }
+
+    private func confirmApplied(_ batchID: UUID, durableAdmission: CloudRecordOutboundAdmission?) throws {
+        guard let event = try mailbox.confirm(batchID) else { return }
+        if let durableAdmission {
+            outboundQueue.confirmAdmission(batchID, durable: durableAdmission)
+        } else if case .batch(let pending) = event {
+            outboundQueue.confirmLegacyAdmission(pending.batch)
         }
-        self.pending = nil
-        if case .sent(let sent) = pending {
-            let retrying = Self.retryingRecordIDs(in: sent)
-            outbound = outbound.filter { retrying.contains($0.key) }
-            outboundOrder = outboundOrder.filter(retrying.contains)
-            currentOutboundBatch = outbound.isEmpty
-                ? nil
-                : CloudOutboundBatch(
-                    operations: outboundOrder.compactMap { outbound[$0] },
-                    zonesToSave: currentOutboundBatch?.zonesToSave ?? []
-                )
-            sendResults = [:]
+        if case .batch(let pending) = event, case .sent(let sent) = pending.batch {
+            outboundQueue.confirm(sent)
         }
+        observePendingAdmission()
     }
 
     package nonisolated static func retryingRecordIDs(
@@ -225,27 +215,13 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         })
     }
 
-    package func drainAutomaticSyncEvents() async {
-        await deliverAutomaticFetchIfNeeded()
-        await deliverAutomaticSendIfNeeded()
-    }
+    package func finishCurrentSyncCycle() async throws { try await waitForCurrentCycle() }
 
     package func scheduleAutomaticSync(_ batch: CloudOutboundBatch) throws {
-        guard engine != nil else { throw CloudTransportError.notStarted }
         try schedule(batch)
     }
 
-    package func pendingBatch() -> CloudPendingBatch? {
-        guard let pending else { return nil }
-        let pendingOutbound: CloudOutboundBatch?
-        switch pending {
-        case .fetched:
-            pendingOutbound = nil
-        case .sent:
-            pendingOutbound = currentOutboundBatch
-        }
-        return CloudPendingBatch(batch: pending, outbound: pendingOutbound)
-    }
+    package func pendingEvent() -> CloudRecordTransportEvent? { mailbox.first }
 
     package func fetchRecord(
         _ id: CloudRecordID,
@@ -298,23 +274,13 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
     }
 
     package func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) async {
+        guard syncEngine === engine else { return }
         switch event {
         case .stateUpdate(let update):
             do {
                 currentSerialization = try JSONEncoder().encode(update.stateSerialization)
-                if !isPerformingSyncOperation,
-                   !fetchCycleInProgress,
-                   !sendCycleInProgress,
-                   pending == nil,
-                   let envelope = envelope(),
-                   let engineStateHandler
-                {
-                    do {
-                        try await engineStateHandler(envelope)
-                    } catch {
-                        automaticFetchReady = true
-                        await deliverAutomaticFetchIfNeeded()
-                    }
+                if !fetchCycleInProgress, !sendCycleInProgress, let state = envelope() {
+                    mailbox.append(.checkpoint(UUID(), state))
                 }
             } catch {
                 fetchedDatabaseEvents.append(.failed(nil, .invalidRecord))
@@ -420,56 +386,80 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
                 sendResults[id] = sendResult(for: id, error: error)
             }
         case .willFetchChanges:
+            if cycleCompletion == nil { cycleCompletion = CloudRecordCycleCompletion() }
             fetchCycleInProgress = true
         case .didFetchChanges:
             fetchCycleInProgress = false
-            if !isPerformingSyncOperation {
-                automaticFetchReady = true
-                await deliverAutomaticFetchIfNeeded()
-            }
+            finishFetchCycle()
+            resumeCycleWaiters()
         case .willSendChanges:
+            if cycleCompletion == nil { cycleCompletion = CloudRecordCycleCompletion() }
             sendCycleInProgress = true
+            outboundQueue.beginCycle()
         case .didSendChanges:
             sendCycleInProgress = false
-            if !isPerformingSyncOperation {
-                automaticSendReady = true
-                await deliverAutomaticSendIfNeeded()
-            }
+            finishSendCycle()
+            resumeCycleWaiters()
         case .accountChange:
-            await accountChangeHandler?()
+            mailbox.append(.accountChange(UUID()))
         default:
             break
         }
+        observePendingAdmission()
     }
 
     package func nextRecordZoneChangeBatch(
         _ context: CKSyncEngine.SendChangesContext,
         syncEngine: CKSyncEngine
     ) async -> CKSyncEngine.RecordZoneChangeBatch? {
+        guard syncEngine === engine, !requiresInitialFetch, !mailbox.hasUncommittedRecords,
+              !outboundQueue.admission.blocksAll else { return nil }
         do {
             try await recordSendGate?()
         } catch {
             return nil
         }
-        let pendingChanges = syncEngine.state.pendingRecordZoneChanges.filter {
+        guard syncEngine === engine, !requiresInitialFetch, !mailbox.hasUncommittedRecords,
+              !outboundQueue.admission.blocksAll else { return nil }
+        let pendingIDs = Set(syncEngine.state.pendingRecordZoneChanges.filter {
             context.options.scope.contains($0)
+        }.compactMap { change -> CloudRecordID? in
+            switch change {
+            case .saveRecord(let id), .deleteRecord(let id): CloudKitRecordMapper.id(for: id)
+            @unknown default: nil
+            }
+        })
+        guard let sendCycle = outboundQueue.cycle else { return nil }
+        let pendingChanges: [CKSyncEngine.PendingRecordZoneChange] = sendCycle.operations(
+            pendingIDs: pendingIDs
+        ).map { operation in
+            let id = CloudKitRecordMapper.recordID(for: operation.id)
+            return switch operation {
+            case .save: .saveRecord(id)
+            case .delete: .deleteRecord(id)
+            }
         }
-        return await CKSyncEngine.RecordZoneChangeBatch(
+        let batch = await CKSyncEngine.RecordZoneChangeBatch(
             pendingChanges: pendingChanges,
             recordProvider: { [weak self] recordID in
-                guard let self,
-                      let draft = await self.draftToSend(
-                          CloudKitRecordMapper.id(for: recordID)
-                      )
+                guard let draft = sendCycle.draft(CloudKitRecordMapper.id(for: recordID))
                 else { return nil }
                 do {
                     return try CloudKitRecordMapper.record(for: draft)
                 } catch {
-                    await self.recordMappingFailed(draft.id)
+                    await self?.recordMappingFailed(draft.id, cycleID: sendCycle.id, from: syncEngine)
                     return nil
                 }
             }
         )
+        guard let batch, syncEngine === engine, outboundQueue.cycle?.id == sendCycle.id,
+              !outboundQueue.admission.blocksAll, !mailbox.hasUncommittedRecords else { return nil }
+        let suppliedIDs = Set((batch.recordsToSave.map(\.recordID) + batch.recordIDsToDelete)
+            .map(CloudKitRecordMapper.id(for:)))
+        guard Set(outboundQueue.cycle?.operations(pendingIDs: suppliedIDs).map(\.id) ?? []) == suppliedIDs
+        else { return nil }
+        outboundQueue.recordSupplied(suppliedIDs)
+        return batch
     }
 
     package func nextFetchChangesOptions(
@@ -479,118 +469,163 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         CKSyncEngine.FetchChangesOptions(scope: .zoneIDs(currentFetchZones))
     }
 
-    private func draftToSend(_ id: CloudRecordID) -> CloudRecordDraft? {
-        guard case .save(let draft)? = outbound[id] else { return nil }
-        return draft
-    }
-
-    private func recordMappingFailed(_ id: CloudRecordID) {
+    private func recordMappingFailed(_ id: CloudRecordID, cycleID: UUID, from source: CKSyncEngine) {
+        guard source === engine, outboundQueue.cycle?.id == cycleID else { return }
+        outboundQueue.recordSupplied([id])
         sendResults[id] = .failed(id, .invalidRecord)
     }
 
     private func envelope() -> CloudEngineStateEnvelope? {
         currentSerialization.map {
-            CloudEngineStateEnvelope(namespace: namespace, serialization: $0)
+            CloudEngineStateEnvelope(
+                namespace: namespace, serialization: $0,
+                requiresInitialFetch: requiresInitialFetch
+            )
         }
     }
 
     private func sendResult(for id: CloudRecordID, error: CKError) -> CloudSendItemResult {
-        guard let operation = outbound[id] else { return .failed(id, .rejected) }
+        guard outboundQueue.cycle?.outbound.operations.contains(where: { $0.id == id }) == true
+        else { return .failed(id, .rejected) }
         if error.code == .serverRecordChanged,
            let server = error.serverRecord,
            let snapshot = try? CloudKitRecordMapper.snapshot(server)
         {
-            return .conflict(operation.id, server: snapshot)
+            return .conflict(id, server: snapshot)
         }
         if error.code == .unknownItem { return .unknownItem(id) }
         return .failed(id, Self.failure(error))
     }
 
-    private func deliverAutomaticFetchIfNeeded() async {
-        guard automaticFetchReady,
-              !isPerformingSyncOperation,
-              pending == nil,
-              let automaticBatchHandler
-        else { return }
+    private func observePendingAdmission() {
+        outboundQueue.observe(.fetched(CloudFetchedBatch(id: fetchedBatchID, items: fetchedItems,
+            databaseEvents: fetchedDatabaseEvents, engineState: nil)), zones: namespace.zones)
+        outboundQueue.observe(.sent(CloudSentBatch(id: sentBatchID, items: [],
+            databaseEvents: sentDatabaseEvents, engineState: nil)), zones: namespace.zones)
+        guard let engine else { return }
+        let admission = outboundQueue.admission
+        let blockedChanges = engine.state.pendingRecordZoneChanges.filter { change in
+            let id: CKRecord.ID
+            switch change {
+            case .saveRecord(let recordID), .deleteRecord(let recordID): id = recordID
+            @unknown default: return admission.blocksAll
+            }
+            return admission.blocksAll || admission.blockedRecordIDs.contains(CloudKitRecordMapper.id(for: id))
+        }
+        if !blockedChanges.isEmpty { engine.state.remove(pendingRecordZoneChanges: blockedChanges) }
+        if admission.blocksAll, !engine.state.pendingDatabaseChanges.isEmpty {
+            engine.state.remove(pendingDatabaseChanges: engine.state.pendingDatabaseChanges)
+        }
+    }
+
+    private func finishFetchCycle() {
+        observePendingAdmission()
+        updateInitialFetchReadiness()
         let batch = CloudFetchedBatch(
-            id: UUID(),
-            items: fetchedItems,
-            databaseEvents: fetchedDatabaseEvents,
-            zoneEvents: fetchedZoneEvents,
-            engineState: envelope()
+            id: fetchedBatchID, items: fetchedItems, databaseEvents: fetchedDatabaseEvents,
+            zoneEvents: fetchedZoneEvents, engineState: sendCycleInProgress ? nil : envelope()
         )
         fetchedItems = []
         fetchedDatabaseEvents = []
         fetchedZoneEvents = []
-        automaticFetchReady = false
-        pending = .fetched(batch)
-        do {
-            try await automaticBatchHandler(.fetched(batch), nil)
-        } catch {
-            // Leave the batch pending so the next explicit sync can apply it.
-        }
+        fetchedBatchID = UUID()
+        mailbox.append(.batch(CloudPendingBatch(batch: .fetched(batch), outbound: nil)))
+        if isPerformingSyncOperation { explicitFetchedBatch = batch }
     }
 
-    private func deliverAutomaticSendIfNeeded() async {
-        if automaticSendReady, currentOutboundBatch == nil {
-            automaticSendReady = false
-            sendResults = [:]
-            sentDatabaseEvents = []
-            sentZoneEvents = []
-            return
-        }
-        guard automaticSendReady,
-              !isPerformingSyncOperation,
-              pending == nil,
-              let automaticBatchHandler,
-              let currentOutboundBatch
-        else { return }
-        let items = outboundOrder.map { id in
-            sendResults[id] ?? .failed(id, .retryable)
-        }
+    private func finishSendCycle() {
+        observePendingAdmission()
+        let id = sentBatchID
+        sentBatchID = UUID()
+        let sent = outboundQueue.finishCycle(id)
         let batch = CloudSentBatch(
-            id: UUID(),
-            items: items,
+            id: id,
+            items: sent.operations.map { sendResults[$0.id] ?? .failed($0.id, .retryable) },
             databaseEvents: sentDatabaseEvents,
             zoneEvents: sentZoneEvents,
-            engineState: envelope()
+            engineState: fetchCycleInProgress ? nil : envelope()
         )
+        sendResults = [:]
         sentDatabaseEvents = []
         sentZoneEvents = []
-        automaticSendReady = false
-        pending = .sent(batch)
-        do {
-            try await automaticBatchHandler(.sent(batch), currentOutboundBatch)
-        } catch {
-            // Leave the batch pending so the next explicit sync can apply it.
+        mailbox.append(.batch(CloudPendingBatch(batch: .sent(batch), outbound: sent)))
+        if isPerformingSyncOperation { explicitSentBatch = batch }
+    }
+
+    private func waitForCurrentCycle() async throws {
+        while let completion = cycleCompletion {
+            try await completion.wait()
+        }
+        try Task.checkCancellation()
+    }
+
+    private func resumeCycleWaiters() {
+        guard !fetchCycleInProgress, !sendCycleInProgress else { return }
+        let completion = cycleCompletion
+        cycleCompletion = nil
+        completion?.finish()
+    }
+
+    private func updateInitialFetchReadiness() {
+        let completed = Set(fetchedZoneEvents.compactMap { event -> CloudZoneID? in
+            guard case .fetched(let zone) = event else { return nil }
+            return zone
+        })
+        let fetched = CloudFetchedBatch(
+            id: UUID(), items: fetchedItems, databaseEvents: fetchedDatabaseEvents,
+            zoneEvents: fetchedZoneEvents, engineState: nil
+        )
+        if automaticallyFetchedZones.isSubset(of: completed),
+           !CloudSyncIssueError.blocksOutbound(in: .fetched(fetched)) {
+            requiresInitialFetch = false
         }
     }
 
     private func schedule(_ batch: CloudOutboundBatch) throws {
         guard let engine else { throw CloudTransportError.notStarted }
-        for operation in batch.operations {
-            if outbound[operation.id] == nil { outboundOrder.append(operation.id) }
-            outbound[operation.id] = operation
+        let admitted = outboundQueue.schedule(batch)
+        let desired = outboundQueue.current
+        let records = Dictionary(desired.operations.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        let obsoleteRecords = engine.state.pendingRecordZoneChanges.filter { change in
+            switch change {
+            case .saveRecord(let id):
+                if case .save? = records[CloudKitRecordMapper.id(for: id)] { return false }
+            case .deleteRecord(let id):
+                if case .delete? = records[CloudKitRecordMapper.id(for: id)] { return false }
+            @unknown default: break
+            }
+            return true
         }
-        let zones = (currentOutboundBatch?.zonesToSave ?? []).union(batch.zonesToSave)
-        currentOutboundBatch = CloudOutboundBatch(
-            operations: outboundOrder.compactMap { outbound[$0] },
-            zonesToSave: zones
-        )
-        engine.state.add(
-            pendingDatabaseChanges: batch.zonesToSave.map {
-                .saveZone(CKRecordZone(zoneID: CloudKitRecordMapper.zoneID(for: $0)))
+        let obsoleteZones = engine.state.pendingDatabaseChanges.filter { change in
+            switch change {
+            case .saveZone(let zone): !desired.zonesToSave.contains(CloudKitRecordMapper.id(for: zone.zoneID))
+            case .deleteZone: true
+            @unknown default: true
             }
-        )
-        engine.state.add(
-            pendingRecordZoneChanges: batch.operations.map { operation in
-                let recordID = CloudKitRecordMapper.recordID(for: operation.id)
-                return switch operation {
-                case .save: .saveRecord(recordID)
-                case .delete: .deleteRecord(recordID)
+        }
+        if !obsoleteRecords.isEmpty { engine.state.remove(pendingRecordZoneChanges: obsoleteRecords) }
+        if !obsoleteZones.isEmpty { engine.state.remove(pendingDatabaseChanges: obsoleteZones) }
+        // A newer snapshot can withdraw queued work during a cycle, but cannot add
+        // new record bodies until that cycle's exact acknowledgement commits.
+        guard let admitted else { return }
+        if !admitted.zonesToSave.isEmpty {
+            engine.state.add(
+                pendingDatabaseChanges: admitted.zonesToSave.map {
+                    .saveZone(CKRecordZone(zoneID: CloudKitRecordMapper.zoneID(for: $0)))
                 }
-            }
-        )
+            )
+        }
+        if !admitted.operations.isEmpty {
+            engine.state.add(
+                pendingRecordZoneChanges: admitted.operations.map { operation in
+                    let recordID = CloudKitRecordMapper.recordID(for: operation.id)
+                    return switch operation {
+                    case .save: .saveRecord(recordID)
+                    case .delete: .deleteRecord(recordID)
+                    }
+                }
+            )
+        }
     }
 
     package nonisolated static func failure(_ error: Error) -> CloudOperationFailure {

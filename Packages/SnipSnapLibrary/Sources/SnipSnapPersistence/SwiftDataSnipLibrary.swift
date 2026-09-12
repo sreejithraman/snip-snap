@@ -342,10 +342,8 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
-    guard !FileManager.default.fileExists(atPath: readOnlyRecoveryMarkerURL.path) else {
-      throw SnipLibraryError.readOnlyRecovery
-    }
     let context = Self.makeContext(container: container)
+    try requireContentWritesAllowed(context: context)
     let loaded = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
     try Self.validate(loaded.state)
     let before = makeSnapshot(state: loaded.state, sortedBy: sortMode)

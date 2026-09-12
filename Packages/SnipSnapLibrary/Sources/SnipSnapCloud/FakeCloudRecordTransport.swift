@@ -110,6 +110,7 @@ package actor FakeCloudServer {
         guard Set(batch.operations.map(\.id)).count == batch.operations.count else {
             throw CloudTransportError.invalidRecord
         }
+        zones.formUnion(batch.zonesToSave)
         let items = try batch.operations.map { operation in
             if let failure = failures[operation.id] {
                 return CloudSendItemResult.failed(operation.id, failure)
@@ -185,6 +186,9 @@ package actor FakeCloudServer {
                 id: UUID(),
                 items: items,
                 databaseEvents: databaseEvents,
+                zoneEvents: zones.filter { scope.contains($0) }
+                    .sorted { ($0.name, $0.ownerName) < ($1.name, $1.ownerName) }
+                    .map(CloudZoneEvent.fetched),
                 engineState: nil
             ),
             advanced
@@ -376,6 +380,7 @@ package actor FakeCloudControlTransport: CloudCollectionControlTransport {
 package actor FakeCloudRecordTransport: CloudRecordTransport {
     private let server: FakeCloudServer
     private let namespace: CloudSyncNamespace?
+    private var started = false
     private var committedCursors: [CloudZoneID: Int] = [:]
     private var pending: CloudSyncBatch?
     private var nextFetchFailure: CloudTransportError?
@@ -402,8 +407,9 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
     }
 
     package func start(state: CloudEngineStateEnvelope?) throws {
+        guard !started else { return }
         eventLog.append(.started)
-        guard let state else { return }
+        guard let state else { committedCursors = [:]; started = true; return }
         if let namespace, state.namespace != namespace {
             throw CloudTransportError.stateNamespaceMismatch
         }
@@ -415,6 +421,13 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
         } catch {
             throw CloudTransportError.invalidEngineState
         }
+        started = true
+    }
+
+    package func reset() {
+        started = false
+        committedCursors = [:]
+        pending = nil
     }
 
     package func failNextFetch() { nextFetchFailure = .fetchFailed }

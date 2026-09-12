@@ -8,12 +8,12 @@ struct RecoveredSnipRow: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(
                 recovery.recovered.content.isEmpty
-                    ? "Recovered edit"
+                    ? "Recovered snip"
                     : SnipTextPreview.displayText(recovery.recovered.content, lineLimit: 3)
             )
                 .lineLimit(3)
                 .foregroundStyle(.primary)
-            Label("Recovered", systemImage: "arrow.uturn.backward.circle.fill")
+            Label("Recovered snip", systemImage: "arrow.uturn.backward.circle.fill")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.orange)
         }
@@ -29,7 +29,7 @@ struct RecoveryCenterView: View {
         NavigationStack {
             List {
                 if !model.recoverySnapshot.pendingSnips.isEmpty {
-                    Section("Recovered Snips") {
+                    Section("Recovered snips") {
                         ForEach(model.recoverySnapshot.pendingSnips) { recovery in
                             NavigationLink {
                                 RecoveredSnipReviewView(model: model, recoveryID: recovery.id)
@@ -40,7 +40,7 @@ struct RecoveryCenterView: View {
                     }
                 }
                 if !model.recoverySnapshot.pendingLists.isEmpty {
-                    Section("Recovered List Edits") {
+                    Section("Recovered lists") {
                         ForEach(model.recoverySnapshot.pendingLists) { recovery in
                             NavigationLink {
                                 RecoveredListReviewView(model: model, recoveryID: recovery.id)
@@ -51,7 +51,7 @@ struct RecoveryCenterView: View {
                     }
                 }
             }
-            .navigationTitle("Needs Attention")
+            .navigationTitle("Needs attention")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
@@ -78,9 +78,9 @@ struct RecoveredSnipReviewView: View {
                 if let recovery, let current = model.currentSnip(for: recovery) {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 24) {
-                            recoverySnipCard("Current", snip: current, fields: recovery.conflictingFields)
+                            recoverySnipCard("Current version", snip: current, fields: recovery.conflictingFields)
                             recoverySnipCard(
-                                "Recovered Edit",
+                                "Recovered version",
                                 snip: recovery.recovered,
                                 fields: recovery.conflictingFields
                             )
@@ -91,15 +91,15 @@ struct RecoveredSnipReviewView: View {
                     .safeAreaInset(edge: .bottom) {
                         VStack(spacing: 12) {
                             HStack {
-                                Button("Keep Current") { resolve(.keepCurrent) }
+                                Button("Keep current") { resolve(.keepCurrent) }
                                 Spacer()
-                                Button("Use Recovered") { resolve(.useRecovered) }
+                                Button("Use recovered") { resolve(.useRecovered) }
                                     .buttonStyle(.borderedProminent)
                             }
                             HStack {
-                                Button("Keep Both") { resolve(.keepBoth) }
+                                Button("Keep both") { resolve(.keepBoth) }
                                 Spacer()
-                                Button("Edit") {
+                                Button("Use edited version") {
                                     if let edited { resolve(.editSnip(edited)) }
                                 }
                             }
@@ -110,10 +110,10 @@ struct RecoveredSnipReviewView: View {
                     .disabled(isResolving)
                     .onAppear { if edited == nil { edited = recovery.recovered } }
                 } else {
-                    ContentUnavailableView("Recovered Edit Is Gone", systemImage: "checkmark.circle")
+                    ContentUnavailableView("Recovered version unavailable", systemImage: "checkmark.circle")
                 }
             }
-            .navigationTitle("Recovered Snip")
+            .navigationTitle("Recovered snip")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
@@ -159,7 +159,7 @@ struct RecoveredSnipReviewView: View {
     @ViewBuilder
     private func editSnipFields(_ recovery: RecoveredSnip) -> some View {
         if let binding = Binding($edited) {
-            GroupBox("Edit Conflicting Fields") {
+            GroupBox("Edit differences") {
                 VStack(alignment: .leading, spacing: 12) {
                     if recovery.conflictingFields.contains(.text) {
                         TextField("Text", text: binding.content, axis: .vertical)
@@ -242,12 +242,12 @@ struct RecoveredListReviewView: View {
             Group {
                 if let recovery, let current = model.currentList(for: recovery) {
                     Form {
-                        Section("Current List") { listValues(current, fields: recovery.conflictingFields) }
-                        Section("Recovered Edit") {
+                        Section("Current version") { listValues(current, fields: recovery.conflictingFields) }
+                        Section("Recovered version") {
                             listValues(recovery.recovered, fields: recovery.conflictingFields)
                         }
                         if let binding = Binding($edited) {
-                            Section("Edit Conflicting Fields") {
+                            Section("Edit differences") {
                                 if recovery.conflictingFields.contains(.name) {
                                     TextField("Name", text: binding.name)
                                 }
@@ -259,11 +259,11 @@ struct RecoveredListReviewView: View {
                     }
                     .safeAreaInset(edge: .bottom) {
                         HStack {
-                            Button("Keep Current") { resolve(.keepCurrent) }
+                            Button("Keep current") { resolve(.keepCurrent) }
                             Spacer()
-                            Button("Use Recovered") { resolve(.useRecovered) }
+                            Button("Use recovered") { resolve(.useRecovered) }
                                 .buttonStyle(.borderedProminent)
-                            Button("Edit") {
+                            Button("Use edited version") {
                                 if let edited { resolve(.editList(edited)) }
                             }
                         }
@@ -273,10 +273,10 @@ struct RecoveredListReviewView: View {
                     .disabled(isResolving)
                     .onAppear { if edited == nil { edited = recovery.recovered } }
                 } else {
-                    ContentUnavailableView("Recovered Edit Is Gone", systemImage: "checkmark.circle")
+                    ContentUnavailableView("Recovered version unavailable", systemImage: "checkmark.circle")
                 }
             }
-            .navigationTitle("Recovered List Edit")
+            .navigationTitle("Recovered list")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }

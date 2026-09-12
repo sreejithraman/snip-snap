@@ -212,12 +212,12 @@ struct ContentView: View {
             ),
             titleVisibility: .visible
         ) {
-            Button("Import Backup") {
+            Button("Import backup") {
                 Task { await model.confirmBackupImport() }
             }
             Button("Cancel", role: .cancel) { model.cancelBackupImport() }
         } message: {
-            Text("This backup contains \(model.importPreviewSummary). Snip Snap will merge this backup with your saved snips.")
+            Text("Merge this backup with your library.\n\n\(model.importPreviewSummary)")
         }
         .sheet(isPresented: $accessibilityPermissions.isRepairPresented) {
             AccessibilityRepairView(controller: accessibilityPermissions)
@@ -305,10 +305,10 @@ struct ContentView: View {
                 Button {
                     showingRecoveryReview = true
                 } label: {
-                    Label("Needs Attention (\(model.needsAttentionCount))", systemImage: "exclamationmark.circle.fill")
+                    Label("Needs attention (\(model.needsAttentionCount))", systemImage: "exclamationmark.circle.fill")
                 }
                 .buttonStyle(.bordered)
-                .help("Review recovered edits")
+                .help("Review recovered versions")
             }
 
             PanelMoreButton(
@@ -454,7 +454,7 @@ struct ContentView: View {
                 .font(.system(size: 12.5, weight: .medium))
                 .foregroundStyle(SnipSnapColors.textSecondary)
             if model.query.isEmpty, model.completionFilter == .all {
-                Text("\(shortcutSettings.configuration.captureSelection.displayName) captures the selection")
+                Text("Select text, then press \(shortcutSettings.configuration.captureSelection.displayName) to save it.")
                     .font(.system(size: 10.5))
                     .foregroundStyle(SnipSnapColors.textTertiary)
             }
@@ -478,7 +478,7 @@ struct ContentView: View {
 
     private var emptyStateTitle: String {
         if !model.query.isEmpty {
-            return String(localized: "No matches")
+            return String(localized: "No results")
         }
         return model.completionFilter.emptyStateTitle
     }
@@ -875,12 +875,12 @@ private struct ClipboardAlertHost: View {
         Color.clear
             .frame(width: 0, height: 0)
             .confirmationDialog(
-                "Clear Clipboard History?",
+                "Clear unpinned history?",
                 isPresented: $showingClearConfirmation
             ) {
-                Button("Clear History", role: .destructive) { history.clear() }
+                Button("Clear unpinned history", role: .destructive) { history.clear() }
             } message: {
-                Text(history.syncIsActive ? "This clears unpinned history across synced devices. Pinned items stay." : "This clears unpinned history on this device. Pinned items stay.")
+                Text(history.syncIsActive ? "This clears unpinned history across synced devices. Pinned items stay." : "This clears unpinned history on this Mac. Pinned items stay.")
             }
             .alert(
                 "Couldn’t Save Clipboard History",

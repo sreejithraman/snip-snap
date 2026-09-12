@@ -32,9 +32,9 @@ final class AppleAccountNoticeModel {
 
     var title: String {
         switch notice {
-        case .paused: String(localized: "iCloud Sync Paused")
-        case .signedOut: String(localized: "Signed Out of iCloud")
-        case .accountChanged: String(localized: "Apple Account Changed")
+        case .paused: String(localized: "Sync paused")
+        case .signedOut: String(localized: "Signed out of iCloud")
+        case .accountChanged: String(localized: "iCloud account changed")
         case nil: ""
         }
     }
@@ -53,7 +53,7 @@ final class AppleAccountNoticeModel {
             notice = try await handler.refreshAppleAccountNotice()
             errorMessage = nil
         } catch {
-            errorMessage = String(localized: "Snip Snap couldn’t save your choice. Try again.")
+            errorMessage = String(localized: "Couldn’t save your choice. Try again.")
         }
     }
 
