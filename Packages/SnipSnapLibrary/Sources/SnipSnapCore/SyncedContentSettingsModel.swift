@@ -29,89 +29,86 @@ public enum SyncedContentSyncIssue: Codable, Equatable, Sendable {
   fileprivate var statusTitle: String {
     switch self {
     case .waitingForConnection:
-      String(localized: "Waiting for a Connection", bundle: .main)
+      String(localized: "Waiting for connection", bundle: .main)
     case .iCloudUnavailable:
-      String(localized: "iCloud Is Unavailable", bundle: .main)
+      String(localized: "iCloud unavailable", bundle: .main)
     case .retryingSoon:
-      String(localized: "iCloud Sync Paused", bundle: .main)
+      String(localized: "Sync paused", bundle: .main)
     case .checkingAccount:
       String(localized: "Checking iCloud…", bundle: .main)
     case .signInRequired:
-      String(localized: "Sign In to iCloud", bundle: .main)
+      String(localized: "Sign in to iCloud", bundle: .main)
     case .accountRestricted:
-      String(localized: "iCloud Access Is Restricted", bundle: .main)
+      String(localized: "iCloud restricted", bundle: .main)
     case .accountTemporarilyUnavailable:
-      String(localized: "iCloud Sync Paused", bundle: .main)
+      String(localized: "Sync paused", bundle: .main)
     case .iCloudStorageFull:
-      String(localized: "iCloud Storage Is Full", bundle: .main)
+      String(localized: "iCloud storage full", bundle: .main)
     case .updateRequired:
-      String(localized: "Update Snip Snap to Sync", bundle: .main)
+      String(localized: "Update Snip Snap", bundle: .main)
     case .accessDenied:
-      String(localized: "iCloud Access Was Denied", bundle: .main)
+      String(localized: "Can’t access iCloud", bundle: .main)
     case .someChangesPending:
-      String(localized: "Some Changes Haven’t Synced", bundle: .main)
+      String(localized: "Some changes haven’t synced", bundle: .main)
     case .attachmentMissing:
-      String(localized: "An Attachment Couldn’t Sync", bundle: .main)
+      String(localized: "Couldn’t sync an attachment", bundle: .main)
     case .attachmentUnavailable:
-      String(localized: "An Attachment Isn’t Available", bundle: .main)
+      String(localized: "Attachment unavailable", bundle: .main)
     case .attachmentStorageUnavailable:
-      String(localized: "An Attachment Couldn’t Be Saved", bundle: .main)
+      String(localized: "Couldn’t save an attachment", bundle: .main)
     case .setupBlocked:
-      String(localized: "iCloud Sync Setup Stopped", bundle: .main)
+      String(localized: "Couldn’t set up sync", bundle: .main)
     case .iCloudDataReset:
-      String(localized: "iCloud Sync Was Turned Off", bundle: .main)
+      String(localized: "Sync turned off", bundle: .main)
     case .iCloudAccountChanged:
-      String(localized: "iCloud Account Changed", bundle: .main)
+      String(localized: "iCloud account changed", bundle: .main)
     case .appDataIssue:
-      String(localized: "Snip Snap Couldn’t Sync", bundle: .main)
+      String(localized: "Couldn’t sync", bundle: .main)
     }
   }
 
   fileprivate func detail(mode: SyncedContentMode) -> String {
-    let safeCopy = mode == .localOnly
-      ? String(localized: "Your local library remains available.", bundle: .main)
-      : String(localized: "Your changes are safe on this device.", bundle: .main)
     return switch self {
     case .waitingForConnection:
       mode == .localOnly
-        ? String(localized: "You appear to be offline. Your local library remains available, and Snip Snap will finish setup when you’re back online.", bundle: .main)
-        : String(localized: "You appear to be offline. Your changes are safe on this device and will sync when you’re back online.", bundle: .main)
+        ? String(localized: "Connect to the internet to finish setup.", bundle: .main)
+        : String(localized: "Your changes will sync when you’re back online.", bundle: .main)
     case .iCloudUnavailable:
       mode == .localOnly
-        ? String(localized: "Snip Snap can’t reach iCloud right now. Your local library remains available, and setup will try again.", bundle: .main)
-        : String(localized: "Snip Snap can’t reach iCloud right now. Your changes are safe on this device, and sync will try again.", bundle: .main)
+        ? String(localized: "iCloud isn’t available right now. Setup will try again.", bundle: .main)
+        : String(localized: "iCloud isn’t available right now. Sync will try again.", bundle: .main)
     case .retryingSoon:
-      String(localized: "iCloud asked Snip Snap to wait. \(safeCopy) Sync will try again soon.", bundle: .main)
+      String(localized: "Sync will resume when iCloud is ready.", bundle: .main)
     case .checkingAccount:
-      String(localized: "Snip Snap can’t check your iCloud account right now. \(safeCopy) Sync will try again.", bundle: .main)
+      String(localized: "Can’t check your iCloud account right now. Sync will try again.", bundle: .main)
     case .signInRequired:
-      String(localized: "Sign in to iCloud in Settings to sync your snips. Your changes will stay on this device until then.", bundle: .main)
+      String(localized: "Sign in to iCloud in your device settings to sync your snips.", bundle: .main)
     case .accountRestricted:
-      String(localized: "Your device or an organization that manages it is blocking iCloud. Your changes will stay on this device.", bundle: .main)
+      String(localized: "Check your device’s iCloud restrictions or ask your administrator.", bundle: .main)
     case .accountTemporarilyUnavailable:
-      String(localized: "Your iCloud account is not ready for sync right now. \(safeCopy) Sync will resume when iCloud is available.", bundle: .main)
+      String(localized: "Sync will resume when your iCloud account is available.", bundle: .main)
     case .iCloudStorageFull:
-      String(localized: "Free up some iCloud storage, then try sync again. \(safeCopy)", bundle: .main)
+      String(localized: "Free up iCloud storage, then retry sync.", bundle: .main)
     case .updateRequired:
-      String(localized: "This version can no longer sync with iCloud. Update Snip Snap to keep syncing. \(safeCopy)", bundle: .main)
+      String(localized: "Update Snip Snap to keep syncing.", bundle: .main)
     case .accessDenied:
-      String(localized: "Snip Snap can’t access this iCloud data. Check your iCloud and device restrictions. \(safeCopy)", bundle: .main)
+      String(localized: "Check your device’s iCloud permissions for Snip Snap.", bundle: .main)
     case .someChangesPending:
-      String(localized: "Some changes did not reach iCloud. Your other changes are safe, and Snip Snap will retry.", bundle: .main)
+      String(localized: "Sync will retry the remaining changes.", bundle: .main)
     case .attachmentMissing:
-      String(localized: "Snip Snap can’t find or read one attachment on this device. Your other changes are safe.", bundle: .main)
+      String(localized: "Can’t read an attachment. Retry sync. If it still fails, contact support.", bundle: .main)
     case .attachmentUnavailable:
-      String(localized: "One attachment can’t be read from iCloud right now. Your other changes are safe, and Snip Snap will try again.", bundle: .main)
+      String(localized: "iCloud can’t provide this attachment yet. Sync will try again.", bundle: .main)
     case .attachmentStorageUnavailable:
-      String(localized: "Snip Snap couldn’t save one iCloud attachment on this device. Your other changes are safe, and sync will try again.", bundle: .main)
+      String(localized: "Retry sync. If it still fails, contact support.", bundle: .main)
     case .setupBlocked(let message):
-      String(localized: "Snip Snap could not finish setting up iCloud Sync. \(safeCopy) \(message)", bundle: .main)
+      String(localized: "\(message) Remove or replace these attachments, then retry sync.", bundle: .main)
     case .iCloudDataReset:
-      String(localized: "Synced Snip Snap data was removed from iCloud. Snip Snap cleared its old copy and won’t upload it again. You can turn sync on when you’re ready.", bundle: .main)
+      String(localized: "iCloud deleted Snip Snap’s synced content. Sync is off so old data won’t upload again.", bundle: .main)
     case .iCloudAccountChanged:
-      String(localized: "Snip Snap stopped sync for the prior iCloud account and opened a separate local library. Sign in to the account you want to use, then turn sync on.", bundle: .main)
+      String(localized: "Your previous account’s snips stay separate. Choose whether to keep them before syncing again.", bundle: .main)
     case .appDataIssue:
-      String(localized: "\(safeCopy) Try sync again. If this keeps happening, check for an update or contact support.", bundle: .main)
+      String(localized: "Retry sync. If it still fails, update Snip Snap or contact support.", bundle: .main)
     }
   }
 
@@ -247,15 +244,15 @@ public final class SyncedContentSettingsModel {
     switch (mode, state) {
     case (_, .failed(let issue)): issue.statusTitle
     case (_, .enabling(let issue?)): issue.statusTitle
-    case (.localOnly, .enabling): String(localized: "Setting Up iCloud Sync…", bundle: .main)
-    case (.localOnly, _): String(localized: "Local Only", bundle: .main)
-    case (_, .ready): String(localized: "iCloud Sync On", bundle: .main)
-    case (_, .enabling): String(localized: "Setting Up iCloud Sync…", bundle: .main)
+    case (.localOnly, .enabling): String(localized: "Setting up sync…", bundle: .main)
+    case (.localOnly, _): String(localized: "Sync off", bundle: .main)
+    case (_, .ready): String(localized: "Sync on", bundle: .main)
+    case (_, .enabling): String(localized: "Setting up sync…", bundle: .main)
     case (_, .syncing): String(localized: "Syncing with iCloud…", bundle: .main)
-    case (_, .disabling): String(localized: "Turning Off iCloud Sync…", bundle: .main)
-    case (_, .deleting): String(localized: "Deleting Synced Content…", bundle: .main)
-    case (_, .removalPending): String(localized: "Old Synced Data Needs Removal", bundle: .main)
-    case (_, .deleted): String(localized: "Synced Data Deleted", bundle: .main)
+    case (_, .disabling): String(localized: "Turning off sync…", bundle: .main)
+    case (_, .deleting): String(localized: "Deleting synced content…", bundle: .main)
+    case (_, .removalPending): String(localized: "Deletion incomplete", bundle: .main)
+    case (_, .deleted): String(localized: "Synced content deleted", bundle: .main)
     }
   }
 
@@ -264,23 +261,23 @@ public final class SyncedContentSettingsModel {
     case (_, .failed(let issue)), (_, .enabling(let issue?)):
       issue.detail(mode: mode)
     case (.localOnly, .enabling):
-      String(localized: "Snip Snap is fetching iCloud data and preparing a safe merged copy.", bundle: .main)
+      String(localized: "Getting your snips from iCloud…", bundle: .main)
     case (.iCloudSync, .enabling):
-      String(localized: "Snip Snap is finishing iCloud Sync setup.", bundle: .main)
+      String(localized: "Finishing sync setup…", bundle: .main)
     case (.iCloudSync, .syncing):
-      String(localized: "Snip Snap is checking iCloud for changes.", bundle: .main)
+      String(localized: "Checking for changes…", bundle: .main)
     case (.iCloudSync, .disabling):
-      String(localized: "Snip Snap is making a local copy of your synced library. Your iCloud copy will stay in place.", bundle: .main)
+      String(localized: "Saving a copy on this device. Your iCloud data stays.", bundle: .main)
     case (.localOnly, _):
-      String(localized: "Snip Snap doesn’t sync local-only data with iCloud.", bundle: .main)
+      String(localized: "Your snips aren’t syncing with iCloud.", bundle: .main)
     case (_, .ready):
-      String(localized: "Saved snips and attachments sync through your private iCloud database. Snip Snap’s maintainers cannot inspect private records in CloudKit Console. Apple encrypts synced data in transit and at rest; user fields use encrypted values and files use CKAsset data. Those user fields and attachments are end-to-end encrypted only when Advanced Data Protection is on.", bundle: .main)
+      String(localized: "Your snips and attachments sync through iCloud.", bundle: .main)
     case (_, .deleting):
-      String(localized: "Snip Snap is starting a new empty synced library and removing the old synced data.", bundle: .main)
+      String(localized: "Removing synced content from iCloud…", bundle: .main)
     case (_, .removalPending):
-      String(localized: "Snip Snap started a new empty synced library, but it could not remove all old iCloud data yet. It will retry the next time it syncs. Your local recovery copy remains.", bundle: .main)
+      String(localized: "Sync will retry the deletion. This device keeps a recovery copy.", bundle: .main)
     case (_, .deleted):
-      String(localized: "Synced data was removed. This device kept a local recovery copy. A small record remains in iCloud to prevent an old device from restoring the deleted data.", bundle: .main)
+      String(localized: "This device keeps a recovery copy.", bundle: .main)
     }
   }
 
@@ -339,13 +336,14 @@ public final class SyncedContentSettingsModel {
   public func recordSyncStarted() {
     guard mode == .iCloudSync else { return }
     switch state {
-    case .ready, .failed:
+    case .ready:
       state = .syncing
-    case .enabling, .syncing, .disabling, .deleting, .removalPending, .deleted:
+    case .enabling, .syncing, .disabling, .deleting, .removalPending, .deleted, .failed:
       break
     }
   }
 
+  /// Records that a normal sync request finished.
   public func recordSyncCompleted() {
     guard mode == .iCloudSync else { return }
     switch state {
@@ -356,9 +354,15 @@ public final class SyncedContentSettingsModel {
     }
   }
 
+  /// Records that the sync engine reports no work or failures remain.
   public func recordOutstandingSyncRecovered() {
     guard mode == .iCloudSync else { return }
-    if case .failed = state { state = .ready }
+    switch state {
+    case .syncing, .failed:
+      state = .ready
+    default:
+      break
+    }
   }
 
   public func recordSyncFailure(_ issue: SyncedContentSyncIssue) {

@@ -98,6 +98,7 @@ package actor SyncModeActiveMutationLease {
   ) async throws -> Value {
     let reservation = try await persistence.reserveActiveMutation(storeID: storeID)
     do {
+      try Task.checkCancellation()
       let value = try await operation()
       try await persistence.finishActiveMutation(reservation)
       return value
@@ -140,6 +141,7 @@ package enum SyncModeCrashPoint: Equatable, Sendable {
 package enum SyncModeWritePoint: Equatable, Sendable {
   case afterRevisionReserved
   case beforeReservationCleared
+  case beforeStoreRetirement
 }
 
 /// Owns mode-store roots and the one atomic file that selects the active root.
@@ -212,6 +214,12 @@ package actor SwiftDataSyncModePersistence {
   let defaultSyncProtocol: SyncModeSyncProtocol
   var manifest: Manifest
   var writeAdmissionInProgress = false
+  struct ActiveMutationWaiter {
+    let id: UUID
+    let storeID: UUID
+    let continuation: CheckedContinuation<SyncModeWriteReservation, any Error>
+  }
+  var activeMutationWaiters: [ActiveMutationWaiter] = []
   var completedRecoveryQuarantineStoreIDs: Set<UUID> = []
 
   package init(
@@ -292,8 +300,12 @@ package actor SwiftDataSyncModePersistence {
   }
 
   package func isolateActiveCloudStore(
-    reason: ICloudAccountIsolationReason
+    reason: ICloudAccountIsolationReason,
+    expectedStoreID: UUID? = nil
   ) async throws -> ICloudAccountIsolation {
+    guard expectedStoreID == nil || manifest.activeStoreID == expectedStoreID else {
+      throw SyncModePersistenceError.namespaceMismatch
+    }
     if let isolation = manifest.accountIsolation { return isolation }
     guard manifest.writeReservation == nil, !writeAdmissionInProgress,
       let active = store(id: manifest.activeStoreID),
@@ -307,6 +319,8 @@ package actor SwiftDataSyncModePersistence {
       else { throw SyncModePersistenceError.transitionInProgress }
     }
 
+    writeAdmissionInProgress = true
+    defer { releaseWriteAdmission() }
     let replacement = Self.newStore(
       kind: .localOnly,
       namespace: nil,
@@ -340,6 +354,7 @@ package actor SwiftDataSyncModePersistence {
     try crashHook(.afterAccountIsolationDurability)
 
     let isolatedLibrary = try libraryForTransition(storeID: active.id)
+    try await writeHook(.beforeStoreRetirement)
     try await isolatedLibrary.markReadOnlyRecovery()
 
     var isolated = manifest
@@ -639,6 +654,8 @@ package actor SwiftDataSyncModePersistence {
     {
       return
     }
+    writeAdmissionInProgress = true
+    defer { releaseWriteAdmission() }
     let kind: SyncModeStoreKind = namespace == nil ? .localOnly : .iCloudSync
     var candidate = Self.newStore(
       kind: kind,
@@ -657,6 +674,7 @@ package actor SwiftDataSyncModePersistence {
       try DurableFile.syncDirectory(candidateRoot)
       try DurableFile.syncDirectory(candidateRoot.deletingLastPathComponent())
       let currentLibrary = try libraryForTransition(storeID: current.id)
+      try await writeHook(.beforeStoreRetirement)
       try await currentLibrary.markReadOnlyRecovery()
       candidate.lifecycle = .ready
       var activated = manifest
@@ -684,15 +702,34 @@ package actor SwiftDataSyncModePersistence {
 
   /// Replaces the active synced cache and queues its store for deletion.
   package func discardActiveCloudCollection() async throws {
+    _ = try await discardActiveCloudCollection(matching: nil)
+  }
+
+  package func discardActiveCloudCollection(
+    storeID: UUID, namespace: ICloudSyncNamespaceBinding
+  ) async throws -> UUID? {
+    try await discardActiveCloudCollection(matching: (storeID, namespace))
+  }
+
+  private func discardActiveCloudCollection(
+    matching expected: (UUID, ICloudSyncNamespaceBinding)?
+  ) async throws -> UUID? {
+    if let expected {
+      guard manifest.activeStoreID == expected.0,
+        store(id: expected.0)?.namespace == expected.1
+      else { return nil }
+    }
     guard manifest.transition == nil,
       manifest.writeReservation == nil,
       !writeAdmissionInProgress,
       let current = store(id: manifest.activeStoreID),
       current.kind == .iCloudSync
     else {
-      if store(id: manifest.activeStoreID)?.kind == .localOnly { return }
+      if store(id: manifest.activeStoreID)?.kind == .localOnly { return nil }
       throw SyncModePersistenceError.transitionInProgress
     }
+    writeAdmissionInProgress = true
+    defer { releaseWriteAdmission() }
     let original = manifest
     var candidate = Self.newStore(
       kind: .localOnly,
@@ -711,6 +748,7 @@ package actor SwiftDataSyncModePersistence {
       try DurableFile.syncDirectory(candidateRoot)
       try DurableFile.syncDirectory(candidateRoot.deletingLastPathComponent())
       let currentLibrary = try libraryForTransition(storeID: current.id)
+      try await writeHook(.beforeStoreRetirement)
       try await currentLibrary.markReadOnlyRecovery()
       candidate.lifecycle = .ready
       var activated = manifest
@@ -719,6 +757,7 @@ package actor SwiftDataSyncModePersistence {
       activated.activeStoreID = candidate.id
       try commit(activated)
       try? cleanupRetiredStores()
+      return candidate.id
     } catch {
       if let currentLibrary = try? libraryForTransition(storeID: current.id) {
         try? await currentLibrary.removeReadOnlyRecoveryMarker()

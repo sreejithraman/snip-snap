@@ -21,14 +21,33 @@ extension SwiftDataSyncModePersistence {
     return SyncModeActiveMutationLease(persistence: self, storeID: storeID)
   }
 
-  func reserveActiveMutation(storeID: UUID? = nil) throws -> SyncModeWriteReservation {
+  func reserveActiveMutation(storeID: UUID) async throws -> SyncModeWriteReservation {
+    let id = UUID()
+    return try await withTaskCancellationHandler {
+      try Task.checkCancellation()
+      guard storeID == manifest.activeStoreID else {
+        throw SyncModePersistenceError.namespaceMismatch
+      }
+      if !writeAdmissionInProgress { return try reserveAvailableMutation(storeID: storeID) }
+      return try await withCheckedThrowingContinuation { continuation in
+        activeMutationWaiters.append(ActiveMutationWaiter(
+          id: id, storeID: storeID, continuation: continuation))
+      }
+    } onCancel: {
+      Task { await self.cancelActiveMutationWaiter(id) }
+    }
+  }
+
+  private func reserveAvailableMutation(storeID: UUID) throws -> SyncModeWriteReservation {
+    let activeID = manifest.activeStoreID
+    guard storeID == activeID, store(id: activeID)?.kind == .iCloudSync,
+      manifest.accountIsolation == nil
+    else {
+      throw SyncModePersistenceError.namespaceMismatch
+    }
     guard !writeAdmissionInProgress, manifest.writeReservation == nil,
       manifest.transition == nil
     else { throw SyncModePersistenceError.transitionInProgress }
-    let activeID = manifest.activeStoreID
-    guard storeID == nil || storeID == activeID else {
-      throw SyncModePersistenceError.namespaceMismatch
-    }
     let revision = manifest.stores[try storeIndex(id: activeID)].revision + 1
     let reservation = SyncModeWriteReservation(
       id: UUID(),
@@ -39,6 +58,7 @@ extension SwiftDataSyncModePersistence {
     next.stores[try storeIndex(id: activeID)].revision = revision
     next.writeReservation = reservation
     try commit(next)
+    writeAdmissionInProgress = true
     return reservation
   }
 
@@ -46,9 +66,31 @@ extension SwiftDataSyncModePersistence {
     guard manifest.writeReservation == reservation else {
       throw SyncModePersistenceError.transitionInProgress
     }
+    defer { releaseWriteAdmission() }
     var next = manifest
     next.writeReservation = nil
     try commit(next)
+  }
+
+  /// Grants the next reservation before returning to other actors. All live
+  /// writers release here, so retained sync work needs no new event to continue.
+  func releaseWriteAdmission() {
+    writeAdmissionInProgress = false
+    while !activeMutationWaiters.isEmpty {
+      let next = activeMutationWaiters.removeFirst()
+      do {
+        let reservation = try reserveAvailableMutation(storeID: next.storeID)
+        next.continuation.resume(returning: reservation)
+        return
+      } catch {
+        next.continuation.resume(throwing: error)
+      }
+    }
+  }
+
+  private func cancelActiveMutationWaiter(_ id: UUID) {
+    guard let index = activeMutationWaiters.firstIndex(where: { $0.id == id }) else { return }
+    activeMutationWaiters.remove(at: index).continuation.resume(throwing: CancellationError())
   }
 
   fileprivate func managedSnapshot(sortedBy: SnipSortMode) async throws -> SnipLibrarySnapshot {
@@ -74,7 +116,7 @@ extension SwiftDataSyncModePersistence {
       ].contains(transition.phase)
     { throw SnipLibraryError.modeTransitionInProgress }
     writeAdmissionInProgress = true
-    defer { writeAdmissionInProgress = false }
+    defer { releaseWriteAdmission() }
     let activeID = manifest.activeStoreID
     let reservedRevision = manifest.stores[try storeIndex(id: activeID)].revision + 1
     var reserved = manifest
@@ -134,7 +176,7 @@ extension SwiftDataSyncModePersistence {
       manifest.transition == nil
     else { throw SnipLibraryError.modeTransitionInProgress }
     writeAdmissionInProgress = true
-    defer { writeAdmissionInProgress = false }
+    defer { releaseWriteAdmission() }
     let activeID = manifest.activeStoreID
     let reservedRevision = manifest.stores[try storeIndex(id: activeID)].revision + 1
     var reserved = manifest
@@ -168,7 +210,9 @@ extension SwiftDataSyncModePersistence {
     try? recordAttention(.storeReadFailed)
   }
   private func reconcileWriteReservation() throws {
-    guard manifest.writeReservation != nil else { return }
+    // A library read may recover an abandoned reservation, but it cannot release
+    // admission held by an operation suspended on another actor.
+    guard !writeAdmissionInProgress, manifest.writeReservation != nil else { return }
     var next = manifest
     next.writeReservation = nil
     try commit(next)

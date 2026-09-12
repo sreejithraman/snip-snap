@@ -280,7 +280,7 @@ package struct CloudSyncNamespace: Codable, Equatable, Sendable {
     package let generation: UUID
     package let zones: Set<CloudZoneID>
 
-    package var namespaceKey: CloudSyncNamespaceKey {
+    package var binding: ICloudSyncNamespaceBinding {
         ICloudSyncNamespaceBinding(
             scope: cloudScope,
             accountLineage: accountLineage,
@@ -288,13 +288,35 @@ package struct CloudSyncNamespace: Codable, Equatable, Sendable {
             zones: Set(zones.map {
                 ICloudSyncZoneBinding(name: $0.name, ownerName: $0.ownerName)
             })
-        ).namespaceKey
+        )
     }
+
+    package var namespaceKey: CloudSyncNamespaceKey { binding.namespaceKey }
 }
 
 package struct CloudEngineStateEnvelope: Codable, Equatable, Sendable {
     package let namespace: CloudSyncNamespace
     package let serialization: Data
+    package let requiresInitialFetch: Bool
+
+    package init(
+        namespace: CloudSyncNamespace,
+        serialization: Data,
+        requiresInitialFetch: Bool = false
+    ) {
+        self.namespace = namespace
+        self.serialization = serialization
+        self.requiresInitialFetch = requiresInitialFetch
+    }
+
+    package init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        namespace = try values.decode(CloudSyncNamespace.self, forKey: .namespace)
+        serialization = try values.decode(Data.self, forKey: .serialization)
+        requiresInitialFetch = try values.decodeIfPresent(
+            Bool.self, forKey: .requiresInitialFetch
+        ) ?? true
+    }
 }
 
 package enum CloudFetchScope: Codable, Equatable, Sendable {
@@ -441,6 +463,10 @@ package struct CloudSentBatch: Codable, Equatable, Sendable {
     package let zoneEvents: [CloudZoneEvent]
     package let engineState: CloudEngineStateEnvelope?
 
+    package var hasResults: Bool {
+        !items.isEmpty || !databaseEvents.isEmpty || !zoneEvents.isEmpty
+    }
+
     package init(
         id: UUID,
         items: [CloudSendItemResult],
@@ -504,12 +530,18 @@ package protocol CloudRecordTransport: Sendable {
         state: CloudEngineStateEnvelope?,
         initialOutbound: CloudOutboundBatch?
     ) async throws
+    func start(
+        state: CloudEngineStateEnvelope?,
+        initialOutbound: CloudOutboundBatch?,
+        outboundAdmission: CloudRecordOutboundAdmission
+    ) async throws
     func reset() async
     func fetch(scope: CloudFetchScope) async throws -> CloudFetchedBatch
     func send(_ batch: CloudOutboundBatch) async throws -> CloudSentBatch
     func confirmApplied(_ batchID: UUID) async throws
-    func pendingBatch() async -> CloudPendingBatch?
-    func drainAutomaticSyncEvents() async
+    func confirmApplied(_ batchID: UUID, outboundAdmission: CloudRecordOutboundAdmission) async throws
+    func pendingEvent() async -> CloudRecordTransportEvent?
+    func finishCurrentSyncCycle() async throws
     func fetchRecord(_ id: CloudRecordID, fields: Set<String>) async throws -> CloudRecordSnapshot?
     func fetchAsset(
         _ id: CloudRecordID,
@@ -531,27 +563,32 @@ package extension CloudRecordTransport {
     ) async throws {
         try await start(state: state)
     }
-    func pendingBatch() async -> CloudPendingBatch? { nil }
-    func drainAutomaticSyncEvents() async {}
+    func start(
+        state: CloudEngineStateEnvelope?,
+        initialOutbound: CloudOutboundBatch?,
+        outboundAdmission: CloudRecordOutboundAdmission
+    ) async throws {
+        try await start(state: state, initialOutbound: initialOutbound)
+    }
+    func confirmApplied(_ batchID: UUID, outboundAdmission: CloudRecordOutboundAdmission) async throws {
+        try await confirmApplied(batchID)
+    }
+    func pendingEvent() async -> CloudRecordTransportEvent? { nil }
+    func finishCurrentSyncCycle() async throws {}
 }
 
 package protocol CloudAutomaticSyncConfiguring: Sendable {
-    typealias BatchHandler = @Sendable (
-        CloudSyncBatch,
-        CloudOutboundBatch?
-    ) async throws -> Void
-    typealias AccountChangeHandler = @Sendable () async -> Void
+    typealias WorkAvailableHandler = @Sendable () async -> Void
     typealias RecordSendGate = @Sendable () async throws -> Void
-    typealias EngineStateHandler = @Sendable (CloudEngineStateEnvelope) async throws -> Void
 
     func configureAutomaticSync(
-        batchHandler: @escaping BatchHandler,
-        accountChangeHandler: @escaping AccountChangeHandler,
-        recordSendGate: @escaping RecordSendGate,
-        engineStateHandler: @escaping EngineStateHandler
+        workAvailableHandler: @escaping WorkAvailableHandler,
+        recordSendGate: @escaping RecordSendGate
     ) async
 }
 
 package protocol CloudAutomaticSyncScheduling: Sendable {
+    /// The complete desired record and zone work. Omitted work is no longer pending.
+    /// An empty snapshot clears unsent work while preserving frozen acknowledgements.
     func scheduleAutomaticSync(_ batch: CloudOutboundBatch) async throws
 }

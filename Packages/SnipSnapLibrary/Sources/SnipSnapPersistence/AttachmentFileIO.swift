@@ -76,6 +76,29 @@ package enum AttachmentFileIO {
     package let byteCount: Int64
   }
 
+  /// Copies a file URL supplied by a trusted system service, such as CloudKit.
+  /// The grant may allow reading the file without reading its parent directories.
+  /// Trusts ancestor resolution but rejects a symlink or non-regular file at the leaf.
+  /// Use RootedDirectory for paths within an imported or otherwise untrusted tree.
+  package static func copyGrantedRegularFile(
+    from sourceURL: URL,
+    to destinationURL: URL
+  ) throws -> CopiedFile {
+    guard sourceURL.isFileURL else { throw SnipLibraryError.invalidStore }
+    let descriptor = open(sourceURL.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+    guard descriptor >= 0 else { throw SnipLibraryError.invalidStore }
+    defer { close(descriptor) }
+    var status = stat()
+    guard fstat(descriptor, &status) == 0,
+      (status.st_mode & S_IFMT) == S_IFREG
+    else { throw SnipLibraryError.invalidStore }
+    return try copyRegularFile(
+      source: OpenedFile(descriptor: descriptor, status: status),
+      to: destinationURL,
+      expectedByteCount: nil
+    )
+  }
+
   package static func copyRegularFile(
     from sourceURL: URL,
     to destinationURL: URL,
@@ -129,6 +152,18 @@ package enum AttachmentFileIO {
       beforeFinalOpen: beforeFinalOpen
     )
     defer { close(source.descriptor) }
+    return try copyRegularFile(
+      source: source,
+      to: destinationURL,
+      expectedByteCount: expectedByteCount
+    )
+  }
+
+  private static func copyRegularFile(
+    source: OpenedFile,
+    to destinationURL: URL,
+    expectedByteCount: Int64?
+  ) throws -> CopiedFile {
     if let expectedByteCount, source.status.st_size != expectedByteCount {
       throw SnipLibraryError.invalidStore
     }

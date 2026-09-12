@@ -715,6 +715,17 @@ package struct CloudFullRecoveryInput: Codable, Equatable, Sendable {
   }
 }
 
+/// Resolves old fetch evidence in the same commit as the record that made it safe.
+package struct CloudFullRecoveryChange: Codable, Equatable, Sendable {
+  package let expected: CloudFullRecoveryInput
+  package let replacement: CloudFullRecoveryInput?
+
+  package init(expected: CloudFullRecoveryInput, replacement: CloudFullRecoveryInput?) {
+    self.expected = expected
+    self.replacement = replacement
+  }
+}
+
 package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
   package let storageVersion: Int
   package let namespaceKey: String
@@ -727,6 +738,7 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
   package let rawBatchData: Data?
   package let outboundBindings: [CloudFullOutboundBinding]
   package let recoveryInputs: [CloudFullRecoveryInput]
+  package let recoveryChanges: [CloudFullRecoveryChange]
   package let recoveryReviews: [CloudRecoveryReviewInput]
   package let settledDeleteIdentities: [CloudTextStorageIdentity]
   package let attachmentTransitions: [CloudAttachmentTransition]
@@ -736,7 +748,7 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
     case storageVersion, namespaceKey, batchID, expectedEngineState, nextEngineState
     case nextEnrollment, expectedNamespaceRevision, nextNamespaceState, rawBatchData
     case outboundBindings, recoveryInputs, recoveryReviews, settledDeleteIdentities
-    case attachmentTransitions, items
+    case recoveryChanges, attachmentTransitions, items
   }
 
   package init(
@@ -750,6 +762,7 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
     rawBatchData: Data? = nil,
     outboundBindings: [CloudFullOutboundBinding] = [],
     recoveryInputs: [CloudFullRecoveryInput] = [],
+    recoveryChanges: [CloudFullRecoveryChange] = [],
     recoveryReviews: [CloudRecoveryReviewInput] = [],
     settledDeleteIdentities: [CloudTextStorageIdentity] = [],
     attachmentTransitions: [CloudAttachmentTransition] = [],
@@ -766,6 +779,7 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
     self.rawBatchData = rawBatchData
     self.outboundBindings = outboundBindings
     self.recoveryInputs = recoveryInputs
+    self.recoveryChanges = recoveryChanges
     self.recoveryReviews = recoveryReviews
     self.settledDeleteIdentities = settledDeleteIdentities
     self.attachmentTransitions = attachmentTransitions
@@ -799,6 +813,9 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
     recoveryInputs = try container.decodeIfPresent(
       [CloudFullRecoveryInput].self,
       forKey: .recoveryInputs
+    ) ?? []
+    recoveryChanges = try container.decodeIfPresent(
+      [CloudFullRecoveryChange].self, forKey: .recoveryChanges
     ) ?? []
     recoveryReviews = try container.decodeIfPresent(
       [CloudRecoveryReviewInput].self,
@@ -834,6 +851,9 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
     try container.encodeIfPresent(rawBatchData, forKey: .rawBatchData)
     try container.encode(outboundBindings, forKey: .outboundBindings)
     try container.encode(recoveryInputs, forKey: .recoveryInputs)
+    if !recoveryChanges.isEmpty {
+      try container.encode(recoveryChanges, forKey: .recoveryChanges)
+    }
     try container.encode(recoveryReviews, forKey: .recoveryReviews)
     try container.encode(settledDeleteIdentities, forKey: .settledDeleteIdentities)
     try container.encode(attachmentTransitions, forKey: .attachmentTransitions)

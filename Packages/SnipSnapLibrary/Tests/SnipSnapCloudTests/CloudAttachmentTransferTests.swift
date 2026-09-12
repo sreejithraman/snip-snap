@@ -727,10 +727,8 @@ final class CloudAttachmentTransferTests: XCTestCase {
     XCTAssertTrue(try XCTUnwrap(after.publications.first(where: {
       $0.metadata.attachmentID == successful.metadata.attachmentID
     })).metadataAccepted)
-    let automaticResult = try await CloudFullRecordCollectionSyncDriver.automaticSentResult(
-      store: store
-    )
-    XCTAssertEqual(automaticResult, .noChange)
+    let automaticResult = try await sync.processAutomaticChanges().result
+    XCTAssertEqual(automaticResult, .syncIssue(.appDataIssue))
     let unresolvedIssue = try await store.unresolvedSyncIssue()
     XCTAssertEqual(unresolvedIssue, .appDataIssue)
   }

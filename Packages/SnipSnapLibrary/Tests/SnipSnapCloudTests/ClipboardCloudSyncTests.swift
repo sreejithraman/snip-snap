@@ -1,5 +1,6 @@
 import CloudKit
 import Foundation
+import Synchronization
 import Testing
 import SnipSnapCore
 import SnipSnapPersistence
@@ -10,6 +11,9 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
     var serial = 0
     var unavailable = false
     var conflictOnce = false
+    var rateLimitedFetches = 0
+    var fetchObserver: (@Sendable () -> Void)?
+    var fetchRequests = 0
     var pauseSave = false
     var paused: CheckedContinuation<Void, Never>?
     func pauseNextSave() { pauseSave = true }
@@ -17,7 +21,20 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
     func resumeSave() { paused?.resume(); paused = nil }
     func setUnavailable(_ value: Bool) { unavailable = value }
     func setConflict() { conflictOnce = true }
+    func rateLimitFetches(_ count: Int) { rateLimitedFetches = count }
+    func observeFetches(_ observer: @escaping @Sendable () -> Void) { fetchObserver = observer }
+    func fetchCount() -> Int { fetchRequests }
     func fetch() throws -> ClipboardCloudSnapshot {
+        fetchRequests += 1
+        fetchObserver?()
+        if rateLimitedFetches > 0 {
+            rateLimitedFetches -= 1
+            throw CKError(_nsError: NSError(
+                domain: CKErrorDomain,
+                code: CKError.Code.requestRateLimited.rawValue,
+                userInfo: [CKErrorRetryAfterKey: 10]
+            ))
+        }
         if unavailable { throw ClipboardCloudError.unavailable }
         return snapshot
     }
@@ -37,11 +54,12 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
     let store: ClipboardHistoryStore
     let files: ClipboardFileStore
     let sync: ClipboardCloudSyncService
-    init(_ cloud: ClipboardTestCloud) {
+    init(_ cloud: ClipboardTestCloud, retry: CloudKitOperationRetry = CloudKitOperationRetry()) {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         files = ClipboardFileStore(rootURL: root.appendingPathComponent("ClipboardFiles"))
         store = ClipboardHistoryStore(url: root.appendingPathComponent("clipboard.json"), fileStore: files)
-        sync = ClipboardCloudSyncService(store: store, syncRootURL: root, makeTransport: { _ in cloud })
+        sync = ClipboardCloudSyncService(store: store, syncRootURL: root,
+                                         makeTransport: { _ in cloud }, retry: retry)
     }
     @discardableResult func run(enabled: Bool = true, scope: String = "account-generation-A") async throws -> ClipboardHistoryState {
         try await sync.synchronize(mainSyncEnabled: true, clipboardSyncEnabled: enabled, generation: scope)
@@ -129,6 +147,40 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
         try await b.store.setPinned(true, id: clip.id)
         await cloud.setUnavailable(false); await cloud.setConflict()
         try await a.run(); #expect(try await b.run().entries.isEmpty)
+    }
+    @Test func tryAgainHonorsTheServerDeadlineAfterClipboardSyncFails() async throws {
+        let clock = ClipboardRetryClock()
+        let retry = CloudKitOperationRetry(now: { clock.now }, sleep: { clock.advance($0) })
+        let cloud = ClipboardTestCloud()
+        let requestTimes = Mutex<[Duration]>([])
+        await cloud.observeFetches { requestTimes.withLock { $0.append(clock.elapsed) } }
+        await cloud.rateLimitFetches(3)
+        let client = ClipboardClient(cloud, retry: retry)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+
+        await #expect(throws: CKError.self) { try await client.run() }
+        try await client.run()
+
+        #expect(requestTimes.withLock { $0 } == [.zero, .seconds(10), .seconds(20), .seconds(30)])
+    }
+    @Test func stopCancelsAClipboardRetryWaitBeforeAnotherRequest() async throws {
+        let sleep = ClipboardRetrySleepGate()
+        let retry = CloudKitOperationRetry(sleep: { _ in try await sleep.wait() })
+        let cloud = ClipboardTestCloud()
+        await cloud.rateLimitFetches(1)
+        let client = ClipboardClient(cloud, retry: retry)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+
+        let running = Task { try await client.run() }
+        for _ in 0..<10_000 {
+            if sleep.isWaiting { break }
+            await Task.yield()
+        }
+        #expect(sleep.isWaiting)
+        client.sync.stop()
+
+        await #expect(throws: CancellationError.self) { try await running.value }
+        #expect(await cloud.fetchCount() == 1)
     }
     @Test func accountChangeRequiresQuarantineAndDoesNotUploadOldData() async throws {
         let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
@@ -267,4 +319,36 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
         #expect(try await b.store.load().entries.count == 101)
     }
 
+}
+
+private final class ClipboardRetryClock: Sendable {
+    private let origin = ContinuousClock.now
+    private let value = Mutex<Duration>(.zero)
+    var now: ContinuousClock.Instant { origin.advanced(by: elapsed) }
+    var elapsed: Duration { value.withLock { $0 } }
+    func advance(_ duration: Duration) { value.withLock { $0 += duration } }
+}
+
+private final class ClipboardRetrySleepGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+
+    var isWaiting: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return continuation != nil
+    }
+
+    func wait() async throws {
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                lock.lock(); self.continuation = continuation; lock.unlock()
+            }
+        }, onCancel: {
+            lock.lock()
+            let continuation = self.continuation
+            self.continuation = nil
+            lock.unlock()
+            continuation?.resume(throwing: CancellationError())
+        })
+    }
 }

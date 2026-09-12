@@ -101,6 +101,19 @@ package actor SwiftDataCloudCollectionLocalStore: CloudCollectionLocalStore {
     try save(next)
   }
 
+  package func markPurged(ifMatching context: CloudRecordWorkContext) async throws -> UUID? {
+    guard let replacementID = try await persistence.discardActiveCloudCollection(
+      storeID: context.storeID, namespace: context.binding
+    ) else { return nil }
+    var next = stored
+    next.hasSyncedBefore = true
+    if next.encryptedDataReset?.priorNamespace == context.collection.namespace {
+      next.encryptedDataReset = nil
+    }
+    try save(next)
+    return replacementID
+  }
+
   package func markDeletionPending() throws {
     var next = stored
     next.deletionState = .pending
@@ -175,15 +188,4 @@ package actor SwiftDataCloudCollectionLocalStore: CloudCollectionLocalStore {
 package enum CloudCollectionLocalStoreError: Error, Equatable, Sendable {
   case invalidState
   case storageFailure
-}
-
-private extension CloudSyncNamespace {
-  var binding: ICloudSyncNamespaceBinding {
-    ICloudSyncNamespaceBinding(
-      scope: cloudScope,
-      accountLineage: accountLineage,
-      generation: generation,
-      zones: Set(zones.map { ICloudSyncZoneBinding(name: $0.name, ownerName: $0.ownerName) })
-    )
-  }
 }

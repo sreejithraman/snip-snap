@@ -148,18 +148,22 @@ package protocol CloudCollectionLocalStore: Sendable {
 }
 
 package enum CloudCollectionFetchResult: Equatable, Sendable {
-  case fetched
-  case encryptedDataReset
+  case fetched(SyncedContentSyncIssue?)
   case purged
+
+  var issue: SyncedContentSyncIssue? {
+    guard case .fetched(let issue) = self else { return nil }
+    return issue
+  }
 }
 
 package enum CloudCollectionSendResult: Equatable, Sendable {
   case sent
-  case encryptedDataReset
   case purged
 }
 
 package protocol CloudCollectionSyncDriver: Sendable {
+  func invalidate() async
   func prepareAutomaticSync(_ context: CloudCollectionSyncContext) async throws
   func prepareManualRetry(_ context: CloudCollectionSyncContext) async throws
   func fetch(_ context: CloudCollectionSyncContext) async throws -> CloudCollectionFetchResult
@@ -167,14 +171,17 @@ package protocol CloudCollectionSyncDriver: Sendable {
 }
 
 package extension CloudCollectionSyncDriver {
+  func invalidate() async {}
   func prepareAutomaticSync(_ context: CloudCollectionSyncContext) async throws {}
   func prepareManualRetry(_ context: CloudCollectionSyncContext) async throws {}
 }
 
 package enum CloudCollectionStatus: Equatable, Sendable {
   case on(CloudSyncNamespace)
+  case scheduled(CloudSyncNamespace)
   case enabled(CloudSyncNamespace)
   case adoptedRemoteCollection(CloudSyncNamespace)
+  case adoptedRemoteCollectionScheduled(CloudSyncNamespace)
   case deletedSyncedContent(CloudSyncNamespace)
   case oldSyncedContentRemovalPending(CloudSyncNamespace)
   case purged
@@ -322,6 +329,10 @@ package actor CloudCollectionCoordinator {
     self.afterStep = afterStep
   }
 
+  package func invalidateRecordSync() async {
+    await syncDriver.invalidate()
+  }
+
   package func deleteSyncedContent() async throws -> CloudCollectionStatus {
     try beginOperation()
     defer { finishOperation() }
@@ -396,8 +407,19 @@ package actor CloudCollectionCoordinator {
     try await synchronize(retryingUserRecoverableFailures: true)
   }
 
+  /// Checks the collection, then lets the record engine choose when to fetch and send.
+  package func scheduleSynchronization(
+    retryingUserRecoverableFailures: Bool = false
+  ) async throws -> CloudCollectionStatus {
+    try await synchronize(
+      retryingUserRecoverableFailures: retryingUserRecoverableFailures,
+      scheduleOnly: true
+    )
+  }
+
   private func synchronize(
-    retryingUserRecoverableFailures: Bool
+    retryingUserRecoverableFailures: Bool,
+    scheduleOnly: Bool = false
   ) async throws -> CloudCollectionStatus {
     try beginOperation()
     defer { finishOperation() }
@@ -433,15 +455,18 @@ package actor CloudCollectionCoordinator {
         try await localStore.stageCleanup(prior.zones.subtracting(control.descriptor.zones))
       }
       try await localStore.adopt(remoteNamespace)
-      let result = try await syncDriver.fetch(context(control.descriptor))
+      let result: CloudCollectionFetchResult
+      if scheduleOnly {
+        try await syncDriver.prepareAutomaticSync(context(control.descriptor))
+        result = try await localStore.state().activeNamespace == nil ? .purged : .fetched(nil)
+      } else {
+        result = try await syncDriver.fetch(context(control.descriptor))
+      }
       if result == .purged {
         try await localStore.markPurged()
         return .purged
       }
-      if result == .encryptedDataReset {
-        try await localStore.markPurged()
-        return .purged
-      }
+      if let issue = result.issue { throw CloudSyncIssueError(issue) }
       do {
         try await cleanPendingZones(protecting: control.descriptor.zones)
       } catch {
@@ -453,7 +478,9 @@ package actor CloudCollectionCoordinator {
       return try await deletionStatusIfNeeded(
         cleanedLocal.deletionState,
         remoteNamespace,
-        fallback: .adoptedRemoteCollection(remoteNamespace)
+        fallback: scheduleOnly
+          ? .adoptedRemoteCollectionScheduled(remoteNamespace)
+          : .adoptedRemoteCollection(remoteNamespace)
       )
     }
 
@@ -461,12 +488,18 @@ package actor CloudCollectionCoordinator {
       try await syncDriver.prepareManualRetry(context(control.descriptor))
     }
 
+    if scheduleOnly {
+      try await syncDriver.prepareAutomaticSync(context(control.descriptor))
+      if try await localStore.state().activeNamespace == nil { return .purged }
+      return try await deletionStatusIfNeeded(
+        cleanedLocal.deletionState,
+        remoteNamespace,
+        fallback: .scheduled(remoteNamespace)
+      )
+    }
+
     let fetchResult = try await syncDriver.fetch(context(control.descriptor))
     if fetchResult == .purged {
-      try await localStore.markPurged()
-      return .purged
-    }
-    if fetchResult == .encryptedDataReset {
       try await localStore.markPurged()
       return .purged
     }
@@ -490,10 +523,7 @@ package actor CloudCollectionCoordinator {
         try await localStore.markPurged()
         return .purged
       }
-      if result == .encryptedDataReset {
-        try await localStore.markPurged()
-        return .purged
-      }
+      if let issue = result.issue { throw CloudSyncIssueError(issue) }
       do {
         try await cleanPendingZones(protecting: checked.descriptor.zones)
       } catch {
@@ -514,10 +544,7 @@ package actor CloudCollectionCoordinator {
       try await localStore.markPurged()
       return .purged
     }
-    if sendResult == .encryptedDataReset {
-      try await localStore.markPurged()
-      return .purged
-    }
+    if let issue = fetchResult.issue { throw CloudSyncIssueError(issue) }
     let state = try await localStore.state()
     return try await deletionStatusIfNeeded(
       state.deletionState,
@@ -549,10 +576,7 @@ package actor CloudCollectionCoordinator {
         try await localStore.markPurged()
         return .purged
       }
-      if result == .encryptedDataReset {
-        try await localStore.markPurged()
-        return .purged
-      }
+      if let issue = result.issue { throw CloudSyncIssueError(issue) }
       return .enabled(namespace)
     }
 
@@ -575,10 +599,7 @@ package actor CloudCollectionCoordinator {
         try await localStore.markPurged()
         return .purged
       }
-      if fetchResult == .encryptedDataReset {
-        try await localStore.markPurged()
-        return .purged
-      }
+      if let issue = fetchResult.issue { throw CloudSyncIssueError(issue) }
       try await cleanPendingZones(protecting: accepted.descriptor.zones)
       return .enabled(namespace)
     case .conflict(let winning):
@@ -593,10 +614,7 @@ package actor CloudCollectionCoordinator {
         try await localStore.markPurged()
         return .purged
       }
-      if fetchResult == .encryptedDataReset {
-        try await localStore.markPurged()
-        return .purged
-      }
+      if let issue = fetchResult.issue { throw CloudSyncIssueError(issue) }
       try await cleanPendingZones(protecting: winning.descriptor.zones)
       return .enabled(namespace)
     }

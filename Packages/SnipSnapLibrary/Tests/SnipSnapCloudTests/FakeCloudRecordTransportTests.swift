@@ -1,7 +1,61 @@
 @testable import SnipSnapCloud
 import XCTest
+import CryptoKit
+import Darwin
 
 final class FakeCloudRecordTransportTests: XCTestCase {
+    func testCloudAssetCopyNeedsFileAccessWithoutDirectoryReadAccess() throws {
+        if geteuid() == 0 { throw XCTSkip("Root bypasses directory permissions.") }
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CloudAssetAccessTests-\(UUID().uuidString)", isDirectory: true)
+        let sourceDirectory = root.appendingPathComponent("source", isDirectory: true)
+        let destinationURL = root.appendingPathComponent("destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+        defer {
+            chmod(sourceDirectory.path, 0o700)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let source = sourceDirectory.appendingPathComponent("asset.bin")
+        let bytes = Data("CloudKit attachment".utf8)
+        try bytes.write(to: source)
+        XCTAssertEqual(chmod(sourceDirectory.path, 0o100), 0)
+        XCTAssertEqual(try Data(contentsOf: source), bytes)
+        let directory = open(sourceDirectory.path, O_RDONLY | O_DIRECTORY)
+        if directory >= 0 { close(directory) }
+        XCTAssertEqual(directory, -1)
+
+        let receipt = try CloudAssetFileCopy.copy(
+            recordID: CloudRecordID(zone: CloudZoneID(name: "payload", ownerName: "owner"), name: "asset"),
+            field: "blob",
+            source: source,
+            destination: CloudAssetDestination(validating: destinationURL)
+        )
+
+        XCTAssertEqual(try Data(contentsOf: receipt.fileURL), bytes)
+        XCTAssertEqual(receipt.byteCount, Int64(bytes.count))
+        XCTAssertEqual(receipt.sha256, Data(SHA256.hash(data: bytes)))
+    }
+
+    func testCloudAssetCopyRejectsNonRegularSourcesAndLeavesNoOutput() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CloudAssetTypeTests-\(UUID().uuidString)", isDirectory: true)
+        let destinationURL = root.appendingPathComponent("destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pipe = root.appendingPathComponent("pipe")
+        XCTAssertEqual(mkfifo(pipe.path, 0o600), 0)
+        for source in [root, pipe] {
+            XCTAssertThrowsError(try CloudAssetFileCopy.copy(
+                recordID: CloudRecordID(zone: CloudZoneID(name: "payload", ownerName: "owner"), name: "asset"),
+                field: "blob",
+                source: source,
+                destination: CloudAssetDestination(validating: destinationURL)
+            ))
+        }
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: destinationURL.path).isEmpty)
+    }
+
     func testCloudAssetCopyRejectsSymlinkSourceAndLeavesNoOutput() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("CloudAssetSymlinkTests-\(UUID().uuidString)", isDirectory: true)

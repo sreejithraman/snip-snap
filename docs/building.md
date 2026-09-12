@@ -264,6 +264,8 @@ destination at run time:
 Confirm the signed build in Xcode before installing it. The preflight lists
 missing setting names but does not print their values.
 
+### Run the live CloudKit check
+
 Maintainers with valid Cloud Dev signing and container access can run the
 small fake-versus-real transport contract:
 
@@ -272,11 +274,38 @@ SNIP_SNAP_RUN_CLOUD_DEV_TRANSPORT_CONTRACT=1 \
   ./scripts/cloud-dev-transport-contract.sh
 ```
 
-The command runs the signed-lane preflight first. It then checks that the fake
-and real development-container transports follow the same save, fetch,
-confirm, and delete rules. Contributor CI does not run this command. If the
-local signing or container setup is missing, leave the release checklist item
-unchecked; do not report a skipped run as a pass.
+The command runs the signed Development preflight first. It uses a unique
+temporary zone and two independent sync clients to check zone creation, the
+initial fetch, text and attachment delivery, exact attachment bytes, record
+deletion, and deletion delivery to the second client. Both the fake and real
+CloudKit transports run the same checks. The test verifies the account on
+account events and before cleanup, then deletes its temporary zone and checks
+that it is gone. Errors name the failed stage; cleanup errors retain the
+original failure too.
+
+This tests real CloudKit requests from a Mac test host. It does not replace a
+Mac-to-iPhone app check for push delivery, background resume, or production
+throttling. The current Cloud Dev command only builds. `scripts/run.sh ios-device`
+installs and launches a local-only app with CloudKit disabled. Agents must report
+this device-proof gap until a guarded Cloud Dev install/run path exists under
+`scripts/run.sh`. A Development run also cannot prove Production throttling.
+Contributor CI does not run the live command. If local signing or container
+access is missing, leave the live check unchecked; a skip is not a pass.
+
+Each run uses this worktree's ignored `.build/cloud-dev-transport-contract`
+directory as its build cache. Set `SNIP_SNAP_DERIVED_DATA` to an absolute path
+to use another cache. Runs cannot share a cache at the same time. A second run
+reports the lock path and stops. If a killed process leaves a lock, confirm it
+has stopped before removing that lock directory. The command keeps a new
+ignored evidence directory under
+`artifacts/cloud-dev-transport-contract` for every run. It contains the
+`.xcresult`, its JSON summary, the `xcodebuild` log, and a local-store directory.
+The host uses a unique store path there; the file appears only if it writes
+local data. Set `SNIP_SNAP_CLOUD_DEV_TRANSPORT_CONTRACT_ARTIFACTS` to an absolute
+path to put that evidence elsewhere. Once preflight passes, the command prints
+the evidence path on success, failure, and skip. Setup and preflight errors
+appear in the terminal before a run starts. A failed `xcodebuild` keeps its exit status and
+prints the test totals and reported test failure text when it can read them.
 
 ## Make an official release
 

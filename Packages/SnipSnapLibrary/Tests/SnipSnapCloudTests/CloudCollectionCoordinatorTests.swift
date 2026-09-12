@@ -188,7 +188,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertEqual(storedControl, active)
     XCTAssertTrue(metadataRecordTypes.contains("AttachmentMetadata"))
     XCTAssertTrue(payloadRecordTypes.contains("AttachmentPayload"))
-    XCTAssertEqual(foreground, .contentUpdated)
+    XCTAssertEqual(foreground, .syncScheduled)
   }
 
   func testModeLifecycleTurnsSyncOffWithoutDeletingCloudContent() async throws {
@@ -742,7 +742,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     )
 
     XCTAssertEqual(CloudKitRetryPolicy.delay(after: error, attempt: 1), .milliseconds(7_500))
-    XCTAssertNil(CloudKitRetryPolicy.delay(after: error, attempt: 3))
+    XCTAssertEqual(CloudKitRetryPolicy.delay(after: error, attempt: 3), .milliseconds(7_500))
   }
 
   @MainActor
@@ -1452,12 +1452,13 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let reset = Task { try await session.deleteSyncedContent() }
     await transport.waitUntilControlSavePauses()
 
-    do {
-      _ = try await session.synchronize()
-      XCTFail("Expected concurrent collection work to be rejected")
-    } catch {
-      XCTAssertEqual(error as? CloudCollectionError, .operationInProgress)
+    let prematureSync = expectation(description: "Sync waits for the reset")
+    prematureSync.isInverted = true
+    let synchronization = Task {
+      defer { prematureSync.fulfill() }
+      return try await session.synchronize()
     }
+    await fulfillment(of: [prematureSync], timeout: 0.05)
     let freshMetadataStillExists = await server.hasZone(fresh.metadataZone)
     let freshPayloadStillExists = await server.hasZone(fresh.payloadZone)
     XCTAssertTrue(freshMetadataStillExists)
@@ -1467,6 +1468,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
 
     await transport.resumeControlSave()
     _ = try await reset.value
+    _ = try await synchronization.value
   }
 
   func testAutomaticAccountChangeReachesTheResultStream() async {
@@ -1489,6 +1491,310 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
 
     XCTAssertEqual(result, .iCloudAccountChanged)
     results.continuation.finish()
+  }
+
+  func testNormalSchedulingAndTryAgainLeaveRecordFetchesAndSendsToTheEngine() async throws {
+    let active = descriptor(
+      generation: "22222222-3333-4444-5555-666666666666",
+      metadata: "automatic-metadata", payload: "automatic-payload"
+    )
+    let server = FakeCloudServer()
+    let transport = FakeCloudControlTransport(server: server)
+    await transport.seedControl(active)
+    let driver = TestCloudCollectionSyncDriver()
+    let coordinator = CloudCollectionCoordinator(
+      cloudScope: "private", accountLineage: "account-a", ownerName: "owner",
+      localStore: TestCloudCollectionLocalStore(active: namespace(active), hasSyncedBefore: true),
+      transport: transport, syncDriver: driver, makeDescriptor: { active }
+    )
+
+    let normal = try await coordinator.scheduleSynchronization()
+    let retried = try await coordinator.scheduleSynchronization(retryingUserRecoverableFailures: true)
+    let events = await driver.events()
+
+    XCTAssertEqual(normal, .scheduled(namespace(active)))
+    XCTAssertEqual(retried, .scheduled(namespace(active)))
+    XCTAssertEqual(events, [
+      .scheduled(namespace(active)),
+      .preparedManualRetry(namespace(active)),
+      .scheduled(namespace(active)),
+    ])
+  }
+
+  func testSchedulingAfterGenerationAdoptionReportsBothLibraryReplacementAndQueuedSync() async throws {
+    let stale = descriptor(
+      generation: "88888888-8888-8888-8888-888888888888",
+      metadata: "stale-scheduled-metadata", payload: "stale-scheduled-payload"
+    )
+    let current = descriptor(
+      generation: "99999999-9999-9999-9999-999999999999",
+      metadata: "current-scheduled-metadata", payload: "current-scheduled-payload"
+    )
+    let server = FakeCloudServer()
+    let transport = FakeCloudControlTransport(server: server)
+    await transport.seedControl(current)
+    let driver = TestCloudCollectionSyncDriver()
+    let coordinator = CloudCollectionCoordinator(
+      cloudScope: "private", accountLineage: "account-a", ownerName: "owner",
+      localStore: TestCloudCollectionLocalStore(active: namespace(stale), hasSyncedBefore: true),
+      transport: transport, syncDriver: driver, makeDescriptor: { current }
+    )
+
+    let status = try await coordinator.scheduleSynchronization()
+    let events = await driver.events()
+
+    XCTAssertEqual(status, .adoptedRemoteCollectionScheduled(namespace(current)))
+    XCTAssertEqual(syncResult(for: status), .libraryReplacedAndSyncScheduled)
+    XCTAssertEqual(events, [.scheduled(namespace(current))])
+  }
+
+  func testLifecycleLaunchForegroundAndTryAgainDoNotForceAnAutomaticRecordEngine() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudEngineFirstLifecycle-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let active = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+    try await persistence.activateEmptyCollection(namespace: binding(active))
+    let source = try JSONSnipLibrary(fileURL: root.appendingPathComponent("source.json"))
+    let server = FakeCloudServer()
+    let control = FakeCloudControlTransport(server: server)
+    await control.seedControl(active)
+    let records = LifecycleAutomaticTransportProbe()
+    let lifecycle = SnipSnapICloudSyncLifecycle(
+      rootURL: root, sourceLibrary: source, syncModeStore: SnipSyncModeStore(persistence),
+      cloudScope: "private", accountLineage: "account-a", ownerName: "owner",
+      controlTransport: control, makeRecordTransport: { _ in records }, makeDescriptor: { active }
+    )
+
+    let launched = try await lifecycle.synchronize()
+    let foregrounded = try await lifecycle.synchronize()
+    let retried = try await lifecycle.retrySynchronization()
+    let events = await records.events()
+
+    XCTAssertEqual([launched, foregrounded, retried], [.syncScheduled, .syncScheduled, .syncScheduled])
+    XCTAssertEqual(events, ["started"])
+  }
+
+  func testAdoptedLibraryKeepsItsEngineAliveUntilTheDelayedFetchCommits() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("CloudAdoptionOwner-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let previous = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    let current = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+    try await persistence.activateEmptyCollection(namespace: binding(previous))
+    let source = try JSONSnipLibrary(fileURL: root.appendingPathComponent("source.json"))
+    let server = FakeCloudServer()
+    let control = FakeCloudControlTransport(server: server)
+    await control.seedControl(current)
+    let snipID = UUID()
+    let remoteID = CloudRecordID.snip(snipID, in: current.metadataZone)
+    _ = try await server.send(CloudOutboundBatch(
+      operations: [.save(.text(id: remoteID, snipID: snipID, text: "arrived after adoption"))],
+      zonesToSave: current.zones
+    ), failures: [:])
+    let fetcher = FakeCloudRecordTransport(server: server, namespace: namespace(current))
+    let fetched = try await fetcher.fetch(scope: .all)
+    let records = LifecycleAutomaticTransportProbe()
+    let delivered = expectation(description: "The adopted engine delivers its fetch")
+    let lifecycle = SnipSnapICloudSyncLifecycle(
+      rootURL: root, sourceLibrary: source, syncModeStore: SnipSyncModeStore(persistence),
+      cloudScope: "private", accountLineage: "account-a", ownerName: "owner",
+      controlTransport: control, makeRecordTransport: { _ in records }, makeDescriptor: { current },
+      automaticResultHandler: { result in
+        if result == .contentUpdated || result == .syncCompleted { delivered.fulfill() }
+      }
+    )
+
+    let result = try await lifecycle.synchronize()
+    let active = try await lifecycle.activeLibrary()
+    XCTAssertEqual(result, .libraryReplacedAndSyncScheduled)
+    await records.enqueue(.fetched(fetched))
+    await fulfillment(of: [delivered], timeout: 2)
+
+    let snapshot = try await active.library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(snapshot.snips.map(\.content), ["arrived after adoption"])
+    let events = await records.events()
+    XCTAssertEqual(events.filter { $0 == "started" }.count, 1)
+  }
+
+  func testQueuedOldPurgeCannotDiscardTheAdoptedStoreOrPublishItsResult() async throws {
+    try await verifyReplacedRecordWork(purge: true)
+  }
+
+  func testOldRecordSendIsDeniedAfterAdoptingAnotherStore() async throws {
+    try await verifyReplacedRecordWork(purge: false)
+  }
+
+  private func verifyReplacedRecordWork(purge: Bool) async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("CloudOldOwner-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let old = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    let fresh = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+    try await persistence.activateEmptyCollection(namespace: binding(old))
+    let original = try await persistence.snapshot().activeStore
+    let source = try JSONSnipLibrary(fileURL: root.appendingPathComponent("source.json"))
+    let server = FakeCloudServer()
+    let control = FakeCloudControlTransport(server: server)
+    await control.seedControl(old)
+    let account = PausingCollectionAccountSource()
+    let oldRecords = LifecycleAutomaticTransportProbe()
+    let freshRecords = LifecycleAutomaticTransportProbe()
+    let results = CollectionResultRecorder()
+    let lifecycle = SnipSnapICloudSyncLifecycle(
+      rootURL: root, sourceLibrary: source, syncModeStore: SnipSyncModeStore(persistence),
+      cloudScope: "private", accountLineage: "account-a", accountStateSource: account, ownerName: "owner",
+      controlTransport: control,
+      makeRecordTransport: { $0.namespace.generation == old.generation ? oldRecords : freshRecords },
+      makeDescriptor: { fresh }, automaticResultHandler: results.append
+    )
+    _ = try await lifecycle.synchronize()
+    let pause = CollectionWorkPause()
+    await account.pauseNextCheck(pause)
+    let finished = expectation(description: "Old record work returns after replacement")
+    let sendTask: Task<Bool, Never>?
+    if purge {
+      await oldRecords.onNextWorkCompletion { finished.fulfill() }
+      await oldRecords.enqueue(.fetched(CloudFetchedBatch(id: UUID(), items: [],
+        databaseEvents: [.zoneDeleted(old.metadataZone, reason: .purged)], engineState: nil)))
+      sendTask = nil
+    } else {
+      sendTask = Task {
+        defer { finished.fulfill() }
+        do { try await oldRecords.authorizeSend(); return true }
+        catch { return false }
+      }
+    }
+    await pause.waitUntilSuspended()
+
+    await control.seedControl(fresh)
+    let adopted = try await lifecycle.synchronize()
+    XCTAssertEqual(adopted, .libraryReplacedAndSyncScheduled)
+    let active = try await lifecycle.activeLibrary()
+    _ = try await active.library.perform(.add(content: "new collection edit", origin: .quickEntry,
+      source: nil, listID: SnipList.inbox.id, attachmentURLs: [], requestID: UUID(), now: Date()), sortedBy: .manual)
+    let beforeRelease = try await persistence.snapshot().activeStore
+    XCTAssertNotEqual(beforeRelease.id, original.id)
+    await pause.resume()
+    await fulfillment(of: [finished], timeout: 2)
+    if let sendTask {
+      let allowed = await sendTask.value
+      XCTAssertFalse(allowed)
+    }
+
+    let after = try await persistence.snapshot().activeStore
+    let snapshot = try await active.library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(after.id, beforeRelease.id)
+    XCTAssertEqual(after.namespace, binding(fresh))
+    XCTAssertEqual(snapshot.snips.map(\.content), ["new collection edit"])
+    XCTAssertFalse(results.values().contains(.iCloudDataReset))
+    XCTAssertFalse(results.values().contains { if case .syncIssue = $0 { true } else { false } })
+    let oldEvents = await oldRecords.events()
+    let freshEvents = await freshRecords.events()
+    XCTAssertTrue(oldEvents.contains("reset"))
+    XCTAssertEqual(freshEvents.filter { $0 == "started" }.count, 1)
+  }
+
+  func testSourceBoundPurgeAndRecordMutationsRejectAReplacedStore() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("CloudBoundMutation-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let old = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    let fresh = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+    try await persistence.activateEmptyCollection(namespace: binding(old))
+    let original = try await persistence.snapshot().activeStore
+    let oldLibrary = try await persistence.libraryForTransition(storeID: original.id)
+    let lease = try await persistence.activeCloudMutationLease(storeID: original.id)
+    let store = CloudFullSyncPersistence(library: oldLibrary, namespace: namespace(old),
+      dataZone: old.metadataZone, payloadZone: old.payloadZone, mutationLease: lease)
+    let batch = CloudFetchedBatch(id: UUID(), items: [], engineState: nil)
+    try await store.stage(.fetched(batch), outbound: nil)
+    try await persistence.activateEmptyCollection(namespace: binding(fresh))
+    let activeBefore = try await persistence.snapshot().activeStore
+
+    do { try await store.applyStaged(batch.id); XCTFail("Old apply must fail admission") }
+    catch SyncModePersistenceError.namespaceMismatch {}
+    do { try await store.stage(.fetched(batch), outbound: nil); XCTFail("Old stage must fail admission") }
+    catch SyncModePersistenceError.namespaceMismatch {}
+    let discarded = try await persistence.discardActiveCloudCollection(storeID: original.id, namespace: binding(old))
+    XCTAssertNil(discarded)
+    let activeAfter = try await persistence.snapshot().activeStore
+    XCTAssertEqual(activeAfter, activeBefore)
+  }
+
+  func testLibraryReadCannotReleaseAnActiveRecordCommitBeforeAdoption() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("CloudMutationAdmission-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let old = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    let fresh = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+    try await persistence.activateEmptyCollection(namespace: binding(old))
+    let original = try await persistence.snapshot().activeStore
+    let library = try await persistence.libraryForTransition(storeID: original.id)
+    let lease = try await persistence.activeCloudMutationLease(storeID: original.id)
+    let pause = CollectionWorkPause()
+    let store = CloudFullSyncPersistence(library: library, namespace: namespace(old),
+      dataZone: old.metadataZone, mutationLease: lease, afterCommitHook: { await pause.suspend() })
+    let batch = CloudFetchedBatch(id: UUID(), items: [], engineState: nil)
+    try await store.stage(.fetched(batch), outbound: nil)
+    let applying = Task { try await store.applyStaged(batch.id) }
+    await pause.waitUntilSuspended()
+
+    let activeLibrary = try await persistence.activeLibrary()
+    _ = try await activeLibrary.checkedSnapshot(sortedBy: .manual)
+    do { try await persistence.activateEmptyCollection(namespace: binding(fresh)); XCTFail("Adoption must wait for mutation admission") }
+    catch SyncModePersistenceError.transitionInProgress {}
+    await pause.resume()
+    try await applying.value
+    try await persistence.activateEmptyCollection(namespace: binding(fresh))
+    let active = try await persistence.snapshot().activeStore
+    XCTAssertEqual(active.namespace, binding(fresh))
+  }
+
+  func testExplicitDriverReportsItsFetchIssueAfterSendingUnrelatedWork() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("CloudExplicitFetchIssue-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let active = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+    try await persistence.activateEmptyCollection(namespace: binding(active))
+    let storage = try await persistence.snapshot()
+    let library = try await persistence.libraryForTransition(storeID: storage.activeStore.id)
+    _ = try await library.perform(.add(
+      content: "unrelated local edit", origin: .quickEntry, source: nil,
+      listID: SnipList.inbox.id, attachmentURLs: [], requestID: UUID(), now: Date()
+    ), sortedBy: .manual)
+    let localSnapshot = try await library.checkedSnapshot(sortedBy: .manual)
+    let local = try XCTUnwrap(localSnapshot.snips.first)
+    let remoteSnipID = UUID()
+    let remoteID = CloudRecordID.snip(remoteSnipID, in: active.metadataZone)
+    let server = FakeCloudServer()
+    let transport = FakeCloudRecordTransport(server: server, namespace: namespace(active))
+    let driver = CloudFullRecordCollectionSyncDriver(persistence: persistence, makeTransport: { _ in transport })
+    _ = try await server.send(CloudOutboundBatch(
+      operations: [.save(.text(id: remoteID, snipID: remoteSnipID, text: "unavailable remote item"))],
+      zonesToSave: active.zones
+    ), failures: [:])
+    _ = try await driver.fetch(CloudCollectionSyncContext(
+      namespace: namespace(active), metadataZone: active.metadataZone, payloadZone: active.payloadZone
+    ))
+    await transport.failNextFetchedItem(remoteID, failure: .attachmentUnavailable)
+    let control = FakeCloudControlTransport(server: server)
+    await control.seedControl(active)
+    let coordinator = CloudCollectionCoordinator(
+      cloudScope: "private", accountLineage: "account-a", ownerName: "owner",
+      localStore: TestCloudCollectionLocalStore(active: namespace(active), hasSyncedBefore: true),
+      transport: control, syncDriver: driver, makeDescriptor: { active }
+    )
+
+    do {
+      _ = try await coordinator.synchronize()
+      XCTFail("The current fetch issue must survive the successful send")
+    } catch let error as CloudSyncIssueError {
+      XCTAssertEqual(error.issue, .attachmentUnavailable)
+    }
+    let uploaded = try await server.snapshot(for: .snip(local.id, in: active.metadataZone), fields: [])
+    let events = await transport.events()
+    XCTAssertNotNil(uploaded, "Transport events: \(events)")
   }
 
   func testOnlyExplicitRetryPreparesUserRecoverableFailures() async throws {
@@ -2000,7 +2306,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     await transport.seedControl(remote)
     let local = TestCloudCollectionLocalStore(active: nil, hasSyncedBefore: true)
     let driver = TestCloudCollectionSyncDriver()
-    await driver.resetNextFetch(.encryptedDataReset)
+    await driver.resetNextFetch(.purged)
     let coordinator = CloudCollectionCoordinator(
       cloudScope: "private",
       accountLineage: "account-a",
@@ -2067,7 +2373,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     await transport.seedControl(old)
     let local = TestCloudCollectionLocalStore(active: namespace(old), hasSyncedBefore: true)
     let driver = TestCloudCollectionSyncDriver()
-    await driver.resetNextSend(.encryptedDataReset)
+    await driver.resetNextSend(.purged)
     let coordinator = CloudCollectionCoordinator(
       cloudScope: "private",
       accountLineage: "account-a",
@@ -2102,8 +2408,8 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let secondLocal = TestCloudCollectionLocalStore(active: namespace(old), hasSyncedBefore: true)
     let firstDriver = TestCloudCollectionSyncDriver()
     let secondDriver = TestCloudCollectionSyncDriver()
-    await firstDriver.resetNextFetch(.encryptedDataReset)
-    await secondDriver.resetNextFetch(.encryptedDataReset)
+    await firstDriver.resetNextFetch(.purged)
+    await secondDriver.resetNextFetch(.purged)
     let first = CloudCollectionCoordinator(
       cloudScope: "private",
       accountLineage: "account-a",
@@ -2412,13 +2718,13 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let recordEvents = await records.events()
     XCTAssertEqual(recordEvents, [])
     XCTAssertEqual(
-      CloudFullRecordCollectionSyncDriver.automaticFailureResult(
+      automaticSyncResult(for:
         CloudAccountIsolationError.signedOut
       ),
       .iCloudSignedOut
     )
     XCTAssertEqual(
-      CloudFullRecordCollectionSyncDriver.automaticFailureResult(
+      automaticSyncResult(for:
         CloudAccountIsolationError.accountChanged
       ),
       .iCloudAccountChanged
@@ -2614,7 +2920,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
       persistence: persistence
     ).state()
     XCTAssertEqual(purgeResult, .iCloudDataReset)
-    XCTAssertEqual(nextSync, .contentUpdated)
+    XCTAssertEqual(nextSync, .syncScheduled)
     XCTAssertEqual(state.activeNamespace, namespace(fresh))
     XCTAssertNil(state.encryptedDataReset)
     XCTAssertEqual(activeSnapshot.snips.map(\.content), ["new local work"])
@@ -2998,12 +3304,13 @@ private actor OfflineThenOnlineControlTransport: CloudCollectionControlTransport
 
 private actor TestCloudCollectionSyncDriver: CloudCollectionSyncDriver {
   enum Event: Equatable {
+    case scheduled(CloudSyncNamespace)
     case preparedManualRetry(CloudSyncNamespace)
     case fetched(CloudSyncNamespace)
     case sent(CloudSyncNamespace)
   }
   private var values: [Event] = []
-  private var nextFetchResult: CloudCollectionFetchResult = .fetched
+  private var nextFetchResult: CloudCollectionFetchResult = .fetched(nil)
   private var nextSendResult: CloudCollectionSendResult = .sent
   private var shouldPauseNextFetch = false
   private var pausedFetch = false
@@ -3020,8 +3327,11 @@ private actor TestCloudCollectionSyncDriver: CloudCollectionSyncDriver {
       pauseWaiters = []
       await withCheckedContinuation { fetchRelease = $0 }
     }
-    defer { nextFetchResult = .fetched }
+    defer { nextFetchResult = .fetched(nil) }
     return nextFetchResult
+  }
+  func prepareAutomaticSync(_ context: CloudCollectionSyncContext) {
+    values.append(.scheduled(context.namespace))
   }
   func prepareManualRetry(_ context: CloudCollectionSyncContext) {
     values.append(.preparedManualRetry(context.namespace))
@@ -3047,4 +3357,84 @@ private actor TestCloudCollectionSyncDriver: CloudCollectionSyncDriver {
     fetchRelease = nil
     pausedFetch = false
   }
+}
+
+private actor LifecycleAutomaticTransportProbe: CloudRecordTransport,
+  CloudAutomaticSyncConfiguring, CloudAutomaticSyncScheduling {
+  private var recorded: [String] = []
+  private let mailbox = CloudRecordTransportMailbox()
+  private var sendGate: RecordSendGate?
+  private var workCompleted: (@Sendable () -> Void)?
+
+  func onNextWorkCompletion(_ action: @escaping @Sendable () -> Void) { workCompleted = action }
+  func authorizeSend() async throws { try await sendGate?() }
+  func reset() { recorded.append("reset"); mailbox.reset() }
+  private func didCompleteWork() { workCompleted?(); workCompleted = nil }
+  func enqueue(_ batch: CloudSyncBatch) {
+    mailbox.append(.batch(CloudPendingBatch(batch: batch, outbound: nil)))
+  }
+  func pendingEvent() -> CloudRecordTransportEvent? { mailbox.first }
+  func events() -> [String] { recorded }
+  func start(state: CloudEngineStateEnvelope?) { recorded.append("started") }
+  func configureAutomaticSync(
+    workAvailableHandler: @escaping WorkAvailableHandler,
+    recordSendGate: @escaping RecordSendGate
+  ) {
+    sendGate = recordSendGate
+    mailbox.configure { [weak self] in
+      await workAvailableHandler()
+      await self?.didCompleteWork()
+    }
+  }
+  func scheduleAutomaticSync(_ batch: CloudOutboundBatch) { recorded.append("scheduled") }
+  func fetch(scope: CloudFetchScope) throws -> CloudFetchedBatch {
+    recorded.append("fetched")
+    throw CloudTransportError.syncAlreadyRunning
+  }
+  func send(_ batch: CloudOutboundBatch) throws -> CloudSentBatch {
+    recorded.append("sent")
+    throw CloudTransportError.syncAlreadyRunning
+  }
+  func confirmApplied(_ batchID: UUID) throws { _ = try mailbox.confirm(batchID) }
+  func fetchRecord(_ id: CloudRecordID, fields: Set<String>) -> CloudRecordSnapshot? { nil }
+  func fetchAsset(
+    _ id: CloudRecordID, field: String, destination: CloudAssetDestination
+  ) -> CloudAssetReceipt? { nil }
+}
+
+private actor CollectionWorkPause {
+  private var suspended = false
+  private var released = false
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+  private var release: CheckedContinuation<Void, Never>?
+  func suspend() async {
+    if released { return }
+    suspended = true
+    waiters.forEach { $0.resume() }
+    waiters = []
+    await withCheckedContinuation { release = $0 }
+  }
+  func waitUntilSuspended() async {
+    if suspended { return }
+    await withCheckedContinuation { waiters.append($0) }
+  }
+  func resume() { released = true; release?.resume(); release = nil }
+}
+
+private actor PausingCollectionAccountSource: ICloudAccountStateSource {
+  private var pause: CollectionWorkPause?
+  func pauseNextCheck(_ value: CollectionWorkPause) { pause = value }
+  func currentAccountState() async -> ICloudAccountState {
+    let next = pause
+    pause = nil
+    await next?.suspend()
+    return .available(accountLineage: "account-a")
+  }
+}
+
+private final class CollectionResultRecorder: @unchecked Sendable {
+  private let lock = NSLock()
+  private var results: [SnipSnapCloudSyncResult] = []
+  func append(_ value: SnipSnapCloudSyncResult) { lock.withLock { results.append(value) } }
+  func values() -> [SnipSnapCloudSyncResult] { lock.withLock { results } }
 }

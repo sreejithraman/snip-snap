@@ -15,9 +15,9 @@ extension AppleAccountNoticeModel {
     var message: String {
         switch notice {
         case .paused:
-            String(localized: "Your synced cache is still on this device. Snip Snap will try again when iCloud is available.")
+            String(localized: "Your synced snips stay on this device. Snip Snap will try again when iCloud is available.")
         case .signedOut, .accountChanged:
-            String(localized: "Snip Snap kept the prior account’s cache apart. Keep it as a local copy or remove it from this device.")
+            String(localized: "Snip Snap kept your previous account’s snips separate.")
         case nil:
             ""
         }

@@ -295,8 +295,13 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                     await model.reload()
                 case .syncCompleted:
                     cloudServices.syncedContentSettings.recordOutstandingSyncRecovered()
+                case .syncScheduled:
+                    return
                 case .libraryReplaced:
                     try await reloadActiveLibrary()
+                case .libraryReplacedAndSyncScheduled:
+                    try await reloadActiveLibrary()
+                    return
                 case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
                     await model.clipboardHistory.resetCloudAccount()
                     try await reloadActiveLibrary()
@@ -340,7 +345,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             await performSync(true)
         }
         cloudLifecycleHooks = SnipSnapCloudLifecycleHooks(syncWhenPossible: syncAction)
-        let productionCloudSyncHandler = Self.makeAccountCacheHandler(
+        let productionCloudSyncHandler = cloudServices.makeAccountCacheHandler(
             syncWhenPossible: syncAction,
             retrySyncWhenPossible: retryAction,
             scheduleSyncAfterLocalChange: {
@@ -465,7 +470,16 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         case .syncCompleted:
             await model.reload()
             syncedContentSettings.recordOutstandingSyncRecovered()
-            await model.clipboardHistory.syncNow()
+            model.clipboardHistory.requestSync()
+        case .syncScheduled:
+            break
+        case .libraryReplacedAndSyncScheduled:
+            if let active = try? await cloudSyncSession?.activeLibrary() {
+                await model.replaceLibrary(
+                    active.library,
+                    recoveryScope: active.recoveryScope
+                )
+            }
         case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
             await model.clipboardHistory.resetCloudAccount()
             if let active = try? await cloudSyncSession?.activeLibrary() {
@@ -492,25 +506,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private static func makeAccountCacheHandler(
-        syncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
-        retrySyncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
-        scheduleSyncAfterLocalChange: @escaping AppleAccountCacheCoordinatorHandler.ScheduleAction
-    ) -> AppleAccountCacheCoordinatorHandler? {
-        guard let containerIdentifier = Bundle.main.object(
-            forInfoDictionaryKey: "SnipSnapCloudKitContainerIdentifier"
-        ) as? String else { return nil }
-        let syncRootURL = LocalSnipStorePaths(storeURL: SwiftDataSnipLibrary.defaultStoreURL())
-            .rootDirectory
-            .appendingPathComponent("SyncMode", isDirectory: true)
-        return AppleAccountCacheCoordinatorHandler(
-            syncRootURL: syncRootURL,
-            containerIdentifier: containerIdentifier,
-            syncWhenPossible: syncWhenPossible,
-            retrySyncWhenPossible: retrySyncWhenPossible,
-            scheduleSyncAfterLocalChange: scheduleSyncAfterLocalChange
-        )
-    }
+
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
@@ -540,9 +536,9 @@ extension AppleAccountNoticeModel {
     var message: String {
         switch notice {
         case .paused:
-            String(localized: "Your synced cache is still on this Mac. Snip Snap will try again when iCloud is available.")
+            String(localized: "Your synced snips stay on this Mac. Snip Snap will try again when iCloud is available.")
         case .signedOut, .accountChanged:
-            String(localized: "Snip Snap kept the prior account’s cache apart. Keep it as a local copy or remove it from this Mac.")
+            String(localized: "Snip Snap kept your previous account’s snips separate.")
         case nil:
             ""
         }
@@ -556,7 +552,7 @@ struct AppleAccountNoticeView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Needs Attention")
+            Text("Needs attention")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
@@ -571,12 +567,12 @@ struct AppleAccountNoticeView: View {
                 .fixedSize(horizontal: false, vertical: true)
             if model.showsResolutionActions {
                 HStack(spacing: 12) {
-                    Button("Keep Local Copy") {
+                    Button("Keep on this Mac") {
                         Task { await model.resolve(.keepLocalCopy) }
                     }
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("keep-account-cache")
-                    Button("Remove", role: .destructive) {
+                    Button("Remove from this Mac", role: .destructive) {
                         Task { await model.resolve(.remove) }
                     }
                     .buttonStyle(.bordered)
@@ -677,11 +673,11 @@ private struct SnipCommands: Commands {
                 .keyboardShortcut(.delete, modifiers: [])
                 .disabled(!isAvailable(.delete))
             Divider()
-            Button(String(localized: "Import Backup…")) {
+            Button(String(localized: "Import backup…")) {
                 model?.beginBackupImport()
             }
             .disabled(model == nil)
-            Button("Export JSON Backup…") {
+            Button("Export backup…") {
                 exportJSONBackup(from: applicationModel)
             }
         }
@@ -700,8 +696,8 @@ private struct SnipCommands: Commands {
 
     private func exportJSONBackup(from model: AppModel) {
         let panel = NSSavePanel()
-        panel.title = String(localized: "Export JSON Backup")
-        panel.prompt = String(localized: "Export")
+        panel.title = String(localized: "Export backup")
+        panel.prompt = String(localized: "Export backup")
         panel.nameFieldStringValue = String(localized: "Snip Snap Backup")
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }

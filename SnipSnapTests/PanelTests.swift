@@ -247,7 +247,7 @@ final class PanelTests: StoreBackedTestCase {
         add(attachment)
 
         XCTAssertTrue(noticeModel.showsResolutionActions)
-        XCTAssertEqual(noticeModel.title, "Signed Out of iCloud")
+        XCTAssertEqual(noticeModel.title, "Signed out of iCloud")
         processLifetimePanelSearchWindows.append(window)
     }
 

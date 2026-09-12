@@ -45,9 +45,9 @@ struct ClipboardListView: View {
                 }
                 if history.isSyncing { ProgressView().controlSize(.small) }
                 if history.syncError != nil {
-                    Button("Retry Sync") { Task { await history.syncNow() } }
+                    Button("Retry clipboard sync") { Task { await history.syncNow() } }
                 }
-                Button("Clear") { showingClearConfirmation = true }.disabled(!history.entries.contains { !$0.isPinned })
+                Button("Clear unpinned history") { showingClearConfirmation = true }.disabled(!history.entries.contains { !$0.isPinned })
             }
         }
     }

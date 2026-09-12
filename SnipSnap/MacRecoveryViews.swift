@@ -43,7 +43,7 @@ struct MacRecoveryReviewSheet: View {
     private var recoveryList: some View {
         List {
             if !model.pendingRecoveredSnips.isEmpty {
-                Section("Recovered Snips") {
+                Section("Recovered snips") {
                     ForEach(model.pendingRecoveredSnips) { recovery in
                         Button {
                             route = .snip(recovery.id)
@@ -51,14 +51,14 @@ struct MacRecoveryReviewSheet: View {
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(
                                     recovery.recovered.content.isEmpty
-                                        ? "Recovered edit"
+                                        ? "Recovered snip"
                                         : SnipTextPreview.displayText(
                                             recovery.recovered.content,
                                             lineLimit: 2
                                         )
                                 )
                                     .lineLimit(2)
-                                Text("Recovered")
+                                Text("Recovered snip")
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(.orange)
                             }
@@ -68,7 +68,7 @@ struct MacRecoveryReviewSheet: View {
                 }
             }
             if !model.pendingRecoveredLists.isEmpty {
-                Section("Recovered List Edits") {
+                Section("Recovered lists") {
                     ForEach(model.pendingRecoveredLists) { recovery in
                         Button {
                             route = .list(recovery.id)
@@ -80,10 +80,10 @@ struct MacRecoveryReviewSheet: View {
                 }
             }
             if model.needsAttentionCount == 0 {
-                ContentUnavailableView("No Edits Need Review", systemImage: "checkmark.circle")
+                ContentUnavailableView("Nothing to review", systemImage: "checkmark.circle")
             }
         }
-        .navigationTitle("Needs Attention")
+        .navigationTitle("Needs attention")
     }
 }
 
@@ -104,17 +104,17 @@ private struct MacRecoveredSnipReview: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         HStack(alignment: .top, spacing: 16) {
-                            values("Current", snip: current, fields: recovery.conflictingFields)
-                            values("Recovered Edit", snip: recovery.recovered, fields: recovery.conflictingFields)
+                            values("Current version", snip: current, fields: recovery.conflictingFields)
+                            values("Recovered version", snip: recovery.recovered, fields: recovery.conflictingFields)
                         }
                         editFields(recovery)
                         HStack {
-                            Button("Keep Current") { resolve(.keepCurrent) }
-                            Button("Keep Both") { resolve(.keepBoth) }
+                            Button("Keep current") { resolve(.keepCurrent) }
+                            Button("Keep both") { resolve(.keepBoth) }
                             Spacer()
-                            Button("Use Recovered") { resolve(.useRecovered) }
+                            Button("Use recovered") { resolve(.useRecovered) }
                                 .buttonStyle(.borderedProminent)
-                            Button("Use Edited") {
+                            Button("Use edited version") {
                                 if let edited { resolve(.editSnip(edited)) }
                             }
                         }
@@ -124,10 +124,10 @@ private struct MacRecoveredSnipReview: View {
                 .disabled(isResolving)
                 .onAppear { if edited == nil { edited = recovery.recovered } }
             } else {
-                ContentUnavailableView("Recovered Edit Is Gone", systemImage: "checkmark.circle")
+                ContentUnavailableView("Recovered version unavailable", systemImage: "checkmark.circle")
             }
         }
-        .navigationTitle("Recovered Snip")
+        .navigationTitle("Recovered snip")
     }
 
     private func values(
@@ -163,7 +163,7 @@ private struct MacRecoveredSnipReview: View {
     @ViewBuilder
     private func editFields(_ recovery: RecoveredSnip) -> some View {
         if let binding = Binding($edited) {
-            GroupBox("Edit Conflicting Fields") {
+            GroupBox("Edit differences") {
                 VStack(alignment: .leading, spacing: 10) {
                     if recovery.conflictingFields.contains(.text) {
                         TextField("Text", text: binding.content, axis: .vertical)
@@ -245,10 +245,10 @@ private struct MacRecoveredListReview: View {
         Group {
             if let recovery, let current = model.currentList(for: recovery) {
                 Form {
-                    Section("Current List") { values(current, fields: recovery.conflictingFields) }
-                    Section("Recovered Edit") { values(recovery.recovered, fields: recovery.conflictingFields) }
+                    Section("Current version") { values(current, fields: recovery.conflictingFields) }
+                    Section("Recovered version") { values(recovery.recovered, fields: recovery.conflictingFields) }
                     if let binding = Binding($edited) {
-                        Section("Edit Conflicting Fields") {
+                        Section("Edit differences") {
                             if recovery.conflictingFields.contains(.name) {
                                 TextField("Name", text: binding.name)
                             }
@@ -258,11 +258,11 @@ private struct MacRecoveredListReview: View {
                         }
                     }
                     HStack {
-                        Button("Keep Current") { resolve(.keepCurrent) }
+                        Button("Keep current") { resolve(.keepCurrent) }
                         Spacer()
-                        Button("Use Recovered") { resolve(.useRecovered) }
+                        Button("Use recovered") { resolve(.useRecovered) }
                             .buttonStyle(.borderedProminent)
-                        Button("Use Edited") {
+                        Button("Use edited version") {
                             if let edited { resolve(.editList(edited)) }
                         }
                     }
@@ -271,10 +271,10 @@ private struct MacRecoveredListReview: View {
                 .disabled(isResolving)
                 .onAppear { if edited == nil { edited = recovery.recovered } }
             } else {
-                ContentUnavailableView("Recovered Edit Is Gone", systemImage: "checkmark.circle")
+                ContentUnavailableView("Recovered version unavailable", systemImage: "checkmark.circle")
             }
         }
-        .navigationTitle("Recovered List Edit")
+        .navigationTitle("Recovered list")
     }
 
     @ViewBuilder

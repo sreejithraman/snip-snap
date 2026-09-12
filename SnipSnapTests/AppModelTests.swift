@@ -59,7 +59,7 @@ final class AppModelTests: StoreBackedTestCase {
         let handler = MacAppleAccountCacheHandlerProbe()
         let model = AppleAccountNoticeModel(notice: .accountChanged, handler: handler)
         XCTAssertEqual(model.notice, .accountChanged)
-        XCTAssertEqual(model.title, "Apple Account Changed")
+        XCTAssertEqual(model.title, "iCloud account changed")
         XCTAssertTrue(model.showsResolutionActions)
 
         await model.resolve(.remove)
@@ -82,8 +82,8 @@ final class AppModelTests: StoreBackedTestCase {
             handler: MacAppleAccountCacheHandlerProbe()
         )
 
-        XCTAssertEqual(model.title, "iCloud Sync Paused")
-        XCTAssertTrue(model.message.contains("still on this Mac"))
+        XCTAssertEqual(model.title, "Sync paused")
+        XCTAssertTrue(model.message.contains("stay on this Mac"))
         XCTAssertFalse(model.showsResolutionActions)
     }
 

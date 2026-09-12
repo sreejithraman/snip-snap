@@ -7,13 +7,29 @@ import SnipSnapPersistence
 public struct SnipSnapCloudAppServices {
   public let syncedContentSettings: SyncedContentSettingsModel
   public let syncSession: SnipSnapCloudSyncSession?
+  package typealias AccountHandlerFactory = @MainActor (
+    AppleAccountCacheCoordinatorHandler.SyncAction?,
+    AppleAccountCacheCoordinatorHandler.SyncAction?,
+    AppleAccountCacheCoordinatorHandler.ScheduleAction?
+  ) -> AppleAccountCacheCoordinatorHandler
+  private let accountHandlerFactory: AccountHandlerFactory?
 
   package init(
     syncedContentSettings: SyncedContentSettingsModel,
-    syncSession: SnipSnapCloudSyncSession?
+    syncSession: SnipSnapCloudSyncSession?,
+    accountHandlerFactory: AccountHandlerFactory? = nil
   ) {
     self.syncedContentSettings = syncedContentSettings
     self.syncSession = syncSession
+    self.accountHandlerFactory = accountHandlerFactory
+  }
+
+  public func makeAccountCacheHandler(
+    syncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
+    retrySyncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
+    scheduleSyncAfterLocalChange: @escaping AppleAccountCacheCoordinatorHandler.ScheduleAction
+  ) -> AppleAccountCacheCoordinatorHandler? {
+    accountHandlerFactory?(syncWhenPossible, retrySyncWhenPossible, scheduleSyncAfterLocalChange)
   }
 }
 
@@ -27,7 +43,7 @@ public enum SnipSnapCloudAppAssembly {
     containerIdentifier: String?
   ) -> SnipSnapCloudAppServices {
     let identifier = containerIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    guard !identifier.isEmpty, let sourceLibrary else {
+    guard !identifier.isEmpty, !identifier.contains("$("), let sourceLibrary else {
       return SnipSnapCloudAppServices(
         syncedContentSettings: SyncedContentSettingsModel(mode: .localOnly),
         syncSession: nil
@@ -73,6 +89,7 @@ public enum SnipSnapCloudAppAssembly {
         automaticResults.continuation.yield(result)
       }
     )
+    let appOperationGate = AsyncOperationGate()
     let session = SnipSnapCloudSyncSession(
       synchronize: { try await lifecycle.synchronize() },
       retry: { try await lifecycle.retrySynchronization() },
@@ -82,11 +99,17 @@ public enum SnipSnapCloudAppAssembly {
       disable: { choice in try await lifecycle.disableICloudSync(choice) },
       delete: { try await lifecycle.deleteSyncedContent() },
       activeLibrary: { try await lifecycle.activeLibrary() },
+      operationGate: appOperationGate,
       automaticSyncResults: automaticResults.stream,
       automaticErrorHandler: { error in
         automaticResults.continuation.yield(automaticSyncResult(for: error))
       }
     )
+    let accountHandlerFactory: SnipSnapCloudAppServices.AccountHandlerFactory = { sync, retry, schedule in
+      lifecycle.makeAccountCacheHandler(operationGate: appOperationGate,
+        syncWhenPossible: sync, retrySyncWhenPossible: retry,
+        scheduleSyncAfterLocalChange: schedule)
+    }
     if settingsStartup.mode == .iCloudSync {
       return SnipSnapCloudAppServices(
         syncedContentSettings: SyncedContentSettingsModel(
@@ -96,7 +119,8 @@ public enum SnipSnapCloudAppAssembly {
           disableAction: { choice in try await session.disableICloudSync(choice) },
           deleteAction: { try await session.deleteSyncedContent() }
         ),
-        syncSession: session
+        syncSession: session,
+        accountHandlerFactory: accountHandlerFactory
       )
     }
     return SnipSnapCloudAppServices(
@@ -109,7 +133,8 @@ public enum SnipSnapCloudAppAssembly {
         disableAction: { choice in try await session.disableICloudSync(choice) },
         deleteAction: { try await session.deleteSyncedContent() }
       ),
-      syncSession: session
+      syncSession: session,
+      accountHandlerFactory: accountHandlerFactory
     )
   }
 
@@ -202,12 +227,14 @@ public enum SnipSnapCloudAppAssembly {
         CloudCollectionDescriptor.fresh(ownerName: "ui-test-owner")
       }
     )
+    let appOperationGate = AsyncOperationGate()
     let session = SnipSnapCloudSyncSession(
       synchronize: { try await lifecycle.synchronize() },
       enable: { try await lifecycle.enableICloudSync() },
       disable: { choice in try await lifecycle.disableICloudSync(choice) },
       delete: { try await lifecycle.deleteSyncedContent() },
-      activeLibrary: { try await lifecycle.activeLibrary() }
+      activeLibrary: { try await lifecycle.activeLibrary() },
+      operationGate: appOperationGate
     )
     return SnipSnapCloudAppServices(
       syncedContentSettings: SyncedContentSettingsModel(
@@ -217,7 +244,12 @@ public enum SnipSnapCloudAppAssembly {
         disableAction: { choice in try await session.disableICloudSync(choice) },
         deleteAction: { try await session.deleteSyncedContent() }
       ),
-      syncSession: session
+      syncSession: session,
+      accountHandlerFactory: { sync, retry, schedule in
+        lifecycle.makeAccountCacheHandler(operationGate: appOperationGate,
+          syncWhenPossible: sync, retrySyncWhenPossible: retry,
+          scheduleSyncAfterLocalChange: schedule)
+      }
     )
   }
 #endif

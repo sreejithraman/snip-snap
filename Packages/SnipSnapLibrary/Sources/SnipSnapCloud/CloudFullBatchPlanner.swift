@@ -10,6 +10,7 @@ struct CloudFullBatchPlanner {
   private let local: SnipLibrarySnapshot
   private let stored: CloudFullStorageSnapshot
   let attachmentStorage: CloudAttachmentStorageSnapshot
+  let recoveryEvents: [CloudFullRecoveryInput]
 
   init(
     namespaceKey: CloudSyncNamespaceKey,
@@ -18,7 +19,8 @@ struct CloudFullBatchPlanner {
     expectedEngine: Data?,
     local: SnipLibrarySnapshot,
     stored: CloudFullStorageSnapshot,
-    attachmentStorage: CloudAttachmentStorageSnapshot
+    attachmentStorage: CloudAttachmentStorageSnapshot,
+    recoveryEvents: [CloudFullRecoveryInput]
   ) {
     self.namespaceKey = namespaceKey
     self.dataZone = dataZone
@@ -27,16 +29,44 @@ struct CloudFullBatchPlanner {
     self.local = local
     self.stored = stored
     self.attachmentStorage = attachmentStorage
+    self.recoveryEvents = recoveryEvents
   }
 
   struct NormalizedBatch {
-    let results: [CloudFetchItemResult]
+    let results: [NormalizedItem]
     let nextEngine: CloudEngineStateEnvelope?
     let attachmentOperationIDs: Set<CloudRecordID>
     let outboundBindings: [CloudFullOutboundBinding]
     let recoveryInputs: [CloudFullRecoveryInput]
     let outboundOperations: [CloudRecordID: CloudOutboundOperation]
     let sentItemResults: [CloudRecordID: CloudSendItemResult]
+  }
+
+  enum NormalizedItem {
+    case record(CloudRecordSnapshot)
+    case saved(CloudRecordSnapshot)
+    case conflict(CloudRecordSnapshot)
+    case deleted(CloudRecordID)
+    case failed(CloudRecordID?, CloudOperationFailure)
+
+    init(_ fetched: CloudFetchItemResult) {
+      switch fetched {
+      case .record(let snapshot): self = .record(snapshot)
+      case .deleted(let id): self = .deleted(id)
+      case .failed(let id, let failure): self = .failed(id, failure)
+      }
+    }
+
+    // Attachments retain their own send-result reducer and submitted operations.
+    var fetchResult: CloudFetchItemResult {
+      switch self {
+      case .record(let snapshot), .saved(let snapshot), .conflict(let snapshot): .record(snapshot)
+      case .deleted(let id): .deleted(id)
+      case .failed(let id, let failure): .failed(id, failure)
+      }
+    }
+
+    var id: CloudRecordID? { fetchResult.id }
   }
 
   func plan(
@@ -64,12 +94,22 @@ struct CloudFullBatchPlanner {
       stored.pendingDeletes.map { ($0.reference, $0) }
     )
     var attachmentTransitions: [CloudAttachmentTransition] = []
-    for result in normalized.results {
+    var resolvedFetchIDs: Set<CloudRecordID> = []
+    for normalizedItem in normalized.results {
+      let result = normalizedItem.fetchResult
       switch try attachmentPlanner.reduce(result) {
       case .unhandled:
         break
       case .handled(let transition):
+        if case .record(let snapshot) = result { resolvedFetchIDs.insert(snapshot.id) }
+        if case .deleted(let id) = result { resolvedFetchIDs.insert(id) }
         if let transition { attachmentTransitions.append(transition) }
+        continue
+      }
+      if case .saved(let snapshot) = normalizedItem {
+        if let item = try Self.savedItem(snapshot, accepted: byReference) {
+          items.append(item)
+        }
         continue
       }
       switch result {
@@ -82,8 +122,10 @@ struct CloudFullBatchPlanner {
           pendingDeleteReferences: Set(pendingDeletes.keys)
         ) {
           items.append(item)
+          if item.acceptedAction == .upsert { resolvedFetchIDs.insert(snapshot.id) }
         }
       case .deleted(let id):
+        resolvedFetchIDs.insert(id)
         guard let accepted = byIdentity[CloudFullSyncPersistence.storageIdentity(id)] else {
           continue
         }
@@ -159,10 +201,47 @@ struct CloudFullBatchPlanner {
       rawBatchData: rawBatchData,
       outboundBindings: normalized.outboundBindings,
       recoveryInputs: recoveryInputs,
+      recoveryChanges: try {
+        guard case .fetched = batch else { return [] }
+        return try CloudFullSyncPersistence.fetchRecoveryChanges(recoveryEvents, resolved: resolvedFetchIDs)
+      }(),
       recoveryReviews: recoveryReviews,
       settledDeleteIdentities: settledDeleteIdentities,
       attachmentTransitions: attachmentTransitions,
       items: items
+    )
+  }
+
+  private static func savedItem(
+    _ snapshot: CloudRecordSnapshot,
+    accepted: [CloudEntityReference: CloudAcceptedEntity]
+  ) throws -> CloudFullBatchItem? {
+    let input: CloudAcceptedEntityInput
+    let binding: CloudRecordBinding
+    switch snapshot.recordType {
+    case "Snip":
+      let record = try CloudFullRecordCodec.snip(from: snapshot)
+      input = try acceptedInput(record, snapshot: snapshot)
+      binding = record.binding
+    case "List":
+      let record = try CloudFullRecordCodec.list(from: snapshot)
+      input = try acceptedInput(record, snapshot: snapshot)
+      binding = record.binding
+    default:
+      return nil
+    }
+    guard binding == .canonical else { return quarantineItem(input, snapshot: snapshot) }
+    let base = accepted[input.reference]
+    // This acknowledges the submitted save, not a remote edit. Advance the accepted
+    // body and shadow without changing local rows: they may have changed or been
+    // deleted since submission, including before the first save was accepted.
+    return CloudFullBatchItem(
+      accepted: input,
+      expectedLocalRevision: base?.localRevision,
+      expectedSystemFields: base?.systemFields,
+      localMutation: .none,
+      conflict: nil,
+      quarantine: nil
     )
   }
 

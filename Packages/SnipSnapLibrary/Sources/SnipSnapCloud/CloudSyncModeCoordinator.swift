@@ -134,8 +134,8 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
 
     func sync() async throws {
         pendingIssue = nil
-        try await syncDriver.sync()
-        try await reportCompletedSyncIssue()
+        let outcome = try await syncDriver.sync()
+        try reportCompletedSyncIssue(outcome)
         if let issue = await takeSyncIssue() { throw CloudSyncIssueError(issue) }
     }
 
@@ -143,27 +143,26 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
         beforeApply: @escaping @Sendable () async throws -> Void
     ) async throws {
         pendingIssue = nil
-        try await syncDriver.fetchRemote(beforeApply: beforeApply)
-        try await retainFetchIssue()
+        let outcome = try await syncDriver.fetchRemote(beforeApply: beforeApply)
+        try retainFetchIssue(outcome)
     }
 
     func sendPending(
         beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void
     ) async throws {
-        try await syncDriver.sendPending(beforeSend: beforeSend)
-        try await reportCompletedSyncIssue()
+        let outcome = try await syncDriver.sendPending(beforeSend: beforeSend)
+        try reportCompletedSyncIssue(outcome)
     }
 
-    private func retainFetchIssue() async throws {
-        let blocksOutbound = await syncDriver.isOutboundBlocked()
-        if let issue = await syncDriver.takeSyncIssue() {
-            if blocksOutbound { throw CloudSyncIssueError(issue) }
+    private func retainFetchIssue(_ outcome: CloudFullSyncOutcome) throws {
+        if let issue = outcome.issue {
+            if outcome.blocksOutbound { throw CloudSyncIssueError(issue) }
             pendingIssue = issue
         }
     }
 
-    private func reportCompletedSyncIssue() async throws {
-        let issue = await syncDriver.takeSyncIssue() ?? pendingIssue
+    private func reportCompletedSyncIssue(_ outcome: CloudFullSyncOutcome) throws {
+        let issue = outcome.issue ?? pendingIssue
         if let issue, issue.retriesAutomatically {
             pendingIssue = issue
             return
@@ -922,16 +921,5 @@ package actor ICloudSyncModeCoordinator {
         case .temporarilyUnavailable:
             throw ICloudAccountGateError.temporarilyUnavailable
         }
-    }
-}
-
-private extension CloudSyncNamespace {
-    var binding: ICloudSyncNamespaceBinding {
-        ICloudSyncNamespaceBinding(
-            scope: cloudScope,
-            accountLineage: accountLineage,
-            generation: generation,
-            zones: Set(zones.map { ICloudSyncZoneBinding(name: $0.name, ownerName: $0.ownerName) })
-        )
     }
 }

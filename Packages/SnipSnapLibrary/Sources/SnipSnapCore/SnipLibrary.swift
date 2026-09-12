@@ -75,7 +75,7 @@ public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .emptyContent:
-            String(localized: "There is nothing to save.", bundle: .main)
+            String(localized: "Add text or an attachment to save a snip.", bundle: .main)
         case .snipNotFound:
             String(localized: "That snip no longer exists.", bundle: .main)
         case .invalidStore:
@@ -93,25 +93,25 @@ public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {
         case .invalidCommand:
             String(localized: "These changes can’t be made together.", bundle: .main)
         case .attachmentCopyFailed:
-            String(localized: "Snip Snap couldn’t copy an attachment.", bundle: .main)
+            String(localized: "Couldn’t copy an attachment. Try again.", bundle: .main)
         case .modeTransitionInProgress:
-            String(localized: "Snip Snap is changing where it stores your snips. Try again when setup finishes.", bundle: .main)
+            String(localized: "Can’t change your snips right now. Try again in a moment. If it still fails, contact support.", bundle: .main)
         case .readOnlyRecovery:
-            String(localized: "This is a recovery copy. Restore it to an active library before making changes.", bundle: .main)
+            String(localized: "You can’t edit this recovery copy.", bundle: .main)
         case .transferUnsupported:
             String(localized: "This library can’t change where it stores your snips.", bundle: .main)
         case .transferConflict:
             String(localized: "Snip Snap found items it can’t copy safely.", bundle: .main)
         case .recoveryNotFound:
-            String(localized: "That recovered edit is no longer available.", bundle: .main)
+            String(localized: "That recovered version is no longer available.", bundle: .main)
         case .recoveryChanged:
-            String(localized: "That recovered edit changed. Refresh the review and try again.", bundle: .main)
+            String(localized: "That recovered version changed. Reopen it and try again.", bundle: .main)
         case .invalidRecoveryChoice:
-            String(localized: "That choice does not apply to this recovered edit.", bundle: .main)
+            String(localized: "That choice doesn’t apply to this recovered version.", bundle: .main)
         case .importChanged:
             String(localized: "The backup or saved snips changed. Review the import again.", bundle: .main)
         case .deviceActionChanged:
-            String(localized: "That action cannot be undone because the same fields changed on another device.", bundle: .main)
+            String(localized: "Can’t undo this action. The same details changed on another device.", bundle: .main)
         }
     }
 }

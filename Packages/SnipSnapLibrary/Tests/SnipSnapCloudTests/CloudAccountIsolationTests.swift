@@ -235,40 +235,6 @@ extension ICloudSyncModeCoordinatorTests {
         })
     }
 
-    func testProductionAccountHandlerIsReadyBeforeFirstCloudOptIn() async throws {
-        let missingRoot = temporaryDirectory()
-        XCTAssertNotNil(
-            AppleAccountCacheCoordinatorHandler(
-                syncRootURL: missingRoot,
-                containerIdentifier: "iCloud.org.example.snipsnap",
-                syncWhenPossible: {}
-            )
-        )
-
-        let localRoot = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: localRoot) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: localRoot)
-        XCTAssertNotNil(
-            AppleAccountCacheCoordinatorHandler(
-                syncRootURL: localRoot,
-                containerIdentifier: "iCloud.org.example.snipsnap",
-                syncWhenPossible: {}
-            )
-        )
-
-        _ = try await persistence.beginTransition(
-            to: .iCloudSync,
-            namespace: testBinding()
-        )
-        XCTAssertNotNil(
-            AppleAccountCacheCoordinatorHandler(
-                syncRootURL: localRoot,
-                containerIdentifier: "iCloud.org.example.snipsnap",
-                syncWhenPossible: {}
-            )
-        )
-    }
-
     func testAccountHandlerRunsTheInjectedCollectionCheckedSyncAction() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -339,8 +305,9 @@ extension ICloudSyncModeCoordinatorTests {
         let preparedURL = root.appendingPathComponent("prepared.bin")
         let probe = AttachmentTransferProbe(preparedURL: preparedURL)
         let handler = AppleAccountCacheCoordinatorHandler(
-            syncRootURL: root,
+            persistence: { persistence },
             controlTransport: control,
+            accountStateSource: FixedICloudAccountStateSource(state: .available(accountLineage: "account-a")),
             makeSyncCoordinator: { persistence, resolvedNamespace, descriptor in
                 makeInjectedSyncCoordinator(
                     persistence: persistence,
@@ -348,10 +315,10 @@ extension ICloudSyncModeCoordinatorTests {
                     descriptor: descriptor
                 )
             },
-            makeAttachmentCoordinator: { _, resolvedNamespace, payloadZone in
+            makeAttachmentCoordinator: { _, resolvedNamespace, descriptor in
                 await probe.recordConfiguration(
                     namespace: resolvedNamespace,
-                    payloadZone: payloadZone
+                    payloadZone: descriptor.payloadZone
                 )
                 return probe
             }
@@ -408,8 +375,9 @@ extension ICloudSyncModeCoordinatorTests {
             preparedURL: root.appendingPathComponent("prepared.bin")
         )
         let handler = AppleAccountCacheCoordinatorHandler(
-            syncRootURL: root,
+            persistence: { persistence },
             controlTransport: control,
+            accountStateSource: FixedICloudAccountStateSource(state: .available(accountLineage: "account-a")),
             makeSyncCoordinator: { persistence, namespace, descriptor in
                 await syncProbe.record(namespace.generation)
                 return makeInjectedSyncCoordinator(
@@ -418,10 +386,10 @@ extension ICloudSyncModeCoordinatorTests {
                     descriptor: descriptor
                 )
             },
-            makeAttachmentCoordinator: { _, namespace, payloadZone in
+            makeAttachmentCoordinator: { _, namespace, descriptor in
                 await attachmentProbe.recordConfiguration(
                     namespace: namespace,
-                    payloadZone: payloadZone
+                    payloadZone: descriptor.payloadZone
                 )
                 return attachmentProbe
             }
@@ -1121,13 +1089,15 @@ extension ICloudSyncModeCoordinatorTests {
                 })
             )
         )
-        let formerlyActiveLibrary = try await persistence.activeLibrary()
+        let formerlyActiveStore = try await persistence.snapshot().activeStore
+        let formerlyActiveLibrary = try await persistence.libraryForTransition(storeID: formerlyActiveStore.id)
         let control = FakeCloudControlTransport(server: FakeCloudServer())
         await control.seedControl(descriptor)
         let account = InjectedICloudAccountStateSource(state: .noAccount)
         let handler = AppleAccountCacheCoordinatorHandler(
-            syncRootURL: root,
+            persistence: { persistence },
             controlTransport: control,
+            accountStateSource: account,
             makeSyncCoordinator: { persistence, resolvedNamespace, resolvedDescriptor in
                 ICloudSyncModeCoordinator(
                     persistence: persistence,

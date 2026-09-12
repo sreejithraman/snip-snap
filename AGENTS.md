@@ -23,3 +23,8 @@ Use the default triage label vocabulary. See `docs/agents/triage-labels.md`.
 ### Domain docs
 
 This is a single-context repo using the root glossary and ADR directory. See `docs/agents/domain.md`.
+
+### iCloud sync
+
+Before diagnosing or changing iCloud sync, running live CloudKit checks, or
+reporting sync test coverage, read [the iCloud guide](docs/agents/icloud-sync.md).

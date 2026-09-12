@@ -17,11 +17,13 @@ package struct ClipboardCloudPayload: Codable, Sendable {
     private let worker: ClipboardPayloadWorker
     private let bindingURL: URL
     private let makeTransport: @Sendable (String) -> any ClipboardCloudTransport
+    private let retry: CloudKitOperationRetry
     private var transport: (any ClipboardCloudTransport)?
     private var scope: String?
     private var transitioning = false
     private var epoch = 0
     private var cancellation = ClipboardCloudCancellation()
+    private var cancelActiveRetry: (() -> Void)?
     private var idleWaiters: [CheckedContinuation<Void, Never>] = []
 
     public convenience init(store: ClipboardHistoryStore,
@@ -32,15 +34,22 @@ package struct ClipboardCloudPayload: Codable, Sendable {
         })
     }
     package init(store: ClipboardHistoryStore, syncRootURL: URL,
-                 makeTransport: @escaping @Sendable (String) -> any ClipboardCloudTransport) {
+                 makeTransport: @escaping @Sendable (String) -> any ClipboardCloudTransport,
+                 retry: CloudKitOperationRetry = CloudKitOperationRetry()) {
         self.store = store
         worker = ClipboardPayloadWorker(store: store, files: store.files)
         bindingURL = syncRootURL.appendingPathComponent("clipboard-account-binding.json")
         self.makeTransport = makeTransport
+        self.retry = retry
     }
 
     /// Call before disabling sync or responding to an account change.
-    public func stop() { epoch += 1; cancellation.cancel(); pendingEntryIDs = [] }
+    public func stop() {
+        epoch += 1
+        cancellation.cancel()
+        cancelActiveRetry?()
+        pendingEntryIDs = []
+    }
 
     @discardableResult public func synchronize(mainSyncEnabled: Bool, clipboardSyncEnabled: Bool,
                                                generation: String) async throws -> ClipboardHistoryState {
@@ -59,7 +68,7 @@ package struct ClipboardCloudPayload: Codable, Sendable {
         }
         do {
             for _ in 0..<4 {
-                let remote = try await transport.fetch()
+                let remote = try await performWithRetry(operationName: "clipboard fetch") { try await transport.fetch() }
                 try checkEpoch(started)
                 let (local, shared, outgoing, pending) = try await worker.prepare(remote, cancellation: cancellation)
                 try checkEpoch(started)
@@ -67,7 +76,8 @@ package struct ClipboardCloudPayload: Codable, Sendable {
                 try checkEpoch(started)
                 do {
                     if !pending.isEmpty || outgoing.keys.count != remote.entries.keys.count || shared.tombstones != remote.tombstones || shared.retentionTombstones != remote.retentionTombstones {
-                        try await transport.save(ClipboardCloudSnapshot(entries: outgoing, tombstones: shared.tombstones, retentionTombstones: shared.retentionTombstones, version: remote.version), cancellation: cancellation)
+                        let snapshot = ClipboardCloudSnapshot(entries: outgoing, tombstones: shared.tombstones, retentionTombstones: shared.retentionTombstones, version: remote.version)
+                        try await performWithRetry(operationName: "clipboard save") { try await transport.save(snapshot, cancellation: self.cancellation) }
                     }
                 }
                 catch ClipboardCloudError.conflict { continue }
@@ -98,7 +108,7 @@ package struct ClipboardCloudPayload: Codable, Sendable {
         await waitUntilIdle()
         let hadBinding = FileManager.default.fileExists(atPath: bindingURL.path)
         try bind(to: generation)
-        try await transport?.deleteAll()
+        if let transport { try await performWithRetry(operationName: "clipboard delete") { try await transport.deleteAll() } }
         if hadBinding {
             try quarantineHistory()
             try await store.save(ClipboardHistoryState())
@@ -145,6 +155,21 @@ package struct ClipboardCloudPayload: Codable, Sendable {
     }
     private func checkEpoch(_ expected: Int) throws {
         guard epoch == expected else { throw CancellationError() }
+    }
+
+    /// Keeps retries scoped to the current cloud operation so `stop()` can cancel a pending delay.
+    private func performWithRetry<Value: Sendable>(
+        operationName: String,
+        _ operation: @escaping @Sendable () async throws -> Value
+    ) async throws -> Value {
+        let task = Task { [retry] in try await retry.run(operationName: operationName, operation) }
+        cancelActiveRetry = { task.cancel() }
+        defer { cancelActiveRetry = nil }
+        return try await withTaskCancellationHandler(operation: {
+            try await task.value
+        }, onCancel: {
+            task.cancel()
+        })
     }
 }
 

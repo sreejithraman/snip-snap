@@ -69,8 +69,8 @@ extension SnipImportPreview {
         }
         if recoveredSnipCount > 0 {
             parts.append(recoveredSnipCount == 1
-                ? String(localized: "1 recovered edit")
-                : String(localized: "\(recoveredSnipCount) recovered edits"))
+                ? String(localized: "1 recovered snip")
+                : String(localized: "\(recoveredSnipCount) recovered snips"))
         }
         if addedListCount > 0 {
             parts.append(addedListCount == 1

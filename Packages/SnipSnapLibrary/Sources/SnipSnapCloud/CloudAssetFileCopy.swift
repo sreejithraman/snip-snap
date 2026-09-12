@@ -16,7 +16,7 @@ package enum CloudAssetFileCopy {
         }
 
         do {
-            let copied = try AttachmentFileIO.copyRegularFile(
+            let copied = try AttachmentFileIO.copyGrantedRegularFile(
                 from: source,
                 to: finalURL
             )

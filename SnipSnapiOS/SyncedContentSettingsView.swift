@@ -34,7 +34,7 @@ struct SyncedContentSettingsView: View {
                         ))
                         .disabled(model.mode != .iCloudSync)
                         .accessibilityIdentifier("clipboard-sync-toggle")
-                        Text("Includes text, images, pinned files, and files synced before. Turning this off keeps local history and leaves iCloud data intact.")
+                        Text("Turning this off doesn’t delete your history.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     if let message = clipboard?.errorMessage {
@@ -46,14 +46,14 @@ struct SyncedContentSettingsView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     if model.canRetryFailedSync, let retryAction {
-                        Button("Try Again") { Task { await retryAction() } }
+                        Button("Retry sync") { Task { await retryAction() } }
                             .accessibilityIdentifier("retry-icloud-sync")
                     }
                 }
 
                 if case .enabling = model.state {
                     Section {
-                        ProgressView("Setting up iCloud Sync…")
+                        ProgressView("Setting up sync…")
                     }
                 } else if case .syncing = model.state {
                     Section {
@@ -61,7 +61,7 @@ struct SyncedContentSettingsView: View {
                     }
                 } else if case .disabling = model.state {
                     Section {
-                        ProgressView("Making a local copy…")
+                        ProgressView("Saving a copy…")
                     }
                 } else if case .deleting = model.state {
                     Section {
@@ -69,7 +69,7 @@ struct SyncedContentSettingsView: View {
                     }
                 } else if model.canDelete {
                     Section {
-                        Button("Delete Synced Content…", role: .destructive) {
+                        Button("Delete synced content…", role: .destructive) {
                             confirmsDelete = true
                         }
                         .accessibilityIdentifier("delete-synced-content")
@@ -78,7 +78,7 @@ struct SyncedContentSettingsView: View {
 
                 Section("About") {
                     Link(
-                        "Privacy Policy",
+                        "Privacy policy",
                         destination: URL(string: "https://sree.world/snip-snap/privacy")!
                     )
                     .accessibilityIdentifier("privacy-policy")
@@ -91,16 +91,16 @@ struct SyncedContentSettingsView: View {
                 }
             }
         }
-        .alert("Sync Clipboard History?", isPresented: $confirmsClipboardSync) {
+        .alert("Sync clipboard history?", isPresented: $confirmsClipboardSync) {
             Button("Cancel", role: .cancel) {}
-            Button("Enable Sync") { Task { await clipboard?.setSyncEnabled(true) } }
+            Button("Sync clipboard history") { Task { await clipboard?.setSyncEnabled(true) } }
         } message: {
-            Text("Text and image entries, pinned files, and files that synced before will upload to your private iCloud and merge with your other devices. Other files stay on this device until pinned.")
+            Text("Sync text, images, and pinned files across your devices. Files that have synced keep syncing after you unpin them.")
         }
         .onAppear(perform: showUITestIssueIfNeeded)
-        .alert("Delete Synced Content?", isPresented: $confirmsDelete) {
+        .alert("Delete synced content?", isPresented: $confirmsDelete) {
             Button("Cancel", role: .cancel) {}
-            Button("Delete Synced Content", role: .destructive) {
+            Button("Delete synced content", role: .destructive) {
                 Task {
                     do {
                         try await clipboard?.deleteSyncedHistory()
@@ -111,15 +111,15 @@ struct SyncedContentSettingsView: View {
                 }
             }
         } message: {
-            Text("This starts a new, empty synced library. It deletes synced snips, attachments, and clipboard history—including pins—from iCloud. This device keeps a local recovery copy. A small iCloud record remains so older devices cannot restore deleted content.")
+            Text("Deletes synced snips, attachments, and clipboard history, including pins, from iCloud and your synced devices. This device keeps a recovery copy.")
         }
-        .alert("Use This Device’s Copy?", isPresented: $confirmsUsingDeviceCopy) {
+        .alert("Turn off sync?", isPresented: $confirmsUsingDeviceCopy) {
             Button("Cancel", role: .cancel) {}
-            Button("Use Device Copy") {
+            Button("Turn off sync") {
                 Task { await model.disableICloudSync(.useCurrentCache) }
             }
         } message: {
-            Text("Snip Snap couldn’t get the latest changes from iCloud. Keep sync on and try again, or turn it off and use the copy on this device. That copy may not include recent changes from other devices. This does not delete iCloud data.")
+            Text("Couldn’t get the latest iCloud changes. Turning off sync uses this device’s copy, which may be out of date. Your iCloud data stays.")
         }
     }
 

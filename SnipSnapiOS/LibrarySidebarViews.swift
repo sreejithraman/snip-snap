@@ -30,7 +30,7 @@ struct ListSidebarView: View {
                     Button {
                         sheet = .recoveryCenter
                     } label: {
-                        Label("Needs Attention", systemImage: "exclamationmark.bubble")
+                        Label("Needs attention", systemImage: "exclamationmark.bubble")
                     }
                     .badge(model.recoverySnapshot.needsAttentionCount)
                     .accessibilityIdentifier("needs-attention")
@@ -103,7 +103,7 @@ struct LibraryActionsMenu: View {
             } label: {
                 Image(systemName: "ellipsis")
                     .frame(width: 32, height: 32)
-                    .accessibilityLabel("Library Actions")
+                    .accessibilityLabel("Library actions")
             }
             .anchorPreference(key: DevelopmentMenuBoundsKey.self, value: .bounds) { $0 }
             .accessibilityIdentifier("library-actions")
@@ -119,7 +119,7 @@ struct LibraryActionsMenu: View {
     }
 
     private var standardMenu: some View {
-        Menu("Library Actions", systemImage: "ellipsis") { menuActions }
+        Menu("Library actions", systemImage: "ellipsis") { menuActions }
             .accessibilityIdentifier("library-actions")
             .listDeletionConfirmation(list: model.selectedList, isPresented: $confirmsDeleteList) {
                 Task { await model.deleteList(id: model.selectedListID) }
@@ -146,11 +146,11 @@ struct LibraryActionsMenu: View {
             }
             Divider()
         }
-        Button("Import Backup…", systemImage: "square.and.arrow.down", action: importBackup)
+        Button("Import backup…", systemImage: "square.and.arrow.down", action: importBackup)
         Button("Settings", systemImage: "gearshape", action: settings)
             .accessibilityIdentifier("settings")
         if let reviewRecoveredEdits {
-            Button("Needs Attention", systemImage: "exclamationmark.bubble", action: reviewRecoveredEdits)
+            Button("Needs attention", systemImage: "exclamationmark.bubble", action: reviewRecoveredEdits)
                 .accessibilityIdentifier("needs-attention")
         }
         if includesCloudActions, model.isCloudSyncActive {

@@ -65,6 +65,16 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
         return envelope
     }
 
+    package func saveEngineState(_ state: CloudEngineStateEnvelope) async throws {
+        guard state.namespace == namespace else {
+            throw CloudTransportError.stateNamespaceMismatch
+        }
+        try await library.saveCloudEngineState(
+            namespaceKey: namespaceKey,
+            envelopeData: JSONEncoder().encode(state)
+        )
+    }
+
     package func stagedBatches() async throws -> [CloudSyncBatch] {
         let snapshot = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
         return try snapshot.stagedBatches

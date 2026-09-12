@@ -649,9 +649,9 @@ final class AppModel: ObservableObject {
 
     func beginBackupImport() {
         let panel = NSOpenPanel()
-        panel.title = String(localized: "Import Backup")
-        panel.prompt = String(localized: "Review Backup")
-        panel.message = String(localized: "Choose a backup folder to include attachments, or a plain JSON file for a text-only backup.")
+        panel.title = String(localized: "Import backup")
+        panel.prompt = String(localized: "Review backup")
+        panel.message = String(localized: "Choose a backup folder that includes attachments, or a JSON file without attachments.")
         panel.allowedContentTypes = [.folder, .json]
         panel.allowsMultipleSelection = false
         panel.canChooseFiles = true

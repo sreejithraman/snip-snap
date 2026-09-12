@@ -403,7 +403,7 @@ final class ClipboardHistory: ObservableObject {
         let resolved = resolvedEntry(entry)
         if !entry.ownedFiles.isEmpty,
            !resolved.fileURLs.allSatisfy({ FileManager.default.isReadableFile(atPath: $0.path) }) {
-            persistenceError = String(localized: "This file isn’t available on this device. If it synced before, try clipboard sync again.")
+            persistenceError = String(localized: "This file isn’t on this Mac. Find the original file and copy it again.")
             return false
         }
         guard resolved.write(to: pasteboard) else { return false }

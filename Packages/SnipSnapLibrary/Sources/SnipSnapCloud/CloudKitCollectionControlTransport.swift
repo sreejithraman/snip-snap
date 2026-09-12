@@ -1,36 +1,6 @@
 import CloudKit
 import Foundation
 
-package enum CloudKitRetryPolicy {
-  package static func isTransient(_ error: Error) -> Bool {
-    guard let error = error as? CKError else { return false }
-    return isTransient(error.code)
-  }
-
-  package static func isTransient(_ code: CKError.Code) -> Bool {
-    switch code {
-    case .networkFailure, .networkUnavailable, .requestRateLimited,
-         .serviceUnavailable, .zoneBusy, .serverResponseLost:
-      true
-    default:
-      false
-    }
-  }
-
-  package static func delay(
-    after error: Error,
-    attempt: Int
-  ) -> Duration? {
-    guard isTransient(error), attempt < 3 else { return nil }
-    if let error = error as? CKError,
-      let seconds = error.userInfo[CKErrorRetryAfterKey] as? NSNumber
-    {
-      return .milliseconds(Int64(max(0, seconds.doubleValue) * 1_000))
-    }
-    return .seconds(1 << max(0, attempt - 1))
-  }
-}
-
 package enum CloudCollectionControlCodec {
   package static let recordType = "SnipSnapCollectionControl"
   package static let schemaVersion: Int64 = 1
@@ -94,6 +64,7 @@ package enum CloudCollectionControlCodec {
 package actor CloudKitCollectionControlTransport: CloudCollectionControlTransport {
   private let database: CKDatabase
   private let controlID: CloudRecordID
+  private let retry = CloudKitOperationRetry()
 
   package init(database: CKDatabase, controlID: CloudRecordID) {
     self.database = database
@@ -106,7 +77,7 @@ package actor CloudKitCollectionControlTransport: CloudCollectionControlTranspor
 
   package func fetchControl() async throws -> CloudCollectionControlRecord? {
     do {
-      let record = try await retrying {
+      let record = try await retry.run(operationName: "control fetch") { [database, controlID] in
         try await database.record(for: CloudKitRecordMapper.recordID(for: controlID))
       }
       return try CloudCollectionControlCodec.decode(record, expectedID: controlID)
@@ -117,16 +88,14 @@ package actor CloudKitCollectionControlTransport: CloudCollectionControlTranspor
 
   package func createZones(_ zones: Set<CloudZoneID>) async throws {
     let allZones = zones.union([controlID.zone])
-    try await retrying {
+    try await retry.run(operationName: "control create zones") { [database] in
       let result = try await database.modifyRecordZones(
         saving: allZones.map {
           CKRecordZone(zoneID: CloudKitRecordMapper.zoneID(for: $0))
         },
         deleting: []
       )
-      for value in result.saveResults.values {
-        _ = try value.get()
-      }
+      try Self.requireZoneSuccess(result.saveResults)
     }
   }
 
@@ -140,7 +109,7 @@ package actor CloudKitCollectionControlTransport: CloudCollectionControlTranspor
       replacing: version
     )
     do {
-      let saved = try await retrying {
+      let saved = try await retry.run(operationName: "control save") { [database] in
         let result = try await database.modifyRecords(
           saving: [record],
           deleting: [],
@@ -161,22 +130,36 @@ package actor CloudKitCollectionControlTransport: CloudCollectionControlTranspor
   package func deleteZones(_ zones: Set<CloudZoneID>) async throws {
     guard !zones.isEmpty else { return }
     do {
-      try await retrying {
+      try await retry.run(operationName: "control delete zones") { [database] in
         let result = try await database.modifyRecordZones(
           saving: [],
           deleting: zones.map(CloudKitRecordMapper.zoneID(for:))
         )
-        for value in result.deleteResults.values {
-          do {
-            try value.get()
-          } catch let error as CKError where error.code == .zoneNotFound {
-            continue
-          }
-        }
+        try Self.requireZoneSuccess(result.deleteResults, ignoringMissingZones: true)
       }
     } catch let error as CKError where error.code == .zoneNotFound {
       return
     }
+  }
+
+  /// Preserve every item error so the retry owner sees the longest server delay.
+  package nonisolated static func requireZoneSuccess<Value>(
+    _ results: [CKRecordZone.ID: Result<Value, any Error>],
+    ignoringMissingZones: Bool = false
+  ) throws {
+    var failures: [CKRecordZone.ID: any Error] = [:]
+    for (id, result) in results {
+      guard case .failure(let error) = result else { continue }
+      if ignoringMissingZones, (error as? CKError)?.code == .zoneNotFound { continue }
+      failures[id] = error
+    }
+    guard !failures.isEmpty else { return }
+    if failures.count == 1, let error = failures.values.first { throw error }
+    throw CKError(_nsError: NSError(
+      domain: CKErrorDomain,
+      code: CKError.Code.partialFailure.rawValue,
+      userInfo: [CKPartialErrorsByItemIDKey: failures]
+    ))
   }
 
   private func conflictOrThrow(
@@ -188,23 +171,5 @@ package actor CloudKitCollectionControlTransport: CloudCollectionControlTranspor
     return .conflict(
       try CloudCollectionControlCodec.decode(server, expectedID: controlID)
     )
-  }
-
-  private func retrying<Value: Sendable>(
-    _ operation: () async throws -> Value
-  ) async throws -> Value {
-    var attempt = 1
-    while true {
-      do {
-        return try await operation()
-      } catch {
-        guard let delay = CloudKitRetryPolicy.delay(after: error, attempt: attempt) else {
-          CloudSyncDiagnostics.record(error, operation: "collection control")
-          throw error
-        }
-        attempt += 1
-        try await Task.sleep(for: delay)
-      }
-    }
   }
 }

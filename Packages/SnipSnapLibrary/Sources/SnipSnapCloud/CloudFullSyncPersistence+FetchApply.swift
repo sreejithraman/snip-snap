@@ -21,7 +21,8 @@ extension CloudFullSyncPersistence {
       expectedEngine: wire.engineState,
       local: local,
       stored: stored,
-      attachmentStorage: attachmentStorage
+      attachmentStorage: attachmentStorage,
+      recoveryEvents: try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
     ).plan(batch, outbound: outbound, rawBatchData: rawBatchData)
   }
 }

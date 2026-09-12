@@ -149,25 +149,46 @@ extension CloudFullSyncPersistenceTests {
     let pendingAfterAcceptance = try await reopenedStore.pendingChanges()
     let serverAfterAcceptance = await server.fullSnapshot(for: recordID)
     let acceptedDeletionCount = await server.acceptedDeletionCount()
-    let automaticSendResult = try await CloudFullRecordCollectionSyncDriver.automaticSentResult(
-      store: reopenedStore
-    )
+    let automaticSendResult = try await reopened.processAutomaticChanges().result
     XCTAssertTrue(settled.pendingDeletes.isEmpty)
     XCTAssertTrue(pendingAfterAcceptance.operations.isEmpty)
     XCTAssertNil(serverAfterAcceptance)
     XCTAssertEqual(acceptedDeletionCount, 1)
     XCTAssertEqual(automaticSendResult, .syncCompleted)
 
-    try await reopenedLibrary.recordCloudFullRecovery(CloudFullRecoveryInput(
-      namespaceKey: namespace.namespaceKey.rawValue,
-      batchID: UUID(),
-      kind: .retryableFetch,
-      outboundData: Data(),
-      resultData: Data()
-    ))
-    let automaticFetchResult = try await CloudFullRecordCollectionSyncDriver
-      .automaticFetchedResult(store: reopenedStore)
+    let fetchFailure = CloudFetchedBatch(id: UUID(), items: [],
+      databaseEvents: [.failed(nil, .networkUnavailable)], engineState: nil)
+    try await reopenedStore.stage(.fetched(fetchFailure))
+    try await reopenedStore.applyStaged(fetchFailure.id)
+    try await reopened.fetchRemote()
+    let automaticFetchResult = try await reopened.processAutomaticChanges().result
     XCTAssertEqual(automaticFetchResult, .syncCompleted)
+  }
+
+  func testUnattemptedSendDoesNotClearEarlierSendRecovery() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("CloudUnattemptedSend-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let namespace = makeNamespace()
+    let zone = try XCTUnwrap(namespace.zones.first)
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let store = CloudFullSyncPersistence(library: library, namespace: namespace, dataZone: zone)
+    let outbound = CloudOutboundBatch(operations: [])
+    let failed = CloudSentBatch(id: UUID(), items: [],
+      databaseEvents: [.failed(zone, .networkUnavailable)], engineState: nil)
+    try await store.stage(.sent(failed), outbound: outbound)
+    try await store.applyStaged(failed.id)
+    let deferred = CloudSentBatch(id: UUID(), items: [], engineState: nil)
+
+    try await store.stage(.sent(deferred), outbound: outbound)
+    try await store.applyStaged(deferred.id)
+
+    let pendingIssue = try await store.unresolvedSyncIssue()
+    XCTAssertEqual(pendingIssue, .waitingForConnection)
+    let accepted = CloudSentBatch(id: UUID(), items: [], databaseEvents: [.zoneSaved(zone)], engineState: nil)
+    try await store.stage(.sent(accepted), outbound: outbound)
+    try await store.applyStaged(accepted.id)
+    let recoveredIssue = try await store.unresolvedSyncIssue()
+    XCTAssertNil(recoveredIssue)
   }
 
   func testDomainReadFailureStopsBeforeAnyCloudSend() async throws {
@@ -613,8 +634,16 @@ extension CloudFullSyncPersistenceTests {
       snipDraft.id.name,
     ].sorted())
     try await persistence.applyStaged(valid.id)
+    let accepted = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
+    XCTAssertEqual(accepted.readyEntities.first(where: {
+      $0.reference == CloudEntityReference(kind: .snip, domainID: snip.id)
+    })?.dependencyListID, list.id)
+    XCTAssertEqual(accepted.readyEntities.first(where: {
+      $0.reference == CloudEntityReference(kind: .list, domainID: list.id)
+    })?.identity.recordName, listDraft.id.name)
     let local = await library.snapshot(sortedBy: .manual)
-    XCTAssertEqual(local.snips.first(where: { $0.id == snip.id })?.listID, list.id)
+    XCTAssertFalse(local.snips.contains { $0.id == snip.id })
+    XCTAssertFalse(local.lists.contains { $0.id == list.id })
 
     let malformed: [[CloudSendItemResult]] = [
       [.saved(listSnapshot)],
