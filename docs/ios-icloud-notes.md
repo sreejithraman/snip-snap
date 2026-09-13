@@ -188,8 +188,6 @@ Sources: [Shared data](https://developer.apple.com/documentation/technologyoverv
 
 Sources: [`CKAsset`](https://developer.apple.com/documentation/cloudkit/ckasset), [fetching selected record fields](https://developer.apple.com/documentation/cloudkit/ckfetchrecordsoperation/desiredkeys-34l1l), [private CloudKit storage](https://developer.apple.com/documentation/cloudkit/ckcontainer/privateclouddatabase), and [CloudKit limit errors](https://developer.apple.com/documentation/cloudkit/ckerror/limitexceeded).
 
-Full findings: [Optional iCloud sync policy research](icloud-sync-policy-research.md).
-
 ## Privacy and local search
 
 - Use CloudKit encrypted values for all user-derived record fields from the first production schema.
