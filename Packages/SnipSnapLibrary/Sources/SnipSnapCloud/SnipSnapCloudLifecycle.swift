@@ -102,6 +102,8 @@ public enum SnipSnapCloudSyncResult: Equatable, Sendable {
   case noChange
   case contentUpdated
   case libraryReplaced
+  case libraryReplacedWithSyncIssue(SyncedContentSyncIssue)
+  case libraryReplacedAndSyncCompleted
   case libraryReplacedAndSyncScheduled
   case iCloudDataReset
   case iCloudSignedOut
@@ -403,9 +405,31 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       }
       throw CloudCollectionError.syncNeedsAttention
     }
-    let status = try await coordinator.scheduleSynchronization(
-      retryingUserRecoverableFailures: retryingUserRecoverableFailures
-    )
+    let status: CloudCollectionStatus
+    do {
+      status = if retryingUserRecoverableFailures {
+        try await coordinator.retrySynchronization()
+      } else {
+        try await coordinator.scheduleSynchronization()
+      }
+    } catch let isolation as CloudAccountIsolationError {
+      await clearCollectionCoordinator()
+      return isolation.syncResult
+    } catch let account as ICloudAccountGateError
+      where account == .accountChanged || account == .noAccount
+    {
+      if let persistence {
+        let snapshot = try await persistence.snapshot()
+        if snapshot.activeStore.kind == .iCloudSync {
+          _ = try await persistence.isolateActiveCloudStore(
+            reason: account == .noAccount ? .signedOut : .accountChanged,
+            expectedStoreID: snapshot.activeStore.id
+          )
+        }
+      }
+      await clearCollectionCoordinator()
+      return account == .noAccount ? .iCloudSignedOut : .iCloudAccountChanged
+    }
     let result = syncResult(for: status)
     if result == .iCloudDataReset { await clearCollectionCoordinator() }
     return result

@@ -508,6 +508,116 @@ release_policy_require_matching_appcast_release() {
     }
 }
 
+release_policy_appcast_item_hashes() {
+    /usr/bin/ruby -rdigest -e '
+        INDENTATION = /\A[ \t]*\r?\n[ \t\r\n]*\z/
+        NAME = /[A-Za-z_:][A-Za-z0-9._:-]*/
+
+        def token_at(xml, offset)
+          return [:text, xml[offset..], xml.bytesize] unless xml.getbyte(offset) == 60
+
+          terminator = if xml.byteslice(offset, 9) == "<![CDATA["
+            "]]>"
+          elsif xml.byteslice(offset, 4) == "<!--"
+            "-->"
+          elsif xml.byteslice(offset, 2) == "<?"
+            "?>"
+          else
+            ">"
+          end
+          if terminator != ">"
+            end_offset = xml.index(terminator, offset + terminator.bytesize)
+            raise "unterminated XML token" unless end_offset
+            finish = end_offset + terminator.bytesize
+            return [:markup, xml[offset...finish], finish]
+          end
+
+          quote = nil
+          cursor = offset + 1
+          while cursor < xml.bytesize
+            character = xml.getbyte(cursor)
+            if quote
+              quote = nil if character == quote
+            elsif character == 34 || character == 39
+              quote = character
+            elsif character == 62
+              finish = cursor + 1
+              return [:markup, xml[offset...finish], finish]
+            end
+            cursor += 1
+          end
+          raise "unterminated XML tag"
+        end
+
+        def markup_type(markup)
+          return :other if markup.start_with?("<!--", "<![CDATA[", "<?", "<!")
+          return :end if markup.match?(/\A<\/[ \t]*#{NAME.source}/)
+          return :start if markup.match?(/\A<[ \t]*#{NAME.source}/)
+
+          :other
+        end
+
+        def markup_name(markup)
+          match = markup.match(/\A<\/?[ \t]*(#{NAME.source})/)
+          match && match[1]
+        end
+
+        def self_closing?(markup)
+          markup.match?(/\/[ \t\r\n]*>\z/)
+        end
+
+        xml = File.binread(ARGV.fetch(0))
+        offset = 0
+        item = nil
+        depth = 0
+
+        while offset < xml.bytesize
+          next_markup = xml.index("<", offset)
+          if !next_markup || next_markup > offset
+            finish = next_markup || xml.bytesize
+            text = xml[offset...finish]
+            item << text if item && !(depth == 1 && INDENTATION.match?(text))
+            offset = finish
+            next
+          end
+
+          type, markup, offset = token_at(xml, offset)
+          if type == :text
+            item << markup if item && !(depth == 1 && INDENTATION.match?(markup))
+            next
+          end
+
+          kind = markup_type(markup)
+          if item.nil?
+            next unless kind == :start && markup_name(markup) == "item"
+
+            item = markup.dup
+            if self_closing?(markup)
+              puts Digest::SHA256.hexdigest(item)
+              item = nil
+            else
+              depth = 1
+            end
+            next
+          end
+
+          item << markup
+          case kind
+          when :start
+            depth += 1 unless self_closing?(markup)
+          when :end
+            depth -= 1
+            if depth.zero?
+              puts Digest::SHA256.hexdigest(item)
+              item = nil
+            end
+          end
+        end
+
+        raise "unterminated appcast item" if item
+    ' "$1"
+}
+
 release_policy_require_preserved_appcast_items() {
     local old_appcast="$1"
     local new_appcast="$2"
@@ -520,15 +630,12 @@ release_policy_require_preserved_appcast_items() {
         release_policy_fail "missing generated appcast"
         return 1
     }
-    old_hashes="$(/usr/bin/perl -MDigest::SHA=sha256_hex -0ne \
-        'while (/<item\b.*?<\/item>/sg) { print sha256_hex($&), "\n" }' \
-        "$old_appcast")" || {
+    # Sparkle can reindent XML nodes without changing a release item.
+    old_hashes="$(release_policy_appcast_item_hashes "$old_appcast")" || {
         release_policy_fail "could not read prior appcast entries"
         return 1
     }
-    new_hashes="$(/usr/bin/perl -MDigest::SHA=sha256_hex -0ne \
-        'while (/<item\b.*?<\/item>/sg) { print sha256_hex($&), "\n" }' \
-        "$new_appcast")" || {
+    new_hashes="$(release_policy_appcast_item_hashes "$new_appcast")" || {
         release_policy_fail "could not read generated appcast entries"
         return 1
     }

@@ -33,6 +33,7 @@ package struct CloudFullSyncOutcome: Sendable {
   package let issue: SyncedContentSyncIssue?
   package let blocksOutbound: Bool
   package let result: SnipSnapCloudSyncResult
+  package let settled: Bool
 }
 
 /// Owns commit order, checkpoint durability, and the outcome of each request.
@@ -72,14 +73,16 @@ package actor CloudFullSyncCoordinator {
 
   @discardableResult
   package func sync() async throws -> CloudFullSyncOutcome {
-    try await run(fetch: true, send: true, beforeApply: {}, beforeSend: { _ in })
+    try await run(fetch: true, send: true, drainOutbound: false, inspectSettlement: false,
+      beforeApply: {}, beforeSend: { _ in })
   }
 
   @discardableResult
   package func fetchRemote(
     beforeApply: @escaping @Sendable () async throws -> Void = {}
   ) async throws -> CloudFullSyncOutcome {
-    try await run(fetch: true, send: false, beforeApply: beforeApply, beforeSend: { _ in })
+    try await run(fetch: true, send: false, drainOutbound: false, inspectSettlement: false,
+      beforeApply: beforeApply, beforeSend: { _ in })
   }
 
   @discardableResult
@@ -87,7 +90,17 @@ package actor CloudFullSyncCoordinator {
     beforeApply: @escaping @Sendable () async throws -> Void = {},
     beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void = { _ in }
   ) async throws -> CloudFullSyncOutcome {
-    try await run(fetch: false, send: true, beforeApply: beforeApply, beforeSend: beforeSend)
+    try await run(fetch: false, send: true, drainOutbound: false, inspectSettlement: true,
+      beforeApply: beforeApply, beforeSend: beforeSend)
+  }
+
+  @discardableResult
+  package func sendPendingUntilSettled(
+    beforeApply: @escaping @Sendable () async throws -> Void = {},
+    beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void = { _ in }
+  ) async throws -> CloudFullSyncOutcome {
+    try await run(fetch: false, send: true, drainOutbound: true, inspectSettlement: true,
+      beforeApply: beforeApply, beforeSend: beforeSend)
   }
 
   @discardableResult
@@ -96,7 +109,8 @@ package actor CloudFullSyncCoordinator {
     beforeStateSave: @escaping @Sendable () async throws -> Void = {}
   ) async throws -> CloudFullSyncOutcome {
     guard transport is any CloudAutomaticSyncScheduling else {
-      return try await run(fetch: true, send: true, beforeApply: beforeApply,
+      return try await run(fetch: true, send: true, drainOutbound: false,
+        inspectSettlement: false, beforeApply: beforeApply,
         beforeSend: { _ in try await beforeApply() })
     }
     return try await automaticWork(beforeApply: beforeApply, beforeStateSave: beforeStateSave,
@@ -176,17 +190,22 @@ package actor CloudFullSyncCoordinator {
   private func run(
     fetch: Bool,
     send: Bool,
+    drainOutbound: Bool,
+    inspectSettlement: Bool,
     beforeApply: @escaping @Sendable () async throws -> Void,
     beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void
   ) async throws -> CloudFullSyncOutcome {
     try await operationGate.withLease {
-      try await self.runSerially(fetch: fetch, send: send, beforeApply: beforeApply, beforeSend: beforeSend)
+      try await self.runSerially(fetch: fetch, send: send, drainOutbound: drainOutbound,
+        inspectSettlement: inspectSettlement, beforeApply: beforeApply, beforeSend: beforeSend)
     }
   }
 
   private func runSerially(
     fetch: Bool,
     send: Bool,
+    drainOutbound: Bool,
+    inspectSettlement: Bool,
     beforeApply: @escaping @Sendable () async throws -> Void,
     beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void
   ) async throws -> CloudFullSyncOutcome {
@@ -205,16 +224,21 @@ package actor CloudFullSyncCoordinator {
         try await applyReturned(.fetched(retry), outbound: nil, state: &state, beforeApply: beforeApply)
       }
     }
-    if send, !state.blocksOutbound, !requiresInitialFetch {
+    var sendCount = 0
+    while send, !state.blocksOutbound, !requiresInitialFetch {
       let outbound = try await pendingChangesOrResetEngine()
-      if !outbound.operations.isEmpty || !outbound.zonesToSave.isEmpty {
-        try await beforeSend(outbound)
-        let sent = try await transport.send(outbound)
-        try await applyReturned(.sent(sent), outbound: outbound, state: &state, beforeApply: beforeApply)
-      }
+      guard !outbound.operations.isEmpty || !outbound.zonesToSave.isEmpty else { break }
+      guard sendCount < 16 else { break }
+      try await beforeSend(outbound)
+      let sent = try await transport.send(outbound)
+      try await applyReturned(.sent(sent), outbound: outbound, state: &state, beforeApply: beforeApply)
+      sendCount += 1
+      guard drainOutbound else { break }
+      guard state.sendIssue == nil else { break }
     }
     try await drainEvents(state: &state, beforeApply: beforeApply, beforeStateSave: beforeApply)
-    return try await outcome(for: state, includeStoredStatus: false)
+    return try await outcome(for: state, includeStoredStatus: false,
+      inspectSettlement: inspectSettlement)
   }
 
   private func ensureStarted() async throws {
@@ -342,13 +366,23 @@ package actor CloudFullSyncCoordinator {
 
   private func outcome(
     for state: RunState,
-    includeStoredStatus: Bool = true
+    includeStoredStatus: Bool = true,
+    inspectSettlement: Bool = true
   ) async throws -> CloudFullSyncOutcome {
+    let currentStatus = if includeStoredStatus || inspectSettlement {
+      try await store.syncStatus()
+    } else if try await store.destructiveResetSignal() != nil {
+      CloudFullSyncStatus.purged
+    } else {
+      CloudFullSyncStatus.pending
+    }
     let stored: CloudFullSyncStatus
     if includeStoredStatus {
-      stored = try await store.syncStatus()
+      stored = currentStatus
+    } else if case .purged = currentStatus {
+      stored = .purged
     } else {
-      stored = try await store.destructiveResetSignal() == nil ? .pending : .purged
+      stored = .pending
     }
     let issue: SyncedContentSyncIssue?
     let result: SnipSnapCloudSyncResult
@@ -371,9 +405,11 @@ package actor CloudFullSyncCoordinator {
         result = .syncScheduled
       }
     }
+    let settled = if case .settled = currentStatus { !requiresInitialFetch } else { false }
     return CloudFullSyncOutcome(issue: issue,
       blocksOutbound: state.blocksOutbound || requiresInitialFetch || result == .iCloudDataReset,
-      result: result)
+      result: result,
+      settled: settled)
   }
 
   private func schedulePendingChanges(beforeSchedule: @Sendable () async throws -> Void) async throws {

@@ -1,8 +1,19 @@
 # 0028: Let CKSyncEngine schedule normal sync
 
-Launch, foreground, local edits, and Try Again request work from the existing `CKSyncEngine`. They do not start a second explicit fetch-and-send sequence. The sync session orders app requests and coalesces repeated requests; the record module owns the first-fetch check and durable stage, apply, and confirm work.
+Launch, foreground, and local edits request work from the existing
+`CKSyncEngine`. They do not start a second explicit fetch-and-send sequence.
+Try Again uses that same engine for one checked fetch, then sends each ready
+follow-up batch until work settles, a batch reports an issue, or the run reaches
+a fixed limit. It waits for that result. The sync session orders app requests and coalesces repeated
+requests; the record module owns the first-fetch check and durable stage, apply,
+and confirm work.
 
-This narrows the choice in [ADR 0016](0016-use-swiftdata-with-cksyncengine.md): explicit transfers remain available when a storage change needs a completed fetch or send. Normal sync accepts the engine's schedule and retry timing. Direct control-record, zone, and clipboard-history calls remain app-owned. Each request owner keeps its retry deadline across calls within a session, using the same retry module.
+This narrows the choice in [ADR 0016](0016-use-swiftdata-with-cksyncengine.md):
+explicit transfers remain available when a storage change or user retry needs a
+completed fetch or send. Normal sync accepts the engine's schedule and retry
+timing. Try Again does not bypass CloudKit retry delays. Direct control-record,
+zone, and clipboard-history calls remain app-owned. Each request owner keeps its
+retry deadline across calls within a session, using the same retry module.
 
 CloudKit delegate events enter one ordered queue. The record module commits
 fetched and sent batches before saving a later engine checkpoint. Delegate
@@ -90,6 +101,8 @@ using old recovery notes as the result of the current transfer. An explicit
 caller can cancel its wait for an active cycle without cancelling engine work
 or releasing other callers from that cycle.
 
-Scheduling work does not mean it reached iCloud. Settings clears a prior sync failure only after the record module reports settled work. Account isolation, sync generation checks, and the discard rule in [ADR 0024](0024-discard-cache-after-icloud-data-reset.md) still govern every apply and send.
+Scheduling work does not mean it reached iCloud. Settings clears a prior sync failure only after the record module reports settled work. If a retry adopts a new collection and finds a current issue, the app reloads that collection before it shows the issue. Account isolation, sync generation checks, and the discard rule in [ADR 0024](0024-discard-cache-after-icloud-data-reset.md) still govern every apply and send.
 
-We chose this over adding more retry checks to the old dual flow or routing every settings action through a general command framework. It puts ordering and recovery behind the sync module's existing interface without making callers learn CloudKit's state.
+We chose two clear actions: schedule background work, or await a user retry. This
+keeps ordering and recovery behind the sync module's existing interface without
+making callers learn CloudKit's state or adding a general command framework.

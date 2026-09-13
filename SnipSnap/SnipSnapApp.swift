@@ -294,14 +294,22 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 case .contentUpdated:
                     await model.reload()
                 case .syncCompleted:
+                    await model.reload()
                     cloudServices.syncedContentSettings.recordOutstandingSyncRecovered()
                 case .syncScheduled:
-                    return
+                    break
                 case .libraryReplaced:
                     try await reloadActiveLibrary()
+                case .libraryReplacedWithSyncIssue(let issue):
+                    try await reloadActiveLibrary()
+                    cloudServices.syncedContentSettings.recordSyncFailure(issue)
+                    return
+                case .libraryReplacedAndSyncCompleted:
+                    try await reloadActiveLibrary()
+                    cloudServices.syncedContentSettings.recordOutstandingSyncRecovered()
                 case .libraryReplacedAndSyncScheduled:
                     try await reloadActiveLibrary()
-                    return
+                    break
                 case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
                     await model.clipboardHistory.resetCloudAccount()
                     try await reloadActiveLibrary()
@@ -473,6 +481,22 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             model.clipboardHistory.requestSync()
         case .syncScheduled:
             break
+        case .libraryReplacedWithSyncIssue(let issue):
+            if let active = try? await cloudSyncSession?.activeLibrary() {
+                await model.replaceLibrary(
+                    active.library,
+                    recoveryScope: active.recoveryScope
+                )
+            }
+            syncedContentSettings.recordSyncFailure(issue)
+        case .libraryReplacedAndSyncCompleted:
+            if let active = try? await cloudSyncSession?.activeLibrary() {
+                await model.replaceLibrary(
+                    active.library,
+                    recoveryScope: active.recoveryScope
+                )
+            }
+            syncedContentSettings.recordOutstandingSyncRecovered()
         case .libraryReplacedAndSyncScheduled:
             if let active = try? await cloudSyncSession?.activeLibrary() {
                 await model.replaceLibrary(

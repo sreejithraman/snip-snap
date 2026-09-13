@@ -159,6 +159,7 @@ package enum CloudCollectionFetchResult: Equatable, Sendable {
 
 package enum CloudCollectionSendResult: Equatable, Sendable {
   case sent
+  case settled
   case purged
 }
 
@@ -178,9 +179,12 @@ package extension CloudCollectionSyncDriver {
 
 package enum CloudCollectionStatus: Equatable, Sendable {
   case on(CloudSyncNamespace)
+  case settled(CloudSyncNamespace)
   case scheduled(CloudSyncNamespace)
   case enabled(CloudSyncNamespace)
   case adoptedRemoteCollection(CloudSyncNamespace)
+  case adoptedRemoteCollectionWithIssue(CloudSyncNamespace, SyncedContentSyncIssue)
+  case adoptedRemoteCollectionSettled(CloudSyncNamespace)
   case adoptedRemoteCollectionScheduled(CloudSyncNamespace)
   case deletedSyncedContent(CloudSyncNamespace)
   case oldSyncedContentRemovalPending(CloudSyncNamespace)
@@ -408,11 +412,9 @@ package actor CloudCollectionCoordinator {
   }
 
   /// Checks the collection, then lets the record engine choose when to fetch and send.
-  package func scheduleSynchronization(
-    retryingUserRecoverableFailures: Bool = false
-  ) async throws -> CloudCollectionStatus {
+  package func scheduleSynchronization() async throws -> CloudCollectionStatus {
     try await synchronize(
-      retryingUserRecoverableFailures: retryingUserRecoverableFailures,
+      retryingUserRecoverableFailures: false,
       scheduleOnly: true
     )
   }
@@ -451,36 +453,12 @@ package actor CloudCollectionCoordinator {
     }
     let cleanedLocal = try await localStore.state()
     guard local.activeNamespace == remoteNamespace else {
-      if let prior = local.activeNamespace {
-        try await localStore.stageCleanup(prior.zones.subtracting(control.descriptor.zones))
-      }
-      try await localStore.adopt(remoteNamespace)
-      let result: CloudCollectionFetchResult
-      if scheduleOnly {
-        try await syncDriver.prepareAutomaticSync(context(control.descriptor))
-        result = try await localStore.state().activeNamespace == nil ? .purged : .fetched(nil)
-      } else {
-        result = try await syncDriver.fetch(context(control.descriptor))
-      }
-      if result == .purged {
-        try await localStore.markPurged()
-        return .purged
-      }
-      if let issue = result.issue { throw CloudSyncIssueError(issue) }
-      do {
-        try await cleanPendingZones(protecting: control.descriptor.zones)
-      } catch {
-        if (try await localStore.state()).deletionState == .pending {
-          return .oldSyncedContentRemovalPending(remoteNamespace)
-        }
-        throw error
-      }
-      return try await deletionStatusIfNeeded(
-        cleanedLocal.deletionState,
-        remoteNamespace,
-        fallback: scheduleOnly
-          ? .adoptedRemoteCollectionScheduled(remoteNamespace)
-          : .adoptedRemoteCollection(remoteNamespace)
+      return try await adoptRemoteCollection(
+        control.descriptor,
+        replacing: local.activeNamespace,
+        deletionState: cleanedLocal.deletionState,
+        scheduleOnly: scheduleOnly,
+        retryingUserRecoverableFailures: retryingUserRecoverableFailures
       )
     }
 
@@ -514,29 +492,12 @@ package actor CloudCollectionCoordinator {
       accountLineage: accountLineage
     )
     guard checkedNamespace == remoteNamespace else {
-      try await localStore.stageCleanup(
-        remoteNamespace.zones.subtracting(checked.descriptor.zones)
-      )
-      try await localStore.adopt(checkedNamespace)
-      let result = try await syncDriver.fetch(context(checked.descriptor))
-      if result == .purged {
-        try await localStore.markPurged()
-        return .purged
-      }
-      if let issue = result.issue { throw CloudSyncIssueError(issue) }
-      do {
-        try await cleanPendingZones(protecting: checked.descriptor.zones)
-      } catch {
-        if (try await localStore.state()).deletionState == .pending {
-          return .oldSyncedContentRemovalPending(checkedNamespace)
-        }
-        throw error
-      }
-      let state = try await localStore.state()
-      return try await deletionStatusIfNeeded(
-        state.deletionState,
-        checkedNamespace,
-        fallback: .adoptedRemoteCollection(checkedNamespace)
+      return try await adoptRemoteCollection(
+        checked.descriptor,
+        replacing: remoteNamespace,
+        deletionState: (try await localStore.state()).deletionState,
+        scheduleOnly: false,
+        retryingUserRecoverableFailures: retryingUserRecoverableFailures
       )
     }
     let sendResult = try await syncDriver.send(context(checked.descriptor))
@@ -546,11 +507,119 @@ package actor CloudCollectionCoordinator {
     }
     if let issue = fetchResult.issue { throw CloudSyncIssueError(issue) }
     let state = try await localStore.state()
+    let settled = retryingUserRecoverableFailures && sendResult == .settled
     return try await deletionStatusIfNeeded(
       state.deletionState,
       remoteNamespace,
-      fallback: .on(remoteNamespace)
+      fallback: settled ? .settled(remoteNamespace) : .on(remoteNamespace)
     )
+  }
+
+  private func adoptRemoteCollection(
+    _ initialDescriptor: CloudCollectionDescriptor,
+    replacing initialNamespace: CloudSyncNamespace?,
+    deletionState: CloudCollectionDeletionState,
+    scheduleOnly: Bool,
+    retryingUserRecoverableFailures: Bool
+  ) async throws -> CloudCollectionStatus {
+    var descriptor = initialDescriptor
+    var priorNamespace = initialNamespace
+    while true {
+      let namespace = descriptor.namespace(
+        cloudScope: cloudScope,
+        accountLineage: accountLineage
+      )
+      try await localStore.finishCleanup(descriptor.zones)
+      if let priorNamespace {
+        try await localStore.stageCleanup(priorNamespace.zones.subtracting(descriptor.zones))
+      }
+      try await localStore.adopt(namespace)
+      do {
+        if scheduleOnly {
+          try await syncDriver.prepareAutomaticSync(context(descriptor))
+          if try await localStore.state().activeNamespace == nil { return .purged }
+          return try await adoptedStatus(
+            namespace,
+            deletionState: deletionState,
+            fallback: .adoptedRemoteCollectionScheduled(namespace)
+          )
+        }
+
+        if retryingUserRecoverableFailures {
+          try await syncDriver.prepareManualRetry(context(descriptor))
+        }
+        let fetchResult = try await syncDriver.fetch(context(descriptor))
+        if fetchResult == .purged {
+          try await localStore.markPurged()
+          return .purged
+        }
+
+        var settled = false
+        if retryingUserRecoverableFailures {
+          guard let checked = try await transport.fetchControl() else {
+            try await localStore.markPurged()
+            return .purged
+          }
+          try validate(checked.descriptor)
+          let checkedNamespace = checked.descriptor.namespace(
+            cloudScope: cloudScope,
+            accountLineage: accountLineage
+          )
+          if checkedNamespace != namespace {
+            priorNamespace = namespace
+            descriptor = checked.descriptor
+            continue
+          }
+          let sendResult = try await syncDriver.send(context(descriptor))
+          if sendResult == .purged {
+            try await localStore.markPurged()
+            return .purged
+          }
+          settled = sendResult == .settled
+        }
+
+        let fallback: CloudCollectionStatus
+        if let issue = fetchResult.issue {
+          fallback = .adoptedRemoteCollectionWithIssue(namespace, issue)
+        } else if settled {
+          fallback = .adoptedRemoteCollectionSettled(namespace)
+        } else {
+          fallback = .adoptedRemoteCollection(namespace)
+        }
+        return try await adoptedStatus(
+          namespace,
+          deletionState: deletionState,
+          fallback: fallback
+        )
+      } catch let isolation as CloudAccountIsolationError {
+        throw isolation
+      } catch let account as ICloudAccountGateError
+        where account == .accountChanged || account == .noAccount
+      {
+        throw account
+      } catch {
+        return .adoptedRemoteCollectionWithIssue(
+          namespace,
+          SnipSnapCloudSyncIssueMapper.issue(for: error)
+        )
+      }
+    }
+  }
+
+  private func adoptedStatus(
+    _ namespace: CloudSyncNamespace,
+    deletionState: CloudCollectionDeletionState,
+    fallback: CloudCollectionStatus
+  ) async throws -> CloudCollectionStatus {
+    do {
+      try await cleanPendingZones(protecting: namespace.zones)
+    } catch {
+      if (try await localStore.state()).deletionState == .pending {
+        return .oldSyncedContentRemovalPending(namespace)
+      }
+      throw error
+    }
+    return try await deletionStatusIfNeeded(deletionState, namespace, fallback: fallback)
   }
 
   /// Explicit user intent is required before a missing control record may be recreated.

@@ -7,6 +7,160 @@ import XCTest
 @testable import SnipSnapPersistence
 
 extension CloudFullSyncPersistenceTests {
+  func testAwaitedRetryStopsAfterAListBatchMakesNoProgress() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudListNoProgress-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let namespace = makeNamespace()
+    let zone = try XCTUnwrap(namespace.zones.first)
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let persistence = CloudFullSyncPersistence(
+      library: library,
+      namespace: namespace,
+      dataZone: zone
+    )
+    try await persistence.approveEnrollment(references: [
+      CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
+    ])
+    let listID = CloudRecordID.list(SnipList.inbox.id, in: zone)
+    let server = FakeCloudServer()
+    let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+    await transport.failNextSentItem(listID, failure: .retryable)
+    let coordinator = CloudFullSyncCoordinator(store: persistence, transport: transport)
+
+    let outcome = try await coordinator.sendPendingUntilSettled()
+
+    let acceptedCount = await server.acceptedOperationCount(for: listID)
+    let pending = try await persistence.pendingChanges()
+    XCTAssertEqual(acceptedCount, 0)
+    XCTAssertEqual(pending.operations.map(\.id), [listID])
+    XCTAssertFalse(outcome.settled)
+  }
+
+  func testAwaitedRetryDoesNotResendARateLimitedPartialBatch() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudPartialRetryDelay-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let namespace = makeNamespace()
+    let zone = try XCTUnwrap(namespace.zones.first)
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let added = try await library.perform(
+      .add(
+        content: "Wait for CloudKit",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [],
+        requestID: UUID(),
+        now: Date(timeIntervalSince1970: 1)
+      ),
+      sortedBy: .manual
+    )
+    guard case .add(.added(let snipID)) = added.outcome else {
+      return XCTFail("Expected a Snip")
+    }
+    let persistence = CloudFullSyncPersistence(
+      library: library,
+      namespace: namespace,
+      dataZone: zone
+    )
+    try await persistence.approveEnrollment(references: [
+      CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
+      CloudEntityReference(kind: .snip, domainID: snipID),
+    ])
+    let snipIDInCloud = CloudRecordID.snip(snipID, in: zone)
+    let server = FakeCloudServer()
+    let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+    await transport.failNextSentItem(snipIDInCloud, failure: .rateLimited)
+    let coordinator = CloudFullSyncCoordinator(store: persistence, transport: transport)
+
+    let outcome = try await coordinator.sendPendingUntilSettled()
+
+    let sends = await transport.events().compactMap { event -> [CloudRecordID]? in
+      guard case .sent(let ids) = event else { return nil }
+      return ids
+    }
+    let pending = try await persistence.pendingChanges()
+    XCTAssertEqual(sends.count, 1)
+    XCTAssertEqual(pending.operations.map(\.id), [snipIDInCloud])
+    XCTAssertEqual(outcome.issue, .retryingSoon)
+    XCTAssertFalse(outcome.settled)
+  }
+
+  func testAwaitedRetrySendsANewerEditForTheSameRecordID() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudSameRecordFollowUp-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let namespace = makeNamespace()
+    let zone = try XCTUnwrap(namespace.zones.first)
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let added = try await library.perform(
+      .add(
+        content: "First",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [],
+        requestID: UUID(),
+        now: Date(timeIntervalSince1970: 1)
+      ),
+      sortedBy: .manual
+    )
+    guard case .add(.added(let snipID)) = added.outcome else {
+      return XCTFail("Expected a Snip")
+    }
+    let persistence = CloudFullSyncPersistence(
+      library: library,
+      namespace: namespace,
+      dataZone: zone
+    )
+    try await persistence.approveEnrollment(references: [
+      CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
+      CloudEntityReference(kind: .snip, domainID: snipID),
+    ])
+    let server = FakeCloudServer()
+    let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+    let coordinator = CloudFullSyncCoordinator(store: persistence, transport: transport)
+    _ = try await coordinator.sendPendingUntilSettled()
+    _ = try await library.perform(
+      .update(
+        id: snipID,
+        content: "Second",
+        attachmentURLs: nil,
+        expectedUpdatedAt: nil,
+        now: Date(timeIntervalSince1970: 2)
+      ),
+      sortedBy: .manual
+    )
+    await transport.pauseNextSend()
+    let sending = Task { try await coordinator.sendPendingUntilSettled() }
+    await transport.waitUntilSendPauses()
+    _ = try await library.perform(
+      .update(
+        id: snipID,
+        content: "Third",
+        attachmentURLs: nil,
+        expectedUpdatedAt: nil,
+        now: Date(timeIntervalSince1970: 3)
+      ),
+      sortedBy: .manual
+    )
+    await transport.resumeSend()
+
+    let outcome = try await sending.value
+    let recordID = CloudRecordID.snip(snipID, in: zone)
+    let storedSnapshot = await server.fullSnapshot(for: recordID)
+    let snapshot = try XCTUnwrap(storedSnapshot)
+    let record = try CloudFullRecordCodec.snip(from: snapshot)
+    let fields = try CloudFullSyncPersistence.snipFields(record)
+    let acceptedCount = await server.acceptedOperationCount(for: recordID)
+    let pending = try await persistence.pendingChanges()
+    XCTAssertEqual(fields.text, "Third")
+    XCTAssertEqual(acceptedCount, 3)
+    XCTAssertTrue(pending.operations.isEmpty)
+    XCTAssertTrue(outcome.settled)
+  }
+
   func testCorruptAcceptedShadowIsQuarantinedOnceWhenRemoteRecordIsAbsent() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CorruptAcceptedShadow-\(UUID().uuidString)")
@@ -321,7 +475,7 @@ extension CloudFullSyncPersistenceTests {
       store: persistence,
       transport: FakeCloudRecordTransport(server: server, namespace: namespace)
     )
-    try await coordinator.sendPending()
+    let retry = try await coordinator.sendPending()
 
     let issueAfterRetry = try await persistence.unresolvedSyncIssue()
     let pendingAfterRetry = try await persistence.pendingChanges()
@@ -329,6 +483,7 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertNil(issueAfterRetry)
     XCTAssertTrue(pendingAfterRetry.operations.isEmpty)
     XCTAssertEqual(acceptedCount, 1)
+    XCTAssertTrue(retry.settled)
   }
 
   func testManualRetryClearsMixedRetryableFailuresButKeepsBlockedFailures() async throws {

@@ -29,8 +29,16 @@ A skip or a prior run against changed code is not proof of the current change.
 
 - **First fetch:** the real transport withholds record writes until the initial
   fetch is confirmed. The contract creates its zone first, confirms queued
-  events, fetches, then writes records. Keep explicit contract transfers separate
-  from normal app scheduling described in ADR 0028.
+  events, fetches, then writes records. Keep explicit contract transfers and the
+  user-run Try Again path separate from normal app scheduling described in ADR
+  0028.
+- **Try Again:** this is an awaited fetch followed by all ready send steps on the
+  current engine, not a request to schedule later work. Test that launch and
+  foreground only schedule, while Try Again can finish a two-step attachment,
+  stops when a batch reports a retry issue, sends an edit made during an earlier
+  send, and returns its current result. When it
+  adopts a collection, test that the app reloads the new store before it reports
+  any current issue.
 - **Event order:** checkpoints can precede a returned batch. Confirm in order,
   stop at the target batch, and reject a different batch. A fresh engine can
   report initial sign-in; the contract validates the current account before

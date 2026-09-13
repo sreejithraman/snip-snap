@@ -20,6 +20,8 @@ func syncResult(for status: CloudCollectionStatus) -> SnipSnapCloudSyncResult {
     .syncScheduled
   case .on:
     .contentUpdated
+  case .settled:
+    .syncCompleted
   case .requiresEnable:
     .noChange
   case .oldSyncedContentRemovalPending:
@@ -28,6 +30,10 @@ func syncResult(for status: CloudCollectionStatus) -> SnipSnapCloudSyncResult {
     .oldSyncedContentRemovalCompleted
   case .enabled, .adoptedRemoteCollection:
     .libraryReplaced
+  case .adoptedRemoteCollectionWithIssue(_, let issue):
+    .libraryReplacedWithSyncIssue(issue)
+  case .adoptedRemoteCollectionSettled:
+    .libraryReplacedAndSyncCompleted
   case .adoptedRemoteCollectionScheduled:
     .libraryReplacedAndSyncScheduled
   case .purged:

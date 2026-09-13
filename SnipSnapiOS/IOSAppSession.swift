@@ -226,6 +226,26 @@ final class IOSAppSession {
             syncedContentSettings.recordOutstandingSyncRecovered()
         case .syncScheduled:
             break
+        case .libraryReplacedWithSyncIssue(let issue):
+            if let cloudSyncSession,
+               let active = try? await cloudSyncSession.iosActiveLibrary()
+            {
+                await model.replaceLibrary(
+                    active.library,
+                    recoveryScope: active.recoveryScope
+                )
+            }
+            syncedContentSettings.recordSyncFailure(issue)
+        case .libraryReplacedAndSyncCompleted:
+            if let cloudSyncSession,
+               let active = try? await cloudSyncSession.iosActiveLibrary()
+            {
+                await model.replaceLibrary(
+                    active.library,
+                    recoveryScope: active.recoveryScope
+                )
+            }
+            syncedContentSettings.recordOutstandingSyncRecovered()
         case .libraryReplacedAndSyncScheduled:
             if let cloudSyncSession,
                let active = try? await cloudSyncSession.iosActiveLibrary()
@@ -286,9 +306,10 @@ final class IOSAppSession {
             case .contentUpdated:
                 await model.load()
             case .syncCompleted:
+                await model.load()
                 settings.recordOutstandingSyncRecovered()
             case .syncScheduled:
-                return
+                break
             case .iCloudSyncSettingUp(let issue):
                 settings.recordEnableSettingUp(issue)
             case .iCloudSyncEnabled:
@@ -304,10 +325,19 @@ final class IOSAppSession {
                 } else if case .oldSyncedContentRemovalCompleted = result {
                     settings.recordRemovalPending(false)
                 }
+            case .libraryReplacedWithSyncIssue(let issue):
+                let active = try await session.iosActiveLibrary()
+                await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+                settings.recordSyncFailure(issue)
+                return
+            case .libraryReplacedAndSyncCompleted:
+                let active = try await session.iosActiveLibrary()
+                await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+                settings.recordOutstandingSyncRecovered()
             case .libraryReplacedAndSyncScheduled:
                 let active = try await session.iosActiveLibrary()
                 await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
-                return
+                break
             case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
                 clipboard.stop()
                 await clipboard.resetAccountBinding()

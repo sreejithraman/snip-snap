@@ -67,14 +67,14 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
 
   package func send(_ context: CloudCollectionSyncContext) async throws -> CloudCollectionSendResult {
     let owner = try await recordOwner(context)
-    let outcome = try await owner.coordinator.sendPending(
+    let outcome = try await owner.coordinator.sendPendingUntilSettled(
       beforeApply: { try await self.requireCurrent(owner.context) },
       beforeSend: { _ in try await self.requireCurrent(owner.context) }
     )
     try await requireActive(owner.context)
     if outcome.result == .iCloudDataReset { return .purged }
     if let issue = outcome.issue { throw CloudSyncIssueError(issue) }
-    return .sent
+    return outcome.settled ? .settled : .sent
   }
 
   package func prepareManualRetry(_ context: CloudCollectionSyncContext) async throws {
