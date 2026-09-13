@@ -490,6 +490,9 @@ extension CloudFullSyncPersistence {
   }
 
   package func loadEngineState() async throws -> CloudEngineStateEnvelope? {
+    if try await needsCorruptShadowRecovery(),
+      try await mutate({ try await self.prepareCorruptShadowRecovery() })
+    { return nil }
     let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey).engineState
     guard let stored else { return nil }
     let value: CloudEngineStateEnvelope
@@ -564,7 +567,10 @@ extension CloudFullSyncPersistence {
 
   private func clearRecoveredFailure(in batch: CloudFullBatchCommit) async throws {
     guard let rawData = batch.rawBatchData,
-      let raw = try? JSONDecoder().decode(RawStagedBatch.self, from: rawData),
+      let raw = try? JSONDecoder().decode(RawStagedBatch.self, from: rawData)
+    else { return }
+    try await resolveCorruptShadowsAfterFetch(raw.batch)
+    guard
       CloudSyncIssueError.issue(in: raw.batch) == nil,
       Self.destructiveResetReason(raw.batch) == nil
     else { return }

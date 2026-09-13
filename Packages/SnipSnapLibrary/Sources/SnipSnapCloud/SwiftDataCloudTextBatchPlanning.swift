@@ -407,11 +407,10 @@ extension SwiftDataCloudTextPersistence {
       _ stored: CloudTextStorageRecord
   ) throws -> CloudRecordShadow? {
       guard let data = stored.shadowData else { return nil }
-      let shadow = try CloudRecordShadow(data: data)
-      guard stored.systemFields == shadow.systemFields else {
+      guard let systemFields = stored.systemFields else {
           throw CloudRecordError.invalidShadow
       }
-      return shadow
+      return try CloudRecordShadow(data: data, systemFields: systemFields)
   }
 
   nonisolated static func encode(_ input: RecoveryInput) throws -> Data {

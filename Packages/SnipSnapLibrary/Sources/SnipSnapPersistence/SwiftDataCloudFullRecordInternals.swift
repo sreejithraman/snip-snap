@@ -221,8 +221,7 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
     let mutationMatchesReference = switch mutation {
     case .none:
       switch precondition {
-      case .none, .exactSnip, .exactList: true
-      case .requireMissing: false
+      case .none, .exactSnip, .exactList, .requireMissing: true
       }
     case .upsertSnip(let value):
       reference.kind == .snip && reference.domainID == value.snipID
@@ -253,6 +252,12 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
     switch (mutation, precondition) {
     case (.none, .none):
       return
+    case (.none, .requireMissing):
+      let exists = switch reference.kind {
+      case .snip: snips.contains { $0.id == reference.domainID }
+      case .list: lists.contains { $0.id == reference.domainID }
+      }
+      guard !exists else { throw CloudFullStorageError.staleLocalEntity }
     case (.none, .exactSnip(let expected)):
       guard let record = snips.first(where: { $0.id == expected.snipID }),
         try matches(record, expected: expected, metadata: metadata, context: context)

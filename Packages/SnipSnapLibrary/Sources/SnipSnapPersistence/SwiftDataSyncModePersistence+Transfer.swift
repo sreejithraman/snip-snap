@@ -123,7 +123,7 @@ extension SwiftDataSyncModePersistence {
     transition.freezeSnapshotTaken = true
     next.transition = transition
     try commit(next)
-    try readHook()
+    try await readHook()
     return try await libraryForTransition(storeID: token.sourceStoreID)
       .transferSnapshot(revision: token.revision)
   }

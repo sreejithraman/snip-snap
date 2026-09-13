@@ -4,6 +4,103 @@ import CryptoKit
 import Darwin
 
 final class FakeCloudRecordTransportTests: XCTestCase {
+    func testMetadataOnlyTransportCompletesInitialFetchWithinItsConfiguredZones() async throws {
+        let server = FakeCloudServer()
+        let metadata = CloudZoneID(name: "metadata", ownerName: "owner")
+        let payload = CloudZoneID(name: "payload", ownerName: "owner")
+        let namespace = CloudSyncNamespace(cloudScope: "test", accountLineage: "account",
+            generation: UUID(), zones: [metadata, payload])
+        let writer = FakeCloudRecordTransport(server: server)
+        let payloadID = CloudRecordID(zone: payload, name: "not-metadata")
+        _ = try await writer.send(CloudOutboundBatch(operations: [
+            .save(.text(id: payloadID, snipID: UUID(), text: "payload"))
+        ]))
+        let transport = FakeCloudRecordTransport(server: server, namespace: namespace,
+            automaticallyFetchedZones: [metadata])
+        try await transport.start(state: nil)
+
+        let initial = try await transport.fetch(scope: .all)
+
+        XCTAssertTrue(initial.isInitialFetch)
+        XCTAssertEqual(initial.engineState?.requiresInitialFetch, false)
+        XCTAssertEqual(initial.zoneEvents, [.fetched(metadata)])
+        XCTAssertTrue(initial.items.isEmpty)
+    }
+
+    func testFailedInitialZoneRetainsItsCursorUntilSuccessfulRefetch() async throws {
+        let server = FakeCloudServer()
+        let zone = CloudZoneID(name: "metadata", ownerName: "owner")
+        let namespace = CloudSyncNamespace(cloudScope: "test", accountLineage: "account",
+            generation: UUID(), zones: [zone])
+        let id = CloudRecordID(zone: zone, name: "record")
+        let writer = FakeCloudRecordTransport(server: server)
+        _ = try await writer.send(CloudOutboundBatch(operations: [
+            .save(.text(id: id, snipID: UUID(), text: "must refetch"))
+        ]))
+        let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        try await transport.start(state: nil)
+        await transport.failNextFetchedZone(zone, failure: .networkUnavailable)
+        let failed = try await transport.fetch(scope: .all)
+        XCTAssertTrue(failed.isInitialFetch)
+        XCTAssertEqual(failed.engineState?.requiresInitialFetch, true)
+        try await transport.confirmApplied(failed.id)
+
+        let retried = try await transport.fetch(scope: .all)
+
+        XCTAssertTrue(retried.isInitialFetch)
+        XCTAssertEqual(retried.engineState?.requiresInitialFetch, false)
+        XCTAssertEqual(retried.items.compactMap(\.id), [id])
+    }
+
+    func testPartialOrFailedInitialFetchKeepsReadinessBlocked() async throws {
+        let metadata = CloudZoneID(name: "metadata", ownerName: "owner")
+        let payload = CloudZoneID(name: "payload", ownerName: "owner")
+        let namespace = CloudSyncNamespace(cloudScope: "test", accountLineage: "account",
+            generation: UUID(), zones: [metadata, payload])
+        let transport = FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
+        try await transport.start(state: nil)
+        let partial = try await transport.fetch(scope: .zones([metadata]))
+        XCTAssertTrue(partial.isInitialFetch)
+        XCTAssertEqual(partial.engineState?.requiresInitialFetch, true)
+        try await transport.confirmApplied(partial.id)
+        await transport.failNextFetchedZone(payload, failure: .networkUnavailable)
+        let failed = try await transport.fetch(scope: .all)
+        XCTAssertTrue(failed.isInitialFetch)
+        XCTAssertEqual(failed.engineState?.requiresInitialFetch, true)
+        try await transport.confirmApplied(failed.id)
+        let complete = try await transport.fetch(scope: .all)
+        XCTAssertTrue(complete.isInitialFetch)
+        XCTAssertEqual(complete.engineState?.requiresInitialFetch, false)
+    }
+
+    func testInitialFetchEvidenceComesFromStateBeforeTheFetchAndResetsWithTheEngine() async throws {
+        let server = FakeCloudServer()
+        let zone = CloudZoneID(name: "metadata", ownerName: "owner")
+        let namespace = CloudSyncNamespace(cloudScope: "test", accountLineage: "account",
+            generation: UUID(), zones: [zone])
+        let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        try await transport.start(state: nil)
+        let zoneSave = try await transport.send(CloudOutboundBatch(operations: [], zonesToSave: [zone]))
+        try await transport.confirmApplied(zoneSave.id)
+        let initial = try await transport.fetch(scope: .all)
+        XCTAssertTrue(initial.isInitialFetch)
+        XCTAssertEqual(initial.engineState?.requiresInitialFetch, false)
+        try await transport.confirmApplied(initial.id)
+        let incremental = try await transport.fetch(scope: .all)
+        XCTAssertFalse(incremental.isInitialFetch)
+        XCTAssertTrue(incremental.zoneEvents.contains(.fetched(zone)))
+        try await transport.confirmApplied(incremental.id)
+        let reopened = FakeCloudRecordTransport(server: server, namespace: namespace)
+        try await reopened.start(state: incremental.engineState)
+        let restored = try await reopened.fetch(scope: .all)
+        XCTAssertFalse(restored.isInitialFetch)
+        try await reopened.confirmApplied(restored.id)
+        await reopened.reset()
+        try await reopened.start(state: nil)
+        let restarted = try await reopened.fetch(scope: .all)
+        XCTAssertTrue(restarted.isInitialFetch)
+    }
+
     func testCloudAssetCopyNeedsFileAccessWithoutDirectoryReadAccess() throws {
         if geteuid() == 0 { throw XCTSkip("Root bypasses directory permissions.") }
         let root = FileManager.default.temporaryDirectory

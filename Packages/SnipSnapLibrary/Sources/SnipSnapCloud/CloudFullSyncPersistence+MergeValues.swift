@@ -26,7 +26,6 @@ extension CloudFullSyncPersistence {
 
   private static func snapshot(_ entity: CloudAcceptedEntity) throws -> CloudRecordSnapshot {
     let shadow = try shadow(entity)
-    guard shadow.systemFields == entity.systemFields else { throw CloudRecordError.invalidShadow }
     let decoded = try CloudKitRecordMapper.snapshot(shadow.record())
     return CloudRecordSnapshot(
       id: decoded.id,
@@ -41,7 +40,7 @@ extension CloudFullSyncPersistence {
   }
 
   static func shadow(_ entity: CloudAcceptedEntity) throws -> CloudRecordShadow {
-    try CloudRecordShadow(data: entity.shadowData)
+    try CloudRecordShadow(data: entity.shadowData, systemFields: entity.systemFields)
   }
 
   static func snipFields(_ record: CloudTypedSnipRecord) throws -> CloudSnipMergeFields {

@@ -6,7 +6,8 @@ extension CloudFullSyncPersistence {
   package func outboundAdmission() async throws -> CloudRecordOutboundAdmission {
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     let recovery = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
-    return CloudRecordOutboundAdmission(blockedRecordIDs: try Self.failedFetchRecordIDs(recovery),
+    let archivedIDs = Set(unresolvedCorruptShadows(stored.quarantines).map { Self.recordID($0.identity) })
+    return CloudRecordOutboundAdmission(blockedRecordIDs: try Self.failedFetchRecordIDs(recovery).union(archivedIDs),
       blocksAll: stored.namespaceState.phase == .blocked || recovery.contains { $0.kind == .destructiveReset })
   }
 
@@ -37,7 +38,7 @@ extension CloudFullSyncPersistence {
     var issues = recovery.map(Self.storedSyncIssue(for:))
     if stored.namespaceState.phase == .blocked
       || !stored.conflicts.isEmpty
-      || !stored.quarantines.isEmpty
+      || hasUnresolvedQuarantines(stored.quarantines)
     {
       issues.append(.appDataIssue)
     }
@@ -52,6 +53,8 @@ extension CloudFullSyncPersistence {
   }
 
   private func prepareManualRetryWithinMutation() async throws -> Bool {
+    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
+    let corruptShadows = unresolvedCorruptShadows(stored.quarantines)
     let recovery = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
     let keys = Set(recovery.compactMap { event -> String? in
       guard event.kind == .terminalFetch || event.kind == .terminalSend,
@@ -66,7 +69,7 @@ extension CloudFullSyncPersistence {
       try await library.clearCloudFullRecoveryEvents(namespaceKey: namespaceKey, keys: keys)
     }
     try await library.clearManuallyRetryableCloudAttachmentFailures(namespaceKey: namespaceKey)
-    return recovery.contains(where: Self.hasFailedFetchRecords)
+    return !corruptShadows.isEmpty || recovery.contains(where: Self.hasFailedFetchRecords)
   }
 
   private static func syncIssue(for failure: CloudAttachmentFailure) -> SyncedContentSyncIssue {
@@ -142,6 +145,7 @@ extension CloudFullSyncPersistence {
     let snips = Dictionary(uniqueKeysWithValues: local.snips.map { ($0.id, $0) })
     let lists = Dictionary(uniqueKeysWithValues: local.lists.map { ($0.id, $0) })
     let conflicted = Set(stored.conflicts.map(\.reference))
+    let archivedReferences = Set(unresolvedCorruptShadows(stored.quarantines).map(\.reference))
     var eligible = stored.enrolledEntities
     if stored.namespaceState.phase == .active {
       eligible.formUnion(local.lists.map {
@@ -174,7 +178,8 @@ extension CloudFullSyncPersistence {
       return nil
     }))
     let newlyDeleted = eligible.compactMap { reference -> CloudPendingDelete? in
-      guard let base = accepted[reference] else { return nil }
+      guard !archivedReferences.contains(reference), !conflicted.contains(reference),
+        let base = accepted[reference] else { return nil }
       let isMissing = switch reference.kind {
       case .snip: snips[reference.domainID] == nil
       case .list: lists[reference.domainID] == nil
@@ -197,6 +202,7 @@ extension CloudFullSyncPersistence {
     var operations: [CloudOutboundOperation] = []
     var hasEligiblePayloadSave = false
     for reference in eligible.sorted(by: Self.referenceOrder) {
+      if archivedReferences.contains(reference) { continue }
       if pendingDeletes[reference] != nil {
         guard let base = accepted[reference] else { throw CloudTransportError.invalidRecord }
         operations.append(.delete(Self.recordID(base.identity), base: try Self.shadow(base)))

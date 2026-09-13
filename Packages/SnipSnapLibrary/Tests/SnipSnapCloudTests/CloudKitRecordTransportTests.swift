@@ -111,7 +111,7 @@ final class CloudKitRecordTransportTests: XCTestCase {
         XCTAssertEqual(first.namespaceKey, binding.namespaceKey)
     }
 
-    func testRejectsEngineStateFromAnotherNamespaceBeforeNetworkWork() async {
+    func testRejectsEngineStateFromAnotherNamespaceBeforeNetworkWork() {
         let zone = CloudZoneID(name: "metadata", ownerName: CKCurrentUserDefaultName)
         let expected = CloudSyncNamespace(
             cloudScope: "test-scope",
@@ -135,7 +135,7 @@ final class CloudKitRecordTransportTests: XCTestCase {
         }
     }
 
-    func testRejectsCorruptEngineStateBeforeNetworkWork() async {
+    func testRejectsCorruptEngineStateBeforeNetworkWork() {
         let zone = CloudZoneID(name: "metadata", ownerName: CKCurrentUserDefaultName)
         let namespace = CloudSyncNamespace(
             cloudScope: "test-scope",

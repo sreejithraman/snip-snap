@@ -332,7 +332,8 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
             return !Self.isRetryable(input) && !Self.isModeRetryDeletion(input)
         }
         let hasTerminalEvent = snapshot.recoveryEvents.contains { event in
-            !Self.isRetryable(Self.recoveryInput(event.payload))
+            let input = Self.recoveryInput(event.payload)
+            return !Self.isRetryable(input) && !Self.isSuccessfulEvent(input)
         }
         return CloudTextEnrollmentEvidence(
             phase: snapshot.namespaceState.phase,
@@ -344,6 +345,15 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
                 || hasTerminalEvent,
             blocksSending: snapshot.namespaceState.phase == .blocked
         )
+    }
+
+    private nonisolated static func isSuccessfulEvent(_ input: RecoveryInput?) -> Bool {
+        switch input {
+        case .zone(.fetched), .database(.zoneChanged), .database(.zoneSaved):
+            true
+        default:
+            false
+        }
     }
 
     package func currentModeSeedSettlement(

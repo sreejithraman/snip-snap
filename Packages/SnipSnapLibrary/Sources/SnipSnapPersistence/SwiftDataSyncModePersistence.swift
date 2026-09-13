@@ -148,7 +148,7 @@ package enum SyncModeWritePoint: Equatable, Sendable {
 package actor SwiftDataSyncModePersistence {
   package typealias ManifestWriter = @Sendable (Data, URL) throws -> Void
   package typealias WriteHook = @Sendable (SyncModeWritePoint) async throws -> Void
-  package typealias ReadHook = @Sendable () throws -> Void
+  package typealias ReadHook = @Sendable () async throws -> Void
   package typealias RecoveryQuarantineHook = @Sendable () throws -> Void
 
   struct Manifest: Codable, Equatable {
@@ -221,6 +221,10 @@ package actor SwiftDataSyncModePersistence {
   }
   var activeMutationWaiters: [ActiveMutationWaiter] = []
   var completedRecoveryQuarantineStoreIDs: Set<UUID> = []
+  // A checked read may suspend while another wrapper starts and finishes its
+  // own read. The newest started read whose result we have seen owns health.
+  var nextManagedReadAttempt: UInt64 = 0
+  var latestCompletedManagedReadAttempt: UInt64 = 0
 
   package init(
     rootURL: URL,

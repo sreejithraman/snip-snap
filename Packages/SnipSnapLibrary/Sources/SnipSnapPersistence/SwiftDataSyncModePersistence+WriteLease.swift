@@ -95,7 +95,7 @@ extension SwiftDataSyncModePersistence {
 
   fileprivate func managedSnapshot(sortedBy: SnipSortMode) async throws -> SnipLibrarySnapshot {
     await finishRecoveryQuarantines()
-    try readHook()
+    try await readHook()
     return try await libraryForTransition(storeID: manifest.activeStoreID)
       .checkedSnapshot(sortedBy: sortedBy)
   }
@@ -206,8 +206,31 @@ extension SwiftDataSyncModePersistence {
     }
   }
 
-  fileprivate func recordStoreReadFailure() {
+  fileprivate func beginManagedReadAttempt() -> UInt64 {
+    nextManagedReadAttempt += 1
+    return nextManagedReadAttempt
+  }
+
+  fileprivate func recordStoreReadFailure(at attempt: UInt64) {
+    guard completeManagedReadAttempt(attempt) else { return }
+    guard manifest.attentionReason == nil || manifest.attentionReason == .storeReadFailed else {
+      return
+    }
     try? recordAttention(.storeReadFailed)
+  }
+
+  fileprivate func clearRecoveredStoreReadFailure(at attempt: UInt64) throws {
+    guard completeManagedReadAttempt(attempt) else { return }
+    guard manifest.attentionReason == .storeReadFailed else { return }
+    var next = manifest
+    next.attentionReason = nil
+    try commit(next)
+  }
+
+  private func completeManagedReadAttempt(_ attempt: UInt64) -> Bool {
+    guard attempt > latestCompletedManagedReadAttempt else { return false }
+    latestCompletedManagedReadAttempt = attempt
+    return true
   }
   private func reconcileWriteReservation() throws {
     // A library read may recover an abandoned reservation, but it cannot release
@@ -246,14 +269,17 @@ private actor ModeManagedSnipLibrary: SnipLibrary {
   }
 
   func checkedSnapshot(sortedBy sortMode: SnipSortMode) async throws -> SnipLibrarySnapshot {
+    let attempt = await persistence.beginManagedReadAttempt()
+    let snapshot: SnipLibrarySnapshot
     do {
-      let snapshot = try await persistence.managedSnapshot(sortedBy: sortMode)
-      lastKnown = snapshot
-      return snapshot
+      snapshot = try await persistence.managedSnapshot(sortedBy: sortMode)
     } catch {
-      await persistence.recordStoreReadFailure()
+      await persistence.recordStoreReadFailure(at: attempt)
       throw error
     }
+    lastKnown = snapshot
+    try await persistence.clearRecoveredStoreReadFailure(at: attempt)
+    return snapshot
   }
 
   func perform(

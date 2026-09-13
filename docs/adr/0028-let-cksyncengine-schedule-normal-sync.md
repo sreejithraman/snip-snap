@@ -95,6 +95,16 @@ also retries records that have not changed on the server. Direct adapters may
 return a batch without queuing it; draining earlier checkpoints must still commit
 that returned batch exactly once.
 
+A bad accepted record keeps its exact CloudKit archive before the app drops the
+bad local shadow. Try Again records the exact candidates, restores missing
+accepted metadata without restoring local content, resets the engine, and does
+a full fetch. This keeps a local deletion intact. Only a clean batch that ends
+that first fetch can mark the recorded revisions as resolved. The archive bytes
+stay in an old-reader-safe row. A restart repeats the fetch, and a new archive
+revision needs its own fetch. A managed-store read fault works the same way at
+its smaller scope: a later checked read clears only `storeReadFailed`, while an
+older result and all other attention reasons cannot overwrite newer health.
+
 An explicit transfer carries its current fetch issue through the control check
 and send. It sends unrelated work when allowed, then reports that issue without
 using old recovery notes as the result of the current transfer. An explicit

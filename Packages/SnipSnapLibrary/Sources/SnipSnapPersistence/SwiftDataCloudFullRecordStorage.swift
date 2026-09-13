@@ -230,10 +230,8 @@ extension SwiftDataSnipLibrary {
         record.identity == value.identity,
         record.shadowData == value.shadowData
       else { throw CloudFullStorageError.staleAcceptedEntity }
-      let shadowDigest = SHA256.hash(data: value.shadowData).prefix(8)
-        .map { String(format: "%02x", $0) }
-        .joined()
-      let key = "corrupt-shadow-\(value.reference.kind.rawValue)-\(value.reference.domainID.uuidString.lowercased())-\(shadowDigest)"
+      let key = CloudStoredQuarantine.corruptShadowKey(
+        reference: value.reference, payload: value.shadowData)
       try Self.insertQuarantineIfNeeded(
         CloudQuarantineInput(
           key: key,
@@ -245,20 +243,104 @@ extension SwiftDataSnipLibrary {
         context: context
       )
       context.delete(record)
-      let pendingID = StoredCloudPendingDelete.domainKey(
-        namespaceKey: namespaceKey,
-        reference: value.reference
-      )
-      let pendingDeletes = try context.fetch(FetchDescriptor<StoredCloudPendingDelete>(
-        predicate: #Predicate { $0.id == pendingID }
-      ))
-      for pending in pendingDeletes {
-        context.delete(pending)
-      }
     }
     try afterMutationBeforeSave()
     try lock.check()
     try context.save()
+  }
+
+  /// Binds exact recovery revisions and restores only their missing accepted metadata.
+  /// Local content stays unchanged; existing accepted domain and identity slots always win.
+  package func beginCorruptCloudShadowRecovery(
+    namespaceKey: CloudSyncNamespaceKey,
+    candidates: [CloudCorruptShadowRecoveryCandidate]
+  ) throws {
+    guard !candidates.isEmpty else { return }
+    guard let container else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    let archives = try context.fetch(FetchDescriptor<StoredCloudMappingQuarantine>())
+    var accepted = try context.fetch(FetchDescriptor<StoredCloudEntityRecord>())
+    let candidateCounts = Dictionary(grouping: candidates, by: { $0.archive.reference }).mapValues(\.count)
+    for candidate in candidates {
+      let value = candidate.archive
+      guard value.format == .legacyBindingV1,
+        value.key == CloudStoredQuarantine.corruptShadowKey(reference: value.reference, payload: value.payload),
+        candidate.accepted.reference == value.reference,
+        candidate.accepted.identity == value.identity,
+        candidate.accepted.shadowData == value.payload,
+        let archive = archives.first(where: {
+          $0.id == StoredCloudMappingQuarantine.key(namespaceKey: namespaceKey.rawValue, key: value.key)
+        }), Self.quarantine(archive, matches: value, namespaceKey: namespaceKey.rawValue)
+      else { throw CloudFullStorageError.invalidConflictReplay }
+      let domain = StoredCloudEntityRecord.domainKey(namespaceKey: namespaceKey.rawValue, reference: value.reference)
+      let identity = StoredCloudEntityRecord.identityKey(namespaceKey: namespaceKey.rawValue, identity: value.identity)
+      if let current = accepted.first(where: { $0.id == domain || $0.identityID == identity }) {
+        guard current.id == domain, current.identityID == identity else { continue }
+      } else {
+        // Without a current base, several archived revisions have no safe order.
+        guard candidateCounts[value.reference] == 1 else { continue }
+        let restored = StoredCloudEntityRecord(namespaceKey: namespaceKey.rawValue,
+          value: candidate.accepted, isDeferred: false)
+        context.insert(restored)
+        accepted.append(restored)
+      }
+      try Self.insertQuarantineIfNeeded(value.corruptShadowRecoveryMarker,
+        namespaceKey: namespaceKey.rawValue, context: context)
+    }
+    try afterMutationBeforeSave()
+    try lock.check()
+    try context.save()
+  }
+
+  /// Moves each exact archive into its recovery marker in one store commit.
+  package func resolveCorruptCloudShadows(
+    namespaceKey: CloudSyncNamespaceKey,
+    expected: [CloudStoredQuarantine]
+  ) throws {
+    guard !expected.isEmpty else { return }
+    guard let container else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    let records = try context.fetch(FetchDescriptor<StoredCloudMappingQuarantine>())
+    for value in expected {
+      guard value.format == .legacyBindingV1,
+        value.key == CloudStoredQuarantine.corruptShadowKey(
+          reference: value.reference, payload: value.payload),
+        let record = records.first(where: {
+          $0.id == StoredCloudMappingQuarantine.key(namespaceKey: namespaceKey.rawValue, key: value.key)
+        }),
+        Self.quarantine(record, matches: value, namespaceKey: namespaceKey.rawValue),
+        let attempt = records.first(where: {
+          $0.id == StoredCloudMappingQuarantine.key(namespaceKey: namespaceKey.rawValue,
+            key: value.corruptShadowRecoveryMarker.key)
+        }), Self.quarantine(attempt, matches: value, namespaceKey: namespaceKey.rawValue)
+      else { throw CloudFullStorageError.invalidConflictReplay }
+      try Self.insertQuarantineIfNeeded(value.corruptShadowResolutionMarker,
+        namespaceKey: namespaceKey.rawValue, context: context)
+      context.delete(record)
+      context.delete(attempt)
+    }
+    try afterMutationBeforeSave()
+    try lock.check()
+    try context.save()
+  }
+
+  private static func quarantine(
+    _ record: StoredCloudMappingQuarantine,
+    matches value: CloudStoredQuarantine,
+    namespaceKey: String
+  ) -> Bool {
+    record.namespaceKey == namespaceKey
+      && record.kind == value.reference.kind.rawValue
+      && record.domainID == value.reference.domainID
+      && record.zoneName == value.identity.zoneName
+      && record.ownerName == value.identity.ownerName
+      && record.recordName == value.identity.recordName
+      && record.payload == value.payload
+      && record.format == value.format.rawValue
   }
 
   package func stageCloudPendingDeletes(

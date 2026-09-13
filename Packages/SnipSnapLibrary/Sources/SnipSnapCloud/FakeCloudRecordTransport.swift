@@ -380,7 +380,9 @@ package actor FakeCloudControlTransport: CloudCollectionControlTransport {
 package actor FakeCloudRecordTransport: CloudRecordTransport {
     private let server: FakeCloudServer
     private let namespace: CloudSyncNamespace?
+    private let automaticallyFetchedZones: Set<CloudZoneID>?
     private var started = false
+    private var requiresInitialFetch = true
     private var committedCursors: [CloudZoneID: Int] = [:]
     private var pending: CloudSyncBatch?
     private var nextFetchFailure: CloudTransportError?
@@ -388,6 +390,7 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
     private var nextSendFailure: CloudTransportError?
     private var nextAssetFailure: FakeCloudError?
     private var fetchItemFailures: [CloudRecordID: CloudOperationFailure] = [:]
+    private var fetchZoneFailures: [CloudZoneID: CloudOperationFailure] = [:]
     private var sendItemFailures: [CloudRecordID: CloudOperationFailure] = [:]
     private var nextOmittedSentResult: CloudRecordID?
     private var eventLog: [FakeCloudTransportEvent] = []
@@ -401,14 +404,20 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
     private var sendPauseWaiters: [CheckedContinuation<Void, Never>] = []
     private var sendRelease: CheckedContinuation<Void, Never>?
 
-    package init(server: FakeCloudServer, namespace: CloudSyncNamespace? = nil) {
+    package init(
+        server: FakeCloudServer,
+        namespace: CloudSyncNamespace? = nil,
+        automaticallyFetchedZones: Set<CloudZoneID>? = nil
+    ) {
         self.server = server
         self.namespace = namespace
+        self.automaticallyFetchedZones = automaticallyFetchedZones ?? namespace?.zones
     }
 
     package func start(state: CloudEngineStateEnvelope?) throws {
         guard !started else { return }
         eventLog.append(.started)
+        requiresInitialFetch = state == nil || state?.requiresInitialFetch == true
         guard let state else { committedCursors = [:]; started = true; return }
         if let namespace, state.namespace != namespace {
             throw CloudTransportError.stateNamespaceMismatch
@@ -424,8 +433,9 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
         started = true
     }
 
-    package func reset() {
+    package func reset() async {
         started = false
+        requiresInitialFetch = true
         committedCursors = [:]
         pending = nil
     }
@@ -469,6 +479,10 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
         fetchItemFailures[id] = failure
     }
 
+    package func failNextFetchedZone(_ zone: CloudZoneID, failure: CloudOperationFailure) {
+        fetchZoneFailures[zone] = failure
+    }
+
     package func failNextSentItem(
         _ id: CloudRecordID,
         failure: CloudOperationFailure
@@ -500,22 +514,44 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
             nextFetchFailure = nil
             throw failure
         }
-        let failures = fetchItemFailures
+        let requestedZones = automaticallyFetchedZones?.filter { scope.contains($0) }
+        let fetchScope = requestedZones.map(CloudFetchScope.zones) ?? scope
+        let failures = fetchItemFailures.filter { fetchScope.contains($0.key.zone) }
         fetchItemFailures = [:]
+        let zoneFailures = fetchZoneFailures.filter { fetchScope.contains($0.key) }
+        fetchZoneFailures = [:]
+        let isInitialFetch = requiresInitialFetch
         let result = await server.changes(
             after: committedCursors,
-            scope: scope,
+            scope: fetchScope,
             failures: failures
         )
+        let zoneEvents = requestedZones?.map { zone -> CloudZoneEvent in
+            if let failure = zoneFailures[zone] { return .failed(zone, failure) }
+            return .fetched(zone)
+        } ?? result.batch.zoneEvents
+        let completed = Set(zoneEvents.compactMap { event -> CloudZoneID? in
+            guard case .fetched(let zone) = event else { return nil }
+            return zone
+        })
+        if (automaticallyFetchedZones ?? completed).isSubset(of: completed),
+           !CloudSyncIssueError.blocksOutbound(in: .fetched(result.batch)), zoneFailures.isEmpty {
+            requiresInitialFetch = false
+        }
+        var cursors = result.cursors
+        for zone in zoneFailures.keys {
+            cursors[zone] = committedCursors[zone]
+        }
         let batch = CloudFetchedBatch(
             id: result.batch.id,
             items: result.batch.items,
             databaseEvents: result.batch.databaseEvents,
-            zoneEvents: result.batch.zoneEvents,
-            engineState: envelope(for: result.cursors)
+            zoneEvents: zoneEvents,
+            engineState: envelope(for: cursors),
+            isInitialFetch: isInitialFetch
         )
         pending = .fetched(batch)
-        pendingCursors = result.cursors
+        pendingCursors = cursors
         return batch
     }
 
@@ -600,7 +636,8 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
         guard let namespace,
               let serialization = try? JSONEncoder().encode(cursors)
         else { return nil }
-        return CloudEngineStateEnvelope(namespace: namespace, serialization: serialization)
+        return CloudEngineStateEnvelope(namespace: namespace, serialization: serialization,
+            requiresInitialFetch: requiresInitialFetch)
     }
 
     package func events() -> [FakeCloudTransportEvent] { eventLog }

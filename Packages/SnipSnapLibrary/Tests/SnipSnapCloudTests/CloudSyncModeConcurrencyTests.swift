@@ -111,6 +111,90 @@ extension ICloudSyncModeCoordinatorTests {
         let storage = try await persistence.snapshot()
         XCTAssertEqual(cached.snips.map(\.content), ["last known"])
         XCTAssertEqual(storage.attentionReason, .storeReadFailed)
+
+        failure.shouldFail = false
+        let recovered = try await library.checkedSnapshot(sortedBy: .chronological)
+        XCTAssertEqual(recovered.snips.map(\.content), ["last known"])
+        let recoveredStorage = try await persistence.snapshot()
+        XCTAssertNil(recoveredStorage.attentionReason)
+
+        let reopened = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            defaultSyncProtocol: .legacyTextV1
+        )
+        let reopenedStorage = try await reopened.snapshot()
+        XCTAssertNil(reopenedStorage.attentionReason)
+    }
+
+    func testSuccessfulManagedReadDoesNotClearAnotherAttentionReason() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            defaultSyncProtocol: .legacyTextV1
+        )
+        let library = try await persistence.activeLibrary()
+        try await persistence.recordAttention(.terminalFetchFailure)
+
+        _ = try await library.checkedSnapshot(sortedBy: .chronological)
+
+        let storage = try await persistence.snapshot()
+        XCTAssertEqual(storage.attentionReason, .terminalFetchFailure)
+    }
+
+    func testManagedReadFailureAndRecoveryDoNotClearAnotherAttentionReason() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let failure = ReadFailureInjector()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            defaultSyncProtocol: .legacyTextV1,
+            readHook: failure.check
+        )
+        let library = try await persistence.activeLibrary()
+        try await persistence.recordAttention(.terminalFetchFailure)
+        failure.shouldFail = true
+
+        do {
+            _ = try await library.checkedSnapshot(sortedBy: .chronological)
+            XCTFail("The checked read must report the store failure.")
+        } catch ReadFailureInjector.Failure.injected {}
+        let afterFailure = try await persistence.snapshot()
+        XCTAssertEqual(afterFailure.attentionReason, .terminalFetchFailure)
+
+        failure.shouldFail = false
+        _ = try await library.checkedSnapshot(sortedBy: .chronological)
+        let afterRecovery = try await persistence.snapshot()
+        XCTAssertEqual(afterRecovery.attentionReason, .terminalFetchFailure)
+    }
+
+    func testOlderManagedReadSuccessDoesNotClearNewerReadFailure() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let overlap = ReadHealthOverlapGate()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            defaultSyncProtocol: .legacyTextV1,
+            readHook: overlap.pauseFirstReadThenFailSecond
+        )
+        let fallback = try JSONSnipLibrary(fileURL: root.appendingPathComponent("fallback.json"))
+        let first = persistence.activeLibrary(fallback: fallback)
+        let firstRead = Task { try await first.checkedSnapshot(sortedBy: .chronological) }
+        await overlap.waitUntilFirstReadPauses()
+
+        let second = persistence.activeLibrary(fallback: fallback)
+        do {
+            _ = try await second.checkedSnapshot(sortedBy: .chronological)
+            XCTFail("The newer checked read must fail.")
+        } catch ReadHealthOverlapGate.Failure.injected {}
+        let failed = try await persistence.snapshot()
+        XCTAssertEqual(failed.attentionReason, .storeReadFailed)
+
+        await overlap.resumeFirstRead()
+        _ = try await firstRead.value
+
+        let afterOlderSuccess = try await persistence.snapshot()
+        XCTAssertEqual(afterOlderSuccess.attentionReason, .storeReadFailed)
     }
 
     func testTransferReadFaultNeverActivatesCandidateAndRestoresWritableSource() async throws {
@@ -405,4 +489,38 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(final.snips.map(\.content), ["committed before fence clear"])
     }
 
+}
+
+actor ReadHealthOverlapGate {
+    enum Failure: Error { case injected }
+
+    private var firstReadPaused = false
+    private var pauseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var release: CheckedContinuation<Void, Never>?
+    private var calls = 0
+
+    func pauseFirstReadThenFailSecond() async throws {
+        calls += 1
+        switch calls {
+        case 1:
+            firstReadPaused = true
+            pauseWaiters.forEach { $0.resume() }
+            pauseWaiters = []
+            await withCheckedContinuation { release = $0 }
+        case 2:
+            throw Failure.injected
+        default:
+            return
+        }
+    }
+
+    func waitUntilFirstReadPauses() async {
+        if firstReadPaused { return }
+        await withCheckedContinuation { pauseWaiters.append($0) }
+    }
+
+    func resumeFirstRead() {
+        release?.resume()
+        release = nil
+    }
 }
