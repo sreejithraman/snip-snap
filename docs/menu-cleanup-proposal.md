@@ -5,8 +5,6 @@ Date: 2026-09-05
 Status: First pass implemented on 2026-09-05. The table below records the
 pre-change source review. See the implementation notes for scope and checks.
 
-Apple sources and platform rules: [Menu platform guidance](menu-platform-guidance-research.md).
-
 ## Current behavior
 
 | Surface | Mac | iOS / iPadOS |
