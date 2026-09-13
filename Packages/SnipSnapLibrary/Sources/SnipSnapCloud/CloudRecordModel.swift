@@ -50,7 +50,9 @@ package struct CloudRecordShadow: Codable, Equatable, Sendable {
         systemFields = Self.encodeSystemFields(record)
     }
 
-    private init(data: Data, systemFields: Data) {
+    /// Stored system fields are an opaque local comparison token, not a stable archive encoding.
+    package init(data: Data, systemFields: Data) throws {
+        _ = try Self.unarchive(data)
         self.data = data
         self.systemFields = systemFields
     }
@@ -59,11 +61,7 @@ package struct CloudRecordShadow: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let data = try container.decode(Data.self, forKey: .data)
         let systemFields = try container.decode(Data.self, forKey: .systemFields)
-        let validated = try CloudRecordShadow(data: data)
-        guard validated.systemFields == systemFields else {
-            throw CloudRecordError.invalidShadow
-        }
-        self = validated
+        self = try CloudRecordShadow(data: data, systemFields: systemFields)
     }
 
     package func encode(to encoder: any Encoder) throws {
@@ -82,7 +80,7 @@ package struct CloudRecordShadow: Codable, Equatable, Sendable {
             withRootObject: record,
             requiringSecureCoding: true
         )
-        return CloudRecordShadow(data: data, systemFields: encodeSystemFields(record))
+        return try CloudRecordShadow(data: data, systemFields: encodeSystemFields(record))
     }
 
     package func record() throws -> CKRecord {
@@ -399,19 +397,36 @@ package struct CloudFetchedBatch: Codable, Equatable, Sendable {
     package let databaseEvents: [CloudDatabaseEvent]
     package let zoneEvents: [CloudZoneEvent]
     package let engineState: CloudEngineStateEnvelope?
+    package let isInitialFetch: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case id, items, databaseEvents, zoneEvents, engineState, isInitialFetch
+    }
 
     package init(
         id: UUID,
         items: [CloudFetchItemResult],
         databaseEvents: [CloudDatabaseEvent] = [],
         zoneEvents: [CloudZoneEvent] = [],
-        engineState: CloudEngineStateEnvelope?
+        engineState: CloudEngineStateEnvelope?,
+        isInitialFetch: Bool = false
     ) {
         self.id = id
         self.items = items
         self.databaseEvents = databaseEvents
         self.zoneEvents = zoneEvents
         self.engineState = engineState
+        self.isInitialFetch = isInitialFetch
+    }
+
+    package init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        items = try values.decode([CloudFetchItemResult].self, forKey: .items)
+        databaseEvents = try values.decode([CloudDatabaseEvent].self, forKey: .databaseEvents)
+        zoneEvents = try values.decode([CloudZoneEvent].self, forKey: .zoneEvents)
+        engineState = try values.decodeIfPresent(CloudEngineStateEnvelope.self, forKey: .engineState)
+        isInitialFetch = try values.decodeIfPresent(Bool.self, forKey: .isInitialFetch) ?? false
     }
 }
 

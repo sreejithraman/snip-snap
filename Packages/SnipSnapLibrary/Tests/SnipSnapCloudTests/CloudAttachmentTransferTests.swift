@@ -48,7 +48,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
     ])
     let sender = CloudFullSyncCoordinator(
       store: senderStore,
-      transport: FakeCloudRecordTransport(server: server, namespace: namespace),
+      transport: FakeCloudRecordTransport(
+        server: server,
+        namespace: namespace,
+        automaticallyFetchedZones: [dataZone]
+      ),
       fetchScope: .zones([dataZone])
     )
 
@@ -80,7 +84,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
       dataZone: dataZone,
       payloadZone: payloadZone
     )
-    let receiverTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
+    let receiverTransport = FakeCloudRecordTransport(
+      server: server,
+      namespace: namespace,
+      automaticallyFetchedZones: [dataZone]
+    )
     let receiver = CloudFullSyncCoordinator(
       store: receiverStore,
       transport: receiverTransport,
@@ -137,7 +145,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
       return XCTFail("Expected a saved snip")
     }
     let server = FakeCloudServer()
-    let offline = FakeCloudRecordTransport(server: server, namespace: namespace)
+    let offline = FakeCloudRecordTransport(
+      server: server,
+      namespace: namespace,
+      automaticallyFetchedZones: [dataZone]
+    )
     let firstStore = CloudFullSyncPersistence(
       library: try XCTUnwrap(library),
       namespace: namespace,
@@ -187,7 +199,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
     )
     let resumed = CloudFullSyncCoordinator(
       store: resumedStore,
-      transport: FakeCloudRecordTransport(server: server, namespace: namespace),
+      transport: FakeCloudRecordTransport(
+        server: server,
+        namespace: namespace,
+        automaticallyFetchedZones: [dataZone]
+      ),
       fetchScope: .zones([dataZone])
     )
     try await resumed.sync()
@@ -221,7 +237,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let publication = try XCTUnwrap(initial.publications.first)
     let payloadID = CloudAttachmentRecordCodec.recordID(publication.metadata.payloadIdentity)
     let server = FakeCloudServer()
-    let transport = FakeCloudRecordTransport(server: server, namespace: fixture.namespace)
+    let transport = FakeCloudRecordTransport(
+      server: server,
+      namespace: fixture.namespace,
+      automaticallyFetchedZones: [CloudZoneID(name: "data", ownerName: "owner")]
+    )
     await transport.failNextSentItem(payloadID, failure: .retryable)
     let coordinator = CloudFullSyncCoordinator(
       store: fixture.store,
@@ -284,7 +304,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
     ])
     let sync = CloudFullSyncCoordinator(
       store: store,
-      transport: FakeCloudRecordTransport(server: server, namespace: namespace),
+      transport: FakeCloudRecordTransport(
+        server: server,
+        namespace: namespace,
+        automaticallyFetchedZones: [dataZone]
+      ),
       fetchScope: .zones([dataZone])
     )
     try await sync.sync()
@@ -384,7 +408,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
       return XCTFail("Expected a saved snip")
     }
     let server = FakeCloudServer()
-    let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+    let transport = FakeCloudRecordTransport(
+      server: server,
+      namespace: namespace,
+      automaticallyFetchedZones: [dataZone]
+    )
     let store = CloudFullSyncPersistence(
       library: library,
       namespace: namespace,
@@ -479,7 +507,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
       return XCTFail("Expected a saved snip")
     }
     let server = FakeCloudServer()
-    let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+    let transport = FakeCloudRecordTransport(
+      server: server,
+      namespace: namespace,
+      automaticallyFetchedZones: [dataZone]
+    )
     let store = CloudFullSyncPersistence(
       library: library,
       namespace: namespace,
@@ -629,7 +661,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
     })
 
     let server = FakeCloudServer()
-    let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+    let transport = FakeCloudRecordTransport(
+      server: server,
+      namespace: namespace,
+      automaticallyFetchedZones: [dataZone]
+    )
     let sync = CloudFullSyncCoordinator(
       store: store,
       transport: transport,
@@ -687,7 +723,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
       return XCTFail("Expected a saved snip")
     }
     let server = FakeCloudServer()
-    let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+    let transport = FakeCloudRecordTransport(
+      server: server,
+      namespace: namespace,
+      automaticallyFetchedZones: [dataZone]
+    )
     let store = CloudFullSyncPersistence(
       library: library,
       namespace: namespace,
@@ -750,7 +790,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
       let retryable = try XCTUnwrap(publications.first)
       let terminal = try XCTUnwrap(publications.last)
       let server = FakeCloudServer()
-      let transport = FakeCloudRecordTransport(server: server, namespace: fixture.namespace)
+      let transport = FakeCloudRecordTransport(
+        server: server,
+        namespace: fixture.namespace,
+        automaticallyFetchedZones: [CloudZoneID(name: "data", ownerName: "owner")]
+      )
       await transport.failNextSentItem(
         CloudAttachmentRecordCodec.recordID(retryable.metadata.payloadIdentity),
         failure: .retryable
@@ -899,7 +943,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
       return XCTFail("Expected a saved snip")
     }
     let server = FakeCloudServer()
-    let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+    let transport = FakeCloudRecordTransport(
+      server: server,
+      namespace: namespace,
+      automaticallyFetchedZones: [dataZone]
+    )
     let store = CloudFullSyncPersistence(
       library: library,
       namespace: namespace,
@@ -1256,7 +1304,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
       return XCTFail("Expected a saved snip")
     }
     let server = FakeCloudServer()
-    let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+    let transport = FakeCloudRecordTransport(
+      server: server,
+      namespace: namespace,
+      automaticallyFetchedZones: [dataZone]
+    )
     let store = CloudFullSyncPersistence(
       library: library,
       namespace: namespace,
@@ -1366,7 +1418,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
       return XCTFail("Expected a saved snip")
     }
     let server = FakeCloudServer()
-    let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+    let transport = FakeCloudRecordTransport(
+      server: server,
+      namespace: namespace,
+      automaticallyFetchedZones: [dataZone]
+    )
     let store = CloudFullSyncPersistence(
       library: library,
       namespace: namespace,
@@ -1514,7 +1570,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
       }
       let server = FakeCloudServer()
       await server.emitZoneDeletion(dataZone, reason: reason)
-      let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+      let transport = FakeCloudRecordTransport(
+        server: server,
+        namespace: namespace,
+        automaticallyFetchedZones: [dataZone]
+      )
       let store = CloudFullSyncPersistence(
         library: library,
         namespace: namespace,
@@ -1582,7 +1642,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
     ])
     let sync = CloudFullSyncCoordinator(
       store: store,
-      transport: FakeCloudRecordTransport(server: server, namespace: namespace),
+      transport: FakeCloudRecordTransport(
+        server: server,
+        namespace: namespace,
+        automaticallyFetchedZones: [dataZone]
+      ),
       fetchScope: .zones([dataZone])
     )
     try await sync.sync()
@@ -1671,7 +1735,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
       dataZone: dataZone,
       payloadZone: payloadZone
     )
-    let transport = FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
+    let transport = FakeCloudRecordTransport(
+      server: FakeCloudServer(),
+      namespace: namespace,
+      automaticallyFetchedZones: [dataZone]
+    )
     let coordinator = CloudFullSyncCoordinator(
       store: persistence,
       transport: transport,
@@ -1737,7 +1805,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
       dataZone: dataZone,
       payloadZone: payloadZone
     )
-    let reader = FakeCloudRecordTransport(server: server, namespace: namespace)
+    let reader = FakeCloudRecordTransport(
+      server: server,
+      namespace: namespace,
+      automaticallyFetchedZones: [dataZone]
+    )
     let coordinator = CloudFullSyncCoordinator(
       store: persistence,
       transport: reader,
@@ -1846,7 +1918,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
     )
     let receiver = CloudFullSyncCoordinator(
       store: receiverStore,
-      transport: FakeCloudRecordTransport(server: server, namespace: namespace),
+      transport: FakeCloudRecordTransport(
+        server: server,
+        namespace: namespace,
+        automaticallyFetchedZones: [dataZone]
+      ),
       fetchScope: .zones([dataZone])
     )
     try await receiver.fetchRemote()
@@ -2210,7 +2286,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
     ])
     let sync = CloudFullSyncCoordinator(
       store: store,
-      transport: FakeCloudRecordTransport(server: server, namespace: namespace),
+      transport: FakeCloudRecordTransport(
+        server: server,
+        namespace: namespace,
+        automaticallyFetchedZones: [dataZone]
+      ),
       fetchScope: .zones([dataZone])
     )
 

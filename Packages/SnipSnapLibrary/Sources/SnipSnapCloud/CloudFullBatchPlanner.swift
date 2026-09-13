@@ -185,6 +185,13 @@ struct CloudFullBatchPlanner {
       }
       enrollment.insert(accepted.reference)
     }
+    // A quarantined row can leave enrollment without either a local item or a base.
+    // Keep its archive, but defer enrollment until a checked base supplies its list.
+    let localSnipIDs = Set(local.snips.map(\.id))
+    enrollment = Set(enrollment.filter { reference in
+      reference.kind != .snip || acceptedAfterBatch[reference] != nil
+        || localSnipIDs.contains(reference.domainID)
+    })
     return CloudFullBatchCommit(
       namespaceKey: namespaceKey.rawValue,
       batchID: batch.id,
@@ -310,6 +317,7 @@ struct CloudFullBatchPlanner {
             accepted: input,
             expectedLocalRevision: base.localRevision,
             expectedSystemFields: base.systemFields,
+            localPrecondition: .requireMissing,
             localMutation: .none,
             conflict: nil,
             quarantine: nil
@@ -319,6 +327,7 @@ struct CloudFullBatchPlanner {
           accepted: input,
           expectedLocalRevision: base.localRevision,
           expectedSystemFields: base.systemFields,
+          localPrecondition: .requireMissing,
           localMutation: .none,
           conflict: CloudConflictInput(
             key: CloudConflictKey.make(
@@ -424,6 +433,7 @@ struct CloudFullBatchPlanner {
           accepted: input,
           expectedLocalRevision: base.localRevision,
           expectedSystemFields: base.systemFields,
+          localPrecondition: .requireMissing,
           localMutation: .none,
           conflict: nil,
           quarantine: nil
@@ -433,6 +443,7 @@ struct CloudFullBatchPlanner {
         accepted: input,
         expectedLocalRevision: base.localRevision,
         expectedSystemFields: base.systemFields,
+        localPrecondition: .requireMissing,
         localMutation: .none,
         conflict: CloudConflictInput(
           key: CloudConflictKey.make(
@@ -514,7 +525,7 @@ struct CloudFullBatchPlanner {
         acceptedAction: .remove,
         expectedLocalRevision: accepted.localRevision,
         expectedSystemFields: accepted.systemFields,
-        localPrecondition: current.map { .exactSnip(CloudLocalSnipMutation($0)) } ?? .none,
+        localPrecondition: current.map { .exactSnip(CloudLocalSnipMutation($0)) } ?? .requireMissing,
         localMutation: {
           guard let current else { return .none }
           guard let recovered else { return .removeSnip(accepted.reference.domainID) }
@@ -548,7 +559,7 @@ struct CloudFullBatchPlanner {
         acceptedAction: .remove,
         expectedLocalRevision: accepted.localRevision,
         expectedSystemFields: accepted.systemFields,
-        localPrecondition: current.map { .exactList(CloudLocalListMutation($0)) } ?? .none,
+        localPrecondition: current.map { .exactList(CloudLocalListMutation($0)) } ?? .requireMissing,
         localMutation: current.map { list in
           moved.isEmpty
             ? .removeList(list.id)
@@ -580,7 +591,7 @@ struct CloudFullBatchPlanner {
     )
   }
 
-  private static func acceptedInput(
+  static func acceptedInput(
     _ record: CloudTypedSnipRecord,
     snapshot: CloudRecordSnapshot
   ) throws -> CloudAcceptedEntityInput {
@@ -596,7 +607,7 @@ struct CloudFullBatchPlanner {
     )
   }
 
-  private static func acceptedInput(
+  static func acceptedInput(
     _ record: CloudTypedListRecord,
     snapshot: CloudRecordSnapshot
   ) throws -> CloudAcceptedEntityInput {

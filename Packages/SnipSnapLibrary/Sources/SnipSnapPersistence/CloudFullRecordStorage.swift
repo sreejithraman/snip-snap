@@ -160,6 +160,33 @@ package struct CloudStoredQuarantine: Equatable, Sendable {
   package let identity: CloudTextStorageIdentity
   package let format: CloudConflictFormat
   package let payload: Data
+
+  package static func corruptShadowKey(reference: CloudEntityReference, payload: Data) -> String {
+    let digest = SHA256.hash(data: payload).prefix(8)
+      .map { String(format: "%02x", $0) }.joined()
+    return "corrupt-shadow-\(reference.kind.rawValue)-\(reference.domainID.uuidString.lowercased())-\(digest)"
+  }
+
+  /// Uses a known format so older readers can still open the store.
+  package var corruptShadowResolutionMarker: CloudQuarantineInput {
+    CloudQuarantineInput(key: "resolved-\(key)", reference: reference,
+      identity: identity, format: .legacyBindingV1, payload: payload)
+  }
+
+  package var corruptShadowRecoveryMarker: CloudQuarantineInput {
+    CloudQuarantineInput(key: "recovering-\(key)", reference: reference,
+      identity: identity, format: .legacyBindingV1, payload: payload)
+  }
+}
+
+package struct CloudCorruptShadowRecoveryCandidate: Sendable {
+  package let archive: CloudStoredQuarantine
+  package let accepted: CloudAcceptedEntityInput
+
+  package init(archive: CloudStoredQuarantine, accepted: CloudAcceptedEntityInput) {
+    self.archive = archive
+    self.accepted = accepted
+  }
 }
 
 package struct CloudDormantBase: Equatable, Sendable {

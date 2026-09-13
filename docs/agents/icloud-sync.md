@@ -55,6 +55,21 @@ A skip or a prior run against changed code is not proof of the current change.
   before diagnosing an app failure. The original live test failed because its
   startup sequence was wrong; the expanded test then found a real file-access
   bug. A harness failure and an app failure need different fixes.
+- **Recovered reads:** `storeReadFailed` records the current store health, not a
+  past fault. A later checked read clears only that flag. When reads overlap,
+  use their start order: an older result must not overwrite a newer one. Keep
+  other attention reasons until the step that owns them proves recovery.
+- **Corrupt accepted records:** keep the archived record bytes, reset the engine
+  on Try Again, and fetch the full zone. Before that fetch, record the exact
+  archive revisions and restore only missing accepted metadata. Never restore
+  local content. This keeps a local deletion as a deletion; a changed server
+  record must use the normal delete-conflict path. Mark only the recorded,
+  valid `corrupt-shadow-*` revisions as resolved, and only after CloudKit ends
+  the first full fetch with no issue. Keep the attempt and resolved markers in
+  formats older builds can read, and keep the archive bytes exact. A restart
+  must resume the full fetch, while a new archive revision must start its own.
+  Do not treat the broad `legacyBindingV1` label as proof: old builds also used
+  it for corrupt canonical records.
 - **Cleanup:** the contract deletes only its unique test zone and checks that it
   is gone. A killed process cannot run cleanup, and an account change can block
   it. If cleanup fails, preserve the reported zone and account context. Confirm

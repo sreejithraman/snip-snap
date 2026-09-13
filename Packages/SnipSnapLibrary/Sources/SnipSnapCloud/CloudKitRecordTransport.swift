@@ -28,6 +28,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
     private var fetchCycleInProgress = false
     private var sendCycleInProgress = false
     private var requiresInitialFetch = true
+    private var fetchCycleWasInitial = false
 
     package init(
         database: CKDatabase,
@@ -83,7 +84,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         self.recordSendGate = recordSendGate
     }
 
-    package func reset() {
+    package func reset() async {
         engine = nil
         currentSerialization = nil
         currentFetchZones = []
@@ -103,6 +104,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         fetchCycleInProgress = false
         sendCycleInProgress = false
         requiresInitialFetch = true
+        fetchCycleWasInitial = false
         resumeCycleWaiters()
     }
 
@@ -132,6 +134,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         isPerformingSyncOperation = true
         defer { if self.engine === engine { isPerformingSyncOperation = false } }
         explicitFetchedBatch = nil
+        fetchCycleWasInitial = requiresInitialFetch
         currentFetchZones = automaticallyFetchedZones.filter { scope.contains($0) }
             .map(CloudKitRecordMapper.zoneID(for:))
         defer {
@@ -388,6 +391,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         case .willFetchChanges:
             if cycleCompletion == nil { cycleCompletion = CloudRecordCycleCompletion() }
             fetchCycleInProgress = true
+            fetchCycleWasInitial = requiresInitialFetch
         case .didFetchChanges:
             fetchCycleInProgress = false
             finishFetchCycle()
@@ -523,8 +527,10 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         updateInitialFetchReadiness()
         let batch = CloudFetchedBatch(
             id: fetchedBatchID, items: fetchedItems, databaseEvents: fetchedDatabaseEvents,
-            zoneEvents: fetchedZoneEvents, engineState: sendCycleInProgress ? nil : envelope()
+            zoneEvents: fetchedZoneEvents, engineState: sendCycleInProgress ? nil : envelope(),
+            isInitialFetch: fetchCycleWasInitial
         )
+        fetchCycleWasInitial = false
         fetchedItems = []
         fetchedDatabaseEvents = []
         fetchedZoneEvents = []

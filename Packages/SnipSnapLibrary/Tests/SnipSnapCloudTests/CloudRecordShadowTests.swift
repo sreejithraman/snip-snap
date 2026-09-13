@@ -3,6 +3,31 @@ import CloudKit
 import XCTest
 
 final class CloudRecordShadowTests: XCTestCase {
+    func testOldFetchedBatchesDoNotClaimInitialFetchEvidence() throws {
+        let batch = CloudFetchedBatch(id: UUID(), items: [], engineState: nil, isInitialFetch: true)
+        let encoded = try JSONEncoder().encode(batch)
+        XCTAssertTrue(try JSONDecoder().decode(CloudFetchedBatch.self, from: encoded).isInitialFetch)
+        var old = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        old.removeValue(forKey: "isInitialFetch")
+        let decoded = try JSONDecoder().decode(CloudFetchedBatch.self,
+            from: JSONSerialization.data(withJSONObject: old))
+        XCTAssertFalse(decoded.isInitialFetch)
+        XCTAssertEqual(decoded.id, batch.id)
+    }
+
+    func testStoredSystemFieldsSurviveCodableRoundTripWithoutRearchivingComparison() throws {
+        let record = CKRecord(recordType: "Snip")
+        let archive = try CloudRecordShadow.archive(record)
+        let token = Data("opaque prior system-fields archive".utf8)
+        let restored = try CloudRecordShadow(data: archive.data, systemFields: token)
+        let decoded = try JSONDecoder().decode(CloudRecordShadow.self,
+            from: JSONEncoder().encode(restored))
+        XCTAssertEqual(decoded.data, archive.data)
+        XCTAssertEqual(decoded.systemFields, token)
+        XCTAssertEqual(try decoded.record().recordID, record.recordID)
+        XCTAssertThrowsError(try CloudRecordShadow(data: Data("invalid".utf8), systemFields: token))
+    }
+
     func testReopenedShadowKeepsFutureFieldsAndConditionalSystemData() throws {
         let zoneID = CKRecordZone.ID(zoneName: "metadata", ownerName: "owner")
         let recordID = CKRecord.ID(recordName: "opaque-record", zoneID: zoneID)

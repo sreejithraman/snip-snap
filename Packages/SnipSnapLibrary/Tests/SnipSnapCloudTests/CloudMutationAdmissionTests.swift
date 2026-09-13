@@ -27,12 +27,31 @@ final class CloudMutationAdmissionTests: XCTestCase {
 
     try await enqueueAutomaticWork(fixture)
     try await waitForQueuedMutations(fixture.persistence, count: 1)
-    let beforeRelease = try await fixture.store.loadEngineState()
-    XCTAssertNil(beforeRelease)
+    let readCompleted = expectation(description: "Engine state reads while attachment holds admission")
+    let reading = Task {
+      let state = try await fixture.store.loadEngineState()
+      readCompleted.fulfill()
+      return state
+    }
+    await fulfillment(of: [readCompleted], timeout: 2)
     await pause.resume()
+    let beforeRelease = try await reading.value
+    XCTAssertNil(beforeRelease)
     _ = try await attachment.value
     await fulfillment(of: [completion], timeout: 2)
     try await assertAutomaticWorkCommitted(fixture)
+  }
+
+  func testEngineStateReadWithoutRecoveryDoesNotReserveAMutation() async throws {
+    let fixture = try await AdmissionFixture.make()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    try await fixture.store.saveEngineState(fixture.checkpoint)
+    let before = try await fixture.persistence.snapshot()
+    let loaded = try await fixture.store.loadEngineState()
+    let after = try await fixture.persistence.snapshot()
+    XCTAssertEqual(loaded, fixture.checkpoint)
+    XCTAssertEqual(after.activeStore.revision, before.activeStore.revision)
+    XCTAssertFalse(after.hasActiveMutationReservation)
   }
 
   func testManagedEditAndImportReleaseContinueAutomaticWorkWithoutAnotherEvent() async throws {

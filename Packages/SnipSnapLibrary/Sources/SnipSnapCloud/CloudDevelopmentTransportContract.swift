@@ -153,7 +153,7 @@ public enum CloudDevelopmentTransportContract {
     }
     try await step("\(name): initial fetch") {
       let fetched = try await transport.fetch(scope: .all)
-      guard fetched.zoneEvents.contains(.fetched(zone)),
+      guard fetched.isInitialFetch, fetched.zoneEvents.contains(.fetched(zone)),
             !CloudSyncIssueError.blocksOutbound(in: .fetched(fetched)) else {
         throw ContractError.initialFetchFailed
       }

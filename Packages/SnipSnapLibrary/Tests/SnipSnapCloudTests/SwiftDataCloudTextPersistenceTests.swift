@@ -1,9 +1,149 @@
 import SnipSnapCore
-import SnipSnapPersistence
+import SwiftData
 @testable import SnipSnapCloud
+@testable import SnipSnapPersistence
 import XCTest
 
 final class SwiftDataCloudTextPersistenceTests: XCTestCase {
+    func testSuccessfulZoneEventsDoNotRequireAttentionButFailedEventsDo() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("snips.store"))
+        let namespace = makeNamespace()
+        let zone = try XCTUnwrap(namespace.zones.first)
+        let bridge = SwiftDataCloudTextPersistence(library: library, namespace: namespace, textZone: zone)
+        let fetched = CloudFetchedBatch(id: UUID(), items: [],
+            databaseEvents: [.zoneChanged(zone)], zoneEvents: [.fetched(zone)], engineState: nil)
+        try await bridge.stage(.fetched(fetched))
+        try await bridge.applyStaged(fetched.id)
+        let saved = CloudSentBatch(id: UUID(), items: [],
+            databaseEvents: [.zoneSaved(zone)], engineState: nil)
+        try await bridge.stage(.sent(saved))
+        try await bridge.applyStaged(saved.id)
+        let success = try await bridge.enrollmentEvidence()
+        XCTAssertFalse(success.needsAttention)
+        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.recoveryEvents.count, 3)
+
+        let failed = CloudFetchedBatch(id: UUID(), items: [],
+            zoneEvents: [.failed(zone, .accessDenied)], engineState: nil)
+        try await bridge.stage(.fetched(failed))
+        try await bridge.applyStaged(failed.id)
+        let failure = try await bridge.enrollmentEvidence()
+        XCTAssertTrue(failure.needsAttention)
+    }
+
+    func testAlreadyStoredSuccessfulZoneEventsDoNotRequireAttention() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("snips.store"))
+        let namespace = makeNamespace()
+        let zone = try XCTUnwrap(namespace.zones.first)
+        let bridge = SwiftDataCloudTextPersistence(library: library, namespace: namespace, textZone: zone)
+        let events = try [
+            SwiftDataCloudTextPersistence.RecoveryInput.zone(.fetched(zone)),
+            .database(.zoneChanged(zone)), .database(.zoneSaved(zone))
+        ].map { try SwiftDataCloudTextPersistence.recoveryEvent($0, batchID: UUID()) }
+        let batch = CloudFetchedBatch(id: UUID(), items: [], engineState: nil)
+        try await bridge.stage(.fetched(batch))
+        try await library.applyCloudTextFetched(namespaceKey: namespace.namespaceKey,
+            mutations: [], recoveryEvents: events, engineState: nil,
+            namespaceState: CloudNamespaceStateStorage(phase: .active), stagedBatchID: batch.id)
+
+        let evidence = try await bridge.enrollmentEvidence()
+        let status = try await bridge.statusEvidence()
+
+        XCTAssertFalse(evidence.needsAttention)
+        XCTAssertFalse(status.needsAttention)
+        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(Set(stored.recoveryEvents.map(\.payload)), Set(events.map(\.payload)))
+
+        let malformedBatch = CloudFetchedBatch(id: UUID(), items: [], engineState: nil)
+        try await bridge.stage(.fetched(malformedBatch))
+        try await library.applyCloudTextFetched(namespaceKey: namespace.namespaceKey,
+            mutations: [], recoveryEvents: [.init(key: "malformed", payload: Data())],
+            engineState: nil, namespaceState: nil, stagedBatchID: malformedBatch.id)
+        let malformed = try await bridge.statusEvidence()
+        XCTAssertTrue(malformed.needsAttention)
+    }
+
+    func testStoredTextShadowKeepsOpaqueSystemFieldsTokenWhenPlanningEdit() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("snips.store")
+        let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+        let namespace = makeNamespace()
+        let zone = try XCTUnwrap(namespace.zones.first)
+        let bridge = SwiftDataCloudTextPersistence(
+            library: library,
+            namespace: namespace,
+            textZone: zone
+        )
+        let added = try await library.perform(
+            .add(
+                content: "accepted text",
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inboxID,
+                attachmentURLs: [],
+                requestID: UUID(),
+                now: Date(timeIntervalSince1970: 100)
+            ),
+            sortedBy: .chronological
+        )
+        let snip = try XCTUnwrap(added.snapshot.snips.first)
+        try await approveAllLocalSnips(bridge, library: library)
+        guard case .save(let initialDraft) = try await bridge.pendingChanges().operations.first else {
+            return XCTFail("Expected the initial save.")
+        }
+        let accepted = try CloudKitRecordMapper.snapshot(
+            CloudKitRecordMapper.record(for: initialDraft)
+        )
+        let sent = CloudSentBatch(id: UUID(), items: [.saved(accepted)], engineState: nil)
+        try await bridge.stage(.sent(sent))
+        try await bridge.applyStaged(sent.id)
+
+        let token = Data("opaque stored CAS token".utf8)
+        XCTAssertNotEqual(accepted.shadow.systemFields, token)
+        let schema = Schema(versionedSchema: SnipSnapSchemaV7.self)
+        let configuration = ModelConfiguration(
+            "SnipSnapLocal",
+            schema: schema,
+            url: storeURL,
+            cloudKitDatabase: .none
+        )
+        let context = ModelContext(try ModelContainer(
+            for: schema,
+            migrationPlan: SnipSnapSchemaMigrationPlan.self,
+            configurations: [configuration]
+        ))
+        let storedRecord = try XCTUnwrap(
+            try context.fetch(FetchDescriptor<StoredCloudTextRecord>()).first
+        )
+        XCTAssertEqual(storedRecord.shadowData, accepted.shadow.data)
+        storedRecord.systemFields = token
+        try context.save()
+
+        _ = try await library.perform(
+            .update(
+                id: snip.id,
+                content: "edited text",
+                attachmentURLs: nil,
+                expectedUpdatedAt: nil,
+                now: Date(timeIntervalSince1970: 200)
+            ),
+            sortedBy: .chronological
+        )
+
+        guard case .save(let edit) = try await bridge.pendingChanges().operations.first else {
+            return XCTFail("Expected an edit save.")
+        }
+        XCTAssertEqual(edit.base?.data, accepted.shadow.data)
+        XCTAssertEqual(edit.base?.systemFields, token)
+        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.records.first?.systemFields, token)
+    }
+
     func testNamespaceRequiresRemoteFetchAndExplicitSeedApproval() async throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
