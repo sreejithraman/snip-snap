@@ -1,0 +1,5 @@
+Snip Snap 0.5.1 Beta 69 — iOS
+
+- Fix iCloud sync scheduling and recovery on Mac and iPhone
+- Prepare 0.5.1 beta with iCloud sync fixes
+- Fix iCloud sync retry reliability
