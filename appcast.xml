@@ -4,6 +4,21 @@
         <title>Snip Snap</title>
         <item>
             <title>0.5.1</title>
+            <pubDate>Sun, 13 Sep 2026 10:20:36 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.5.1-beta.70</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.5.1-beta.70-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>70</sparkle:version>
+            <sparkle:shortVersionString>0.5.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.5.1-beta.70/Snip-Snap-0.5.1.zip" length="9808473" type="application/octet-stream" sparkle:edSignature="ecoxoLlPACUUCn/xNI38YcznU0rWvfZLOYrL5x3W88kLQzFfTYj7tD6cJnR8zH4USqmLIPEoUa6qRjYc5Mc8Cw=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.5.1 Beta 70 — Mac
+
+- Recover iCloud sync health safely
+</description>
+        </item>
+        <item>
+            <title>0.5.1</title>
             <pubDate>Sun, 13 Sep 2026 07:41:27 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.5.1-beta.69</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.5.1-beta.69-mac.txt</sparkle:fullReleaseNotesLink>
