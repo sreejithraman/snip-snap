@@ -618,7 +618,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(syncCount, 1)
     }
 
-    func testGenerationAdoptionReloadsTheLibraryWithoutReportingTheQueuedSyncAsComplete() async {
+    func testGenerationAdoptionReloadsTheLibraryAndEndsTheSchedulingStatus() async {
         let oldLibrary = ModelTestLibrary(
             snips: [Snip(content: "Old collection", origin: .quickEntry)]
         )
@@ -630,7 +630,6 @@ final class IOSAppModelTests: XCTestCase {
             activeLibrary: adoptedLibrary
         )
         let settings = SyncedContentSettingsModel(mode: .iCloudSync)
-        settings.recordSyncFailure(.retryingSoon)
         let session = IOSAppSession(
             library: oldLibrary,
             syncedContentSettings: settings,
@@ -641,7 +640,7 @@ final class IOSAppModelTests: XCTestCase {
         await session.syncWhenPossible()
 
         XCTAssertEqual(session.model.snips.map(\.content), ["Adopted collection"])
-        XCTAssertEqual(settings.state, .failed(.retryingSoon))
+        XCTAssertEqual(settings.state, .ready)
     }
 
     func testPurgeReplacesTheLibraryAndExplainsWhySyncStopped() async {
@@ -687,6 +686,82 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(settings.state, .failed(.appDataIssue))
         XCTAssertFalse(settings.detail.contains("offline"))
         XCTAssertNil(session.model.errorMessage)
+    }
+
+    func testSuccessfulRetryClearsThePriorFailureOnlyWhenSyncSettles() async {
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+        let session = IOSAppSession(
+            library: ModelTestLibrary(),
+            syncedContentSettings: settings,
+            cloudSyncSession: IOSCloudSyncSessionProbe(
+                result: .syncCompleted,
+                activeLibrary: ModelTestLibrary()
+            )
+        )
+        settings.recordSyncFailure(.retryingSoon)
+
+        await session.retrySyncWhenPossible()
+
+        XCTAssertEqual(settings.state, .ready)
+    }
+
+    func testSettledRetryAfterLibraryReplacementReloadsAndClearsFailure() async {
+        let adopted = ModelTestLibrary(
+            snips: [Snip(content: "Adopted collection", origin: .quickEntry)]
+        )
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+        let session = IOSAppSession(
+            library: ModelTestLibrary(),
+            syncedContentSettings: settings,
+            cloudSyncSession: IOSCloudSyncSessionProbe(
+                result: .libraryReplacedAndSyncCompleted,
+                activeLibrary: adopted
+            )
+        )
+        settings.recordSyncFailure(.retryingSoon)
+
+        await session.retrySyncWhenPossible()
+
+        XCTAssertEqual(session.model.snips.map(\.content), ["Adopted collection"])
+        XCTAssertEqual(settings.state, .ready)
+    }
+
+    func testRetryAfterLibraryReplacementReloadsBeforeShowingTheCurrentIssue() async {
+        let adopted = ModelTestLibrary(
+            snips: [Snip(content: "Adopted with issue", origin: .quickEntry)]
+        )
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+        let session = IOSAppSession(
+            library: ModelTestLibrary(),
+            syncedContentSettings: settings,
+            cloudSyncSession: IOSCloudSyncSessionProbe(
+                result: .libraryReplacedWithSyncIssue(.someChangesPending),
+                activeLibrary: adopted
+            )
+        )
+        settings.recordSyncFailure(.retryingSoon)
+
+        await session.retrySyncWhenPossible()
+
+        XCTAssertEqual(session.model.snips.map(\.content), ["Adopted with issue"])
+        XCTAssertEqual(settings.state, .failed(.someChangesPending))
+    }
+
+    func testRetryThatOnlyFetchesKeepsThePriorFailure() async {
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+        let session = IOSAppSession(
+            library: ModelTestLibrary(),
+            syncedContentSettings: settings,
+            cloudSyncSession: IOSCloudSyncSessionProbe(
+                result: .contentUpdated,
+                activeLibrary: ModelTestLibrary()
+            )
+        )
+        settings.recordSyncFailure(.retryingSoon)
+
+        await session.retrySyncWhenPossible()
+
+        XCTAssertEqual(settings.state, .failed(.retryingSoon))
     }
 
     func testAutomaticCloudChangeReloadsTheVisibleLibrary() async {
@@ -742,7 +817,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(session.syncedContentSettings.state, .ready)
     }
 
-    func testScheduledSyncDoesNotReportCompletionBeforeTheEngineFinishes() async {
+    func testScheduledSyncEndsItsTransientStatusAndKeepsEarlierFailures() async {
         let automatic = AsyncStream.makeStream(of: SnipSnapCloudSyncResult.self)
         let settings = SyncedContentSettingsModel(mode: .iCloudSync)
         let cloudSession = IOSCloudSyncSessionProbe(
@@ -758,7 +833,7 @@ final class IOSAppModelTests: XCTestCase {
 
         await session.syncWhenPossible()
 
-        XCTAssertEqual(settings.state, .syncing)
+        XCTAssertEqual(settings.state, .ready)
 
         settings.recordSyncFailure(.retryingSoon)
         automatic.continuation.yield(.syncScheduled)

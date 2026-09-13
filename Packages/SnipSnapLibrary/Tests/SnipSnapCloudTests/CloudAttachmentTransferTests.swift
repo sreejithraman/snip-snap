@@ -236,11 +236,11 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let interruptedCount = await server.acceptedOperationCount(for: payloadID)
     XCTAssertEqual(interruptedCount, 0)
 
-    try await coordinator.sendPending()
-    try await coordinator.sendPending()
+    let retry = try await coordinator.sendPendingUntilSettled()
 
     let settled = try await snapshot(fixture.library, fixture.namespace)
     XCTAssertTrue(try XCTUnwrap(settled.publications.first).metadataAccepted)
+    XCTAssertTrue(retry.settled)
     let settledCount = await server.acceptedOperationCount(for: payloadID)
     XCTAssertEqual(settledCount, 1)
   }

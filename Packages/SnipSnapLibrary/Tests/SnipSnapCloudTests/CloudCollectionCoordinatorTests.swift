@@ -1493,7 +1493,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     results.continuation.finish()
   }
 
-  func testNormalSchedulingAndTryAgainLeaveRecordFetchesAndSendsToTheEngine() async throws {
+  func testNormalSchedulingLeavesRecordFetchesAndSendsToTheEngine() async throws {
     let active = descriptor(
       generation: "22222222-3333-4444-5555-666666666666",
       metadata: "automatic-metadata", payload: "automatic-payload"
@@ -1509,16 +1509,10 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     )
 
     let normal = try await coordinator.scheduleSynchronization()
-    let retried = try await coordinator.scheduleSynchronization(retryingUserRecoverableFailures: true)
     let events = await driver.events()
 
     XCTAssertEqual(normal, .scheduled(namespace(active)))
-    XCTAssertEqual(retried, .scheduled(namespace(active)))
-    XCTAssertEqual(events, [
-      .scheduled(namespace(active)),
-      .preparedManualRetry(namespace(active)),
-      .scheduled(namespace(active)),
-    ])
+    XCTAssertEqual(events, [.scheduled(namespace(active))])
   }
 
   func testSchedulingAfterGenerationAdoptionReportsBothLibraryReplacementAndQueuedSync() async throws {
@@ -1548,7 +1542,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertEqual(events, [.scheduled(namespace(current))])
   }
 
-  func testLifecycleLaunchForegroundAndTryAgainDoNotForceAnAutomaticRecordEngine() async throws {
+  func testLifecycleLaunchAndForegroundScheduleButTryAgainWaitsForFetch() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudEngineFirstLifecycle-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -1559,7 +1553,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let server = FakeCloudServer()
     let control = FakeCloudControlTransport(server: server)
     await control.seedControl(active)
-    let records = LifecycleAutomaticTransportProbe()
+    let records = LifecycleAutomaticTransportProbe(namespace: namespace(active))
     let lifecycle = SnipSnapICloudSyncLifecycle(
       rootURL: root, sourceLibrary: source, syncModeStore: SnipSyncModeStore(persistence),
       cloudScope: "private", accountLineage: "account-a", ownerName: "owner",
@@ -1571,8 +1565,226 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let retried = try await lifecycle.retrySynchronization()
     let events = await records.events()
 
-    XCTAssertEqual([launched, foregrounded, retried], [.syncScheduled, .syncScheduled, .syncScheduled])
-    XCTAssertEqual(events, ["started"])
+    XCTAssertEqual([launched, foregrounded, retried], [.syncScheduled, .syncScheduled, .syncCompleted])
+    XCTAssertEqual(events, ["started", "fetched"])
+  }
+
+  func testTryAgainAdoptsThenSendsAndReportsSettled() async throws {
+    let old = descriptor(
+      generation: "10101010-1111-2222-3333-444444444444",
+      metadata: "retry-adopt-old-metadata", payload: "retry-adopt-old-payload"
+    )
+    let current = descriptor(
+      generation: "20202020-1111-2222-3333-444444444444",
+      metadata: "retry-adopt-new-metadata", payload: "retry-adopt-new-payload"
+    )
+    let server = FakeCloudServer()
+    let transport = FakeCloudControlTransport(server: server)
+    await transport.seedControl(current)
+    let driver = TestCloudCollectionSyncDriver()
+    await driver.resetNextSend(.settled)
+    let coordinator = CloudCollectionCoordinator(
+      cloudScope: "private", accountLineage: "account-a", ownerName: "owner",
+      localStore: TestCloudCollectionLocalStore(
+        active: namespace(old), hasSyncedBefore: true
+      ),
+      transport: transport, syncDriver: driver, makeDescriptor: { current }
+    )
+
+    let status = try await coordinator.retrySynchronization()
+
+    XCTAssertEqual(status, .adoptedRemoteCollectionSettled(namespace(current)))
+    XCTAssertEqual(syncResult(for: status), .libraryReplacedAndSyncCompleted)
+    let events = await driver.events()
+    XCTAssertEqual(events, [
+      .preparedManualRetry(namespace(current)),
+      .fetched(namespace(current)),
+      .sent(namespace(current)),
+    ])
+  }
+
+  func testTryAgainAdoptsSendsAndReturnsTheCurrentFetchIssue() async throws {
+    let old = descriptor(
+      generation: "21212121-1111-2222-3333-444444444444",
+      metadata: "retry-issue-old-metadata", payload: "retry-issue-old-payload"
+    )
+    let current = descriptor(
+      generation: "22222222-1111-2222-3333-444444444444",
+      metadata: "retry-issue-new-metadata", payload: "retry-issue-new-payload"
+    )
+    let server = FakeCloudServer()
+    let transport = FakeCloudControlTransport(server: server)
+    await transport.seedControl(current)
+    let driver = TestCloudCollectionSyncDriver()
+    await driver.resetNextFetch(.fetched(.someChangesPending))
+    await driver.resetNextSend(.settled)
+    let coordinator = CloudCollectionCoordinator(
+      cloudScope: "private", accountLineage: "account-a", ownerName: "owner",
+      localStore: TestCloudCollectionLocalStore(
+        active: namespace(old), hasSyncedBefore: true
+      ),
+      transport: transport, syncDriver: driver, makeDescriptor: { current }
+    )
+
+    let status = try await coordinator.retrySynchronization()
+
+    XCTAssertEqual(
+      status,
+      .adoptedRemoteCollectionWithIssue(namespace(current), .someChangesPending)
+    )
+    XCTAssertEqual(
+      syncResult(for: status),
+      .libraryReplacedWithSyncIssue(.someChangesPending)
+    )
+    let events = await driver.events()
+    XCTAssertEqual(events, [
+      .preparedManualRetry(namespace(current)),
+      .fetched(namespace(current)),
+      .sent(namespace(current)),
+    ])
+  }
+
+  func testTryAgainReportsAThrowingFetchAfterAdoptingTheLibrary() async throws {
+    let old = descriptor(
+      generation: "23232323-1111-2222-3333-444444444444",
+      metadata: "retry-fetch-error-old-metadata", payload: "retry-fetch-error-old-payload"
+    )
+    let current = descriptor(
+      generation: "24242424-1111-2222-3333-444444444444",
+      metadata: "retry-fetch-error-new-metadata", payload: "retry-fetch-error-new-payload"
+    )
+    let server = FakeCloudServer()
+    let transport = FakeCloudControlTransport(server: server)
+    await transport.seedControl(current)
+    let local = TestCloudCollectionLocalStore(active: namespace(old), hasSyncedBefore: true)
+    let driver = TestCloudCollectionSyncDriver()
+    await driver.failNextFetch(.waitingForConnection)
+    let coordinator = CloudCollectionCoordinator(
+      cloudScope: "private", accountLineage: "account-a", ownerName: "owner",
+      localStore: local, transport: transport, syncDriver: driver,
+      makeDescriptor: { current }
+    )
+
+    let status = try await coordinator.retrySynchronization()
+    let active = await local.activeNamespace()
+    let events = await driver.events()
+
+    XCTAssertEqual(active, namespace(current))
+    XCTAssertEqual(
+      status,
+      .adoptedRemoteCollectionWithIssue(namespace(current), .waitingForConnection)
+    )
+    XCTAssertEqual(events, [
+      .preparedManualRetry(namespace(current)),
+      .fetched(namespace(current)),
+    ])
+  }
+
+  func testTryAgainDoesNotHideAccountIsolationAfterAdoptingTheLibrary() async throws {
+    let old = descriptor(
+      generation: "27272727-1111-2222-3333-444444444444",
+      metadata: "retry-account-old-metadata", payload: "retry-account-old-payload"
+    )
+    let current = descriptor(
+      generation: "28282828-1111-2222-3333-444444444444",
+      metadata: "retry-account-new-metadata", payload: "retry-account-new-payload"
+    )
+    let server = FakeCloudServer()
+    let transport = FakeCloudControlTransport(server: server)
+    await transport.seedControl(current)
+    let driver = TestCloudCollectionSyncDriver()
+    await driver.isolateNextFetch(.accountChanged)
+    let coordinator = CloudCollectionCoordinator(
+      cloudScope: "private", accountLineage: "account-a", ownerName: "owner",
+      localStore: TestCloudCollectionLocalStore(
+        active: namespace(old), hasSyncedBefore: true
+      ),
+      transport: transport, syncDriver: driver, makeDescriptor: { current }
+    )
+
+    do {
+      _ = try await coordinator.retrySynchronization()
+      XCTFail("Retry must report an Apple Account change")
+    } catch {
+      XCTAssertEqual(error as? CloudAccountIsolationError, .accountChanged)
+    }
+  }
+
+  func testTryAgainReportsAThrowingSendAfterAdoptingTheLibrary() async throws {
+    let old = descriptor(
+      generation: "25252525-1111-2222-3333-444444444444",
+      metadata: "retry-send-error-old-metadata", payload: "retry-send-error-old-payload"
+    )
+    let current = descriptor(
+      generation: "26262626-1111-2222-3333-444444444444",
+      metadata: "retry-send-error-new-metadata", payload: "retry-send-error-new-payload"
+    )
+    let server = FakeCloudServer()
+    let transport = FakeCloudControlTransport(server: server)
+    await transport.seedControl(current)
+    let local = TestCloudCollectionLocalStore(active: namespace(old), hasSyncedBefore: true)
+    let driver = TestCloudCollectionSyncDriver()
+    await driver.failNextSend(.iCloudStorageFull)
+    let coordinator = CloudCollectionCoordinator(
+      cloudScope: "private", accountLineage: "account-a", ownerName: "owner",
+      localStore: local, transport: transport, syncDriver: driver,
+      makeDescriptor: { current }
+    )
+
+    let status = try await coordinator.retrySynchronization()
+    let active = await local.activeNamespace()
+    let events = await driver.events()
+
+    XCTAssertEqual(active, namespace(current))
+    XCTAssertEqual(
+      status,
+      .adoptedRemoteCollectionWithIssue(namespace(current), .iCloudStorageFull)
+    )
+    XCTAssertEqual(events, [
+      .preparedManualRetry(namespace(current)),
+      .fetched(namespace(current)),
+      .sent(namespace(current)),
+    ])
+  }
+
+  func testTryAgainFollowsAControlChangeThenSendsTheAdoptedCollection() async throws {
+    let old = descriptor(
+      generation: "30303030-1111-2222-3333-444444444444",
+      metadata: "retry-change-old-metadata", payload: "retry-change-old-payload"
+    )
+    let current = descriptor(
+      generation: "40404040-1111-2222-3333-444444444444",
+      metadata: "retry-change-new-metadata", payload: "retry-change-new-payload"
+    )
+    let server = FakeCloudServer()
+    let transport = FakeCloudControlTransport(server: server)
+    await transport.seedControl(old)
+    let driver = TestCloudCollectionSyncDriver()
+    await driver.pauseNextFetch()
+    let coordinator = CloudCollectionCoordinator(
+      cloudScope: "private", accountLineage: "account-a", ownerName: "owner",
+      localStore: TestCloudCollectionLocalStore(
+        active: namespace(old), hasSyncedBefore: true
+      ),
+      transport: transport, syncDriver: driver, makeDescriptor: { current }
+    )
+
+    let retry = Task { try await coordinator.retrySynchronization() }
+    await driver.waitUntilFetchPauses()
+    await transport.seedControl(current)
+    await driver.resetNextSend(.settled)
+    await driver.resumeFetch()
+    let status = try await retry.value
+
+    XCTAssertEqual(status, .adoptedRemoteCollectionSettled(namespace(current)))
+    let events = await driver.events()
+    XCTAssertEqual(events, [
+      .preparedManualRetry(namespace(old)),
+      .fetched(namespace(old)),
+      .preparedManualRetry(namespace(current)),
+      .fetched(namespace(current)),
+      .sent(namespace(current)),
+    ])
   }
 
   func testAdoptedLibraryKeepsItsEngineAliveUntilTheDelayedFetchCommits() async throws {
@@ -3312,12 +3524,15 @@ private actor TestCloudCollectionSyncDriver: CloudCollectionSyncDriver {
   private var values: [Event] = []
   private var nextFetchResult: CloudCollectionFetchResult = .fetched(nil)
   private var nextSendResult: CloudCollectionSendResult = .sent
+  private var nextFetchIssue: SyncedContentSyncIssue?
+  private var nextSendIssue: SyncedContentSyncIssue?
+  private var nextFetchIsolation: CloudAccountIsolationError?
   private var shouldPauseNextFetch = false
   private var pausedFetch = false
   private var pauseWaiters: [CheckedContinuation<Void, Never>] = []
   private var fetchRelease: CheckedContinuation<Void, Never>?
 
-  func fetch(_ context: CloudCollectionSyncContext) async -> CloudCollectionFetchResult {
+  func fetch(_ context: CloudCollectionSyncContext) async throws -> CloudCollectionFetchResult {
     let namespace = context.namespace
     values.append(.fetched(namespace))
     if shouldPauseNextFetch {
@@ -3326,6 +3541,14 @@ private actor TestCloudCollectionSyncDriver: CloudCollectionSyncDriver {
       pauseWaiters.forEach { $0.resume() }
       pauseWaiters = []
       await withCheckedContinuation { fetchRelease = $0 }
+    }
+    if let nextFetchIssue {
+      self.nextFetchIssue = nil
+      throw CloudSyncIssueError(nextFetchIssue)
+    }
+    if let nextFetchIsolation {
+      self.nextFetchIsolation = nil
+      throw nextFetchIsolation
     }
     defer { nextFetchResult = .fetched(nil) }
     return nextFetchResult
@@ -3336,14 +3559,21 @@ private actor TestCloudCollectionSyncDriver: CloudCollectionSyncDriver {
   func prepareManualRetry(_ context: CloudCollectionSyncContext) {
     values.append(.preparedManualRetry(context.namespace))
   }
-  func send(_ context: CloudCollectionSyncContext) -> CloudCollectionSendResult {
+  func send(_ context: CloudCollectionSyncContext) throws -> CloudCollectionSendResult {
     values.append(.sent(context.namespace))
+    if let nextSendIssue {
+      self.nextSendIssue = nil
+      throw CloudSyncIssueError(nextSendIssue)
+    }
     defer { nextSendResult = .sent }
     return nextSendResult
   }
   func events() -> [Event] { values }
   func resetNextFetch(_ result: CloudCollectionFetchResult) { nextFetchResult = result }
   func resetNextSend(_ result: CloudCollectionSendResult) { nextSendResult = result }
+  func failNextFetch(_ issue: SyncedContentSyncIssue) { nextFetchIssue = issue }
+  func failNextSend(_ issue: SyncedContentSyncIssue) { nextSendIssue = issue }
+  func isolateNextFetch(_ error: CloudAccountIsolationError) { nextFetchIsolation = error }
 
   func pauseNextFetch() { shouldPauseNextFetch = true }
 
@@ -3361,10 +3591,15 @@ private actor TestCloudCollectionSyncDriver: CloudCollectionSyncDriver {
 
 private actor LifecycleAutomaticTransportProbe: CloudRecordTransport,
   CloudAutomaticSyncConfiguring, CloudAutomaticSyncScheduling {
+  private let namespace: CloudSyncNamespace?
   private var recorded: [String] = []
   private let mailbox = CloudRecordTransportMailbox()
   private var sendGate: RecordSendGate?
   private var workCompleted: (@Sendable () -> Void)?
+
+  init(namespace: CloudSyncNamespace? = nil) {
+    self.namespace = namespace
+  }
 
   func onNextWorkCompletion(_ action: @escaping @Sendable () -> Void) { workCompleted = action }
   func authorizeSend() async throws { try await sendGate?() }
@@ -3389,7 +3624,17 @@ private actor LifecycleAutomaticTransportProbe: CloudRecordTransport,
   func scheduleAutomaticSync(_ batch: CloudOutboundBatch) { recorded.append("scheduled") }
   func fetch(scope: CloudFetchScope) throws -> CloudFetchedBatch {
     recorded.append("fetched")
-    throw CloudTransportError.syncAlreadyRunning
+    guard let namespace else { throw CloudTransportError.syncAlreadyRunning }
+    return CloudFetchedBatch(
+      id: UUID(),
+      items: [],
+      zoneEvents: namespace.zones.map(CloudZoneEvent.fetched),
+      engineState: CloudEngineStateEnvelope(
+        namespace: namespace,
+        serialization: Data("completed-fetch".utf8),
+        requiresInitialFetch: false
+      )
+    )
   }
   func send(_ batch: CloudOutboundBatch) throws -> CloudSentBatch {
     recorded.append("sent")
