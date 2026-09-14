@@ -4,6 +4,21 @@
         <title>Snip Snap</title>
         <item>
             <title>0.5.1</title>
+            <pubDate>Mon, 14 Sep 2026 16:23:16 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.5.1-beta.72</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.5.1-beta.72-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>72</sparkle:version>
+            <sparkle:shortVersionString>0.5.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.5.1-beta.72/Snip-Snap-0.5.1.zip" length="9808610" type="application/octet-stream" sparkle:edSignature="8wjO96d4Y+P6jMzEd34rmDnQ9V/5CgeT2Okd92OxVY/B9N9zu7O3zUpVOCwjVxc447Xgst8ytOQ8+wXgs9xRBA=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.5.1 Beta 72 — Mac
+
+- Show cached iCloud data before sync
+</description>
+        </item>
+        <item>
+            <title>0.5.1</title>
             <pubDate>Sun, 13 Sep 2026 10:20:36 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.5.1-beta.70</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.5.1-beta.70-mac.txt</sparkle:fullReleaseNotesLink>
