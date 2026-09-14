@@ -1575,7 +1575,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(events, [.importPending, .importPending])
     }
 
-    func testForegroundWithoutPendingShareUsesOneSyncAndShowsNoShareAlert() async {
+    func testForegroundWithoutPendingShareSchedulesAutomaticSyncAndShowsNoShareAlert() async {
         let library = ModelTestLibrary()
         let cloudSession = IOSCloudSyncSessionProbe(
             result: .noChange,
@@ -1591,8 +1591,33 @@ final class IOSAppModelTests: XCTestCase {
         await session.foreground()
 
         let syncCount = await cloudSession.syncCount()
-        XCTAssertEqual(syncCount, 1)
+        let scheduleCount = await cloudSession.scheduleCount()
+        XCTAssertEqual(syncCount, 0)
+        XCTAssertEqual(scheduleCount, 1)
         XCTAssertNil(session.model.errorMessage)
+    }
+
+    func testLaunchShowsCachedLibraryBeforeAutomaticCloudWorkFinishes() async {
+        let cached = Snip(content: "Cached", origin: .quickEntry)
+        let library = ModelTestLibrary(snips: [cached])
+        let cloudSession = IOSCloudSyncSessionProbe(
+            result: .syncScheduled,
+            activeLibrary: library,
+            pausesCloudWork: true
+        )
+        let session = IOSAppSession(library: library, cloudSyncSession: cloudSession)
+
+        let launch = Task { await session.launch() }
+        await cloudSession.waitUntilCloudWorkStarts()
+
+        XCTAssertEqual(session.model.snips.map(\.id), [cached.id])
+
+        await cloudSession.resumeCloudWork()
+        await launch.value
+        let syncCount = await cloudSession.syncCount()
+        let scheduleCount = await cloudSession.scheduleCount()
+        XCTAssertEqual(syncCount, 0)
+        XCTAssertEqual(scheduleCount, 1)
     }
 
     func testTrailingEmptyPassDoesNotRepeatAShareSync() async {
@@ -3213,24 +3238,37 @@ private actor IOSCloudSyncSessionProbe: IOSCloudSyncSessionHandling {
     private let library: any SnipLibrary
     private let syncError: Failure?
     private var synchronizeCallCount = 0
+    private var scheduleCallCount = 0
+    private let pausesCloudWork: Bool
+    private var cloudWorkStarted = false
+    private var cloudWorkStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var cloudWorkRelease: CheckedContinuation<Void, Never>?
     nonisolated let automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult>
 
     init(
         result: SnipSnapCloudSyncResult,
         activeLibrary: any SnipLibrary,
         syncError: Failure? = nil,
+        pausesCloudWork: Bool = false,
         automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> = AsyncStream { $0.finish() }
     ) {
         self.result = result
         library = activeLibrary
         self.syncError = syncError
+        self.pausesCloudWork = pausesCloudWork
         self.automaticSyncResults = automaticSyncResults
     }
 
     func synchronize() async throws -> SnipSnapCloudSyncResult {
         synchronizeCallCount += 1
+        await pauseCloudWorkIfNeeded()
         if let syncError { throw syncError }
         return result
+    }
+
+    func scheduleAutomaticSync() async {
+        scheduleCallCount += 1
+        await pauseCloudWorkIfNeeded()
     }
 
     func iosActiveLibrary()
@@ -3240,6 +3278,25 @@ private actor IOSCloudSyncSessionProbe: IOSCloudSyncSessionHandling {
     }
 
     func syncCount() -> Int { synchronizeCallCount }
+    func scheduleCount() -> Int { scheduleCallCount }
+
+    func waitUntilCloudWorkStarts() async {
+        if cloudWorkStarted { return }
+        await withCheckedContinuation { cloudWorkStartWaiters.append($0) }
+    }
+
+    func resumeCloudWork() {
+        cloudWorkRelease?.resume()
+        cloudWorkRelease = nil
+    }
+
+    private func pauseCloudWorkIfNeeded() async {
+        guard pausesCloudWork else { return }
+        cloudWorkStarted = true
+        cloudWorkStartWaiters.forEach { $0.resume() }
+        cloudWorkStartWaiters.removeAll()
+        await withCheckedContinuation { cloudWorkRelease = $0 }
+    }
 }
 
 private actor MutableIOSCloudSyncHandler: OptionalCloudSyncHandling {

@@ -1542,7 +1542,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertEqual(events, [.scheduled(namespace(current))])
   }
 
-  func testLifecycleLaunchAndForegroundScheduleButTryAgainWaitsForFetch() async throws {
+  func testNormalSchedulingUsesCachedDescriptorButTryAgainWaitsForFetch() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudEngineFirstLifecycle-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -1560,12 +1560,14 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
       controlTransport: control, makeRecordTransport: { _ in records }, makeDescriptor: { active }
     )
 
-    let launched = try await lifecycle.synchronize()
-    let foregrounded = try await lifecycle.synchronize()
+    try await lifecycle.scheduleAutomaticSync()
+    try await lifecycle.scheduleAutomaticSync()
+    let automaticControlEvents = await control.events()
     let retried = try await lifecycle.retrySynchronization()
     let events = await records.events()
 
-    XCTAssertEqual([launched, foregrounded, retried], [.syncScheduled, .syncScheduled, .syncCompleted])
+    XCTAssertEqual(automaticControlEvents, [])
+    XCTAssertEqual(retried, .syncCompleted)
     XCTAssertEqual(events, ["started", "fetched"])
   }
 
