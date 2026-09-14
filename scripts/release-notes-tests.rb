@@ -7,6 +7,8 @@ class ReleaseNotesTest < Minitest::Test
   def setup
     @dir = Dir.mktmpdir('snip-snap-notes-')
     git('init', '-q', '--initial-branch=main')
+    git('config', 'maintenance.auto', 'false')
+    git('config', 'gc.auto', '0')
     git('config', 'user.name', 'Test')
     git('config', 'user.email', 'test@example.invalid')
     commit('Shared/base.swift', 'Initial release')
@@ -28,7 +30,11 @@ class ReleaseNotesTest < Minitest::Test
   end
 
   def git(*args)
-    out, status = Open3.capture2e('git', '-C', @dir, *args)
+    config_environment = {
+      'GIT_CONFIG_NOSYSTEM' => '1',
+      'GIT_CONFIG_GLOBAL' => File::NULL
+    }
+    out, status = Open3.capture2e(config_environment, 'git', '-C', @dir, *args)
     raise out unless status.success?
     out.strip
   end
@@ -91,6 +97,11 @@ class ReleaseNotesTest < Minitest::Test
     assert_equal ['ios'], ReleaseNotes.platforms_for(['SnipSnapiOS/App.swift'], 'Match Mac controls')
     assert_equal %w[mac ios], ReleaseNotes.platforms_for(
       ['SnipSnap/Panel.swift', 'SnipSnapiOS/App.swift'], 'Match Mac controls')
+  end
+
+  def test_test_repository_disables_background_maintenance
+    assert_equal 'false', git('config', '--local', '--get', 'maintenance.auto')
+    assert_equal '0', git('config', '--local', '--get', 'gc.auto')
   end
 
   def test_oversized_ios_notes_fail_before_writing_release_files
