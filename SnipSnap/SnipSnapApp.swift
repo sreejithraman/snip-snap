@@ -352,13 +352,20 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let retryAction: AppleAccountCacheCoordinatorHandler.SyncAction = {
             await performSync(true)
         }
-        cloudLifecycleHooks = SnipSnapCloudLifecycleHooks(syncWhenPossible: syncAction)
+        let scheduleAction: AppleAccountCacheCoordinatorHandler.ScheduleAction = {
+            await cloudServices.syncSession?.scheduleAutomaticSync()
+        }
+        let lifecycleScheduleAction: SnipSnapCloudLifecycleHooks.SyncAction = {
+            await scheduleAction()
+            await model.clipboardHistory.syncNow()
+        }
+        cloudLifecycleHooks = SnipSnapCloudLifecycleHooks(
+            syncWhenPossible: lifecycleScheduleAction
+        )
         let productionCloudSyncHandler = cloudServices.makeAccountCacheHandler(
             syncWhenPossible: syncAction,
             retrySyncWhenPossible: retryAction,
-            scheduleSyncAfterLocalChange: {
-                await cloudServices.syncSession?.scheduleAutomaticSync()
-            }
+            scheduleSyncAfterLocalChange: scheduleAction
         )
         cloudSyncHandler = productionCloudSyncHandler
         model.setCloudSyncHandler(productionCloudSyncHandler)

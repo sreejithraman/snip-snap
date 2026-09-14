@@ -148,12 +148,7 @@ final class IOSAppSession {
             syncedContentSettings.setDeleteCompletionAction(reloadActiveLibrary)
         }
         cloudLifecycleHooks = SnipSnapCloudLifecycleHooks {
-            try? await Self.synchronizeCloudSessionOrThrow(
-                cloudSyncSession,
-                model: model,
-                settings: syncedContentSettings,
-                clipboard: clipboard
-            )
+            await cloudSyncSession?.scheduleAutomaticSync()
         }
         accountNoticeModel?.setActiveLibraryChangeAction {
             guard let cloudSyncSession else { return }
@@ -175,12 +170,11 @@ final class IOSAppSession {
     }
 
     func launch() async {
+        await model.load()
         await cloudLifecycleHooks.launch()
         await clipboard.foreground()
         if let shareImporter {
             await shareImporter.importPendingAndReload()
-        } else {
-            await model.load()
         }
         await accountNoticeModel?.refresh()
     }
