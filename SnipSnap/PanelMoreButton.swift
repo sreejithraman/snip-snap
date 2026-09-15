@@ -67,11 +67,13 @@ struct PanelMoreButton: View {
                 .tag(AppAppearance.dark)
         }
 
-        Button(accessibilityPermissions.menuActionTitle) {
-            accessibilityPermissions.performMenuAction()
+        if let title = accessibilityPermissions.menuActionTitle {
+            Button(title) {
+                accessibilityPermissions.performMenuAction()
+            }
         }
 
-        Button("Keyboard Shortcuts…") {
+        Button("Settings…") {
             openSettings()
         }
     }

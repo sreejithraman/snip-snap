@@ -234,10 +234,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
         XCTAssertFalse(coordinator.accessibilityPermissions.isSetupCardVisible)
         XCTAssertEqual(requestCount, 0)
-        XCTAssertEqual(
-            coordinator.accessibilityPermissions.menuActionTitle,
-            "Accessibility Settings…"
-        )
+        XCTAssertNil(coordinator.accessibilityPermissions.menuActionTitle)
 
         coordinator.accessibilityPermissions.performMenuAction()
 
@@ -318,6 +315,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
         coordinator.start()
         coordinator.accessibilityPermissions.presentRepair()
+        XCTAssertNotNil(coordinator.accessibilityPermissions.menuActionTitle)
         isTrusted = true
 
         coordinator.accessibilityPermissions.refresh()
@@ -325,11 +323,43 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         XCTAssertTrue(coordinator.accessibilityPermissions.isGranted)
         XCTAssertFalse(coordinator.accessibilityPermissions.isSetupCardVisible)
         XCTAssertFalse(coordinator.accessibilityPermissions.isRepairPresented)
+        XCTAssertNil(coordinator.accessibilityPermissions.menuActionTitle)
         XCTAssertEqual(
             manager.registeredConfigurations,
             [.snipSnapDefaults, .snipSnapDefaults]
         )
         XCTAssertEqual(manager.unregisterCount, 1)
+    }
+
+    @MainActor
+    func testRevokedAccessRestoresTheSettingsActionWhenTheAppBecomesActive() async throws {
+        let suiteName = "Snip SnapAccessibilityRevokedTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(true, forKey: AccessibilityPermissionController.didRequestAccessDefaultsKey)
+        let notificationCenter = NotificationCenter()
+        var isTrusted = true
+        let refreshAfterRevocation = expectation(description: "Refresh after access is revoked")
+        let controller = AccessibilityPermissionController(
+            defaults: defaults,
+            notificationCenter: notificationCenter,
+            isTrusted: {
+                if !isTrusted {
+                    refreshAfterRevocation.fulfill()
+                }
+                return isTrusted
+            },
+            requestTrust: {},
+            openSettings: {}
+        )
+        controller.start()
+        XCTAssertNil(controller.menuActionTitle)
+
+        isTrusted = false
+        notificationCenter.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        await fulfillment(of: [refreshAfterRevocation], timeout: 1)
+
+        XCTAssertEqual(controller.menuActionTitle, "Open Accessibility Settings…")
     }
 
     @MainActor
