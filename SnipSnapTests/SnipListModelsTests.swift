@@ -219,7 +219,7 @@ final class SnipListModelsTests: XCTestCase {
         XCTAssertEqual(snips.first?.draggingFrame, sourceFrame)
     }
 
-    func testMixedSnipDragPublishesMarkdownThenEveryAttachment() throws {
+    func testMixedSnipDragPublishesTextMarkdownAndEveryAttachment() throws {
         let first = URL(fileURLWithPath: "/tmp/first.png")
         let second = URL(fileURLWithPath: "/tmp/second.md")
         let payload = SnipDragPayload(
@@ -232,13 +232,13 @@ final class SnipListModelsTests: XCTestCase {
         let writers = package.pasteboardWriters()
 
         XCTAssertEqual(writers.count, 4)
-        let provider = try XCTUnwrap(writers.first as? NSFilePromiseProvider)
+        let provider = try XCTUnwrap(writers.compactMap { $0 as? NSFilePromiseProvider }.first)
         XCTAssertEqual(provider.fileType, UTType.data.identifier)
         XCTAssertEqual(
             writers.compactMap { ($0 as? NSURL) as URL? },
             [first, second]
         )
-        let privateItem = try XCTUnwrap(writers.last as? NSPasteboardItem)
+        let privateItem = try XCTUnwrap(writers.first as? NSPasteboardItem)
         XCTAssertNotNil(privateItem.data(forType: SnipDragExportPackage.privateType))
     }
 
@@ -272,9 +272,15 @@ final class SnipListModelsTests: XCTestCase {
         XCTAssertEqual(snip.string(forType: .string), payload.text)
     }
 
-    func testMixedSnipDragWritesOnlyFilesToTheDragPasteboard() throws {
-        let first = URL(fileURLWithPath: "/tmp/first.png")
-        let second = URL(fileURLWithPath: "/tmp/second.md")
+    func testMixedSnipDragOffersPlainTextBeforeItsAttachments() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = directory.appendingPathComponent("first.png")
+        let second = directory.appendingPathComponent("second.md")
+        try Data("Image".utf8).write(to: first)
+        try Data("Notes".utf8).write(to: second)
         let payload = SnipDragPayload(
             ids: [UUID()],
             text: "Use these files",
@@ -282,15 +288,270 @@ final class SnipListModelsTests: XCTestCase {
         )
         let writers = SnipDragExportPackage(payload: payload).pasteboardWriters()
 
-        XCTAssertTrue(writers.first is NSFilePromiseProvider)
+        let textItem = try XCTUnwrap(writers.first as? NSPasteboardItem)
+        XCTAssertEqual(textItem.string(forType: .string), payload.text)
+        XCTAssertNotNil(textItem.data(forType: .rtfd))
+        XCTAssertNotNil(textItem.data(forType: SnipDragExportPackage.privateType))
         XCTAssertEqual(
             writers.compactMap { ($0 as? NSURL) as URL? },
             [first, second]
         )
-        XCTAssertEqual(
-            (writers.last as? NSPasteboardItem)?.types,
-            [SnipDragExportPackage.privateType]
+    }
+
+    func testMixedSnipDragKeepsRichAttachmentBeyondClipboardHistoryLimit() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let attachment = directory.appendingPathComponent("large.bin")
+        let text = "x"
+        let attachmentSize = ClipboardHistoryState.representationByteLimit + 1
+        try Data(repeating: 0, count: attachmentSize).write(to: attachment)
+        let payload = SnipDragPayload(
+            ids: [UUID()],
+            text: text,
+            attachmentURLs: [attachment]
         )
+
+        let item = try XCTUnwrap(
+            SnipDragExportPackage(payload: payload).pasteboardWriters().first
+                as? NSPasteboardItem
+        )
+
+        XCTAssertTrue(item.types.contains(NSPasteboard.PasteboardType.rtfd))
+        let data = try XCTUnwrap(item.data(forType: NSPasteboard.PasteboardType.rtfd))
+        let richText = try NSAttributedString(
+            data: data,
+            options: [.documentType: NSAttributedString.DocumentType.rtfd],
+            documentAttributes: nil
+        )
+        var attachmentCount = 0
+        richText.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: richText.length)
+        ) { value, _, _ in
+            if value != nil {
+                attachmentCount += 1
+            }
+        }
+        XCTAssertEqual(richText.string, "x\n\u{fffc}")
+        XCTAssertEqual(attachmentCount, 1)
+    }
+
+    func testMixedSnipRichTextHonorsTheAggregateSourceLimit() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let text = "x"
+        let allowedFileBytes = SnipPasteboardExport.richTextSourceByteLimit - text.utf8.count
+
+        let exact = directory.appendingPathComponent("exact.bin")
+        XCTAssertTrue(FileManager.default.createFile(atPath: exact.path, contents: Data()))
+        let exactHandle = try FileHandle(forWritingTo: exact)
+        try exactHandle.truncate(atOffset: UInt64(allowedFileBytes))
+        try exactHandle.close()
+        let exactItem = try XCTUnwrap(
+            SnipDragExportPackage(payload: SnipDragPayload(
+                ids: [UUID()],
+                text: text,
+                attachmentURLs: [exact]
+            )).pasteboardWriters().first as? NSPasteboardItem
+        )
+        XCTAssertTrue(exactItem.types.contains(.rtfd))
+
+        let first = directory.appendingPathComponent("first.bin")
+        let second = directory.appendingPathComponent("second.bin")
+        for url in [first, second] {
+            XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: Data()))
+        }
+        let firstBytes = allowedFileBytes / 2
+        let firstHandle = try FileHandle(forWritingTo: first)
+        try firstHandle.truncate(atOffset: UInt64(firstBytes))
+        try firstHandle.close()
+        let secondHandle = try FileHandle(forWritingTo: second)
+        try secondHandle.truncate(atOffset: UInt64(allowedFileBytes - firstBytes + 1))
+        try secondHandle.close()
+        let overLimitItem = try XCTUnwrap(
+            SnipDragExportPackage(payload: SnipDragPayload(
+                ids: [UUID()],
+                text: text,
+                attachmentURLs: [first, second]
+            )).pasteboardWriters().first as? NSPasteboardItem
+        )
+        XCTAssertFalse(overLimitItem.types.contains(.rtfd))
+    }
+
+    func testMixedSnipRichTextFallsBackIfAnAttachmentGrowsPastTheSourceLimit() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let attachment = directory.appendingPathComponent("growing.bin")
+        try Data("small".utf8).write(to: attachment)
+        let payload = SnipDragPayload(
+            ids: [UUID()],
+            text: "Keep this text",
+            attachmentURLs: [attachment]
+        )
+        let item = try XCTUnwrap(
+            SnipDragExportPackage(payload: payload).pasteboardWriters().first
+                as? NSPasteboardItem
+        )
+        XCTAssertTrue(item.types.contains(.rtfd))
+        let handle = try FileHandle(forWritingTo: attachment)
+        try handle.truncate(atOffset: UInt64(SnipPasteboardExport.richTextSourceByteLimit))
+        try handle.close()
+
+        let data = try XCTUnwrap(item.data(forType: .rtfd))
+        let richText = try NSAttributedString(
+            data: data,
+            options: [.documentType: NSAttributedString.DocumentType.rtfd],
+            documentAttributes: nil
+        )
+        XCTAssertEqual(richText.string, payload.text)
+        var attachmentCount = 0
+        richText.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: richText.length)
+        ) { value, _, _ in
+            if value != nil {
+                attachmentCount += 1
+            }
+        }
+        XCTAssertEqual(attachmentCount, 0)
+    }
+
+    func testBoundedAttachmentReadRejectsFileChanges() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceBytes = 2 * 1024 * 1024
+        let maximumBytes = sourceBytes + 1024
+
+        let shrinking = directory.appendingPathComponent("shrinking.bin")
+        try Data(repeating: 1, count: sourceBytes).write(to: shrinking)
+        let shrinkingHandle = try FileHandle(forWritingTo: shrinking)
+        defer { try? shrinkingHandle.close() }
+        var didShrink = false
+        let shrunkData = SnipPasteboardExport.boundedFileData(
+            at: shrinking,
+            maximumBytes: maximumBytes
+        ) { _ in
+            guard !didShrink else { return }
+            didShrink = true
+            try? shrinkingHandle.truncate(atOffset: UInt64(sourceBytes / 2))
+        }
+        XCTAssertNil(shrunkData)
+
+        let growing = directory.appendingPathComponent("growing-within-limit.bin")
+        try Data(repeating: 2, count: sourceBytes).write(to: growing)
+        let growingHandle = try FileHandle(forWritingTo: growing)
+        defer { try? growingHandle.close() }
+        var didGrow = false
+        let grownData = SnipPasteboardExport.boundedFileData(
+            at: growing,
+            maximumBytes: maximumBytes
+        ) { _ in
+            guard !didGrow else { return }
+            didGrow = true
+            try? growingHandle.seekToEnd()
+            try? growingHandle.write(contentsOf: Data([3]))
+        }
+        XCTAssertNil(grownData)
+
+        let replaced = directory.appendingPathComponent("replaced.bin")
+        let replacement = directory.appendingPathComponent("replacement.bin")
+        try Data(repeating: 4, count: sourceBytes).write(to: replaced)
+        try Data(repeating: 5, count: sourceBytes).write(to: replacement)
+        var didReplace = false
+        let replacedData = SnipPasteboardExport.boundedFileData(
+            at: replaced,
+            maximumBytes: maximumBytes
+        ) { _ in
+            guard !didReplace else { return }
+            didReplace = true
+            try? FileManager.default.removeItem(at: replaced)
+            try? FileManager.default.moveItem(at: replacement, to: replaced)
+        }
+        XCTAssertNil(replacedData)
+    }
+
+    func testEligibleRichTextKeepsTextIfItsAttachmentBecomesMissing() throws {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+
+        let data = try XCTUnwrap(SnipPasteboardExport.richTextDataForEligibleExport(
+            text: "Keep this text",
+            attachmentURLs: [missing]
+        ))
+        let richText = try NSAttributedString(
+            data: data,
+            options: [.documentType: NSAttributedString.DocumentType.rtfd],
+            documentAttributes: nil
+        )
+
+        XCTAssertEqual(richText.string, "Keep this text")
+    }
+
+    func testMixedSnipDragKeepsTextIfAnAdvertisedAttachmentDisappears() throws {
+        let attachment = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try Data("attachment".utf8).write(to: attachment)
+        let payload = SnipDragPayload(
+            ids: [UUID()],
+            text: "Keep this text",
+            attachmentURLs: [attachment]
+        )
+        let item = try XCTUnwrap(
+            SnipDragExportPackage(payload: payload).pasteboardWriters().first
+                as? NSPasteboardItem
+        )
+        XCTAssertTrue(item.types.contains(NSPasteboard.PasteboardType.rtfd))
+        try FileManager.default.removeItem(at: attachment)
+
+        let data = try XCTUnwrap(item.data(forType: NSPasteboard.PasteboardType.rtfd))
+        let richText = try NSAttributedString(
+            data: data,
+            options: [.documentType: NSAttributedString.DocumentType.rtfd],
+            documentAttributes: nil
+        )
+
+        XCTAssertEqual(richText.string, payload.text)
+    }
+
+    func testMixedSnipDragKeepsAnEmptyAttachmentInRichText() throws {
+        let attachment = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        XCTAssertTrue(FileManager.default.createFile(atPath: attachment.path, contents: Data()))
+        defer { try? FileManager.default.removeItem(at: attachment) }
+        let payload = SnipDragPayload(
+            ids: [UUID()],
+            text: "Keep this text",
+            attachmentURLs: [attachment]
+        )
+        let item = try XCTUnwrap(
+            SnipDragExportPackage(payload: payload).pasteboardWriters().first
+                as? NSPasteboardItem
+        )
+        let data = try XCTUnwrap(item.data(forType: NSPasteboard.PasteboardType.rtfd))
+        let richText = try NSAttributedString(
+            data: data,
+            options: [.documentType: NSAttributedString.DocumentType.rtfd],
+            documentAttributes: nil
+        )
+        var attachmentCount = 0
+        richText.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: richText.length)
+        ) { value, _, _ in
+            if value != nil {
+                attachmentCount += 1
+            }
+        }
+
+        XCTAssertEqual(attachmentCount, 1)
     }
 
     func testImageOnlySnipDragStillPublishesItsFile() throws {
@@ -320,7 +581,7 @@ final class SnipListModelsTests: XCTestCase {
         )
         let package = SnipDragExportPackage(payload: payload)
         let provider = try XCTUnwrap(
-            package.pasteboardWriters().first as? NSFilePromiseProvider
+            package.pasteboardWriters().compactMap { $0 as? NSFilePromiseProvider }.first
         )
         let delegate = try XCTUnwrap(provider.delegate)
         let queue = try XCTUnwrap(delegate.operationQueue?(for: provider))
@@ -369,7 +630,7 @@ final class SnipListModelsTests: XCTestCase {
     ) throws -> NSFilePromiseProvider {
         let package = SnipDragExportPackage(payload: payload)
         return try XCTUnwrap(
-            package.pasteboardWriters().first as? NSFilePromiseProvider
+            package.pasteboardWriters().compactMap { $0 as? NSFilePromiseProvider }.first
         )
     }
 

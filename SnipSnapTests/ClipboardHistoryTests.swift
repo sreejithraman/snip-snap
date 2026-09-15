@@ -48,6 +48,269 @@ final class ClipboardHistoryTests: XCTestCase {
         )
     }
 
+    func testRestoreDoesNotReplaceStoredRTFWhenFilesArePresent() throws {
+        let context = try makeContext()
+        let directory = context.storeURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("formatted-history.txt")
+        try Data("Attachment".utf8).write(to: source)
+        let font = NSFont.boldSystemFont(ofSize: 18)
+        let attributed = NSAttributedString(
+            string: "Bold text",
+            attributes: [.font: font]
+        )
+        let rtf = try attributed.data(
+            from: NSRange(location: 0, length: attributed.length),
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+        )
+        let primary = NSPasteboardItem()
+        primary.setString("Bold text", forType: .string)
+        primary.setData(rtf, forType: .rtf)
+        context.pasteboard.clearContents()
+        XCTAssertTrue(context.pasteboard.writeObjects([primary, source as NSURL]))
+
+        context.history.poll()
+        let entry = try XCTUnwrap(context.history.entries.first)
+        XCTAssertTrue(context.history.restore(entry))
+        XCTAssertEqual(context.pasteboard.data(forType: .rtf), rtf)
+        XCTAssertNotNil(context.pasteboard.data(forType: .rtfd))
+
+        let target = NSTextView()
+        target.isRichText = true
+        target.importsGraphics = true
+        XCTAssertTrue(target.readSelection(from: context.pasteboard))
+        let restoredFont = try XCTUnwrap(target.textStorage?.attribute(
+            .font,
+            at: 0,
+            effectiveRange: nil
+        ) as? NSFont)
+        XCTAssertTrue(NSFontManager.shared.traits(of: restoredFont).contains(.boldFontMask))
+    }
+
+    func testCaptureRestoresMixedSnipRichText() async throws {
+        let context = try makeContext()
+        let directory = context.storeURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("mixed-history.txt")
+        try Data("Attachment".utf8).write(to: source)
+        let writers = SnipPasteboardExport(
+            text: "Keep this text",
+            attachmentURLs: [source]
+        ).pasteboardWriters()
+        context.pasteboard.clearContents()
+        XCTAssertTrue(context.pasteboard.writeObjects(writers))
+
+        context.history.poll()
+        await context.history.waitForPendingCapture()
+        let entry = try XCTUnwrap(context.history.entries.first)
+        XCTAssertEqual(entry.plainText, "Keep this text")
+        XCTAssertTrue(context.history.restore(entry))
+
+        let target = NSTextView()
+        target.isRichText = true
+        target.importsGraphics = true
+        XCTAssertTrue(target.readSelection(from: context.pasteboard))
+        XCTAssertTrue(target.string.contains("Keep this text"))
+        var attachmentCount = 0
+        target.textStorage?.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: target.textStorage?.length ?? 0)
+        ) { value, _, _ in
+            if value != nil {
+                attachmentCount += 1
+            }
+        }
+        XCTAssertEqual(attachmentCount, 1)
+    }
+
+    func testRestoreRebuildsMixedRichTextDroppedByTheHistoryLimit() async throws {
+        let context = try makeContext()
+        let directory = context.storeURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("large-mixed-history.bin")
+        try Data(
+            repeating: 7,
+            count: ClipboardHistory.representationByteLimit + 1
+        ).write(to: source)
+        let writers = SnipPasteboardExport(
+            text: "Keep this large text",
+            attachmentURLs: [source]
+        ).pasteboardWriters()
+        context.pasteboard.clearContents()
+        XCTAssertTrue(context.pasteboard.writeObjects(writers))
+
+        context.history.poll()
+        await context.history.waitForPendingCapture()
+        let entry = try XCTUnwrap(context.history.entries.first)
+        XCTAssertFalse(entry.items.flatMap(\.representations).contains {
+            $0.type == NSPasteboard.PasteboardType.rtfd.rawValue
+        })
+        XCTAssertTrue(context.history.restore(entry))
+
+        let target = NSTextView()
+        target.isRichText = true
+        target.importsGraphics = true
+        XCTAssertTrue(target.readSelection(from: context.pasteboard))
+        XCTAssertTrue(target.string.contains("Keep this large text"))
+        var attachmentCount = 0
+        target.textStorage?.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: target.textStorage?.length ?? 0)
+        ) { value, _, _ in
+            if value != nil {
+                attachmentCount += 1
+            }
+        }
+        XCTAssertEqual(attachmentCount, 1)
+    }
+
+    func testRestoreRebuildsMixedRichTextFromTheReadableFiles() throws {
+        let context = try makeContext()
+        let directory = context.storeURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let readable = directory.appendingPathComponent("readable-history.txt")
+        let missing = directory.appendingPathComponent("missing-history.txt")
+        try Data("Attachment".utf8).write(to: readable)
+        let primary = NSPasteboardItem()
+        primary.setString("Keep partial text", forType: .string)
+        context.pasteboard.clearContents()
+        XCTAssertTrue(context.pasteboard.writeObjects([
+            primary,
+            readable as NSURL,
+            missing as NSURL
+        ]))
+
+        context.history.poll()
+        let entry = try XCTUnwrap(context.history.entries.first)
+        XCTAssertEqual(entry.fileURLs, [readable, missing])
+        XCTAssertTrue(context.history.restore(entry))
+
+        let target = NSTextView()
+        target.isRichText = true
+        target.importsGraphics = true
+        XCTAssertTrue(target.readSelection(from: context.pasteboard))
+        XCTAssertTrue(target.string.contains("Keep partial text"))
+        var attachmentCount = 0
+        target.textStorage?.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: target.textStorage?.length ?? 0)
+        ) { value, _, _ in
+            if value != nil {
+                attachmentCount += 1
+            }
+        }
+        XCTAssertEqual(attachmentCount, 1)
+    }
+
+    func testRestoreDoesNotRepeatOtherTextItemsInRebuiltRichText() throws {
+        let context = try makeContext()
+        let directory = context.storeURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("multi-text-history.txt")
+        try Data("Attachment".utf8).write(to: source)
+        let first = NSPasteboardItem()
+        first.setString("First", forType: .string)
+        let second = NSPasteboardItem()
+        second.setString("Second", forType: .string)
+        context.pasteboard.clearContents()
+        XCTAssertTrue(context.pasteboard.writeObjects([first, second, source as NSURL]))
+
+        context.history.poll()
+        let entry = try XCTUnwrap(context.history.entries.first)
+        XCTAssertTrue(context.history.restore(entry))
+
+        let restored = try XCTUnwrap(context.pasteboard.pasteboardItems)
+        XCTAssertEqual(restored.compactMap { $0.string(forType: .string) }, ["First", "Second"])
+        let data = try XCTUnwrap(restored[0].data(forType: .rtfd))
+        let richText = try NSAttributedString(
+            data: data,
+            options: [.documentType: NSAttributedString.DocumentType.rtfd],
+            documentAttributes: nil
+        )
+        XCTAssertFalse(richText.string.contains("Second"))
+    }
+
+    func testRestoreRebuildsRTFDFromStoredRTFOrHTMLText() throws {
+        let context = try makeContext()
+        let directory = context.storeURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("formatted-only-history.txt")
+        try Data("Attachment".utf8).write(to: source)
+        let attributed = NSAttributedString(string: "Formatted only")
+
+        for (pasteboardType, documentType) in [
+            (NSPasteboard.PasteboardType.rtf, NSAttributedString.DocumentType.rtf),
+            (.html, .html)
+        ] {
+            let data = try attributed.data(
+                from: NSRange(location: 0, length: attributed.length),
+                documentAttributes: [.documentType: documentType]
+            )
+            let item = NSPasteboardItem()
+            item.setData(data, forType: pasteboardType)
+            context.pasteboard.clearContents()
+            XCTAssertTrue(context.pasteboard.writeObjects([item, source as NSURL]))
+
+            context.history.poll()
+            let entry = try XCTUnwrap(context.history.entries.first)
+            XCTAssertTrue(context.history.restore(entry))
+            XCTAssertEqual(context.pasteboard.data(forType: pasteboardType), data)
+            let rtfd = try XCTUnwrap(context.pasteboard.data(forType: .rtfd))
+            let rebuilt = try NSAttributedString(
+                data: rtfd,
+                options: [.documentType: NSAttributedString.DocumentType.rtfd],
+                documentAttributes: nil
+            )
+            XCTAssertTrue(rebuilt.string.contains("Formatted only"))
+        }
+    }
+
+    func testCaptureExtractsTextFromAnRTFDOnlyItem() async throws {
+        let context = try makeContext()
+        let directory = context.storeURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("rtfd-only.txt")
+        try Data("Attachment".utf8).write(to: source)
+        let exportItem = try XCTUnwrap(
+            SnipPasteboardExport(
+                text: "Searchable text",
+                attachmentURLs: [source]
+            ).pasteboardWriters().first as? NSPasteboardItem
+        )
+        let richData = try XCTUnwrap(exportItem.data(forType: .rtfd))
+        let richItem = NSPasteboardItem()
+        richItem.setData(richData, forType: .rtfd)
+        context.pasteboard.clearContents()
+        XCTAssertTrue(context.pasteboard.writeObjects([richItem]))
+
+        context.history.poll()
+        await context.history.waitForPendingCapture()
+
+        XCTAssertEqual(context.history.entries.first?.plainText, "Searchable text\n")
+        XCTAssertTrue(context.history.entries.first?.searchText.contains("Searchable text") == true)
+    }
+
+    func testRTFDTextExtractionKeepsLineBreakBeforeAnInterleavedAttachment() async throws {
+        let context = try makeContext()
+        let richText = NSMutableAttributedString(string: "before\n")
+        let attachment = NSTextAttachment(data: Data([1]), ofType: "public.data")
+        richText.append(NSAttributedString(attachment: attachment))
+        richText.append(NSAttributedString(string: "after"))
+        let data = try richText.data(
+            from: NSRange(location: 0, length: richText.length),
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd]
+        )
+        let item = NSPasteboardItem()
+        item.setData(data, forType: .rtfd)
+        context.pasteboard.clearContents()
+        XCTAssertTrue(context.pasteboard.writeObjects([item]))
+
+        context.history.poll()
+        await context.history.waitForPendingCapture()
+
+        XCTAssertEqual(context.history.entries.first?.plainText, "before\nafter")
+    }
+
     func testCaptureSkipsUnsupportedAndOversizedRepresentations() throws {
         let context = try makeContext()
         let item = NSPasteboardItem()

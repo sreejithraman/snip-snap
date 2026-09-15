@@ -28,6 +28,7 @@ final class AttachmentPreparationCoordinator {
     ) async throws -> [UUID: URL] {
         var prepared: [UUID: URL] = [:]
         for attachment in unique(attachments) {
+            try Task.checkCancellation()
             if let cached = cachedURLs[attachment.id], isAvailable(cached) {
                 prepared[attachment.id] = cached
                 continue
@@ -40,6 +41,7 @@ final class AttachmentPreparationCoordinator {
                 attachment.id,
                 for: use
             )
+            try Task.checkCancellation()
             cachedURLs[attachment.id] = url
             prepared[attachment.id] = url
         }

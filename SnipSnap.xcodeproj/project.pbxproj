@@ -58,6 +58,7 @@
 		10000000000000000000002E /* ComposerDraftStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000037 /* ComposerDraftStore.swift */; };
 		100000000000000000000030 /* AttachmentPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000039 /* AttachmentPreview.swift */; };
 		100000000000000000000031 /* SnipDragExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003A /* SnipDragExport.swift */; };
+		D11000000000000000000001 /* SnipPasteboardExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12000000000000000000001 /* SnipPasteboardExport.swift */; };
 		100000000000000000000032 /* PanelFileDrop.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003B /* PanelFileDrop.swift */; };
 		100000000000000000000033 /* SnipSnapColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003C /* SnipSnapColors.swift */; };
 		100000000000000000000034 /* PanelResizeSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003D /* PanelResizeSurface.swift */; };
@@ -247,6 +248,7 @@
 		A20000000000000000000006 /* AppleAccountNoticeModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAccountNoticeModel.swift; sourceTree = "<group>"; };
 		200000000000000000000039 /* AttachmentPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentPreview.swift; sourceTree = "<group>"; };
 		20000000000000000000003A /* SnipDragExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipDragExport.swift; sourceTree = "<group>"; };
+		D12000000000000000000001 /* SnipPasteboardExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipPasteboardExport.swift; sourceTree = "<group>"; };
 		20000000000000000000003B /* PanelFileDrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelFileDrop.swift; sourceTree = "<group>"; };
 		20000000000000000000003C /* SnipSnapColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipSnapColors.swift; sourceTree = "<group>"; };
 		20000000000000000000003D /* PanelResizeSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelResizeSurface.swift; sourceTree = "<group>"; };
@@ -426,6 +428,7 @@
 				200000000000000000000026 /* SnipListView.swift */,
 				C20000000000000000000006 /* SnipListReorderGeometry.swift */,
 				200000000000000000000039 /* AttachmentPreview.swift */,
+				D12000000000000000000001 /* SnipPasteboardExport.swift */,
 				20000000000000000000003A /* SnipDragExport.swift */,
 				B20000000000000000000005 /* PanelDragSession.swift */,
 				200000000000000000000030 /* PanelUI.swift */,
@@ -869,6 +872,7 @@
 				10000000000000000000001E /* SnipListView.swift in Sources */,
 				C10000000000000000000006 /* SnipListReorderGeometry.swift in Sources */,
 				100000000000000000000030 /* AttachmentPreview.swift in Sources */,
+				D11000000000000000000001 /* SnipPasteboardExport.swift in Sources */,
 				100000000000000000000031 /* SnipDragExport.swift in Sources */,
 				B10000000000000000000005 /* PanelDragSession.swift in Sources */,
 				100000000000000000000027 /* PanelUI.swift in Sources */,

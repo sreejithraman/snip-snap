@@ -71,25 +71,15 @@ struct SnipDragExportPackage: PanelDragExportPackage {
     }
 
     func pasteboardWriters() -> [NSPasteboardWriting] {
-        if let markdownPromiseProvider {
-            return [markdownPromiseProvider]
-                + payload.attachmentURLs.map { $0 as NSURL }
-                + [privatePayloadWriter()]
-        }
-
-        let primary = NSPasteboardItem()
-        if !payload.text.isEmpty {
-            primary.setString(payload.text, forType: .string)
-            addPrivatePayload(to: primary)
-            return [primary] + payload.attachmentURLs.map { $0 as NSURL }
-        }
-
-        guard !payload.attachmentURLs.isEmpty else {
-            addPrivatePayload(to: primary)
-            return [primary]
-        }
-        return payload.attachmentURLs.map { $0 as NSURL }
-            + [privatePayloadWriter()]
+        let privatePayload = try? JSONEncoder().encode(payload)
+        let promisedFiles: [NSPasteboardWriting] = markdownPromiseProvider.map { [$0] } ?? []
+        return SnipPasteboardExport(
+            text: payload.text,
+            attachmentURLs: payload.attachmentURLs
+        ).pasteboardWriters(
+            filesAfterPrimary: promisedFiles,
+            additionalRepresentations: privatePayload.map { [Self.privateType: $0] } ?? [:]
+        )
     }
 
     static func markdown(for payload: SnipDragPayload) -> String {
@@ -103,18 +93,6 @@ struct SnipDragExportPackage: PanelDragExportPackage {
             result.append("- `\(name)`\n")
         }
         return result
-    }
-
-    private func addPrivatePayload(to item: NSPasteboardItem) {
-        if let encoded = try? JSONEncoder().encode(payload) {
-            item.setData(encoded, forType: Self.privateType)
-        }
-    }
-
-    private func privatePayloadWriter() -> NSPasteboardItem {
-        let item = NSPasteboardItem()
-        addPrivatePayload(to: item)
-        return item
     }
 
     static let privateType = NSPasteboard.PasteboardType(UTType.snipSnapSnipDrag.identifier)

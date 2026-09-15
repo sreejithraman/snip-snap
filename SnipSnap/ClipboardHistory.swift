@@ -6,6 +6,7 @@ import Foundation
 import UniformTypeIdentifiers
 
 extension ClipboardEntry {
+    @MainActor
     func write(to pasteboard: NSPasteboard = .general) -> Bool {
         let previous = PasteboardSnapshotStore.snapshot(pasteboard)
         var pasteboardItems: [NSPasteboardItem] = []
@@ -18,6 +19,31 @@ extension ClipboardEntry {
                 ) else { return false }
             }
             pasteboardItems.append(item)
+        }
+        let hasRTFD = items.contains { payload in
+            payload.representations.contains {
+                $0.type == NSPasteboard.PasteboardType.rtfd.rawValue
+            }
+        }
+        if !hasRTFD,
+           let primaryIndex = items.firstIndex(where: {
+               Self.extractMacAttributedText(from: $0) != nil
+           }),
+           let primaryText = Self.extractMacAttributedText(from: items[primaryIndex]) {
+            let primary = pasteboardItems[primaryIndex]
+            let readableFiles = fileURLs.filter { url in
+                guard FileManager.default.isReadableFile(atPath: url.path),
+                      let values = try? url.resourceValues(forKeys: [
+                        .isRegularFileKey,
+                        .isSymbolicLinkKey
+                      ]) else { return false }
+                return values.isRegularFile == true && values.isSymbolicLink != true
+            }
+            SnipPasteboardExport.addDeferredRichText(
+                to: primary,
+                attributedText: primaryText,
+                attachmentURLs: readableFiles
+            )
         }
         pasteboard.clearContents()
         guard pasteboard.writeObjects(pasteboardItems) else {
@@ -35,30 +61,70 @@ extension ClipboardEntry {
 
     @MainActor
     fileprivate static func extractMacText(from items: [ClipboardPayloadItem]) -> String {
-        items.compactMap { item in
-            if let value = item.representations.first(where: {
-                $0.type == NSPasteboard.PasteboardType.string.rawValue
-            }), let string = String(data: value.data, encoding: .utf8) {
-                return string
-            }
-            for (type, documentType) in [
-                (NSPasteboard.PasteboardType.rtf.rawValue, NSAttributedString.DocumentType.rtf),
-                (NSPasteboard.PasteboardType.html.rawValue, .html)
-            ] {
-                guard let value = item.representations.first(where: { $0.type == type }),
-                      let attributed = try? NSAttributedString(
-                        data: value.data,
-                        options: [.documentType: documentType],
-                        documentAttributes: nil
-                      ) else { continue }
-                return attributed.string
-            }
-            return nil
-        }
+        items.compactMap(extractMacText(from:))
         .filter { !$0.isEmpty }
         .joined(separator: "\n")
     }
 
+    @MainActor
+    private static func extractMacText(from item: ClipboardPayloadItem) -> String? {
+        if let value = item.representations.first(where: {
+            $0.type == NSPasteboard.PasteboardType.string.rawValue
+        }), let string = String(data: value.data, encoding: .utf8) {
+            return string
+        }
+        return extractMacAttributedText(from: item)?.string
+    }
+
+    @MainActor
+    private static func extractMacAttributedText(
+        from item: ClipboardPayloadItem
+    ) -> NSAttributedString? {
+        for (type, documentType) in [
+            (NSPasteboard.PasteboardType.rtf.rawValue, NSAttributedString.DocumentType.rtf),
+            (NSPasteboard.PasteboardType.rtfd.rawValue, .rtfd),
+            (NSPasteboard.PasteboardType.html.rawValue, .html)
+        ] {
+            guard let value = item.representations.first(where: { $0.type == type }),
+                  let attributed = try? NSAttributedString(
+                    data: value.data,
+                    options: [.documentType: documentType],
+                    documentAttributes: nil
+                  ) else { continue }
+            return documentType == .rtfd
+                ? attributed.removingAttachments
+                : attributed
+        }
+        if let value = item.representations.first(where: {
+            $0.type == NSPasteboard.PasteboardType.string.rawValue
+        }), let string = String(data: value.data, encoding: .utf8) {
+            return NSAttributedString(string: string)
+        }
+        return nil
+    }
+
+}
+
+private extension NSAttributedString {
+    var stringByRemovingAttachments: String {
+        removingAttachments.string
+    }
+
+    var removingAttachments: NSAttributedString {
+        let text = NSMutableAttributedString(attributedString: self)
+        var ranges: [NSRange] = []
+        text.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: text.length)
+        ) { value, range, _ in
+            guard value != nil else { return }
+            ranges.append(range)
+        }
+        for range in ranges.reversed() {
+            text.deleteCharacters(in: range)
+        }
+        return text
+    }
 }
 
 struct ClipboardSnipMaterialization: Sendable {
@@ -158,7 +224,7 @@ private final class ClipboardCaptureReader {
 
     private static func supportedTypes(in item: NSPasteboardItem) -> [NSPasteboard.PasteboardType] {
         let supported: [NSPasteboard.PasteboardType] = [
-            .string, .rtf, .html, .fileURL, .png, .tiff
+            .string, .rtf, .rtfd, .html, .fileURL, .png, .tiff
         ]
         return supported.filter(item.types.contains)
     }
