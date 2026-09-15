@@ -1302,6 +1302,242 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testCopyingMixedSnipKeepsTextAndAttachmentInRichTextTargets() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("mixed-copy.txt")
+        try Data("Attachment".utf8).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let added = try await repository.add(
+            content: "Keep this text",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let snip = try XCTUnwrap(added)
+        let model = AppModel(library: repository, defaults: defaults())
+        await model.reload()
+        model.selection = [snip.id]
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-mixed-copy-\(UUID())"))
+
+        let copied = await model.copySelectionNow(to: pasteboard)
+        XCTAssertTrue(copied)
+
+        let target = NSTextView()
+        target.isRichText = true
+        target.importsGraphics = true
+        XCTAssertTrue(target.readSelection(from: pasteboard))
+        XCTAssertTrue(target.string.contains("Keep this text"))
+        var attachmentCount = 0
+        target.textStorage?.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: target.textStorage?.length ?? 0)
+        ) { value, _, _ in
+            if value != nil {
+                attachmentCount += 1
+            }
+        }
+        XCTAssertEqual(attachmentCount, 1)
+    }
+
+    @MainActor
+    func testSlowerCopyCannotOverwriteANewerCopy() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("large-copy.bin")
+        try Data(
+            repeating: 0,
+            count: ClipboardHistoryState.representationByteLimit
+        ).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let added = try await repository.add(
+            content: "Older mixed copy",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let mixedID = try XCTUnwrap(added?.id)
+        let exportGate = PausingPasteboardExportPreparer()
+        let model = AppModel(
+            library: repository,
+            defaults: defaults(),
+            preparePasteboardExport: exportGate.prepare
+        )
+        await model.reload()
+        let mixed = try XCTUnwrap(model.snips.first(where: { $0.id == mixedID }))
+        let newer = Snip(content: "Newer plain copy", origin: .quickEntry)
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-copy-race-\(UUID())"))
+
+        let olderAccepted = model.placeOnClipboard(
+            .snips([mixed]),
+            feedback: .silent,
+            to: pasteboard
+        )
+        await exportGate.waitUntilPreparationStarts()
+        let newerCopied = await model.placeOnClipboardNow(
+            .snips([newer]),
+            feedback: .silent,
+            to: pasteboard
+        )
+        await model.waitForPendingClipboardWrite()
+        await exportGate.waitUntilCancellationIsObserved()
+
+        XCTAssertTrue(olderAccepted)
+        XCTAssertTrue(newerCopied)
+        let observedCancellation = await exportGate.didObserveCancellation()
+        XCTAssertTrue(observedCancellation)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Newer plain copy")
+    }
+
+    @MainActor
+    func testPendingCopyCannotOverwriteANewerExternalClipboardWrite() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("external-race.bin")
+        try Data(
+            repeating: 0,
+            count: ClipboardHistoryState.representationByteLimit
+        ).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let added = try await repository.add(
+            content: "Pending mixed copy",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let mixedID = try XCTUnwrap(added?.id)
+        let exportGate = PausingPasteboardExportPreparer()
+        let model = AppModel(
+            library: repository,
+            defaults: defaults(),
+            preparePasteboardExport: exportGate.prepare
+        )
+        await model.reload()
+        let mixed = try XCTUnwrap(model.snips.first(where: { $0.id == mixedID }))
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-external-race-\(UUID())"))
+
+        XCTAssertTrue(model.placeOnClipboard(
+            .snips([mixed]),
+            feedback: .silent,
+            to: pasteboard
+        ))
+        await exportGate.waitUntilPreparationStarts()
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("External copy", forType: .string))
+        await exportGate.release()
+        await model.waitForPendingClipboardWrite()
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "External copy")
+    }
+
+    @MainActor
+    func testCancellingAwaitedCopyStopsPendingExport() async {
+        let exportGate = PausingPasteboardExportPreparer()
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: []),
+            defaults: defaults(),
+            preparePasteboardExport: exportGate.prepare
+        )
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-copy-caller-cancel-\(UUID())"))
+        let copy = Task { @MainActor in
+            await model.placeOnClipboardNow(
+                .snips([Snip(content: "Cancelled copy", origin: .quickEntry)]),
+                feedback: .silent,
+                to: pasteboard
+            )
+        }
+
+        await exportGate.waitUntilPreparationStarts()
+        copy.cancel()
+        let copied = await copy.value
+
+        let observedCancellation = await exportGate.didObserveCancellation()
+        XCTAssertFalse(copied)
+        XCTAssertTrue(observedCancellation)
+        XCTAssertNil(pasteboard.string(forType: .string))
+    }
+
+    @MainActor
+    func testNewerCopyCancelsPendingAttachmentPreparation() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("cancel-copy.txt")
+        try Data("Attachment".utf8).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let added = try await repository.add(
+            content: "Older remote copy",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let snip = try XCTUnwrap(added)
+        let attachment = try XCTUnwrap(snip.attachments.first)
+        try FileManager.default.removeItem(at: repository.attachmentURL(for: attachment))
+        let handler = CancellableMacAttachmentHandler(url: source)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [snip]),
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        await model.reload()
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-copy-cancel-\(UUID())"))
+
+        let olderCopy = Task { @MainActor in
+            await model.placeOnClipboardNow(
+                .snips([snip]),
+                feedback: .silent,
+                to: pasteboard
+            )
+        }
+        await handler.waitUntilPreparationStarts()
+        let newerCopied = await model.placeOnClipboardNow(
+            .snips([Snip(content: "Newer copy", origin: .quickEntry)]),
+            feedback: .silent,
+            to: pasteboard
+        )
+        let olderCopied = await olderCopy.value
+
+        let observedCancellation = await handler.didObserveCancellation()
+        XCTAssertTrue(newerCopied)
+        XCTAssertFalse(olderCopied)
+        XCTAssertTrue(observedCancellation)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Newer copy")
+    }
+
+    @MainActor
+    func testCancellingCopyDuringAttachmentPreparationDoesNotShowAnError() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("caller-cancel.txt")
+        try Data("Attachment".utf8).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let added = try await repository.add(
+            content: "Remote copy",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let snip = try XCTUnwrap(added)
+        let attachment = try XCTUnwrap(snip.attachments.first)
+        try FileManager.default.removeItem(at: repository.attachmentURL(for: attachment))
+        let handler = CancellableMacAttachmentHandler(
+            url: source,
+            returnsNonCancellationError: true
+        )
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [snip]),
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-attachment-cancel-\(UUID())"))
+        let copy = Task { @MainActor in
+            await model.placeOnClipboardNow(
+                .snips([snip]),
+                feedback: .silent,
+                to: pasteboard
+            )
+        }
+
+        await handler.waitUntilPreparationStarts()
+        copy.cancel()
+        let copied = await copy.value
+
+        XCTAssertFalse(copied)
+        XCTAssertNil(model.presentedError)
+        XCTAssertNil(pasteboard.string(forType: .string))
+    }
+
+    @MainActor
     func testPlacingSnipsRecordsTheCopyInClipboardHistory() async throws {
         let pasteboard = NSPasteboard(
             name: .init("SnipSnapTests-place-history-\(UUID().uuidString)")
@@ -1928,4 +2164,96 @@ private actor MacOptionalCloudSyncHandlerProbe: OptionalCloudSyncHandling {
 
     func preparationRequests() -> [MacAttachmentPreparationRequest] { requests }
     func clearCount() -> Int { clears }
+}
+
+private actor CancellableMacAttachmentHandler: OptionalCloudSyncHandling {
+    private let url: URL
+    private let returnsNonCancellationError: Bool
+    private var preparationStarted = false
+    private var observedCancellation = false
+
+    init(url: URL, returnsNonCancellationError: Bool = false) {
+        self.url = url
+        self.returnsNonCancellationError = returnsNonCancellationError
+    }
+
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
+    func syncWhenPossible() async {}
+    func isCloudSyncActive() async throws -> Bool { true }
+    func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { [:] }
+
+    func prepareSyncedAttachment(
+        _ id: UUID,
+        for use: SyncedAttachmentUse
+    ) async throws -> URL {
+        preparationStarted = true
+        do {
+            try await Task.sleep(nanoseconds: 60_000_000_000)
+        } catch is CancellationError {
+            observedCancellation = true
+            if returnsNonCancellationError {
+                throw MacAttachmentPreparationError.unavailable
+            }
+            throw CancellationError()
+        }
+        return url
+    }
+
+    func clearDownloadedFiles() async throws {}
+
+    func waitUntilPreparationStarts() async {
+        while !preparationStarted {
+            await Task.yield()
+        }
+    }
+
+    func didObserveCancellation() -> Bool {
+        observedCancellation
+    }
+
+}
+
+private actor PausingPasteboardExportPreparer {
+    private var callCount = 0
+    private var preparationStarted = false
+    private var isReleased = false
+    private var observedCancellation = false
+
+    func prepare(text: String, attachmentURLs: [URL]) async -> SnipPasteboardExport {
+        callCount += 1
+        if callCount == 1 {
+            preparationStarted = true
+            while !isReleased, !Task.isCancelled {
+                await Task.yield()
+            }
+            if Task.isCancelled {
+                observedCancellation = true
+            }
+        }
+        return await SnipPasteboardExport.preparingRichText(
+            text: text,
+            attachmentURLs: attachmentURLs
+        )
+    }
+
+    func waitUntilPreparationStarts() async {
+        while !preparationStarted {
+            await Task.yield()
+        }
+    }
+
+    func release() {
+        isReleased = true
+    }
+
+    func didObserveCancellation() -> Bool {
+        observedCancellation
+    }
+
+    func waitUntilCancellationIsObserved() async {
+        while !observedCancellation {
+            await Task.yield()
+        }
+    }
 }

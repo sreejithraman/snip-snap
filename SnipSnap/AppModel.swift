@@ -71,6 +71,9 @@ final class AppModel: ObservableObject {
     private var cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private let defaults: UserDefaults
     private let composerDrafts: ComposerDraftStore
+    private let preparePasteboardExport: @Sendable (String, [URL]) async -> SnipPasteboardExport
+    private var clipboardWriteGeneration = 0
+    private var pendingClipboardWriteTask: Task<Bool, Never>?
     let clipboardHistory: ClipboardHistory
 
     var filteredSnips: [Snip] {
@@ -120,7 +123,10 @@ final class AppModel: ObservableObject {
         recoveryScope: SnipRecoveryScope? = nil,
         cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
         userActions: (any SnipLibraryUserActions)? = nil,
-        userActionsRebinder: SnipLibraryUserActionsRebinder = .direct
+        userActionsRebinder: SnipLibraryUserActionsRebinder = .direct,
+        preparePasteboardExport: @escaping @Sendable (String, [URL]) async -> SnipPasteboardExport = {
+            await SnipPasteboardExport.preparingRichText(text: $0, attachmentURLs: $1)
+        }
     ) {
         self.defaults = defaults
         composerDrafts = ComposerDraftStore(
@@ -146,6 +152,7 @@ final class AppModel: ObservableObject {
             cloudSyncHandler: cloudSyncHandler
         )
         self.cloudSyncHandler = cloudSyncHandler
+        self.preparePasteboardExport = preparePasteboardExport
         presentError(initialError)
         Task { await reload() }
     }
@@ -919,9 +926,14 @@ final class AppModel: ObservableObject {
         switch placement {
         case .snips(let snips):
             guard !snips.isEmpty else { return false }
-            Task { await placeOnClipboardNow(.snips(snips), feedback: feedback, to: pasteboard) }
+            pendingClipboardWriteTask = startClipboardWrite(
+                snips,
+                feedback: feedback,
+                to: pasteboard
+            )
             return true
         case .clipboardEntry(let entry):
+            _ = nextClipboardWriteGeneration()
             return placeClipboardEntry(entry, feedback: feedback)
         }
     }
@@ -934,8 +946,20 @@ final class AppModel: ObservableObject {
     ) async -> Bool {
         switch placement {
         case .snips(let snips):
-            return await placeSnipsOnClipboard(snips, feedback: feedback, to: pasteboard)
+            guard !snips.isEmpty else { return false }
+            let task = startClipboardWrite(
+                snips,
+                feedback: feedback,
+                to: pasteboard
+            )
+            pendingClipboardWriteTask = task
+            return await withTaskCancellationHandler {
+                await task.value
+            } onCancel: {
+                task.cancel()
+            }
         case .clipboardEntry(let entry):
+            _ = nextClipboardWriteGeneration()
             return placeClipboardEntry(entry, feedback: feedback)
         }
     }
@@ -955,25 +979,55 @@ final class AppModel: ObservableObject {
         return true
     }
 
-    private func placeSnipsOnClipboard(
+    private func startClipboardWrite(
         _ snips: [Snip],
         feedback: ClipboardPlacementFeedback,
         to pasteboard: NSPasteboard
+    ) -> Task<Bool, Never> {
+        let changeCount = pasteboard.changeCount
+        let generation = nextClipboardWriteGeneration()
+        return Task {
+            await placeSnipsOnClipboard(
+                snips,
+                feedback: feedback,
+                to: pasteboard,
+                generation: generation,
+                expectedChangeCount: changeCount
+            )
+        }
+    }
+
+    private func placeSnipsOnClipboard(
+        _ snips: [Snip],
+        feedback: ClipboardPlacementFeedback,
+        to pasteboard: NSPasteboard,
+        generation: Int,
+        expectedChangeCount: Int
     ) async -> Bool {
         guard !snips.isEmpty else { return false }
         let attachments = attachmentPreparation.unique(snips.flatMap(\.attachments))
         let prepared: [UUID: URL]
         do {
             prepared = try await prepareAttachments(attachments, for: .copy)
+        } catch is CancellationError {
+            return false
         } catch {
-            presentError(error)
+            if !Task.isCancelled, generation == clipboardWriteGeneration {
+                presentError(error)
+            }
             return false
         }
         let text = SnipFormatter.formatForClipboard(snips: snips)
-        let textItem = NSPasteboardItem()
-        textItem.setString(text, forType: .string)
-        var objects: [NSPasteboardWriting] = [textItem]
-        objects.append(contentsOf: attachments.compactMap { prepared[$0.id] as NSURL? })
+        guard generation == clipboardWriteGeneration,
+              pasteboard.changeCount == expectedChangeCount else { return false }
+        let export = await preparePasteboardExport(
+            text,
+            attachments.compactMap { prepared[$0.id] }
+        )
+        guard !Task.isCancelled,
+              generation == clipboardWriteGeneration else { return false }
+        guard pasteboard.changeCount == expectedChangeCount else { return false }
+        let objects = export.pasteboardWriters()
         pasteboard.clearContents()
         let copied = pasteboard.writeObjects(objects)
         if copied {
@@ -983,6 +1037,16 @@ final class AppModel: ObservableObject {
             }
         }
         return copied
+    }
+
+    private func nextClipboardWriteGeneration() -> Int {
+        pendingClipboardWriteTask?.cancel()
+        clipboardWriteGeneration += 1
+        return clipboardWriteGeneration
+    }
+
+    func waitForPendingClipboardWrite() async {
+        _ = await pendingClipboardWriteTask?.value
     }
 
     func clearDownloadedFiles() async throws {
