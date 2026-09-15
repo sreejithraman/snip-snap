@@ -4,6 +4,23 @@
         <title>Snip Snap</title>
         <item>
             <title>0.5.1</title>
+            <pubDate>Tue, 15 Sep 2026 21:19:42 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.5.1-beta.76</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.5.1-beta.76-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>76</sparkle:version>
+            <sparkle:shortVersionString>0.5.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.5.1-beta.76/Snip-Snap-0.5.1.zip" length="9834776" type="application/octet-stream" sparkle:edSignature="LfxVDvL0a7MMPYYAjypz1YqgEMqTrMjxMYikzPSMv0nO2gevBCJ/kq6qJHJgFQdod1zy7eaoXdn48mh6fBS0Cw=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.5.1 Beta 76 — Mac
+
+- Fix interrupted double Shift shortcuts
+- Improve settings layout across macOS and iOS
+- Fix mixed snip copy and drag
+</description>
+        </item>
+        <item>
+            <title>0.5.1</title>
             <pubDate>Tue, 15 Sep 2026 19:01:47 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.5.1-beta.73</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.5.1-beta.73-mac.txt</sparkle:fullReleaseNotesLink>
