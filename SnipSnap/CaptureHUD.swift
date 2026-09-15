@@ -32,7 +32,7 @@ final class CaptureHUDController {
             panel.setFrameOrigin(
                 NSPoint(
                     x: frame.midX - panel.frame.width / 2,
-                    y: frame.maxY - panel.frame.height - 36
+                    y: frame.minY + 36
                 )
             )
         }
