@@ -23,7 +23,13 @@ struct ShortcutSettingsView: View {
                             }
                         )
                     }
+                } header: {
+                    Text("From Any App")
+                } footer: {
+                    Text("Capture content or open Snip Snap while you’re using another app.")
+                }
 
+                Section("In Snip Snap") {
                     ForEach(AppShortcutAction.allCases) { action in
                         let chord = shortcutSettings.chord(for: action)
                         ShortcutSettingRow(
@@ -51,8 +57,6 @@ struct ShortcutSettingsView: View {
                     .padding([.horizontal, .bottom])
             }
         }
-        .frame(width: 400, height: 230)
-        .background(ShortcutSettingsWindowConfigurator())
     }
 
     private func save(_ trigger: ShortcutTrigger, for action: GlobalHotKeyAction) {
@@ -79,28 +83,6 @@ struct ShortcutSettingsView: View {
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
-        }
-    }
-}
-
-private struct ShortcutSettingsWindowConfigurator: NSViewRepresentable {
-    func makeNSView(context: Context) -> ConfiguringView {
-        ConfiguringView()
-    }
-
-    func updateNSView(_ view: ConfiguringView, context: Context) {
-        view.configureWindow()
-    }
-
-    final class ConfiguringView: NSView {
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            configureWindow()
-        }
-
-        func configureWindow() {
-            window?.title = String(localized: "Keyboard Shortcuts")
-            window?.level = .modalPanel
         }
     }
 }

@@ -15,76 +15,86 @@ struct SyncedContentSettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    Toggle("Haptics", isOn: $haptics.isEnabled)
-                        .accessibilityIdentifier("haptics-toggle")
+                Section("General") {
+                    Toggle(isOn: $haptics.isEnabled) {
+                        settingsLabel("Haptics", systemImage: "waveform") {
+                            Text("Feel feedback when you use Snip Snap.")
+                        }
+                    }
+                    .accessibilityIdentifier("haptics-toggle")
                 }
 
-                Section("Sync") {
-                    Toggle("Sync with iCloud", isOn: syncEnabled)
-                        .disabled(!canChangeSync)
-                        .accessibilityIdentifier("icloud-sync-toggle")
+                Section("iCloud") {
+                    Toggle(isOn: syncEnabled) {
+                        settingsLabel("Sync with iCloud", systemImage: "icloud")
+                    }
+                    .disabled(!canChangeSync)
+                    .accessibilityIdentifier("icloud-sync-toggle")
+                    syncStatus
                     if let clipboard {
-                        Toggle("Sync clipboard history", isOn: Binding(
+                        Toggle(isOn: Binding(
                             get: { clipboard.syncEnabled },
                             set: { enabled in
                                 if enabled { confirmsClipboardSync = true }
                                 else { Task { await clipboard.setSyncEnabled(false) } }
                             }
-                        ))
+                        )) {
+                            settingsLabel("Sync clipboard history", systemImage: "doc.on.clipboard") {
+                                Text("Turning this off doesn’t delete your history.")
+                            }
+                        }
                         .disabled(model.mode != .iCloudSync)
                         .accessibilityIdentifier("clipboard-sync-toggle")
-                        Text("Turning this off doesn’t delete your history.")
-                            .font(.caption).foregroundStyle(.secondary)
                     }
                     if let message = clipboard?.errorMessage {
-                        Text(message).font(.caption).foregroundStyle(.red)
+                        Label(message, systemImage: "exclamationmark.triangle")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    Label(model.statusTitle, systemImage: statusImage)
-                        .accessibilityIdentifier("sync-status")
-                    Text(model.detail)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
                     if model.canRetryFailedSync, let retryAction {
-                        Button("Retry sync") { Task { await retryAction() } }
-                            .accessibilityIdentifier("retry-icloud-sync")
+                        Button {
+                            Task { await retryAction() }
+                        } label: {
+                            settingsLabel("Retry sync", systemImage: "arrow.clockwise")
+                        }
+                        .accessibilityIdentifier("retry-icloud-sync")
                     }
                 }
 
-                if case .enabling = model.state {
+                if model.canDelete {
                     Section {
-                        ProgressView("Setting up sync…")
-                    }
-                } else if case .syncing = model.state {
-                    Section {
-                        ProgressView("Syncing with iCloud…")
-                    }
-                } else if case .disabling = model.state {
-                    Section {
-                        ProgressView("Saving a copy…")
-                    }
-                } else if case .deleting = model.state {
-                    Section {
-                        ProgressView("Deleting synced content…")
-                    }
-                } else if model.canDelete {
-                    Section {
-                        Button("Delete synced content…", role: .destructive) {
+                        Button(role: .destructive) {
                             confirmsDelete = true
+                        } label: {
+                            Label("Delete synced content…", systemImage: "trash")
                         }
                         .accessibilityIdentifier("delete-synced-content")
+                    } header: {
+                        Text("iCloud Data")
+                    } footer: {
+                        Text("Remove synced content from iCloud and your synced devices.")
                     }
                 }
 
                 Section("About") {
-                    Link(
-                        "Privacy policy",
-                        destination: URL(string: "https://sree.world/snip-snap/privacy")!
-                    )
+                    Link(destination: URL(string: "https://sree.world/snip-snap/privacy")!) {
+                        HStack {
+                            settingsLabel("Privacy policy", systemImage: "hand.raised")
+                            Spacer()
+                            Image(systemName: "arrow.up.right")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                    .foregroundStyle(.primary)
                     .accessibilityIdentifier("privacy-policy")
                 }
             }
+            .formStyle(.grouped)
             .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
@@ -120,6 +130,59 @@ struct SyncedContentSettingsView: View {
             }
         } message: {
             Text("Couldn’t get the latest iCloud changes. Turning off sync uses this device’s copy, which may be out of date. Your iCloud data stays.")
+        }
+    }
+
+    private var syncStatus: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Group {
+                if isSyncBusy {
+                    ProgressView()
+                } else {
+                    Image(systemName: statusImage)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 24)
+            .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(model.statusTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .accessibilityIdentifier("sync-status")
+                Text(model.detail)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func settingsLabel(
+        _ title: LocalizedStringKey,
+        systemImage: String
+    ) -> some View {
+        settingsLabel(title, systemImage: systemImage) { EmptyView() }
+    }
+
+    private func settingsLabel<Detail: View>(
+        _ title: LocalizedStringKey,
+        systemImage: String,
+        @ViewBuilder detail: () -> Detail
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Image(systemName: systemImage)
+                .foregroundStyle(.secondary)
+                .frame(width: 24)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                detail()
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -174,9 +237,20 @@ struct SyncedContentSettingsView: View {
     }
 
     private var statusImage: String {
+        switch model.state {
+        case .failed, .removalPending: return "exclamationmark.triangle"
+        default: break
+        }
         switch model.mode {
-        case .localOnly: "internaldrive"
-        case .iCloudSync: "icloud"
+        case .localOnly: return "internaldrive"
+        case .iCloudSync: return "icloud"
+        }
+    }
+
+    private var isSyncBusy: Bool {
+        switch model.state {
+        case .enabling, .syncing, .disabling, .deleting: true
+        case .ready, .removalPending, .deleted, .failed: false
         }
     }
 }

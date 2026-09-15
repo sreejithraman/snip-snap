@@ -51,10 +51,8 @@ final class AccessibilityPermissionController: ObservableObject {
         hasRequestedAccess ? .needsRepair : .initial
     }
 
-    var menuActionTitle: String {
-        if isGranted {
-            return "Accessibility Settings…"
-        }
+    var menuActionTitle: String? {
+        guard !isGranted else { return nil }
 
         switch setupCardState {
         case .initial:

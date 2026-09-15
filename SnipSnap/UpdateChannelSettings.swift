@@ -41,24 +41,23 @@ struct UpdateSettingsView: View {
 
     var body: some View {
         Form {
-            Toggle(
-                "Include beta updates",
-                isOn: Binding(
-                    get: { settings.includesBetaUpdates },
-                    set: { newValue in
-                        settings.setIncludesBetaUpdates(newValue) {
-                            updater.resetUpdateCycleAfterShortDelay()
+            Section {
+                Toggle(
+                    "Include beta updates",
+                    isOn: Binding(
+                        get: { settings.includesBetaUpdates },
+                        set: { newValue in
+                            settings.setIncludesBetaUpdates(newValue) {
+                                updater.resetUpdateCycleAfterShortDelay()
+                            }
                         }
-                    }
+                    )
                 )
-            )
-            .accessibilityIdentifier("include-beta-updates")
-
-            Text("Beta updates may be less stable. Turn this off to receive only normal releases.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("include-beta-updates")
+            } footer: {
+                Text("Beta updates may be less stable. Turn this off to receive only normal releases.")
+            }
         }
         .formStyle(.grouped)
-        .padding()
     }
 }

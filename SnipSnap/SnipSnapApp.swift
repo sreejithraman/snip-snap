@@ -48,14 +48,13 @@ struct SnipSnapApp: App {
                     : nil
             )
         }
-        .defaultSize(width: 440, height: 290)
+        .defaultSize(width: 480, height: 480)
         .windowResizability(.contentSize)
         .commands {
             SnipCommands(
                 applicationModel: appDelegate.model,
                 coordinator: appDelegate.coordinator
             )
-            ShortcutCommands()
             if appDelegate.updateChecksEnabled {
                 UpdateCommands(updaterController: appDelegate.updaterController)
             }
@@ -72,9 +71,6 @@ private struct AppSettingsContent: View {
     let cloudSyncHandler: (any OptionalCloudSyncHandling)?
     let updateChannelSettings: UpdateChannelSettings
     let updaterController: SPUStandardUpdaterController?
-    @State private var isClearingDownloads = false
-    @State private var isSyncing = false
-    @State private var clearDownloadsError: String?
 
     var body: some View {
         TabView {
@@ -99,9 +95,14 @@ private struct AppSettingsContent: View {
                         } else {
                             await cloudSyncHandler?.retrySyncWhenPossible()
                         }
+                    },
+                    attachmentActions: cloudSyncHandler.map { handler in
+                        AttachmentSettingsActions(
+                            syncNow: { await handler.syncWhenPossible() },
+                            clearDownloads: { try await model.clearDownloadedFiles() }
+                        )
                     }
                 )
-                attachmentControls
             }
                 .tabItem { Label("Sync", systemImage: "icloud") }
 
@@ -113,54 +114,8 @@ private struct AppSettingsContent: View {
                 .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
             }
         }
+        .frame(width: 480, height: 480)
         .preferredColorScheme(model.appearance.colorScheme)
-    }
-
-    @ViewBuilder
-    private var attachmentControls: some View {
-        if let cloudSyncHandler {
-            Divider()
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("iCloud Attachments").font(.headline)
-                    Text("Downloaded files can be fetched again when you open them.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button(isSyncing ? "Syncing…" : "Sync Now") {
-                    isSyncing = true
-                    Task {
-                        await cloudSyncHandler.syncWhenPossible()
-                        isSyncing = false
-                    }
-                }
-                .disabled(isSyncing)
-                .accessibilityIdentifier("sync-icloud-now")
-                Button(isClearingDownloads ? "Clearing…" : "Clear Downloaded Files") {
-                    isClearingDownloads = true
-                    clearDownloadsError = nil
-                    Task {
-                        do {
-                            try await model.clearDownloadedFiles()
-                        } catch {
-                            clearDownloadsError = String(localized: "Couldn’t clear downloaded files. Try again.")
-                        }
-                        isClearingDownloads = false
-                    }
-                }
-                .disabled(isClearingDownloads)
-                .accessibilityIdentifier("clear-icloud-downloads")
-            }
-            .padding(16)
-            if let clearDownloadsError {
-                Text(clearDownloadsError)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
-            }
-        }
     }
 }
 
@@ -644,17 +599,6 @@ private struct UpdateCommands: Commands {
             Button("Check for Updates…") {
                 updaterController.checkForUpdates(nil)
             }
-        }
-    }
-}
-
-private struct ShortcutCommands: Commands {
-    var body: some Commands {
-        CommandGroup(after: .appSettings) {
-            SettingsLink {
-                Text("Keyboard Shortcuts…")
-            }
-            .keyboardShortcut("/", modifiers: .command)
         }
     }
 }
