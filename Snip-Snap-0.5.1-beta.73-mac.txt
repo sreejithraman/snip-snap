@@ -1,0 +1,3 @@
+Snip Snap 0.5.1 Beta 73 — Mac
+
+- Move macOS capture toast to screen bottom
