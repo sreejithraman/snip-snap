@@ -1376,6 +1376,7 @@ final class AppModelTests: StoreBackedTestCase {
             to: pasteboard
         )
         await model.waitForPendingClipboardWrite()
+        await exportGate.waitUntilCancellationIsObserved()
 
         XCTAssertTrue(olderAccepted)
         XCTAssertTrue(newerCopied)
@@ -2210,6 +2211,7 @@ private actor CancellableMacAttachmentHandler: OptionalCloudSyncHandling {
     func didObserveCancellation() -> Bool {
         observedCancellation
     }
+
 }
 
 private actor PausingPasteboardExportPreparer {
@@ -2247,5 +2249,11 @@ private actor PausingPasteboardExportPreparer {
 
     func didObserveCancellation() -> Bool {
         observedCancellation
+    }
+
+    func waitUntilCancellationIsObserved() async {
+        while !observedCancellation {
+            await Task.yield()
+        }
     }
 }
