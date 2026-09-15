@@ -110,14 +110,17 @@ final class GlobalHotKeyManager: GlobalHotKeyManaging {
     }
 
     private func installDoubleShiftMonitors() {
-        let mask: NSEvent.EventTypeMask = [.flagsChanged, .keyDown]
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+        localMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: DoubleShiftRouter.eventMask
+        ) { [weak self] event in
             MainActor.assumeIsolated {
                 self?.receiveForDoubleShift(event)
             }
             return event
         }
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: DoubleShiftRouter.eventMask
+        ) { [weak self] event in
             MainActor.assumeIsolated {
                 self?.receiveForDoubleShift(event)
             }
@@ -125,40 +128,10 @@ final class GlobalHotKeyManager: GlobalHotKeyManaging {
     }
 
     private func receiveForDoubleShift(_ event: NSEvent) {
-        if event.type == .keyDown {
-            cancelDoubleShiftDetectors()
-            return
-        }
-        guard event.type == .flagsChanged,
-              event.keyCode == UInt16(kVK_Shift) || event.keyCode == UInt16(kVK_RightShift) else {
-            cancelDoubleShiftDetectors()
-            return
-        }
-        let side: ShiftSide = event.keyCode == UInt16(kVK_Shift) ? .left : .right
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let otherFlags = flags.subtracting(.shift).intersection([.command, .control, .option])
-        let modifier: DoubleShiftModifier
-        if otherFlags.isEmpty {
-            modifier = .none
-        } else if otherFlags == .command {
-            modifier = .command
-        } else {
-            cancelDoubleShiftDetectors()
-            return
-        }
-        let gesture = DoubleShiftGesture(side: side, modifier: modifier)
-        let shouldFire = doubleShiftRouter.shiftChanged(
-            gesture: gesture,
-            isDown: flags.contains(.shift),
-            timestamp: event.timestamp
-        )
-        if shouldFire, let action = doubleShiftActions[gesture] {
+        if let gesture = doubleShiftRouter.receive(event),
+           let action = doubleShiftActions[gesture] {
             handler(action)
         }
-    }
-
-    private func cancelDoubleShiftDetectors() {
-        doubleShiftRouter.cancel()
     }
 
     deinit {

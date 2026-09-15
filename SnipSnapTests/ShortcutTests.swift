@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 import SnipSnapCore
 import Carbon.HIToolbox
 @testable import SnipSnap
@@ -161,6 +162,68 @@ final class ShortcutTests: StoreBackedTestCase {
         XCTAssertFalse(detector.shiftChanged(isDown: true, timestamp: 4.00))
         XCTAssertFalse(detector.shiftChanged(isDown: false, timestamp: 4.08))
         XCTAssertFalse(detector.shiftChanged(isDown: true, timestamp: 4.50))
+    }
+
+    func testDoubleShiftMonitorSeesKeyReleaseBetweenShiftTaps() {
+        XCTAssertEqual(
+            DoubleShiftRouter.eventMask,
+            [.flagsChanged, .keyDown, .keyUp]
+        )
+    }
+
+    func testKeyReleaseBetweenShiftTapsCancelsDoubleShift() {
+        let left = DoubleShiftGesture(side: .left, modifier: .none)
+        var router = DoubleShiftRouter(gestures: [left])
+
+        XCTAssertNil(router.receive(keyEvent(
+            type: .flagsChanged,
+            flags: .shift,
+            timestamp: 0.00,
+            keyCode: UInt16(kVK_Shift)
+        )))
+        XCTAssertNil(router.receive(keyEvent(
+            type: .flagsChanged,
+            flags: [],
+            timestamp: 0.08,
+            keyCode: UInt16(kVK_Shift)
+        )))
+        XCTAssertEqual(router.receive(keyEvent(
+            type: .flagsChanged,
+            flags: .shift,
+            timestamp: 0.20,
+            keyCode: UInt16(kVK_Shift)
+        )), left)
+        XCTAssertNil(router.receive(keyEvent(
+            type: .flagsChanged,
+            flags: [],
+            timestamp: 0.28,
+            keyCode: UInt16(kVK_Shift)
+        )))
+
+        XCTAssertNil(router.receive(keyEvent(
+            type: .flagsChanged,
+            flags: .shift,
+            timestamp: 1.00,
+            keyCode: UInt16(kVK_Shift)
+        )))
+        XCTAssertNil(router.receive(keyEvent(
+            type: .flagsChanged,
+            flags: [],
+            timestamp: 1.08,
+            keyCode: UInt16(kVK_Shift)
+        )))
+        XCTAssertNil(router.receive(keyEvent(
+            type: .keyUp,
+            flags: [],
+            timestamp: 1.12,
+            keyCode: UInt16(kVK_ANSI_A)
+        )))
+        XCTAssertNil(router.receive(keyEvent(
+            type: .flagsChanged,
+            flags: .shift,
+            timestamp: 1.20,
+            keyCode: UInt16(kVK_Shift)
+        )))
     }
 
     func testDoubleShiftRouterKeepsLeftAndRightGesturesSeparate() {
@@ -543,4 +606,24 @@ final class ShortcutTests: StoreBackedTestCase {
         )
     }
 
+}
+
+private func keyEvent(
+    type: NSEvent.EventType,
+    flags: NSEvent.ModifierFlags,
+    timestamp: TimeInterval,
+    keyCode: UInt16
+) -> NSEvent {
+    NSEvent.keyEvent(
+        with: type,
+        location: .zero,
+        modifierFlags: flags,
+        timestamp: timestamp,
+        windowNumber: 0,
+        context: nil,
+        characters: "",
+        charactersIgnoringModifiers: "",
+        isARepeat: false,
+        keyCode: keyCode
+    )!
 }

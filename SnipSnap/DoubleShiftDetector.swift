@@ -1,4 +1,5 @@
-import Foundation
+import AppKit
+import Carbon.HIToolbox
 
 enum DoubleShiftModifier: Hashable, Sendable {
     case none
@@ -55,6 +56,12 @@ struct DoubleShiftDetector: Sendable {
 }
 
 struct DoubleShiftRouter: Sendable {
+    static let eventMask: NSEvent.EventTypeMask = [
+        .flagsChanged,
+        .keyDown,
+        .keyUp,
+    ]
+
     private var detectors: [DoubleShiftGesture: DoubleShiftDetector]
 
     init(gestures: some Sequence<DoubleShiftGesture>) {
@@ -76,6 +83,32 @@ struct DoubleShiftRouter: Sendable {
         )
         detectors[gesture] = detector
         return shouldFire
+    }
+
+    mutating func receive(_ event: NSEvent) -> DoubleShiftGesture? {
+        guard event.type == .flagsChanged,
+              event.keyCode == UInt16(kVK_Shift) || event.keyCode == UInt16(kVK_RightShift) else {
+            cancel()
+            return nil
+        }
+        let side: ShiftSide = event.keyCode == UInt16(kVK_Shift) ? .left : .right
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let otherFlags = flags.subtracting(.shift).intersection([.command, .control, .option])
+        let modifier: DoubleShiftModifier
+        if otherFlags.isEmpty {
+            modifier = .none
+        } else if otherFlags == .command {
+            modifier = .command
+        } else {
+            cancel()
+            return nil
+        }
+        let gesture = DoubleShiftGesture(side: side, modifier: modifier)
+        return shiftChanged(
+            gesture: gesture,
+            isDown: flags.contains(.shift),
+            timestamp: event.timestamp
+        ) ? gesture : nil
     }
 
     mutating func cancel() {
