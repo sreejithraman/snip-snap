@@ -47,25 +47,53 @@ struct AppToast: Identifiable {
     }
 }
 
-struct AppProminentActionButton<Label: View>: View {
+/// The preferred, nondestructive action in the current view.
+///
+/// The role is shared, while each platform keeps its native prominent style.
+enum AppPrimaryActionPresentation {
+    case content
+    case floatingGlass
+}
+
+struct AppPrimaryActionButton<Label: View>: View {
+    var presentation: AppPrimaryActionPresentation = .content
     let action: () -> Void
     @ViewBuilder let label: () -> Label
 
+    @ViewBuilder
     var body: some View {
+#if os(macOS)
+        contentButton
+#else
+        switch presentation {
+        case .content:
+            contentButton
+        case .floatingGlass:
+            Button(action: action) {
+                label()
+            }
+            .buttonStyle(.glassProminent)
+            .buttonBorderShape(.capsule)
+            .tint(SnipSnapTheme.actionAccent)
+            .foregroundStyle(SnipSnapTheme.actionLabel)
+        }
+#endif
+    }
+
+    private var contentButton: some View {
         Button(action: action) {
             label()
         }
-        .buttonStyle(.glassProminent)
-        .tint(SnipSnapTheme.controlTint)
-        .foregroundStyle(SnipSnapTheme.prominentControlLabel)
-        .buttonBorderShape(.capsule)
+        .buttonStyle(.borderedProminent)
+        .tint(SnipSnapTheme.actionAccent)
+        .foregroundStyle(SnipSnapTheme.actionLabel)
     }
 }
 
 struct AppTintedGlassActionButton<Label: View>: View {
     let isEnabled: Bool
     var tint: Color = SnipSnapTheme.actionGlassTint
-    var labelColor: Color = SnipSnapTheme.prominentControlLabel
+    var labelColor: Color = SnipSnapTheme.actionLabel
     let action: () -> Void
     @ViewBuilder let label: () -> Label
 
@@ -88,6 +116,7 @@ private struct AppToastPresenter: ViewModifier {
     @Binding var toast: AppToast?
     let alignment: Alignment
     let edge: Edge
+    let isHidden: Bool
     let onAction: (AppToast) -> Void
     let onDismiss: (AppToast) -> Void
 
@@ -97,7 +126,7 @@ private struct AppToastPresenter: ViewModifier {
     func body(content: Content) -> some View {
         content
             .overlay(alignment: alignment) {
-                if let toast {
+                if !isHidden, let toast {
                     toastView(toast)
                         .padding(12)
                         .transition(
@@ -110,7 +139,7 @@ private struct AppToastPresenter: ViewModifier {
             }
             .animation(reduceMotion ? nil : .snappy, value: toast?.id)
             .task(id: timerID) {
-                guard let toast, !isHovering else { return }
+                guard let toast, !isHovering, !isHidden else { return }
                 do {
                     try await Task.sleep(for: toast.duration)
                 } catch {
@@ -123,7 +152,7 @@ private struct AppToastPresenter: ViewModifier {
     }
 
     private var timerID: String {
-        "\(toast?.id.uuidString ?? "none")-\(isHovering)"
+        "\(toast?.id.uuidString ?? "none")-\(isHovering)-\(isHidden)"
     }
 
     private func toastView(_ toast: AppToast) -> some View {
@@ -135,7 +164,7 @@ private struct AppToastPresenter: ViewModifier {
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(2)
                 if toast.action != nil {
-                    AppProminentActionButton {
+                    AppPrimaryActionButton(presentation: .floatingGlass) {
                         self.toast = nil
                         onAction(toast)
                     } label: {
@@ -165,6 +194,7 @@ extension View {
         _ toast: Binding<AppToast?>,
         alignment: Alignment,
         edge: Edge,
+        isHidden: Bool = false,
         onAction: @escaping (AppToast) -> Void = { _ in },
         onDismiss: @escaping (AppToast) -> Void = { _ in }
     ) -> some View {
@@ -173,6 +203,7 @@ extension View {
                 toast: toast,
                 alignment: alignment,
                 edge: edge,
+                isHidden: isHidden,
                 onAction: onAction,
                 onDismiss: onDismiss
             )
@@ -193,16 +224,32 @@ enum SnipSnapTheme {
         Color.white.mix(with: tint, by: 0.12)
     }
 
-    static let controlTint = Color.primary
-    static let actionGlassTint = Color.primary
-    static let disabledActionGlassTint = Color.primary.opacity(0.08)
-    static let actionGlassLabel = Color.primary
-    static let disabledActionGlassLabel = Color.primary.opacity(0.40)
+    /// The app's monochrome accent. Reserve it for active controls,
+    /// selection, and one preferred action in a view.
 #if os(macOS)
-    static let prominentControlLabel = Color(nsColor: .windowBackgroundColor)
+    static let actionAccent = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 0.92, alpha: 1)
+            : NSColor(white: 0.16, alpha: 1)
+    })
+    static let actionLabel = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 0.10, alpha: 1)
+            : .white
+    })
 #else
-    static let prominentControlLabel = Color(uiColor: .systemBackground)
+    static let actionAccent = Color("AccentColor")
+    static let actionLabel = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(white: 0.10, alpha: 1)
+            : .white
+    })
 #endif
+    static let controlTint = actionAccent
+    static let actionGlassTint = actionAccent
+    static let actionGlassLabel = actionLabel
+    static let disabledActionGlassTint = Color.primary.opacity(0.08)
+    static let disabledActionGlassLabel = Color.primary.opacity(0.40)
     static let selectionFill = Color.primary.opacity(0.10)
     static let compactSelectionFill = Color.primary.opacity(0.18)
     static let compactActionFill = Color.primary.opacity(0.10)

@@ -37,7 +37,7 @@ xcodebuild \
     CODE_SIGNING_ALLOWED=NO \
     "${bundle_arguments[@]}" \
     'PRODUCT_BUNDLE_IDENTIFIER=$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).compilecheck' \
-    PRODUCT_NAME=SnipSnapCompileCheck \
+    SNIP_SNAP_PRODUCT_NAME=SnipSnapCompileCheck \
     'INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Compile Check' \
     build
 

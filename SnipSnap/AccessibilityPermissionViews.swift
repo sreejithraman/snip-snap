@@ -43,8 +43,8 @@ struct AccessibilitySetupCard: View {
 }
 
 struct AccessibilityRepairView: View {
-    @Environment(\.dismiss) private var dismiss
     @ObservedObject var controller: AccessibilityPermissionController
+    let dismiss: () -> Void
 
     var body: some View {
         let presentation = controller.setupCardState.presentation
@@ -91,9 +91,8 @@ private struct AccessibilityActionButton: View {
             Button(title, action: action)
                 .buttonStyle(InactiveAccessibilityActionButtonStyle())
         } else {
-            AppProminentActionButton(action: action) {
+            AppPrimaryActionButton(action: action) {
                 Text(title)
-                    .foregroundStyle(SnipSnapTheme.prominentControlLabel)
             }
         }
     }

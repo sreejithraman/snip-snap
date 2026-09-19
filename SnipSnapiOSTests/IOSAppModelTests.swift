@@ -555,39 +555,29 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(model.sortMode, .chronological)
     }
 
-    func testProminentControlThemeHasReadableContrast() {
-        for style in [UIUserInterfaceStyle.light, .dark] {
+    func testControlTintUsesTheMonochromeActionPair() throws {
+        for (style, fillWhite, labelWhite) in [
+            (UIUserInterfaceStyle.light, 0.16, 1.0),
+            (.dark, 0.92, 0.10),
+        ] {
             let traits = UITraitCollection(userInterfaceStyle: style)
-            let fill = UIColor(SnipSnapTheme.controlTint).resolvedColor(with: traits)
-            let label = UIColor(SnipSnapTheme.prominentControlLabel).resolvedColor(with: traits)
-            XCTAssertGreaterThanOrEqual(
-                contrastRatio(fill, label),
-                4.5,
-                "Prominent controls need readable label contrast in style \(style.rawValue)."
-            )
+            let tint = UIColor(SnipSnapTheme.controlTint).resolvedColor(with: traits)
+            let label = UIColor(SnipSnapTheme.actionLabel).resolvedColor(with: traits)
+            var tintRed: CGFloat = 0
+            var tintGreen: CGFloat = 0
+            var tintBlue: CGFloat = 0
+            var labelRed: CGFloat = 0
+            var labelGreen: CGFloat = 0
+            var labelBlue: CGFloat = 0
+            XCTAssertTrue(tint.getRed(&tintRed, green: &tintGreen, blue: &tintBlue, alpha: nil))
+            XCTAssertTrue(label.getRed(&labelRed, green: &labelGreen, blue: &labelBlue, alpha: nil))
+            XCTAssertEqual(tintRed, fillWhite, accuracy: 0.001)
+            XCTAssertEqual(tintGreen, fillWhite, accuracy: 0.001)
+            XCTAssertEqual(tintBlue, fillWhite, accuracy: 0.001)
+            XCTAssertEqual(labelRed, labelWhite, accuracy: 0.001)
+            XCTAssertEqual(labelGreen, labelWhite, accuracy: 0.001)
+            XCTAssertEqual(labelBlue, labelWhite, accuracy: 0.001)
         }
-    }
-
-    private func contrastRatio(_ first: UIColor, _ second: UIColor) -> CGFloat {
-        let lighter = max(relativeLuminance(first), relativeLuminance(second))
-        let darker = min(relativeLuminance(first), relativeLuminance(second))
-        return (lighter + 0.05) / (darker + 0.05)
-    }
-
-    private func relativeLuminance(_ color: UIColor) -> CGFloat {
-        var red: CGFloat = 0
-        var green: CGFloat = 0
-        var blue: CGFloat = 0
-        guard color.getRed(&red, green: &green, blue: &blue, alpha: nil) else {
-            XCTFail("Prominent control colors must resolve to RGB values.")
-            return 0
-        }
-        func linear(_ value: CGFloat) -> CGFloat {
-            value <= 0.04045
-                ? value / 12.92
-                : pow((value + 0.055) / 1.055, 2.4)
-        }
-        return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
     }
 
     func testManualSyncUsesTheSameLibraryReplacementAndStatusPathAsLifecycleSync() async {

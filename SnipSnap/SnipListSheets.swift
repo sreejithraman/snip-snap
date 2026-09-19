@@ -159,7 +159,9 @@ struct NewSnipListSheet: View {
                 Spacer()
                 Button("Cancel") { isPresented = false }
                     .keyboardShortcut(.cancelAction)
-                Button("Create") { create() }
+                AppPrimaryActionButton { create() } label: {
+                    Text("Create")
+                }
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -187,7 +189,7 @@ struct NewSnipListSheet: View {
 struct SnipListEditSheet: View {
     @ObservedObject var model: AppModel
     let list: SnipList
-    @Environment(\.dismiss) private var dismiss
+    let dismiss: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var name: String
     @State private var systemImage: String
@@ -196,9 +198,10 @@ struct SnipListEditSheet: View {
     @State private var isSaving = false
     @FocusState private var nameIsFocused: Bool
 
-    init(model: AppModel, list: SnipList) {
+    init(model: AppModel, list: SnipList, dismiss: @escaping () -> Void) {
         self.model = model
         self.list = list
+        self.dismiss = dismiss
         _name = State(initialValue: list.name)
         _systemImage = State(initialValue: list.systemImage)
         _color = State(initialValue: list.color)
@@ -266,9 +269,10 @@ struct SnipListEditSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button(isSaving ? "Saving…" : "Save", action: save)
+                AppPrimaryActionButton(action: save) {
+                    Text(isSaving ? "Saving…" : "Save")
+                }
                     .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
                     .disabled(cleanedName.isEmpty)
             }
             .controlSize(.large)

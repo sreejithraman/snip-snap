@@ -21,6 +21,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     let coordinator: AppCoordinator
     @ObservedObject private var accessibilityPermissions: AccessibilityPermissionController
+    @ObservedObject private var panelDialogs: PanelDialogPresentationState
     @ObservedObject private var fileDropController: PanelFileDropController
     private let accountNoticeModel: AppleAccountNoticeModel?
     private let dragSessionController: PanelDragSessionController
@@ -52,6 +53,7 @@ struct ContentView: View {
         _accessibilityPermissions = ObservedObject(
             wrappedValue: coordinator.accessibilityPermissions
         )
+        _panelDialogs = ObservedObject(wrappedValue: coordinator.panelDialogs)
         self.dragSessionController = dragSessionController
         _fileDropController = ObservedObject(wrappedValue: fileDropController)
     }
@@ -59,6 +61,8 @@ struct ContentView: View {
     var body: some View {
         GlassEffectContainer(spacing: 0) {
             panelShell
+                .disabled(panelDialogs.isPresented)
+                .accessibilityHidden(panelDialogs.isPresented)
         }
         .padding(AppWindowDefaults.effectGutter)
         .overlay(alignment: .topTrailing) {
@@ -74,11 +78,14 @@ struct ContentView: View {
             $model.toast,
             alignment: .top,
             edge: .top,
+            isHidden: panelDialogs.isPresented,
             onAction: model.performToastAction,
             onDismiss: model.dismissToast
         )
         .background {
-            PanelDragRegion()
+            if !panelDialogs.isPresented {
+                PanelDragRegion()
+            }
         }
         .tint(SnipSnapColors.controlTint)
         .preferredColorScheme(model.appearance.colorScheme)
@@ -140,6 +147,7 @@ struct ContentView: View {
 
             SnipListTabBarView(
                 model: model,
+                coordinator: coordinator,
                 dragSessionController: dragSessionController
             ) {
                 newListMovingIDs = []
@@ -188,21 +196,11 @@ struct ContentView: View {
             coordinator.setSnipCommandFocusActive(isActive)
         }
         .onExitCommand(perform: handleCancel)
-        .sheet(
-            isPresented: $showingNewList,
-            onDismiss: {
-                newListMovingIDs = []
-                restoreListFocus()
-            }
-        ) {
-            NewSnipListSheet(
-                model: model,
-                isPresented: $showingNewList,
-                movingIDs: newListMovingIDs
-            )
+        .onChange(of: showingNewList) { _, isPresented in
+            presentNewListDialog(isPresented: isPresented)
         }
-        .sheet(isPresented: $showingRecoveryReview) {
-            MacRecoveryReviewSheet(model: model)
+        .onChange(of: showingRecoveryReview) { _, isPresented in
+            presentRecoveryDialog(isPresented: isPresented)
         }
         .confirmationDialog(
             "Import this backup?",
@@ -219,8 +217,8 @@ struct ContentView: View {
         } message: {
             Text("Merge this backup with your library.\n\n\(model.importPreviewSummary)")
         }
-        .sheet(isPresented: $accessibilityPermissions.isRepairPresented) {
-            AccessibilityRepairView(controller: accessibilityPermissions)
+        .onChange(of: accessibilityPermissions.isRepairPresented) { _, isPresented in
+            presentAccessibilityDialog(isPresented: isPresented)
         }
         .alert(
             model.presentedErrorTitle ?? String(localized: "Something Went Wrong"),
@@ -232,6 +230,55 @@ struct ContentView: View {
             Button("OK") { model.dismissPresentedError() }
         } message: {
             Text(model.presentedError ?? "")
+        }
+    }
+
+    private func presentNewListDialog(isPresented: Bool) {
+        guard isPresented else {
+            coordinator.dismissPanelDialog(id: .newList)
+            newListMovingIDs = []
+            restoreListFocus()
+            return
+        }
+        coordinator.presentPanelDialog(id: .newList, title: String(localized: "New list")) {
+            showingNewList = false
+        } content: {
+            NewSnipListSheet(
+                model: model,
+                isPresented: $showingNewList,
+                movingIDs: newListMovingIDs
+            )
+        }
+    }
+
+    private func presentRecoveryDialog(isPresented: Bool) {
+        guard isPresented else {
+            coordinator.dismissPanelDialog(id: .recovery)
+            return
+        }
+        coordinator.presentPanelDialog(id: .recovery, title: String(localized: "Needs attention")) {
+            showingRecoveryReview = false
+        } content: {
+            MacRecoveryReviewSheet(model: model) {
+                showingRecoveryReview = false
+            }
+        }
+    }
+
+    private func presentAccessibilityDialog(isPresented: Bool) {
+        guard isPresented else {
+            coordinator.dismissPanelDialog(id: .accessibility)
+            return
+        }
+        coordinator.presentPanelDialog(
+            id: .accessibility,
+            title: String(localized: "Accessibility Access Needed")
+        ) {
+            accessibilityPermissions.isRepairPresented = false
+        } content: {
+            AccessibilityRepairView(controller: accessibilityPermissions) {
+                accessibilityPermissions.isRepairPresented = false
+            }
         }
     }
 
@@ -268,7 +315,10 @@ struct ContentView: View {
     }
 
     private var hasSnipCommandFocus: Bool {
-        focusedTarget == .list && model.editingID == nil && controlActiveState == .key
+        !panelDialogs.isPresented
+            && focusedTarget == .list
+            && model.editingID == nil
+            && controlActiveState == .key
     }
 
     private var selectedPage: PanelTabPage {
@@ -276,7 +326,7 @@ struct ContentView: View {
     }
 
     private var hasCommandNumberFocus: Bool {
-        controlActiveState == .key && model.editingID == nil
+        !panelDialogs.isPresented && controlActiveState == .key && model.editingID == nil
     }
 
     private func pickCommandNumber(_ target: CommandNumberTarget) {
@@ -847,6 +897,7 @@ struct ContentView: View {
     }
 
     private func handleCancel() {
+        guard !panelDialogs.isPresented else { return }
         if focusedTarget == .search {
             focusedTarget = .list
         } else if focusedTarget == .inlineEntry {

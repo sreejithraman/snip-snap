@@ -2,10 +2,126 @@ import XCTest
 import SnipSnapCore
 import AppKit
 import Carbon.HIToolbox
+import Combine
+import SwiftUI
 @testable import SnipSnap
 @testable import SnipSnapPersistence
 
 final class AppCoordinatorTests: StoreBackedTestCase {
+    func testDialogOriginStaysInsideTheVisibleScreen() {
+        let visibleFrame = NSRect(x: 0, y: 0, width: 1_000, height: 800)
+        let dialogSize = NSSize(width: 560, height: 520)
+
+        XCTAssertEqual(
+            AppCoordinator.centeredDialogOrigin(
+                size: dialogSize,
+                over: NSRect(x: -100, y: -100, width: 382, height: 500),
+                within: visibleFrame
+            ),
+            NSPoint(x: 0, y: 0)
+        )
+        XCTAssertEqual(
+            AppCoordinator.centeredDialogOrigin(
+                size: dialogSize,
+                over: NSRect(x: 900, y: 700, width: 382, height: 500),
+                within: visibleFrame
+            ),
+            NSPoint(x: 440, y: 280)
+        )
+    }
+
+    @MainActor
+    func testGlobalPanelActionsKeepDialogOwnershipAndHideWithoutReopeningParent() throws {
+        let defaultsName = "Snip SnapPanelDialogTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let model = AppModel(
+            library: try JSONSnipLibrary(fileURL: storeURL()),
+            defaults: defaults
+        )
+        let coordinator = AppCoordinator(
+            model: model,
+            shortcutSettings: ShortcutSettings(defaults: defaults),
+            isAccessibilityTrusted: { false }
+        )
+        let panel = NSWindow()
+        panel.setContentSize(NSSize(width: 382, height: 500))
+        coordinator.attachPanelWindow(panel)
+        panel.makeKeyAndOrderFront(nil)
+        defer { panel.orderOut(nil) }
+        var didDismiss = false
+        var focusRequestCount = 0
+        let focusRequest = coordinator.panelFocusRequests.sink { _ in
+            focusRequestCount += 1
+        }
+        defer { focusRequest.cancel() }
+
+        coordinator.presentPanelDialog(id: .newList, title: "Test") {
+            didDismiss = true
+        } content: {
+            Text("Dialog").padding()
+        }
+
+        XCTAssertTrue(coordinator.panelDialogs.isPresented)
+        XCTAssertFalse(panel.ignoresMouseEvents)
+        XCTAssertEqual(panel.childWindows?.count, 1)
+        XCTAssertEqual(panel.childWindows?.first?.isOpaque, true)
+        let dialog = try XCTUnwrap(panel.childWindows?.first)
+        let inputShield = try XCTUnwrap(
+            panel.contentView?.subviews.last as? PanelDialogInputShieldView
+        )
+        let click = try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: .leftMouseDown,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: panel.windowNumber,
+                context: nil,
+                eventNumber: 0,
+                clickCount: 1,
+                pressure: 1
+            )
+        )
+        XCTAssertEqual(inputShield.frame, panel.contentView?.bounds)
+        XCTAssertTrue(inputShield.hitTest(NSPoint(x: 1, y: 1)) === inputShield)
+        XCTAssertTrue(inputShield.acceptsFirstMouse(for: click))
+        XCTAssertNotNil(inputShield.activateDialog)
+        XCTAssertTrue(
+            AppCoordinator.shouldRestorePreviousApplication(
+                panelIsKey: false,
+                dialogIsKey: true
+            )
+        )
+
+        coordinator.toggleClipboard()
+
+        XCTAssertFalse(model.isShowingClipboard)
+        XCTAssertTrue(coordinator.panelDialogs.isPresented)
+        XCTAssertTrue(panel.childWindows?.first === dialog)
+
+        coordinator.captureSelection()
+
+        XCTAssertFalse(coordinator.accessibilityPermissions.isRepairPresented)
+        XCTAssertTrue(coordinator.panelDialogs.isPresented)
+        XCTAssertTrue(panel.childWindows?.first === dialog)
+
+        coordinator.focusPanelSearch()
+
+        XCTAssertEqual(focusRequestCount, 0)
+        XCTAssertTrue(coordinator.panelDialogs.isPresented)
+        XCTAssertTrue(panel.childWindows?.first === dialog)
+
+        coordinator.togglePanel()
+
+        XCTAssertTrue(didDismiss)
+        XCTAssertFalse(coordinator.panelDialogs.isPresented)
+        XCTAssertFalse(panel.ignoresMouseEvents)
+        XCTAssertFalse(panel.isVisible)
+        XCTAssertTrue(panel.childWindows?.isEmpty ?? true)
+        XCTAssertFalse(inputShield.isDescendant(of: panel.contentView ?? NSView()))
+    }
+
     @MainActor
     func testCopyClipboardEntryRestoresContentWithoutClosingThePanel() throws {
         let pasteboard = NSPasteboard(
@@ -483,7 +599,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         XCTAssertFalse(panel.isVisible)
     }
 
-    func testToggleHidesOnlyWhenVisibleOnActiveSpace() {
+    func testToggleHidesWhenVisibleOnActiveSpaceOrDialogIsPresented() {
         XCTAssertTrue(
             AppCoordinator.shouldHidePanel(
                 isVisible: true,
@@ -510,6 +626,14 @@ final class AppCoordinatorTests: StoreBackedTestCase {
                 isVisible: true,
                 isMiniaturized: true,
                 isOnActiveSpace: true
+            )
+        )
+        XCTAssertTrue(
+            AppCoordinator.shouldHidePanel(
+                isDialogPresented: true,
+                isVisible: true,
+                isMiniaturized: false,
+                isOnActiveSpace: false
             )
         )
     }

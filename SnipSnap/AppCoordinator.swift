@@ -3,10 +3,23 @@ import SnipSnapCore
 import ApplicationServices
 import Carbon.HIToolbox
 import Combine
+import SwiftUI
 
 enum PanelFocusRequest {
     case search
     case inlineEntry
+}
+
+enum PanelDialogID: Equatable {
+    case newList
+    case recovery
+    case accessibility
+    case editList(UUID)
+}
+
+@MainActor
+final class PanelDialogPresentationState: ObservableObject {
+    @Published fileprivate(set) var isPresented = false
 }
 
 enum SelectionAttachmentStagingError: Error, Equatable, Sendable {
@@ -24,6 +37,8 @@ final class AppCoordinator {
     let panelFocusRequests = PassthroughSubject<PanelFocusRequest, Never>()
     private var hotKeys: (any GlobalHotKeyManaging)?
     private weak var panelWindow: NSWindow?
+    let panelDialogs = PanelDialogPresentationState()
+    private let panelDialogPresenter = PanelDialogPresenter()
     private var requestedPanelComposerExpansion: CGFloat = 0
     private var appliedPanelComposerExpansion: CGFloat = 0
     private var previousExternalApplication: NSRunningApplication?
@@ -104,11 +119,17 @@ final class AppCoordinator {
     func togglePanel() {
         guard let panelWindow else { return }
         if Self.shouldHidePanel(
+            isDialogPresented: panelDialogs.isPresented,
             isVisible: panelWindow.isVisible,
             isMiniaturized: panelWindow.isMiniaturized,
             isOnActiveSpace: panelWindow.isOnActiveSpace
         ) {
-            hidePanel(restoringPreviousApplication: panelWindow.isKeyWindow)
+            hidePanel(
+                restoringPreviousApplication: Self.shouldRestorePreviousApplication(
+                    panelIsKey: panelWindow.isKeyWindow,
+                    dialogIsKey: panelDialogPresenter.isKeyWindow
+                )
+            )
             return
         }
         showPanel(panelWindow, focusing: .inlineEntry)
@@ -116,6 +137,7 @@ final class AppCoordinator {
 
     func toggleClipboard() {
         guard let panelWindow else { return }
+        guard !panelDialogs.isPresented else { return }
         if model.isShowingClipboard,
            Self.shouldHidePanel(
                isVisible: panelWindow.isVisible,
@@ -147,14 +169,41 @@ final class AppCoordinator {
     }
 
     nonisolated static func shouldHidePanel(
+        isDialogPresented: Bool = false,
         isVisible: Bool,
         isMiniaturized: Bool,
         isOnActiveSpace: Bool
     ) -> Bool {
-        isVisible && !isMiniaturized && isOnActiveSpace
+        isDialogPresented || (isVisible && !isMiniaturized && isOnActiveSpace)
+    }
+
+    nonisolated static func shouldRestorePreviousApplication(
+        panelIsKey: Bool,
+        dialogIsKey: Bool
+    ) -> Bool {
+        panelIsKey || dialogIsKey
+    }
+
+    nonisolated static func centeredDialogOrigin(
+        size: NSSize,
+        over parentFrame: NSRect,
+        within visibleFrame: NSRect?
+    ) -> NSPoint {
+        let centered = NSPoint(
+            x: parentFrame.midX - size.width / 2,
+            y: parentFrame.midY - size.height / 2
+        )
+        guard let visibleFrame else { return centered }
+        let maximumX = max(visibleFrame.minX, visibleFrame.maxX - size.width)
+        let maximumY = max(visibleFrame.minY, visibleFrame.maxY - size.height)
+        return NSPoint(
+            x: min(max(centered.x, visibleFrame.minX), maximumX),
+            y: min(max(centered.y, visibleFrame.minY), maximumY)
+        )
     }
 
     func focusPanelSearch() {
+        guard !panelDialogs.isPresented else { return }
         panelFocusRequests.send(.search)
     }
 
@@ -165,6 +214,7 @@ final class AppCoordinator {
     }
 
     func hidePanel(restoringPreviousApplication: Bool = true) {
+        panelDialogPresenter.dismissForParentHide()
         panelWindow?.orderOut(nil)
         if restoringPreviousApplication {
             previousExternalApplication?.activate(options: [])
@@ -178,6 +228,7 @@ final class AppCoordinator {
     }
 
     func captureSelection() {
+        guard !panelDialogs.isPresented else { return }
         guard accessibilityPermissions.refresh() else {
             presentAccessibilityRepair()
             return
@@ -307,6 +358,34 @@ final class AppCoordinator {
         applyPanelComposerExpansion()
     }
 
+    func presentPanelDialog<Content: View>(
+        id: PanelDialogID,
+        title: String,
+        onDismiss: @escaping () -> Void,
+        @ViewBuilder content: () -> Content
+    ) {
+        guard let panelWindow else { return }
+        panelDialogPresenter.present(
+            id: id,
+            title: title,
+            parent: panelWindow,
+            content: AnyView(
+                content()
+                    .tint(SnipSnapTheme.controlTint)
+                    .preferredColorScheme(model.appearance.colorScheme)
+            ),
+            onDismiss: { [weak self] in
+                self?.panelDialogs.isPresented = false
+                onDismiss()
+            }
+        )
+        panelDialogs.isPresented = true
+    }
+
+    func dismissPanelDialog(id: PanelDialogID) {
+        panelDialogPresenter.dismiss(id: id)
+    }
+
     func updatePanelComposerExpansion(_ expansion: CGFloat) {
         requestedPanelComposerExpansion = max(expansion, 0)
         applyPanelComposerExpansion()
@@ -416,6 +495,148 @@ final class AppCoordinator {
                 self?.previousExternalApplication = application
             }
         }
+    }
+
+}
+
+/// Hosts form-sized work in an opaque child window. AppKit's sheet dimmer
+/// otherwise exposes the clear panel's rectangular window bounds.
+final class PanelDialogInputShieldView: NSView {
+    var activateDialog: (() -> Void)?
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        activateDialog?()
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        activateDialog?()
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        activateDialog?()
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        activateDialog?()
+    }
+}
+
+@MainActor
+private final class PanelDialogPresenter: NSObject, NSWindowDelegate {
+    private var id: PanelDialogID?
+    private weak var parentWindow: NSWindow?
+    private weak var parentInputShield: PanelDialogInputShieldView?
+    private var restoresParentOnDismissal = true
+    private var windowController: NSWindowController?
+    private var onDismiss: (() -> Void)?
+
+    var isKeyWindow: Bool {
+        windowController?.window?.isKeyWindow == true
+    }
+
+    func present(
+        id: PanelDialogID,
+        title: String,
+        parent: NSWindow,
+        content: AnyView,
+        onDismiss: @escaping () -> Void
+    ) {
+        dismissCurrent()
+
+        let hostingController = NSHostingController(rootView: content)
+        let window = NSPanel(
+            contentRect: .zero,
+            styleMask: [.titled, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = title
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.standardWindowButton(.closeButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
+        window.animationBehavior = .utilityWindow
+        window.backgroundColor = .windowBackgroundColor
+        window.isOpaque = true
+        window.hasShadow = true
+        window.hidesOnDeactivate = false
+        window.isReleasedWhenClosed = false
+        window.contentViewController = hostingController
+        window.delegate = self
+
+        hostingController.view.layoutSubtreeIfNeeded()
+        let size = hostingController.view.fittingSize
+        window.setContentSize(size)
+        window.setFrameOrigin(
+            AppCoordinator.centeredDialogOrigin(
+                size: window.frame.size,
+                over: parent.frame,
+                within: parent.screen?.visibleFrame
+            )
+        )
+
+        self.parentWindow = parent
+        self.id = id
+        self.onDismiss = onDismiss
+        windowController = NSWindowController(window: window)
+        if let parentContentView = parent.contentView {
+            let inputShield = PanelDialogInputShieldView(frame: parentContentView.bounds)
+            inputShield.autoresizingMask = [.width, .height]
+            inputShield.setAccessibilityElement(false)
+            inputShield.activateDialog = { [weak window] in
+                window?.makeKeyAndOrderFront(nil)
+            }
+            parentContentView.addSubview(inputShield, positioned: .above, relativeTo: nil)
+            parentInputShield = inputShield
+        }
+        parent.addChildWindow(window, ordered: .above)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    func dismiss(id: PanelDialogID) {
+        guard self.id == id else { return }
+        dismissCurrent()
+    }
+
+    func dismissForParentHide() {
+        dismissCurrent(restoringParent: false)
+    }
+
+    private func dismissCurrent(restoringParent: Bool = true) {
+        guard let window = windowController?.window else { return }
+        restoresParentOnDismissal = restoringParent
+        window.close()
+        if windowController != nil {
+            finishDismissal()
+        }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        finishDismissal()
+    }
+
+    private func finishDismissal() {
+        guard windowController != nil else { return }
+        let callback = onDismiss
+        if let window = windowController?.window {
+            parentWindow?.removeChildWindow(window)
+        }
+        parentInputShield?.removeFromSuperview()
+        if restoresParentOnDismissal, parentWindow?.isVisible == true {
+            parentWindow?.makeKeyAndOrderFront(nil)
+        }
+        windowController = nil
+        parentWindow = nil
+        parentInputShield = nil
+        restoresParentOnDismissal = true
+        id = nil
+        onDismiss = nil
+        callback?()
     }
 
 }

@@ -7,6 +7,7 @@ struct SnipListTabBarView: View {
     private typealias TabSelection = PanelTabPage
 
     @ObservedObject var model: AppModel
+    let coordinator: AppCoordinator
     let dragSessionController: PanelDragSessionController
     let createList: () -> Void
     @State private var dropTargetTab: TabSelection?
@@ -39,8 +40,21 @@ struct SnipListTabBarView: View {
             )
         }
         .onDisappear { hoverOpenTask?.cancel() }
-        .sheet(item: $editingList) { list in
-            SnipListEditSheet(model: model, list: list)
+        .onChange(of: editingList?.id) { previousListID, listID in
+            guard let listID,
+                  let list = model.lists.first(where: { $0.id == listID }) else {
+                if let previousListID {
+                    coordinator.dismissPanelDialog(id: .editList(previousListID))
+                }
+                return
+            }
+            coordinator.presentPanelDialog(id: .editList(listID), title: String(localized: "Edit list")) {
+                editingList = nil
+            } content: {
+                SnipListEditSheet(model: model, list: list) {
+                    editingList = nil
+                }
+            }
         }
         .confirmationDialog(
             String(localized: "Delete \(listPendingDeletion?.name ?? String(localized: "list"))?"),
