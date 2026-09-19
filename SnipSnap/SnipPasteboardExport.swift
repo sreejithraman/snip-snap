@@ -13,6 +13,7 @@ final class SnipPasteboardMarkdownFile: @unchecked Sendable {
     private let fileManager: FileManager
     private let lock = NSLock()
     private var isRemoved = false
+    private var isPasteboardRetentionArmed = false
     private var cleanupTask: Task<Void, Never>?
 
     init(markdown: String, fileManager: FileManager = .default) throws {
@@ -44,12 +45,26 @@ final class SnipPasteboardMarkdownFile: @unchecked Sendable {
         changeCount: Int
     ) {
         let pasteboardName = pasteboard.name
-        cleanupTask = Task { @MainActor [self] in
+        let task = Task { @MainActor [self] in
             let observedPasteboard = NSPasteboard(name: pasteboardName)
             while !Task.isCancelled, observedPasteboard.changeCount == changeCount {
-                try? await Task.sleep(for: .milliseconds(250))
+                do {
+                    try await Task.sleep(for: .milliseconds(250))
+                } catch {
+                    return
+                }
             }
+            guard !Task.isCancelled else { return }
             remove()
+        }
+        let shouldCancel = lock.withLock {
+            guard !isRemoved, cleanupTask == nil else { return true }
+            isPasteboardRetentionArmed = true
+            cleanupTask = task
+            return false
+        }
+        if shouldCancel {
+            task.cancel()
         }
     }
 
@@ -67,7 +82,10 @@ final class SnipPasteboardMarkdownFile: @unchecked Sendable {
     }
 
     deinit {
-        remove()
+        let shouldRemove = lock.withLock { !isPasteboardRetentionArmed }
+        if shouldRemove {
+            remove()
+        }
     }
 }
 
@@ -138,7 +156,7 @@ struct SnipPasteboardExport {
         markdownFile = nil
     }
 
-    static func preparingRichText(
+    static func preparingClipboardExport(
         text: String,
         attachmentURLs: [URL]
     ) async throws -> Self {
@@ -236,10 +254,34 @@ struct SnipPasteboardExport {
         }
         result.append("\n## Attachments\n\n")
         for url in attachmentURLs {
-            let name = url.lastPathComponent.replacingOccurrences(of: "`", with: "\\`")
-            result.append("- `\(name)`\n")
+            result.append("- \(markdownCodeSpan(url.lastPathComponent))\n")
         }
         return result
+    }
+
+    private static func markdownCodeSpan(_ value: String) -> String {
+        let normalized = value
+            .replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+        var longestBacktickRun = 0
+        var currentBacktickRun = 0
+        for character in normalized {
+            if character == "`" {
+                currentBacktickRun += 1
+                longestBacktickRun = max(longestBacktickRun, currentBacktickRun)
+            } else {
+                currentBacktickRun = 0
+            }
+        }
+        let delimiter = String(repeating: "`", count: longestBacktickRun + 1)
+        let needsPadding = !normalized.allSatisfy(\.isWhitespace)
+            && (normalized.first?.isWhitespace == true
+                || normalized.last?.isWhitespace == true
+                || normalized.first == "`"
+                || normalized.last == "`")
+        let padding = needsPadding ? " " : ""
+        return "\(delimiter)\(padding)\(normalized)\(padding)\(delimiter)"
     }
 
     private static func stagedMarkdownFile(

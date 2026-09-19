@@ -124,7 +124,13 @@ PATH="$test_dir/bin:$PATH" \
 grep -F -- "$test_dir/state/build/slot-2" "$test_dir/build-args" >/dev/null
 grep -F -- "PRODUCT_BUNDLE_IDENTIFIER=world.sree.snipsnap.dev2" \
     "$test_dir/build-args" >/dev/null
-grep -F -- "PRODUCT_NAME=SnipSnapDev2" "$test_dir/build-args" >/dev/null
+grep -E -- '(^|[[:space:]])SNIP_SNAP_PRODUCT_NAME=SnipSnapDev2([[:space:]]|$)' \
+    "$test_dir/build-args" >/dev/null
+if grep -E -- '(^|[[:space:]])PRODUCT_NAME=SnipSnapDev2([[:space:]]|$)' \
+    "$test_dir/build-args" >/dev/null; then
+    print -u2 "A Dev build overrode PRODUCT_NAME for every target."
+    exit 1
+fi
 grep -F -- "INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Dev 2" \
     "$test_dir/build-args" >/dev/null
 grep -F -- "CODE_SIGN_IDENTITY=-" "$test_dir/build-args" >/dev/null

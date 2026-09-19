@@ -127,7 +127,10 @@ final class AppModel: ObservableObject {
         userActionsRebinder: SnipLibraryUserActionsRebinder = .direct,
         preparePasteboardExport: @escaping @Sendable (String, [URL]) async throws
             -> SnipPasteboardExport = {
-            try await SnipPasteboardExport.preparingRichText(text: $0, attachmentURLs: $1)
+            try await SnipPasteboardExport.preparingClipboardExport(
+                text: $0,
+                attachmentURLs: $1
+            )
         }
     ) {
         self.defaults = defaults
@@ -1008,26 +1011,12 @@ final class AppModel: ObservableObject {
     ) async -> Bool {
         guard !snips.isEmpty else { return false }
         let attachments = attachmentPreparation.unique(snips.flatMap(\.attachments))
-        let prepared: [UUID: URL]
-        do {
-            prepared = try await prepareAttachments(attachments, for: .copy)
-        } catch is CancellationError {
-            return false
-        } catch {
-            if shouldPresentClipboardError(
-                generation: generation,
-                pasteboard: pasteboard,
-                expectedChangeCount: expectedChangeCount
-            ) {
-                presentError(error)
-            }
-            return false
-        }
-        let text = SnipFormatter.formatForClipboard(snips: snips)
-        guard generation == clipboardWriteGeneration,
-              pasteboard.changeCount == expectedChangeCount else { return false }
         let export: SnipPasteboardExport
         do {
+            let prepared = try await prepareAttachments(attachments, for: .copy)
+            let text = SnipFormatter.formatForClipboard(snips: snips)
+            guard generation == clipboardWriteGeneration,
+                  pasteboard.changeCount == expectedChangeCount else { return false }
             export = try await preparePasteboardExport(
                 text,
                 attachments.compactMap { prepared[$0.id] }

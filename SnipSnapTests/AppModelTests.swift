@@ -1449,7 +1449,7 @@ final class AppModelTests: StoreBackedTestCase {
         let directory = try storeURL().deletingLastPathComponent()
         let source = directory.appendingPathComponent("retention-race.png")
         try Data([0x89, 0x50, 0x4e, 0x47]).write(to: source)
-        let export = try await SnipPasteboardExport.preparingRichText(
+        let export = try await SnipPasteboardExport.preparingClipboardExport(
             text: "Explain this image",
             attachmentURLs: [source]
         )
@@ -2391,7 +2391,7 @@ private actor PausingPasteboardExportPreparer {
                 throw CocoaError(.fileReadUnknown)
             }
         }
-        return try await SnipPasteboardExport.preparingRichText(
+        return try await SnipPasteboardExport.preparingClipboardExport(
             text: text,
             attachmentURLs: attachmentURLs
         )
