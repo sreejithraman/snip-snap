@@ -121,6 +121,7 @@ package enum SyncModeCrashPoint: Equatable, Sendable {
   case beforeSendAttemptManifest
   case afterFirstSendComplete
   case afterRetryBasePromotion
+  case beforeRetryFetchSettlementCommit
   case duringRetryBasePromotionStaging
   case beforePointerSwap
   case afterPointerSwap

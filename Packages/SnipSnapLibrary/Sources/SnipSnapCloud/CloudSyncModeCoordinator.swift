@@ -31,7 +31,11 @@ private protocol ICloudSyncAdapter: Sendable {
         for outbound: CloudOutboundBatch,
         namespace: ICloudSyncNamespaceBinding
     ) async throws -> SyncModeSendAttempt
-    func prepareModeRetry(snipIDs: Set<UUID>) async throws
+    func prepareFailureRecovery(snipIDs: Set<UUID>) async throws
+    func prepareModeRetry(
+        snipIDs: Set<UUID>,
+        commitSettlement: @escaping @Sendable () async throws -> Void
+    ) async throws
 }
 
 package enum ICloudAccountGateError: Error, Equatable, Sendable {
@@ -106,7 +110,15 @@ private actor LegacyTextSyncAdapter: ICloudSyncAdapter {
         try await raw.currentModeSeedSettlement(candidates: candidates, namespace: namespace)
     }
 
-    func prepareModeRetry(snipIDs: Set<UUID>) async throws {
+    func prepareModeRetry(
+        snipIDs: Set<UUID>,
+        commitSettlement: @escaping @Sendable () async throws -> Void
+    ) async throws {
+        try await raw.prepareModeRetry(snipIDs: snipIDs)
+        try await commitSettlement()
+    }
+
+    func prepareFailureRecovery(snipIDs: Set<UUID>) async throws {
         try await raw.prepareModeRetry(snipIDs: snipIDs)
     }
 
@@ -230,8 +242,19 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
         try await raw.modeSendAttempt(for: outbound, namespace: namespace)
     }
 
-    func prepareModeRetry(snipIDs: Set<UUID>) async throws {
-        try await raw.prepareModeRetry(snipIDs: snipIDs)
+    func prepareModeRetry(
+        snipIDs: Set<UUID>,
+        commitSettlement: @escaping @Sendable () async throws -> Void
+    ) async throws {
+        try await commitSettlement()
+        // Full-record recovery is batch scoped, so seed IDs cannot narrow it.
+        _ = snipIDs
+        try await syncDriver.prepareManualRetry()
+    }
+
+    func prepareFailureRecovery(snipIDs: Set<UUID>) async throws {
+        // Keep the failed batch until the durable transition restart records settlement.
+        _ = snipIDs
     }
 }
 
@@ -442,8 +465,10 @@ package actor ICloudSyncModeCoordinator {
                     candidates: candidates,
                     namespace: namespace.binding
                 )
-                try await bridge.prepareModeRetry(snipIDs: Set(candidates.map(\.snipID)))
-                try await persistence.prepareRetryFetch(settlement: settlement)
+                let candidateIDs = Set(candidates.map(\.snipID))
+                try await bridge.prepareModeRetry(snipIDs: candidateIDs) { [persistence] in
+                    try await persistence.prepareRetryFetch(settlement: settlement)
+                }
                 try await requireMatchingAccount()
                 try await bridge.fetchRemote {
                     try await self.requireMatchingAccount()
@@ -765,10 +790,12 @@ package actor ICloudSyncModeCoordinator {
             let settlement: SyncModeSeedSettlementProof?
             if let modeAdapter {
                 settlement = try? await modeAdapter.currentModeSeedSettlement(
-                    candidates: settlementCandidates(transition),
+                    candidates: candidates,
                     namespace: namespace.binding
                 )
-                try? await modeAdapter.prepareModeRetry(snipIDs: Set(candidates.map(\.snipID)))
+                try? await modeAdapter.prepareFailureRecovery(
+                    snipIDs: Set(candidates.map(\.snipID))
+                )
             } else {
                 settlement = nil
             }

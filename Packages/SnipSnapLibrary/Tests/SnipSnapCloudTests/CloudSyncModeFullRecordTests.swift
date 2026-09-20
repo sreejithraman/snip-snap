@@ -4,6 +4,159 @@ import SnipSnapCore
 import XCTest
 
 extension ICloudSyncModeCoordinatorTests {
+    func testFullRecordEnableRetryClearsTerminalSendFailure() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let source = try await persistence.activeLibrary()
+        try await add("retry rejected send", to: source)
+        let local = await source.snapshot(sortedBy: .manual)
+        let snip = try XCTUnwrap(local.snips.first)
+        let namespace = makeNamespace()
+        let zone = textZone(namespace)
+        let server = FakeCloudServer()
+        let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        await transport.failNextSentItem(.snip(snip.id, in: zone), failure: .rejected)
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: zone,
+            makeTransport: { transport }
+        )
+
+        do {
+            _ = try await coordinator.enableOrRetry()
+            XCTFail("The first rejected send must be reported")
+        } catch let error as CloudSyncIssueError {
+            XCTAssertEqual(error.issue, .appDataIssue)
+        }
+        let interrupted = try await persistence.snapshot()
+        XCTAssertEqual(interrupted.transition?.phase, .candidateReady)
+        let candidate = try await persistence.libraryForTransition(
+            storeID: try XCTUnwrap(interrupted.transition?.candidateStoreID)
+        )
+        let failedRecovery = try await candidate.cloudFullRecoveryEvents(
+            namespaceKey: namespace.namespaceKey
+        )
+        XCTAssertEqual(failedRecovery.map(\.kind), [.terminalSend])
+
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+        let retry = ICloudSyncModeCoordinator(
+            persistence: reopened,
+            namespace: namespace,
+            textZone: zone,
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+        )
+
+        let retried = try await retry.enableOrRetry()
+
+        XCTAssertEqual(retried.state, .on)
+        let completed = try await reopened.snapshot()
+        XCTAssertNil(completed.transition)
+        let active = try await reopened.libraryForTransition(
+            storeID: completed.activeStore.id
+        )
+        let localAfterRetry = await active.snapshot(sortedBy: .manual)
+        XCTAssertEqual(localAfterRetry.snips.first?.id, snip.id)
+        XCTAssertEqual(localAfterRetry.snips.first?.content, "retry rejected send")
+        let recovery = try await active.cloudFullRecoveryEvents(
+            namespaceKey: namespace.namespaceKey
+        )
+        XCTAssertTrue(recovery.isEmpty)
+        let remoteText = await server.storedTextValues()
+        XCTAssertEqual(remoteText, ["retry rejected send"])
+    }
+
+    func testFullRecordModeRetryResetsCursorAfterFailedFetchedRecord() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let source = try await persistence.activeLibrary()
+        try await add("retry local send", to: source)
+        let local = await source.snapshot(sortedBy: .manual)
+        let localSnip = try XCTUnwrap(local.snips.first)
+        let namespace = makeNamespace()
+        let zone = textZone(namespace)
+        let server = FakeCloudServer()
+        let firstTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        await firstTransport.failNextSentItem(.snip(localSnip.id, in: zone), failure: .rejected)
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: zone,
+            makeTransport: { firstTransport }
+        )
+
+        do {
+            _ = try await coordinator.enableOrRetry()
+            XCTFail("The rejected first send must be reported")
+        } catch let error as CloudSyncIssueError {
+            XCTAssertEqual(error.issue, .appDataIssue)
+        }
+
+        let remoteSnip = Snip(content: "refetch after cursor reset", origin: .quickEntry)
+        let writer = FakeCloudRecordTransport(server: server, namespace: namespace)
+        let remoteWrite = try await writer.send(CloudOutboundBatch(operations: [
+            .save(try CloudFullRecordCodec.snipDraft(remoteSnip, in: zone))
+        ]))
+        try await writer.confirmApplied(remoteWrite.id)
+
+        let failedFetchTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        await failedFetchTransport.failNextFetchedItem(
+            .snip(remoteSnip.id, in: zone),
+            failure: .invalidRecord
+        )
+        let failedFetchRetry = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: zone,
+            makeTransport: { failedFetchTransport }
+        )
+        let failedFetch = try await failedFetchRetry.enableOrRetry()
+        XCTAssertEqual(failedFetch.state, .needsAttention)
+
+        let interrupted = try await persistence.snapshot()
+        XCTAssertEqual(interrupted.transition?.phase, .candidateReady)
+        let candidate = try await persistence.libraryForTransition(
+            storeID: try XCTUnwrap(interrupted.transition?.candidateStoreID)
+        )
+        let raw = CloudFullSyncPersistence(
+            library: candidate,
+            namespace: namespace,
+            dataZone: zone
+        )
+        let savedEngineState = try await raw.loadEngineState()
+        XCTAssertNotNil(savedEngineState)
+        let failedRecovery = try await candidate.cloudFullRecoveryEvents(
+            namespaceKey: namespace.namespaceKey
+        )
+        XCTAssertEqual(
+            try CloudFullSyncPersistence.failedFetchRecordIDs(failedRecovery),
+            [.snip(remoteSnip.id, in: zone)]
+        )
+
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+        let retry = ICloudSyncModeCoordinator(
+            persistence: reopened,
+            namespace: namespace,
+            textZone: zone,
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+        )
+        let result = try await retry.enableOrRetry()
+
+        XCTAssertEqual(result.state, .on)
+        let active = try await reopened.activeLibrary()
+        let final = await active.snapshot(sortedBy: .manual)
+        XCTAssertEqual(Set(final.snips.map(\.id)), Set([localSnip.id, remoteSnip.id]))
+        XCTAssertTrue(final.snips.contains(where: { $0.content == "refetch after cursor reset" }))
+        let completed = try await reopened.snapshot()
+        let rawActive = try await reopened.libraryForTransition(storeID: completed.activeStore.id)
+        let recovery = try await rawActive.cloudFullRecoveryEvents(
+            namespaceKey: namespace.namespaceKey
+        )
+        XCTAssertTrue(recovery.isEmpty)
+    }
+
     func testFullRecordEnableKeepsTypedFetchIssueWhileSetupWaits() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1589,7 +1742,7 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertTrue(final.snips.contains(where: { $0.id == failedSnip.id }))
     }
 
-    func testFullPartialFirstSendPromotionCrashReplaysAfterHardReopen() async throws {
+    func testFullTerminalFirstSendSettlementCrashPreservesRecoveryAfterHardReopen() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let persistence = try SwiftDataSyncModePersistence(
@@ -1623,10 +1776,14 @@ extension ICloudSyncModeCoordinatorTests {
         )
         let enabling = Task { try await coordinator.enableOrRetry() }
         await transport.waitUntilSendPauses()
-        await transport.failNextSentItem(.snip(failed.id, in: zone), failure: .retryable)
+        await transport.failNextSentItem(.snip(failed.id, in: zone), failure: .rejected)
         await transport.resumeSend()
-        let partial = try await enabling.value
-        XCTAssertEqual(partial.state, .settingUp)
+        do {
+            _ = try await enabling.value
+            XCTFail("The rejected first send must be reported")
+        } catch let error as CloudSyncIssueError {
+            XCTAssertEqual(error.issue, .appDataIssue)
+        }
 
         let interrupted = try await persistence.snapshot()
         XCTAssertEqual(interrupted.transition?.phase, .firstSendStarted)
@@ -1642,6 +1799,33 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertFalse(promoted.contains(where: {
             $0.reference == CloudEntityReference(kind: .snip, domainID: failed.id)
         }))
+
+        let settlementCrash = CrashInjector(point: .beforeRetryFetchSettlementCommit)
+        let settling = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            crashHook: settlementCrash.hit
+        )
+        let interruptedRetry = ICloudSyncModeCoordinator(
+            persistence: settling,
+            namespace: namespace,
+            textZone: zone,
+            makeTransport: {
+                FakeCloudRecordTransport(server: server, namespace: namespace)
+            }
+        )
+        let interruptedResult = try await interruptedRetry.enableOrRetry()
+        XCTAssertEqual(interruptedResult.state, .needsAttention)
+        let unsettled = try await settling.snapshot()
+        XCTAssertEqual(unsettled.transition?.phase, .candidateReady)
+        XCTAssertEqual(unsettled.transition?.captureAcceptedServerProvenance, true)
+        XCTAssertEqual(unsettled.attentionReason, .terminalFetchFailure)
+        let unsettledCandidate = try await settling.libraryForTransition(
+            storeID: try XCTUnwrap(unsettled.transition?.candidateStoreID)
+        )
+        let recovery = try await unsettledCandidate.cloudFullRecoveryEvents(
+            namespaceKey: namespace.namespaceKey
+        )
+        XCTAssertEqual(recovery.map(\.kind), [.terminalSend])
 
         let reopened = try SwiftDataSyncModePersistence(rootURL: root)
         let retry = ICloudSyncModeCoordinator(
