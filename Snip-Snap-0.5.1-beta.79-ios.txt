@@ -1,0 +1,3 @@
+Snip Snap 0.5.1 Beta 79 — iOS
+
+- Fix adaptive actions and Mac dialogs

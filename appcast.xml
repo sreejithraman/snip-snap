@@ -4,6 +4,21 @@
         <title>Snip Snap</title>
         <item>
             <title>0.5.1</title>
+            <pubDate>Sun, 20 Sep 2026 04:34:12 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.5.1-beta.79</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.5.1-beta.79-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>79</sparkle:version>
+            <sparkle:shortVersionString>0.5.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.5.1-beta.79/Snip-Snap-0.5.1.zip" length="9929805" type="application/octet-stream" sparkle:edSignature="1AHtXQWhV5TPq1janvDBy7C6VAlBwVjuSPoPRyUpdbvnOW1yQiorFhOsvxm0xxfJYxsfLy4h4lFsuqZwwWfRCQ=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.5.1 Beta 79 — Mac
+
+- Fix adaptive actions and Mac dialogs
+</description>
+        </item>
+        <item>
+            <title>0.5.1</title>
             <pubDate>Sun, 20 Sep 2026 02:54:23 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.5.1-beta.78</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.5.1-beta.78-mac.txt</sparkle:fullReleaseNotesLink>
