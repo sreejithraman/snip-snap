@@ -5,8 +5,8 @@ result succeeds. Views never select a haptic pattern.
 
 | Action | UI entry points | Shared execution seam | Feedback |
 | --- | --- | --- | --- |
-| Copy | Row and selection menus; Copy, Copy Text, Copy Attachments, Copy Text Only | `IOSCopyShareCoordinator.write` after the pasteboard accepts the payload | `copied` |
-| Mark Done / Mark Not Done | Row button, swipe, context menu, selection menu | `IOSAppModel.setDoneUnlocked` then `performUserAction` | `markedDone` or `selection` |
+| Copy + Done | Row and selection menus; Copy, Copy Text, Copy Attachments, Copy Text Only | `IOSCopyShareCoordinator.writeAndMarkDone` after the pasteboard accepts the payload and the model marks it Done when needed | `copied`, plus `markedDone` when the state changes |
+| Done + Copy / Mark Not Done | Row button, swipe, context menu, selection menu | `IOSCopyShareCoordinator.toggleDone` when marking Done; `IOSAppModel.setDoneUnlocked` when marking Not Done | `copied` and `markedDone`, or `reopened` |
 | Delete snips | Row and selection menus, swipe | `IOSAppModel.deleteSnips` after the deletion snapshot applies | `deleted` |
 | Delete list | List menu | `IOSAppModel.performUserAction` after the deletion snapshot applies | `deleted` |
 | Undo delete | Undo toast | `IOSAppModel.restoreDeletion` after the restored snapshot applies | `restored` |
@@ -43,10 +43,10 @@ All impacts use Apple's default strength. UIKit playback happens when the action
 emits, without waiting for a SwiftUI update. The root modifier only tracks scene
 lifetime. Preference, cancellation, and stale-interaction checks still apply.
 
-A compound result can retain both meanings, such as `[.copied, .markedDone]`, but
+A compound result retains both meanings, such as `[.copied, .markedDone]`, but
 plays one system response: error or warning first, otherwise the last outcome.
-The check button still only marks Done. A future Copy + Done action needs one
-owner to publish its actual result after the underlying operations finish.
+`IOSCopyShareCoordinator` owns Copy + Done and publishes the result after both
+operations finish. A failed copy leaves the snip unchecked.
 
 Tests cover the action paths, repeated outcomes, failures, preferences, and stale
 work. A UI test exercises swipe Done/Delete and context-menu Copy/Delete. These

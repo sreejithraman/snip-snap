@@ -104,7 +104,10 @@ struct SnipCollectionView: View {
                                         isRecovered: model.isRecoveredSnip(snip.id),
                                         isReordering: isReordering,
                                         onPreviewAttachment: previewAttachment,
-                                        onCopy: { Task { await copyShare.copy(snips: [snip], model: model) } }
+                                        onCopy: { Task { await copyShare.copy(snips: [snip], model: model) } },
+                                        onToggleDone: {
+                                            await copyShare.toggleDone(snip: snip, model: model)
+                                        }
                                     )
                                     .contentShape(Rectangle())
                                     .highPriorityGesture(
@@ -130,7 +133,7 @@ struct SnipCollectionView: View {
                                             }
                                         } else {
                                             Button(SnipCompletionLanguage.actionTitle(isDone: snip.isDone)) {
-                                                Task { await model.toggleDone(id: snip.id) }
+                                                Task { await copyShare.toggleDone(snip: snip, model: model) }
                                             }
                                         }
                                     }
@@ -149,7 +152,7 @@ struct SnipCollectionView: View {
                                     role: nil,
                                     accessibilityIdentifier: snip.isDone ? "not-done" : "done"
                                 ) {
-                                    Task { await model.toggleDone(id: snip.id) }
+                                    Task { await copyShare.toggleDone(snip: snip, model: model) }
                                 }
                                 .id(snip.isDone)
                             }
@@ -392,7 +395,7 @@ struct SnipCollectionView: View {
             SnipCompletionLanguage.menuActionTitle(isDone: snip.isDone),
             systemImage: snip.isDone ? "arrow.uturn.backward" : "checkmark"
         ) {
-            Task { await model.toggleDone(id: snip.id) }
+            Task { await copyShare.toggleDone(snip: snip, model: model) }
         }
         }
         if !isSelecting || model.lists.contains(where: { $0.id != snip.listID }) {
@@ -563,6 +566,7 @@ private struct SnipRow: View {
     @State private var isChangingCompletion = false
     var onPreviewAttachment: ((SnipAttachment) -> Void)? = nil
     var onCopy: (() -> Void)? = nil
+    var onToggleDone: (() async -> Bool)? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -577,7 +581,11 @@ private struct SnipRow: View {
                     guard !isChangingCompletion else { return }
                     isChangingCompletion = true
                     Task { @MainActor in
-                        _ = await model.toggleDone(id: snip.id)
+                        if let onToggleDone {
+                            _ = await onToggleDone()
+                        } else {
+                            _ = await model.toggleDone(id: snip.id)
+                        }
                         isChangingCompletion = false
                     }
                 } label: {
@@ -869,7 +877,7 @@ struct LibrarySearchView: View {
 
     private func clipboardResult(_ entry: ClipboardEntry) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            SnipCopyControl { clipboard.copy(entry) }
+            SnipCopyControl { copyShare.copyClipboardEntry(entry, clipboard: clipboard) }
                 .accessibilityLabel("Copy Clipboard Entry")
             VStack(alignment: .leading, spacing: 6) {
                 if let image = entry.imageRepresentations.first.flatMap({ UIImage(data: $0.data) }) {
@@ -886,7 +894,9 @@ struct LibrarySearchView: View {
         .listRowSeparator(.hidden)
         .accessibilityIdentifier("search-clipboard-\(entry.id)")
         .contextMenu {
-            Button("Copy", systemImage: "doc.on.doc") { clipboard.copy(entry) }
+            Button("Copy", systemImage: "doc.on.doc") {
+                copyShare.copyClipboardEntry(entry, clipboard: clipboard)
+            }
             Button(entry.isPinned ? "Unpin" : "Pin", systemImage: "pin") {
                 Task { await clipboard.togglePin(entry) }
             }

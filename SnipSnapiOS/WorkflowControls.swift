@@ -109,7 +109,9 @@ struct SelectionActionsMenu: View {
         if model.selectedVisibleSnips.contains(where: { !$0.isDone }) {
             Button(SnipCompletionLanguage.menuActionTitle(isDone: false), systemImage: "checkmark") {
                 Task {
-                    if await model.setSelectionDone(true) { endSelection() }
+                    if await copyShare.markDone(snips: model.selectedVisibleSnips, model: model) {
+                        endSelection()
+                    }
                 }
             }
             .disabled(!model.selectedVisibleSnips.contains { !$0.isPinned })
