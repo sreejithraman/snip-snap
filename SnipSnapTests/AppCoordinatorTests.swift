@@ -238,6 +238,34 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testQueuedDialogRetriesWhenAppKitMakesParentUsable() async throws {
+        let defaultsName = "Snip SnapUsabilityDialogTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let coordinator = AppCoordinator(
+            model: AppModel(
+                library: try JSONSnipLibrary(fileURL: storeURL()),
+                defaults: defaults
+            ),
+            shortcutSettings: ShortcutSettings(defaults: defaults),
+            isAccessibilityTrusted: { false }
+        )
+        let parent = NSWindow()
+        coordinator.attachPanelWindow(parent)
+        coordinator.presentPanelDialog(id: .backupImport, title: "Import") {} content: {
+            Text("Review backup")
+        }
+
+        parent.makeKeyAndOrderFront(nil)
+        defer { parent.orderOut(nil) }
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertEqual(parent.childWindows?.count, 1)
+        XCTAssertEqual(parent.childWindows?.first?.isOpaque, true)
+        coordinator.dismissPanelDialog(id: .backupImport)
+    }
+
+    @MainActor
     func testNewDialogWaitsForActiveDialogToClose() async throws {
         let defaultsName = "Snip SnapQueuedDialogTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))

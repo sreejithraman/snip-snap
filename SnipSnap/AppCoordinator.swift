@@ -65,6 +65,7 @@ final class AppCoordinator {
     private var presentedOpenPanel: NSOpenPanel?
     private var openPanelCompletion: (([URL]?) -> Void)?
     private var pendingPanelDialogs: [PendingPanelDialog] = []
+    private var panelUsabilitySubscriptions: Set<AnyCancellable> = []
 
     init(
         model: AppModel,
@@ -399,8 +400,47 @@ final class AppCoordinator {
 
     func attachPanelWindow(_ window: NSWindow) {
         panelWindow = window
+        observePanelUsability(window)
         appliedPanelComposerExpansion = 0
         applyPanelComposerExpansion()
+    }
+
+    private func observePanelUsability(_ window: NSWindow) {
+        panelUsabilitySubscriptions.removeAll()
+        let windowNotifications = [
+            NSWindow.didBecomeKeyNotification,
+            NSWindow.didDeminiaturizeNotification,
+            NSWindow.didChangeOcclusionStateNotification
+        ].map { notification in
+            NotificationCenter.default.publisher(for: notification, object: window)
+                .eraseToAnyPublisher()
+        }
+        Publishers.MergeMany(windowNotifications)
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in self?.retryPendingPanelWork() }
+            }
+            .store(in: &panelUsabilitySubscriptions)
+        NSWorkspace.shared.notificationCenter.publisher(
+            for: NSWorkspace.activeSpaceDidChangeNotification
+        )
+        .sink { [weak self] _ in
+            Task { @MainActor [weak self] in self?.retryPendingPanelWork() }
+        }
+        .store(in: &panelUsabilitySubscriptions)
+        NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in self?.retryPendingPanelWork() }
+            }
+            .store(in: &panelUsabilitySubscriptions)
+    }
+
+    private func retryPendingPanelWork() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if !self.presentNextPendingPanelDialog() {
+                self.updatePresentedError()
+            }
+        }
     }
 
     func presentPanelDialog<Content: View>(
