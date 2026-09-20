@@ -15,6 +15,9 @@ enum PanelDialogID: Equatable {
     case recovery
     case accessibility
     case editList(UUID)
+    case backupImport
+    case clearClipboardHistory
+    case deleteList(UUID)
     case error
 }
 
@@ -404,8 +407,8 @@ final class AppCoordinator {
         panelDialogs.isPresented = true
     }
 
-    func dismissPanelDialog(id: PanelDialogID) {
-        panelDialogPresenter.dismiss(id: id)
+    func dismissPanelDialog(id: PanelDialogID, restoringParent: Bool = true) {
+        panelDialogPresenter.dismiss(id: id, restoringParent: restoringParent)
     }
 
     func updatePresentedError() {
@@ -587,6 +590,41 @@ private struct PanelErrorDialog: View {
     }
 }
 
+struct PanelConfirmationDialog: View {
+    let title: String
+    let message: String
+    let confirmTitle: String
+    var isDestructive = false
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: SnipSnapSpacing.paneContentInset) {
+            Text(title)
+                .font(.headline)
+            Text(message)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                if isDestructive {
+                    Button(confirmTitle, role: .destructive, action: onConfirm)
+                        .buttonStyle(.bordered)
+                } else {
+                    AppPrimaryActionButton(action: onConfirm) {
+                        Text(confirmTitle)
+                    }
+                    .keyboardShortcut(.defaultAction)
+                }
+            }
+        }
+        .padding(SnipSnapSpacing.paneContentInset)
+        .frame(width: 380)
+    }
+}
+
 /// Hosts form-sized work in an opaque child window. AppKit's sheet dimmer
 /// otherwise exposes the clear panel's rectangular window bounds.
 final class PanelDialogInputShieldView: NSView {
@@ -693,9 +731,9 @@ private final class PanelDialogPresenter: NSObject, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
     }
 
-    func dismiss(id: PanelDialogID) {
+    func dismiss(id: PanelDialogID, restoringParent: Bool = true) {
         guard self.id == id else { return }
-        dismissCurrent()
+        dismissCurrent(restoringParent: restoringParent)
     }
 
     func dismissForParentHide() {

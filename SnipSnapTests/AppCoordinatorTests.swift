@@ -200,6 +200,102 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testRootConfirmationsUseOpaqueChildrenInsteadOfParentSheets() throws {
+        let defaultsName = "Snip SnapPanelConfirmationTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let model = AppModel(
+            library: try JSONSnipLibrary(fileURL: storeURL()),
+            defaults: defaults
+        )
+        let coordinator = AppCoordinator(
+            model: model,
+            shortcutSettings: ShortcutSettings(defaults: defaults),
+            isAccessibilityTrusted: { false }
+        )
+        let panel = NSWindow()
+        coordinator.attachPanelWindow(panel)
+        panel.orderFront(nil)
+        defer { panel.orderOut(nil) }
+
+        let dialogIDs: [PanelDialogID] = [
+            .backupImport,
+            .clearClipboardHistory,
+            .deleteList(UUID())
+        ]
+        for id in dialogIDs {
+            coordinator.presentPanelDialog(id: id, title: "Test") {} content: {
+                PanelConfirmationDialog(
+                    title: "Confirm",
+                    message: "Check this action.",
+                    confirmTitle: "Continue",
+                    onConfirm: {},
+                    onCancel: {}
+                )
+            }
+
+            let dialog = try XCTUnwrap(panel.childWindows?.first)
+            XCTAssertTrue(dialog.isOpaque)
+            XCTAssertNil(panel.attachedSheet)
+            XCTAssertNil(dialog.attachedSheet)
+
+            coordinator.dismissPanelDialog(id: id)
+            XCTAssertTrue(panel.childWindows?.isEmpty ?? true)
+        }
+    }
+
+    @MainActor
+    func testAttachmentImporterIsAStandalonePanel() {
+        let parent = NSWindow()
+        let importer = StandaloneFileImporter.makePanel()
+        defer { importer.orderOut(nil) }
+
+        importer.orderFront(nil)
+
+        XCTAssertNil(parent.attachedSheet)
+        XCTAssertNil(importer.sheetParent)
+        XCTAssertFalse(parent.childWindows?.contains(importer) == true)
+    }
+
+    @MainActor
+    func testAccessibilityRepairDismissesBeforeOpeningSettings() throws {
+        let defaultsName = "Snip SnapAccessibilityDialogOrderTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        defaults.set(true, forKey: AccessibilityPermissionController.didRequestAccessDefaultsKey)
+        var openedSettings = false
+        var coordinator: AppCoordinator!
+        let model = AppModel(
+            library: try JSONSnipLibrary(fileURL: storeURL()),
+            defaults: defaults
+        )
+        coordinator = AppCoordinator(
+            model: model,
+            shortcutSettings: ShortcutSettings(defaults: defaults),
+            isAccessibilityTrusted: { false },
+            requestAccessibilityTrust: {},
+            openAccessibilitySettings: {
+                XCTAssertFalse(coordinator.panelDialogs.isPresented)
+                openedSettings = true
+            },
+            accessibilitySetupDefaults: defaults
+        )
+        let parent = NSWindow()
+        coordinator.attachPanelWindow(parent)
+        parent.orderFront(nil)
+        defer { parent.orderOut(nil) }
+        coordinator.presentPanelDialog(id: .accessibility, title: "Test") {} content: {
+            Text("Repair")
+        }
+
+        coordinator.dismissPanelDialog(id: .accessibility, restoringParent: false)
+        coordinator.accessibilityPermissions.performPrimaryAction()
+
+        XCTAssertTrue(openedSettings)
+        XCTAssertTrue(parent.childWindows?.isEmpty ?? true)
+    }
+
+    @MainActor
     func testPendingFormErrorMovesToAnOpaqueChildAfterHideAndReopen() async throws {
         let defaultsName = "Snip SnapPendingPanelErrorTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))

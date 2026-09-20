@@ -14,6 +14,18 @@ struct PendingEditAttachmentImport: Identifiable {
     let urls: [URL]
 }
 
+@MainActor
+enum StandaloneFileImporter {
+    static func makePanel() -> NSOpenPanel {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.data]
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        return panel
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var shortcutSettings: ShortcutSettings
@@ -90,37 +102,8 @@ struct ContentView: View {
         .tint(SnipSnapColors.controlTint)
         .preferredColorScheme(model.appearance.colorScheme)
         .quickLookPreview($selectedPreviewURL, in: previewURLs)
-        .background {
-            ClipboardAlertHost(
-                history: model.clipboardHistory,
-                showingClearConfirmation: $showingClearClipboard
-            )
-        }
-        .fileImporter(
-            isPresented: $showingFileImporter,
-            allowedContentTypes: [.data],
-            allowsMultipleSelection: true
-        ) { result in
-            switch result {
-            case .success(let urls):
-                switch fileImportTarget {
-                case .edit(let snipID) where snipID == model.editingID:
-                    pendingEditAttachmentImport = PendingEditAttachmentImport(
-                        snipID: snipID,
-                        urls: urls
-                    )
-                case .composer(let listID):
-                    model.addDraftAttachments(urls, to: listID)
-                    cacheComposerDraft(for: listID)
-                case .edit, .none:
-                    break
-                }
-            case .failure(let error):
-                if (error as NSError).code != NSUserCancelledError {
-                    model.presentError(error)
-                }
-            }
-            fileImportTarget = nil
+        .onChange(of: showingFileImporter) { _, isPresented in
+            if isPresented { presentStandaloneFileImporter() }
         }
         .onReceive(fileDropController.fileDrops) { urls in
             guard model.editingID == nil else { return }
@@ -202,20 +185,19 @@ struct ContentView: View {
         .onChange(of: showingRecoveryReview) { _, isPresented in
             presentRecoveryDialog(isPresented: isPresented)
         }
-        .confirmationDialog(
-            "Import this backup?",
-            isPresented: Binding(
-                get: { model.pendingImportPreview != nil },
-                set: { if !$0 { model.cancelBackupImport() } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Import backup") {
-                Task { await model.confirmBackupImport() }
-            }
-            Button("Cancel", role: .cancel) { model.cancelBackupImport() }
-        } message: {
-            Text("Merge this backup with your library.\n\n\(model.importPreviewSummary)")
+        .onChange(of: model.pendingImportPreview, initial: true) { _, preview in
+            presentBackupImportDialog(isPresented: preview != nil)
+        }
+        .onChange(of: showingClearClipboard) { _, isPresented in
+            presentClearClipboardDialog(isPresented: isPresented)
+        }
+        .onChange(of: model.clipboardHistory.persistenceError, initial: true) { _, error in
+            guard let error else { return }
+            model.clipboardHistory.dismissPersistenceError()
+            model.presentError(
+                error,
+                title: String(localized: "Couldn’t Save Clipboard History")
+            )
         }
         .onChange(of: accessibilityPermissions.isRepairPresented) { _, isPresented in
             presentAccessibilityDialog(isPresented: isPresented)
@@ -239,6 +221,52 @@ struct ContentView: View {
                 model: model,
                 isPresented: $showingNewList,
                 movingIDs: newListMovingIDs
+            )
+        }
+    }
+
+    private func presentBackupImportDialog(isPresented: Bool) {
+        guard isPresented else {
+            coordinator.dismissPanelDialog(id: .backupImport)
+            return
+        }
+        coordinator.presentPanelDialog(id: .backupImport, title: String(localized: "Import backup")) {
+            model.cancelBackupImport()
+        } content: {
+            PanelConfirmationDialog(
+                title: String(localized: "Import this backup?"),
+                message: String(localized: "Merge this backup with your library.\n\n\(model.importPreviewSummary)"),
+                confirmTitle: String(localized: "Import backup"),
+                onConfirm: { Task { await model.confirmBackupImport() } },
+                onCancel: model.cancelBackupImport
+            )
+        }
+    }
+
+    private func presentClearClipboardDialog(isPresented: Bool) {
+        guard isPresented else {
+            coordinator.dismissPanelDialog(id: .clearClipboardHistory)
+            return
+        }
+        let history = model.clipboardHistory
+        coordinator.presentPanelDialog(
+            id: .clearClipboardHistory,
+            title: String(localized: "Clear clipboard history")
+        ) {
+            showingClearClipboard = false
+        } content: {
+            PanelConfirmationDialog(
+                title: String(localized: "Clear unpinned history?"),
+                message: history.syncIsActive
+                    ? String(localized: "This clears unpinned history across synced devices. Pinned items stay.")
+                    : String(localized: "This clears unpinned history on this Mac. Pinned items stay."),
+                confirmTitle: String(localized: "Clear unpinned history"),
+                isDestructive: true,
+                onConfirm: {
+                    showingClearClipboard = false
+                    history.clear()
+                },
+                onCancel: { showingClearClipboard = false }
             )
         }
     }
@@ -268,10 +296,52 @@ struct ContentView: View {
         ) {
             accessibilityPermissions.isRepairPresented = false
         } content: {
-            AccessibilityRepairView(controller: accessibilityPermissions) {
-                accessibilityPermissions.isRepairPresented = false
+            AccessibilityRepairView(
+                controller: accessibilityPermissions,
+                dismiss: { accessibilityPermissions.isRepairPresented = false },
+                performPrimaryAction: {
+                    coordinator.dismissPanelDialog(id: .accessibility, restoringParent: false)
+                    accessibilityPermissions.performPrimaryAction()
+                }
+            )
+        }
+    }
+
+    private func presentStandaloneFileImporter() {
+        showingFileImporter = false
+        let panel = StandaloneFileImporter.makePanel()
+        panel.begin { response in
+            Task { @MainActor in
+                guard response == .OK else {
+                    fileImportTarget = nil
+                    return
+                }
+                handleFileImport(.success(panel.urls))
             }
         }
+    }
+
+    private func handleFileImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            switch fileImportTarget {
+            case .edit(let snipID) where snipID == model.editingID:
+                pendingEditAttachmentImport = PendingEditAttachmentImport(
+                    snipID: snipID,
+                    urls: urls
+                )
+            case .composer(let listID):
+                model.addDraftAttachments(urls, to: listID)
+                cacheComposerDraft(for: listID)
+            case .edit, .none:
+                break
+            }
+        case .failure(let error):
+            if (error as NSError).code != NSUserCancelledError {
+                model.presentError(error)
+            }
+        }
+        fileImportTarget = nil
     }
 
     private var mainPanel: some View {
@@ -908,37 +978,4 @@ struct ContentView: View {
         }
     }
 
-}
-
-private struct ClipboardAlertHost: View {
-    @ObservedObject var history: ClipboardHistory
-    @Binding var showingClearConfirmation: Bool
-
-    var body: some View {
-        Color.clear
-            .frame(width: 0, height: 0)
-            .confirmationDialog(
-                "Clear unpinned history?",
-                isPresented: $showingClearConfirmation
-            ) {
-                Button("Clear unpinned history", role: .destructive) { history.clear() }
-            } message: {
-                Text(history.syncIsActive ? "This clears unpinned history across synced devices. Pinned items stay." : "This clears unpinned history on this Mac. Pinned items stay.")
-            }
-            .alert(
-                "Couldn’t Save Clipboard History",
-                isPresented: persistenceErrorPresented
-            ) {
-                Button("OK") { history.dismissPersistenceError() }
-            } message: {
-                Text(history.persistenceError ?? "")
-            }
-    }
-
-    private var persistenceErrorPresented: Binding<Bool> {
-        Binding(
-            get: { history.persistenceError != nil },
-            set: { if !$0 { history.dismissPersistenceError() } }
-        )
-    }
 }

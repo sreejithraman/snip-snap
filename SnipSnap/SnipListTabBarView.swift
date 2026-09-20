@@ -56,18 +56,8 @@ struct SnipListTabBarView: View {
                 }
             }
         }
-        .confirmationDialog(
-            String(localized: "Delete \(listPendingDeletion?.name ?? String(localized: "list"))?"),
-            isPresented: listDeletionPresented
-        ) {
-            Button("Delete List", role: .destructive) {
-                guard let list = listPendingDeletion else { return }
-                listPendingDeletion = nil
-                Task { await model.deleteList(list) }
-            }
-            Button("Cancel", role: .cancel) { listPendingDeletion = nil }
-        } message: {
-            Text("The snips in this list will move to Inbox.")
+        .onChange(of: listPendingDeletion?.id) { previousListID, listID in
+            presentDeleteListDialog(listID: listID, previousListID: previousListID)
         }
     }
 
@@ -239,11 +229,33 @@ struct SnipListTabBarView: View {
         hoverOpenTask = nil
     }
 
-    private var listDeletionPresented: Binding<Bool> {
-        Binding(
-            get: { listPendingDeletion != nil },
-            set: { if !$0 { listPendingDeletion = nil } }
-        )
+    private func presentDeleteListDialog(listID: UUID?, previousListID: UUID?) {
+        guard let listID,
+              let list = listPendingDeletion,
+              list.id == listID else {
+            if let previousListID {
+                coordinator.dismissPanelDialog(id: .deleteList(previousListID))
+            }
+            return
+        }
+        coordinator.presentPanelDialog(
+            id: .deleteList(listID),
+            title: String(localized: "Delete list")
+        ) {
+            listPendingDeletion = nil
+        } content: {
+            PanelConfirmationDialog(
+                title: String(localized: "Delete \(list.name)?"),
+                message: String(localized: "The snips in this list will move to Inbox."),
+                confirmTitle: String(localized: "Delete List"),
+                isDestructive: true,
+                onConfirm: {
+                    listPendingDeletion = nil
+                    Task { await model.deleteList(list) }
+                },
+                onCancel: { listPendingDeletion = nil }
+            )
+        }
     }
 
     private var tabs: [TabSelection] {

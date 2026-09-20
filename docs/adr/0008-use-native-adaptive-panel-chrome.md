@@ -18,7 +18,7 @@ Use native button styles by default. The compact Mac editor actions are an excep
 
 Keep resizing on the visible glass edge because the window frame includes a 24-point effect gutter. A five-point AppKit overlay handles the edge drag. Use always-active enter and exit tracking for idle frame-resize cursors, then hold the same cursor during a drag. Keep the panel's size limits on `NSWindow`.
 
-Do not attach form sheets to the clear floating panel. AppKit dims the full rectangular parent window during a sheet, which reveals the clear effect gutter as a gray box. Show form work in a separate, opaque child panel centered over the floating panel. Block the parent while the child is open. Keep Escape on cancel or back actions. Use Return only for a safe main action. Keep system alerts and confirmation dialogs for short choices.
+Do not attach sheets, alerts, or confirmation dialogs to the clear floating panel. AppKit dims the full rectangular parent window during a sheet, which reveals the clear effect gutter as a gray box. Show form work and short choices in a separate, opaque child panel centered over the floating panel. Normal opaque windows can keep system alerts. Block the parent while the child is open. Keep Escape on cancel or back actions. Use Return only for a safe main action.
 
 ## Consequences
 

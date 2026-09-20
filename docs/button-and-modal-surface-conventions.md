@@ -21,8 +21,9 @@ For the current case:
 - Use a separate, normally backed Mac window or panel for list editing. Hide or
   close the floating panel while this editor is open if the task must hold the
   person's full attention.
-- Keep `confirmationDialog` or `NSAlert` for short choices such as delete and
-  discard.
+- On the clear floating panel, show short choices such as delete and discard in
+  the same opaque child-window host. Normal opaque windows can keep
+  `confirmationDialog` or `NSAlert`.
 - If the editor must stay inside the floating panel, use an app-owned overlay
   and mask its dim layer to the visible panel surface. This costs more work for
   focus, Escape, Return, VoiceOver, and blocked hit testing, so treat it as the
@@ -204,9 +205,9 @@ tasks. They show longer tasks in a normal window.
    disabled states.
 4. Give Mac confirm and cancel actions `.defaultAction` and `.cancelAction`.
    Use semantic toolbar placements when they sit in a sheet or editor toolbar.
-5. Move Mac list editing out of the clear panel's `.sheet`. Use a separate
-   backed editor window or panel. Keep the existing system confirmation dialog
-   pattern for delete.
+5. Move every Mac root-panel dialog out of the clear panel's `.sheet`. Use a
+   backed child window for forms, confirmations, and errors. Keep native alerts
+   on normal opaque windows.
 6. Test light, dark, Increase Contrast, Reduce Transparency, enabled, disabled,
    hover, press, Return, Escape, and VoiceOver on both platforms.
 
