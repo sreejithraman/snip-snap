@@ -116,15 +116,21 @@ final class AppModelTests: StoreBackedTestCase {
         private(set) var addedContents: [String] = []
         private(set) var snapshotCallCount = 0
         private(set) var recoveryChoices: [SnipRecoveryChoice] = []
+        private var suspendsFirstCommand: Bool
+        private var firstCommandStarted = false
+        private var firstCommandStartWaiters: [CheckedContinuation<Void, Never>] = []
+        private var firstCommandContinuation: CheckedContinuation<Void, Never>?
 
         init(
             snips: [Snip],
             recovery: SnipRecoverySnapshot = .empty,
-            attachmentURLs: [UUID: URL] = [:]
+            attachmentURLs: [UUID: URL] = [:],
+            suspendsFirstCommand: Bool = false
         ) {
             self.snips = snips
             self.recovery = recovery
             self.attachmentURLs = attachmentURLs
+            self.suspendsFirstCommand = suspendsFirstCommand
         }
 
         func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
@@ -149,7 +155,14 @@ final class AppModelTests: StoreBackedTestCase {
         func perform(
             _ command: SnipLibraryCommand,
             sortedBy sortMode: SnipSortMode
-        ) throws -> SnipLibraryUpdate {
+        ) async throws -> SnipLibraryUpdate {
+            if suspendsFirstCommand {
+                suspendsFirstCommand = false
+                firstCommandStarted = true
+                firstCommandStartWaiters.forEach { $0.resume() }
+                firstCommandStartWaiters.removeAll()
+                await withCheckedContinuation { firstCommandContinuation = $0 }
+            }
             let outcome: SnipLibraryOutcome
             switch command {
             case let .add(content, origin, source, listID, _, requestID, now):
@@ -164,12 +177,34 @@ final class AppModelTests: StoreBackedTestCase {
                 snips.append(snip)
                 addedContents.append(content)
                 outcome = .add(.added(snip.id))
+            case .update(let id, let content, _, _, let now):
+                guard let index = snips.firstIndex(where: { $0.id == id }) else {
+                    throw SnipLibraryError.snipNotFound
+                }
+                snips[index].content = content
+                snips[index].updatedAt = now
+                outcome = .none
+            case .setDone(let ids, let done):
+                for index in snips.indices where ids.contains(snips[index].id) {
+                    snips[index].isDone = done
+                }
+                outcome = .none
             case .pruneAttachments:
                 outcome = .none
             default:
                 throw SnipLibraryError.storeUnavailable
             }
             return SnipLibraryUpdate(snapshot: makeSnapshot(sortedBy: sortMode), outcome: outcome)
+        }
+
+        func waitUntilFirstCommandStarts() async {
+            if firstCommandStarted { return }
+            await withCheckedContinuation { firstCommandStartWaiters.append($0) }
+        }
+
+        func resumeFirstCommand() {
+            firstCommandContinuation?.resume()
+            firstCommandContinuation = nil
         }
 
         func recoverySnapshot(in scope: SnipRecoveryScope) -> SnipRecoverySnapshot {
@@ -508,26 +543,82 @@ final class AppModelTests: StoreBackedTestCase {
         await model.reload()
         model.selection = [first.id, second.id]
 
-        await model.toggleDoneNow(id: first.id)
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-check-copy-\(UUID())"))
+        await model.toggleDoneNow(id: first.id, to: pasteboard)
 
         XCTAssertEqual(model.selection, [first.id, second.id])
         XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == first.id }).isDone)
         XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == second.id }).isDone)
+        XCTAssertEqual(pasteboard.string(forType: .string), "First")
     }
 
     @MainActor
-    func testRapidDoneTogglesApplyInOrder() async throws {
+    func testRapidDoneTogglesOnlyApplyTheSuccessfulCopy() async throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let added = try await repository.add(content: "Snip", origin: .quickEntry)
         let snip = try XCTUnwrap(added)
         let model = AppModel(library: repository)
         await model.reload()
 
-        async let first: Void = model.toggleDoneNow(id: snip.id)
-        async let second: Void = model.toggleDoneNow(id: snip.id)
-        _ = await (first, second)
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-rapid-check-copy-\(UUID())"))
+        let first = Task { @MainActor in
+            await model.toggleDoneNow(id: snip.id, to: pasteboard)
+        }
+        let second = Task { @MainActor in
+            await model.toggleDoneNow(id: snip.id, to: pasteboard)
+        }
+        _ = await (first.value, second.value)
 
-        XCTAssertFalse(try XCTUnwrap(model.snips.first).isDone)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first).isDone)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Snip")
+    }
+
+    @MainActor
+    func testCopyUsesCurrentContentInsteadOfViewSnapshot() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let added = try await repository.add(content: "Old content", origin: .quickEntry)
+        let original = try XCTUnwrap(added)
+        let model = AppModel(library: repository, defaults: defaults())
+        await model.reload()
+        let edited = await model.update(id: original.id, content: "Current content")
+        XCTAssertTrue(edited)
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-current-copy-\(UUID())"))
+
+        let copied = await model.copySnipsAndMarkDoneNow([original], to: pasteboard)
+
+        XCTAssertTrue(copied)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Current content")
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == original.id }).isDone)
+    }
+
+    @MainActor
+    func testCopyDoesNotFinishANewerEditWhileExportPreparationWaits() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let added = try await repository.add(content: "Original content", origin: .quickEntry)
+        let original = try XCTUnwrap(added)
+        let exportGate = PausingPasteboardExportPreparer()
+        let model = AppModel(
+            library: repository,
+            defaults: defaults(),
+            preparePasteboardExport: exportGate.prepare
+        )
+        await model.reload()
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-edit-during-copy-\(UUID())"))
+        let copy = Task { @MainActor in
+            await model.copySnipsAndMarkDoneNow([original], to: pasteboard)
+        }
+        await exportGate.waitUntilPreparationStarts()
+
+        let edited = await model.update(id: original.id, content: "Edited while copying")
+        await exportGate.release()
+        let copied = await copy.value
+
+        XCTAssertTrue(edited)
+        XCTAssertTrue(copied)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Original content")
+        let current = try XCTUnwrap(model.snips.first { $0.id == original.id })
+        XCTAssertEqual(current.content, "Edited while copying")
+        XCTAssertFalse(current.isDone)
     }
 
     @MainActor
@@ -541,10 +632,56 @@ final class AppModelTests: StoreBackedTestCase {
         let model = AppModel(library: repository)
         await model.reload()
 
-        await model.setDoneAfterExternalDropNow(ids: [first.id, second.id])
+        await model.setDoneAfterExternalDropNow(versions: [
+            first.id: first.updatedAt,
+            second.id: second.updatedAt,
+        ])
 
         XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == first.id }).isDone)
         XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == second.id }).isDone)
+    }
+
+    @MainActor
+    func testExternalDropDoesNotFinishASnipEditedAfterDragStarted() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let added = try await repository.add(content: "Original", origin: .quickEntry)
+        let original = try XCTUnwrap(added)
+        let model = AppModel(library: repository)
+        await model.reload()
+        let versions = [original.id: original.updatedAt]
+
+        let edited = await model.update(id: original.id, content: "Edited")
+        XCTAssertTrue(edited)
+        await model.setDoneAfterExternalDropNow(versions: versions)
+
+        let current = try XCTUnwrap(model.snips.first { $0.id == original.id })
+        XCTAssertEqual(current.content, "Edited")
+        XCTAssertFalse(current.isDone)
+    }
+
+    @MainActor
+    func testExternalDropRechecksVersionAfterWaitingForLibraryLock() async throws {
+        let original = Snip(content: "Original", origin: .quickEntry)
+        let library = InMemorySnipLibrary(snips: [original], suspendsFirstCommand: true)
+        let model = AppModel(library: library)
+        await model.reload()
+        let versions = [original.id: original.updatedAt]
+        let editTask = Task { @MainActor in
+            await model.update(id: original.id, content: "Edited")
+        }
+        await library.waitUntilFirstCommandStarts()
+        let dropTask = Task { @MainActor in
+            await model.setDoneAfterExternalDropNow(versions: versions)
+        }
+
+        await library.resumeFirstCommand()
+        let editSucceeded = await editTask.value
+        XCTAssertTrue(editSucceeded)
+        await dropTask.value
+
+        let current = try XCTUnwrap(model.snips.first { $0.id == original.id })
+        XCTAssertEqual(current.content, "Edited")
+        XCTAssertFalse(current.isDone)
     }
 
     @MainActor
@@ -1253,9 +1390,10 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testCopyingTextOnlyDoesNotCallCloudHandler() async {
-        let snip = Snip(content: "Text only", origin: .quickEntry)
-        let library = InMemorySnipLibrary(snips: [snip])
+    func testCopyingTextOnlyDoesNotCallCloudHandler() async throws {
+        let library = try JSONSnipLibrary(fileURL: storeURL())
+        let added = try await library.add(content: "Text only", origin: .quickEntry)
+        let snip = try XCTUnwrap(added)
         let handler = MacOptionalCloudSyncHandlerProbe()
         let model = AppModel(
             library: library,
@@ -1265,10 +1403,13 @@ final class AppModelTests: StoreBackedTestCase {
         await model.reload()
         model.selection = [snip.id]
 
-        let copied = await model.copySelectionNow()
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-copy-check-\(UUID())"))
+        let copied = await model.copySelectionNow(to: pasteboard)
         let requests = await handler.preparationRequests()
         XCTAssertTrue(copied)
         XCTAssertTrue(requests.isEmpty)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Text only")
+        XCTAssertTrue(try XCTUnwrap(model.snips.first).isDone)
     }
 
     @MainActor
@@ -1299,6 +1440,23 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertTrue(silent)
         XCTAssertEqual(model.toast?.action, .undoDelete)
         XCTAssertNil(model.clipboardCopyPulse)
+    }
+
+    @MainActor
+    func testCopyAndFinishKeepsPendingDeleteUndoVisible() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let added = try await repository.add(content: "Copy me", origin: .quickEntry)
+        let snip = try XCTUnwrap(added)
+        let model = AppModel(library: repository)
+        await model.reload()
+        model.toast = .deleted(count: 1, id: UUID())
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-copy-undo-\(UUID())"))
+
+        let copied = await model.copySnipsAndMarkDoneNow([snip], to: pasteboard)
+
+        XCTAssertTrue(copied)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first).isDone)
+        XCTAssertEqual(model.toast?.action, .undoDelete)
     }
 
     @MainActor
@@ -1637,6 +1795,86 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertFalse(olderCopied)
         XCTAssertTrue(observedCancellation)
         XCTAssertEqual(pasteboard.string(forType: .string), "Newer copy")
+    }
+
+    @MainActor
+    func testNewerLinkedCopyCancelsPendingAttachmentPreparation() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("cancel-linked-copy.txt")
+        try Data("Attachment".utf8).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let added = try await repository.add(
+            content: "Older remote copy",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let older = try XCTUnwrap(added)
+        let attachment = try XCTUnwrap(older.attachments.first)
+        try FileManager.default.removeItem(at: repository.attachmentURL(for: attachment))
+        let newerResult = try await repository.add(
+            content: "Newer linked copy",
+            origin: .quickEntry
+        )
+        let newer = try XCTUnwrap(newerResult)
+        let handler = CancellableMacAttachmentHandler(url: source)
+        let model = AppModel(
+            library: repository,
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        await model.reload()
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-linked-copy-cancel-\(UUID())"))
+
+        let olderCopy = Task { @MainActor in
+            await model.copySnipsAndMarkDoneNow([older], to: pasteboard)
+        }
+        await handler.waitUntilPreparationStarts()
+        let newerCopied = await model.copySnipsAndMarkDoneNow([newer], to: pasteboard)
+        let olderCopied = await olderCopy.value
+
+        XCTAssertTrue(newerCopied)
+        XCTAssertFalse(olderCopied)
+        let observedCancellation = await handler.didObserveCancellation()
+        XCTAssertTrue(observedCancellation)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Newer linked copy")
+        XCTAssertEqual(model.snips.first(where: { $0.id == older.id })?.isDone, false)
+        XCTAssertEqual(model.snips.first(where: { $0.id == newer.id })?.isDone, true)
+    }
+
+    @MainActor
+    func testNewerCopyPreventsOlderPostWriteCompletionWhileLibraryIsLocked() async throws {
+        let older = Snip(content: "Older copy", origin: .quickEntry)
+        let newer = Snip(content: "Newer copy", origin: .quickEntry, pinnedAt: Date())
+        let blocker = Snip(content: "Hold the lock", origin: .quickEntry)
+        let library = InMemorySnipLibrary(
+            snips: [older, newer, blocker],
+            suspendsFirstCommand: true
+        )
+        let model = AppModel(library: library)
+        await model.reload()
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-post-write-generation-\(UUID())"))
+        let blockerTask = Task { @MainActor in
+            await model.update(id: blocker.id, content: "Lock held")
+        }
+        await library.waitUntilFirstCommandStarts()
+        let olderCopy = Task { @MainActor in
+            await model.copySnipsAndMarkDoneNow([older], to: pasteboard)
+        }
+        let olderDidWrite = await waitUntil {
+            pasteboard.string(forType: .string) == "Older copy"
+        }
+        XCTAssertTrue(olderDidWrite)
+
+        let newerCopied = await model.copySnipsAndMarkDoneNow([newer], to: pasteboard)
+        await library.resumeFirstCommand()
+        let blockerSaved = await blockerTask.value
+        let olderCopied = await olderCopy.value
+
+        XCTAssertTrue(newerCopied)
+        XCTAssertTrue(blockerSaved)
+        XCTAssertTrue(olderCopied)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Newer copy")
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == older.id }).isDone)
     }
 
     @MainActor

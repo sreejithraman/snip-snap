@@ -794,6 +794,7 @@ final class SnipListModelsTests: XCTestCase {
             SnipDragPayload.make(snips: [first]),
             SnipDragPayload(
                 ids: [first.id],
+                versions: [first.id: first.updatedAt],
                 text: "Shown first",
                 previewSourceLabel: "Safari — Reference"
             )
@@ -802,6 +803,7 @@ final class SnipListModelsTests: XCTestCase {
             SnipDragPayload.make(snips: [second, first]),
             SnipDragPayload(
                 ids: [second.id, first.id],
+                versions: [second.id: second.updatedAt, first.id: first.updatedAt],
                 text: "Shown second\n\n---\n\nShown first\nSource: Safari — Reference\nURL: https://example.com",
                 previewSourceLabel: "2 snips"
             )

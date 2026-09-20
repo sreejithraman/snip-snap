@@ -108,7 +108,7 @@ struct IOSClipboardView: View {
             }
             ForEach(entries) { entry in
                 HStack(alignment: .top, spacing: 12) {
-                    SnipCopyControl { model.copy(entry) }
+                    SnipCopyControl { copyShare.copyClipboardEntry(entry, clipboard: model) }
                     .accessibilityLabel("Copy Clipboard Entry")
                     VStack(alignment: .leading, spacing: 6) {
                         if let image = entry.imageRepresentations.first.flatMap({ UIImage(data: $0.data) }) {
@@ -144,11 +144,15 @@ struct IOSClipboardView: View {
                 .accessibilityAction(named: Text(entry.isPinned ? "Unpin" : "Pin")) {
                     Task { await model.togglePin(entry) }
                 }
-                .accessibilityAction(named: "Copy") { model.copy(entry) }
+                .accessibilityAction(named: "Copy") {
+                    copyShare.copyClipboardEntry(entry, clipboard: model)
+                }
                 .id("\(entry.id.uuidString)-\(entry.isPinned)")
                 .accessibilityIdentifier("clipboard-entry-\(entry.id)")
                 .contextMenu {
-                    Button("Copy", systemImage: "doc.on.doc") { model.copy(entry) }
+                    Button("Copy", systemImage: "doc.on.doc") {
+                        copyShare.copyClipboardEntry(entry, clipboard: model)
+                    }
                     Button(entry.isPinned ? "Unpin" : "Pin", systemImage: entry.isPinned ? "pin.slash" : "pin") {
                         Task { await model.togglePin(entry) }
                     }

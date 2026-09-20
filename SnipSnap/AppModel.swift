@@ -725,42 +725,81 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func toggleDoneNow(ids: Set<UUID>) async {
+    func toggleDoneNow(
+        ids: Set<UUID>,
+        to pasteboard: NSPasteboard = .general
+    ) async {
         guard !ids.isEmpty else { return }
-        await performUserMutation {
-            let update = try await session.performLibraryCommand(
-                .toggleDoneMany(ids: ids), sortedBy: sortMode
-            )
-            return (update, ())
+        let shouldMarkDone = snips.contains {
+            ids.contains($0.id) && !$0.isPinned && !$0.isDone
         }
+        await setDoneNow(shouldMarkDone, ids: ids, to: pasteboard)
     }
 
     func setDone(_ done: Bool, ids: Set<UUID>) {
         guard !ids.isEmpty else { return }
-        Task {
-            await performUserMutation {
-                let update = try await session.performLibraryCommand(
-                    .setDone(ids: ids, done: done),
-                    sortedBy: sortMode
+        Task { await setDoneNow(done, ids: ids) }
+    }
+
+    func setDoneNow(
+        _ done: Bool,
+        ids: Set<UUID>,
+        to pasteboard: NSPasteboard = .general
+    ) async {
+        guard !ids.isEmpty else { return }
+        let snipsToCheck = done ? snips.filter {
+            ids.contains($0.id) && !$0.isPinned && !$0.isDone
+        } : []
+        if snipsToCheck.isEmpty {
+            await withCommandLock {
+                await setDoneWithoutCopyUnlocked(done, ids: ids)
+            }
+        } else {
+            let versions = copiedSnipVersions(snipsToCheck)
+            await copyBeforeCommandLock(snipsToCheck, to: pasteboard) {
+                await setDoneWithoutCopyUnlocked(
+                    done,
+                    ids: ids,
+                    versions: versions,
+                    preservesDeletionToast: true
                 )
-                return (update, ())
             }
         }
+    }
+
+    private func setDoneWithoutCopyUnlocked(
+        _ done: Bool,
+        ids: Set<UUID>,
+        versions: [UUID: Date]? = nil,
+        preservesDeletionToast: Bool = false
+    ) async {
+        let eligibleIDs = Set(snips.lazy.filter {
+            ids.contains($0.id)
+                && !$0.isPinned
+                && $0.isDone != done
+                && (versions == nil || versions?[$0.id] == $0.updatedAt)
+        }.map(\.id))
+        guard !eligibleIDs.isEmpty else { return }
+        let deletionToast = preservesDeletionToast && toast?.action == .undoDelete ? toast : nil
+        await performUserMutationUnlocked {
+            let update = try await session.performLibraryCommand(
+                .setDone(ids: eligibleIDs, done: done),
+                sortedBy: sortMode
+            )
+            return (update, ())
+        }
+        if let deletionToast { toast = deletionToast }
     }
 
     func toggleDone(id: UUID) {
         Task { await toggleDoneNow(id: id) }
     }
 
-    func toggleDoneNow(id: UUID) async {
-        guard snips.contains(where: { $0.id == id && !$0.isPinned }) else { return }
-        await performUserMutation {
-            let update = try await session.performLibraryCommand(
-                .toggleDone(id: id),
-                sortedBy: sortMode
-            )
-            return (update, ())
-        }
+    func toggleDoneNow(
+        id: UUID,
+        to pasteboard: NSPasteboard = .general
+    ) async {
+        await toggleDoneNow(ids: [id], to: pasteboard)
     }
 
     func togglePinned(id: UUID) async {
@@ -781,23 +820,29 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func setDoneAfterExternalDrop(ids: [UUID]) {
-        Task { await setDoneAfterExternalDropNow(ids: Set(ids)) }
+    func setDoneAfterExternalDrop(versions: [UUID: Date]) {
+        Task { await setDoneAfterExternalDropNow(versions: versions) }
     }
 
-    func setDoneAfterExternalDropNow(ids: Set<UUID>) async {
-        let unfinishedIDs = Set(
-            snips.lazy
-                .filter { ids.contains($0.id) && !$0.isDone && !$0.isPinned }
-                .map(\.id)
-        )
-        guard !unfinishedIDs.isEmpty else { return }
-        await performUserMutation {
-            let update = try await session.performLibraryCommand(
-                .setDone(ids: unfinishedIDs, done: true),
-                sortedBy: sortMode
+    func setDoneAfterExternalDropNow(versions: [UUID: Date]) async {
+        await withCommandLock {
+            let unfinishedIDs = Set(
+                snips.lazy
+                    .filter {
+                        versions[$0.id] == $0.updatedAt && !$0.isDone && !$0.isPinned
+                    }
+                    .map(\.id)
             )
-            return (update, ())
+            guard !unfinishedIDs.isEmpty else { return }
+            let deletionToast = toast?.action == .undoDelete ? toast : nil
+            await performUserMutationUnlocked {
+                let update = try await session.performLibraryCommand(
+                    .setDone(ids: unfinishedIDs, done: true),
+                    sortedBy: sortMode
+                )
+                return (update, ())
+            }
+            if let deletionToast { toast = deletionToast }
         }
     }
 
@@ -910,16 +955,75 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func copySelection() -> Bool {
-        placeOnClipboard(.snips(selectedSnips), feedback: .notify)
+        copySnipsAndMarkDone(selectedSnips)
     }
 
     @discardableResult
     func copySelectionNow(to pasteboard: NSPasteboard = .general) async -> Bool {
-        await placeOnClipboardNow(
-            .snips(selectedSnips),
-            feedback: .notify,
-            to: pasteboard
-        )
+        await copySnipsAndMarkDoneNow(selectedSnips, to: pasteboard)
+    }
+
+    @discardableResult
+    func copySnipsAndMarkDone(_ snips: [Snip]) -> Bool {
+        guard !snips.isEmpty else { return false }
+        Task { await copySnipsAndMarkDoneNow(snips) }
+        return true
+    }
+
+    @discardableResult
+    func copySnipsAndMarkDoneNow(
+        _ snips: [Snip],
+        to pasteboard: NSPasteboard = .general
+    ) async -> Bool {
+        let current = currentSnips(for: snips)
+        let versions = copiedSnipVersions(current)
+        return await copyBeforeCommandLock(
+            current,
+            to: pasteboard,
+            requiresMutation: !versions.isEmpty
+        ) {
+            await setDoneWithoutCopyUnlocked(
+                true,
+                ids: Set(versions.keys),
+                versions: versions,
+                preservesDeletionToast: true
+            )
+        }
+    }
+
+    private func currentSnips(for requested: [Snip]) -> [Snip] {
+        let currentByID = Dictionary(uniqueKeysWithValues: snips.map { ($0.id, $0) })
+        return requested.compactMap { currentByID[$0.id] }
+    }
+
+    private func copiedSnipVersions(_ snips: [Snip]) -> [UUID: Date] {
+        Dictionary(uniqueKeysWithValues: snips.lazy.filter {
+            !$0.isPinned && !$0.isDone
+        }.map { ($0.id, $0.updatedAt) })
+    }
+
+    private func copyBeforeCommandLock(
+        _ snips: [Snip],
+        to pasteboard: NSPasteboard,
+        requiresMutation: Bool = true,
+        mutation: @MainActor @Sendable () async -> Void
+    ) async -> Bool {
+        guard !snips.isEmpty else { return false }
+        let task = startClipboardWrite(snips, feedback: .notify, to: pasteboard)
+        let generation = clipboardWriteGeneration
+        pendingClipboardWriteTask = task
+        let copied = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        guard copied else { return false }
+        guard requiresMutation else { return true }
+        return await withCommandLock {
+            guard generation == clipboardWriteGeneration else { return true }
+            await mutation()
+            return true
+        }
     }
 
     @discardableResult
@@ -1119,7 +1223,15 @@ final class AppModel: ObservableObject {
     private func performUserMutation(
         _ mutation: () async throws -> (SnipLibraryUpdate, Void)
     ) async {
-        if case .failure(let error) = await performMutation(mutation) {
+        await withCommandLock {
+            await performUserMutationUnlocked(mutation)
+        }
+    }
+
+    private func performUserMutationUnlocked(
+        _ mutation: () async throws -> (SnipLibraryUpdate, Void)
+    ) async {
+        if case .failure(let error) = await performMutationUnlocked(mutation) {
             presentError(error)
         }
     }

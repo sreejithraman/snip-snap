@@ -2,6 +2,14 @@ import Foundation
 import Observation
 import SnipSnapCore
 
+enum IOSMarkCopiedSnipsDoneResult: Sendable {
+    case unchanged
+    case markedDone
+    case failed
+}
+
+typealias IOSCopiedSnipVersions = [UUID: Date]
+
 @MainActor
 @Observable
 final class InlineListDraft {
@@ -287,6 +295,34 @@ final class IOSAppModel {
     func toggleDone(id: UUID) async -> Bool {
         await withUserMutation { interaction in
             await toggleDoneUnlocked(id: id, feedbackInteraction: interaction)
+        }
+    }
+
+    func copiedSnipVersions(ids: Set<UUID>) -> IOSCopiedSnipVersions {
+        Dictionary(uniqueKeysWithValues: snips.lazy.filter {
+            ids.contains($0.id) && !$0.isPinned && !$0.isDone
+        }.map { ($0.id, $0.updatedAt) })
+    }
+
+    func markCopiedSnipsDone(
+        versions: IOSCopiedSnipVersions,
+        ifStillCurrent: @MainActor @Sendable () -> Bool = { true }
+    ) async -> IOSMarkCopiedSnipsDoneResult {
+        guard !versions.isEmpty else { return .unchanged }
+        return await withSerializedMutation { () -> IOSMarkCopiedSnipsDoneResult in
+            guard ifStillCurrent() else { return .unchanged }
+            let unfinishedIDs = Set(snips.lazy.filter {
+                versions[$0.id] == $0.updatedAt && !$0.isPinned && !$0.isDone
+            }.map(\.id))
+            guard !unfinishedIDs.isEmpty else { return .unchanged }
+            let deletionToast = toast?.action == .undoDelete ? toast : nil
+            let changed = await setDoneUnlocked(
+                ids: unfinishedIDs,
+                done: true,
+                feedbackInteraction: nil
+            )
+            if changed, let deletionToast { toast = deletionToast }
+            return changed ? .markedDone : .failed
         }
     }
 

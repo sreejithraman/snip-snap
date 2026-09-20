@@ -325,7 +325,7 @@ struct ContentView: View {
         switch target {
         case .snip(let id):
             guard let snip = model.snips.first(where: { $0.id == id }) else { return }
-            _ = model.placeOnClipboard(.snips([snip]), feedback: .notify)
+            _ = model.copySnipsAndMarkDone([snip])
         case .clipboardEntry(let id):
             guard let entry = model.clipboardHistory.entry(id: id) else { return }
             _ = model.placeOnClipboard(.clipboardEntry(entry), feedback: .notify)

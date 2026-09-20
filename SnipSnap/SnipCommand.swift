@@ -53,7 +53,7 @@ struct SnipCommandDispatcher {
         guard command.isAvailable(for: snips.count) else { return }
         switch command {
         case .copy:
-            _ = await model.placeOnClipboardNow(.snips(snips), feedback: .notify)
+            _ = await model.copySnipsAndMarkDoneNow(snips)
         case .toggleDone:
             await model.toggleDoneNow(ids: ids)
         case .edit:

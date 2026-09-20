@@ -189,7 +189,9 @@ struct IOSAppRootView: View {
                 set: { if !$0 { copyShare.cancelUnavailableFilesNotice() } }
             )
         ) {
-            Button("Copy Text Only") { copyShare.copyTextFromNotice(model: model) }
+            Button("Copy Text Only") {
+                Task { await copyShare.copyTextFromNotice(model: model) }
+            }
             Button("Cancel", role: .cancel) { copyShare.cancelUnavailableFilesNotice() }
         } message: {
             Text(copyShare.unavailableFilesNotice?.message
