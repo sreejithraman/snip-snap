@@ -704,17 +704,19 @@ private struct SnipCommands: Commands {
         panel.prompt = String(localized: "Export backup")
         panel.nameFieldStringValue = String(localized: "Snip Snap Backup")
         panel.canCreateDirectories = true
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { @MainActor in
-            let didAccess = url.startAccessingSecurityScopedResource()
-            defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
-            do {
-                let archive = try await model.exportArchive()
-                try await Task.detached {
-                    try JSONSnipArchiveTransfer.write(archive, to: url)
-                }.value
-            } catch {
-                model.presentError(error)
+        coordinator.presentSavePanel(panel) { url in
+            guard let url else { return }
+            Task { @MainActor in
+                let didAccess = url.startAccessingSecurityScopedResource()
+                defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+                do {
+                    let archive = try await model.exportArchive()
+                    try await Task.detached {
+                        try JSONSnipArchiveTransfer.write(archive, to: url)
+                    }.value
+                } catch {
+                    model.presentError(error)
+                }
             }
         }
     }

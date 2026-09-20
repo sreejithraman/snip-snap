@@ -78,7 +78,6 @@ struct AccessibilityRepairView: View {
             }
         }
         .padding(SnipSnapSpacing.paneContentInset)
-        .frame(width: 380)
     }
 }
 

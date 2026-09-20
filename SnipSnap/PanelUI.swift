@@ -43,6 +43,10 @@ enum PanelShapeMetrics {
     static let expandedInputCornerRadius: CGFloat = 14
 }
 
+enum PanelDialogMetrics {
+    static let width: CGFloat = 320
+}
+
 enum PanelListMetrics {
     static let horizontalContentInset = SnipSnapSpacing.paneContentInset
     static let rowSpacing = SnipSnapSpacing.relatedContent

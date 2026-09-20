@@ -761,8 +761,7 @@ final class PanelTests: StoreBackedTestCase {
         )
         window.contentView = NSHostingView(rootView: input)
         window.makeKeyAndOrderFront(nil)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        let textField = try XCTUnwrap(findTextField(in: window.contentView))
+        let textField = try XCTUnwrap(waitForTextField(in: window.contentView))
         XCTAssertTrue(window.makeFirstResponder(textField))
         let event = try XCTUnwrap(
             NSEvent.keyEvent(
@@ -812,8 +811,7 @@ final class PanelTests: StoreBackedTestCase {
         )
         window.contentView = NSHostingView(rootView: input)
         window.makeKeyAndOrderFront(nil)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        let textField = try XCTUnwrap(findTextField(in: window.contentView))
+        let textField = try XCTUnwrap(waitForTextField(in: window.contentView))
         XCTAssertTrue(window.makeFirstResponder(textField))
         let event = try XCTUnwrap(
             NSEvent.keyEvent(
@@ -860,8 +858,7 @@ final class PanelTests: StoreBackedTestCase {
         )
         window.contentView = NSHostingView(rootView: input)
         window.makeKeyAndOrderFront(nil)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        let textField = try XCTUnwrap(findTextField(in: window.contentView))
+        let textField = try XCTUnwrap(waitForTextField(in: window.contentView))
         XCTAssertTrue(window.makeFirstResponder(textField))
         let event = try XCTUnwrap(
             NSEvent.keyEvent(
@@ -910,8 +907,7 @@ final class PanelTests: StoreBackedTestCase {
         )
         window.contentView = NSHostingView(rootView: input)
         window.makeKeyAndOrderFront(nil)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        let textField = try XCTUnwrap(findTextField(in: window.contentView))
+        let textField = try XCTUnwrap(waitForTextField(in: window.contentView))
         XCTAssertTrue(window.makeFirstResponder(textField))
         let event = try XCTUnwrap(
             NSEvent.keyEvent(
@@ -957,8 +953,7 @@ final class PanelTests: StoreBackedTestCase {
         )
         window.contentView = NSHostingView(rootView: input)
         window.makeKeyAndOrderFront(nil)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        let textField = try XCTUnwrap(findTextField(in: window.contentView))
+        let textField = try XCTUnwrap(waitForTextField(in: window.contentView))
         textField.selectText(nil)
         let fieldEditor = try XCTUnwrap(window.firstResponder as? NSTextView)
         fieldEditor.setSelectedRange(NSRange(location: 5, length: 0))
@@ -1000,6 +995,24 @@ final class PanelTests: StoreBackedTestCase {
             }
         }
         return nil
+    }
+
+    @MainActor
+    private func waitForTextField(
+        in view: NSView?,
+        placeholder: String? = nil,
+        timeout: TimeInterval = 1
+    ) -> NSTextField? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let textField = findTextField(in: view, placeholder: placeholder) {
+                return textField
+            }
+            RunLoop.main.run(
+                until: min(deadline, Date().addingTimeInterval(0.01))
+            )
+        }
+        return findTextField(in: view, placeholder: placeholder)
     }
 
     func testPanelPastedImageStagingWritesAnImageFile() throws {
