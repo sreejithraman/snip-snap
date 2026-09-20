@@ -192,7 +192,9 @@ final class AppCoordinator {
             panelWindow.orderOut(nil)
         }
         panelWindow.makeKeyAndOrderFront(nil)
-        updatePresentedError()
+        if !presentNextPendingPanelDialog() {
+            updatePresentedError()
+        }
         if let target {
             DispatchQueue.main.async { [weak self] in
                 self?.panelFocusRequests.send(target)
@@ -421,7 +423,14 @@ final class AppCoordinator {
             ),
             onDismiss: onDismiss
         )
-        guard presentedOpenPanel == nil else {
+        guard presentedOpenPanel == nil,
+              !panelDialogs.isPresented,
+              let panelWindow,
+              Self.shouldPresentPendingError(
+                  isVisible: panelWindow.isVisible,
+                  isMiniaturized: panelWindow.isMiniaturized,
+                  isOnActiveSpace: panelWindow.isOnActiveSpace
+              ) else {
             enqueuePanelDialog(request)
             return
         }
@@ -463,6 +472,12 @@ final class AppCoordinator {
     private func presentNextPendingPanelDialog() -> Bool {
         guard presentedOpenPanel == nil,
               !panelDialogs.isPresented,
+              let panelWindow,
+              Self.shouldPresentPendingError(
+                  isVisible: panelWindow.isVisible,
+                  isMiniaturized: panelWindow.isMiniaturized,
+                  isOnActiveSpace: panelWindow.isOnActiveSpace
+              ),
               !pendingPanelDialogs.isEmpty else { return false }
         let request = pendingPanelDialogs.removeFirst()
         showPanelDialog(request)

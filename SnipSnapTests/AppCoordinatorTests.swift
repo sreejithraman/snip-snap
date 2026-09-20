@@ -207,6 +207,78 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testDialogRequestedWhileParentIsHiddenWaitsForReopen() throws {
+        let defaultsName = "Snip SnapHiddenDialogTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let coordinator = AppCoordinator(
+            model: AppModel(
+                library: try JSONSnipLibrary(fileURL: storeURL()),
+                defaults: defaults
+            ),
+            shortcutSettings: ShortcutSettings(defaults: defaults),
+            isAccessibilityTrusted: { false }
+        )
+        let parent = NSWindow()
+        coordinator.attachPanelWindow(parent)
+
+        coordinator.presentPanelDialog(id: .backupImport, title: "Import") {} content: {
+            Text("Review backup")
+        }
+
+        XCTAssertFalse(parent.isVisible)
+        XCTAssertTrue(parent.childWindows?.isEmpty ?? true)
+
+        coordinator.togglePanel()
+
+        XCTAssertTrue(parent.isVisible)
+        XCTAssertEqual(parent.childWindows?.count, 1)
+        XCTAssertEqual(parent.childWindows?.first?.isOpaque, true)
+        coordinator.dismissPanelDialog(id: .backupImport)
+    }
+
+    @MainActor
+    func testNewDialogWaitsForActiveDialogToClose() async throws {
+        let defaultsName = "Snip SnapQueuedDialogTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let coordinator = AppCoordinator(
+            model: AppModel(
+                library: try JSONSnipLibrary(fileURL: storeURL()),
+                defaults: defaults
+            ),
+            shortcutSettings: ShortcutSettings(defaults: defaults),
+            isAccessibilityTrusted: { false }
+        )
+        let parent = NSWindow()
+        coordinator.attachPanelWindow(parent)
+        parent.orderFront(nil)
+        defer { parent.orderOut(nil) }
+        var didDismissNewList = false
+        coordinator.presentPanelDialog(id: .newList, title: "New list") {
+            didDismissNewList = true
+        } content: {
+            Text("New list form")
+        }
+        let newListWindow = try XCTUnwrap(parent.childWindows?.first)
+
+        coordinator.presentPanelDialog(id: .backupImport, title: "Import") {} content: {
+            Text("Review backup")
+        }
+
+        XCTAssertTrue(parent.childWindows?.first === newListWindow)
+        XCTAssertFalse(didDismissNewList)
+
+        coordinator.dismissPanelDialog(id: .newList)
+        await Task.yield()
+
+        XCTAssertTrue(didDismissNewList)
+        XCTAssertEqual(parent.childWindows?.count, 1)
+        XCTAssertFalse(parent.childWindows?.first === newListWindow)
+        coordinator.dismissPanelDialog(id: .backupImport)
+    }
+
+    @MainActor
     func testRootErrorUsesAnOpaqueChildInsteadOfAParentSheet() throws {
         let defaultsName = "Snip SnapPanelErrorTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
