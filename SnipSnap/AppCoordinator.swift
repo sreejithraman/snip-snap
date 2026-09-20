@@ -587,6 +587,7 @@ private struct PanelErrorDialog: View {
         }
         .padding(SnipSnapSpacing.paneContentInset)
         .frame(width: 360)
+        .onExitCommand(perform: model.dismissPresentedError)
     }
 }
 
