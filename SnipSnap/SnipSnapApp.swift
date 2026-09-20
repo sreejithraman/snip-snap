@@ -5,6 +5,21 @@ import Sparkle
 import SnipSnapPersistence
 import SwiftUI
 
+@MainActor
+enum BackupImportOpenPanel {
+    static func makePanel() -> NSOpenPanel {
+        let panel = NSOpenPanel()
+        panel.title = String(localized: "Import backup")
+        panel.prompt = String(localized: "Review backup")
+        panel.message = String(localized: "Choose a backup folder that includes attachments, or a JSON file without attachments.")
+        panel.allowedContentTypes = [.folder, .json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        return panel
+    }
+}
+
 private extension ShortcutKeyChord {
     var swiftUIEventModifiers: SwiftUI.EventModifiers {
         var result: SwiftUI.EventModifiers = []
@@ -676,14 +691,7 @@ private struct SnipCommands: Commands {
 
     private func beginBackupImport() {
         guard let model else { return }
-        let panel = NSOpenPanel()
-        panel.title = String(localized: "Import backup")
-        panel.prompt = String(localized: "Review backup")
-        panel.message = String(localized: "Choose a backup folder that includes attachments, or a JSON file without attachments.")
-        panel.allowedContentTypes = [.folder, .json]
-        panel.allowsMultipleSelection = false
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = true
+        let panel = BackupImportOpenPanel.makePanel()
         coordinator.presentOpenPanel(panel) { urls in
             guard let url = urls?.first else { return }
             Task { @MainActor in await model.previewBackupImport(from: url) }

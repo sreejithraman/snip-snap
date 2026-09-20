@@ -116,6 +116,13 @@ final class AppCoordinatorTests: StoreBackedTestCase {
                 dialogIsKey: true
             )
         )
+        XCTAssertTrue(
+            AppCoordinator.shouldRestorePreviousApplication(
+                panelIsKey: false,
+                dialogIsKey: false,
+                openPanelIsKey: true
+            )
+        )
 
         model.presentError("Dialog save failed")
         try await Task.sleep(for: .milliseconds(100))
@@ -151,6 +158,52 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         XCTAssertFalse(panel.isVisible)
         XCTAssertTrue(panel.childWindows?.isEmpty ?? true)
         XCTAssertFalse(inputShield.isDescendant(of: panel.contentView ?? NSView()))
+    }
+
+    @MainActor
+    func testBackupImporterUsesTheOwnedStandalonePanelPath() {
+        let panel = BackupImportOpenPanel.makePanel()
+
+        XCTAssertTrue(panel.canChooseFiles)
+        XCTAssertTrue(panel.canChooseDirectories)
+        XCTAssertFalse(panel.allowsMultipleSelection)
+        XCTAssertTrue(panel.allowedContentTypes.contains(.folder))
+        XCTAssertTrue(panel.allowedContentTypes.contains(.json))
+    }
+
+    @MainActor
+    func testDialogRequestedDuringOpenPanelAppearsAfterPickerCloses() async throws {
+        let defaultsName = "Snip SnapDeferredDialogTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        var panelCompletion: ((NSApplication.ModalResponse) -> Void)?
+        let coordinator = AppCoordinator(
+            model: AppModel(
+                library: try JSONSnipLibrary(fileURL: storeURL()),
+                defaults: defaults
+            ),
+            shortcutSettings: ShortcutSettings(defaults: defaults),
+            isAccessibilityTrusted: { false },
+            beginOpenPanel: { _, completion in panelCompletion = completion }
+        )
+        let parent = NSWindow()
+        coordinator.attachPanelWindow(parent)
+        parent.orderFront(nil)
+        defer { parent.orderOut(nil) }
+        let importer = StandaloneFileImporter.makePanel()
+        coordinator.presentOpenPanel(importer) { _ in }
+        coordinator.presentPanelDialog(id: .backupImport, title: "Import") {} content: {
+            Text("Review backup")
+        }
+
+        XCTAssertTrue(parent.childWindows?.isEmpty ?? true)
+
+        panelCompletion?(.cancel)
+        await Task.yield()
+
+        XCTAssertEqual(parent.childWindows?.count, 1)
+        XCTAssertEqual(parent.childWindows?.first?.isOpaque, true)
+        coordinator.dismissPanelDialog(id: .backupImport)
     }
 
     @MainActor
@@ -270,6 +323,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         XCTAssertTrue(coordinator.presentOpenPanel(importer) { importedURLs = $0 })
 
         XCTAssertTrue(coordinator.panelDialogs.isPresented)
+        XCTAssertEqual(importer.level, .modalPanel)
         XCTAssertNil(parent.attachedSheet)
         XCTAssertNil(importer.sheetParent)
         XCTAssertFalse(parent.childWindows?.contains(importer) == true)

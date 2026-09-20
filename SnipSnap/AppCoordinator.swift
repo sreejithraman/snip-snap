@@ -22,6 +22,14 @@ enum PanelDialogID: Equatable {
 }
 
 @MainActor
+private struct PendingPanelDialog {
+    let id: PanelDialogID
+    let title: String
+    let content: AnyView
+    let onDismiss: () -> Void
+}
+
+@MainActor
 final class PanelDialogPresentationState: ObservableObject {
     @Published fileprivate(set) var isPresented = false
 }
@@ -56,6 +64,7 @@ final class AppCoordinator {
     private let cancelOpenPanel: (NSOpenPanel) -> Void
     private var presentedOpenPanel: NSOpenPanel?
     private var openPanelCompletion: (([URL]?) -> Void)?
+    private var pendingPanelDialogs: [PendingPanelDialog] = []
 
     init(
         model: AppModel,
@@ -148,7 +157,8 @@ final class AppCoordinator {
             hidePanel(
                 restoringPreviousApplication: Self.shouldRestorePreviousApplication(
                     panelIsKey: panelWindow.isKeyWindow,
-                    dialogIsKey: panelDialogPresenter.isKeyWindow
+                    dialogIsKey: panelDialogPresenter.isKeyWindow,
+                    openPanelIsKey: presentedOpenPanel?.isKeyWindow == true
                 )
             )
             return
@@ -201,9 +211,10 @@ final class AppCoordinator {
 
     nonisolated static func shouldRestorePreviousApplication(
         panelIsKey: Bool,
-        dialogIsKey: Bool
+        dialogIsKey: Bool,
+        openPanelIsKey: Bool = false
     ) -> Bool {
-        panelIsKey || dialogIsKey
+        panelIsKey || dialogIsKey || openPanelIsKey
     }
 
     nonisolated static func shouldPresentPendingError(
@@ -245,6 +256,7 @@ final class AppCoordinator {
 
     func hidePanel(restoringPreviousApplication: Bool = true) {
         dismissOpenPanel()
+        dismissPendingPanelDialogs()
         panelDialogPresenter.dismissForParentHide()
         panelWindow?.orderOut(nil)
         if restoringPreviousApplication {
@@ -395,11 +407,9 @@ final class AppCoordinator {
         onDismiss: @escaping () -> Void,
         @ViewBuilder content: () -> Content
     ) {
-        guard let panelWindow, presentedOpenPanel == nil else { return }
-        panelDialogPresenter.present(
+        let request = PendingPanelDialog(
             id: id,
             title: title,
-            parent: panelWindow,
             content: AnyView(
                 PanelDialogContent(
                     model: model,
@@ -409,20 +419,62 @@ final class AppCoordinator {
                     .tint(SnipSnapTheme.controlTint)
                     .preferredColorScheme(model.appearance.colorScheme)
             ),
+            onDismiss: onDismiss
+        )
+        guard presentedOpenPanel == nil else {
+            enqueuePanelDialog(request)
+            return
+        }
+        showPanelDialog(request)
+    }
+
+    private func showPanelDialog(_ request: PendingPanelDialog) {
+        guard let panelWindow else { return }
+        panelDialogPresenter.present(
+            id: request.id,
+            title: request.title,
+            parent: panelWindow,
+            content: request.content,
             onDismiss: { [weak self] reason in
                 guard let self else { return }
                 panelDialogs.isPresented = false
-                if id != .error || reason != .parentHide {
-                    onDismiss()
+                if request.id != .error || reason != .parentHide {
+                    request.onDismiss()
                 }
-                if id != .error, reason == .close {
+                if reason == .close {
                     DispatchQueue.main.async { [weak self] in
-                        self?.updatePresentedError()
+                        guard let self else { return }
+                        if !self.presentNextPendingPanelDialog() {
+                            self.updatePresentedError()
+                        }
                     }
                 }
             }
         )
         panelDialogs.isPresented = true
+    }
+
+    private func enqueuePanelDialog(_ request: PendingPanelDialog) {
+        pendingPanelDialogs.removeAll { $0.id == request.id }
+        pendingPanelDialogs.append(request)
+    }
+
+    @discardableResult
+    private func presentNextPendingPanelDialog() -> Bool {
+        guard presentedOpenPanel == nil,
+              !panelDialogs.isPresented,
+              !pendingPanelDialogs.isEmpty else { return false }
+        let request = pendingPanelDialogs.removeFirst()
+        showPanelDialog(request)
+        return true
+    }
+
+    private func dismissPendingPanelDialogs() {
+        let requests = pendingPanelDialogs
+        pendingPanelDialogs.removeAll()
+        for request in requests where request.id != .error {
+            request.onDismiss()
+        }
     }
 
     @discardableResult
@@ -431,6 +483,7 @@ final class AppCoordinator {
         completion: @escaping ([URL]?) -> Void
     ) -> Bool {
         guard !panelDialogs.isPresented, presentedOpenPanel == nil else { return false }
+        panel.level = .modalPanel
         presentedOpenPanel = panel
         openPanelCompletion = completion
         panelDialogs.isPresented = true
@@ -464,10 +517,11 @@ final class AppCoordinator {
         openPanelCompletion = nil
         panelDialogs.isPresented = false
         completion?(urls)
-        if updateError { updatePresentedError() }
+        if updateError, !presentNextPendingPanelDialog() { updatePresentedError() }
     }
 
     func dismissPanelDialog(id: PanelDialogID, restoringParent: Bool = true) {
+        pendingPanelDialogs.removeAll { $0.id == id }
         panelDialogPresenter.dismiss(id: id, restoringParent: restoringParent)
     }
 
