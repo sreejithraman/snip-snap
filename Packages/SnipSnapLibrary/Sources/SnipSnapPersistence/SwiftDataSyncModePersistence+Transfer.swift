@@ -286,16 +286,19 @@ extension SwiftDataSyncModePersistence {
       intent.fullReenablePlanID == transition.id
     else { return }
     let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
-    if let receipt = try await candidate.cloudFullReenableReceipt(
+    let proof = CloudFullReenableCommitProof(
       namespaceKey: transition.namespace?.namespaceKey ?? CloudSyncNamespaceKey(rawValue: ""),
-      transitionID: transition.id
-    ) {
-      guard receipt == intent.planDigest else {
-        try abortUnactivatedCandidate(reason: .storageFailure)
-        throw SyncModePersistenceError.storageFailure
+      transitionID: transition.id,
+      digest: intent.planDigest
+    )
+    do {
+      if try await candidate.recognizesAppliedCloudFullReenable(proof) {
+        try advanceFullReenableIntent(intent)
+        return
       }
-      try advanceFullReenableIntent(intent)
-      return
+    } catch {
+      try abortUnactivatedCandidate(reason: .storageFailure)
+      throw SyncModePersistenceError.storageFailure
     }
     let plan: CloudFullReenableApplyPlan
     do {

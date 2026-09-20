@@ -1205,12 +1205,14 @@ extension ICloudSyncModeCoordinatorTests {
             let candidate = try await crashingPersistence.libraryForTransition(
                 storeID: transition.candidateStoreID
             )
-            let receipt = try await candidate.cloudFullReenableReceipt(
-                namespaceKey: namespace.namespaceKey,
-                transitionID: transition.id
+            let receipt = try await candidate.recognizesAppliedCloudFullReenable(
+                CloudFullReenableCommitProof(
+                    namespaceKey: namespace.namespaceKey,
+                    transitionID: transition.id,
+                    digest: intent.planDigest
+                )
             )
-            XCTAssertEqual(receipt == nil, point == .beforeCandidateMergeDurability)
-            if let receipt { XCTAssertEqual(receipt, intent.planDigest) }
+            XCTAssertEqual(receipt, point != .beforeCandidateMergeDurability)
 
             let reopened = try SwiftDataSyncModePersistence(rootURL: root)
             let resumed = ICloudSyncModeCoordinator(

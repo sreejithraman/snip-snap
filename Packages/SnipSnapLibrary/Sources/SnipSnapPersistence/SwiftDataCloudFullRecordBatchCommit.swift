@@ -16,15 +16,13 @@ extension SwiftDataSnipLibrary {
     let context = Self.makeContext(container: container)
     let data = try Self.fullBatchData(batch)
     let digest = Self.batchReceiptDigest(batch, encoded: data)
-    let receiptID = StoredCloudFullBatchReceipt.key(
+    let operation = CloudFullReceiptOperation.committedBatch(batch.batchID)
+    if try SwiftDataCloudFullOperationReceipts.isReplay(
+      operation,
       namespaceKey: batch.namespaceKey,
-      batchID: batch.batchID
-    )
-    if let receipt = try context.fetch(FetchDescriptor(
-      predicate: #Predicate<StoredCloudFullBatchReceipt> { $0.id == receiptID }
-    )).first
-    {
-      guard receipt.digest == digest else { throw CloudFullStorageError.invalidBatchReplay }
+      digest: digest,
+      context: context
+    ) {
       return .replayed
     }
     let stagedID = "\(batch.namespaceKey)|\(batch.batchID.uuidString.lowercased())"
@@ -401,21 +399,17 @@ extension SwiftDataSnipLibrary {
       } else if let engine {
         context.delete(engine)
       }
-      context.insert(
-        StoredCloudFullBatchReceipt(
-          namespaceKey: batch.namespaceKey,
-          batchID: batch.batchID,
-          digest: digest
-        )
+      SwiftDataCloudFullOperationReceipts.record(
+        operation,
+        namespaceKey: batch.namespaceKey,
+        digest: digest,
+        context: context
       )
-      let receipts = try context.fetch(FetchDescriptor(
-        predicate: #Predicate<StoredCloudFullBatchReceipt> { $0.namespaceKey == namespaceKey }
-      ))
-        .sorted {
-          if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
-          return $0.id > $1.id
-        }
-      for receipt in receipts.dropFirst(256) { context.delete(receipt) }
+      try SwiftDataCloudFullOperationReceipts.pruneCommittedBatches(
+        namespaceKey: namespaceKey,
+        keeping: 256,
+        context: context
+      )
       try afterMutationBeforeSave()
       try lock.check()
       try context.save()

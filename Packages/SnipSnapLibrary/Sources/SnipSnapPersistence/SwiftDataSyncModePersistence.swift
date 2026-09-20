@@ -468,6 +468,21 @@ package actor SwiftDataSyncModePersistence {
     return candidate.revision
   }
 
+  /// Creates a mode transition or resumes its durable merge before returning it.
+  package func beginOrResumeTransition(
+    to targetKind: SyncModeStoreKind,
+    namespace: ICloudSyncNamespaceBinding?
+  ) async throws -> SyncModeTransition {
+    _ = try beginTransition(to: targetKind, namespace: namespace)
+    if targetKind == .iCloudSync {
+      try await reconcileFullReenableIntent()
+    }
+    guard let transition = manifest.transition else {
+      throw SyncModePersistenceError.transitionInProgress
+    }
+    return transition
+  }
+
   package func beginTransition(
     to targetKind: SyncModeStoreKind,
     namespace: ICloudSyncNamespaceBinding?

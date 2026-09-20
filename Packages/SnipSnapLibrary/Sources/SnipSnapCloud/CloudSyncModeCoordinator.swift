@@ -2,6 +2,11 @@ import Foundation
 import SnipSnapCore
 import SnipSnapPersistence
 
+private enum ICloudModeMergePreparation: Sendable {
+    case legacy(acceptedTextBySnipID: [UUID: String])
+    case fullRecord(CloudFullReenableApplyPlan)
+}
+
 private protocol ICloudSyncAdapter: Sendable {
     func sync() async throws
     func fetchRemote(
@@ -14,14 +19,13 @@ private protocol ICloudSyncAdapter: Sendable {
     func approveModeMerge(snipIDs: Set<UUID>) async throws
     func enrollmentEvidence() async throws -> CloudTextEnrollmentEvidence
     func statusEvidence() async throws -> CloudTextEnrollmentEvidence
-    func acceptedSnipTextValues() async throws -> [UUID: String]
     func dormantAcceptedBaseTransferPayload() async throws -> Data?
-    func isReenableReady() async throws -> Bool
-    func makeReenableApplyPlan(
+    func canPrepareModeMerge() async throws -> Bool
+    func prepareModeMerge(
         source: SnipLibraryTransferSnapshot,
         transitionID: UUID,
         targetRevision: UInt64
-    ) async throws -> CloudFullReenableApplyPlan?
+    ) async throws -> ICloudModeMergePreparation
     func clearRetryableEvents(_ keys: Set<String>) async throws
     func currentModeSeedSettlement(
         candidates: [SyncModeSeedSettlementCandidate],
@@ -85,19 +89,18 @@ private actor LegacyTextSyncAdapter: ICloudSyncAdapter {
         try await raw.statusEvidence()
     }
 
-    func acceptedSnipTextValues() async throws -> [UUID: String] {
-        try await raw.acceptedSnipTextValues()
-    }
-
     func dormantAcceptedBaseTransferPayload() async throws -> Data? { nil }
 
-    func isReenableReady() async throws -> Bool { true }
+    func canPrepareModeMerge() async throws -> Bool { true }
 
-    func makeReenableApplyPlan(
+    func prepareModeMerge(
         source: SnipLibraryTransferSnapshot,
         transitionID: UUID,
         targetRevision: UInt64
-    ) async throws -> CloudFullReenableApplyPlan? { nil }
+    ) async throws -> ICloudModeMergePreparation {
+        _ = (source, transitionID, targetRevision)
+        return .legacy(acceptedTextBySnipID: try await raw.acceptedSnipTextValues())
+    }
 
     func clearRetryableEvents(_ keys: Set<String>) async throws {
         try await raw.clearRetryableEvents(keys)
@@ -200,28 +203,27 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
         try await raw.statusEvidence()
     }
 
-    func acceptedSnipTextValues() async throws -> [UUID: String] {
-        try await raw.acceptedSnipTextValues()
-    }
-
     func dormantAcceptedBaseTransferPayload() async throws -> Data? {
         try await raw.dormantAcceptedBaseTransferPayload()
     }
 
-    func isReenableReady() async throws -> Bool {
+    func canPrepareModeMerge() async throws -> Bool {
         try await raw.isReenableReady()
     }
 
-    func makeReenableApplyPlan(
+    func prepareModeMerge(
         source: SnipLibraryTransferSnapshot,
         transitionID: UUID,
         targetRevision: UInt64
-    ) async throws -> CloudFullReenableApplyPlan? {
-        try await raw.makeReenableApplyPlan(
+    ) async throws -> ICloudModeMergePreparation {
+        if let plan = try await raw.makeReenableApplyPlan(
             source: source,
             transitionID: transitionID,
             targetRevision: targetRevision
-        )
+        ) {
+            return .fullRecord(plan)
+        }
+        return .legacy(acceptedTextBySnipID: try await raw.acceptedSnipTextValues())
     }
 
     func clearRetryableEvents(_ keys: Set<String>) async throws {
@@ -450,13 +452,11 @@ package actor ICloudSyncModeCoordinator {
             }
         }
 
-        var transition = try await persistence.beginTransition(
+        var transition = try await persistence.beginOrResumeTransition(
             to: .iCloudSync,
             namespace: namespace.binding
         )
         let bridge = try await adapter(storeID: transition.candidateStoreID)
-        try await persistence.reconcileFullReenableIntent()
-        transition = try await currentTransition()
 
         if transition.phase == .candidateReady {
             do {
@@ -510,7 +510,7 @@ package actor ICloudSyncModeCoordinator {
 
         do {
             if transition.phase == .remoteFetched {
-                guard try await bridge.isReenableReady() else {
+                guard try await bridge.canPrepareModeMerge() else {
                     try await persistence.retryRemoteFetch()
                     return try await statusUnchecked()
                 }
@@ -519,18 +519,18 @@ package actor ICloudSyncModeCoordinator {
                 let targetRevision = try await persistence.candidateRevision(
                     transitionID: transition.id
                 )
-                if let plan = try await bridge.makeReenableApplyPlan(
+                switch try await bridge.prepareModeMerge(
                     source: source,
                     transitionID: transition.id,
                     targetRevision: targetRevision
                 ) {
+                case .fullRecord(let plan):
                     _ = try await persistence.mergeFullReenableSnapshot(
                         source,
                         using: token,
                         plan: plan
                     )
-                } else {
-                    let accepted = try await bridge.acceptedSnipTextValues()
+                case .legacy(let accepted):
                     _ = try await persistence.mergeFinalSnapshot(
                         source,
                         using: token,
