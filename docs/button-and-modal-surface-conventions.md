@@ -11,23 +11,18 @@ lines will not move.
 Snip Snap should share button *intent* across both apps, then let each platform
 draw that intent. It should not share raw fills or label colors.
 
-The Mac edit-list view should not use a standard sheet on the clear floating
-panel. A Mac sheet dims its parent window. The parent is still a rectangle even
-when much of it is clear, so the dim layer makes that rectangle visible. This is
-expected when a sheet uses a clear window, not a bad gray value.
+The Mac edit-list view uses a standard sheet on the clear floating panel. A Mac
+sheet dims its parent window, including the clear effect gutter. That rectangle
+is expected. The native parent relationship and motion are more important than
+keeping the gutter completely clear during a modal task.
 
 For the current case:
 
-- Use a separate, normally backed Mac window or panel for list editing. Hide or
-  close the floating panel while this editor is open if the task must hold the
-  person's full attention.
-- On the clear floating panel, show short choices such as delete and discard in
-  the same opaque child-window host. Normal opaque windows can keep
-  `confirmationDialog` or `NSAlert`.
-- If the editor must stay inside the floating panel, use an app-owned overlay
-  and mask its dim layer to the visible panel surface. This costs more work for
-  focus, Escape, Return, VoiceOver, and blocked hit testing, so treat it as the
-  fallback.
+- Use a compact native sheet for list editing and other panel-owned forms.
+- Show short choices such as delete and discard in the same sheet host. Native
+  alerts presented from that host remain nested under the form task.
+- Attach open and save panels with `beginSheetModal(for:)` so file workflows
+  preserve the same parent relationship.
 
 ## Button rules
 
@@ -89,7 +84,8 @@ Apple's current rules support this split:
 
 Apple treats Liquid Glass as a control and navigation layer, not a general fill.
 Standard SwiftUI controls already use the new material. Custom glass should be
-rare.
+rare. Snip Snap's compact app-owned Mac sheet is the deliberate exception: its
+single rounded surface visually relates the modal card to the floating panel.
 
 - Use tint to call out a main action. Do not tint every action.
 - Prefer native glass tint to a solid fill. It adapts to the content below and
@@ -205,9 +201,9 @@ tasks. They show longer tasks in a normal window.
    disabled states.
 4. Give Mac confirm and cancel actions `.defaultAction` and `.cancelAction`.
    Use semantic toolbar placements when they sit in a sheet or editor toolbar.
-5. Move every Mac root-panel dialog out of the clear panel's `.sheet`. Use a
-   backed child window for forms, confirmations, and errors. Keep native alerts
-   on normal opaque windows.
+5. Attach every Mac root-panel dialog and file panel to the clear panel as a
+   native sheet. Keep app-owned sheet surfaces compact and reuse the shared
+   nested-glass treatment.
 6. Test light, dark, Increase Contrast, Reduce Transparency, enabled, disabled,
    hover, press, Return, Escape, and VoiceOver on both platforms.
 

@@ -32,7 +32,7 @@ struct MacRecoveryReviewSheet: View {
                 }
             }
         }
-        .frame(minWidth: 560, minHeight: 520)
+        .frame(height: 420)
         .task {
             while !Task.isCancelled {
                 await model.refreshRecovery()
@@ -104,18 +104,23 @@ private struct MacRecoveredSnipReview: View {
             if let recovery, let current = model.currentSnip(for: recovery) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
-                        HStack(alignment: .top, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 12) {
                             values("Current version", snip: current, fields: recovery.conflictingFields)
                             values("Recovered version", snip: recovery.recovered, fields: recovery.conflictingFields)
                         }
                         editFields(recovery)
-                        HStack {
-                            Button("Keep current") { resolve(.keepCurrent) }
-                            Button("Keep both") { resolve(.keepBoth) }
-                            Spacer()
-                            Button("Use recovered") { resolve(.useRecovered) }
-                            Button("Use edited version") {
-                                if let edited { resolve(.editSnip(edited)) }
+                        VStack(spacing: SnipSnapSpacing.relatedContent) {
+                            HStack {
+                                Button("Keep current") { resolve(.keepCurrent) }
+                                Spacer()
+                                Button("Keep both") { resolve(.keepBoth) }
+                            }
+                            HStack {
+                                Button("Use recovered") { resolve(.useRecovered) }
+                                Spacer()
+                                Button("Use edited version") {
+                                    if let edited { resolve(.editSnip(edited)) }
+                                }
                             }
                         }
                     }
@@ -257,12 +262,17 @@ private struct MacRecoveredListReview: View {
                             }
                         }
                     }
-                    HStack {
-                        Button("Keep current") { resolve(.keepCurrent) }
-                        Spacer()
-                        Button("Use recovered") { resolve(.useRecovered) }
-                        Button("Use edited version") {
-                            if let edited { resolve(.editList(edited)) }
+                    VStack(spacing: SnipSnapSpacing.relatedContent) {
+                        HStack {
+                            Button("Keep current") { resolve(.keepCurrent) }
+                            Spacer()
+                            Button("Use recovered") { resolve(.useRecovered) }
+                        }
+                        HStack {
+                            Spacer()
+                            Button("Use edited version") {
+                                if let edited { resolve(.editList(edited)) }
+                            }
                         }
                     }
                 }

@@ -8,28 +8,6 @@ import SwiftUI
 @testable import SnipSnapPersistence
 
 final class AppCoordinatorTests: StoreBackedTestCase {
-    func testDialogOriginStaysInsideTheVisibleScreen() {
-        let visibleFrame = NSRect(x: 0, y: 0, width: 1_000, height: 800)
-        let dialogSize = NSSize(width: 560, height: 520)
-
-        XCTAssertEqual(
-            AppCoordinator.centeredDialogOrigin(
-                size: dialogSize,
-                over: NSRect(x: -100, y: -100, width: 382, height: 500),
-                within: visibleFrame
-            ),
-            NSPoint(x: 0, y: 0)
-        )
-        XCTAssertEqual(
-            AppCoordinator.centeredDialogOrigin(
-                size: dialogSize,
-                over: NSRect(x: 900, y: 700, width: 382, height: 500),
-                within: visibleFrame
-            ),
-            NSPoint(x: 440, y: 280)
-        )
-    }
-
     func testPendingErrorsWaitForAUsablePanel() {
         XCTAssertTrue(AppCoordinator.shouldPresentPendingError(
             isVisible: true,
@@ -87,29 +65,9 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
         XCTAssertTrue(coordinator.panelDialogs.isPresented)
         XCTAssertFalse(panel.ignoresMouseEvents)
-        XCTAssertEqual(panel.childWindows?.count, 1)
-        XCTAssertEqual(panel.childWindows?.first?.isOpaque, true)
-        let dialog = try XCTUnwrap(panel.childWindows?.first)
-        let inputShield = try XCTUnwrap(
-            panel.contentView?.subviews.last as? PanelDialogInputShieldView
-        )
-        let click = try XCTUnwrap(
-            NSEvent.mouseEvent(
-                with: .leftMouseDown,
-                location: .zero,
-                modifierFlags: [],
-                timestamp: 0,
-                windowNumber: panel.windowNumber,
-                context: nil,
-                eventNumber: 0,
-                clickCount: 1,
-                pressure: 1
-            )
-        )
-        XCTAssertEqual(inputShield.frame, panel.contentView?.bounds)
-        XCTAssertTrue(inputShield.hitTest(NSPoint(x: 1, y: 1)) === inputShield)
-        XCTAssertTrue(inputShield.acceptsFirstMouse(for: click))
-        XCTAssertNotNil(inputShield.activateDialog)
+        let dialog = try XCTUnwrap(panel.attachedSheet)
+        XCTAssertFalse(dialog.isOpaque)
+        XCTAssertTrue(dialog.sheetParent === panel)
         XCTAssertTrue(
             AppCoordinator.shouldRestorePreviousApplication(
                 panelIsKey: false,
@@ -120,14 +78,14 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             AppCoordinator.shouldRestorePreviousApplication(
                 panelIsKey: false,
                 dialogIsKey: false,
-                openPanelIsKey: true
+                filePanelIsKey: true
             )
         )
 
         model.presentError("Dialog save failed")
         try await Task.sleep(for: .milliseconds(100))
 
-        XCTAssertNil(panel.attachedSheet)
+        XCTAssertTrue(panel.attachedSheet === dialog)
         XCTAssertNotNil(dialog.attachedSheet)
         model.dismissPresentedError()
         try await Task.sleep(for: .milliseconds(100))
@@ -136,19 +94,19 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
         XCTAssertFalse(model.isShowingClipboard)
         XCTAssertTrue(coordinator.panelDialogs.isPresented)
-        XCTAssertTrue(panel.childWindows?.first === dialog)
+        XCTAssertTrue(panel.attachedSheet === dialog)
 
         coordinator.captureSelection()
 
         XCTAssertFalse(coordinator.accessibilityPermissions.isRepairPresented)
         XCTAssertTrue(coordinator.panelDialogs.isPresented)
-        XCTAssertTrue(panel.childWindows?.first === dialog)
+        XCTAssertTrue(panel.attachedSheet === dialog)
 
         coordinator.focusPanelSearch()
 
         XCTAssertEqual(focusRequestCount, 0)
         XCTAssertTrue(coordinator.panelDialogs.isPresented)
-        XCTAssertTrue(panel.childWindows?.first === dialog)
+        XCTAssertTrue(panel.attachedSheet === dialog)
 
         coordinator.togglePanel()
 
@@ -156,8 +114,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         XCTAssertFalse(coordinator.panelDialogs.isPresented)
         XCTAssertFalse(panel.ignoresMouseEvents)
         XCTAssertFalse(panel.isVisible)
-        XCTAssertTrue(panel.childWindows?.isEmpty ?? true)
-        XCTAssertFalse(inputShield.isDescendant(of: panel.contentView ?? NSView()))
+        XCTAssertNil(panel.attachedSheet)
     }
 
     @MainActor
@@ -184,7 +141,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             ),
             shortcutSettings: ShortcutSettings(defaults: defaults),
             isAccessibilityTrusted: { false },
-            beginOpenPanel: { _, completion in panelCompletion = completion }
+            beginFilePanel: { _, _, completion in panelCompletion = completion }
         )
         let parent = NSWindow()
         coordinator.attachPanelWindow(parent)
@@ -196,13 +153,13 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             Text("Review backup")
         }
 
-        XCTAssertTrue(parent.childWindows?.isEmpty ?? true)
+        XCTAssertNil(parent.attachedSheet)
 
         panelCompletion?(.cancel)
         await Task.yield()
 
-        XCTAssertEqual(parent.childWindows?.count, 1)
-        XCTAssertEqual(parent.childWindows?.first?.isOpaque, true)
+        XCTAssertNotNil(parent.attachedSheet)
+        XCTAssertEqual(parent.attachedSheet?.isOpaque, false)
         coordinator.dismissPanelDialog(id: .backupImport)
     }
 
@@ -227,13 +184,13 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         }
 
         XCTAssertFalse(parent.isVisible)
-        XCTAssertTrue(parent.childWindows?.isEmpty ?? true)
+        XCTAssertNil(parent.attachedSheet)
 
         coordinator.togglePanel()
 
         XCTAssertTrue(parent.isVisible)
-        XCTAssertEqual(parent.childWindows?.count, 1)
-        XCTAssertEqual(parent.childWindows?.first?.isOpaque, true)
+        XCTAssertNotNil(parent.attachedSheet)
+        XCTAssertEqual(parent.attachedSheet?.isOpaque, false)
         coordinator.dismissPanelDialog(id: .backupImport)
     }
 
@@ -260,8 +217,8 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         defer { parent.orderOut(nil) }
         try await Task.sleep(for: .milliseconds(100))
 
-        XCTAssertEqual(parent.childWindows?.count, 1)
-        XCTAssertEqual(parent.childWindows?.first?.isOpaque, true)
+        XCTAssertNotNil(parent.attachedSheet)
+        XCTAssertEqual(parent.attachedSheet?.isOpaque, false)
         coordinator.dismissPanelDialog(id: .backupImport)
     }
 
@@ -288,26 +245,26 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         } content: {
             Text("New list form")
         }
-        let newListWindow = try XCTUnwrap(parent.childWindows?.first)
+        let newListWindow = try XCTUnwrap(parent.attachedSheet)
 
         coordinator.presentPanelDialog(id: .backupImport, title: "Import") {} content: {
             Text("Review backup")
         }
 
-        XCTAssertTrue(parent.childWindows?.first === newListWindow)
+        XCTAssertTrue(parent.attachedSheet === newListWindow)
         XCTAssertFalse(didDismissNewList)
 
         coordinator.dismissPanelDialog(id: .newList)
         await Task.yield()
 
         XCTAssertTrue(didDismissNewList)
-        XCTAssertEqual(parent.childWindows?.count, 1)
-        XCTAssertFalse(parent.childWindows?.first === newListWindow)
+        XCTAssertNotNil(parent.attachedSheet)
+        XCTAssertFalse(parent.attachedSheet === newListWindow)
         coordinator.dismissPanelDialog(id: .backupImport)
     }
 
     @MainActor
-    func testRootErrorUsesAnOpaqueChildInsteadOfAParentSheet() throws {
+    func testRootErrorUsesAGlassSheetAttachedToThePanel() throws {
         let defaultsName = "Snip SnapPanelErrorTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
         defer { defaults.removePersistentDomain(forName: defaultsName) }
@@ -328,10 +285,11 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         model.presentError("A root action failed")
         coordinator.updatePresentedError()
 
-        let errorWindow = try XCTUnwrap(panel.childWindows?.first)
+        let errorWindow = try XCTUnwrap(panel.attachedSheet)
         XCTAssertTrue(coordinator.panelDialogs.isPresented)
-        XCTAssertTrue(errorWindow.isOpaque)
-        XCTAssertNil(panel.attachedSheet)
+        XCTAssertTrue(errorWindow.canBecomeKey)
+        XCTAssertFalse(errorWindow.isOpaque)
+        XCTAssertTrue(errorWindow.sheetParent === panel)
         XCTAssertNil(errorWindow.attachedSheet)
 
         coordinator.togglePanel()
@@ -341,19 +299,19 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
         coordinator.togglePanel()
 
-        let reopenedErrorWindow = try XCTUnwrap(panel.childWindows?.first)
-        XCTAssertTrue(reopenedErrorWindow.isOpaque)
-        XCTAssertNil(reopenedErrorWindow.attachedSheet)
+        let reopenedErrorWindow = try XCTUnwrap(panel.attachedSheet)
+        XCTAssertFalse(reopenedErrorWindow.isOpaque)
+        XCTAssertTrue(reopenedErrorWindow.sheetParent === panel)
 
         model.dismissPresentedError()
         coordinator.updatePresentedError()
 
         XCTAssertFalse(coordinator.panelDialogs.isPresented)
-        XCTAssertTrue(panel.childWindows?.isEmpty ?? true)
+        XCTAssertNil(panel.attachedSheet)
     }
 
     @MainActor
-    func testRootConfirmationsUseOpaqueChildrenInsteadOfParentSheets() throws {
+    func testRootConfirmationsUseGlassSheetsAttachedToThePanel() throws {
         let defaultsName = "Snip SnapPanelConfirmationTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
         defer { defaults.removePersistentDomain(forName: defaultsName) }
@@ -387,13 +345,14 @@ final class AppCoordinatorTests: StoreBackedTestCase {
                 )
             }
 
-            let dialog = try XCTUnwrap(panel.childWindows?.first)
-            XCTAssertTrue(dialog.isOpaque)
-            XCTAssertNil(panel.attachedSheet)
+            let dialog = try XCTUnwrap(panel.attachedSheet)
+            XCTAssertTrue(dialog.canBecomeKey)
+            XCTAssertFalse(dialog.isOpaque)
+            XCTAssertTrue(dialog.sheetParent === panel)
             XCTAssertNil(dialog.attachedSheet)
 
             coordinator.dismissPanelDialog(id: id)
-            XCTAssertTrue(panel.childWindows?.isEmpty ?? true)
+            XCTAssertNil(panel.attachedSheet)
         }
     }
 
@@ -413,8 +372,9 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             ),
             shortcutSettings: ShortcutSettings(defaults: defaults),
             isAccessibilityTrusted: { false },
-            beginOpenPanel: { panel, completion in
+            beginFilePanel: { panel, sheetParent, completion in
                 XCTAssertTrue(panel === importer)
+                XCTAssertTrue(sheetParent === parent)
                 panelCompletion = completion
             }
         )
@@ -423,9 +383,8 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         XCTAssertTrue(coordinator.presentOpenPanel(importer) { importedURLs = $0 })
 
         XCTAssertTrue(coordinator.panelDialogs.isPresented)
-        XCTAssertEqual(importer.level, .modalPanel)
+        // The injected presenter captures the request without asking AppKit to show it.
         XCTAssertNil(parent.attachedSheet)
-        XCTAssertNil(importer.sheetParent)
         XCTAssertFalse(parent.childWindows?.contains(importer) == true)
         XCTAssertFalse(coordinator.presentOpenPanel(NSOpenPanel()) { _ in })
 
@@ -434,6 +393,42 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
         XCTAssertFalse(coordinator.panelDialogs.isPresented)
         XCTAssertNil(importedURLs)
+    }
+
+    @MainActor
+    func testSavePanelUsesTheAttachedFilePanelFlow() async throws {
+        let defaultsName = "Snip SnapSavePanelTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let parent = NSWindow()
+        let exporter = NSSavePanel()
+        var panelCompletion: ((NSApplication.ModalResponse) -> Void)?
+        var exportedURL: URL?
+        let coordinator = AppCoordinator(
+            model: AppModel(
+                library: try JSONSnipLibrary(fileURL: storeURL()),
+                defaults: defaults
+            ),
+            shortcutSettings: ShortcutSettings(defaults: defaults),
+            isAccessibilityTrusted: { false },
+            beginFilePanel: { panel, sheetParent, completion in
+                XCTAssertTrue(panel === exporter)
+                XCTAssertTrue(sheetParent === parent)
+                XCTAssertTrue(parent.isVisible)
+                panelCompletion = completion
+            }
+        )
+        coordinator.attachPanelWindow(parent)
+        defer { parent.orderOut(nil) }
+
+        XCTAssertTrue(coordinator.presentSavePanel(exporter) { exportedURL = $0 })
+        XCTAssertTrue(coordinator.panelDialogs.isPresented)
+
+        panelCompletion?(.cancel)
+        await Task.yield()
+
+        XCTAssertFalse(coordinator.panelDialogs.isPresented)
+        XCTAssertNil(exportedURL)
     }
 
     @MainActor
@@ -452,8 +447,8 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             ),
             shortcutSettings: ShortcutSettings(defaults: defaults),
             isAccessibilityTrusted: { false },
-            beginOpenPanel: { _, _ in },
-            cancelOpenPanel: { panel in
+            beginFilePanel: { _, _, _ in },
+            cancelFilePanel: { panel in
                 XCTAssertTrue(panel === importer)
                 didCancel = true
             }
@@ -509,11 +504,11 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         coordinator.accessibilityPermissions.performPrimaryAction()
 
         XCTAssertTrue(openedSettings)
-        XCTAssertTrue(parent.childWindows?.isEmpty ?? true)
+        XCTAssertNil(parent.attachedSheet)
     }
 
     @MainActor
-    func testPendingFormErrorMovesToAnOpaqueChildAfterHideAndReopen() async throws {
+    func testPendingFormErrorMovesToAPanelSheetAfterHideAndReopen() async throws {
         let defaultsName = "Snip SnapPendingPanelErrorTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
         defer { defaults.removePersistentDomain(forName: defaultsName) }
@@ -534,7 +529,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         coordinator.presentPanelDialog(id: .newList, title: "Test") {} content: {
             Text("Dialog").padding()
         }
-        let formWindow = try XCTUnwrap(panel.childWindows?.first)
+        let formWindow = try XCTUnwrap(panel.attachedSheet)
         model.presentError("Dialog save failed")
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertNotNil(formWindow.attachedSheet)
@@ -544,14 +539,14 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
         XCTAssertFalse(panel.isVisible)
         XCTAssertNotNil(model.presentedError)
-        XCTAssertTrue(panel.childWindows?.isEmpty ?? true)
+        XCTAssertNil(panel.attachedSheet)
 
         coordinator.togglePanel()
 
-        let errorWindow = try XCTUnwrap(panel.childWindows?.first)
+        let errorWindow = try XCTUnwrap(panel.attachedSheet)
         XCTAssertTrue(panel.isVisible)
-        XCTAssertTrue(errorWindow.isOpaque)
-        XCTAssertNil(panel.attachedSheet)
+        XCTAssertFalse(errorWindow.isOpaque)
+        XCTAssertTrue(errorWindow.sheetParent === panel)
         XCTAssertNil(errorWindow.attachedSheet)
 
         model.dismissPresentedError()
@@ -559,7 +554,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testPendingFormErrorMovesToAnOpaqueChildAfterNormalDismissal() async throws {
+    func testPendingFormErrorMovesToAPanelSheetAfterNormalDismissal() async throws {
         let defaultsName = "Snip SnapDismissedFormErrorTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
         defer { defaults.removePersistentDomain(forName: defaultsName) }
@@ -580,15 +575,15 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         coordinator.presentPanelDialog(id: .newList, title: "Test") {} content: {
             Text("Dialog").padding()
         }
-        XCTAssertNotNil(panel.childWindows?.first)
+        XCTAssertNotNil(panel.attachedSheet)
         model.presentError("Dialog save failed")
 
         coordinator.dismissPanelDialog(id: .newList)
         try await Task.sleep(for: .milliseconds(100))
 
-        let errorWindow = try XCTUnwrap(panel.childWindows?.first)
-        XCTAssertTrue(errorWindow.isOpaque)
-        XCTAssertNil(panel.attachedSheet)
+        let errorWindow = try XCTUnwrap(panel.attachedSheet)
+        XCTAssertFalse(errorWindow.isOpaque)
+        XCTAssertTrue(errorWindow.sheetParent === panel)
         XCTAssertNil(errorWindow.attachedSheet)
         XCTAssertNotNil(model.presentedError)
 
@@ -619,16 +614,16 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         coordinator.updatePresentedError()
 
         XCTAssertFalse(panel.isVisible)
-        XCTAssertTrue(panel.childWindows?.isEmpty ?? true)
+        XCTAssertNil(panel.attachedSheet)
         XCTAssertFalse(coordinator.panelDialogs.isPresented)
         XCTAssertNotNil(model.presentedError)
 
         coordinator.togglePanel()
 
-        let errorWindow = try XCTUnwrap(panel.childWindows?.first)
+        let errorWindow = try XCTUnwrap(panel.attachedSheet)
         XCTAssertTrue(panel.isVisible)
-        XCTAssertTrue(errorWindow.isOpaque)
-        XCTAssertNil(panel.attachedSheet)
+        XCTAssertFalse(errorWindow.isOpaque)
+        XCTAssertTrue(errorWindow.sheetParent === panel)
         XCTAssertNil(errorWindow.attachedSheet)
 
         model.dismissPresentedError()

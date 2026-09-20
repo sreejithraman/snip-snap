@@ -6,7 +6,7 @@ Snip Snap floats over other apps, so its chrome must remain clear over backgroun
 
 ## Decision
 
-Use macOS 26 Liquid Glass for top-level panel controls and navigation. Put nearby custom glass in a shared `GlassEffectContainer` when they form one visual group. Use named semantic color roles for text, state, edges, cards, and actions. Let native glass adapt to its backdrop and the selected System, Light, or Dark appearance. Do not add a window-wide blur plate or draw a custom halo. Keep content cards as a separate content surface.
+Use macOS 26 Liquid Glass for top-level panel controls and navigation. Put nearby custom glass in a shared `GlassEffectContainer` when they form one visual group. Use named semantic color roles for text, state, edges, cards, and actions. Let native glass adapt to its backdrop and the selected System, Light, or Dark appearance. Do not add a window-wide blur plate to the main panel or draw a custom halo. Keep content cards as a separate content surface. A compact app-owned sheet is its own subordinate surface and can use the shared nested-glass treatment across its bounds.
 
 The pinned header and small secondary controls share the `NestedGlassTint` color asset. Its light variant keeps the subtle system tint; its dark variant uses 20% black. The composer uses regular interactive glass, with Send in a separate overlay and glass container inside its visible bounds. This keeps input and Send presses separate.
 
@@ -18,10 +18,12 @@ Use native button styles by default. The compact Mac editor actions are an excep
 
 Keep resizing on the visible glass edge because the window frame includes a 24-point effect gutter. A five-point AppKit overlay handles the edge drag. Use always-active enter and exit tracking for idle frame-resize cursors, then hold the same cursor during a drag. Keep the panel's size limits on `NSWindow`.
 
-Do not attach sheets, alerts, or confirmation dialogs to the clear floating panel. AppKit dims the full rectangular parent window during a sheet, which reveals the clear effect gutter as a gray box. Show form work and short choices in a separate, opaque child panel centered over the floating panel. Normal opaque windows can keep system alerts. Block the parent while the child is open. Keep Escape on cancel or back actions. Use Return only for a safe main action.
+Attach forms, alerts, confirmations, and file panels to the floating panel as native macOS sheets. The document-modal relationship is more important than keeping the effect gutter completely clear while the parent is dimmed. Host app-owned dialog content in a compact borderless sheet whose rounded surface uses the shared `NestedGlassTint` treatment. File panels use `beginSheetModal(for:)`. Keep Escape on cancel or back actions. Use Return only for a safe main action.
 
 ## Consequences
 
 Small and large glass surfaces can resolve to different tones over the same background. That native response is expected. Tints remain reserved for meaning or emphasis. Reduce Transparency, Increase Contrast, and Reduce Motion continue to work through the system. New views should reuse the shared surface and color roles instead of adding raw colors or opacity recipes.
+
+The system sheet dimmer covers the clear panel's rectangular window bounds, including its effect gutter. This is an accepted tradeoff for visible parent ownership and native sheet motion. Keep dialog surfaces compact so they still read as a subordinate layer of the panel.
 
 The borderless panel needs a small resize overlay because AppKit's window edge sits outside the visible glass. The overlay takes only five points from straight edges and uses always-active enter and exit events instead of app-active cursor-update events.

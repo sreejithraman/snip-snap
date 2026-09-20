@@ -167,7 +167,6 @@ struct NewSnipListSheet: View {
             }
         }
         .padding()
-        .frame(width: 360)
     }
 
     private func create() {
@@ -211,7 +210,7 @@ struct SnipListEditSheet: View {
     private var cleanedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: SnipSnapSpacing.paneContentInset) {
             Text("Edit list")
                 .font(.headline)
 
@@ -277,8 +276,7 @@ struct SnipListEditSheet: View {
             }
             .controlSize(.large)
         }
-        .padding(24)
-        .frame(width: 400)
+        .padding(SnipSnapSpacing.paneContentInset)
         .disabled(isSaving)
         .interactiveDismissDisabled(isSaving)
         .onAppear { nameIsFocused = true }
