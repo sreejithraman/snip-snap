@@ -58,8 +58,9 @@ white in a dark one. It does not describe an action fill.
 Before this change, `AppProminentActionButton` combined `.glassProminent`,
 `SnipSnapTheme.controlTint`, and a forced foreground color, while `controlTint`
 was `Color.primary`. The system and the app could then make separate choices
-for the plate and its label. The design-system fix makes the wrapper semantic
-and lets its native style set contrast.
+for the plate and its label. The design-system fix makes the wrapper semantic,
+pairs its fill with a tested label token, and leaves pressed, edge, and disabled
+states to the native style.
 
 Apple's current rules support this split:
 
@@ -198,8 +199,9 @@ tasks. They show longer tasks in a normal window.
    destructive, and icon actions on native button roles.
 2. Put the iOS and Mac primary renderers behind that API. Share intent and
    color roles, not exact fills, shapes, or sizes.
-3. Replace `Color.primary` as the action tint with a real semantic accent. Let
-   native button styles choose label contrast.
+3. Replace `Color.primary` as the action tint with a real semantic accent. Pair
+   it with the action label token, then let native styles own pressed, edge, and
+   disabled states.
 4. Give Mac confirm and cancel actions `.defaultAction` and `.cancelAction`.
    Use semantic toolbar placements when they sit in a sheet or editor toolbar.
 5. Move Mac list editing out of the clear panel's `.sheet`. Use a separate

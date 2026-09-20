@@ -181,7 +181,29 @@ final class PanelTests: StoreBackedTestCase {
             XCTAssertEqual(label.redComponent, labelWhite, accuracy: 0.001)
             XCTAssertEqual(label.greenComponent, labelWhite, accuracy: 0.001)
             XCTAssertEqual(label.blueComponent, labelWhite, accuracy: 0.001)
+            XCTAssertGreaterThanOrEqual(
+                contrastRatio(tint, label),
+                4.5,
+                "Action controls need readable label contrast in \(appearanceName.rawValue)."
+            )
         }
+    }
+
+    private func contrastRatio(_ first: NSColor, _ second: NSColor) -> CGFloat {
+        let lighter = max(relativeLuminance(first), relativeLuminance(second))
+        let darker = min(relativeLuminance(first), relativeLuminance(second))
+        return (lighter + 0.05) / (darker + 0.05)
+    }
+
+    private func relativeLuminance(_ color: NSColor) -> CGFloat {
+        func linear(_ value: CGFloat) -> CGFloat {
+            value <= 0.04045
+                ? value / 12.92
+                : pow((value + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linear(color.redComponent)
+            + 0.7152 * linear(color.greenComponent)
+            + 0.0722 * linear(color.blueComponent)
     }
 
     @MainActor

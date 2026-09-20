@@ -220,16 +220,8 @@ struct ContentView: View {
         .onChange(of: accessibilityPermissions.isRepairPresented) { _, isPresented in
             presentAccessibilityDialog(isPresented: isPresented)
         }
-        .alert(
-            model.presentedErrorTitle ?? String(localized: "Something Went Wrong"),
-            isPresented: Binding(
-                get: { model.presentedError != nil },
-                set: { if !$0 { model.dismissPresentedError() } }
-            )
-        ) {
-            Button("OK") { model.dismissPresentedError() }
-        } message: {
-            Text(model.presentedError ?? "")
+        .onChange(of: model.presentedError, initial: true) { _, _ in
+            coordinator.updatePresentedError()
         }
     }
 

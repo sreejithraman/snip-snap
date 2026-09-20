@@ -15,6 +15,7 @@ enum PanelDialogID: Equatable {
     case recovery
     case accessibility
     case editList(UUID)
+    case error
 }
 
 @MainActor
@@ -161,6 +162,7 @@ final class AppCoordinator {
             panelWindow.orderOut(nil)
         }
         panelWindow.makeKeyAndOrderFront(nil)
+        updatePresentedError()
         if let target {
             DispatchQueue.main.async { [weak self] in
                 self?.panelFocusRequests.send(target)
@@ -182,6 +184,14 @@ final class AppCoordinator {
         dialogIsKey: Bool
     ) -> Bool {
         panelIsKey || dialogIsKey
+    }
+
+    nonisolated static func shouldPresentPendingError(
+        isVisible: Bool,
+        isMiniaturized: Bool,
+        isOnActiveSpace: Bool
+    ) -> Bool {
+        isVisible && !isMiniaturized && isOnActiveSpace
     }
 
     nonisolated static func centeredDialogOrigin(
@@ -370,13 +380,25 @@ final class AppCoordinator {
             title: title,
             parent: panelWindow,
             content: AnyView(
-                content()
+                PanelDialogContent(
+                    model: model,
+                    showsModelErrors: id != .error,
+                    content: content()
+                )
                     .tint(SnipSnapTheme.controlTint)
                     .preferredColorScheme(model.appearance.colorScheme)
             ),
-            onDismiss: { [weak self] in
-                self?.panelDialogs.isPresented = false
-                onDismiss()
+            onDismiss: { [weak self] reason in
+                guard let self else { return }
+                panelDialogs.isPresented = false
+                if id != .error || reason != .parentHide {
+                    onDismiss()
+                }
+                if id != .error, reason == .close {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.updatePresentedError()
+                    }
+                }
             }
         )
         panelDialogs.isPresented = true
@@ -384,6 +406,28 @@ final class AppCoordinator {
 
     func dismissPanelDialog(id: PanelDialogID) {
         panelDialogPresenter.dismiss(id: id)
+    }
+
+    func updatePresentedError() {
+        guard model.presentedError != nil else {
+            dismissPanelDialog(id: .error)
+            return
+        }
+        guard let panelWindow,
+              Self.shouldPresentPendingError(
+                  isVisible: panelWindow.isVisible,
+                  isMiniaturized: panelWindow.isMiniaturized,
+                  isOnActiveSpace: panelWindow.isOnActiveSpace
+              ) else { return }
+        guard !panelDialogs.isPresented else { return }
+        presentPanelDialog(
+            id: .error,
+            title: model.presentedErrorTitle ?? String(localized: "Something Went Wrong")
+        ) { [weak model] in
+            model?.dismissPresentedError()
+        } content: {
+            PanelErrorDialog(model: model)
+        }
     }
 
     func updatePanelComposerExpansion(_ expansion: CGFloat) {
@@ -499,6 +543,50 @@ final class AppCoordinator {
 
 }
 
+private struct PanelDialogContent<Content: View>: View {
+    @ObservedObject var model: AppModel
+    let showsModelErrors: Bool
+    let content: Content
+
+    var body: some View {
+        content
+            .alert(
+                model.presentedErrorTitle ?? String(localized: "Something Went Wrong"),
+                isPresented: Binding(
+                    get: { showsModelErrors && model.presentedError != nil },
+                    set: { _ in }
+                )
+            ) {
+                Button("OK") { model.dismissPresentedError() }
+            } message: {
+                Text(model.presentedError ?? "")
+            }
+    }
+}
+
+private struct PanelErrorDialog: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: SnipSnapSpacing.paneContentInset) {
+            Text(model.presentedErrorTitle ?? String(localized: "Something Went Wrong"))
+                .font(.headline)
+            Text(model.presentedError ?? "")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                AppPrimaryActionButton(action: model.dismissPresentedError) {
+                    Text("OK")
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(SnipSnapSpacing.paneContentInset)
+        .frame(width: 360)
+    }
+}
+
 /// Hosts form-sized work in an opaque child window. AppKit's sheet dimmer
 /// otherwise exposes the clear panel's rectangular window bounds.
 final class PanelDialogInputShieldView: NSView {
@@ -526,13 +614,20 @@ final class PanelDialogInputShieldView: NSView {
 }
 
 @MainActor
+private enum PanelDialogDismissalReason {
+    case close
+    case parentHide
+}
+
+@MainActor
 private final class PanelDialogPresenter: NSObject, NSWindowDelegate {
     private var id: PanelDialogID?
     private weak var parentWindow: NSWindow?
     private weak var parentInputShield: PanelDialogInputShieldView?
     private var restoresParentOnDismissal = true
+    private var dismissalReason = PanelDialogDismissalReason.close
     private var windowController: NSWindowController?
-    private var onDismiss: (() -> Void)?
+    private var onDismiss: ((PanelDialogDismissalReason) -> Void)?
 
     var isKeyWindow: Bool {
         windowController?.window?.isKeyWindow == true
@@ -543,7 +638,7 @@ private final class PanelDialogPresenter: NSObject, NSWindowDelegate {
         title: String,
         parent: NSWindow,
         content: AnyView,
-        onDismiss: @escaping () -> Void
+        onDismiss: @escaping (PanelDialogDismissalReason) -> Void
     ) {
         dismissCurrent()
 
@@ -604,12 +699,16 @@ private final class PanelDialogPresenter: NSObject, NSWindowDelegate {
     }
 
     func dismissForParentHide() {
-        dismissCurrent(restoringParent: false)
+        dismissCurrent(restoringParent: false, reason: .parentHide)
     }
 
-    private func dismissCurrent(restoringParent: Bool = true) {
+    private func dismissCurrent(
+        restoringParent: Bool = true,
+        reason: PanelDialogDismissalReason = .close
+    ) {
         guard let window = windowController?.window else { return }
         restoresParentOnDismissal = restoringParent
+        dismissalReason = reason
         window.close()
         if windowController != nil {
             finishDismissal()
@@ -623,6 +722,7 @@ private final class PanelDialogPresenter: NSObject, NSWindowDelegate {
     private func finishDismissal() {
         guard windowController != nil else { return }
         let callback = onDismiss
+        let reason = dismissalReason
         if let window = windowController?.window {
             parentWindow?.removeChildWindow(window)
         }
@@ -634,9 +734,10 @@ private final class PanelDialogPresenter: NSObject, NSWindowDelegate {
         parentWindow = nil
         parentInputShield = nil
         restoresParentOnDismissal = true
+        dismissalReason = .close
         id = nil
         onDismiss = nil
-        callback?()
+        callback?(reason)
     }
 
 }

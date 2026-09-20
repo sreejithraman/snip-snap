@@ -577,7 +577,34 @@ final class IOSAppModelTests: XCTestCase {
             XCTAssertEqual(labelRed, labelWhite, accuracy: 0.001)
             XCTAssertEqual(labelGreen, labelWhite, accuracy: 0.001)
             XCTAssertEqual(labelBlue, labelWhite, accuracy: 0.001)
+            XCTAssertGreaterThanOrEqual(
+                contrastRatio(tint, label),
+                4.5,
+                "Action controls need readable label contrast in style \(style.rawValue)."
+            )
         }
+    }
+
+    private func contrastRatio(_ first: UIColor, _ second: UIColor) -> CGFloat {
+        let lighter = max(relativeLuminance(first), relativeLuminance(second))
+        let darker = min(relativeLuminance(first), relativeLuminance(second))
+        return (lighter + 0.05) / (darker + 0.05)
+    }
+
+    private func relativeLuminance(_ color: UIColor) -> CGFloat {
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        guard color.getRed(&red, green: &green, blue: &blue, alpha: nil) else {
+            XCTFail("Action colors must resolve to RGB values.")
+            return 0
+        }
+        func linear(_ value: CGFloat) -> CGFloat {
+            value <= 0.04045
+                ? value / 12.92
+                : pow((value + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
     }
 
     func testManualSyncUsesTheSameLibraryReplacementAndStatusPathAsLifecycleSync() async {
