@@ -1,0 +1,3 @@
+Snip Snap 0.5.1 Beta 77 — iOS
+
+- Fix mixed snip copy for file-first inputs

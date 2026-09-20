@@ -1,0 +1,9 @@
+# Snip Snap 0.5.1 Beta 77
+
+## Mac
+
+- Fix mixed snip copy for file-first inputs
+
+## iOS
+
+- Fix mixed snip copy for file-first inputs
