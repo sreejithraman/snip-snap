@@ -32,6 +32,11 @@ enum SelectionAttachmentStagingError: Error, Equatable, Sendable {
 
 @MainActor
 final class AppCoordinator {
+    typealias BeginOpenPanel = (
+        NSOpenPanel,
+        @escaping (NSApplication.ModalResponse) -> Void
+    ) -> Void
+
     private let model: AppModel
     let shortcutSettings: ShortcutSettings
     private let makeHotKeyManager: (@escaping (GlobalHotKeyAction) -> Void) -> any GlobalHotKeyManaging
@@ -47,6 +52,10 @@ final class AppCoordinator {
     private var appliedPanelComposerExpansion: CGFloat = 0
     private var previousExternalApplication: NSRunningApplication?
     private var applicationActivationObserver: NSObjectProtocol?
+    private let beginOpenPanel: BeginOpenPanel
+    private let cancelOpenPanel: (NSOpenPanel) -> Void
+    private var presentedOpenPanel: NSOpenPanel?
+    private var openPanelCompletion: (([URL]?) -> Void)?
 
     init(
         model: AppModel,
@@ -70,11 +79,19 @@ final class AppCoordinator {
             )
         },
         accessibilitySetupDefaults: UserDefaults = .standard,
-        accessibilityNotificationCenter: NotificationCenter = .default
+        accessibilityNotificationCenter: NotificationCenter = .default,
+        beginOpenPanel: @escaping BeginOpenPanel = { panel, completion in
+            panel.begin(completionHandler: completion)
+        },
+        cancelOpenPanel: @escaping (NSOpenPanel) -> Void = { panel in
+            panel.cancel(nil)
+        }
     ) {
         self.model = model
         self.shortcutSettings = shortcutSettings
         self.makeHotKeyManager = makeHotKeyManager
+        self.beginOpenPanel = beginOpenPanel
+        self.cancelOpenPanel = cancelOpenPanel
         accessibilityPermissions = AccessibilityPermissionController(
             defaults: accessibilitySetupDefaults,
             notificationCenter: accessibilityNotificationCenter,
@@ -227,6 +244,7 @@ final class AppCoordinator {
     }
 
     func hidePanel(restoringPreviousApplication: Bool = true) {
+        dismissOpenPanel()
         panelDialogPresenter.dismissForParentHide()
         panelWindow?.orderOut(nil)
         if restoringPreviousApplication {
@@ -377,7 +395,7 @@ final class AppCoordinator {
         onDismiss: @escaping () -> Void,
         @ViewBuilder content: () -> Content
     ) {
-        guard let panelWindow else { return }
+        guard let panelWindow, presentedOpenPanel == nil else { return }
         panelDialogPresenter.present(
             id: id,
             title: title,
@@ -405,6 +423,48 @@ final class AppCoordinator {
             }
         )
         panelDialogs.isPresented = true
+    }
+
+    @discardableResult
+    func presentOpenPanel(
+        _ panel: NSOpenPanel,
+        completion: @escaping ([URL]?) -> Void
+    ) -> Bool {
+        guard !panelDialogs.isPresented, presentedOpenPanel == nil else { return false }
+        presentedOpenPanel = panel
+        openPanelCompletion = completion
+        panelDialogs.isPresented = true
+        beginOpenPanel(panel) { [weak self, weak panel] response in
+            Task { @MainActor in
+                guard let self, let panel, self.presentedOpenPanel === panel else { return }
+                self.finishOpenPanel(
+                    panel,
+                    urls: response == .OK ? panel.urls : nil,
+                    updateError: true
+                )
+            }
+        }
+        return true
+    }
+
+    private func dismissOpenPanel() {
+        guard let panel = presentedOpenPanel else { return }
+        cancelOpenPanel(panel)
+        finishOpenPanel(panel, urls: nil, updateError: false)
+    }
+
+    private func finishOpenPanel(
+        _ panel: NSOpenPanel,
+        urls: [URL]?,
+        updateError: Bool
+    ) {
+        guard presentedOpenPanel === panel else { return }
+        let completion = openPanelCompletion
+        presentedOpenPanel = nil
+        openPanelCompletion = nil
+        panelDialogs.isPresented = false
+        completion?(urls)
+        if updateError { updatePresentedError() }
     }
 
     func dismissPanelDialog(id: PanelDialogID, restoringParent: Bool = true) {

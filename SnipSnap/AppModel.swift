@@ -659,21 +659,6 @@ final class AppModel: ObservableObject {
         pendingImportPreview?.localizedSummary ?? ""
     }
 
-    func beginBackupImport() {
-        let panel = NSOpenPanel()
-        panel.title = String(localized: "Import backup")
-        panel.prompt = String(localized: "Review backup")
-        panel.message = String(localized: "Choose a backup folder that includes attachments, or a JSON file without attachments.")
-        panel.allowedContentTypes = [.folder, .json]
-        panel.allowsMultipleSelection = false
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = true
-        panel.begin { [weak self] response in
-            guard response == .OK, let url = panel.url else { return }
-            Task { @MainActor in await self?.previewBackupImport(from: url) }
-        }
-    }
-
     func previewBackupImport(from url: URL) async {
         await withCommandLock {
             let didAccess = url.startAccessingSecurityScopedResource()

@@ -245,16 +245,79 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testAttachmentImporterIsAStandalonePanel() {
+    func testOpenPanelBlocksParentActionsAndClearsAfterCompletion() async throws {
+        let defaultsName = "Snip SnapOpenPanelTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
         let parent = NSWindow()
         let importer = StandaloneFileImporter.makePanel()
-        defer { importer.orderOut(nil) }
+        var panelCompletion: ((NSApplication.ModalResponse) -> Void)?
+        var importedURLs: [URL]?
+        let coordinator = AppCoordinator(
+            model: AppModel(
+                library: try JSONSnipLibrary(fileURL: storeURL()),
+                defaults: defaults
+            ),
+            shortcutSettings: ShortcutSettings(defaults: defaults),
+            isAccessibilityTrusted: { false },
+            beginOpenPanel: { panel, completion in
+                XCTAssertTrue(panel === importer)
+                panelCompletion = completion
+            }
+        )
+        coordinator.attachPanelWindow(parent)
 
-        importer.orderFront(nil)
+        XCTAssertTrue(coordinator.presentOpenPanel(importer) { importedURLs = $0 })
 
+        XCTAssertTrue(coordinator.panelDialogs.isPresented)
         XCTAssertNil(parent.attachedSheet)
         XCTAssertNil(importer.sheetParent)
         XCTAssertFalse(parent.childWindows?.contains(importer) == true)
+        XCTAssertFalse(coordinator.presentOpenPanel(NSOpenPanel()) { _ in })
+
+        panelCompletion?(.cancel)
+        await Task.yield()
+
+        XCTAssertFalse(coordinator.panelDialogs.isPresented)
+        XCTAssertNil(importedURLs)
+    }
+
+    @MainActor
+    func testHidingPanelCancelsOwnedOpenPanel() throws {
+        let defaultsName = "Snip SnapOpenPanelHideTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let parent = NSWindow()
+        let importer = StandaloneFileImporter.makePanel()
+        var didCancel = false
+        var didComplete = false
+        let coordinator = AppCoordinator(
+            model: AppModel(
+                library: try JSONSnipLibrary(fileURL: storeURL()),
+                defaults: defaults
+            ),
+            shortcutSettings: ShortcutSettings(defaults: defaults),
+            isAccessibilityTrusted: { false },
+            beginOpenPanel: { _, _ in },
+            cancelOpenPanel: { panel in
+                XCTAssertTrue(panel === importer)
+                didCancel = true
+            }
+        )
+        coordinator.attachPanelWindow(parent)
+        parent.orderFront(nil)
+        defer { parent.orderOut(nil) }
+        coordinator.presentOpenPanel(importer) { urls in
+            XCTAssertNil(urls)
+            didComplete = true
+        }
+
+        coordinator.hidePanel(restoringPreviousApplication: false)
+
+        XCTAssertTrue(didCancel)
+        XCTAssertTrue(didComplete)
+        XCTAssertFalse(coordinator.panelDialogs.isPresented)
+        XCTAssertFalse(parent.isVisible)
     }
 
     @MainActor

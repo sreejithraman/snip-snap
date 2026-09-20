@@ -652,7 +652,7 @@ private struct SnipCommands: Commands {
                 .disabled(!isAvailable(.delete))
             Divider()
             Button(String(localized: "Import backup…")) {
-                model?.beginBackupImport()
+                beginBackupImport()
             }
             .disabled(model == nil || panelDialogs.isPresented)
             Button("Export backup…") {
@@ -672,6 +672,22 @@ private struct SnipCommands: Commands {
     private func perform(_ command: SnipCommand) {
         guard let model else { return }
         SnipCommandDispatcher(model: model).perform(command)
+    }
+
+    private func beginBackupImport() {
+        guard let model else { return }
+        let panel = NSOpenPanel()
+        panel.title = String(localized: "Import backup")
+        panel.prompt = String(localized: "Review backup")
+        panel.message = String(localized: "Choose a backup folder that includes attachments, or a JSON file without attachments.")
+        panel.allowedContentTypes = [.folder, .json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        coordinator.presentOpenPanel(panel) { urls in
+            guard let url = urls?.first else { return }
+            Task { @MainActor in await model.previewBackupImport(from: url) }
+        }
     }
 
     private func exportJSONBackup(from model: AppModel) {

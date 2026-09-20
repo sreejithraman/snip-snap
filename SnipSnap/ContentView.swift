@@ -309,39 +309,31 @@ struct ContentView: View {
 
     private func presentStandaloneFileImporter() {
         showingFileImporter = false
+        guard let target = fileImportTarget else { return }
         let panel = StandaloneFileImporter.makePanel()
-        panel.begin { response in
-            Task { @MainActor in
-                guard response == .OK else {
-                    fileImportTarget = nil
-                    return
-                }
-                handleFileImport(.success(panel.urls))
-            }
-        }
-    }
-
-    private func handleFileImport(_ result: Result<[URL], Error>) {
-        switch result {
-        case .success(let urls):
-            switch fileImportTarget {
-            case .edit(let snipID) where snipID == model.editingID:
-                pendingEditAttachmentImport = PendingEditAttachmentImport(
-                    snipID: snipID,
-                    urls: urls
-                )
-            case .composer(let listID):
-                model.addDraftAttachments(urls, to: listID)
-                cacheComposerDraft(for: listID)
-            case .edit, .none:
-                break
-            }
-        case .failure(let error):
-            if (error as NSError).code != NSUserCancelledError {
-                model.presentError(error)
-            }
+        guard coordinator.presentOpenPanel(panel, completion: { urls in
+            guard let urls else { return }
+            handleFileImport(urls, target: target)
+        }) else {
+            fileImportTarget = nil
+            return
         }
         fileImportTarget = nil
+    }
+
+    private func handleFileImport(_ urls: [URL], target: FileImportTarget) {
+        switch target {
+        case .edit(let snipID) where snipID == model.editingID:
+            pendingEditAttachmentImport = PendingEditAttachmentImport(
+                snipID: snipID,
+                urls: urls
+            )
+        case .composer(let listID):
+            model.addDraftAttachments(urls, to: listID)
+            cacheComposerDraft(for: listID)
+        case .edit:
+            break
+        }
     }
 
     private var mainPanel: some View {
