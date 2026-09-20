@@ -90,21 +90,15 @@ extension SwiftDataSyncModePersistence {
     let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
     try await promoteAcceptedFullRetryBases(transition: transition, candidate: candidate)
     try crashHook(.afterRetryBasePromotion)
-    let accepted = try await acceptedSnipIDs(
+    let settledState = try await settledSeedState(
       transition: transition,
       candidate: candidate,
       settlement: settlement
     )
-    let seedIDs = Set(transition.seedProvenance.map(\.candidateSnipID))
-    let settled = try await settledSeedProvenance(
-      transition: transition,
-      accepted: accepted,
-      settlement: settlement
-    )
     var next = manifest
     next.transition?.supersededApprovedSnipIDs.formUnion(transition.approvedSnipIDs)
-    next.transition?.serverAcceptedSeedSnipIDs.formUnion(accepted.intersection(seedIDs))
-    next.transition?.seedProvenance = settled
+    next.transition?.serverAcceptedSeedSnipIDs.formUnion(settledState.acceptedSeedIDs)
+    next.transition?.seedProvenance = settledState.provenance
     next.transition?.pendingSettlementSnipIDs = []
     next.transition?.sendAttempt = nil
     next.transition?.captureAcceptedServerProvenance = false
@@ -172,23 +166,18 @@ extension SwiftDataSyncModePersistence {
     else { return }
     let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
     try await promoteAcceptedFullRetryBases(transition: transition, candidate: candidate)
-    let accepted = try await acceptedSnipIDs(
+    let settledState = try await settledSeedState(
       transition: transition,
       candidate: candidate,
       settlement: settlement
     )
-    let seedIDs = Set(transition.seedProvenance.map(\.candidateSnipID))
-    let settled = try await settledSeedProvenance(
-      transition: transition,
-      accepted: accepted,
-      settlement: settlement
-    )
     var next = manifest
-    next.transition?.serverAcceptedSeedSnipIDs.formUnion(accepted.intersection(seedIDs))
-    next.transition?.seedProvenance = settled
+    next.transition?.serverAcceptedSeedSnipIDs.formUnion(settledState.acceptedSeedIDs)
+    next.transition?.seedProvenance = settledState.provenance
     next.transition?.pendingSettlementSnipIDs = []
     next.transition?.sendAttempt = nil
     next.transition?.captureAcceptedServerProvenance = false
+    try crashHook(.beforeRetryFetchSettlementCommit)
     try commit(next)
   }
 
@@ -203,6 +192,29 @@ extension SwiftDataSyncModePersistence {
     var next = manifest
     next.transition?.phase = to
     try commit(next)
+  }
+
+  private func settledSeedState(
+    transition: SyncModeTransition,
+    candidate: SwiftDataSnipLibrary,
+    settlement: SyncModeSeedSettlementProof?
+  ) async throws -> (
+    acceptedSeedIDs: Set<UUID>,
+    provenance: [SyncModeSeedProvenance]
+  ) {
+    let accepted = try await acceptedSnipIDs(
+      transition: transition,
+      candidate: candidate,
+      settlement: settlement
+    )
+    return (
+      accepted.intersection(transition.seedProvenance.map(\.candidateSnipID)),
+      try await settledSeedProvenance(
+        transition: transition,
+        accepted: accepted,
+        settlement: settlement
+      )
+    )
   }
 
   private func settledSeedProvenance(

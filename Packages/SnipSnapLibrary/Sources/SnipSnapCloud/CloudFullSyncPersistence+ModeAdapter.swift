@@ -87,10 +87,6 @@ extension CloudFullSyncPersistence {
     return SyncModeSeedSettlementProof(namespace: actual, values: values)
   }
 
-  package func prepareModeRetry(snipIDs: Set<UUID>) async throws {
-    _ = snipIDs
-  }
-
   package func modeSendAttempt(
     for outbound: CloudOutboundBatch,
     namespace expectedNamespace: ICloudSyncNamespaceBinding
