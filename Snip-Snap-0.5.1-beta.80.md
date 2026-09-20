@@ -1,0 +1,9 @@
+# Snip Snap 0.5.1 Beta 80
+
+## Mac
+
+- Fix iCloud sync retry recovery
+
+## iOS
+
+- Fix iCloud sync retry recovery
