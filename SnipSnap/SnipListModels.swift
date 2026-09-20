@@ -10,6 +10,7 @@ extension UTType {
 
 struct SnipDragPayload: Codable, Equatable, Sendable, Transferable {
     let ids: [UUID]
+    let versions: [UUID: Date]
     let text: String
     let attachmentIDs: [UUID]
     let attachmentURLs: [URL]
@@ -18,6 +19,7 @@ struct SnipDragPayload: Codable, Equatable, Sendable, Transferable {
 
     init(
         ids: [UUID],
+        versions: [UUID: Date] = [:],
         text: String,
         attachmentIDs: [UUID] = [],
         attachmentURLs: [URL] = [],
@@ -25,6 +27,7 @@ struct SnipDragPayload: Codable, Equatable, Sendable, Transferable {
         previewIsDone: Bool = false
     ) {
         self.ids = ids
+        self.versions = versions
         self.text = text
         self.attachmentIDs = attachmentIDs
         self.attachmentURLs = attachmentURLs
@@ -52,6 +55,7 @@ struct SnipDragPayload: Codable, Equatable, Sendable, Transferable {
         }
         return SnipDragPayload(
             ids: snips.map(\.id),
+            versions: Dictionary(uniqueKeysWithValues: snips.map { ($0.id, $0.updatedAt) }),
             text: snips.count == 1
                 ? snips[0].content
                 : SnipFormatter.formatInGivenOrder(snips: snips),

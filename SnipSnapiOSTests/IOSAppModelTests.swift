@@ -1822,13 +1822,19 @@ final class IOSAppModelTests: XCTestCase {
             lists: [.inbox],
             attachmentURLs: [availableID: fileURL]
         )
-        let model = IOSAppModel(library: ModelTestLibrary(), initialSnapshot: snapshot)
+        let model = IOSAppModel(
+            library: ModelTestLibrary(
+                snips: [mixed, missing],
+                attachmentURLs: [availableID: fileURL]
+            ),
+            initialSnapshot: snapshot
+        )
         let pasteboard = RecordingPasteboard()
         let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
 
         await coordinator.copy(snips: [mixed], model: model)
         XCTAssertEqual(pasteboard.writes, [[.text("Text"), .file(fileURL)]])
-        coordinator.copyText(snips: [mixed], model: model)
+        await coordinator.copyText(snips: [mixed], model: model)
         XCTAssertEqual(pasteboard.writes.last, [.text("Text")])
         await coordinator.copyAttachments(snips: [mixed], model: model)
         XCTAssertEqual(pasteboard.writes.last, [.file(fileURL)])
@@ -1839,9 +1845,243 @@ final class IOSAppModelTests: XCTestCase {
         await coordinator.copy(snips: [missing], model: model)
         XCTAssertEqual(pasteboard.writes.count, writeCount)
         XCTAssertEqual(coordinator.unavailableFilesNotice?.payload.unavailableFileNames, ["missing.txt"])
-        coordinator.copyTextFromNotice(model: model)
+        await coordinator.copyTextFromNotice(model: model)
         XCTAssertEqual(pasteboard.writes.last, [.text("Safe text")])
         XCTAssertNil(coordinator.unavailableFilesNotice)
+    }
+
+    func testCopyChecksSnipAndCheckingCopiesSnip() async throws {
+        let first = Snip(content: "Copy checks", origin: .quickEntry)
+        let second = Snip(content: "Check copies", origin: .quickEntry)
+        let feedback = makeFeedback()
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: [first, second]),
+            haptics: feedback
+        )
+        await model.load()
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+
+        let copied = await coordinator.copy(snips: [first], model: model)
+        XCTAssertTrue(copied)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == first.id }).isDone)
+        XCTAssertEqual(feedback.event?.kinds, [.copied, .markedDone])
+
+        let checked = await coordinator.toggleDone(snip: second, model: model)
+        XCTAssertTrue(checked)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == second.id }).isDone)
+        XCTAssertEqual(pasteboard.writes.last, [.text("Check copies")])
+        XCTAssertEqual(feedback.event?.kinds, [.copied, .markedDone])
+    }
+
+    func testMarkDoneCopiesOnlyCurrentUnfinishedUnpinnedSnips() async throws {
+        let unfinished = Snip(content: "Unfinished", origin: .quickEntry)
+        let done = Snip(content: "Done", origin: .quickEntry, isDone: true)
+        let pinned = Snip(content: "Pinned", origin: .quickEntry, pinnedAt: Date())
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [unfinished, done, pinned]))
+        await model.load()
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+
+        let marked = await coordinator.markDone(
+            snips: [unfinished, done, pinned],
+            model: model
+        )
+
+        XCTAssertTrue(marked)
+        XCTAssertEqual(pasteboard.writes, [[.text("Unfinished")]])
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == unfinished.id }).isDone)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == done.id }).isDone)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == pinned.id }).isPinned)
+    }
+
+    func testToggleDoneUsesCurrentStateInsteadOfViewSnapshot() async throws {
+        let original = Snip(content: "Current state", origin: .quickEntry)
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [original]))
+        await model.load()
+        let initiallyToggled = await model.toggleDone(id: original.id)
+        XCTAssertTrue(initiallyToggled)
+        let staleDone = try XCTUnwrap(model.snips.first { $0.id == original.id })
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+
+        let reopened = await coordinator.toggleDone(snip: original, model: model)
+        XCTAssertTrue(reopened)
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == original.id }).isDone)
+        XCTAssertTrue(pasteboard.writes.isEmpty)
+
+        let checked = await coordinator.toggleDone(snip: staleDone, model: model)
+        XCTAssertTrue(checked)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == original.id }).isDone)
+        XCTAssertEqual(pasteboard.writes, [[.text("Current state")]])
+    }
+
+    func testCopyUsesCurrentContentInsteadOfViewSnapshot() async throws {
+        let original = Snip(content: "Old content", origin: .quickEntry)
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [original]))
+        await model.load()
+        let edited = await model.editSnip(original, content: "Current content")
+        XCTAssertTrue(edited)
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+
+        let copied = await coordinator.copyText(snips: [original], model: model)
+
+        XCTAssertTrue(copied)
+        XCTAssertEqual(pasteboard.writes, [[.text("Current content")]])
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == original.id }).isDone)
+    }
+
+    func testNewerCopyWinsWhileOlderAttachmentPreparationWaits() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("Attachment".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let attachment = try testAttachment(id: UUID(), fileName: "note.txt")
+        let older = Snip(content: "Older copy", origin: .quickEntry, attachments: [attachment])
+        let newer = Snip(content: "Newer copy", origin: .quickEntry)
+        let handler = IOSCloudSyncHandlerProbe(states: [attachment.id: .waiting])
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: [older, newer]),
+            cloudSyncHandler: handler
+        )
+        await model.load()
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+        let olderCopy = Task { await coordinator.copy(snips: [older], model: model) }
+        await handler.waitUntilPrepareStarts()
+
+        let newerCopied = await coordinator.copy(snips: [newer], model: model)
+        await handler.finishPrepare(with: .success(file))
+        let olderCopied = await olderCopy.value
+
+        XCTAssertTrue(newerCopied)
+        XCTAssertFalse(olderCopied)
+        XCTAssertEqual(pasteboard.writes, [[.text("Newer copy")]])
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == older.id }).isDone)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == newer.id }).isDone)
+        XCTAssertNil(coordinator.unavailableFilesNotice)
+    }
+
+    func testNewerCopyPreventsOlderPostWriteCompletionWhileLibraryIsLocked() async throws {
+        let older = Snip(content: "Older copy", origin: .quickEntry)
+        let newer = Snip(content: "Newer copy", origin: .quickEntry, pinnedAt: Date())
+        let blocker = Snip(content: "Hold the lock", origin: .quickEntry)
+        let library = ModelTestLibrary(
+            snips: [older, newer, blocker],
+            suspendsFirstCommand: true
+        )
+        let model = IOSAppModel(library: library)
+        await model.load()
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+        let blockerTask = Task {
+            await model.editSnip(blocker, content: "Lock held")
+        }
+        await library.waitUntilFirstCommandStarts()
+        let olderWrite = expectation(description: "Older copy writes to the pasteboard")
+        pasteboard.onNextWrite = {
+            olderWrite.fulfill()
+        }
+        let olderCopy = Task {
+            await coordinator.copyText(snips: [older], model: model)
+        }
+        await fulfillment(of: [olderWrite], timeout: 2)
+        XCTAssertEqual(pasteboard.writes, [[.text("Older copy")]])
+
+        let newerCopied = await coordinator.copyText(snips: [newer], model: model)
+        await library.resumeFirstCommand()
+        let blockerSaved = await blockerTask.value
+        let olderCopied = await olderCopy.value
+
+        XCTAssertTrue(newerCopied)
+        XCTAssertTrue(blockerSaved)
+        XCTAssertTrue(olderCopied)
+        XCTAssertEqual(pasteboard.writes, [[.text("Older copy")], [.text("Newer copy")]])
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == older.id }).isDone)
+    }
+
+    func testClipboardHistoryCopyWinsWhileOlderSnipCopyWaits() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("Attachment".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let attachment = try testAttachment(id: UUID(), fileName: "note.txt")
+        let snip = Snip(content: "Older snip copy", origin: .quickEntry, attachments: [attachment])
+        let handler = IOSCloudSyncHandlerProbe(states: [attachment.id: .waiting])
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: [snip]),
+            cloudSyncHandler: handler
+        )
+        await model.load()
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+        let olderCopy = Task { await coordinator.copy(snips: [snip], model: model) }
+        await handler.waitUntilPrepareStarts()
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapClipboardRace-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let preferences = UserDefaults(suiteName: UUID().uuidString)!
+        let clipboard = IOSClipboardModel(
+            rootURL: root,
+            settings: SyncedContentSettingsModel(mode: .localOnly),
+            preferences: preferences
+        )
+        let entry = ClipboardEntry(items: [ClipboardPayloadItem(representations: [
+            ClipboardRepresentation(type: UTType.utf8PlainText.identifier, data: Data("Newer history copy".utf8)),
+        ])])
+        coordinator.copyClipboardEntry(entry, clipboard: clipboard)
+        await handler.finishPrepare(with: .success(file))
+        let copied = await olderCopy.value
+
+        XCTAssertFalse(copied)
+        XCTAssertTrue(pasteboard.writes.isEmpty)
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == snip.id }).isDone)
+    }
+
+    func testCopyTextFromNoticeDoesNotFinishANewerEdit() async throws {
+        let attachment = try testAttachment(id: UUID(), fileName: "missing.txt")
+        let original = Snip(content: "Original text", origin: .quickEntry, attachments: [attachment])
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [original]))
+        await model.load()
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+        let initialCopy = await coordinator.copy(snips: [original], model: model)
+        XCTAssertFalse(initialCopy)
+
+        let edited = await model.editSnip(original, content: "Edited text")
+        XCTAssertTrue(edited)
+        let copiedText = await coordinator.copyTextFromNotice(model: model)
+
+        XCTAssertTrue(copiedText)
+        XCTAssertEqual(pasteboard.writes, [[.text("Original text")]])
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == original.id }).isDone)
+    }
+
+    func testCopyDoesNotUndoANewerReopenWhileAttachmentPreparationWaits() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("Attachment".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let attachment = try testAttachment(id: UUID(), fileName: "note.txt")
+        let snip = Snip(content: "Copy me", origin: .quickEntry, attachments: [attachment])
+        let handler = IOSCloudSyncHandlerProbe(states: [attachment.id: .waiting])
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: [snip]),
+            cloudSyncHandler: handler
+        )
+        await model.load()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: RecordingPasteboard())
+        let copy = Task { await coordinator.copy(snips: [snip], model: model) }
+        await handler.waitUntilPrepareStarts()
+
+        let checked = await model.toggleDone(id: snip.id)
+        let reopened = await model.toggleDone(id: snip.id)
+        await handler.finishPrepare(with: .success(file))
+        let copied = await copy.value
+
+        XCTAssertTrue(checked)
+        XCTAssertTrue(reopened)
+        XCTAssertTrue(copied)
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == snip.id }).isDone)
     }
 
     func testCopyAndCopyAttachmentsPrepareEachUniqueAttachmentWithCopyIntent() async throws {
@@ -1862,8 +2102,7 @@ final class IOSAppModelTests: XCTestCase {
             results: [.success(preparedURL), .success(preparedAttachmentsURL)]
         )
         let model = IOSAppModel(
-            library: ModelTestLibrary(),
-            initialSnapshot: SnipLibrarySnapshot(snips: [first, second], lists: [.inbox]),
+            library: ModelTestLibrary(snips: [first, second]),
             cloudSyncHandler: handler
         )
         await model.load()
@@ -1911,7 +2150,7 @@ final class IOSAppModelTests: XCTestCase {
             states: [firstID: .waiting, secondID: .waiting],
             results: [.failure(SnipLibraryError.attachmentCopyFailed), .success(secondURL)]
         )
-        let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [snip]), cloudSyncHandler: handler)
         await model.load()
         let coordinator = IOSCopyShareCoordinator(pasteboard: RecordingPasteboard())
 
@@ -1939,7 +2178,7 @@ final class IOSAppModelTests: XCTestCase {
             states: [attachmentID: .waiting],
             results: [.failure(SnipLibraryError.attachmentCopyFailed), .success(preparedURL)]
         )
-        let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [snip]), cloudSyncHandler: handler)
         await model.load()
         let pasteboard = RecordingPasteboard()
         let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
@@ -1958,6 +2197,32 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(calls.map(\.use), [.copy, .copy])
     }
 
+    func testCopyAttachmentsFailureShowsTheTextFallbackNotice() async throws {
+        let attachment = try testAttachment(id: UUID(), fileName: "missing.txt")
+        let snip = Snip(content: "Text remains", origin: .quickEntry, attachments: [attachment])
+        let handler = IOSCopyShareActionHandlerProbe(
+            states: [attachment.id: .waiting],
+            results: [.failure(SnipLibraryError.attachmentCopyFailed)]
+        )
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: [snip]),
+            cloudSyncHandler: handler
+        )
+        await model.load()
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+
+        let copied = await coordinator.copyAttachments(snips: [snip], model: model)
+
+        XCTAssertFalse(copied)
+        XCTAssertTrue(pasteboard.writes.isEmpty)
+        XCTAssertEqual(
+            coordinator.unavailableFilesNotice?.payload.unavailableFileNames,
+            ["missing.txt"]
+        )
+        XCTAssertFalse(try XCTUnwrap(model.snips.first).isDone)
+    }
+
     func testCopyTextNeverPreparesAttachments() async throws {
         let attachmentID = UUID()
         let attachment = try testAttachment(id: attachmentID, fileName: "remote.txt")
@@ -1966,12 +2231,12 @@ final class IOSAppModelTests: XCTestCase {
             states: [attachmentID: .waiting],
             results: []
         )
-        let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [snip]), cloudSyncHandler: handler)
         await model.load()
         let pasteboard = RecordingPasteboard()
         let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
 
-        coordinator.copyText(snips: [snip], model: model)
+        await coordinator.copyText(snips: [snip], model: model)
 
         XCTAssertEqual(pasteboard.writes, [[.text("Text only")]])
         let calls = await handler.prepareCalls()
@@ -2004,7 +2269,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertTrue(calls.isEmpty)
     }
 
-    func testCopyReusesVerifiedSyncedCacheWithoutCallingCloudHandlerAgain() async throws {
+    func testRepeatedCopyUsesTheVerifiedSyncedFile() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SnipSnapCopyVerifiedCache-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -2013,12 +2278,17 @@ final class IOSAppModelTests: XCTestCase {
         try Data("Cached".utf8).write(to: cachedURL)
         let attachmentID = UUID()
         let attachment = try testAttachment(id: attachmentID, fileName: "cached.txt")
-        let snip = Snip(content: "Cached", origin: .quickEntry, attachments: [attachment])
+        let snip = Snip(
+            content: "Cached",
+            origin: .quickEntry,
+            pinnedAt: Date(),
+            attachments: [attachment]
+        )
         let handler = IOSCopyShareActionHandlerProbe(
             states: [attachmentID: .available],
             results: [.success(cachedURL)]
         )
-        let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [snip]), cloudSyncHandler: handler)
         await model.load()
         let pasteboard = RecordingPasteboard()
         let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
@@ -2029,6 +2299,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(pasteboard.writes.count, 2)
         let calls = await handler.prepareCalls()
         XCTAssertEqual(calls.count, 1)
+        XCTAssertTrue(calls.allSatisfy { $0.id == attachmentID && $0.use == .copy })
     }
 
     func testPasteboardProviderLoadsStagedBytesAfterLibrarySourceIsPruned() async throws {
@@ -2632,6 +2903,15 @@ final class IOSAppModelTests: XCTestCase {
             userActionsRebinder: assembly.userActionsRebinder
         )
     }
+
+    private func makeFeedback() -> IOSHapticFeedback {
+        let suite = "copy-check-test-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let feedback = IOSHapticFeedback(defaults: defaults, player: RecordingHapticPlayer())
+        feedback.isActive = true
+        return feedback
+    }
 }
 
 @MainActor
@@ -2715,14 +2995,15 @@ final class IOSHapticFeedbackTests: XCTestCase {
 
     func testRepeatedCopyWorksWhileUndoToastIsVisibleAndReportsWriteFailures() async throws {
         let feedback = makeFeedback()
-        let snip = Snip(content: "Copy me", origin: .quickEntry)
+        let snip = Snip(content: "Copy me", origin: .quickEntry, pinnedAt: Date())
         let model = IOSAppModel(library: ModelTestLibrary(snips: [snip]), haptics: feedback)
+        await model.load()
         let undo = AppToast.deleted(count: 1, id: UUID())
         model.presentToast(undo)
         let pasteboard = RecordingPasteboard()
         let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
 
-        coordinator.copyText(snips: [snip], model: model)
+        await coordinator.copyText(snips: [snip], model: model)
         let first = try XCTUnwrap(feedback.event)
         XCTAssertEqual(first.kind, .copied)
         await coordinator.copy(snips: [snip], model: model)
@@ -2731,20 +3012,21 @@ final class IOSHapticFeedbackTests: XCTestCase {
         XCTAssertEqual(model.toast?.id, undo.id)
 
         pasteboard.succeeds = false
-        coordinator.copyText(snips: [snip], model: model)
+        await coordinator.copyText(snips: [snip], model: model)
         let failure = try XCTUnwrap(feedback.event)
         XCTAssertEqual(failure.kind, .error)
         XCTAssertNotNil(coordinator.errorMessage)
-        coordinator.copyText(snips: [snip], model: model)
+        await coordinator.copyText(snips: [snip], model: model)
         XCTAssertEqual(feedback.event?.kind, .error)
         XCTAssertNotEqual(feedback.event?.id, failure.id)
     }
 
     func testUnavailableCopyWarnsAndCancelDoesNotEmitCompletion() async throws {
         let feedback = makeFeedback()
-        var snip = Snip(content: "Text remains", origin: .quickEntry)
+        var snip = Snip(content: "Text remains", origin: .quickEntry, pinnedAt: Date())
         snip.attachments = [try testAttachment(id: UUID(), fileName: "missing.txt")]
         let model = IOSAppModel(library: ModelTestLibrary(snips: [snip]), haptics: feedback)
+        await model.load()
         let coordinator = IOSCopyShareCoordinator(pasteboard: RecordingPasteboard())
         await coordinator.copy(snips: [snip], model: model)
         XCTAssertNotNil(coordinator.unavailableFilesNotice)
@@ -2753,7 +3035,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         coordinator.cancelUnavailableFilesNotice()
         XCTAssertEqual(feedback.event, warning)
         await coordinator.copy(snips: [snip], model: model)
-        coordinator.copyTextFromNotice(model: model)
+        await coordinator.copyTextFromNotice(model: model)
         XCTAssertEqual(feedback.event?.kind, .copied)
     }
 
@@ -2762,6 +3044,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         var snip = Snip(content: "Share me", origin: .quickEntry)
         snip.attachments = [try testAttachment(id: UUID(), fileName: "missing.txt")]
         let model = IOSAppModel(library: ModelTestLibrary(snips: [snip]), haptics: feedback)
+        await model.load()
         let coordinator = IOSCopyShareCoordinator(pasteboard: RecordingPasteboard())
         let pending = feedback.beginInteraction()
 
@@ -2824,12 +3107,14 @@ final class IOSHapticFeedbackTests: XCTestCase {
 
     func testNewActionSupersedesFeedbackFromAnOlderSave() async throws {
         let feedback = makeFeedback()
-        let library = ModelTestLibrary(suspendsFirstCommand: true)
+        let copiedSnip = Snip(content: "Copy now", origin: .quickEntry, pinnedAt: Date())
+        let library = ModelTestLibrary(snips: [copiedSnip], suspendsFirstCommand: true)
         let model = IOSAppModel(library: library, haptics: feedback)
+        await model.load()
         let save = Task { await model.createSnip(content: "Pending", in: SnipList.inboxID) }
         await library.waitUntilFirstCommandStarts()
         let coordinator = IOSCopyShareCoordinator(pasteboard: RecordingPasteboard())
-        coordinator.copyText(snips: [Snip(content: "Copy now", origin: .quickEntry)], model: model)
+        await coordinator.copyText(snips: [copiedSnip], model: model)
         let copied = try XCTUnwrap(feedback.event)
         XCTAssertEqual(copied.kind, .copied)
 
@@ -2961,7 +3246,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         await model.load()
         let pasteboard = RecordingPasteboard()
         let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
-        coordinator.copyText(snips: [snip], model: model)
+        await coordinator.copyText(snips: [snip], model: model)
         await coordinator.copy(snips: [snip], model: model)
         await coordinator.copyAttachments(snips: [snip], model: model)
         XCTAssertEqual(pasteboard.writes.count, 3)
@@ -3383,9 +3668,13 @@ private actor IOSCopyShareActionHandlerProbe: OptionalCloudSyncHandling {
 private final class RecordingPasteboard: IOSPasteboardWriting {
     private(set) var writes: [[IOSCopyItem]] = []
     var succeeds = true
+    var onNextWrite: (() -> Void)?
 
     func write(_ items: [IOSCopyItem]) -> Bool {
         writes.append(items)
+        let onWrite = onNextWrite
+        onNextWrite = nil
+        onWrite?()
         return succeeds
     }
 }

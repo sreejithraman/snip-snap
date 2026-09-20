@@ -575,7 +575,7 @@ struct SnipListView: View {
             return
         }
         if ClipboardDragPlacement.shouldPlace(outcome: outcome, droppedInList: false) {
-            model.setDoneAfterExternalDrop(ids: payload.ids)
+            model.setDoneAfterExternalDrop(versions: payload.versions)
             let placed = payload.ids.compactMap { id in
                 model.snips.first { $0.id == id }
             }
@@ -689,7 +689,7 @@ struct SnipListView: View {
             onToggleDone: { model.toggleDone(id: snip.id) },
             onCopy: {
                 selectExclusively(snip.id)
-                return await model.placeOnClipboardNow(.snips([snip]))
+                return await model.copySnipsAndMarkDoneNow([snip])
             },
             onChooseFiles: {
                 guard model.editingID == snip.id else { return }
