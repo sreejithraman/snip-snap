@@ -5,6 +5,21 @@ import Sparkle
 import SnipSnapPersistence
 import SwiftUI
 
+@MainActor
+enum BackupImportOpenPanel {
+    static func makePanel() -> NSOpenPanel {
+        let panel = NSOpenPanel()
+        panel.title = String(localized: "Import backup")
+        panel.prompt = String(localized: "Review backup")
+        panel.message = String(localized: "Choose a backup folder that includes attachments, or a JSON file without attachments.")
+        panel.allowedContentTypes = [.folder, .json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        return panel
+    }
+}
+
 private extension ShortcutKeyChord {
     var swiftUIEventModifiers: SwiftUI.EventModifiers {
         var result: SwiftUI.EventModifiers = []
@@ -553,10 +568,11 @@ struct AppleAccountNoticeView: View {
                 .fixedSize(horizontal: false, vertical: true)
             if model.showsResolutionActions {
                 HStack(spacing: 12) {
-                    Button("Keep on this Mac") {
+                    AppPrimaryActionButton {
                         Task { await model.resolve(.keepLocalCopy) }
+                    } label: {
+                        Text("Keep on this Mac")
                     }
-                    .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("keep-account-cache")
                     Button("Remove from this Mac", role: .destructive) {
                         Task { await model.resolve(.remove) }
@@ -616,10 +632,12 @@ extension FocusedValues {
 
 private struct SnipCommands: Commands {
     @FocusedValue(\.snipCommandModel) private var model
+    @ObservedObject private var panelDialogs: PanelDialogPresentationState
     let applicationModel: AppModel
     let coordinator: AppCoordinator
 
     init(applicationModel: AppModel, coordinator: AppCoordinator) {
+        _panelDialogs = ObservedObject(wrappedValue: coordinator.panelDialogs)
         self.applicationModel = applicationModel
         self.coordinator = coordinator
     }
@@ -649,16 +667,18 @@ private struct SnipCommands: Commands {
                 .disabled(!isAvailable(.delete))
             Divider()
             Button(String(localized: "Import backup…")) {
-                model?.beginBackupImport()
+                beginBackupImport()
             }
-            .disabled(model == nil)
+            .disabled(model == nil || panelDialogs.isPresented)
             Button("Export backup…") {
                 exportJSONBackup(from: applicationModel)
             }
+            .disabled(panelDialogs.isPresented)
         }
     }
 
     private func isAvailable(_ command: SnipCommand) -> Bool {
+        guard !panelDialogs.isPresented else { return false }
         guard let model else { return false }
         if command == .toggleDone, model.selectedSnips.contains(where: \.isPinned) { return false }
         return command.isAvailable(for: model.selection.count)
@@ -667,6 +687,15 @@ private struct SnipCommands: Commands {
     private func perform(_ command: SnipCommand) {
         guard let model else { return }
         SnipCommandDispatcher(model: model).perform(command)
+    }
+
+    private func beginBackupImport() {
+        guard let model else { return }
+        let panel = BackupImportOpenPanel.makePanel()
+        coordinator.presentOpenPanel(panel) { urls in
+            guard let url = urls?.first else { return }
+            Task { @MainActor in await model.previewBackupImport(from: url) }
+        }
     }
 
     private func exportJSONBackup(from model: AppModel) {

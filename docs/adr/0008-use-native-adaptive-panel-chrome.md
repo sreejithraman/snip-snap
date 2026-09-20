@@ -10,11 +10,15 @@ Use macOS 26 Liquid Glass for top-level panel controls and navigation. Put nearb
 
 The pinned header and small secondary controls share the `NestedGlassTint` color asset. Its light variant keeps the subtle system tint; its dark variant uses 20% black. The composer uses regular interactive glass, with Send in a separate overlay and glass container inside its visible bounds. This keeps input and Send presses separate.
 
-Send uses the selected list's saved color at the shared glass tint strength, with a softly tinted white arrow. Neutral lists use an inverse arrow based on the view's appearance. Save retains `ActionGlassTint` and its existing label role. Native glass supplies the material and edge; do not add a solid plate or custom stroke. This list-color decision replaces the earlier shared neutral treatment for Send and Save.
+Send uses the selected list's saved color at the shared glass tint strength, with a softly tinted white arrow. Neutral lists use an inverse arrow based on the view's appearance. Primary actions use the paired monochrome action fill and label on both platforms. Never use `Color.primary` as an action tint. It is a text color and turns black in light mode. Native button styles set the pressed and disabled states. This list-color decision replaces the earlier shared neutral treatment for Send and Save.
+
+Share the primary-action role across platforms, not its exact shape. Mac uses the native bordered-prominent style. iOS uses native prominent glass for controls that float over content. Secondary, cancel, and destructive buttons keep their native roles and lower weight. Use no more than one main action in a control group.
 
 Use native button styles by default. The compact Mac editor actions are an exception: their shared glass treatment fixes their size and keeps idle controls visible. Send and Save use a 36 × 24 capsule; secondary editor controls use 24-point circles. A shared ButtonStyle keeps the glass inside the button label and supplies explicit idle colors. The button stays disabled when unavailable. Retain native Button actions, keyboard shortcuts, and accessibility labels.
 
-Keep resizing on the visible glass edge because the window frame includes a 24-point effect gutter. A five-point AppKit overlay owns the edge drag. Use always-active enter and exit tracking for idle frame-resize cursors, then hold the same cursor during a drag. Keep the panel's size limits on `NSWindow`.
+Keep resizing on the visible glass edge because the window frame includes a 24-point effect gutter. A five-point AppKit overlay handles the edge drag. Use always-active enter and exit tracking for idle frame-resize cursors, then hold the same cursor during a drag. Keep the panel's size limits on `NSWindow`.
+
+Do not attach sheets, alerts, or confirmation dialogs to the clear floating panel. AppKit dims the full rectangular parent window during a sheet, which reveals the clear effect gutter as a gray box. Show form work and short choices in a separate, opaque child panel centered over the floating panel. Normal opaque windows can keep system alerts. Block the parent while the child is open. Keep Escape on cancel or back actions. Use Return only for a safe main action.
 
 ## Consequences
 

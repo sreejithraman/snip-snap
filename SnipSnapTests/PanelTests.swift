@@ -160,23 +160,31 @@ final class PanelTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testProminentControlThemeHasReadableContrast() throws {
-        for appearanceName in [NSAppearance.Name.aqua, .darkAqua] {
+    func testControlTintUsesTheMonochromeActionPair() throws {
+        for (appearanceName, fillWhite, labelWhite) in [
+            (NSAppearance.Name.aqua, 0.16, 1.0),
+            (.darkAqua, 0.92, 0.10),
+        ] {
             let appearance = try XCTUnwrap(NSAppearance(named: appearanceName))
-            var resolvedFill: NSColor?
+            var resolvedTint: NSColor?
             var resolvedLabel: NSColor?
             appearance.performAsCurrentDrawingAppearance {
-                resolvedFill = NSColor(SnipSnapTheme.controlTint)
-                    .usingColorSpace(.sRGB)
-                resolvedLabel = NSColor(SnipSnapTheme.prominentControlLabel)
-                    .usingColorSpace(.sRGB)
+                resolvedTint = NSColor(SnipSnapTheme.controlTint).usingColorSpace(.sRGB)
+                resolvedLabel = NSColor(SnipSnapTheme.actionLabel).usingColorSpace(.sRGB)
             }
-            let fill = try XCTUnwrap(resolvedFill)
+
+            let tint = try XCTUnwrap(resolvedTint)
             let label = try XCTUnwrap(resolvedLabel)
+            XCTAssertEqual(tint.redComponent, fillWhite, accuracy: 0.001)
+            XCTAssertEqual(tint.greenComponent, fillWhite, accuracy: 0.001)
+            XCTAssertEqual(tint.blueComponent, fillWhite, accuracy: 0.001)
+            XCTAssertEqual(label.redComponent, labelWhite, accuracy: 0.001)
+            XCTAssertEqual(label.greenComponent, labelWhite, accuracy: 0.001)
+            XCTAssertEqual(label.blueComponent, labelWhite, accuracy: 0.001)
             XCTAssertGreaterThanOrEqual(
-                contrastRatio(fill, label),
+                contrastRatio(tint, label),
                 4.5,
-                "Prominent controls need readable label contrast in \(appearanceName.rawValue)."
+                "Action controls need readable label contrast in \(appearanceName.rawValue)."
             )
         }
     }

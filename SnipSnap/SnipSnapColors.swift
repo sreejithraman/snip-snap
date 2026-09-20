@@ -50,8 +50,8 @@ enum SnipSnapColors {
 
     static let compactActionFill = SnipSnapTheme.compactActionFill
     static let nestedGlassTint = Color("NestedGlassTint")
-    static let actionGlassTint = Color("ActionGlassTint")
-    static let actionGlassLabel = Color("InversePrimary")
+    static let actionGlassTint = SnipSnapTheme.actionGlassTint
+    static let actionGlassLabel = SnipSnapTheme.actionGlassLabel
     static let idleActionGlassTint = Color(nsColor: .tertiaryLabelColor)
     static let idleActionLabel = Color(nsColor: .secondaryLabelColor)
     static let attachmentFill = Color.primary.opacity(0.055)

@@ -7,6 +7,7 @@ struct SnipListTabBarView: View {
     private typealias TabSelection = PanelTabPage
 
     @ObservedObject var model: AppModel
+    let coordinator: AppCoordinator
     let dragSessionController: PanelDragSessionController
     let createList: () -> Void
     @State private var dropTargetTab: TabSelection?
@@ -39,21 +40,24 @@ struct SnipListTabBarView: View {
             )
         }
         .onDisappear { hoverOpenTask?.cancel() }
-        .sheet(item: $editingList) { list in
-            SnipListEditSheet(model: model, list: list)
-        }
-        .confirmationDialog(
-            String(localized: "Delete \(listPendingDeletion?.name ?? String(localized: "list"))?"),
-            isPresented: listDeletionPresented
-        ) {
-            Button("Delete List", role: .destructive) {
-                guard let list = listPendingDeletion else { return }
-                listPendingDeletion = nil
-                Task { await model.deleteList(list) }
+        .onChange(of: editingList?.id) { previousListID, listID in
+            guard let listID,
+                  let list = model.lists.first(where: { $0.id == listID }) else {
+                if let previousListID {
+                    coordinator.dismissPanelDialog(id: .editList(previousListID))
+                }
+                return
             }
-            Button("Cancel", role: .cancel) { listPendingDeletion = nil }
-        } message: {
-            Text("The snips in this list will move to Inbox.")
+            coordinator.presentPanelDialog(id: .editList(listID), title: String(localized: "Edit list")) {
+                editingList = nil
+            } content: {
+                SnipListEditSheet(model: model, list: list) {
+                    editingList = nil
+                }
+            }
+        }
+        .onChange(of: listPendingDeletion?.id) { previousListID, listID in
+            presentDeleteListDialog(listID: listID, previousListID: previousListID)
         }
     }
 
@@ -225,11 +229,33 @@ struct SnipListTabBarView: View {
         hoverOpenTask = nil
     }
 
-    private var listDeletionPresented: Binding<Bool> {
-        Binding(
-            get: { listPendingDeletion != nil },
-            set: { if !$0 { listPendingDeletion = nil } }
-        )
+    private func presentDeleteListDialog(listID: UUID?, previousListID: UUID?) {
+        guard let listID,
+              let list = listPendingDeletion,
+              list.id == listID else {
+            if let previousListID {
+                coordinator.dismissPanelDialog(id: .deleteList(previousListID))
+            }
+            return
+        }
+        coordinator.presentPanelDialog(
+            id: .deleteList(listID),
+            title: String(localized: "Delete list")
+        ) {
+            listPendingDeletion = nil
+        } content: {
+            PanelConfirmationDialog(
+                title: String(localized: "Delete \(list.name)?"),
+                message: String(localized: "The snips in this list will move to Inbox."),
+                confirmTitle: String(localized: "Delete List"),
+                isDestructive: true,
+                onConfirm: {
+                    listPendingDeletion = nil
+                    Task { await model.deleteList(list) }
+                },
+                onCancel: { listPendingDeletion = nil }
+            )
+        }
     }
 
     private var tabs: [TabSelection] {

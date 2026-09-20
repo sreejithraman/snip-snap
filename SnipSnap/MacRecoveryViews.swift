@@ -7,8 +7,8 @@ private enum MacRecoveryRoute: Equatable {
 }
 
 struct MacRecoveryReviewSheet: View {
-    @Environment(\.dismiss) private var dismiss
     @ObservedObject var model: AppModel
+    let dismiss: () -> Void
     @State private var route: MacRecoveryRoute?
 
     var body: some View {
@@ -28,6 +28,7 @@ struct MacRecoveryReviewSheet: View {
                     Button(route == nil ? "Done" : "Back") {
                         if route == nil { dismiss() } else { route = nil }
                     }
+                    .keyboardShortcut(.cancelAction)
                 }
             }
         }
@@ -113,7 +114,6 @@ private struct MacRecoveredSnipReview: View {
                             Button("Keep both") { resolve(.keepBoth) }
                             Spacer()
                             Button("Use recovered") { resolve(.useRecovered) }
-                                .buttonStyle(.borderedProminent)
                             Button("Use edited version") {
                                 if let edited { resolve(.editSnip(edited)) }
                             }
@@ -261,7 +261,6 @@ private struct MacRecoveredListReview: View {
                         Button("Keep current") { resolve(.keepCurrent) }
                         Spacer()
                         Button("Use recovered") { resolve(.useRecovered) }
-                            .buttonStyle(.borderedProminent)
                         Button("Use edited version") {
                             if let edited { resolve(.editList(edited)) }
                         }

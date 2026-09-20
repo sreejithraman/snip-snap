@@ -43,8 +43,9 @@ struct AccessibilitySetupCard: View {
 }
 
 struct AccessibilityRepairView: View {
-    @Environment(\.dismiss) private var dismiss
     @ObservedObject var controller: AccessibilityPermissionController
+    let dismiss: () -> Void
+    let performPrimaryAction: () -> Void
 
     var body: some View {
         let presentation = controller.setupCardState.presentation
@@ -69,10 +70,10 @@ struct AccessibilityRepairView: View {
                 Spacer()
                 Button("Not Now") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                AccessibilityActionButton(title: presentation.primaryActionTitle) {
-                    dismiss()
-                    controller.performPrimaryAction()
-                }
+                AccessibilityActionButton(
+                    title: presentation.primaryActionTitle,
+                    action: performPrimaryAction
+                )
                 .keyboardShortcut(.defaultAction)
             }
         }
@@ -91,9 +92,8 @@ private struct AccessibilityActionButton: View {
             Button(title, action: action)
                 .buttonStyle(InactiveAccessibilityActionButtonStyle())
         } else {
-            AppProminentActionButton(action: action) {
+            AppPrimaryActionButton(action: action) {
                 Text(title)
-                    .foregroundStyle(SnipSnapTheme.prominentControlLabel)
             }
         }
     }

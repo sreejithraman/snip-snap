@@ -14,6 +14,18 @@ struct PendingEditAttachmentImport: Identifiable {
     let urls: [URL]
 }
 
+@MainActor
+enum StandaloneFileImporter {
+    static func makePanel() -> NSOpenPanel {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.data]
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        return panel
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var shortcutSettings: ShortcutSettings
@@ -21,6 +33,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     let coordinator: AppCoordinator
     @ObservedObject private var accessibilityPermissions: AccessibilityPermissionController
+    @ObservedObject private var panelDialogs: PanelDialogPresentationState
     @ObservedObject private var fileDropController: PanelFileDropController
     private let accountNoticeModel: AppleAccountNoticeModel?
     private let dragSessionController: PanelDragSessionController
@@ -52,6 +65,7 @@ struct ContentView: View {
         _accessibilityPermissions = ObservedObject(
             wrappedValue: coordinator.accessibilityPermissions
         )
+        _panelDialogs = ObservedObject(wrappedValue: coordinator.panelDialogs)
         self.dragSessionController = dragSessionController
         _fileDropController = ObservedObject(wrappedValue: fileDropController)
     }
@@ -59,6 +73,8 @@ struct ContentView: View {
     var body: some View {
         GlassEffectContainer(spacing: 0) {
             panelShell
+                .disabled(panelDialogs.isPresented)
+                .accessibilityHidden(panelDialogs.isPresented)
         }
         .padding(AppWindowDefaults.effectGutter)
         .overlay(alignment: .topTrailing) {
@@ -74,46 +90,20 @@ struct ContentView: View {
             $model.toast,
             alignment: .top,
             edge: .top,
+            isHidden: panelDialogs.isPresented,
             onAction: model.performToastAction,
             onDismiss: model.dismissToast
         )
         .background {
-            PanelDragRegion()
+            if !panelDialogs.isPresented {
+                PanelDragRegion()
+            }
         }
         .tint(SnipSnapColors.controlTint)
         .preferredColorScheme(model.appearance.colorScheme)
         .quickLookPreview($selectedPreviewURL, in: previewURLs)
-        .background {
-            ClipboardAlertHost(
-                history: model.clipboardHistory,
-                showingClearConfirmation: $showingClearClipboard
-            )
-        }
-        .fileImporter(
-            isPresented: $showingFileImporter,
-            allowedContentTypes: [.data],
-            allowsMultipleSelection: true
-        ) { result in
-            switch result {
-            case .success(let urls):
-                switch fileImportTarget {
-                case .edit(let snipID) where snipID == model.editingID:
-                    pendingEditAttachmentImport = PendingEditAttachmentImport(
-                        snipID: snipID,
-                        urls: urls
-                    )
-                case .composer(let listID):
-                    model.addDraftAttachments(urls, to: listID)
-                    cacheComposerDraft(for: listID)
-                case .edit, .none:
-                    break
-                }
-            case .failure(let error):
-                if (error as NSError).code != NSUserCancelledError {
-                    model.presentError(error)
-                }
-            }
-            fileImportTarget = nil
+        .onChange(of: showingFileImporter) { _, isPresented in
+            if isPresented { presentStandaloneFileImporter() }
         }
         .onReceive(fileDropController.fileDrops) { urls in
             guard model.editingID == nil else { return }
@@ -140,6 +130,7 @@ struct ContentView: View {
 
             SnipListTabBarView(
                 model: model,
+                coordinator: coordinator,
                 dragSessionController: dragSessionController
             ) {
                 newListMovingIDs = []
@@ -188,50 +179,160 @@ struct ContentView: View {
             coordinator.setSnipCommandFocusActive(isActive)
         }
         .onExitCommand(perform: handleCancel)
-        .sheet(
-            isPresented: $showingNewList,
-            onDismiss: {
-                newListMovingIDs = []
-                restoreListFocus()
-            }
-        ) {
+        .onChange(of: showingNewList) { _, isPresented in
+            presentNewListDialog(isPresented: isPresented)
+        }
+        .onChange(of: showingRecoveryReview) { _, isPresented in
+            presentRecoveryDialog(isPresented: isPresented)
+        }
+        .onChange(of: model.pendingImportPreview, initial: true) { _, preview in
+            presentBackupImportDialog(isPresented: preview != nil)
+        }
+        .onChange(of: showingClearClipboard) { _, isPresented in
+            presentClearClipboardDialog(isPresented: isPresented)
+        }
+        .onChange(of: model.clipboardHistory.persistenceError, initial: true) { _, error in
+            guard let error else { return }
+            model.clipboardHistory.dismissPersistenceError()
+            model.presentError(
+                error,
+                title: String(localized: "Couldn’t Save Clipboard History")
+            )
+        }
+        .onChange(of: accessibilityPermissions.isRepairPresented) { _, isPresented in
+            presentAccessibilityDialog(isPresented: isPresented)
+        }
+        .onChange(of: model.presentedError, initial: true) { _, _ in
+            coordinator.updatePresentedError()
+        }
+    }
+
+    private func presentNewListDialog(isPresented: Bool) {
+        guard isPresented else {
+            coordinator.dismissPanelDialog(id: .newList)
+            newListMovingIDs = []
+            restoreListFocus()
+            return
+        }
+        coordinator.presentPanelDialog(id: .newList, title: String(localized: "New list")) {
+            showingNewList = false
+        } content: {
             NewSnipListSheet(
                 model: model,
                 isPresented: $showingNewList,
                 movingIDs: newListMovingIDs
             )
         }
-        .sheet(isPresented: $showingRecoveryReview) {
-            MacRecoveryReviewSheet(model: model)
+    }
+
+    private func presentBackupImportDialog(isPresented: Bool) {
+        guard isPresented else {
+            coordinator.dismissPanelDialog(id: .backupImport)
+            return
         }
-        .confirmationDialog(
-            "Import this backup?",
-            isPresented: Binding(
-                get: { model.pendingImportPreview != nil },
-                set: { if !$0 { model.cancelBackupImport() } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Import backup") {
-                Task { await model.confirmBackupImport() }
-            }
-            Button("Cancel", role: .cancel) { model.cancelBackupImport() }
-        } message: {
-            Text("Merge this backup with your library.\n\n\(model.importPreviewSummary)")
-        }
-        .sheet(isPresented: $accessibilityPermissions.isRepairPresented) {
-            AccessibilityRepairView(controller: accessibilityPermissions)
-        }
-        .alert(
-            model.presentedErrorTitle ?? String(localized: "Something Went Wrong"),
-            isPresented: Binding(
-                get: { model.presentedError != nil },
-                set: { if !$0 { model.dismissPresentedError() } }
+        coordinator.presentPanelDialog(id: .backupImport, title: String(localized: "Import backup")) {
+            model.cancelBackupImport()
+        } content: {
+            PanelConfirmationDialog(
+                title: String(localized: "Import this backup?"),
+                message: String(localized: "Merge this backup with your library.\n\n\(model.importPreviewSummary)"),
+                confirmTitle: String(localized: "Import backup"),
+                onConfirm: { Task { await model.confirmBackupImport() } },
+                onCancel: model.cancelBackupImport
             )
+        }
+    }
+
+    private func presentClearClipboardDialog(isPresented: Bool) {
+        guard isPresented else {
+            coordinator.dismissPanelDialog(id: .clearClipboardHistory)
+            return
+        }
+        let history = model.clipboardHistory
+        coordinator.presentPanelDialog(
+            id: .clearClipboardHistory,
+            title: String(localized: "Clear clipboard history")
         ) {
-            Button("OK") { model.dismissPresentedError() }
-        } message: {
-            Text(model.presentedError ?? "")
+            showingClearClipboard = false
+        } content: {
+            PanelConfirmationDialog(
+                title: String(localized: "Clear unpinned history?"),
+                message: history.syncIsActive
+                    ? String(localized: "This clears unpinned history across synced devices. Pinned items stay.")
+                    : String(localized: "This clears unpinned history on this Mac. Pinned items stay."),
+                confirmTitle: String(localized: "Clear unpinned history"),
+                isDestructive: true,
+                onConfirm: {
+                    showingClearClipboard = false
+                    history.clear()
+                },
+                onCancel: { showingClearClipboard = false }
+            )
+        }
+    }
+
+    private func presentRecoveryDialog(isPresented: Bool) {
+        guard isPresented else {
+            coordinator.dismissPanelDialog(id: .recovery)
+            return
+        }
+        coordinator.presentPanelDialog(id: .recovery, title: String(localized: "Needs attention")) {
+            showingRecoveryReview = false
+        } content: {
+            MacRecoveryReviewSheet(model: model) {
+                showingRecoveryReview = false
+            }
+        }
+    }
+
+    private func presentAccessibilityDialog(isPresented: Bool) {
+        guard isPresented else {
+            coordinator.dismissPanelDialog(id: .accessibility)
+            return
+        }
+        coordinator.presentPanelDialog(
+            id: .accessibility,
+            title: String(localized: "Accessibility Access Needed")
+        ) {
+            accessibilityPermissions.isRepairPresented = false
+        } content: {
+            AccessibilityRepairView(
+                controller: accessibilityPermissions,
+                dismiss: { accessibilityPermissions.isRepairPresented = false },
+                performPrimaryAction: {
+                    coordinator.dismissPanelDialog(id: .accessibility, restoringParent: false)
+                    accessibilityPermissions.performPrimaryAction()
+                }
+            )
+        }
+    }
+
+    private func presentStandaloneFileImporter() {
+        showingFileImporter = false
+        guard let target = fileImportTarget else { return }
+        let panel = StandaloneFileImporter.makePanel()
+        guard coordinator.presentOpenPanel(panel, completion: { urls in
+            guard let urls else { return }
+            handleFileImport(urls, target: target)
+        }) else {
+            fileImportTarget = nil
+            return
+        }
+        fileImportTarget = nil
+    }
+
+    private func handleFileImport(_ urls: [URL], target: FileImportTarget) {
+        switch target {
+        case .edit(let snipID) where snipID == model.editingID:
+            pendingEditAttachmentImport = PendingEditAttachmentImport(
+                snipID: snipID,
+                urls: urls
+            )
+        case .composer(let listID):
+            model.addDraftAttachments(urls, to: listID)
+            cacheComposerDraft(for: listID)
+        case .edit:
+            break
         }
     }
 
@@ -268,7 +369,10 @@ struct ContentView: View {
     }
 
     private var hasSnipCommandFocus: Bool {
-        focusedTarget == .list && model.editingID == nil && controlActiveState == .key
+        !panelDialogs.isPresented
+            && focusedTarget == .list
+            && model.editingID == nil
+            && controlActiveState == .key
     }
 
     private var selectedPage: PanelTabPage {
@@ -276,7 +380,7 @@ struct ContentView: View {
     }
 
     private var hasCommandNumberFocus: Bool {
-        controlActiveState == .key && model.editingID == nil
+        !panelDialogs.isPresented && controlActiveState == .key && model.editingID == nil
     }
 
     private func pickCommandNumber(_ target: CommandNumberTarget) {
@@ -847,6 +951,7 @@ struct ContentView: View {
     }
 
     private func handleCancel() {
+        guard !panelDialogs.isPresented else { return }
         if focusedTarget == .search {
             focusedTarget = .list
         } else if focusedTarget == .inlineEntry {
@@ -865,37 +970,4 @@ struct ContentView: View {
         }
     }
 
-}
-
-private struct ClipboardAlertHost: View {
-    @ObservedObject var history: ClipboardHistory
-    @Binding var showingClearConfirmation: Bool
-
-    var body: some View {
-        Color.clear
-            .frame(width: 0, height: 0)
-            .confirmationDialog(
-                "Clear unpinned history?",
-                isPresented: $showingClearConfirmation
-            ) {
-                Button("Clear unpinned history", role: .destructive) { history.clear() }
-            } message: {
-                Text(history.syncIsActive ? "This clears unpinned history across synced devices. Pinned items stay." : "This clears unpinned history on this Mac. Pinned items stay.")
-            }
-            .alert(
-                "Couldn’t Save Clipboard History",
-                isPresented: persistenceErrorPresented
-            ) {
-                Button("OK") { history.dismissPersistenceError() }
-            } message: {
-                Text(history.persistenceError ?? "")
-            }
-    }
-
-    private var persistenceErrorPresented: Binding<Bool> {
-        Binding(
-            get: { history.persistenceError != nil },
-            set: { if !$0 { history.dismissPersistenceError() } }
-        )
-    }
 }

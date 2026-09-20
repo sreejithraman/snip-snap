@@ -590,10 +590,11 @@ private struct AppleAccountNoticeBanner: View {
             }
             if model.showsResolutionActions {
                 HStack(spacing: 12) {
-                    Button("Keep on this device") {
+                    AppPrimaryActionButton {
                         Task { await model.resolve(.keepLocalCopy) }
+                    } label: {
+                        Text("Keep on this device")
                     }
-                    .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("keep-account-cache")
                     Button("Remove from this device", role: .destructive) {
                         Task { await model.resolve(.remove) }

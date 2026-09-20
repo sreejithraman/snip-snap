@@ -94,7 +94,6 @@ struct RecoveredSnipReviewView: View {
                                 Button("Keep current") { resolve(.keepCurrent) }
                                 Spacer()
                                 Button("Use recovered") { resolve(.useRecovered) }
-                                    .buttonStyle(.borderedProminent)
                             }
                             HStack {
                                 Button("Keep both") { resolve(.keepBoth) }
@@ -262,7 +261,6 @@ struct RecoveredListReviewView: View {
                             Button("Keep current") { resolve(.keepCurrent) }
                             Spacer()
                             Button("Use recovered") { resolve(.useRecovered) }
-                                .buttonStyle(.borderedProminent)
                             Button("Use edited version") {
                                 if let edited { resolve(.editList(edited)) }
                             }

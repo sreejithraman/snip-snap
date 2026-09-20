@@ -3,10 +3,35 @@ import SnipSnapCore
 import ApplicationServices
 import Carbon.HIToolbox
 import Combine
+import SwiftUI
 
 enum PanelFocusRequest {
     case search
     case inlineEntry
+}
+
+enum PanelDialogID: Equatable {
+    case newList
+    case recovery
+    case accessibility
+    case editList(UUID)
+    case backupImport
+    case clearClipboardHistory
+    case deleteList(UUID)
+    case error
+}
+
+@MainActor
+private struct PendingPanelDialog {
+    let id: PanelDialogID
+    let title: String
+    let content: AnyView
+    let onDismiss: () -> Void
+}
+
+@MainActor
+final class PanelDialogPresentationState: ObservableObject {
+    @Published fileprivate(set) var isPresented = false
 }
 
 enum SelectionAttachmentStagingError: Error, Equatable, Sendable {
@@ -15,6 +40,11 @@ enum SelectionAttachmentStagingError: Error, Equatable, Sendable {
 
 @MainActor
 final class AppCoordinator {
+    typealias BeginOpenPanel = (
+        NSOpenPanel,
+        @escaping (NSApplication.ModalResponse) -> Void
+    ) -> Void
+
     private let model: AppModel
     let shortcutSettings: ShortcutSettings
     private let makeHotKeyManager: (@escaping (GlobalHotKeyAction) -> Void) -> any GlobalHotKeyManaging
@@ -24,10 +54,18 @@ final class AppCoordinator {
     let panelFocusRequests = PassthroughSubject<PanelFocusRequest, Never>()
     private var hotKeys: (any GlobalHotKeyManaging)?
     private weak var panelWindow: NSWindow?
+    let panelDialogs = PanelDialogPresentationState()
+    private let panelDialogPresenter = PanelDialogPresenter()
     private var requestedPanelComposerExpansion: CGFloat = 0
     private var appliedPanelComposerExpansion: CGFloat = 0
     private var previousExternalApplication: NSRunningApplication?
     private var applicationActivationObserver: NSObjectProtocol?
+    private let beginOpenPanel: BeginOpenPanel
+    private let cancelOpenPanel: (NSOpenPanel) -> Void
+    private var presentedOpenPanel: NSOpenPanel?
+    private var openPanelCompletion: (([URL]?) -> Void)?
+    private var pendingPanelDialogs: [PendingPanelDialog] = []
+    private var panelUsabilitySubscriptions: Set<AnyCancellable> = []
 
     init(
         model: AppModel,
@@ -51,11 +89,19 @@ final class AppCoordinator {
             )
         },
         accessibilitySetupDefaults: UserDefaults = .standard,
-        accessibilityNotificationCenter: NotificationCenter = .default
+        accessibilityNotificationCenter: NotificationCenter = .default,
+        beginOpenPanel: @escaping BeginOpenPanel = { panel, completion in
+            panel.begin(completionHandler: completion)
+        },
+        cancelOpenPanel: @escaping (NSOpenPanel) -> Void = { panel in
+            panel.cancel(nil)
+        }
     ) {
         self.model = model
         self.shortcutSettings = shortcutSettings
         self.makeHotKeyManager = makeHotKeyManager
+        self.beginOpenPanel = beginOpenPanel
+        self.cancelOpenPanel = cancelOpenPanel
         accessibilityPermissions = AccessibilityPermissionController(
             defaults: accessibilitySetupDefaults,
             notificationCenter: accessibilityNotificationCenter,
@@ -104,11 +150,18 @@ final class AppCoordinator {
     func togglePanel() {
         guard let panelWindow else { return }
         if Self.shouldHidePanel(
+            isDialogPresented: panelDialogs.isPresented,
             isVisible: panelWindow.isVisible,
             isMiniaturized: panelWindow.isMiniaturized,
             isOnActiveSpace: panelWindow.isOnActiveSpace
         ) {
-            hidePanel(restoringPreviousApplication: panelWindow.isKeyWindow)
+            hidePanel(
+                restoringPreviousApplication: Self.shouldRestorePreviousApplication(
+                    panelIsKey: panelWindow.isKeyWindow,
+                    dialogIsKey: panelDialogPresenter.isKeyWindow,
+                    openPanelIsKey: presentedOpenPanel?.isKeyWindow == true
+                )
+            )
             return
         }
         showPanel(panelWindow, focusing: .inlineEntry)
@@ -116,6 +169,7 @@ final class AppCoordinator {
 
     func toggleClipboard() {
         guard let panelWindow else { return }
+        guard !panelDialogs.isPresented else { return }
         if model.isShowingClipboard,
            Self.shouldHidePanel(
                isVisible: panelWindow.isVisible,
@@ -139,6 +193,9 @@ final class AppCoordinator {
             panelWindow.orderOut(nil)
         }
         panelWindow.makeKeyAndOrderFront(nil)
+        if !presentNextPendingPanelDialog() {
+            updatePresentedError()
+        }
         if let target {
             DispatchQueue.main.async { [weak self] in
                 self?.panelFocusRequests.send(target)
@@ -147,6 +204,23 @@ final class AppCoordinator {
     }
 
     nonisolated static func shouldHidePanel(
+        isDialogPresented: Bool = false,
+        isVisible: Bool,
+        isMiniaturized: Bool,
+        isOnActiveSpace: Bool
+    ) -> Bool {
+        isDialogPresented || (isVisible && !isMiniaturized && isOnActiveSpace)
+    }
+
+    nonisolated static func shouldRestorePreviousApplication(
+        panelIsKey: Bool,
+        dialogIsKey: Bool,
+        openPanelIsKey: Bool = false
+    ) -> Bool {
+        panelIsKey || dialogIsKey || openPanelIsKey
+    }
+
+    nonisolated static func shouldPresentPendingError(
         isVisible: Bool,
         isMiniaturized: Bool,
         isOnActiveSpace: Bool
@@ -154,7 +228,26 @@ final class AppCoordinator {
         isVisible && !isMiniaturized && isOnActiveSpace
     }
 
+    nonisolated static func centeredDialogOrigin(
+        size: NSSize,
+        over parentFrame: NSRect,
+        within visibleFrame: NSRect?
+    ) -> NSPoint {
+        let centered = NSPoint(
+            x: parentFrame.midX - size.width / 2,
+            y: parentFrame.midY - size.height / 2
+        )
+        guard let visibleFrame else { return centered }
+        let maximumX = max(visibleFrame.minX, visibleFrame.maxX - size.width)
+        let maximumY = max(visibleFrame.minY, visibleFrame.maxY - size.height)
+        return NSPoint(
+            x: min(max(centered.x, visibleFrame.minX), maximumX),
+            y: min(max(centered.y, visibleFrame.minY), maximumY)
+        )
+    }
+
     func focusPanelSearch() {
+        guard !panelDialogs.isPresented else { return }
         panelFocusRequests.send(.search)
     }
 
@@ -165,6 +258,9 @@ final class AppCoordinator {
     }
 
     func hidePanel(restoringPreviousApplication: Bool = true) {
+        dismissOpenPanel()
+        dismissPendingPanelDialogs()
+        panelDialogPresenter.dismissForParentHide()
         panelWindow?.orderOut(nil)
         if restoringPreviousApplication {
             previousExternalApplication?.activate(options: [])
@@ -178,6 +274,7 @@ final class AppCoordinator {
     }
 
     func captureSelection() {
+        guard !panelDialogs.isPresented else { return }
         guard accessibilityPermissions.refresh() else {
             presentAccessibilityRepair()
             return
@@ -303,8 +400,206 @@ final class AppCoordinator {
 
     func attachPanelWindow(_ window: NSWindow) {
         panelWindow = window
+        observePanelUsability(window)
         appliedPanelComposerExpansion = 0
         applyPanelComposerExpansion()
+    }
+
+    private func observePanelUsability(_ window: NSWindow) {
+        panelUsabilitySubscriptions.removeAll()
+        let windowNotifications = [
+            NSWindow.didBecomeKeyNotification,
+            NSWindow.didDeminiaturizeNotification,
+            NSWindow.didChangeOcclusionStateNotification
+        ].map { notification in
+            NotificationCenter.default.publisher(for: notification, object: window)
+                .eraseToAnyPublisher()
+        }
+        Publishers.MergeMany(windowNotifications)
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in self?.retryPendingPanelWork() }
+            }
+            .store(in: &panelUsabilitySubscriptions)
+        NSWorkspace.shared.notificationCenter.publisher(
+            for: NSWorkspace.activeSpaceDidChangeNotification
+        )
+        .sink { [weak self] _ in
+            Task { @MainActor [weak self] in self?.retryPendingPanelWork() }
+        }
+        .store(in: &panelUsabilitySubscriptions)
+        NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in self?.retryPendingPanelWork() }
+            }
+            .store(in: &panelUsabilitySubscriptions)
+    }
+
+    private func retryPendingPanelWork() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if !self.presentNextPendingPanelDialog() {
+                self.updatePresentedError()
+            }
+        }
+    }
+
+    func presentPanelDialog<Content: View>(
+        id: PanelDialogID,
+        title: String,
+        onDismiss: @escaping () -> Void,
+        @ViewBuilder content: () -> Content
+    ) {
+        let request = PendingPanelDialog(
+            id: id,
+            title: title,
+            content: AnyView(
+                PanelDialogContent(
+                    model: model,
+                    showsModelErrors: id != .error,
+                    content: content()
+                )
+                    .tint(SnipSnapTheme.controlTint)
+                    .preferredColorScheme(model.appearance.colorScheme)
+            ),
+            onDismiss: onDismiss
+        )
+        guard presentedOpenPanel == nil,
+              !panelDialogs.isPresented,
+              let panelWindow,
+              Self.shouldPresentPendingError(
+                  isVisible: panelWindow.isVisible,
+                  isMiniaturized: panelWindow.isMiniaturized,
+                  isOnActiveSpace: panelWindow.isOnActiveSpace
+              ) else {
+            enqueuePanelDialog(request)
+            return
+        }
+        showPanelDialog(request)
+    }
+
+    private func showPanelDialog(_ request: PendingPanelDialog) {
+        guard let panelWindow else { return }
+        panelDialogPresenter.present(
+            id: request.id,
+            title: request.title,
+            parent: panelWindow,
+            content: request.content,
+            onDismiss: { [weak self] reason in
+                guard let self else { return }
+                panelDialogs.isPresented = false
+                if request.id != .error || reason != .parentHide {
+                    request.onDismiss()
+                }
+                if reason == .close {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        if !self.presentNextPendingPanelDialog() {
+                            self.updatePresentedError()
+                        }
+                    }
+                }
+            }
+        )
+        panelDialogs.isPresented = true
+    }
+
+    private func enqueuePanelDialog(_ request: PendingPanelDialog) {
+        pendingPanelDialogs.removeAll { $0.id == request.id }
+        pendingPanelDialogs.append(request)
+    }
+
+    @discardableResult
+    private func presentNextPendingPanelDialog() -> Bool {
+        guard presentedOpenPanel == nil,
+              !panelDialogs.isPresented,
+              let panelWindow,
+              Self.shouldPresentPendingError(
+                  isVisible: panelWindow.isVisible,
+                  isMiniaturized: panelWindow.isMiniaturized,
+                  isOnActiveSpace: panelWindow.isOnActiveSpace
+              ),
+              !pendingPanelDialogs.isEmpty else { return false }
+        let request = pendingPanelDialogs.removeFirst()
+        showPanelDialog(request)
+        return true
+    }
+
+    private func dismissPendingPanelDialogs() {
+        let requests = pendingPanelDialogs
+        pendingPanelDialogs.removeAll()
+        for request in requests where request.id != .error {
+            request.onDismiss()
+        }
+    }
+
+    @discardableResult
+    func presentOpenPanel(
+        _ panel: NSOpenPanel,
+        completion: @escaping ([URL]?) -> Void
+    ) -> Bool {
+        guard !panelDialogs.isPresented, presentedOpenPanel == nil else { return false }
+        panel.level = .modalPanel
+        presentedOpenPanel = panel
+        openPanelCompletion = completion
+        panelDialogs.isPresented = true
+        beginOpenPanel(panel) { [weak self, weak panel] response in
+            Task { @MainActor in
+                guard let self, let panel, self.presentedOpenPanel === panel else { return }
+                self.finishOpenPanel(
+                    panel,
+                    urls: response == .OK ? panel.urls : nil,
+                    updateError: true
+                )
+            }
+        }
+        return true
+    }
+
+    private func dismissOpenPanel() {
+        guard let panel = presentedOpenPanel else { return }
+        cancelOpenPanel(panel)
+        finishOpenPanel(panel, urls: nil, updateError: false)
+    }
+
+    private func finishOpenPanel(
+        _ panel: NSOpenPanel,
+        urls: [URL]?,
+        updateError: Bool
+    ) {
+        guard presentedOpenPanel === panel else { return }
+        let completion = openPanelCompletion
+        presentedOpenPanel = nil
+        openPanelCompletion = nil
+        panelDialogs.isPresented = false
+        completion?(urls)
+        if updateError, !presentNextPendingPanelDialog() { updatePresentedError() }
+    }
+
+    func dismissPanelDialog(id: PanelDialogID, restoringParent: Bool = true) {
+        pendingPanelDialogs.removeAll { $0.id == id }
+        panelDialogPresenter.dismiss(id: id, restoringParent: restoringParent)
+    }
+
+    func updatePresentedError() {
+        guard model.presentedError != nil else {
+            dismissPanelDialog(id: .error)
+            return
+        }
+        guard let panelWindow,
+              Self.shouldPresentPendingError(
+                  isVisible: panelWindow.isVisible,
+                  isMiniaturized: panelWindow.isMiniaturized,
+                  isOnActiveSpace: panelWindow.isOnActiveSpace
+              ) else { return }
+        guard !panelDialogs.isPresented else { return }
+        presentPanelDialog(
+            id: .error,
+            title: model.presentedErrorTitle ?? String(localized: "Something Went Wrong")
+        ) { [weak model] in
+            model?.dismissPresentedError()
+        } content: {
+            PanelErrorDialog(model: model)
+        }
     }
 
     func updatePanelComposerExpansion(_ expansion: CGFloat) {
@@ -416,6 +711,241 @@ final class AppCoordinator {
                 self?.previousExternalApplication = application
             }
         }
+    }
+
+}
+
+private struct PanelDialogContent<Content: View>: View {
+    @ObservedObject var model: AppModel
+    let showsModelErrors: Bool
+    let content: Content
+
+    var body: some View {
+        content
+            .alert(
+                model.presentedErrorTitle ?? String(localized: "Something Went Wrong"),
+                isPresented: Binding(
+                    get: { showsModelErrors && model.presentedError != nil },
+                    set: { _ in }
+                )
+            ) {
+                Button("OK", role: .cancel) { model.dismissPresentedError() }
+            } message: {
+                Text(model.presentedError ?? "")
+            }
+    }
+}
+
+private struct PanelErrorDialog: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: SnipSnapSpacing.paneContentInset) {
+            Text(model.presentedErrorTitle ?? String(localized: "Something Went Wrong"))
+                .font(.headline)
+            Text(model.presentedError ?? "")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                AppPrimaryActionButton(action: model.dismissPresentedError) {
+                    Text("OK")
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(SnipSnapSpacing.paneContentInset)
+        .frame(width: 360)
+        .onExitCommand(perform: model.dismissPresentedError)
+    }
+}
+
+struct PanelConfirmationDialog: View {
+    let title: String
+    let message: String
+    let confirmTitle: String
+    var isDestructive = false
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: SnipSnapSpacing.paneContentInset) {
+            Text(title)
+                .font(.headline)
+            Text(message)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                if isDestructive {
+                    Button(confirmTitle, role: .destructive, action: onConfirm)
+                        .buttonStyle(.bordered)
+                } else {
+                    AppPrimaryActionButton(action: onConfirm) {
+                        Text(confirmTitle)
+                    }
+                    .keyboardShortcut(.defaultAction)
+                }
+            }
+        }
+        .padding(SnipSnapSpacing.paneContentInset)
+        .frame(width: 380)
+    }
+}
+
+/// Hosts form-sized work in an opaque child window. AppKit's sheet dimmer
+/// otherwise exposes the clear panel's rectangular window bounds.
+final class PanelDialogInputShieldView: NSView {
+    var activateDialog: (() -> Void)?
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        activateDialog?()
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        activateDialog?()
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        activateDialog?()
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        activateDialog?()
+    }
+}
+
+@MainActor
+private enum PanelDialogDismissalReason {
+    case close
+    case parentHide
+}
+
+@MainActor
+private final class PanelDialogPresenter: NSObject, NSWindowDelegate {
+    private var id: PanelDialogID?
+    private weak var parentWindow: NSWindow?
+    private weak var parentInputShield: PanelDialogInputShieldView?
+    private var restoresParentOnDismissal = true
+    private var dismissalReason = PanelDialogDismissalReason.close
+    private var windowController: NSWindowController?
+    private var onDismiss: ((PanelDialogDismissalReason) -> Void)?
+
+    var isKeyWindow: Bool {
+        windowController?.window?.isKeyWindow == true
+    }
+
+    func present(
+        id: PanelDialogID,
+        title: String,
+        parent: NSWindow,
+        content: AnyView,
+        onDismiss: @escaping (PanelDialogDismissalReason) -> Void
+    ) {
+        dismissCurrent()
+
+        let hostingController = NSHostingController(rootView: content)
+        let window = NSPanel(
+            contentRect: .zero,
+            styleMask: [.titled, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = title
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.standardWindowButton(.closeButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
+        window.animationBehavior = .utilityWindow
+        window.backgroundColor = .windowBackgroundColor
+        window.isOpaque = true
+        window.hasShadow = true
+        window.hidesOnDeactivate = false
+        window.isReleasedWhenClosed = false
+        window.contentViewController = hostingController
+        window.delegate = self
+
+        hostingController.view.layoutSubtreeIfNeeded()
+        let size = hostingController.view.fittingSize
+        window.setContentSize(size)
+        window.setFrameOrigin(
+            AppCoordinator.centeredDialogOrigin(
+                size: window.frame.size,
+                over: parent.frame,
+                within: parent.screen?.visibleFrame
+            )
+        )
+
+        self.parentWindow = parent
+        self.id = id
+        self.onDismiss = onDismiss
+        windowController = NSWindowController(window: window)
+        if let parentContentView = parent.contentView {
+            let inputShield = PanelDialogInputShieldView(frame: parentContentView.bounds)
+            inputShield.autoresizingMask = [.width, .height]
+            inputShield.setAccessibilityElement(false)
+            inputShield.activateDialog = { [weak window] in
+                window?.makeKeyAndOrderFront(nil)
+            }
+            parentContentView.addSubview(inputShield, positioned: .above, relativeTo: nil)
+            parentInputShield = inputShield
+        }
+        parent.addChildWindow(window, ordered: .above)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    func dismiss(id: PanelDialogID, restoringParent: Bool = true) {
+        guard self.id == id else { return }
+        dismissCurrent(restoringParent: restoringParent)
+    }
+
+    func dismissForParentHide() {
+        dismissCurrent(restoringParent: false, reason: .parentHide)
+    }
+
+    private func dismissCurrent(
+        restoringParent: Bool = true,
+        reason: PanelDialogDismissalReason = .close
+    ) {
+        guard let window = windowController?.window else { return }
+        restoresParentOnDismissal = restoringParent
+        dismissalReason = reason
+        window.close()
+        if windowController != nil {
+            finishDismissal()
+        }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        finishDismissal()
+    }
+
+    private func finishDismissal() {
+        guard windowController != nil else { return }
+        let callback = onDismiss
+        let reason = dismissalReason
+        if let window = windowController?.window {
+            parentWindow?.removeChildWindow(window)
+        }
+        parentInputShield?.removeFromSuperview()
+        if restoresParentOnDismissal, parentWindow?.isVisible == true {
+            parentWindow?.makeKeyAndOrderFront(nil)
+        }
+        windowController = nil
+        parentWindow = nil
+        parentInputShield = nil
+        restoresParentOnDismissal = true
+        dismissalReason = .close
+        id = nil
+        onDismiss = nil
+        callback?(reason)
     }
 
 }

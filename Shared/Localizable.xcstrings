@@ -616,6 +616,9 @@
     "Clear clipboard history?" : {
 
     },
+    "Clear clipboard history" : {
+
+    },
     "Clearing…" : {
 
     },
@@ -680,6 +683,9 @@
 
     },
     "Delete List" : {
+
+    },
+    "Delete list" : {
 
     },
     "Deleting synced content…" : {
