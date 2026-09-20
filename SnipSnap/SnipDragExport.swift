@@ -83,16 +83,10 @@ struct SnipDragExportPackage: PanelDragExportPackage {
     }
 
     static func markdown(for payload: SnipDragPayload) -> String {
-        var result = payload.text
-        if !result.hasSuffix("\n") {
-            result.append("\n")
-        }
-        result.append("\n## Attachments\n\n")
-        for url in payload.attachmentURLs {
-            let name = url.lastPathComponent.replacingOccurrences(of: "`", with: "\\`")
-            result.append("- `\(name)`\n")
-        }
-        return result
+        SnipPasteboardExport.markdown(
+            text: payload.text,
+            attachmentURLs: payload.attachmentURLs
+        )
     }
 
     static let privateType = NSPasteboard.PasteboardType(UTType.snipSnapSnipDrag.identifier)

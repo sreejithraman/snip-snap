@@ -134,7 +134,8 @@ PATH="$test_dir/bin:$PATH" \
 /bin/kill -0 "$test_pid"
 /usr/bin/grep -F -- "$SNIP_SNAP_DEV_STATE_DIR/build/slot-2" "$test_dir/build-args" >/dev/null
 /usr/bin/grep -F -- "PRODUCT_BUNDLE_IDENTIFIER=world.sree.snipsnap.dev2" "$test_dir/build-args" >/dev/null
-/usr/bin/grep -F -- "PRODUCT_NAME=SnipSnapDev2" "$test_dir/build-args" >/dev/null
+/usr/bin/grep -E -- '(^|[[:space:]])SNIP_SNAP_PRODUCT_NAME=SnipSnapDev2([[:space:]]|$)' \
+    "$test_dir/build-args" >/dev/null
 /usr/bin/grep -F -- "INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Dev 2" "$test_dir/build-args" >/dev/null
 
 recorded_pid="$test_pid"

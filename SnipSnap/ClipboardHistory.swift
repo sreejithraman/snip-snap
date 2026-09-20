@@ -223,6 +223,7 @@ private final class ClipboardCaptureReader {
     }
 
     private static func supportedTypes(in item: NSPasteboardItem) -> [NSPasteboard.PasteboardType] {
+        guard !item.types.contains(SnipPasteboardMarkdownFile.privateType) else { return [] }
         let supported: [NSPasteboard.PasteboardType] = [
             .string, .rtf, .rtfd, .html, .fileURL, .png, .tiff
         ]

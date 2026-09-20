@@ -71,7 +71,8 @@ final class AppModel: ObservableObject {
     private var cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private let defaults: UserDefaults
     private let composerDrafts: ComposerDraftStore
-    private let preparePasteboardExport: @Sendable (String, [URL]) async -> SnipPasteboardExport
+    private let preparePasteboardExport: @Sendable (String, [URL]) async throws
+        -> SnipPasteboardExport
     private var clipboardWriteGeneration = 0
     private var pendingClipboardWriteTask: Task<Bool, Never>?
     let clipboardHistory: ClipboardHistory
@@ -124,8 +125,12 @@ final class AppModel: ObservableObject {
         cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
         userActions: (any SnipLibraryUserActions)? = nil,
         userActionsRebinder: SnipLibraryUserActionsRebinder = .direct,
-        preparePasteboardExport: @escaping @Sendable (String, [URL]) async -> SnipPasteboardExport = {
-            await SnipPasteboardExport.preparingRichText(text: $0, attachmentURLs: $1)
+        preparePasteboardExport: @escaping @Sendable (String, [URL]) async throws
+            -> SnipPasteboardExport = {
+            try await SnipPasteboardExport.preparingClipboardExport(
+                text: $0,
+                attachmentURLs: $1
+            )
         }
     ) {
         self.defaults = defaults
@@ -1006,37 +1011,55 @@ final class AppModel: ObservableObject {
     ) async -> Bool {
         guard !snips.isEmpty else { return false }
         let attachments = attachmentPreparation.unique(snips.flatMap(\.attachments))
-        let prepared: [UUID: URL]
+        let export: SnipPasteboardExport
         do {
-            prepared = try await prepareAttachments(attachments, for: .copy)
+            let prepared = try await prepareAttachments(attachments, for: .copy)
+            let text = SnipFormatter.formatForClipboard(snips: snips)
+            guard generation == clipboardWriteGeneration,
+                  pasteboard.changeCount == expectedChangeCount else { return false }
+            export = try await preparePasteboardExport(
+                text,
+                attachments.compactMap { prepared[$0.id] }
+            )
         } catch is CancellationError {
             return false
         } catch {
-            if !Task.isCancelled, generation == clipboardWriteGeneration {
+            if shouldPresentClipboardError(
+                generation: generation,
+                pasteboard: pasteboard,
+                expectedChangeCount: expectedChangeCount
+            ) {
                 presentError(error)
             }
             return false
         }
-        let text = SnipFormatter.formatForClipboard(snips: snips)
-        guard generation == clipboardWriteGeneration,
-              pasteboard.changeCount == expectedChangeCount else { return false }
-        let export = await preparePasteboardExport(
-            text,
-            attachments.compactMap { prepared[$0.id] }
-        )
         guard !Task.isCancelled,
-              generation == clipboardWriteGeneration else { return false }
-        guard pasteboard.changeCount == expectedChangeCount else { return false }
+              generation == clipboardWriteGeneration,
+              pasteboard.changeCount == expectedChangeCount else { return false }
         let objects = export.pasteboardWriters()
-        pasteboard.clearContents()
+        let writeChangeCount = pasteboard.clearContents()
         let copied = pasteboard.writeObjects(objects)
         if copied {
+            export.retainStagedResources(
+                untilPasteboardChanges: pasteboard,
+                from: writeChangeCount
+            )
             clipboardHistory.captureNow(from: pasteboard)
             if feedback == .notify, toast?.action == nil {
                 toast = .copied(count: snips.count)
             }
         }
         return copied
+    }
+
+    private func shouldPresentClipboardError(
+        generation: Int,
+        pasteboard: NSPasteboard,
+        expectedChangeCount: Int
+    ) -> Bool {
+        !Task.isCancelled
+            && generation == clipboardWriteGeneration
+            && pasteboard.changeCount == expectedChangeCount
     }
 
     private func nextClipboardWriteGeneration() -> Int {

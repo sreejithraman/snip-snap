@@ -242,6 +242,20 @@ final class SnipListModelsTests: XCTestCase {
         XCTAssertNotNil(privateItem.data(forType: SnipDragExportPackage.privateType))
     }
 
+    func testMixedSnipMarkdownQuotesUnusualAttachmentNames() {
+        let attachment = URL(fileURLWithPath: "/tmp/odd``name\n.png")
+        let payload = SnipDragPayload(
+            ids: [UUID()],
+            text: "Use this file",
+            attachmentURLs: [attachment]
+        )
+
+        XCTAssertEqual(
+            SnipDragExportPackage.markdown(for: payload),
+            "Use this file\n\n## Attachments\n\n- ```odd``name .png```\n"
+        )
+    }
+
     func testRemoteOnlyDragPayloadWaitsForPreparationWithoutInventingAFileURL() {
         let attachmentID = UUID()
         let payload = SnipDragPayload(

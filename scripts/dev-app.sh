@@ -191,7 +191,7 @@ run_signed_build() {
         "${signing_arguments[@]}"
         "SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER=$product_bundle_identifier"
         "PRODUCT_BUNDLE_IDENTIFIER=$product_bundle_identifier.dev$slot"
-        "PRODUCT_NAME=$process_name"
+        "SNIP_SNAP_PRODUCT_NAME=$process_name"
         "INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Dev $slot"
         build
     )
