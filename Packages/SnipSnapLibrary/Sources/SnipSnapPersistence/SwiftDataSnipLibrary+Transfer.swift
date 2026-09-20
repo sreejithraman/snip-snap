@@ -3,6 +3,12 @@ import Foundation
 import SnipSnapCore
 import SwiftData
 
+struct CloudFullReenableCommitProof: Sendable {
+  let namespaceKey: CloudSyncNamespaceKey
+  let transitionID: UUID
+  let digest: Data
+}
+
 extension SwiftDataSnipLibrary {
   public func transferSnapshot(revision: UInt64) async throws -> SnipLibraryTransferSnapshot {
     let current = try await checkedSnapshot(sortedBy: .manual)
@@ -238,16 +244,12 @@ extension SwiftDataSnipLibrary {
     defer { withExtendedLifetime(lock) {} }
     let context = Self.makeContext(container: container)
     try requireContentWritesAllowed(context: context)
-    let receiptID = StoredCloudFullBatchReceipt.key(
+    if try SwiftDataCloudFullOperationReceipts.isReplay(
+      .reenableTransition(plan.transitionID),
       namespaceKey: plan.namespaceKey,
-      batchID: plan.transitionID
-    )
-    if let receipt = try context.fetch(FetchDescriptor<StoredCloudFullBatchReceipt>())
-      .first(where: { $0.id == receiptID })
-    {
-      guard receipt.digest == plan.planDigest else {
-        throw CloudFullStorageError.invalidBatchReplay
-      }
+      digest: plan.planDigest,
+      context: context
+    ) {
       return plan.result
     }
     let loaded = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
@@ -361,11 +363,12 @@ extension SwiftDataSnipLibrary {
       for recovery in plan.recoveryInputs {
         try Self.insertFullRecoveryIfNeeded(recovery, context: context)
       }
-      context.insert(StoredCloudFullBatchReceipt(
+      SwiftDataCloudFullOperationReceipts.record(
+        .reenableTransition(plan.transitionID),
         namespaceKey: plan.namespaceKey,
-        batchID: plan.transitionID,
-        digest: plan.planDigest
-      ))
+        digest: plan.planDigest,
+        context: context
+      )
       try afterMutationBeforeSave()
       try lock.check()
       try context.save()
@@ -380,21 +383,32 @@ extension SwiftDataSnipLibrary {
     }
   }
 
-  package func cloudFullReenableReceipt(
-    namespaceKey: CloudSyncNamespaceKey,
-    transitionID: UUID
-  ) throws -> Data? {
-    let namespaceKey = namespaceKey.rawValue
+  func recognizesAppliedCloudFullReenable(
+    _ proof: CloudFullReenableCommitProof
+  ) throws -> Bool {
+    let namespaceKey = proof.namespaceKey.rawValue
     guard let container else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
     let context = Self.makeContext(container: container)
-    let id = StoredCloudFullBatchReceipt.key(
+    if let digest = try SwiftDataCloudFullOperationReceipts.digest(
+      for: .reenableTransition(proof.transitionID),
       namespaceKey: namespaceKey,
-      batchID: transitionID
-    )
-    return try context.fetch(FetchDescriptor<StoredCloudFullBatchReceipt>())
-      .first(where: { $0.id == id })?.digest
+      context: context
+    ) {
+      guard digest == proof.digest else { throw CloudFullStorageError.invalidBatchReplay }
+      return true
+    }
+    guard try SwiftDataCloudFullOperationReceipts.migrateLegacyReenableReceipt(
+      namespaceKey: namespaceKey,
+      transitionID: proof.transitionID,
+      expectedDigest: proof.digest,
+      context: context
+    ) else { return false }
+    try afterMutationBeforeSave()
+    try lock.check()
+    try context.save()
+    return true
   }
 
   static func transferMetadata(

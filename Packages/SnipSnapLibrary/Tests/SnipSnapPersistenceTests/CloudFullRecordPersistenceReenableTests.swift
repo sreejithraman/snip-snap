@@ -6,6 +6,113 @@ import XCTest
 @testable import SnipSnapPersistence
 
 extension CloudFullRecordPersistenceTests {
+  func testLegacyReenableReceiptMigratesWithoutConsumingTheSendReceiptKey() async throws {
+    let location = temporaryStore()
+    defer { try? FileManager.default.removeItem(at: location.root) }
+    let store = try SwiftDataSnipLibrary(storeURL: location.store)
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|legacy-reenable")
+    let transitionID = UUID()
+    let target = try await store.transferSnapshot(revision: 0)
+    let plan = try CloudFullReenableApplyPlan(
+      transitionID: transitionID,
+      namespaceKey: namespace.rawValue,
+      targetRevision: target.revision,
+      targetDigest: SnipLibraryTransferPlanner.digest(snapshot: target),
+      snips: target.snips,
+      lists: target.lists,
+      attachmentData: target.attachmentData,
+      dormantPayload: target.opaqueSyncStatePayload,
+      acceptedCAS: [],
+      conflicts: [],
+      recoveryInputs: [],
+      result: SnipLibraryTransferResult(approvedSnipIDs: [], recoveredSourceSnipIDs: [])
+    )
+    try await store.testStoreLegacyReenableReceipt(
+      namespaceKey: namespace,
+      transitionID: transitionID,
+      digest: plan.planDigest
+    )
+
+    let proof = CloudFullReenableCommitProof(
+      namespaceKey: namespace,
+      transitionID: transitionID,
+      digest: plan.planDigest
+    )
+    let migrated = try await store.recognizesAppliedCloudFullReenable(proof)
+    XCTAssertTrue(migrated)
+    let current = try await store.recognizesAppliedCloudFullReenable(proof)
+    XCTAssertTrue(current)
+
+    let sendBatch = CloudFullBatchCommit(
+      namespaceKey: namespace.rawValue,
+      batchID: transitionID,
+      expectedEngineState: nil,
+      nextEngineState: nil,
+      items: []
+    )
+    try await store.stageCloudFullBatch(sendBatch)
+    let sendResult = try await store.commitCloudFullBatch(sendBatch)
+    XCTAssertEqual(sendResult, .applied)
+  }
+
+  func testReenableReceiptDoesNotReduceTheFullBatchReplayWindow() async throws {
+    let location = temporaryStore()
+    defer { try? FileManager.default.removeItem(at: location.root) }
+    let store = try SwiftDataSnipLibrary(storeURL: location.store)
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|receipt-retention")
+    var batches: [CloudFullBatchCommit] = []
+    for _ in 0..<256 {
+      let batch = CloudFullBatchCommit(
+        namespaceKey: namespace.rawValue,
+        batchID: UUID(),
+        expectedEngineState: nil,
+        nextEngineState: nil,
+        items: []
+      )
+      try await store.stageCloudFullBatch(batch)
+      _ = try await store.commitCloudFullBatch(batch)
+      batches.append(batch)
+    }
+    let target = try await store.transferSnapshot(revision: 0)
+    let transitionID = UUID()
+    let plan = try CloudFullReenableApplyPlan(
+      transitionID: transitionID,
+      namespaceKey: namespace.rawValue,
+      targetRevision: target.revision,
+      targetDigest: SnipLibraryTransferPlanner.digest(snapshot: target),
+      snips: target.snips,
+      lists: target.lists,
+      attachmentData: target.attachmentData,
+      dormantPayload: target.opaqueSyncStatePayload,
+      acceptedCAS: [],
+      conflicts: [],
+      recoveryInputs: [],
+      result: SnipLibraryTransferResult(approvedSnipIDs: [], recoveredSourceSnipIDs: [])
+    )
+    _ = try await store.applyCloudFullReenablePlan(plan)
+    let finalBatch = CloudFullBatchCommit(
+      namespaceKey: namespace.rawValue,
+      batchID: UUID(),
+      expectedEngineState: nil,
+      nextEngineState: nil,
+      items: []
+    )
+    try await store.stageCloudFullBatch(finalBatch)
+    _ = try await store.commitCloudFullBatch(finalBatch)
+
+    let counts = try await store.testCloudReceiptCounts(namespaceKey: namespace)
+    XCTAssertEqual(counts.fullBatch, 256)
+    XCTAssertEqual(counts.reenable, 1)
+    do {
+      _ = try await store.commitCloudFullBatch(try XCTUnwrap(batches.first))
+      XCTFail("Expected the oldest batch receipt to be pruned")
+    } catch CloudFullStorageError.invalidBatchReplay {
+      // Expected.
+    }
+    let retainedReplay = try await store.commitCloudFullBatch(try XCTUnwrap(batches.dropFirst().first))
+    XCTAssertEqual(retainedReplay, .replayed)
+  }
+
   func testReenablePlanKeepsFreshAcceptedBytesAndAtomicallyStoresSidecarsAndReceipt() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
@@ -20,6 +127,16 @@ extension CloudFullRecordPersistenceTests {
     let storageBefore = try await store.cloudFullStorageSnapshot(namespaceKey: namespace)
     let acceptedBefore = try XCTUnwrap(storageBefore.readyEntities.first)
     let target = try await store.transferSnapshot(revision: 9)
+    let sendBatch = CloudFullBatchCommit(
+      namespaceKey: namespace.rawValue,
+      batchID: transitionID,
+      expectedEngineState: nil,
+      nextEngineState: nil,
+      items: []
+    )
+    try await store.stageCloudFullBatch(sendBatch)
+    let sendResult = try await store.commitCloudFullBatch(sendBatch)
+    XCTAssertEqual(sendResult, .applied)
     let conflict = CloudConflictInput(
       key: "reenable-list-conflict",
       reference: acceptedBefore.reference,
@@ -72,17 +189,22 @@ extension CloudFullRecordPersistenceTests {
     let afterFailure = try SwiftDataSnipLibrary(storeURL: location.store)
     let failedStorage = try await afterFailure.cloudFullStorageSnapshot(namespaceKey: namespace)
     let failedRecovery = try await afterFailure.cloudFullRecoveryEvents(namespaceKey: namespace)
-    let failedReceipt = try await afterFailure.cloudFullReenableReceipt(
-      namespaceKey: namespace,
-      transitionID: transitionID
+    let failedReceipt = try await afterFailure.recognizesAppliedCloudFullReenable(
+      CloudFullReenableCommitProof(
+        namespaceKey: namespace,
+        transitionID: transitionID,
+        digest: plan.planDigest
+      )
     )
     XCTAssertEqual(failedStorage.readyEntities, [acceptedBefore])
     XCTAssertTrue(failedStorage.conflicts.isEmpty)
     XCTAssertTrue(failedRecovery.isEmpty)
-    XCTAssertNil(failedReceipt)
+    XCTAssertFalse(failedReceipt)
 
     _ = try await store.applyCloudFullReenablePlan(plan, currentRevision: 9)
     _ = try await store.applyCloudFullReenablePlan(plan, currentRevision: 9)
+    let sendReplay = try await store.commitCloudFullBatch(sendBatch)
+    XCTAssertEqual(sendReplay, .replayed)
 
     let storageAfter = try await store.cloudFullStorageSnapshot(namespaceKey: namespace)
     let acceptedAfter = try XCTUnwrap(storageAfter.readyEntities.first)
@@ -90,12 +212,15 @@ extension CloudFullRecordPersistenceTests {
     let stored = try await store.cloudFullStorageSnapshot(namespaceKey: namespace)
     XCTAssertEqual(stored.conflicts.map(\.key), [conflict.key])
     let recoveryAfter = try await store.cloudFullRecoveryEvents(namespaceKey: namespace)
-    let receipt = try await store.cloudFullReenableReceipt(
-      namespaceKey: namespace,
-      transitionID: transitionID
+    let receipt = try await store.recognizesAppliedCloudFullReenable(
+      CloudFullReenableCommitProof(
+        namespaceKey: namespace,
+        transitionID: transitionID,
+        digest: plan.planDigest
+      )
     )
     XCTAssertEqual(recoveryAfter.count, 1)
-    XCTAssertEqual(receipt, plan.planDigest)
+    XCTAssertTrue(receipt)
 
     let mismatchedReplay = try CloudFullReenableApplyPlan(
       transitionID: transitionID,
@@ -120,11 +245,14 @@ extension CloudFullRecordPersistenceTests {
     } catch CloudFullStorageError.invalidBatchReplay {
       // Expected.
     }
-    let receiptAfterMismatch = try await store.cloudFullReenableReceipt(
-      namespaceKey: namespace,
-      transitionID: transitionID
+    let receiptAfterMismatch = try await store.recognizesAppliedCloudFullReenable(
+      CloudFullReenableCommitProof(
+        namespaceKey: namespace,
+        transitionID: transitionID,
+        digest: plan.planDigest
+      )
     )
-    XCTAssertEqual(receiptAfterMismatch, plan.planDigest)
+    XCTAssertTrue(receiptAfterMismatch)
   }
 
   func testReenablePlanRejectsStaleAcceptedCASWithoutChangingAnySidecar() async throws {
@@ -181,11 +309,14 @@ extension CloudFullRecordPersistenceTests {
     let recovery = try await store.cloudFullRecoveryEvents(namespaceKey: namespace)
     XCTAssertTrue(after.conflicts.isEmpty)
     XCTAssertTrue(recovery.isEmpty)
-    let receipt = try await store.cloudFullReenableReceipt(
-      namespaceKey: namespace,
-      transitionID: transitionID
+    let receipt = try await store.recognizesAppliedCloudFullReenable(
+      CloudFullReenableCommitProof(
+        namespaceKey: namespace,
+        transitionID: transitionID,
+        digest: plan.planDigest
+      )
     )
-    XCTAssertNil(receipt)
+    XCTAssertFalse(receipt)
   }
 
   func testReenablePlanRejectsAddedAcceptedRowAndNamespaceRevisionChange() async throws {
@@ -238,11 +369,14 @@ extension CloudFullRecordPersistenceTests {
           XCTAssertEqual(error as? CloudFullStorageError, .namespaceStateMismatch)
         }
       }
-      let receipt = try await store.cloudFullReenableReceipt(
-        namespaceKey: namespace,
-        transitionID: plan.transitionID
+      let receipt = try await store.recognizesAppliedCloudFullReenable(
+        CloudFullReenableCommitProof(
+          namespaceKey: namespace,
+          transitionID: plan.transitionID,
+          digest: plan.planDigest
+        )
       )
-      XCTAssertNil(receipt)
+      XCTAssertFalse(receipt)
     }
   }
 
@@ -298,10 +432,51 @@ extension CloudFullRecordPersistenceTests {
     let after = await store.snapshot(sortedBy: .manual)
     let storedURL = try XCTUnwrap(after.attachmentURLs[attachment.id])
     XCTAssertEqual(try Data(contentsOf: storedURL), originalBytes)
-    let receipt = try await store.cloudFullReenableReceipt(
-      namespaceKey: CloudSyncNamespaceKey(rawValue: plan.namespaceKey),
-      transitionID: transitionID
+    let receipt = try await store.recognizesAppliedCloudFullReenable(
+      CloudFullReenableCommitProof(
+        namespaceKey: CloudSyncNamespaceKey(rawValue: plan.namespaceKey),
+        transitionID: transitionID,
+        digest: plan.planDigest
+      )
     )
-    XCTAssertNil(receipt)
+    XCTAssertFalse(receipt)
+  }
+}
+
+private extension SwiftDataSnipLibrary {
+  func testStoreLegacyReenableReceipt(
+    namespaceKey: CloudSyncNamespaceKey,
+    transitionID: UUID,
+    digest: Data
+  ) throws {
+    guard let container else { throw SnipLibraryError.storeUnavailable }
+    let context = Self.makeContext(container: container)
+    context.insert(StoredCloudFullBatchReceipt(
+      namespaceKey: namespaceKey.rawValue,
+      operation: .committedBatch(transitionID),
+      digest: digest
+    ))
+    try context.save()
+  }
+
+  func testCloudReceiptCounts(
+    namespaceKey: CloudSyncNamespaceKey
+  ) throws -> (fullBatch: Int, reenable: Int) {
+    guard let container else { throw SnipLibraryError.storeUnavailable }
+    let context = Self.makeContext(container: container)
+    let namespace = namespaceKey.rawValue
+    let receipts = try context.fetch(FetchDescriptor(
+      predicate: #Predicate<StoredCloudFullBatchReceipt> { $0.namespaceKey == namespace }
+    ))
+    return (
+      receipts.count {
+        CloudFullReceiptOperation.committedBatch($0.batchID)
+          .matches($0, namespaceKey: namespace)
+      },
+      receipts.count {
+        CloudFullReceiptOperation.reenableTransition($0.batchID)
+          .matches($0, namespaceKey: namespace)
+      }
+    )
   }
 }

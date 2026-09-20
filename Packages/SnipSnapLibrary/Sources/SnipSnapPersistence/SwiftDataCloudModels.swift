@@ -343,16 +343,12 @@ final class StoredCloudFullBatchReceipt {
   var digest: Data
   var createdAt: Date
 
-  init(namespaceKey: String, batchID: UUID, digest: Data) {
-    id = Self.key(namespaceKey: namespaceKey, batchID: batchID)
+  init(namespaceKey: String, operation: CloudFullReceiptOperation, digest: Data) {
+    id = operation.storageKey(namespaceKey: namespaceKey)
     self.namespaceKey = namespaceKey
-    self.batchID = batchID
+    batchID = operation.operationID
     self.digest = digest
     createdAt = Date()
-  }
-
-  static func key(namespaceKey: String, batchID: UUID) -> String {
-    "\(namespaceKey)|full-batch|\(batchID.uuidString.lowercased())"
   }
 }
 

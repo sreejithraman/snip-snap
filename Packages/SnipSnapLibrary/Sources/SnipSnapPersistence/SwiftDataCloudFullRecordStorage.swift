@@ -92,16 +92,12 @@ extension SwiftDataSnipLibrary {
     let context = Self.makeContext(container: container)
     let payload = try Self.fullBatchData(batch)
     let id = "\(batch.namespaceKey)|\(batch.batchID.uuidString.lowercased())"
-    let receiptID = StoredCloudFullBatchReceipt.key(
+    if try SwiftDataCloudFullOperationReceipts.isReplay(
+      .committedBatch(batch.batchID),
       namespaceKey: batch.namespaceKey,
-      batchID: batch.batchID
-    )
-    if let receipt = try context.fetch(FetchDescriptor<StoredCloudFullBatchReceipt>())
-      .first(where: { $0.id == receiptID })
-    {
-      guard receipt.digest == Self.batchReceiptDigest(batch, encoded: payload) else {
-        throw CloudFullStorageError.invalidBatchReplay
-      }
+      digest: Self.batchReceiptDigest(batch, encoded: payload),
+      context: context
+    ) {
       return
     }
     if let current = try context.fetch(FetchDescriptor<StoredCloudStagedBatch>())
@@ -139,11 +135,11 @@ extension SwiftDataSnipLibrary {
     else { throw CloudFullStorageError.invalidBatchReplay }
     let prior = try JSONDecoder().decode(CloudFullBatchCommit.self, from: envelope.payload)
     guard prior.rawBatchData == raw,
-      try context.fetch(FetchDescriptor<StoredCloudFullBatchReceipt>())
-        .allSatisfy({ $0.id != StoredCloudFullBatchReceipt.key(
-          namespaceKey: batch.namespaceKey,
-          batchID: batch.batchID
-        ) })
+      try SwiftDataCloudFullOperationReceipts.digest(
+        for: .committedBatch(batch.batchID),
+        namespaceKey: batch.namespaceKey,
+        context: context
+      ) == nil
     else { throw CloudFullStorageError.invalidBatchReplay }
     current.payload = try Self.fullBatchData(batch)
     try afterMutationBeforeSave()
