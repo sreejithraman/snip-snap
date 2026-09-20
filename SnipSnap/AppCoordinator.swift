@@ -560,7 +560,7 @@ private struct PanelDialogContent<Content: View>: View {
                     set: { _ in }
                 )
             ) {
-                Button("OK") { model.dismissPresentedError() }
+                Button("OK", role: .cancel) { model.dismissPresentedError() }
             } message: {
                 Text(model.presentedError ?? "")
             }
