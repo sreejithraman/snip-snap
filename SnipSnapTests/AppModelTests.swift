@@ -1339,6 +1339,145 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testCopyingMixedSnipKeepsTextAsMarkdownForFileFirstTargets() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("mixed-copy.png")
+        let attachmentData = Data([0x89, 0x50, 0x4e, 0x47])
+        try attachmentData.write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let added = try await repository.add(
+            content: "Explain this image",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let snip = try XCTUnwrap(added)
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-mixed-copy-files-\(UUID())"))
+        let history = ClipboardHistory(
+            pasteboard: pasteboard,
+            defaults: defaults(),
+            storeURL: store.deletingLastPathComponent().appendingPathComponent(
+                "mixed-copy-clipboard.json"
+            )
+        )
+        let model = AppModel(
+            library: repository,
+            defaults: defaults(),
+            clipboardHistory: history
+        )
+        await model.reload()
+        await history.waitForInitialLoad()
+
+        let copied = await model.placeOnClipboardNow(
+            .snips([snip]),
+            feedback: .silent,
+            to: pasteboard
+        )
+
+        XCTAssertTrue(copied)
+        let items = try XCTUnwrap(pasteboard.pasteboardItems)
+        XCTAssertEqual(items.count, 3)
+        XCTAssertEqual(items[0].string(forType: .string), "Explain this image")
+        XCTAssertNotNil(items[0].data(forType: .rtfd))
+        XCTAssertTrue(items[1].types.contains(SnipPasteboardMarkdownFile.privateType))
+        let fileURLs = items.compactMap { item in
+            item.string(forType: .fileURL).flatMap(URL.init(string:))
+        }
+        XCTAssertEqual(
+            fileURLs.map(\.lastPathComponent),
+            ["Snip Snap Snip.md", "mixed-copy.png"]
+        )
+        let markdownURL = try XCTUnwrap(fileURLs.first {
+            $0.lastPathComponent == "Snip Snap Snip.md"
+        })
+        let markdown = try String(contentsOf: markdownURL, encoding: .utf8)
+        XCTAssertEqual(
+            markdown,
+            "Explain this image\n\n## Attachments\n\n- `mixed-copy.png`\n"
+        )
+        let copiedAttachment = try XCTUnwrap(fileURLs.first {
+            $0.lastPathComponent == "mixed-copy.png"
+        })
+        XCTAssertEqual(try Data(contentsOf: copiedAttachment), attachmentData)
+        XCTAssertEqual(history.entries.first?.fileURLs, [copiedAttachment])
+        XCTAssertEqual(items[1].data(forType: SnipPasteboardMarkdownFile.privateType), Data())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: markdownURL.path))
+
+        pasteboard.clearContents()
+        let removedAfterPasteboardChanged = await waitUntil {
+            !FileManager.default.fileExists(atPath: markdownURL.path)
+        }
+        XCTAssertTrue(removedAfterPasteboardChanged)
+    }
+
+    @MainActor
+    func testMixedCopyLeavesClipboardAloneWhenMarkdownStagingFails() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("mixed-copy.png")
+        try Data([0x89, 0x50, 0x4e, 0x47]).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let added = try await repository.add(
+            content: "Explain this image",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let snip = try XCTUnwrap(added)
+        let model = AppModel(
+            library: repository,
+            defaults: defaults(),
+            preparePasteboardExport: { _, _ in
+                throw CocoaError(.fileWriteNoPermission)
+            }
+        )
+        await model.reload()
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-mixed-copy-failure-\(UUID())"))
+        pasteboard.clearContents()
+        pasteboard.setString("Keep this clipboard", forType: .string)
+
+        let copied = await model.placeOnClipboardNow(
+            .snips([snip]),
+            feedback: .silent,
+            to: pasteboard
+        )
+
+        XCTAssertFalse(copied)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Keep this clipboard")
+        XCTAssertNotNil(model.presentedError)
+    }
+
+    @MainActor
+    func testStagedMarkdownExpiresWhenPasteboardChangedBeforeRetentionStarts() async throws {
+        let directory = try storeURL().deletingLastPathComponent()
+        let source = directory.appendingPathComponent("retention-race.png")
+        try Data([0x89, 0x50, 0x4e, 0x47]).write(to: source)
+        let export = try await SnipPasteboardExport.preparingClipboardExport(
+            text: "Explain this image",
+            attachmentURLs: [source]
+        )
+        let pasteboard = NSPasteboard(
+            name: .init("SnipSnapTests-retention-race-\(UUID())")
+        )
+        let writeChangeCount = pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.writeObjects(export.pasteboardWriters()))
+        let markdownURL = try XCTUnwrap(
+            pasteboard.pasteboardItems?
+                .compactMap { $0.string(forType: .fileURL).flatMap(URL.init(string:)) }
+                .first { $0.lastPathComponent == "Snip Snap Snip.md" }
+        )
+
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("External copy", forType: .string))
+        export.retainStagedResources(
+            untilPasteboardChanges: pasteboard,
+            from: writeChangeCount
+        )
+
+        let removed = await waitUntil {
+            !FileManager.default.fileExists(atPath: markdownURL.path)
+        }
+        XCTAssertTrue(removed)
+    }
+
+    @MainActor
     func testSlowerCopyCannotOverwriteANewerCopy() async throws {
         let store = try storeURL()
         let source = store.deletingLastPathComponent().appendingPathComponent("large-copy.bin")
@@ -1400,7 +1539,7 @@ final class AppModelTests: StoreBackedTestCase {
             attachmentURLs: [source]
         )
         let mixedID = try XCTUnwrap(added?.id)
-        let exportGate = PausingPasteboardExportPreparer()
+        let exportGate = PausingPasteboardExportPreparer(throwsAfterRelease: true)
         let model = AppModel(
             library: repository,
             defaults: defaults(),
@@ -1422,11 +1561,14 @@ final class AppModelTests: StoreBackedTestCase {
         await model.waitForPendingClipboardWrite()
 
         XCTAssertEqual(pasteboard.string(forType: .string), "External copy")
+        XCTAssertNil(model.presentedError)
     }
 
     @MainActor
     func testCancellingAwaitedCopyStopsPendingExport() async {
-        let exportGate = PausingPasteboardExportPreparer()
+        let exportGate = PausingPasteboardExportPreparer(
+            returnsNonCancellationError: true
+        )
         let model = AppModel(
             library: InMemorySnipLibrary(snips: []),
             defaults: defaults(),
@@ -1449,6 +1591,7 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertFalse(copied)
         XCTAssertTrue(observedCancellation)
         XCTAssertNil(pasteboard.string(forType: .string))
+        XCTAssertNil(model.presentedError)
     }
 
     @MainActor
@@ -1642,7 +1785,7 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testCopyingARepeatedRemoteAttachmentWritesOneFileObject() async throws {
+    func testCopyingARepeatedRemoteAttachmentWritesOneAttachmentFileObject() async throws {
         let store = try storeURL()
         let source = store.deletingLastPathComponent().appendingPathComponent("copy-once.md")
         try Data("One copy".utf8).write(to: source)
@@ -1675,10 +1818,11 @@ final class AppModelTests: StoreBackedTestCase {
         let requests = await handler.preparationRequests()
         XCTAssertTrue(copied)
 
-        let fileItems = pasteboard.pasteboardItems?.filter {
-            $0.string(forType: .fileURL) != nil
+        let fileURLs = pasteboard.pasteboardItems?.compactMap {
+            $0.string(forType: .fileURL).flatMap(URL.init(string:))
         } ?? []
-        XCTAssertEqual(fileItems.count, 1)
+        XCTAssertEqual(fileURLs.filter { $0.lastPathComponent == "copy-ready.md" }.count, 1)
+        XCTAssertEqual(fileURLs.filter { $0.lastPathComponent == "Snip Snap Snip.md" }.count, 1)
         XCTAssertEqual(requests.count, 1)
     }
 
@@ -2215,12 +2359,22 @@ private actor CancellableMacAttachmentHandler: OptionalCloudSyncHandling {
 }
 
 private actor PausingPasteboardExportPreparer {
+    private let returnsNonCancellationError: Bool
+    private let throwsAfterRelease: Bool
     private var callCount = 0
     private var preparationStarted = false
     private var isReleased = false
     private var observedCancellation = false
 
-    func prepare(text: String, attachmentURLs: [URL]) async -> SnipPasteboardExport {
+    init(
+        returnsNonCancellationError: Bool = false,
+        throwsAfterRelease: Bool = false
+    ) {
+        self.returnsNonCancellationError = returnsNonCancellationError
+        self.throwsAfterRelease = throwsAfterRelease
+    }
+
+    func prepare(text: String, attachmentURLs: [URL]) async throws -> SnipPasteboardExport {
         callCount += 1
         if callCount == 1 {
             preparationStarted = true
@@ -2229,9 +2383,15 @@ private actor PausingPasteboardExportPreparer {
             }
             if Task.isCancelled {
                 observedCancellation = true
+                if returnsNonCancellationError {
+                    throw CocoaError(.fileReadUnknown)
+                }
+            }
+            if throwsAfterRelease {
+                throw CocoaError(.fileReadUnknown)
             }
         }
-        return await SnipPasteboardExport.preparingRichText(
+        return try await SnipPasteboardExport.preparingClipboardExport(
             text: text,
             attachmentURLs: attachmentURLs
         )

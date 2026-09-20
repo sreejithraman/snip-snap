@@ -33,7 +33,13 @@ mac_build="$({
 }
 grep -F -- 'PRODUCT_BUNDLE_IDENTIFIER=$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).compilecheck' \
     "$test_dir/build-args" >/dev/null
-grep -F -- "SNIP_SNAP_PRODUCT_NAME=SnipSnapCompileCheck" "$test_dir/build-args" >/dev/null
+grep -E -- '(^|[[:space:]])SNIP_SNAP_PRODUCT_NAME=SnipSnapCompileCheck([[:space:]]|$)' \
+    "$test_dir/build-args" >/dev/null
+if grep -E -- '(^|[[:space:]])PRODUCT_NAME=SnipSnapCompileCheck([[:space:]]|$)' \
+    "$test_dir/build-args" >/dev/null; then
+    print -u2 "A compile check overrode PRODUCT_NAME for every target."
+    exit 1
+fi
 grep -F -- "INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Compile Check" \
     "$test_dir/build-args" >/dev/null
 [[ "$output" == *"Do not launch this build."* ]]

@@ -2,6 +2,93 @@ import AppKit
 import Darwin
 import Foundation
 
+final class SnipPasteboardMarkdownFile: @unchecked Sendable {
+    static let privateType = NSPasteboard.PasteboardType(
+        "world.sree.snipsnap.generated-markdown"
+    )
+
+    let directory: URL
+    let url: URL
+
+    private let fileManager: FileManager
+    private let lock = NSLock()
+    private var isRemoved = false
+    private var isPasteboardRetentionArmed = false
+    private var cleanupTask: Task<Void, Never>?
+
+    init(markdown: String, fileManager: FileManager = .default) throws {
+        let directory = fileManager.temporaryDirectory
+            .appendingPathComponent("SnipSnapPasteboard", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let url = directory.appendingPathComponent("Snip Snap Snip.md", isDirectory: false)
+        self.directory = directory
+        self.url = url
+        self.fileManager = fileManager
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data(markdown.utf8).write(to: url, options: .atomic)
+        } catch {
+            try? fileManager.removeItem(at: directory)
+            throw error
+        }
+    }
+
+    func pasteboardItem() -> NSPasteboardItem {
+        let item = NSPasteboardItem()
+        item.setString(url.absoluteString, forType: .fileURL)
+        item.setData(Data(), forType: Self.privateType)
+        return item
+    }
+
+    func retainUntilPasteboardChanges(
+        _ pasteboard: NSPasteboard,
+        changeCount: Int
+    ) {
+        let pasteboardName = pasteboard.name
+        let task = Task { @MainActor [self] in
+            let observedPasteboard = NSPasteboard(name: pasteboardName)
+            while !Task.isCancelled, observedPasteboard.changeCount == changeCount {
+                do {
+                    try await Task.sleep(for: .milliseconds(250))
+                } catch {
+                    return
+                }
+            }
+            guard !Task.isCancelled else { return }
+            remove()
+        }
+        let shouldCancel = lock.withLock {
+            guard !isRemoved, cleanupTask == nil else { return true }
+            isPasteboardRetentionArmed = true
+            cleanupTask = task
+            return false
+        }
+        if shouldCancel {
+            task.cancel()
+        }
+    }
+
+    func remove() {
+        let removal = lock.withLock { () -> (Bool, Task<Void, Never>?) in
+            guard !isRemoved else { return (false, nil) }
+            isRemoved = true
+            let task = cleanupTask
+            cleanupTask = nil
+            return (true, task)
+        }
+        guard removal.0 else { return }
+        removal.1?.cancel()
+        try? fileManager.removeItem(at: directory)
+    }
+
+    deinit {
+        let shouldRemove = lock.withLock { !isPasteboardRetentionArmed }
+        if shouldRemove {
+            remove()
+        }
+    }
+}
+
 private final class SnipRichTextPasteboardProvider: NSObject,
     NSPasteboardItemDataProvider,
     @unchecked Sendable {
@@ -60,17 +147,19 @@ struct SnipPasteboardExport {
     let text: String
     let attachmentURLs: [URL]
     private let richText: RichText
+    private let markdownFile: SnipPasteboardMarkdownFile?
 
     init(text: String, attachmentURLs: [URL]) {
         self.text = text
         self.attachmentURLs = attachmentURLs
         richText = .deferred
+        markdownFile = nil
     }
 
-    static func preparingRichText(
+    static func preparingClipboardExport(
         text: String,
         attachmentURLs: [URL]
-    ) async -> Self {
+    ) async throws -> Self {
         guard let sources = eligibleRichTextSources(
             text: text,
             attachmentURLs: attachmentURLs
@@ -78,7 +167,11 @@ struct SnipPasteboardExport {
             return Self(
                 text: text,
                 attachmentURLs: attachmentURLs,
-                richText: .prepared(nil)
+                richText: .prepared(nil),
+                markdownFile: try stagedMarkdownFile(
+                    text: text,
+                    attachmentURLs: attachmentURLs
+                )
             )
         }
         let task: Task<Data?, Never> = Task.detached(priority: .userInitiated) {
@@ -89,21 +182,29 @@ struct SnipPasteboardExport {
         } onCancel: {
             task.cancel()
         }
+        try Task.checkCancellation()
+        let markdownFile = try stagedMarkdownFile(
+            text: text,
+            attachmentURLs: attachmentURLs
+        )
         return Self(
             text: text,
             attachmentURLs: attachmentURLs,
-            richText: .prepared(data)
+            richText: .prepared(data),
+            markdownFile: markdownFile
         )
     }
 
     private init(
         text: String,
         attachmentURLs: [URL],
-        richText: RichText
+        richText: RichText,
+        markdownFile: SnipPasteboardMarkdownFile? = nil
     ) {
         self.text = text
         self.attachmentURLs = attachmentURLs
         self.richText = richText
+        self.markdownFile = markdownFile
     }
 
     func pasteboardWriters(
@@ -121,6 +222,9 @@ struct SnipPasteboardExport {
             writers.append(primary)
         }
         writers.append(contentsOf: filesAfterPrimary)
+        if let markdownFile {
+            writers.append(markdownFile.pasteboardItem())
+        }
         writers.append(contentsOf: attachmentURLs.map { $0 as NSURL })
 
         if text.isEmpty, !additionalRepresentations.isEmpty {
@@ -131,6 +235,63 @@ struct SnipPasteboardExport {
             writers.append(privateItem)
         }
         return writers
+    }
+
+    func retainStagedResources(
+        untilPasteboardChanges pasteboard: NSPasteboard,
+        from changeCount: Int
+    ) {
+        markdownFile?.retainUntilPasteboardChanges(
+            pasteboard,
+            changeCount: changeCount
+        )
+    }
+
+    static func markdown(text: String, attachmentURLs: [URL]) -> String {
+        var result = text
+        if !result.hasSuffix("\n") {
+            result.append("\n")
+        }
+        result.append("\n## Attachments\n\n")
+        for url in attachmentURLs {
+            result.append("- \(markdownCodeSpan(url.lastPathComponent))\n")
+        }
+        return result
+    }
+
+    private static func markdownCodeSpan(_ value: String) -> String {
+        let normalized = value
+            .replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+        var longestBacktickRun = 0
+        var currentBacktickRun = 0
+        for character in normalized {
+            if character == "`" {
+                currentBacktickRun += 1
+                longestBacktickRun = max(longestBacktickRun, currentBacktickRun)
+            } else {
+                currentBacktickRun = 0
+            }
+        }
+        let delimiter = String(repeating: "`", count: longestBacktickRun + 1)
+        let needsPadding = !normalized.allSatisfy(\.isWhitespace)
+            && (normalized.first?.isWhitespace == true
+                || normalized.last?.isWhitespace == true
+                || normalized.first == "`"
+                || normalized.last == "`")
+        let padding = needsPadding ? " " : ""
+        return "\(delimiter)\(padding)\(normalized)\(padding)\(delimiter)"
+    }
+
+    private static func stagedMarkdownFile(
+        text: String,
+        attachmentURLs: [URL]
+    ) throws -> SnipPasteboardMarkdownFile? {
+        guard !text.isEmpty, !attachmentURLs.isEmpty else { return nil }
+        return try SnipPasteboardMarkdownFile(
+            markdown: markdown(text: text, attachmentURLs: attachmentURLs)
+        )
     }
 
     static func addDeferredRichText(
