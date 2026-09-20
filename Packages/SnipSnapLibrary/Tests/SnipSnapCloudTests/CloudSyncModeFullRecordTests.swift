@@ -1,3 +1,4 @@
+import CryptoKit
 import SnipSnapCore
 @testable import SnipSnapPersistence
 @testable import SnipSnapCloud
@@ -1129,15 +1130,33 @@ extension ICloudSyncModeCoordinatorTests {
     }
 
     func testFullReenableIntentReplaysWithoutReceiptAndAdvancesWithReceipt() async throws {
-        for point in [
-            SyncModeCrashPoint.beforeCandidateMergeDurability,
-            .afterCandidateMergeDurability,
-        ] {
+        let cases: [(SyncModeCrashPoint, SnipListColorPreset?, Bool)] = [
+            (.beforeCandidateMergeDurability, nil, false),
+            (.beforeCandidateMergeDurability, .pink, false),
+            (.beforeCandidateMergeDurability, nil, true),
+            (.afterCandidateMergeDurability, nil, false),
+        ]
+        for (point, legacyTargetColor, includeLegacyListConflict) in cases {
             let root = temporaryDirectory()
             defer { try? FileManager.default.removeItem(at: root) }
             let initialPersistence = try SwiftDataSyncModePersistence(rootURL: root)
             let initialLocal = try await initialPersistence.activeLibrary()
             try await add("base", to: initialLocal)
+            var syncedColoredListID: UUID?
+            if let legacyTargetColor {
+                let creation = try await initialLocal.perform(
+                    .createList(
+                        name: "Synced color",
+                        systemImage: "paintpalette",
+                        color: legacyTargetColor
+                    ),
+                    sortedBy: .manual
+                )
+                guard case .listCreated(let list) = creation.outcome else {
+                    return XCTFail("Expected a synced colored list")
+                }
+                syncedColoredListID = list.id
+            }
             let baseSnapshot = await initialLocal.snapshot(sortedBy: .manual)
             let base = try XCTUnwrap(baseSnapshot.snips.first)
             let namespace = makeNamespace()
@@ -1155,6 +1174,13 @@ extension ICloudSyncModeCoordinatorTests {
             let local = try await initialPersistence.activeLibrary()
             let localSnapshot = await local.snapshot(sortedBy: .manual)
             let current = try XCTUnwrap(localSnapshot.snips.first)
+            let listCreation = try await local.perform(
+                .createList(name: "Offline", systemImage: "folder", color: .red),
+                sortedBy: .manual
+            )
+            guard case .listCreated(let coloredList) = listCreation.outcome else {
+                return XCTFail("Expected a colored list")
+            }
             let attachmentURL = root.appendingPathComponent("large-offline.bin")
             let attachmentBytes = Data(repeating: 0xA7, count: 65_536)
             try attachmentBytes.write(to: attachmentURL)
@@ -1197,13 +1223,30 @@ extension ICloudSyncModeCoordinatorTests {
             let stagedFiles = try FileManager.default.subpathsOfDirectory(atPath: root.path)
               .filter { $0.contains("full-reenable-v1") }
             XCTAssertTrue(stagedFiles.contains { $0.hasSuffix("plan.json") })
+            let candidate = try await crashingPersistence.libraryForTransition(
+                storeID: transition.candidateStoreID
+            )
+            if point == .beforeCandidateMergeDurability {
+                let planPath = try XCTUnwrap(stagedFiles.first { $0.hasSuffix("plan.json") })
+                let legacyDigest = try await rewriteStagedPlanAsLegacy(
+                    at: root.appendingPathComponent(planPath),
+                    target: candidate,
+                    includeListConflict: includeLegacyListConflict
+                )
+                try mutateManifest(at: root.appendingPathComponent("activation.json")) { manifest in
+                    var manifestTransition = try XCTUnwrap(manifest["transition"] as? [String: Any])
+                    var manifestIntent = try XCTUnwrap(
+                        manifestTransition["mergeIntent"] as? [String: Any]
+                    )
+                    manifestIntent["planDigest"] = legacyDigest.base64EncodedString()
+                    manifestTransition["mergeIntent"] = manifestIntent
+                    manifest["transition"] = manifestTransition
+                }
+            }
             let stagedAttachment = try XCTUnwrap(stagedFiles.first { $0.hasSuffix(".data") })
             XCTAssertEqual(
                 try Data(contentsOf: root.appendingPathComponent(stagedAttachment)),
                 attachmentBytes
-            )
-            let candidate = try await crashingPersistence.libraryForTransition(
-                storeID: transition.candidateStoreID
             )
             let receipt = try await candidate.recognizesAppliedCloudFullReenable(
                 CloudFullReenableCommitProof(
@@ -1224,10 +1267,42 @@ extension ICloudSyncModeCoordinatorTests {
                 }
             )
             let result = try await resumed.enableOrRetry()
-            XCTAssertEqual(result.state, .on)
+            XCTAssertEqual(result.state, includeLegacyListConflict ? .needsAttention : .on)
             let reopenedLibrary = try await reopened.activeLibrary()
             let final = await reopenedLibrary.snapshot(sortedBy: .manual)
             XCTAssertEqual(final.snips.first(where: { $0.id == base.id })?.content, "changed while local")
+            XCTAssertEqual(
+                final.lists.first(where: { $0.id == coloredList.id })?.color,
+                point == .beforeCandidateMergeDurability ? nil : .red
+            )
+            if let syncedColoredListID {
+                let syncedList = try XCTUnwrap(
+                    final.lists.first(where: { $0.id == syncedColoredListID })
+                )
+                XCTAssertNil(syncedList.color)
+            }
+            if includeLegacyListConflict {
+                let activeStorage = try await reopened.snapshot()
+                let rawLibrary = try await reopened.libraryForTransition(
+                    storeID: activeStorage.activeStore.id
+                )
+                let recovery = try await rawLibrary.recoverySnapshot(
+                    in: SnipRecoveryScope(namespace.namespaceKey.rawValue)
+                )
+                let recovered = try XCTUnwrap(
+                    recovery.pendingLists.first(where: { $0.id == legacyStagedListRecoveryID })
+                )
+                XCTAssertEqual(recovered.recovered.desiredName, "Recovered legacy list")
+                XCTAssertEqual(recovered.recovered.resolvedName, "Recovered legacy list")
+                XCTAssertEqual(recovered.recovered.systemImage, "paintpalette")
+                XCTAssertEqual(recovered.conflictingFields, [.color])
+                XCTAssertNil(recovered.recovered.color)
+                XCTAssertEqual(recovered.currentListID, recovered.recovered.id)
+                let currentList = try XCTUnwrap(
+                    final.lists.first(where: { $0.id == recovered.currentListID })
+                )
+                XCTAssertEqual(recovered.recovered.sortKey, currentList.sortKey)
+            }
             let finalAttachment = try XCTUnwrap(final.snips.first?.attachments.first)
             let finalURL = try XCTUnwrap(final.attachmentURLs[finalAttachment.id])
             XCTAssertEqual(try Data(contentsOf: finalURL), attachmentBytes)
@@ -1978,4 +2053,263 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(stored.pendingSettlementSnipIDs, [domainID])
     }
 
+}
+
+private struct LegacyStagedListColor: Encodable {
+    let light: String
+    let dark: String
+}
+
+private struct LegacyStagedList: Encodable {
+    let id: UUID
+    let name: String
+    let desiredName: String
+    let resolvedName: String
+    let systemImage: String
+    let color: LegacyStagedListColor?
+    let position: Int
+    let sortKey: SnipOrderKey
+
+    init(_ list: SnipList) {
+        id = list.id
+        name = list.resolvedName
+        desiredName = list.desiredName
+        resolvedName = list.resolvedName
+        systemImage = list.systemImage
+        color = switch list.color {
+        case .red: LegacyStagedListColor(light: "#E81345", dark: "#FF2454")
+        case .orange: LegacyStagedListColor(light: "#FF7800", dark: "#FF8A00")
+        case .yellow: LegacyStagedListColor(light: "#F5C400", dark: "#FFD000")
+        case .green: LegacyStagedListColor(light: "#00B84F", dark: "#00DB63")
+        case .teal: LegacyStagedListColor(light: "#1C807A", dark: "#82FAF3")
+        case .blue: LegacyStagedListColor(light: "#007AFF", dark: "#008CFF")
+        case .indigo: LegacyStagedListColor(light: "#4636E8", dark: "#604AFF")
+        case .violet: LegacyStagedListColor(light: "#9822EE", dark: "#AF32FF")
+        case .pink: LegacyStagedListColor(light: "#801C4C", dark: "#FA82BC")
+        case .clay: LegacyStagedListColor(light: "#9A5A3C", dark: "#F0A17E")
+        case .slate: LegacyStagedListColor(light: "#526678", dark: "#BBD1E5")
+        case nil: nil
+        }
+        position = list.position
+        sortKey = list.sortKey
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, desiredName, resolvedName, systemImage, color, position, sortKey
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(desiredName, forKey: .desiredName)
+        try container.encode(resolvedName, forKey: .resolvedName)
+        try container.encode(systemImage, forKey: .systemImage)
+        try container.encode(color, forKey: .color)
+        try container.encode(position, forKey: .position)
+        try container.encode(sortKey, forKey: .sortKey)
+    }
+}
+
+private struct LegacyStagedPlanDigestInput: Encodable {
+    let storageVersion: Int
+    let transitionID: UUID
+    let namespaceKey: String
+    let expectedNamespaceRevision: UInt64
+    let targetRevision: UInt64
+    let targetDigest: Data
+    let snips: [Snip]
+    let lists: [LegacyStagedList]
+    let attachmentData: [UUID: Data]
+    let dormantPayload: Data
+    let acceptedCAS: [CloudFullReenableAcceptedCAS]
+    let conflicts: [LegacyStagedJSON]
+    let recoveryInputs: [CloudFullRecoveryInput]
+    let approvedSnipIDs: Set<UUID>
+    let recoveredSourceSnipIDs: Set<UUID>
+}
+
+private let legacyStagedListRecoveryID = UUID(
+    uuidString: "00000000-0000-4000-8000-000000000123"
+)!
+
+private enum LegacyStagedJSON: Codable {
+    case null
+    case bool(Bool)
+    case integer(Int64)
+    case number(Double)
+    case string(String)
+    case array([Self])
+    case object([String: Self])
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() { self = .null }
+        else if let value = try? container.decode(Bool.self) { self = .bool(value) }
+        else if let value = try? container.decode(Int64.self) { self = .integer(value) }
+        else if let value = try? container.decode(Double.self) { self = .number(value) }
+        else if let value = try? container.decode(String.self) { self = .string(value) }
+        else if let value = try? container.decode([Self].self) { self = .array(value) }
+        else { self = .object(try container.decode([String: Self].self)) }
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .null: try container.encodeNil()
+        case .bool(let value): try container.encode(value)
+        case .integer(let value): try container.encode(value)
+        case .number(let value): try container.encode(value)
+        case .string(let value): try container.encode(value)
+        case .array(let value): try container.encode(value)
+        case .object(let value): try container.encode(value)
+        }
+    }
+}
+
+private func rewriteStagedPlanAsLegacy(
+    at url: URL,
+    target: SwiftDataSnipLibrary,
+    includeListConflict: Bool
+) async throws -> Data {
+    let stagedData = try Data(contentsOf: url)
+    let staged = try JSONDecoder().decode(CloudFullReenableStagedPlan.self, from: stagedData)
+    let plan = try staged.restore(from: url.deletingLastPathComponent()).plan
+    let targetSnapshot = try await target.transferSnapshot(revision: plan.targetRevision)
+    let targetDigest = legacyTransferSnapshotDigest(targetSnapshot)
+    let legacyLists = plan.lists.map(LegacyStagedList.init)
+    var conflicts = plan.conflicts
+    if includeListConflict {
+        let recovered = try XCTUnwrap(plan.lists.first)
+        conflicts.append(CloudConflictInput(
+            key: "legacy-list-conflict",
+            reference: CloudEntityReference(kind: .list, domainID: recovered.id),
+            format: .listMergeV1,
+            payload: Data("legacy list conflict".utf8),
+            recovery: .list(RecoveredListEdit(
+                id: legacyStagedListRecoveryID,
+                currentListID: recovered.id,
+                recovered: SnipList(
+                    id: recovered.id,
+                    desiredName: "Recovered legacy list",
+                    resolvedName: "Recovered legacy list",
+                    systemImage: "paintpalette",
+                    color: .pink,
+                    sortKey: recovered.sortKey
+                ),
+                conflictingFields: [.color]
+            ))
+        ))
+    }
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    encoder.dateEncodingStrategy = .secondsSince1970
+    let encodedConflicts = try JSONSerialization.jsonObject(with: encoder.encode(conflicts))
+    let legacyConflictsJSON = legacyColorJSON(encodedConflicts)
+    let legacyConflictsData = try JSONSerialization.data(
+        withJSONObject: legacyConflictsJSON,
+        options: [.sortedKeys]
+    )
+    let legacyConflicts = try JSONDecoder().decode(
+        [LegacyStagedJSON].self,
+        from: legacyConflictsData
+    )
+    let digestInput = LegacyStagedPlanDigestInput(
+        storageVersion: plan.storageVersion,
+        transitionID: plan.transitionID,
+        namespaceKey: plan.namespaceKey,
+        expectedNamespaceRevision: plan.expectedNamespaceRevision,
+        targetRevision: plan.targetRevision,
+        targetDigest: targetDigest,
+        snips: plan.snips,
+        lists: legacyLists,
+        attachmentData: plan.attachmentData,
+        dormantPayload: plan.dormantPayload,
+        acceptedCAS: plan.acceptedCAS,
+        conflicts: legacyConflicts,
+        recoveryInputs: plan.recoveryInputs,
+        approvedSnipIDs: plan.result.approvedSnipIDs,
+        recoveredSourceSnipIDs: plan.result.recoveredSourceSnipIDs
+    )
+    let legacyDigest = Data(SHA256.hash(data: try encoder.encode(digestInput)))
+    var object = try XCTUnwrap(
+        JSONSerialization.jsonObject(with: stagedData) as? [String: Any]
+    )
+    object["lists"] = try JSONSerialization.jsonObject(with: encoder.encode(legacyLists))
+    object["conflicts"] = legacyConflictsJSON
+    object["targetDigest"] = targetDigest.base64EncodedString()
+    object["planDigest"] = legacyDigest.base64EncodedString()
+    try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        .write(to: url, options: .atomic)
+    return legacyDigest
+}
+
+private func legacyColorJSON(_ value: Any) -> Any {
+    if let values = value as? [Any] {
+        return values.map(legacyColorJSON)
+    }
+    guard var values = value as? [String: Any] else { return value }
+    values = values.mapValues(legacyColorJSON)
+    guard let preset = values.removeValue(forKey: "colorPreset") as? String else {
+        return values
+    }
+    let pair: [String: String] = switch preset {
+    case "red": ["light": "#E81345", "dark": "#FF2454"]
+    case "orange": ["light": "#FF7800", "dark": "#FF8A00"]
+    case "yellow": ["light": "#F5C400", "dark": "#FFD000"]
+    case "green": ["light": "#00B84F", "dark": "#00DB63"]
+    case "teal": ["light": "#1C807A", "dark": "#82FAF3"]
+    case "blue": ["light": "#007AFF", "dark": "#008CFF"]
+    case "indigo": ["light": "#4636E8", "dark": "#604AFF"]
+    case "violet": ["light": "#9822EE", "dark": "#AF32FF"]
+    case "pink": ["light": "#801C4C", "dark": "#FA82BC"]
+    case "clay": ["light": "#9A5A3C", "dark": "#F0A17E"]
+    case "slate": ["light": "#526678", "dark": "#BBD1E5"]
+    default: [:]
+    }
+    values["color"] = pair
+    return values
+}
+
+private func legacyTransferSnapshotDigest(_ snapshot: SnipLibraryTransferSnapshot) -> Data {
+    var bytes = Data("snipsnap-transfer-snapshot-v2".utf8)
+    appendLegacyDigest(snapshot.revision, to: &bytes)
+    appendLegacyDigest(UInt64(snapshot.lists.count), to: &bytes)
+    for list in snapshot.lists {
+        appendLegacyDigest(list.id.uuidString.lowercased(), to: &bytes)
+        appendLegacyDigest(list.desiredName, to: &bytes)
+        appendLegacyDigest(list.resolvedName, to: &bytes)
+        appendLegacyDigest(list.systemImage, to: &bytes)
+        let color = LegacyStagedList(list).color
+        appendLegacyDigest(color?.light ?? "", to: &bytes)
+        appendLegacyDigest(color?.dark ?? "", to: &bytes)
+        appendLegacyDigest(list.sortKey.data, to: &bytes)
+    }
+    appendLegacyDigest(UInt64(snapshot.snips.count), to: &bytes)
+    for snip in snapshot.snips {
+        appendLegacyDigest(
+            SnipLibraryTransferPlanner.digest(
+                snip: snip,
+                attachmentData: snapshot.attachmentData,
+                attachmentFileDigests: snapshot.attachmentFileDigests
+            ),
+            to: &bytes
+        )
+    }
+    appendLegacyDigest(snapshot.opaqueSyncStateDigest, to: &bytes)
+    return Data(SHA256.hash(data: bytes))
+}
+
+private func appendLegacyDigest(_ value: String, to data: inout Data) {
+    appendLegacyDigest(Data(value.utf8), to: &data)
+}
+
+private func appendLegacyDigest(_ value: Data, to data: inout Data) {
+    appendLegacyDigest(UInt64(value.count), to: &data)
+    data.append(value)
+}
+
+private func appendLegacyDigest(_ value: UInt64, to data: inout Data) {
+    var bigEndian = value.bigEndian
+    withUnsafeBytes(of: &bigEndian) { data.append(contentsOf: $0) }
 }

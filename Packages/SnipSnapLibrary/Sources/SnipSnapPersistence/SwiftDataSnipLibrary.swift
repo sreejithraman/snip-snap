@@ -425,7 +425,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
   }
 
   private static func makeContainer(storeURL: URL) throws -> ModelContainer {
-    let schema = Schema(versionedSchema: SnipSnapSchemaV7.self)
+    let schema = Schema(versionedSchema: SnipSnapSchemaV9.self)
     let configuration = ModelConfiguration(
       "SnipSnapLocal",
       schema: schema,

@@ -1,97 +1,5 @@
-import CryptoKit
 import Foundation
 import SnipSnapCore
-
-private struct CloudFullReenableStagedPlan: Codable {
-  struct AttachmentFile: Codable {
-    let id: UUID
-    let relativePath: String
-    let digest: Data
-  }
-
-  let storageVersion: Int
-  let transitionID: UUID
-  let namespaceKey: String
-  let expectedNamespaceRevision: UInt64
-  let targetRevision: UInt64
-  let targetDigest: Data
-  let snips: [Snip]
-  let lists: [SnipList]
-  let dormantPayload: Data
-  let acceptedCAS: [CloudFullReenableAcceptedCAS]
-  let conflicts: [CloudConflictInput]
-  let recoveryInputs: [CloudFullRecoveryInput]
-  let result: SnipLibraryTransferResult
-  let attachmentFiles: [AttachmentFile]
-  let planDigest: Data
-
-  init(plan: CloudFullReenableApplyPlan) {
-    storageVersion = 1
-    transitionID = plan.transitionID
-    namespaceKey = plan.namespaceKey
-    expectedNamespaceRevision = plan.expectedNamespaceRevision
-    targetRevision = plan.targetRevision
-    targetDigest = plan.targetDigest
-    snips = plan.snips
-    lists = plan.lists
-    dormantPayload = plan.dormantPayload
-    acceptedCAS = plan.acceptedCAS
-    conflicts = plan.conflicts
-    recoveryInputs = plan.recoveryInputs
-    result = plan.result
-    attachmentFiles = plan.attachmentData.map { id, data in
-      let digest = Data(SHA256.hash(data: data))
-      return AttachmentFile(
-        id: id,
-        relativePath: "attachments/\(Self.hex(digest)).data",
-        digest: digest
-      )
-    }.sorted { $0.id.uuidString < $1.id.uuidString }
-    planDigest = plan.planDigest
-  }
-
-  func restore(from root: URL) throws -> CloudFullReenableApplyPlan {
-    guard storageVersion == 1,
-      Set(attachmentFiles.map(\.id)).count == attachmentFiles.count
-    else { throw SyncModePersistenceError.invalidManifest }
-    var attachmentData: [UUID: Data] = [:]
-    for file in attachmentFiles {
-      let expectedPath = "attachments/\(Self.hex(file.digest)).data"
-      guard file.relativePath == expectedPath else {
-        throw SyncModePersistenceError.invalidManifest
-      }
-      let data = try Data(contentsOf: root.appendingPathComponent(file.relativePath))
-      guard Data(SHA256.hash(data: data)) == file.digest else {
-        throw SyncModePersistenceError.invalidManifest
-      }
-      attachmentData[file.id] = data
-    }
-    let plan = try CloudFullReenableApplyPlan(
-      transitionID: transitionID,
-      namespaceKey: namespaceKey,
-      expectedNamespaceRevision: expectedNamespaceRevision,
-      targetRevision: targetRevision,
-      targetDigest: targetDigest,
-      snips: snips,
-      lists: lists,
-      attachmentData: attachmentData,
-      dormantPayload: dormantPayload,
-      acceptedCAS: acceptedCAS,
-      conflicts: conflicts,
-      recoveryInputs: recoveryInputs,
-      result: result
-    )
-    guard plan.planDigest == planDigest else {
-      throw SyncModePersistenceError.invalidManifest
-    }
-    return plan
-  }
-
-  private static func hex(_ data: Data) -> String {
-    data.map { String(format: "%02x", $0) }.joined()
-  }
-}
-
 
 extension SwiftDataSyncModePersistence {
   package func freezeSource() throws -> SyncModeFreezeToken {
@@ -282,9 +190,10 @@ extension SwiftDataSyncModePersistence {
   package func reconcileFullReenableIntent() async throws {
     guard let transition = manifest.transition,
       transition.phase == .sourceFrozen,
-      let intent = transition.mergeIntent,
-      intent.fullReenablePlanID == transition.id
+      let initialIntent = transition.mergeIntent,
+      initialIntent.fullReenablePlanID == transition.id
     else { return }
+    var intent = initialIntent
     let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
     let proof = CloudFullReenableCommitProof(
       namespaceKey: transition.namespace?.namespaceKey ?? CloudSyncNamespaceKey(rawValue: ""),
@@ -300,12 +209,47 @@ extension SwiftDataSyncModePersistence {
       try abortUnactivatedCandidate(reason: .storageFailure)
       throw SyncModePersistenceError.storageFailure
     }
-    let plan: CloudFullReenableApplyPlan
+    var plan: CloudFullReenableApplyPlan
     do {
-      plan = try loadFullReenablePlan(
+      let restored = try loadFullReenablePlan(
         candidateStoreID: transition.candidateStoreID,
         transitionID: transition.id
       )
+      plan = restored.plan
+      if let legacyDigest = restored.acceptedLegacyDigest {
+        guard let candidateStore = store(id: transition.candidateStoreID),
+          candidateStore.revision == plan.targetRevision
+        else { throw SyncModePersistenceError.invalidManifest }
+        let candidateSnapshot = try await candidate.transferSnapshot(
+          revision: candidateStore.revision
+        )
+        plan = try plan.replacingTargetDigest(
+          SnipLibraryTransferPlanner.digest(snapshot: candidateSnapshot)
+        )
+        if legacyDigest == intent.planDigest, plan.planDigest != intent.planDigest {
+          let migrated = SyncModeMergeIntent(
+            id: intent.id,
+            sourceRevision: intent.sourceRevision,
+            planDigest: plan.planDigest,
+            approvedSnipIDs: intent.approvedSnipIDs,
+            recoveredSourceSnipIDs: intent.recoveredSourceSnipIDs,
+            seedProvenance: intent.seedProvenance,
+            seededListIDs: intent.seededListIDs,
+            fullReenablePlanID: intent.fullReenablePlanID
+          )
+          var next = manifest
+          guard next.transition?.mergeIntent == intent else {
+            throw SyncModePersistenceError.transitionInProgress
+          }
+          next.transition?.mergeIntent = migrated
+          try commit(next)
+          intent = migrated
+        }
+        guard plan.planDigest == intent.planDigest else {
+          throw SyncModePersistenceError.invalidManifest
+        }
+        try stageFullReenablePlan(plan, candidateStoreID: transition.candidateStoreID)
+      }
       guard plan.transitionID == transition.id,
         plan.planDigest == intent.planDigest,
         try plan.hasValidDigest()
@@ -428,7 +372,7 @@ extension SwiftDataSyncModePersistence {
   private func loadFullReenablePlan(
     candidateStoreID: UUID,
     transitionID: UUID
-  ) throws -> CloudFullReenableApplyPlan {
+  ) throws -> CloudFullReenableStagedPlan.Restored {
     let root = try fullReenablePlanRoot(
       candidateStoreID: candidateStoreID,
       transitionID: transitionID

@@ -6,6 +6,119 @@ import XCTest
 @testable import SnipSnapPersistence
 
 extension CloudFullRecordPersistenceTests {
+  func testLegacyColoredStagedListBatchLoadsAndCommitsAsNeutral() async throws {
+    let location = temporaryStore()
+    defer { try? FileManager.default.removeItem(at: location.root) }
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|legacy-colored-batch")
+    let store = try SwiftDataSnipLibrary(storeURL: location.store)
+    let creation = try await store.perform(
+      .createList(name: "Work", systemImage: "briefcase"),
+      sortedBy: .manual
+    )
+    guard case .listCreated(let list) = creation.outcome else {
+      return XCTFail("Expected a list")
+    }
+    let add = try await store.perform(
+      .add(
+        content: "Keep this snip",
+        origin: .quickEntry,
+        source: nil,
+        listID: list.id,
+        attachmentURLs: [],
+        requestID: UUID(),
+        now: Date(timeIntervalSince1970: 1)
+      ),
+      sortedBy: .manual
+    )
+    guard case .add(.added(let snipID)) = add.outcome else {
+      return XCTFail("Expected a snip")
+    }
+
+    let legacyColoredList = SnipList(
+      id: list.id,
+      name: list.name,
+      systemImage: list.systemImage,
+      color: .red,
+      position: list.position,
+      sortKey: list.sortKey
+    )
+    let renamedList = SnipList(
+      id: list.id,
+      name: "Projects",
+      systemImage: list.systemImage,
+      position: list.position,
+      sortKey: list.sortKey
+    )
+    let batch = CloudFullBatchCommit(
+      namespaceKey: namespace.rawValue,
+      batchID: UUID(),
+      expectedEngineState: nil,
+      nextEngineState: Data("advanced".utf8),
+      items: [
+        CloudFullBatchItem(
+          accepted: entity(.list, list.id, identity("legacy-colored-list")),
+          expectedLocalRevision: nil,
+          expectedSystemFields: nil,
+          localPrecondition: .exactList(CloudLocalListMutation(legacyColoredList)),
+          localMutation: .upsertList(renamedList),
+          conflict: nil,
+          quarantine: nil
+        )
+      ]
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let currentPayload = try encoder.encode(batch)
+    let currentJSON = try XCTUnwrap(String(data: currentPayload, encoding: .utf8))
+    let legacyJSON = currentJSON.replacingOccurrences(
+      of: #""colorPreset":"red""#,
+      with: ##""color":{"dark":"#FF4040","light":"#E00000"}"##
+    )
+    XCTAssertNotEqual(legacyJSON, currentJSON)
+    let storedPayload = try CloudWirePayloadEnvelope(
+      format: .fullRecordV1,
+      payload: Data(legacyJSON.utf8)
+    ).encoded()
+    try await store.insertLegacyStagedBatch(
+      namespaceKey: namespace.rawValue,
+      batchID: batch.batchID,
+      payload: storedPayload
+    )
+
+    let staged = try await store.stagedCloudFullBatches(namespaceKey: namespace)
+    let loaded = try XCTUnwrap(staged.first)
+    guard case .exactList(let decodedPrecondition) = loaded.items.first?.localPrecondition else {
+      return XCTFail("Expected the list precondition")
+    }
+    XCTAssertNil(decodedPrecondition.color)
+    let result = try await store.commitCloudFullBatch(loaded)
+    XCTAssertEqual(result, .applied)
+    let snapshot = await store.snapshot(sortedBy: .manual)
+    XCTAssertEqual(snapshot.lists.first(where: { $0.id == list.id })?.desiredName, "Projects")
+    XCTAssertNil(snapshot.lists.first(where: { $0.id == list.id })?.color)
+    XCTAssertEqual(snapshot.snips.first(where: { $0.id == snipID })?.content, "Keep this snip")
+
+    let malformedJSON = currentJSON.replacingOccurrences(
+      of: #""colorPreset":"red""#,
+      with: "\"color\":true"
+    )
+    XCTAssertNotEqual(malformedJSON, currentJSON)
+    try await store.insertLegacyStagedBatch(
+      namespaceKey: namespace.rawValue,
+      batchID: batch.batchID,
+      payload: try CloudWirePayloadEnvelope(
+        format: .fullRecordV1,
+        payload: Data(malformedJSON.utf8)
+      ).encoded()
+    )
+    do {
+      _ = try await store.stagedCloudFullBatches(namespaceKey: namespace)
+      XCTFail("Expected malformed durable color data to be rejected")
+    } catch {
+      XCTAssertTrue(error is DecodingError)
+    }
+  }
+
   func testFullBatchCommitsLocalRecordsBasesConflictStageAndEngineOnce() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
@@ -759,4 +872,20 @@ extension CloudFullRecordPersistenceTests {
     XCTAssertEqual(afterClear, .applied)
   }
 
+}
+
+private extension SwiftDataSnipLibrary {
+  func insertLegacyStagedBatch(
+    namespaceKey: String,
+    batchID: UUID,
+    payload: Data
+  ) throws {
+    let context = Self.makeContext(container: try XCTUnwrap(container))
+    context.insert(StoredCloudStagedBatch(
+      namespaceKey: namespaceKey,
+      batchID: batchID,
+      payload: payload
+    ))
+    try context.save()
+  }
 }

@@ -16,7 +16,7 @@ extension CloudFullSyncPersistenceTests {
     let first = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("first.store"))
     let second = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("second.store"))
     let created = try await first.perform(
-      .createList(name: "Work", systemImage: "folder", color: SnipListColorPreset.blue.color), sortedBy: .manual)
+      .createList(name: "Work", systemImage: "folder", color: .blue), sortedBy: .manual)
     guard case .listCreated(let list) = created.outcome else { return XCTFail("Expected list") }
     let firstStore = CloudFullSyncPersistence(library: first, namespace: namespace, dataZone: zone)
     let secondStore = CloudFullSyncPersistence(library: second, namespace: namespace, dataZone: zone)
@@ -31,9 +31,9 @@ extension CloudFullSyncPersistenceTests {
     try await firstClient.sync()
     try await secondClient.fetchRemote()
     let received = await second.snapshot(sortedBy: .manual)
-    XCTAssertEqual(received.lists.first { $0.id == list.id }?.color, SnipListColorPreset.blue.color)
+    XCTAssertEqual(received.lists.first { $0.id == list.id }?.color, .blue)
     _ = try await first.perform(
-      .updateList(id: list.id, name: "Work", systemImage: "folder", color: .set(SnipListColorPreset.violet.color)), sortedBy: .manual)
+      .updateList(id: list.id, name: "Work", systemImage: "folder", color: .set(.violet)), sortedBy: .manual)
     _ = try await second.perform(
       .updateList(id: list.id, name: "Projects", systemImage: "folder"), sortedBy: .manual)
     try await firstClient.sync()
@@ -41,7 +41,7 @@ extension CloudFullSyncPersistenceTests {
     try await firstClient.sync()
     for library in [first, second] {
       let snapshot = await library.snapshot(sortedBy: .manual)
-      XCTAssertEqual(snapshot.lists.first { $0.id == list.id }?.color, SnipListColorPreset.violet.color)
+      XCTAssertEqual(snapshot.lists.first { $0.id == list.id }?.color, .violet)
       XCTAssertEqual(snapshot.lists.first { $0.id == list.id }?.name, "Projects")
     }
     _ = try await first.perform(

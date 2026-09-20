@@ -105,7 +105,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
 
         let token = Data("opaque stored CAS token".utf8)
         XCTAssertNotEqual(accepted.shadow.systemFields, token)
-        let schema = Schema(versionedSchema: SnipSnapSchemaV7.self)
+        let schema = Schema(versionedSchema: SnipSnapSchemaV9.self)
         let configuration = ModelConfiguration(
             "SnipSnapLocal",
             schema: schema,

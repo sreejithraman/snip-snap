@@ -416,6 +416,24 @@ package struct CloudFullReenableApplyPlan: Codable, Equatable, Sendable {
     )
   }
 
+  package func replacingTargetDigest(_ targetDigest: Data) throws -> Self {
+    try Self(
+      transitionID: transitionID,
+      namespaceKey: namespaceKey,
+      expectedNamespaceRevision: expectedNamespaceRevision,
+      targetRevision: targetRevision,
+      targetDigest: targetDigest,
+      snips: snips,
+      lists: lists,
+      attachmentData: attachmentData,
+      dormantPayload: dormantPayload,
+      acceptedCAS: acceptedCAS,
+      conflicts: conflicts,
+      recoveryInputs: recoveryInputs,
+      result: result
+    )
+  }
+
   private static func digest(
     storageVersion: Int,
     transitionID: UUID,
@@ -578,22 +596,6 @@ package struct CloudLocalSnipMutation: Codable, Equatable, Sendable {
     isDone = snip.isDone
     pinnedAt = snip.pinnedAt
     orderKey = snip.manualSortKey
-  }
-}
-
-package struct CloudLocalListMutation: Codable, Equatable, Sendable {
-  package let listID: UUID
-  package let desiredName: String
-  package let systemImage: String
-  package let color: SnipListColor?
-  package let orderKey: SnipOrderKey
-
-  package init(_ list: SnipList) {
-    listID = list.id
-    desiredName = list.desiredName
-    systemImage = list.systemImage
-    color = list.color
-    orderKey = list.sortKey
   }
 }
 

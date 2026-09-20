@@ -422,7 +422,7 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
     var recoveredList = current
     recoveredList.name = "Local name"
     recoveredList.systemImage = "folder"
-    recoveredList.color = SnipListColorPreset.blue.color
+    recoveredList.color = .blue
     let item = RecoveredListEdit(
       id: UUID(),
       currentListID: current.id,
@@ -439,13 +439,13 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
     var custom = recoveredList
     custom.name = "Chosen name"
     custom.systemImage = "star"
-    custom.color = SnipListColorPreset.violet.color
+    custom.color = .violet
 
     _ = try await store.resolveRecovery(item.id, in: scope, choice: .editList(custom))
     let snapshot = await store.snapshot(sortedBy: .manual)
     XCTAssertEqual(snapshot.lists.first { $0.id == current.id }?.name, "Server name")
     XCTAssertEqual(snapshot.lists.first { $0.id == current.id }?.systemImage, "server.rack")
-    XCTAssertEqual(snapshot.lists.first { $0.id == current.id }?.color, SnipListColorPreset.violet.color)
+    XCTAssertEqual(snapshot.lists.first { $0.id == current.id }?.color, .violet)
     XCTAssertEqual(snapshot.snips.first { $0.id == member.id }?.listID, current.id)
     let recoveryAfterEdit = try await store.recoverySnapshot(in: scope)
     XCTAssertTrue(recoveryAfterEdit.pendingLists.isEmpty)

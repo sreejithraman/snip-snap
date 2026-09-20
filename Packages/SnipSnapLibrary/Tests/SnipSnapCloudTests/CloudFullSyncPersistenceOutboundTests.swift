@@ -203,7 +203,7 @@ extension CloudFullSyncPersistenceTests {
     try await persistence.stage(.fetched(fetched), outbound: nil)
     try await persistence.applyStaged(fetched.id)
 
-    let schema = Schema(versionedSchema: SnipSnapSchemaV7.self)
+    let schema = Schema(versionedSchema: SnipSnapSchemaV9.self)
     let configuration = ModelConfiguration(
       "SnipSnapLocal",
       schema: schema,
@@ -368,7 +368,7 @@ extension CloudFullSyncPersistenceTests {
     guard case .add(.added(let snipID)) = added.outcome else {
       return XCTFail("Expected a saved snip")
     }
-    let schema = Schema(versionedSchema: SnipSnapSchemaV7.self)
+    let schema = Schema(versionedSchema: SnipSnapSchemaV9.self)
     let configuration = ModelConfiguration(
       "SnipSnapLocal",
       schema: schema,

@@ -1,8 +1,16 @@
 # CloudKit schema
 
-`SnipSnap.ckdb` defines the Development schema used by Snip Snap. It lists only
-record types and fields. CloudKit creates each user's custom zones at runtime,
-so this file must not name a user's metadata or payload zone.
+`SnipSnap.ckdb` defines the clean schema expected by the current Snip Snap
+runtime. It lists only live record types and fields. CloudKit creates each
+user's custom zones at runtime, so this file must not name a user's metadata or
+payload zone.
+
+Treat this file as a fresh-container baseline, not a destructive diff for an
+existing container. For an additive rollout, export the existing Development
+schema, add the new fields from this baseline, validate, and import that merged
+schema. Deployed retired fields can remain physically present even though the
+runtime no longer writes them; do not try to remove them by importing this
+clean baseline.
 
 The schema has five record types:
 

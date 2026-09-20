@@ -44,7 +44,7 @@ package struct CloudListMergeFields: Codable, Equatable, Sendable {
   package var id: UUID
   package var desiredName: String
   package var systemImage: String
-  package var color: SnipListColor?
+  package var color: SnipListColorPreset?
   package var orderKey: SnipOrderKey
   package var updatedAt: Date
 
@@ -52,7 +52,7 @@ package struct CloudListMergeFields: Codable, Equatable, Sendable {
     id: UUID,
     desiredName: String,
     systemImage: String,
-    color: SnipListColor? = nil,
+    color: SnipListColorPreset? = nil,
     orderKey: SnipOrderKey,
     updatedAt: Date
   ) {
@@ -62,6 +62,37 @@ package struct CloudListMergeFields: Codable, Equatable, Sendable {
     self.color = color
     self.orderKey = orderKey
     self.updatedAt = updatedAt
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id, desiredName, systemImage, color, colorPreset, orderKey, updatedAt
+  }
+
+  package init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = try container.decode(UUID.self, forKey: .id)
+    desiredName = try container.decode(String.self, forKey: .desiredName)
+    systemImage = try container.decode(String.self, forKey: .systemImage)
+    if container.contains(.colorPreset) {
+      color = try StoredListColorPresetCodec.decodeIfPresent(
+        from: container,
+        forKey: .colorPreset
+      )
+    } else {
+      color = try StoredListColorPresetCodec.decodeIfPresent(from: container, forKey: .color)
+    }
+    orderKey = try container.decode(SnipOrderKey.self, forKey: .orderKey)
+    updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+  }
+
+  package func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(id, forKey: .id)
+    try container.encode(desiredName, forKey: .desiredName)
+    try container.encode(systemImage, forKey: .systemImage)
+    try container.encodeIfPresent(color?.rawValue, forKey: .colorPreset)
+    try container.encode(orderKey, forKey: .orderKey)
+    try container.encode(updatedAt, forKey: .updatedAt)
   }
 }
 

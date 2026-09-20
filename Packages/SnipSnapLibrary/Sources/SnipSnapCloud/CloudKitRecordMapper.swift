@@ -3,9 +3,13 @@ import Foundation
 
 package enum CloudKitRecordMapper {
     package static func record(for draft: CloudRecordDraft) throws -> CKRecord {
+        let removableEncryptedFields: Set<String> = switch draft.recordType {
+        case "Snip": ["sourceValue"]
+        case "List": ["color"]
+        default: []
+        }
         guard draft.removedRoutingFields.isEmpty,
-              draft.removedEncryptedFields.isEmpty || draft.recordType == "Snip",
-              draft.removedEncryptedFields.isSubset(of: ["sourceValue"]),
+              draft.removedEncryptedFields.isSubset(of: removableEncryptedFields),
               draft.removedEncryptedFields.isDisjoint(with: draft.encryptedFields.keys)
         else {
             throw CloudRecordError.invalidField("removedFields")
@@ -31,7 +35,10 @@ package enum CloudKitRecordMapper {
         let storedVersion = Int(record["schemaVersion"] as? Int64 ?? 0)
         record["schemaVersion"] = Int64(max(storedVersion, draft.schemaVersion))
         for key in draft.removedRoutingFields where key != "schemaVersion" { record[key] = nil }
-        for key in draft.removedEncryptedFields { record.encryptedValues[key] = nil }
+        let existingEncryptedKeys = Set(record.encryptedValues.allKeys())
+        for key in draft.removedEncryptedFields where existingEncryptedKeys.contains(key) {
+            record.encryptedValues[key] = nil
+        }
         for (key, value) in draft.routingFields where key != "schemaVersion" {
             try set(value, on: record, key: key, encrypted: false)
         }

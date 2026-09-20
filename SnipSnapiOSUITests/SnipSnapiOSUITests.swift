@@ -1104,6 +1104,40 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["list-color-blue"].isSelected)
     }
 
+    func testListEditorShowsExpandedPaletteAndPersistsRed() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        guard app.descendants(matching: .any)["composer-text"].waitForExistence(timeout: 5)
+        else {
+            throw XCTSkip("The compact list tabs are limited to iPhone.")
+        }
+
+        createList("Palette", in: app)
+        openListEditor(named: "Palette", in: app)
+
+        let colorIdentifiers = [
+            "neutral", "red", "orange", "yellow", "green", "teal",
+            "blue", "indigo", "violet", "pink", "clay", "slate",
+        ]
+        for identifier in colorIdentifiers {
+            XCTAssertTrue(app.buttons["list-color-\(identifier)"].waitForExistence(timeout: 3))
+        }
+
+        let red = app.buttons["list-color-red"]
+        red.tap()
+        XCTAssertTrue(red.isSelected)
+        app.buttons["save-list"].tap()
+
+        openListEditor(named: "Palette", in: app)
+        XCTAssertTrue(red.waitForExistence(timeout: 3))
+        XCTAssertTrue(red.isSelected)
+
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Expanded palette with Red selected"
+        proof.lifetime = .keepAlways
+        add(proof)
+    }
+
     func testListEditorKeepsDraftAcrossSearch() {
         continueAfterFailure = false
         let app = launchApp()
