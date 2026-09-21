@@ -74,10 +74,8 @@ build_release_cli() {
     cli_bin_dir="$(/usr/bin/xcrun swift build "${cli_build_args[@]}" --show-bin-path)"
     release_cli_path="$cli_bin_dir/snipsnap"
     [[ -x "$release_cli_path" ]] || fail "SwiftPM did not build the snipsnap CLI"
-    /usr/bin/lipo -verify_arch arm64 "$release_cli_path" || \
-        fail "the snipsnap CLI is missing arm64 support"
-    /usr/bin/lipo -verify_arch x86_64 "$release_cli_path" || \
-        fail "the snipsnap CLI is missing x86_64 support"
+    release_policy_verify_cli_architectures "$release_cli_path" || \
+        fail "the snipsnap CLI is not universal"
     "$release_cli_path" --help >/dev/null || fail "the snipsnap CLI could not start"
 }
 

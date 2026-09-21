@@ -435,16 +435,27 @@ release_policy_verify_cli() {
         release_policy_fail "missing bundled snipsnap CLI"
         return 1
     }
-    /usr/bin/lipo -verify_arch arm64 "$cli_path" >/dev/null 2>&1 || {
+    release_policy_verify_cli_architectures "$cli_path" || return 1
+    "$cli_path" --help >/dev/null 2>&1 || {
+        release_policy_fail "bundled snipsnap CLI could not start"
+        return 1
+    }
+}
+
+release_policy_verify_cli_architectures() {
+    local cli_path="$1"
+    local architectures
+
+    architectures="$(/usr/bin/lipo -archs "$cli_path" 2>/dev/null)" || {
+        release_policy_fail "bundled snipsnap CLI is not a Mach-O executable"
+        return 1
+    }
+    [[ " $architectures " == *" arm64 "* ]] || {
         release_policy_fail "bundled snipsnap CLI is missing arm64 support"
         return 1
     }
-    /usr/bin/lipo -verify_arch x86_64 "$cli_path" >/dev/null 2>&1 || {
+    [[ " $architectures " == *" x86_64 "* ]] || {
         release_policy_fail "bundled snipsnap CLI is missing x86_64 support"
-        return 1
-    }
-    "$cli_path" --help >/dev/null 2>&1 || {
-        release_policy_fail "bundled snipsnap CLI could not start"
         return 1
     }
 }
