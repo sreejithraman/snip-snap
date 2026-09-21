@@ -84,19 +84,21 @@ package enum AttachmentFileIO {
     from sourceURL: URL,
     to destinationURL: URL
   ) throws -> CopiedFile {
-    guard sourceURL.isFileURL else { throw SnipLibraryError.invalidStore }
-    let descriptor = open(sourceURL.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
-    guard descriptor >= 0 else { throw SnipLibraryError.invalidStore }
-    defer { close(descriptor) }
-    var status = stat()
-    guard fstat(descriptor, &status) == 0,
-      (status.st_mode & S_IFMT) == S_IFREG
-    else { throw SnipLibraryError.invalidStore }
+    let source = try openGrantedRegularFile(sourceURL)
+    defer { close(source.descriptor) }
     return try copyRegularFile(
-      source: OpenedFile(descriptor: descriptor, status: status),
+      source: source,
       to: destinationURL,
       expectedByteCount: nil
     )
+  }
+
+  /// Hashes a file whose leaf access was granted without requiring directory enumeration.
+  /// The caller remains responsible for validating the path and its ancestor components.
+  package static func digestGrantedRegularFile(at fileURL: URL) throws -> Data {
+    let opened = try openGrantedRegularFile(fileURL)
+    defer { close(opened.descriptor) }
+    return try digest(descriptor: opened.descriptor)
   }
 
   package static func copyRegularFile(
@@ -316,6 +318,20 @@ package enum AttachmentFileIO {
   private struct OpenedFile {
     let descriptor: Int32
     let status: stat
+  }
+
+  private static func openGrantedRegularFile(_ fileURL: URL) throws -> OpenedFile {
+    guard fileURL.isFileURL else { throw SnipLibraryError.invalidStore }
+    let descriptor = open(fileURL.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+    guard descriptor >= 0 else { throw SnipLibraryError.invalidStore }
+    var status = stat()
+    guard fstat(descriptor, &status) == 0,
+      (status.st_mode & S_IFMT) == S_IFREG
+    else {
+      close(descriptor)
+      throw SnipLibraryError.invalidStore
+    }
+    return OpenedFile(descriptor: descriptor, status: status)
   }
 
   private static func openRegularFileNoFollow(

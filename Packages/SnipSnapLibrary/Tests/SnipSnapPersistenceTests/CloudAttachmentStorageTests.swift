@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import SnipSnapCore
 import XCTest
@@ -514,6 +515,85 @@ final class CloudAttachmentStorageTests: XCTestCase {
     XCTAssertTrue(cloudState.cleanups.isEmpty)
     XCTAssertTrue(cloudState.cacheEntries.isEmpty)
     XCTAssertFalse(FileManager.default.fileExists(atPath: cached.path))
+  }
+
+  func testCacheInstallDoesNotRequireDirectoryReadAccessToAStagedFile() async throws {
+    if geteuid() == 0 { throw XCTSkip("Root bypasses directory permissions.") }
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let added = try await library.perform(
+      .add(
+        content: "remote attachment",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [],
+        requestID: UUID(),
+        now: .distantPast
+      ),
+      sortedBy: .manual
+    )
+    guard case .add(.added(let snipID)) = added.outcome else {
+      return XCTFail("Expected a saved snip")
+    }
+    let namespace = CloudSyncNamespaceKey(rawValue: "restricted-staging-directory")
+    let attachmentID = UUID()
+    let payload = CloudTextStorageIdentity(
+      zoneName: "payload", ownerName: "owner", recordName: UUID().uuidString.lowercased()
+    )
+    let bytes = Data("downloaded through a file grant".utf8)
+    let metadata = CloudAttachmentMetadataValue(
+      attachmentID: attachmentID,
+      snipID: snipID,
+      position: 0,
+      fileName: "download.txt",
+      contentType: "text/plain",
+      byteCount: Int64(bytes.count),
+      sha256: Data(SHA256.hash(data: bytes)),
+      payloadIdentity: payload
+    )
+    try await library.commitCloudAttachmentTransitions(
+      namespaceKey: namespace,
+      transitions: [.remoteMetadataAccepted(
+        metadata: metadata,
+        metadataIdentity: CloudTextStorageIdentity(
+          zoneName: "data", ownerName: "owner", recordName: "a-\(attachmentID)"
+        ),
+        shadowData: Data("shadow".utf8),
+        systemFields: Data("fields".utf8)
+      )]
+    )
+    let stagingRoot = try await library.cloudAttachmentStagingRoot(namespaceKey: namespace)
+    let restrictedDirectory = stagingRoot.appendingPathComponent("download", isDirectory: true)
+    let staged = restrictedDirectory.appendingPathComponent("payload")
+    try FileManager.default.createDirectory(
+      at: restrictedDirectory,
+      withIntermediateDirectories: true
+    )
+    try bytes.write(to: staged)
+    defer {
+      chmod(restrictedDirectory.path, 0o700)
+      try? FileManager.default.removeItem(at: root)
+    }
+    XCTAssertEqual(chmod(restrictedDirectory.path, 0o300), 0)
+    XCTAssertEqual(try Data(contentsOf: staged), bytes)
+    let directory = open(restrictedDirectory.path, O_RDONLY | O_DIRECTORY)
+    if directory >= 0 { close(directory) }
+    XCTAssertEqual(directory, -1)
+
+    let cached = try await library.installCloudAttachmentCacheFile(
+      namespaceKey: namespace,
+      attachmentID: attachmentID,
+      expectedPayloadIdentity: payload,
+      stagedURL: staged,
+      expectedByteCount: Int64(bytes.count),
+      expectedSHA256: metadata.sha256,
+      maximumBytes: 1_024,
+      now: .distantPast
+    )
+
+    XCTAssertEqual(try Data(contentsOf: cached), bytes)
   }
 
   private func temporaryDirectory() -> URL {
