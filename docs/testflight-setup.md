@@ -272,6 +272,15 @@ Apple accepts uploads from Xcode, Transporter, `altool`, the App Store Connect
 API, or Xcode Cloud. The first upload is simplest in Organizer. [Upload
 builds](https://developer.apple.com/help/app-store-connect/manage-builds/upload-builds)
 
+### Attachment diagnostics
+
+TestFlight builds keep a bounded, privacy-safe attachment diagnostic log. After
+reproducing a failed download, open **Settings → Support → Share diagnostic log**.
+The text file contains the app version and build plus recent timestamps, transfer
+stages, outcomes, stable error codes, and byte counts. It does not include snip
+content, filenames, file paths, CloudKit record IDs, or hashes. Use **Clear
+diagnostic log** after the report is saved when a fresh capture is useful.
+
 ## Repeat for each beta build
 
 1. Use a clean reviewed commit on `main`. The workflow run number plus its fixed

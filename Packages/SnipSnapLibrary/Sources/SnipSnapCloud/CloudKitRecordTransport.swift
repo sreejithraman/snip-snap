@@ -258,21 +258,42 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         destination: CloudAssetDestination
     ) async throws -> CloudAssetReceipt? {
         let recordID = CloudKitRecordMapper.recordID(for: id)
+        var stage = CloudSyncDiagnostics.AttachmentStage.cloudKitRequest
+        CloudSyncDiagnostics.attachmentStarted(stage)
         do {
             let results = try await database.records(for: [recordID], desiredKeys: [field])
-            guard let result = results[recordID] else { return nil }
-            let record = try result.get()
-            guard let asset = record[field] as? CKAsset, let source = asset.fileURL else {
+            CloudSyncDiagnostics.attachmentSucceeded(stage)
+            stage = .cloudKitRecord
+            CloudSyncDiagnostics.attachmentStarted(stage)
+            guard let result = results[recordID] else {
+                CloudSyncDiagnostics.attachmentMissing(stage)
                 return nil
             }
-            return try CloudAssetFileCopy.copy(
+            let record = try result.get()
+            CloudSyncDiagnostics.attachmentSucceeded(stage)
+            stage = .cloudKitAssetURL
+            CloudSyncDiagnostics.attachmentStarted(stage)
+            guard let asset = record[field] as? CKAsset, let source = asset.fileURL else {
+                CloudSyncDiagnostics.attachmentMissing(stage)
+                return nil
+            }
+            CloudSyncDiagnostics.attachmentSucceeded(stage)
+            stage = .assetCopy
+            CloudSyncDiagnostics.attachmentStarted(stage)
+            let receipt = try CloudAssetFileCopy.copy(
                 recordID: id,
                 field: field,
                 source: source,
                 destination: destination
             )
+            CloudSyncDiagnostics.attachmentSucceeded(stage, byteCount: receipt.byteCount)
+            return receipt
         } catch let error as CKError where error.code == .unknownItem {
+            CloudSyncDiagnostics.attachmentMissing(.cloudKitRecord)
             return nil
+        } catch {
+            CloudSyncDiagnostics.attachmentFailed(stage, error: error)
+            throw error
         }
     }
 

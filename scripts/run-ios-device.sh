@@ -13,6 +13,7 @@ slot="$("$script_dir/dev-slot.sh" claim)"
 dev_state_dir="${SNIP_SNAP_DEV_STATE_DIR:-$HOME/Library/Application Support/Snip Snap/Development}"
 derived_data="$dev_state_dir/build/ios-device-slot-$slot"
 bundle_id="world.sree.snipsnap.ios.dev$slot"
+local_dev_entitlements="$repo_dir/Config/LocalDev.iOS.entitlements"
 
 xcodebuild \
     -project "$repo_dir/SnipSnap.xcodeproj" \
@@ -25,7 +26,8 @@ xcodebuild \
     "DEVELOPMENT_TEAM=$development_team" \
     CODE_SIGN_IDENTITY="Apple Development" \
     CODE_SIGN_STYLE=Automatic \
-    CODE_SIGN_ENTITLEMENTS= \
+    "CODE_SIGN_ENTITLEMENTS=$local_dev_entitlements" \
+    "SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS=$local_dev_entitlements" \
     SNIP_SNAP_APP_GROUP_IDENTIFIER= \
     SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER= \
     "SNIP_SNAP_IOS_PRODUCT_BUNDLE_IDENTIFIER=$bundle_id" \

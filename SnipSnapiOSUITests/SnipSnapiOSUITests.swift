@@ -114,6 +114,23 @@ final class SnipSnapiOSUITests: XCTestCase {
         waitForExpectations(timeout: 3)
     }
 
+    func testSettingsOffersPrivacySafeDiagnosticLogActions() {
+        continueAfterFailure = false
+        let app = launchApp()
+        openSettings(in: app)
+
+        let share = app.buttons["share-diagnostic-log"]
+        for _ in 0..<3 where !share.exists {
+            app.swipeUp()
+        }
+
+        XCTAssertTrue(share.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["clear-diagnostic-log"].exists)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@", "not your content or file names"
+        )).firstMatch.exists)
+    }
+
     func testExplicitEnableKeepsLocalContentAndTurnsSyncOn() {
         continueAfterFailure = false
         let app = launchApp(withSyncEnable: true)
