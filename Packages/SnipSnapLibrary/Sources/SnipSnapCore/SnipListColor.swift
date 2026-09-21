@@ -1,75 +1,39 @@
 import Foundation
 
-/// A list's saved colors. Both values change together, including during sync.
-public struct SnipListColor: Codable, Equatable, Hashable, Sendable {
+/// The adaptive display values for a preset. Lists save the preset, not these values.
+public struct SnipListColor: Equatable, Hashable, Sendable {
   public let light: String
   public let dark: String
 
-  public init?(light: String, dark: String) {
-    guard let light = Self.normalized(light), let dark = Self.normalized(dark) else { return nil }
-    self.light = light
-    self.dark = dark
+  fileprivate init(presetLight: String, presetDark: String) {
+    light = presetLight
+    dark = presetDark
   }
 
-  private static func normalized(_ value: String) -> String? {
-    let bytes = Array(value.utf8)
-    guard bytes.count == 7, bytes.first == 35,
-      bytes.dropFirst().allSatisfy({
-        (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0)
-      }) else { return nil }
-    return value.uppercased()
-  }
-
-  private enum CodingKeys: String, CodingKey { case light, dark }
-
-  public init(from decoder: any Decoder) throws {
-    let values = try decoder.container(keyedBy: CodingKeys.self)
-    let light = try values.decode(String.self, forKey: .light)
-    let dark = try values.decode(String.self, forKey: .dark)
-    guard let color = Self(light: light, dark: dark) else {
-      throw DecodingError.dataCorrupted(.init(
-        codingPath: decoder.codingPath, debugDescription: "List colors must use #RRGGBB."))
-    }
-    self = color
-  }
 }
 
-/// Presets provide names in the picker. Lists save their values, not these IDs.
-public enum SnipListColorPreset: String, CaseIterable, Sendable {
-  case neutral, red, orange, yellow, green, blue, indigo, violet
+/// Stable list-color identities. Neutral is represented by a nil preset.
+public enum SnipListColorPreset: String, CaseIterable, Codable, Hashable, Sendable {
+  case red, orange, yellow, green, teal, blue, indigo, violet, pink, clay, slate
 
-  public var color: SnipListColor? {
+  public var color: SnipListColor {
     switch self {
-    case .neutral: nil
-    case .red: SnipListColor(light: "#E81345", dark: "#FF2454")
-    case .orange: SnipListColor(light: "#FF7800", dark: "#FF8A00")
-    case .green: SnipListColor(light: "#00B84F", dark: "#00DB63")
-    case .yellow: SnipListColor(light: "#F5C400", dark: "#FFD000")
-    case .blue: SnipListColor(light: "#007AFF", dark: "#008CFF")
-    case .violet: SnipListColor(light: "#9822EE", dark: "#AF32FF")
-    case .indigo: SnipListColor(light: "#4636E8", dark: "#604AFF")
+    case .red: SnipListColor(presetLight: "#E00000", presetDark: "#FF4040")
+    case .orange: SnipListColor(presetLight: "#FF7800", presetDark: "#FF8A00")
+    case .yellow: SnipListColor(presetLight: "#F5C400", presetDark: "#FFD000")
+    case .green: SnipListColor(presetLight: "#00B84F", presetDark: "#00DB63")
+    case .teal: SnipListColor(presetLight: "#1C807A", presetDark: "#82FAF3")
+    case .blue: SnipListColor(presetLight: "#007AFF", presetDark: "#008CFF")
+    case .indigo: SnipListColor(presetLight: "#4636E8", presetDark: "#604AFF")
+    case .violet: SnipListColor(presetLight: "#9822EE", presetDark: "#AF32FF")
+    case .pink: SnipListColor(presetLight: "#E0007F", presetDark: "#FF4FA3")
+    case .clay: SnipListColor(presetLight: "#9A5A3C", presetDark: "#F0A17E")
+    case .slate: SnipListColor(presetLight: "#526678", presetDark: "#BBD1E5")
     }
   }
-
-  public static func color(forLegacyID id: String) -> SnipListColor? {
-    switch id {
-    // Migration values must not follow later picker palette changes.
-    case "purple", "violet": SnipListColor(light: "#9822EE", dark: "#AF32FF")
-    case "red": SnipListColor(light: "#E81345", dark: "#FF2454")
-    case "orange": SnipListColor(light: "#FF7800", dark: "#FF8A00")
-    case "yellow": SnipListColor(light: "#F5C400", dark: "#FFD000")
-    case "green": SnipListColor(light: "#00B84F", dark: "#00DB63")
-    case "blue": SnipListColor(light: "#007AFF", dark: "#008CFF")
-    case "indigo": SnipListColor(light: "#4636E8", dark: "#604AFF")
-    case "teal": SnipListColor(light: "#1C807A", dark: "#82FAF3")
-    case "pink": SnipListColor(light: "#801C4C", dark: "#FA82BC")
-    default: nil
-    }
-  }
-
 }
 
 public enum SnipListColorChange: Equatable, Sendable {
   case keep
-  case set(SnipListColor?)
+  case set(SnipListColorPreset?)
 }

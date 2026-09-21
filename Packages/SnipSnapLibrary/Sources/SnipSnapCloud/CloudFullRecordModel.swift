@@ -85,14 +85,14 @@ package struct CloudTypedListRecord: Codable, Equatable, Sendable {
   package let schemaVersion: Int
   package let desiredName: CloudFieldPresence<String>
   package let systemImage: CloudFieldPresence<String>
-  package let color: CloudFieldPresence<SnipListColor?>?
+  package let color: CloudFieldPresence<SnipListColorPreset?>?
   package let orderKey: CloudFieldPresence<SnipOrderKey>
   package let updatedAt: CloudFieldPresence<Date>
   package let shadow: CloudRecordShadow
 }
 
 package enum CloudFullRecordCodec {
-  package static let schemaVersion = 2
+  package static let schemaVersion = 3
 
   package static func snipDraft(
     _ snip: Snip,
@@ -217,10 +217,11 @@ package enum CloudFullRecordCodec {
       encryptedFields: [
         "desiredName": .string(list.desiredName),
         "systemImage": .string(list.systemImage),
-        "color": .data(try encode(list.color)),
+        "colorPreset": .data(try encode(list.color)),
         "orderKey": .data(list.sortKey.data),
         "updatedAt": .data(try encode(updatedAt)),
       ],
+      removedEncryptedFields: ["color"],
       base: base
     )
   }
@@ -264,7 +265,7 @@ package enum CloudFullRecordCodec {
       schemaVersion: snapshot.schemaVersion,
       desiredName: try stringPresence(snapshot.encryptedFields, key: "desiredName"),
       systemImage: try stringPresence(snapshot.encryptedFields, key: "systemImage"),
-      color: try codablePresence(snapshot.encryptedFields, key: "color", as: SnipListColor?.self),
+      color: try colorPresetPresence(snapshot.encryptedFields),
       orderKey: try orderKeyPresence(snapshot.encryptedFields, key: "orderKey"),
       updatedAt: try codablePresence(snapshot.encryptedFields, key: "updatedAt", as: Date.self),
       shadow: snapshot.shadow
@@ -321,6 +322,17 @@ package enum CloudFullRecordCodec {
       throw CloudRecordError.invalidField("sourceValue")
     }
     return .value(try decode(SnipSource.self, from: data))
+  }
+
+  private static func colorPresetPresence(
+    _ fields: [String: CloudFieldValue]
+  ) throws -> CloudFieldPresence<SnipListColorPreset?> {
+    guard let field = fields["colorPreset"] else { return .missing }
+    guard case .data(let data) = field else {
+      throw CloudRecordError.invalidField("colorPreset")
+    }
+    let rawValue = try decode(String?.self, from: data)
+    return .value(rawValue.flatMap(SnipListColorPreset.init(rawValue:)))
   }
 
   private static func placementPresence(

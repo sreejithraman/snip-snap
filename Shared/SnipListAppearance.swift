@@ -11,24 +11,27 @@ extension SnipListColorPreset {
 
     var title: String {
         switch self {
-        case .neutral: String(localized: "Neutral")
         case .red: String(localized: "Red")
         case .orange: String(localized: "Orange")
-        case .green: String(localized: "Green")
         case .yellow: String(localized: "Yellow")
+        case .green: String(localized: "Green")
+        case .teal: String(localized: "Teal")
         case .blue: String(localized: "Blue")
-        case .violet: String(localized: "Violet")
         case .indigo: String(localized: "Indigo")
+        case .violet: String(localized: "Violet")
+        case .pink: String(localized: "Pink")
+        case .clay: String(localized: "Clay")
+        case .slate: String(localized: "Slate")
         }
     }
 
 }
 
 struct SnipListAppearance {
-    let pair: SnipListColor?
+    let preset: SnipListColorPreset?
 
     var title: String {
-        SnipListColorPreset.allCases.first { $0.color == pair }?.title ?? String(localized: "Custom")
+        preset?.title ?? String(localized: "Neutral")
     }
 
     private static func components(_ hex: String) -> (CGFloat, CGFloat, CGFloat) {
@@ -38,7 +41,7 @@ struct SnipListAppearance {
     }
 
     var color: Color {
-        guard let pair else { return .primary }
+        guard let pair = preset?.color else { return .primary }
 #if os(macOS)
         return Color(nsColor: NSColor(name: nil) { appearance in
             let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
@@ -56,7 +59,7 @@ struct SnipListAppearance {
     var selectionFill: Color { color.opacity(0.16) }
 
     func sendIconColor(in colorScheme: ColorScheme) -> Color {
-        pair == nil
+        preset == nil
             ? (colorScheme == .dark ? .black : .white)
             : SnipSnapTheme.sendIconColor(tint: color)
     }
@@ -64,40 +67,37 @@ struct SnipListAppearance {
 }
 
 extension SnipList {
-    var accent: SnipListAppearance { SnipListAppearance(pair: color) }
+    var accent: SnipListAppearance { SnipListAppearance(preset: color) }
 }
 
 struct SnipListColorPicker: View {
-    @Binding var selection: SnipListColor?
+    @Binding var selection: SnipListColorPreset?
+    private static let options = [nil] + SnipListColorPreset.allCases.map(Optional.some)
 
     var body: some View {
         VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
             Text("Color").font(.subheadline.weight(.semibold))
-            if !SnipListColorPreset.allCases.contains(where: { $0.color == selection }) {
-                Label("Custom", systemImage: "circle.fill")
-                    .foregroundStyle(SnipListAppearance(pair: selection).color)
-            }
             GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
                 LazyVGrid(
                     columns: Array(repeating: GridItem(.flexible(minimum: 44), spacing: SnipSnapSpacing.cardContentInset), count: 4),
                     spacing: SnipSnapSpacing.paneContentInset
                 ) {
-                    ForEach(SnipListColorPreset.allCases, id: \.rawValue) { accent in
-                        let selected = selection == accent.color
+                    ForEach(Self.options, id: \.self) { preset in
+                        let selected = selection == preset
                         Button {
-                            selection = accent.color
+                            selection = preset
                         } label: {
                             SnipListColorSwatch(
-                                color: SnipListAppearance(pair: accent.color).color,
+                                color: SnipListAppearance(preset: preset).color,
                                 isSelected: selected
                             )
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel(accent.title)
+                        .accessibilityLabel(preset?.title ?? String(localized: "Neutral"))
                         .accessibilityAddTraits(selected ? .isSelected : [])
-                        .accessibilityIdentifier("list-color-\(accent.rawValue)")
-                        .help(accent.title)
+                        .accessibilityIdentifier("list-color-\(preset?.rawValue ?? "neutral")")
+                        .help(preset?.title ?? String(localized: "Neutral"))
                     }
                 }
             }

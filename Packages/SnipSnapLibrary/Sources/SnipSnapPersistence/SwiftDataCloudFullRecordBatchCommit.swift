@@ -28,8 +28,17 @@ extension SwiftDataSnipLibrary {
     let stagedID = "\(batch.namespaceKey)|\(batch.batchID.uuidString.lowercased())"
     guard let staged = try context.fetch(FetchDescriptor(
       predicate: #Predicate<StoredCloudStagedBatch> { $0.id == stagedID }
-    )).first, staged.payload == data
+    )).first
     else { throw CloudFullStorageError.invalidBatchReplay }
+    let decodedStaged: CloudFullBatchCommit? = {
+      guard let envelope = CloudWirePayloadEnvelope.decode(staged.payload),
+        envelope.format == .fullRecordV1
+      else { return nil }
+      return try? JSONDecoder().decode(CloudFullBatchCommit.self, from: envelope.payload)
+    }()
+    guard staged.payload == data || decodedStaged == batch else {
+      throw CloudFullStorageError.invalidBatchReplay
+    }
     let namespaceKey = batch.namespaceKey
     let engine = try context.fetch(FetchDescriptor(
       predicate: #Predicate<StoredCloudEngineState> { $0.namespaceKey == namespaceKey }

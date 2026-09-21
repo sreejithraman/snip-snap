@@ -590,7 +590,7 @@ private struct Fixture {
   func remove() { try? FileManager.default.removeItem(at: root) }
 
   func context() throws -> ModelContext {
-    let schema = Schema(versionedSchema: SnipSnapSchemaV7.self)
+    let schema = Schema(versionedSchema: SnipSnapSchemaV9.self)
     let configuration = ModelConfiguration("SnipSnapLocal", schema: schema, url: url, cloudKitDatabase: .none)
     return ModelContext(try ModelContainer(for: schema,
       migrationPlan: SnipSnapSchemaMigrationPlan.self, configurations: [configuration]))

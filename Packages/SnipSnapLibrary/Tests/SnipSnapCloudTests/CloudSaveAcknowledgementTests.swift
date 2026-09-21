@@ -44,7 +44,7 @@ final class CloudSaveAcknowledgementTests: XCTestCase {
       let fixture = try await Fixture()
       defer { fixture.removeStore() }
       try await fixture.coordinator.sync()
-      try await fixture.editList("B", icon: "star", color: SnipListColorPreset.blue.color)
+      try await fixture.editList("B", icon: "star", color: .blue)
       await fixture.transport.pauseNextSend()
       let sending = Task { try await fixture.coordinator.sendPending() }
       await fixture.transport.waitUntilSendPauses()
@@ -79,7 +79,7 @@ final class CloudSaveAcknowledgementTests: XCTestCase {
     let sending = Task { try await fixture.coordinator.sendPending() }
     await fixture.transport.waitUntilSendPauses()
     try await fixture.editSnip("new Snip")
-    try await fixture.editList("new List", icon: "star", color: SnipListColorPreset.violet.color)
+    try await fixture.editList("new List", icon: "star", color: .violet)
     await fixture.transport.resumeSend()
     _ = try await sending.value
 
@@ -347,7 +347,7 @@ final class CloudSaveAcknowledgementTests: XCTestCase {
         expectedUpdatedAt: nil, now: Date()), sortedBy: .manual)
     }
 
-    func editList(_ name: String, icon: String, color: SnipListColor?) async throws {
+    func editList(_ name: String, icon: String, color: SnipListColorPreset?) async throws {
       _ = try await library.perform(.updateList(id: listID, name: name, systemImage: icon, color: .set(color)), sortedBy: .manual)
     }
 

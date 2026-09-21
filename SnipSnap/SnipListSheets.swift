@@ -143,14 +143,14 @@ struct NewSnipListSheet: View {
     let movingIDs: Set<UUID>
     @State private var name = ""
     @State private var systemImage = "circle.grid.2x2.fill"
-    @State private var color: SnipListColor?
+    @State private var color: SnipListColorPreset?
 
     var body: some View {
         VStack(alignment: .leading) {
             Text("New list")
                 .font(.system(size: 15, weight: .semibold))
             SnipListNameAndIconField(name: $name, selection: $systemImage)
-                .tint(SnipListAppearance(pair: color).color)
+                .tint(SnipListAppearance(preset: color).color)
                 .textFieldStyle(.automatic)
                 .controlSize(.regular)
                 .onSubmit(create)
@@ -192,7 +192,7 @@ struct SnipListEditSheet: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var name: String
     @State private var systemImage: String
-    @State private var color: SnipListColor?
+    @State private var color: SnipListColorPreset?
     @State private var showsIcons = false
     @State private var isSaving = false
     @FocusState private var nameIsFocused: Bool
@@ -206,7 +206,7 @@ struct SnipListEditSheet: View {
         _color = State(initialValue: list.color)
     }
 
-    private var appearance: SnipListAppearance { SnipListAppearance(pair: color) }
+    private var appearance: SnipListAppearance { SnipListAppearance(preset: color) }
     private var cleanedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var body: some View {

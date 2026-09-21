@@ -501,7 +501,7 @@ final class AppModel: ObservableObject {
     func createList(
         name: String,
         systemImage: String,
-        color: SnipListColor? = nil,
+        color: SnipListColorPreset? = nil,
         movingIDs: Set<UUID> = []
     ) async -> Bool {
         let result = await performMutation {

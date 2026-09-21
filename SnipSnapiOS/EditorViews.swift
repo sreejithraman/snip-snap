@@ -312,7 +312,7 @@ struct InlineListEditor: View {
                     Image(systemName: draft.systemImage)
                         .font(.title3.weight(.semibold))
                         .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
-                        .foregroundStyle(SnipListAppearance(pair: draft.color).color)
+                        .foregroundStyle(SnipListAppearance(preset: draft.color).color)
                         .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.glass)
@@ -322,7 +322,7 @@ struct InlineListEditor: View {
 
                 TextField(list.displayName, text: $draft.name)
                     .font(.system(.title, design: .rounded, weight: .bold))
-                    .foregroundStyle(SnipListAppearance(pair: draft.color).color)
+                    .foregroundStyle(SnipListAppearance(preset: draft.color).color)
                     .textFieldStyle(.plain)
                     .lineLimit(1)
                     .textInputAutocapitalization(.words)

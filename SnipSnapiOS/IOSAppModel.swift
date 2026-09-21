@@ -15,7 +15,7 @@ typealias IOSCopiedSnipVersions = [UUID: Date]
 final class InlineListDraft {
     var name: String
     var systemImage: String
-    var color: SnipListColor?
+    var color: SnipListColorPreset?
     var isSaving = false
 
     init(list: SnipList, isNew: Bool) {
@@ -361,7 +361,7 @@ final class IOSAppModel {
     }
 
     @discardableResult
-    func createList(name: String, systemImage: String = "list.bullet", color: SnipListColor? = nil) async -> Bool {
+    func createList(name: String, systemImage: String = "list.bullet", color: SnipListColorPreset? = nil) async -> Bool {
         await withUserMutation { _ in
             await createListUnlocked(name: name, systemImage: systemImage, color: color)
         }
@@ -630,7 +630,7 @@ final class IOSAppModel {
     }
 
     private func createListUnlocked(
-        name: String, systemImage: String, color: SnipListColor?,
+        name: String, systemImage: String, color: SnipListColorPreset?,
         namePolicy: SnipListNamePolicy = .exact
     ) async -> Bool {
         await performUserAction(

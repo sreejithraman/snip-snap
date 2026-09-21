@@ -203,7 +203,7 @@ public indirect enum SnipLibraryCommand: Sendable {
         now: Date
     )
     case createList(
-        name: String, systemImage: String, color: SnipListColor? = nil,
+        name: String, systemImage: String, color: SnipListColorPreset? = nil,
         namePolicy: SnipListNamePolicy = .exact
     )
     case restoreList(SnipList)

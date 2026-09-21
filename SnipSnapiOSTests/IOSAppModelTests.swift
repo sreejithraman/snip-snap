@@ -2641,17 +2641,18 @@ final class IOSAppModelTests: XCTestCase {
         let model = makeModel(library: library)
         await model.load()
 
-        let createdList = await model.createList(name: "Notes", color: SnipListColorPreset.blue.color)
+        let createdList = await model.createList(name: "Notes", color: .blue)
         XCTAssertTrue(createdList)
         let list = try XCTUnwrap(model.lists.first(where: { $0.name == "Notes" }))
         XCTAssertEqual(list.systemImage, "list.bullet")
-        XCTAssertEqual(list.color, SnipListColorPreset.blue.color)
+        XCTAssertEqual(list.color, .blue)
         let createdSnip = await model.createSnip(content: "Keep me", in: list.id)
         XCTAssertTrue(createdSnip)
-        let renamedList = await model.renameList(list, name: "Ideas", systemImage: list.systemImage, color: .set(SnipListColorPreset.violet.color))
+        let renamedList = await model.renameList(
+            list, name: "Ideas", systemImage: list.systemImage, color: .set(.violet))
         XCTAssertTrue(renamedList)
         XCTAssertEqual(model.lists.first(where: { $0.id == list.id })?.name, "Ideas")
-        XCTAssertEqual(model.lists.first(where: { $0.id == list.id })?.color, SnipListColorPreset.violet.color)
+        XCTAssertEqual(model.lists.first(where: { $0.id == list.id })?.color, .violet)
 
         let deletedList = await model.deleteList(id: list.id)
         XCTAssertTrue(deletedList)
