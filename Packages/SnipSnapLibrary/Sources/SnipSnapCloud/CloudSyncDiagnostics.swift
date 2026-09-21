@@ -1,6 +1,7 @@
 import CloudKit
 import Foundation
 import OSLog
+import SnipSnapCore
 import SnipSnapPersistence
 
 enum CloudSyncDiagnostics {
@@ -127,6 +128,29 @@ enum CloudSyncDiagnostics {
       case .wrongBatchConfirmation: return "transport.wrongBatchConfirmation"
       case .notStarted: return "transport.notStarted"
       case .syncAlreadyRunning: return "transport.syncAlreadyRunning"
+      }
+    }
+    if let error = error as? SnipLibraryError {
+      switch error {
+      case .emptyContent: return "library.emptyContent"
+      case .snipNotFound: return "library.snipNotFound"
+      case .invalidStore: return "library.invalidStore"
+      case .storeUnavailable: return "library.storeUnavailable"
+      case .requiresMultipleSnips: return "library.requiresMultipleSnips"
+      case .snipChanged: return "library.snipChanged"
+      case .duplicateList: return "library.duplicateList"
+      case .invalidList: return "library.invalidList"
+      case .invalidCommand: return "library.invalidCommand"
+      case .attachmentCopyFailed: return "library.attachmentCopyFailed"
+      case .modeTransitionInProgress: return "library.modeTransitionInProgress"
+      case .readOnlyRecovery: return "library.readOnlyRecovery"
+      case .transferUnsupported: return "library.transferUnsupported"
+      case .transferConflict: return "library.transferConflict"
+      case .recoveryNotFound: return "library.recoveryNotFound"
+      case .recoveryChanged: return "library.recoveryChanged"
+      case .invalidRecoveryChoice: return "library.invalidRecoveryChoice"
+      case .importChanged: return "library.importChanged"
+      case .deviceActionChanged: return "library.deviceActionChanged"
       }
     }
     if let error = error as? CocoaError {
