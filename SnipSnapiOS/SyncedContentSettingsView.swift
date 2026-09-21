@@ -11,6 +11,8 @@ struct SyncedContentSettingsView: View {
     @State private var confirmsClipboardSync = false
     @State private var confirmsDelete = false
     @State private var confirmsUsingDeviceCopy = false
+    @State private var diagnosticsShareRequest: IOSShareRequest?
+    @State private var diagnosticsMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -77,6 +79,24 @@ struct SyncedContentSettingsView: View {
                     }
                 }
 
+                Section("Support") {
+                    Button {
+                        shareDiagnostics()
+                    } label: {
+                        settingsLabel("Share diagnostic log", systemImage: "square.and.arrow.up") {
+                            Text("Includes only recent sync stages and error codes—not your content or file names.")
+                        }
+                    }
+                    .accessibilityIdentifier("share-diagnostic-log")
+
+                    Button {
+                        clearDiagnostics()
+                    } label: {
+                        settingsLabel("Clear diagnostic log", systemImage: "trash")
+                    }
+                    .accessibilityIdentifier("clear-diagnostic-log")
+                }
+
                 Section("About") {
                     Link(destination: URL(string: "https://sree.world/snip-snap/privacy")!) {
                         HStack {
@@ -100,6 +120,18 @@ struct SyncedContentSettingsView: View {
                     Button("Done") { dismiss() }
                 }
             }
+        }
+        .background {
+            IOSShareSheetPresenter(request: $diagnosticsShareRequest)
+                .frame(width: 0, height: 0)
+        }
+        .alert("Diagnostics", isPresented: Binding(
+            get: { diagnosticsMessage != nil },
+            set: { if !$0 { diagnosticsMessage = nil } }
+        )) {
+            Button("OK") { diagnosticsMessage = nil }
+        } message: {
+            Text(diagnosticsMessage ?? "")
         }
         .alert("Sync clipboard history?", isPresented: $confirmsClipboardSync) {
             Button("Cancel", role: .cancel) {}
@@ -229,6 +261,24 @@ struct SyncedContentSettingsView: View {
             model.recordSyncFailure(.appDataIssue)
         }
 #endif
+    }
+
+    private func shareDiagnostics() {
+        do {
+            let url = try CloudSyncDiagnosticsExport.makeShareableFile()
+            diagnosticsShareRequest = IOSShareRequest(items: [.file(url)])
+        } catch {
+            diagnosticsMessage = String(localized: "Couldn’t prepare the diagnostic log. Try again.")
+        }
+    }
+
+    private func clearDiagnostics() {
+        do {
+            try CloudSyncDiagnosticsExport.clear()
+            diagnosticsMessage = String(localized: "Diagnostic log cleared.")
+        } catch {
+            diagnosticsMessage = String(localized: "Couldn’t clear the diagnostic log. Try again.")
+        }
     }
 
     private var canChangeSync: Bool {

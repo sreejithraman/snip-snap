@@ -173,19 +173,40 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
     let stagingRoot = try await library.cloudAttachmentStagingRoot(namespaceKey: namespaceKey)
     let destination = try CloudAssetDestination(validating: stagingRoot)
     let recordID = CloudAttachmentRecordCodec.recordID(publication.metadata.payloadIdentity)
-    guard let receipt = try await transport.fetchAsset(
-      recordID,
-      field: CloudAttachmentRecordCodec.assetField,
-      destination: destination
-    ) else { throw CloudAttachmentStorageError.missingPayload }
+    CloudSyncDiagnostics.attachmentStarted(.remoteFetch)
+    let receipt: CloudAssetReceipt
+    do {
+      guard let fetched = try await transport.fetchAsset(
+        recordID,
+        field: CloudAttachmentRecordCodec.assetField,
+        destination: destination
+      ) else {
+        CloudSyncDiagnostics.attachmentMissing(.remoteFetch)
+        throw CloudAttachmentStorageError.missingPayload
+      }
+      receipt = fetched
+      CloudSyncDiagnostics.attachmentSucceeded(.remoteFetch, byteCount: receipt.byteCount)
+    } catch {
+      if (error as? CloudAttachmentStorageError) != .missingPayload {
+        CloudSyncDiagnostics.attachmentFailed(.remoteFetch, error: error)
+      }
+      throw error
+    }
+    CloudSyncDiagnostics.attachmentStarted(.receiptValidation)
     guard receipt.recordID == recordID,
       receipt.field == CloudAttachmentRecordCodec.assetField
     else {
       Self.removeStagedFileIfSafe(receipt.fileURL, stagingRoot: stagingRoot)
+      CloudSyncDiagnostics.attachmentFailed(
+        .receiptValidation,
+        error: CloudAttachmentStorageError.invalidMetadata
+      )
       throw CloudAttachmentStorageError.invalidMetadata
     }
+    CloudSyncDiagnostics.attachmentSucceeded(.receiptValidation)
+    CloudSyncDiagnostics.attachmentStarted(.cacheInstall)
     do {
-      return try await library.installCloudAttachmentCacheFile(
+      let installedURL = try await library.installCloudAttachmentCacheFile(
         namespaceKey: namespaceKey,
         attachmentID: attachmentID,
         expectedPayloadIdentity: publication.metadata.payloadIdentity,
@@ -195,8 +216,11 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
         maximumBytes: maximumCacheBytes,
         now: now()
       )
+      CloudSyncDiagnostics.attachmentSucceeded(.cacheInstall, byteCount: receipt.byteCount)
+      return installedURL
     } catch {
       Self.removeStagedFileIfSafe(receipt.fileURL, stagingRoot: stagingRoot)
+      CloudSyncDiagnostics.attachmentFailed(.cacheInstall, error: error)
       throw error
     }
   }
