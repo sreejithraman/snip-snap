@@ -613,7 +613,12 @@ private struct SnipRow: View {
                     .foregroundStyle(snip.isDone ? .secondary : .primary)
                     .strikethrough(snip.isDone)
                     .lineLimit(3)
-                SnipRowMetadata(date: snip.updatedAt, isPinned: snip.isPinned)
+                SnipRowMetadata(
+                    date: snip.updatedAt,
+                    isPinned: snip.isPinned,
+                    isAgent: snip.origin == .agent,
+                    agentContextLabel: snip.agentContextLabel
+                )
                 if isRecovered {
                     Label("Recovered", systemImage: "arrow.uturn.backward.circle.fill")
                         .font(.caption.weight(.semibold))
@@ -657,6 +662,9 @@ private struct SnipRow: View {
         let attachments = snip.attachments.map(\.fileName).joined(separator: ", ")
         return [
             text.isEmpty ? nil : text,
+            snip.origin == .agent
+                ? AgentSnipContextLanguage.accessibilityLabel(snip.agentContextLabel)
+                : nil,
             attachments.isEmpty ? nil : String(localized: "Attachments: \(attachments)"),
         ]
         .compactMap { $0 }
@@ -745,6 +753,8 @@ struct SnipCopyControl: View {
 struct SnipRowMetadata: View {
     let date: Date
     let isPinned: Bool
+    var isAgent = false
+    var agentContextLabel: String? = nil
 
     var body: some View {
         HStack(spacing: 6) {
@@ -754,6 +764,10 @@ struct SnipRowMetadata: View {
                     .accessibilityHidden(true)
             }
             Text(date, format: .relative(presentation: .named))
+            if isAgent {
+                AgentSnipContextLabel(contextLabel: agentContextLabel)
+                    .accessibilityHidden(true)
+            }
         }
         .font(.caption)
         .foregroundStyle(.secondary)

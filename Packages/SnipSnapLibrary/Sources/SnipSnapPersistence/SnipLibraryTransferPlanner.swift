@@ -207,6 +207,10 @@ package enum SnipLibraryTransferPlanner {
       append(source.applicationName, to: &bytes)
       append(source.windowTitle, to: &bytes)
       append(source.url, to: &bytes)
+      if let context = source.agentContext {
+        append(context.sessionTitle, to: &bytes)
+        append(context.branchName, to: &bytes)
+      }
     } else {
       bytes.append(0)
     }

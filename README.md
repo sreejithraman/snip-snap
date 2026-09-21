@@ -33,6 +33,30 @@ system-wide capture and Shift shortcuts can work.
 Everything stays in a small panel where you can edit, copy, or drag snips back
 into your work.
 
+## Add snips from an agent
+
+The `snipsnap` CLI adds text to Inbox or a named list and marks its origin as
+Agent. The Homebrew cask installs it with the app. Pass text as an argument or
+on standard input:
+
+```sh
+snipsnap add "Follow up tomorrow"
+printf '%s' "Review the release notes" | snipsnap add \
+  --list Research --session-title "Release follow-ups"
+```
+
+Agent snips show a sparkle and their session title. When no title is supplied,
+the CLI records the current Git branch instead. Session IDs are never shown.
+
+Agents running in this checkout discover the repo skill at
+`.agents/skills/add-to-snip-snap`. The skill uses a stable request UUID so a
+retry does not add the same snip twice.
+The CLI asks the running app to import the request so the UI updates immediately
+and iCloud sync is scheduled. If the app is closed, the request stays queued
+until the next launch.
+If a queued destination list disappears before import, the app preserves the
+snip in Inbox.
+
 ## Private by default
 
 Snip Snap needs no sign-in and has no tracking. Snip Snap does not send

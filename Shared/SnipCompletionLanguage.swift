@@ -1,5 +1,5 @@
-import Foundation
 import SnipSnapCore
+import Foundation
 
 enum SnipCompletionLanguage {
     static let done = String(localized: .snipCompletionDone)
@@ -17,6 +17,7 @@ enum SnipCompletionLanguage {
     static func stateTitle(isDone: Bool) -> String {
         isDone ? done : notDone
     }
+
 }
 
 extension SnipCompletionFilter {
@@ -46,6 +47,11 @@ extension SnipList {
 
 extension Snip {
     var displaySourceLabel: String {
+        if origin == .agent {
+            return [String(localized: "Agent"), agentContextLabel]
+                .compactMap { $0 }
+                .joined(separator: " — ")
+        }
         if let source {
             let label = source.conciseLabel
             if !label.isEmpty { return label }
@@ -55,7 +61,13 @@ extension Snip {
         case .quickEntry: String(localized: "Snip Snap — Quick Entry")
         case .clipboard: String(localized: "Clipboard")
         case .share: String(localized: "Shared")
+        case .agent: String(localized: "Agent")
         }
+    }
+
+    var agentContextLabel: String? {
+        guard origin == .agent else { return nil }
+        return source?.agentContext?.displayLabel
     }
 }
 

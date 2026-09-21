@@ -17,6 +17,7 @@ cloudkit_container_identifier=""
 product_bundle_identifier=""
 provisioning_profile_specifier="${SNIP_SNAP_MAC_PROVISIONING_PROFILE_SPECIFIER:-}"
 requested_build=""
+release_cli_path=""
 
 source "$script_dir/release-policy.sh"
 source "$script_dir/signing-policy.sh"
@@ -55,6 +56,51 @@ verify_release_cloudkit() {
     signing_policy_verify_production_cloudkit_app \
         "$app_path" "$cloudkit_container_identifier" \
         "$development_team" "$product_bundle_identifier"
+}
+
+build_release_cli() {
+    local cli_build_root="$signing_temp_root/cli-build"
+    local cli_bin_dir
+    local -a cli_build_args=(
+        --package-path "$repo_dir/Packages/SnipSnapLibrary"
+        --configuration release
+        --product snipsnap
+        --arch arm64
+        --arch x86_64
+        --scratch-path "$cli_build_root"
+    )
+
+    /usr/bin/xcrun swift build "${cli_build_args[@]}"
+    cli_bin_dir="$(/usr/bin/xcrun swift build "${cli_build_args[@]}" --show-bin-path)"
+    release_cli_path="$cli_bin_dir/snipsnap"
+    [[ -x "$release_cli_path" ]] || fail "SwiftPM did not build the snipsnap CLI"
+    /usr/bin/lipo -verify_arch arm64 "$release_cli_path" || \
+        fail "the snipsnap CLI is missing arm64 support"
+    /usr/bin/lipo -verify_arch x86_64 "$release_cli_path" || \
+        fail "the snipsnap CLI is missing x86_64 support"
+    "$release_cli_path" --help >/dev/null || fail "the snipsnap CLI could not start"
+}
+
+embed_release_cli() {
+    local bundled_cli="$app_path/Contents/MacOS/snipsnap"
+
+    [[ -x "$release_cli_path" ]] || fail "the release CLI is unavailable"
+    /usr/bin/ditto "$release_cli_path" "$bundled_cli"
+    /bin/chmod 755 "$bundled_cli"
+    /usr/bin/codesign \
+        --force \
+        --sign "$signing_identity" \
+        --options runtime \
+        --timestamp \
+        "$bundled_cli"
+    /usr/bin/codesign \
+        --force \
+        --sign "$signing_identity" \
+        --options runtime \
+        --entitlements "$mac_release_entitlements" \
+        --timestamp \
+        --generate-entitlement-der \
+        "$app_path"
 }
 
 cleanup() {
@@ -163,6 +209,7 @@ if [[ -e "$release_root" ]]; then
 else
     release_policy_require_new_notary_build "$notary_profile" "$build_number" "$notary_keychain"
     /bin/mkdir -p "$release_root"
+    build_release_cli
 
     /usr/bin/xcodebuild \
         -project "$repo_dir/SnipSnap.xcodeproj" \
@@ -192,6 +239,7 @@ else
         -exportOptionsPlist "$export_options"
 
     [[ -d "$app_path" ]] || fail "Xcode did not export Snip Snap.app"
+    embed_release_cli
     release_policy_verify_app "$app_path"
     verify_release_cloudkit
 

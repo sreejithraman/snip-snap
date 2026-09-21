@@ -202,12 +202,24 @@ assert_fails "$update_root/scripts/set-release.sh" 0.1.0
 assert_fails "$update_root/scripts/set-release.sh" 0.3.0 2
 
 verified_app="$test_root/verified/Snip Snap.app"
-/bin/mkdir -p "$verified_app/Contents/Resources"
+/bin/mkdir -p "$verified_app/Contents/MacOS" "$verified_app/Contents/Resources"
 print '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>0.1.0</string><key>CFBundleVersion</key><string>1</string></dict></plist>' > \
     "$verified_app/Contents/Info.plist"
 print '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>NSPrivacyTracking</key><false/></dict></plist>' > \
     "$verified_app/Contents/Resources/PrivacyInfo.xcprivacy"
+cli_source="$test_root/snipsnap.c"
+universal_cli="$test_root/snipsnap-universal"
+thin_cli="$test_root/snipsnap-arm64"
+print 'int main(void) { return 0; }' > "$cli_source"
+/usr/bin/xcrun clang -arch arm64 -arch x86_64 "$cli_source" -o "$universal_cli"
+/usr/bin/lipo "$universal_cli" -thin arm64 -output "$thin_cli"
+/bin/cp "$universal_cli" "$verified_app/Contents/MacOS/snipsnap"
 assert_succeeds release_policy_verify_app "$verified_app"
+/bin/rm "$verified_app/Contents/MacOS/snipsnap"
+assert_fails release_policy_verify_app "$verified_app"
+/bin/cp "$thin_cli" "$verified_app/Contents/MacOS/snipsnap"
+assert_fails release_policy_verify_app "$verified_app"
+/bin/cp "$universal_cli" "$verified_app/Contents/MacOS/snipsnap"
 /bin/rm "$verified_app/Contents/Resources/PrivacyInfo.xcprivacy"
 assert_fails release_policy_verify_app "$verified_app"
 

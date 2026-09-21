@@ -12,6 +12,7 @@ cask "snip-snap@beta" do
   depends_on macos: :tahoe
 
   app "Snip Snap.app"
+  binary "#{appdir}/Snip Snap.app/Contents/MacOS/snipsnap"
 
   zap trash: [
     "~/Library/Caches/world.sree.snipsnap",

@@ -1444,8 +1444,14 @@ final class SnipLibraryBehaviorTests: XCTestCase {
         createdAt: Date(timeIntervalSince1970: 10),
         updatedAt: Date(timeIntervalSince1970: 20),
         content: "all fields",
-        origin: .share,
-        source: SnipSource(applicationName: "Source", windowTitle: "Window", url: "https://example.test"),
+        origin: .agent,
+        source: SnipSource(
+          applicationName: "",
+          agentContext: SnipAgentContext(
+            sessionTitle: "Agent provenance",
+            branchName: "feature/agent-context"
+          )
+        ),
         listID: work.id,
         isDone: true,
         manualPosition: 42,

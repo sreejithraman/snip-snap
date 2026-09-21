@@ -24,9 +24,10 @@ final class StoredSnipRecord {
     updatedAt = snip.updatedAt
     content = snip.content
     origin = snip.origin.rawValue
-    sourceApplicationName = snip.source?.applicationName
-    sourceWindowTitle = snip.source?.windowTitle
-    sourceURL = snip.source?.url
+    let source = Self.persistedSource(for: snip)
+    sourceApplicationName = source.applicationName
+    sourceWindowTitle = source.windowTitle
+    sourceURL = source.url
     listID = snip.listID
     isDone = snip.isDone
     manualPosition = snip.manualPosition
@@ -38,12 +39,63 @@ final class StoredSnipRecord {
     updatedAt = snip.updatedAt
     content = snip.content
     origin = snip.origin.rawValue
-    sourceApplicationName = snip.source?.applicationName
-    sourceWindowTitle = snip.source?.windowTitle
-    sourceURL = snip.source?.url
+    let source = Self.persistedSource(for: snip)
+    sourceApplicationName = source.applicationName
+    sourceWindowTitle = source.windowTitle
+    sourceURL = source.url
     listID = snip.listID
     isDone = snip.isDone
     manualPosition = snip.manualPosition
+  }
+
+  struct PersistedSource {
+    let applicationName: String?
+    let windowTitle: String?
+    let url: String?
+  }
+
+  static func persistedSource(for snip: Snip) -> PersistedSource {
+    persistedSource(origin: snip.origin, source: snip.source)
+  }
+
+  static func persistedSource(origin: SnipOrigin, source: SnipSource?) -> PersistedSource {
+    guard origin == .agent, let context = source?.agentContext else {
+      return PersistedSource(
+        applicationName: source?.applicationName,
+        windowTitle: source?.windowTitle,
+        url: source?.url
+      )
+    }
+    // Agent context reuses the shipped source columns so this additive metadata does not
+    // invalidate existing SwiftData schema versions.
+    return PersistedSource(
+      applicationName: context.branchName,
+      windowTitle: context.sessionTitle,
+      url: source?.url
+    )
+  }
+
+  func source(origin: SnipOrigin) -> SnipSource? {
+    if origin == .agent {
+      let context = SnipAgentContext(
+        sessionTitle: sourceWindowTitle,
+        branchName: sourceApplicationName
+      )
+      guard context.displayLabel != nil || sourceURL != nil else { return nil }
+      return SnipSource(
+        applicationName: "",
+        url: sourceURL,
+        agentContext: context.displayLabel == nil ? nil : context
+      )
+    }
+    guard sourceApplicationName != nil || sourceWindowTitle != nil || sourceURL != nil else {
+      return nil
+    }
+    return SnipSource(
+      applicationName: sourceApplicationName ?? "",
+      windowTitle: sourceWindowTitle,
+      url: sourceURL
+    )
   }
 }
 

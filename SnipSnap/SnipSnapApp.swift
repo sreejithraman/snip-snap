@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SnipSnapCloud
 import SnipSnapCore
 import Sparkle
@@ -151,9 +152,12 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     let accountNoticeModel: AppleAccountNoticeModel?
     let cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private var cloudAccountObserver: NSObjectProtocol?
+    private var agentImportObserver: NSObjectProtocol?
     private var automaticSyncTask: Task<Void, Never>?
     private var mainPanel: SnipSnapPanel?
     private var isFlushingBeforeTermination = false
+    private let agentImports: AgentImportStore
+    private var agentListCatalogSubscription: AnyCancellable?
 
     override init() {
         let isReleaseApp = Bundle.main.bundleIdentifier == "world.sree.snipsnap"
@@ -162,6 +166,9 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let library = store.library
         let syncModeRootURL = LocalSnipStorePaths(storeURL: libraryStoreURL).rootDirectory
             .appendingPathComponent("SyncMode", isDirectory: true)
+        agentImports = AgentImportStore(
+            rootURL: LocalSnipStorePaths(storeURL: libraryStoreURL).rootDirectory
+        )
 #if DEBUG
         let initializeSyncModeStore =
             ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1"
@@ -372,6 +379,12 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             syncedContentSettings.setDeleteCompletionAction(reloadActiveLibrary)
         }
         super.init()
+        agentListCatalogSubscription = model.$lists
+            .dropFirst()
+            .removeDuplicates()
+            .sink { [agentImports] lists in
+                Task { try? await agentImports.publishAvailableLists(lists) }
+            }
     }
 
     static func openLibrary(
@@ -408,6 +421,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         Task { [cloudLifecycleHooks, accountNoticeModel] in
             await cloudLifecycleHooks.launch()
             await accountNoticeModel?.refresh()
+            await self.importPendingAgentRequests()
         }
         if let cloudSyncSession {
             let results = cloudSyncSession.automaticSyncResults
@@ -429,6 +443,15 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 await self.accountNoticeModel?.refresh()
             }
         }
+        agentImportObserver = DistributedNotificationCenter.default().addObserver(
+            forName: AgentImportStore.pendingNotificationName,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.importPendingAgentRequests()
+            }
+        }
         if !panel.restoredSavedFrame {
             panel.center()
         }
@@ -445,6 +468,14 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         Task { [cloudLifecycleHooks, accountNoticeModel] in
             await cloudLifecycleHooks.foreground()
             await accountNoticeModel?.refresh()
+            await self.importPendingAgentRequests()
+        }
+    }
+
+    private func importPendingAgentRequests() async {
+        guard await agentImports.pendingImportCount() > 0 else { return }
+        _ = await agentImports.importPending { [model] request in
+            try await model.importAgentRequest(request)
         }
     }
 

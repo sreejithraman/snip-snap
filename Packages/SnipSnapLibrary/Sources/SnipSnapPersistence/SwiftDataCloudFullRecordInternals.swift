@@ -339,14 +339,18 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
     }
     let orderKey = try SnipOrderKey(data: orderData)
     let pinnedAt = try context.snipPinnedAt(record.id)
+    let source = StoredSnipRecord.persistedSource(
+      origin: expected.origin,
+      source: expected.source
+    )
     return record.id == expected.snipID
       && record.requestID == expected.requestID
       && record.createdAt == expected.createdAt
       && record.content == expected.content
       && record.origin == expected.origin.rawValue
-      && record.sourceApplicationName == expected.source?.applicationName
-      && record.sourceWindowTitle == expected.source?.windowTitle
-      && record.sourceURL == expected.source?.url
+      && record.sourceApplicationName == source.applicationName
+      && record.sourceWindowTitle == source.windowTitle
+      && record.sourceURL == source.url
       && record.listID == expected.listID
       && record.isDone == expected.isDone
       && pinnedAt == expected.pinnedAt
@@ -385,9 +389,10 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
         record.updatedAt = value.updatedAt
         record.content = value.content
         record.origin = value.origin.rawValue
-        record.sourceApplicationName = value.source?.applicationName
-        record.sourceWindowTitle = value.source?.windowTitle
-        record.sourceURL = value.source?.url
+        let source = StoredSnipRecord.persistedSource(origin: value.origin, source: value.source)
+        record.sourceApplicationName = source.applicationName
+        record.sourceWindowTitle = source.windowTitle
+        record.sourceURL = source.url
         record.listID = value.listID
         record.isDone = value.pinnedAt == nil && value.isDone
       } else {

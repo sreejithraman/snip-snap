@@ -310,6 +310,19 @@ done
 
 /usr/bin/ruby -c "$script_dir/snip-snap-beta.rb.template" >/dev/null || \
     fail_test "invalid beta cask template"
+for cask_template in snip-snap.rb.template snip-snap-beta.rb.template; do
+    /usr/bin/grep -F 'binary "#{appdir}/Snip Snap.app/Contents/MacOS/snipsnap"' \
+        "$script_dir/$cask_template" >/dev/null || \
+        fail_test "$cask_template does not install the snipsnap CLI"
+done
+for cli_release_requirement in \
+    '--product snipsnap' \
+    '--arch arm64' \
+    '--arch x86_64' \
+    'embed_release_cli'; do
+    /usr/bin/grep -F -- "$cli_release_requirement" "$script_dir/release.sh" >/dev/null || \
+        fail_test "Mac release does not include $cli_release_requirement"
+done
 
 ci_setup_repo="$test_root/ci-setup-repo"
 ci_setup_root="$test_root/snip-snap-release-setup"
