@@ -69,8 +69,10 @@ final class CloudDiagnosticEventStore: @unchecked Sendable {
   }
 
   private func eventLines(from contents: String) -> String {
-    guard let separator = contents.range(of: "\n\n") else { return contents }
-    return String(contents[separator.upperBound...])
+    let lines = contents.split(separator: "\n", omittingEmptySubsequences: true)
+      .filter { $0.contains(" attachment_download ") }
+    guard !lines.isEmpty else { return "" }
+    return lines.joined(separator: "\n") + "\n"
   }
 
   private func bounded(_ contents: String) -> String {

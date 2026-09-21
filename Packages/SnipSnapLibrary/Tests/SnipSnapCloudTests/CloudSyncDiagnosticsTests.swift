@@ -3,6 +3,7 @@ import Foundation
 import XCTest
 
 @testable import SnipSnapCloud
+@testable import SnipSnapCore
 @testable import SnipSnapPersistence
 
 final class CloudSyncDiagnosticsTests: XCTestCase {
@@ -50,6 +51,21 @@ final class CloudSyncDiagnosticsTests: XCTestCase {
     XCTAssertEqual(
       CloudSyncDiagnostics.attachmentErrorCode(PrivateFailure()),
       "other.PrivateFailure"
+    )
+  }
+
+  func testAttachmentErrorCodeClassifiesSnipLibraryFailures() {
+    XCTAssertEqual(
+      CloudSyncDiagnostics.attachmentErrorCode(SnipLibraryError.storeUnavailable),
+      "library.storeUnavailable"
+    )
+    XCTAssertEqual(
+      CloudSyncDiagnostics.attachmentErrorCode(SnipLibraryError.invalidStore),
+      "library.invalidStore"
+    )
+    XCTAssertEqual(
+      CloudSyncDiagnostics.attachmentErrorCode(SnipLibraryError.attachmentCopyFailed),
+      "library.attachmentCopyFailed"
     )
   }
 
@@ -114,5 +130,49 @@ final class CloudSyncDiagnosticsTests: XCTestCase {
     let export = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
 
     XCTAssertFalse(export.contains("attachment_download"))
+  }
+
+  func testDiagnosticStoreWritesOneHeaderAcrossMultipleEvents() throws {
+    let store = CloudDiagnosticEventStore(
+      directoryURL: temporaryDirectory,
+      maxBytes: 4_096,
+      appVersion: "1",
+      appBuild: "2"
+    )
+    store.append("attachment_download stage=remote_fetch outcome=started")
+    store.append("attachment_download stage=remote_fetch outcome=succeeded bytes=12")
+
+    let export = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
+
+    XCTAssertEqual(export.components(separatedBy: "Snip Snap diagnostics").count - 1, 1)
+    XCTAssertEqual(export.components(separatedBy: "privacy=attachment-stage-events-only").count - 1, 1)
+    XCTAssertEqual(export.components(separatedBy: "attachment_download").count - 1, 2)
+  }
+
+  func testDiagnosticStoreRepairsRepeatedLegacyHeadersOnAppend() throws {
+    try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+    let eventsURL = temporaryDirectory.appendingPathComponent("attachment-events.txt")
+    try """
+      Snip Snap diagnostics
+      format=1 app_version=0.5.1 app_build=84
+      privacy=attachment-stage-events-only
+      Snip Snap diagnostics
+      format=1 app_version=0.5.1 app_build=84
+      privacy=attachment-stage-events-only
+      2026-09-21T19:43:28Z attachment_download stage=cache_install outcome=failed error=other.SnipLibraryError
+      """.write(to: eventsURL, atomically: true, encoding: .utf8)
+    let store = CloudDiagnosticEventStore(
+      directoryURL: temporaryDirectory,
+      maxBytes: 4_096,
+      appVersion: "0.5.1",
+      appBuild: "85"
+    )
+
+    store.append("attachment_download stage=remote_fetch outcome=started")
+    let export = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
+
+    XCTAssertEqual(export.components(separatedBy: "Snip Snap diagnostics").count - 1, 1)
+    XCTAssertTrue(export.contains("stage=cache_install outcome=failed"))
+    XCTAssertTrue(export.contains("stage=remote_fetch outcome=started"))
   }
 }
