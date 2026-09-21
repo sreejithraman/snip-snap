@@ -1,0 +1,3 @@
+Snip Snap 0.5.1 Beta 84 — iOS
+
+- Add shareable attachment download diagnostics
