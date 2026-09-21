@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "SnipSnapCore", targets: ["SnipSnapCore"]),
         .library(name: "SnipSnapPersistence", targets: ["SnipSnapPersistence"]),
         .library(name: "SnipSnapCloud", targets: ["SnipSnapCloud"]),
+        .executable(name: "snipsnap", targets: ["SnipSnapCLI"]),
     ],
     targets: [
         .target(name: "SnipSnapCore"),
@@ -23,6 +24,10 @@ let package = Package(
             name: "SnipSnapCloud",
             dependencies: ["SnipSnapCore", "SnipSnapPersistence"]
         ),
+        .executableTarget(
+            name: "SnipSnapCLI",
+            dependencies: ["SnipSnapCore", "SnipSnapPersistence"]
+        ),
         .testTarget(
             name: "SnipSnapPersistenceTests",
             dependencies: ["SnipSnapCore", "SnipSnapPersistence"]
@@ -30,6 +35,10 @@ let package = Package(
         .testTarget(
             name: "SnipSnapCloudTests",
             dependencies: ["SnipSnapCore", "SnipSnapPersistence", "SnipSnapCloud"]
+        ),
+        .testTarget(
+            name: "SnipSnapCLITests",
+            dependencies: ["SnipSnapCLI", "SnipSnapCore", "SnipSnapPersistence"]
         ),
     ]
 )

@@ -163,6 +163,9 @@ struct SnipCardRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                if snip.origin == .agent {
+                    AgentSnipContextLabel(contextLabel: snip.agentContextLabel)
+                }
                 SnipCardText(
                     text: snip.content,
                     isDone: snip.isDone && !snip.isPinned

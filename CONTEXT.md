@@ -49,6 +49,11 @@ The two completion states for a snip. Compact controls use these labels;
 menu actions use **Mark Done / Mark Not Done** to name the next action.
 _Avoid_: Complete, Incomplete
 
+**Agent context**:
+Human-readable work context saved with an agent-created snip. Its display label
+uses the session title when available and otherwise the Git branch name.
+_Avoid_: Session ID, agent badge
+
 **Sync generation**:
 A random identity for one version of the user's synced collection. Devices must match it before they may upload.
 _Avoid_: Schema version, account ID

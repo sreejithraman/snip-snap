@@ -859,6 +859,40 @@ final class SnipListModelsTests: XCTestCase {
         )
     }
 
+    func testFilteringSearchesAgentOriginLabel() {
+        let agent = Snip(
+            content: "Generated note",
+            origin: .agent,
+            source: SnipSource(
+                applicationName: "Agent",
+                agentContext: SnipAgentContext(
+                    sessionTitle: "Agent provenance",
+                    branchName: "feature/agent-context"
+                )
+            )
+        )
+        let quickEntry = Snip(content: "Typed note", origin: .quickEntry)
+
+        XCTAssertEqual(
+            SnipFilter.apply(
+                snips: [agent, quickEntry],
+                query: "agent",
+                completionFilter: .all,
+                sourceLabel: { $0.displaySourceLabel }
+            ),
+            [agent]
+        )
+        XCTAssertEqual(
+            SnipFilter.apply(
+                snips: [agent, quickEntry],
+                query: "provenance",
+                completionFilter: .all,
+                sourceLabel: { $0.displaySourceLabel }
+            ),
+            [agent]
+        )
+    }
+
     func testLargeSnipFilteringKeepsExactMatches() {
         let snips = (0..<2_500).map { index in
             Snip(

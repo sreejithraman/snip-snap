@@ -396,6 +396,78 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func importAgentRequest(_ request: AgentImportRequest) async throws -> AgentImportReceipt {
+        let result: Result<AgentImportReceipt, Error> = await performMutation {
+            let state = await session.state(sortedBy: sortMode)
+            let destinationListID = state.library.lists.contains(where: {
+                $0.id == request.destinationListID
+            }) ? request.destinationListID : SnipList.inboxID
+            let update = try await session.performLibraryCommand(
+                .add(
+                    content: request.content,
+                    origin: .agent,
+                    source: request.agentContext.map {
+                        SnipSource(applicationName: "", agentContext: $0)
+                    },
+                    listID: destinationListID,
+                    attachmentURLs: [],
+                    requestID: request.requestID,
+                    now: request.createdAt
+                ),
+                sortedBy: sortMode
+            )
+            guard case .add(let outcome) = update.outcome else {
+                throw SnipLibraryError.invalidStore
+            }
+            guard let snip = update.snapshot.snips.first(where: {
+                $0.requestID == request.requestID
+            }) else {
+                guard case .duplicate = outcome,
+                      let list = update.snapshot.lists.first(where: {
+                          $0.id == destinationListID
+                      }) else { throw SnipLibraryError.invalidStore }
+                return (update, AgentImportReceipt(
+                    status: .failed,
+                    snipID: nil,
+                    listID: list.id,
+                    listName: list.name,
+                    request: request,
+                    error: "The original snip for this request is no longer available."
+                ))
+            }
+            if case .duplicate = outcome {
+                let expectedSource = request.agentContext.map {
+                    SnipSource(applicationName: "", agentContext: $0)
+                }
+                guard snip.content == request.content,
+                      snip.origin == .agent,
+                      snip.source == expectedSource,
+                      snip.listID == destinationListID else {
+                    throw AgentImportError.conflictingRequestID
+                }
+            }
+            guard let list = update.snapshot.lists.first(where: { $0.id == snip.listID }) else {
+                throw SnipLibraryError.invalidStore
+            }
+            let status: AgentImportReceipt.Status
+            switch outcome {
+            case .added:
+                status = .added
+            case .duplicate:
+                status = .unchanged
+            }
+            let receipt = AgentImportReceipt(
+                status: status,
+                snipID: snip.id,
+                listID: list.id,
+                listName: list.name,
+                request: request
+            )
+            return (update, receipt)
+        }
+        return try result.get()
+    }
+
     func update(
         id: UUID,
         content: String,

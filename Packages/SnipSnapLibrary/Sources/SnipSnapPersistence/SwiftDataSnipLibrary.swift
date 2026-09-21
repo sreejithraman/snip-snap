@@ -568,10 +568,6 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       guard let origin = SnipOrigin(rawValue: record.origin) else {
         throw SnipLibraryError.invalidStore
       }
-      let source = record.sourceApplicationName.map {
-        SnipSource(
-          applicationName: $0, windowTitle: record.sourceWindowTitle, url: record.sourceURL)
-      }
       return Snip(
         id: record.id,
         requestID: record.requestID,
@@ -579,7 +575,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
         updatedAt: record.updatedAt,
         content: record.content,
         origin: origin,
-        source: source,
+        source: record.source(origin: origin),
         listID: record.listID,
         isDone: record.isDone,
         pinnedAt: pinsByID[record.id],

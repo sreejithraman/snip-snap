@@ -5,6 +5,7 @@ public enum SnipOrigin: String, Codable, Sendable {
     case quickEntry
     case clipboard
     case share
+    case agent
 }
 
 public struct SnipList: Identifiable, Codable, Equatable, Sendable, Hashable {
@@ -140,6 +141,7 @@ public struct SnipSource: Codable, Equatable, Sendable {
     public var applicationName: String
     public var windowTitle: String?
     public var url: String?
+    public var agentContext: SnipAgentContext?
 
     public var conciseLabel: String {
         [applicationName, windowTitle]
@@ -153,11 +155,33 @@ public struct SnipSource: Codable, Equatable, Sendable {
     public init(
         applicationName: String,
         windowTitle: String? = nil,
-        url: String? = nil
+        url: String? = nil,
+        agentContext: SnipAgentContext? = nil
     ) {
         self.applicationName = applicationName
         self.windowTitle = windowTitle
         self.url = url
+        self.agentContext = agentContext
+    }
+}
+
+public struct SnipAgentContext: Codable, Equatable, Sendable {
+    public var sessionTitle: String?
+    public var branchName: String?
+
+    public var displayLabel: String? {
+        Self.cleaned(sessionTitle) ?? Self.cleaned(branchName)
+    }
+
+    public init(sessionTitle: String? = nil, branchName: String? = nil) {
+        self.sessionTitle = Self.cleaned(sessionTitle)
+        self.branchName = Self.cleaned(branchName)
+    }
+
+    private static func cleaned(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value
     }
 }
 
