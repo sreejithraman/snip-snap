@@ -1,0 +1,9 @@
+# Snip Snap 0.5.1 Beta 85
+
+## Mac
+
+- Improve attachment failure diagnostics
+
+## iOS
+
+- Improve attachment failure diagnostics
