@@ -97,7 +97,9 @@ struct CloudAttachmentCacheFiles {
     expectedByteCount: Int64,
     expectedSHA256: Data
   ) throws {
-    try Self.requireChild(stagedURL, of: try stagingRoot(namespaceKey: namespaceKey))
+    let root = try stagingRoot(namespaceKey: namespaceKey)
+    try Self.requireChild(stagedURL, of: root)
+    try Self.requireNoSymlinkComponents(stagedURL, root: root)
     let values = try stagedURL.resourceValues(
       forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
     )
@@ -106,7 +108,7 @@ struct CloudAttachmentCacheFiles {
     else {
       throw CloudAttachmentStorageError.sizeMismatch
     }
-    guard try Self.digest(at: stagedURL) == expectedSHA256 else {
+    guard try AttachmentFileIO.digestGrantedRegularFile(at: stagedURL) == expectedSHA256 else {
       throw CloudAttachmentStorageError.hashMismatch
     }
   }
