@@ -493,51 +493,58 @@ struct CloudAttachmentCacheFiles {
   }
 
   static func validatedChild(relativePath: String, root: URL) throws -> URL {
-    try validatedChild(relativePath: relativePath, root: root, checkingRoot: true)
+    try validatedRootedChild(relativePath: relativePath, root: root, checkingRoot: true)
   }
 
   /// Validates a relative path beneath a cache root returned by `cacheRoot(namespaceKey:)`.
   /// The app-owned root may resolve through a permitted container alias; descendants may not.
   private static func validatedCacheChild(relativePath: String, root: URL) throws -> URL {
-    try validatedChild(relativePath: relativePath, root: root, checkingRoot: false)
+    try validatedRootedChild(relativePath: relativePath, root: root, checkingRoot: false)
   }
 
   /// Unlinks only a symlink at the cache entry leaf. Parent validation still rejects
   /// every descendant symlink, so cleanup can never follow an entry outside the cache.
   private static func removeCacheLeafSymlink(relativePath: String, root: URL) throws -> Bool {
-    let components = relativePath.split(separator: "/", omittingEmptySubsequences: false)
-    guard let leaf = components.last, !leaf.isEmpty else {
-      throw CloudAttachmentStorageError.invalidRelativePath
-    }
+    let components = try relativePathComponents(relativePath)
+    let leaf = components[components.index(before: components.endIndex)]
     let parent: URL
     if components.count == 1 {
-      parent = root.standardizedFileURL
+      parent = root
     } else {
       parent = try validatedCacheChild(
         relativePath: components.dropLast().joined(separator: "/"),
         root: root
       )
     }
-    let candidate = parent.appendingPathComponent(String(leaf)).standardizedFileURL
+    let candidate = parent.appendingPathComponent(leaf)
     let values = try candidate.resourceValues(forKeys: [.isSymbolicLinkKey])
     guard values.isSymbolicLink == true else { return false }
     try FileManager.default.removeItem(at: candidate)
     return true
   }
 
-  private static func validatedChild(
+  /// Constructs an app-owned child from validated relative components. Containment follows
+  /// from that construction, so this preserves the root URL exactly as iOS supplied it.
+  private static func validatedRootedChild(
     relativePath: String,
     root: URL,
     checkingRoot: Bool
   ) throws -> URL {
-    guard !relativePath.isEmpty, !relativePath.hasPrefix("/"),
-      !relativePath.split(separator: "/", omittingEmptySubsequences: false)
-        .contains(where: { $0 == "." || $0 == ".." || $0.isEmpty })
+    let components = try relativePathComponents(relativePath)
+    try requireNoSymlinkComponents(
+      root: root,
+      components: components[...],
+      checkingRoot: checkingRoot
+    )
+    return components.reduce(root) { $0.appendingPathComponent($1) }
+  }
+
+  private static func relativePathComponents(_ relativePath: String) throws -> [String] {
+    let components = relativePath.split(separator: "/", omittingEmptySubsequences: false)
+    guard !relativePath.isEmpty, !relativePath.hasPrefix("/"), !relativePath.utf8.contains(0),
+      !components.contains(where: { $0 == "." || $0 == ".." || $0.isEmpty })
     else { throw CloudAttachmentStorageError.invalidRelativePath }
-    let candidate = root.appendingPathComponent(relativePath).standardizedFileURL
-    try requireChild(candidate, of: root)
-    try requireNoSymlinkComponents(candidate, root: root, checkingRoot: checkingRoot)
-    return candidate
+    return components.map(String.init)
   }
 
   static func requireChild(_ candidate: URL, of root: URL) throws {
@@ -549,23 +556,53 @@ struct CloudAttachmentCacheFiles {
     root: URL,
     checkingRoot: Bool = true
   ) throws {
-    let standardizedRoot = root.standardizedFileURL
+    let childPath = try childPath(candidate, of: root)
+    try requireNoSymlinkComponents(
+      root: childPath.root,
+      components: childPath.components,
+      checkingRoot: checkingRoot
+    )
+  }
+
+  private static func requireNoSymlinkComponents(
+    root: URL,
+    components: ArraySlice<String>,
+    checkingRoot: Bool
+  ) throws {
     if checkingRoot {
-      let rootValues = try standardizedRoot.resourceValues(forKeys: [.isSymbolicLinkKey])
+      let rootValues = try root.resourceValues(forKeys: [.isSymbolicLinkKey])
       guard rootValues.isSymbolicLink != true else {
         throw CloudAttachmentStorageError.symbolicLinkRoot
       }
     }
-    let childPath = try childPath(candidate, of: root)
-    var current = childPath.root
-    for component in childPath.components {
+    var current = root
+    for component in components {
       current.appendPathComponent(component)
-      guard FileManager.default.fileExists(atPath: current.path) else { continue }
-      let values = try current.resourceValues(forKeys: [.isSymbolicLinkKey])
-      guard values.isSymbolicLink != true else {
+      let attributes: [FileAttributeKey: Any]
+      do {
+        attributes = try FileManager.default.attributesOfItem(atPath: current.path)
+      } catch {
+        guard pathDoesNotExist(error) else { throw error }
+        return
+      }
+      guard attributes[.type] as? FileAttributeType != .typeSymbolicLink else {
         throw CloudAttachmentStorageError.symbolicLinkDescendant
       }
     }
+  }
+
+  private static func pathDoesNotExist(_ error: Error) -> Bool {
+    let error = error as NSError
+    if error.domain == NSCocoaErrorDomain,
+      error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError
+    {
+      return true
+    }
+    guard let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError,
+      underlying.domain == NSPOSIXErrorDomain
+    else { return false }
+    return underlying.code == POSIXError.Code.ENOENT.rawValue
+      || underlying.code == POSIXError.Code.ENOTDIR.rawValue
   }
 
   /// Returns the path to a descendant while allowing the app-owned root to be
@@ -574,6 +611,10 @@ struct CloudAttachmentCacheFiles {
     _ candidate: URL,
     of root: URL
   ) throws -> (root: URL, components: ArraySlice<String>) {
+    if let components = relativeComponents(of: candidate, beneath: root) {
+      return (root, components)
+    }
+
     let root = root.standardizedFileURL
     let candidate = candidate.standardizedFileURL
     if let components = relativeComponents(of: candidate, beneath: root) {
@@ -599,7 +640,10 @@ struct CloudAttachmentCacheFiles {
     let rootComponents = root.pathComponents
     let candidateComponents = candidate.pathComponents
     guard candidateComponents.count > rootComponents.count,
-      candidateComponents.starts(with: rootComponents)
+      candidateComponents.starts(with: rootComponents),
+      !candidateComponents.dropFirst(rootComponents.count).contains(where: {
+        $0 == "." || $0 == ".." || $0.isEmpty
+      })
     else { return nil }
     return candidateComponents.dropFirst(rootComponents.count)
   }

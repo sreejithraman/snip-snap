@@ -1021,6 +1021,134 @@ final class CloudAttachmentStorageTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: cached), bytes)
   }
 
+  func testCacheInstallTrustsFileReferenceCacheRoot() throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let cacheContainer = root.appendingPathComponent("Cache", isDirectory: true)
+    try FileManager.default.createDirectory(at: cacheContainer, withIntermediateDirectories: true)
+    let fileReferenceCacheContainer = try XCTUnwrap(
+      (cacheContainer as NSURL).fileReferenceURL()
+    )
+    let files = CloudAttachmentCacheFiles(
+      attachmentRootURL: root.appendingPathComponent("Attachments", isDirectory: true),
+      lockURL: root.appendingPathComponent("snips.store.lock", isDirectory: false),
+      cacheContainerURL: fileReferenceCacheContainer
+    )
+    let namespace = "file-reference-cache-root"
+    let stagingRoot = try files.stagingRoot(namespaceKey: namespace)
+    let bytes = Data("downloaded through a file-reference cache root".utf8)
+    let staged = stagingRoot.appendingPathComponent("cloud-asset")
+    try bytes.write(to: staged)
+    let relativePath = "Files/\(UUID().uuidString.lowercased())/payload"
+
+    try files.validateStagedFile(
+      staged,
+      namespaceKey: namespace,
+      expectedByteCount: Int64(bytes.count),
+      expectedSHA256: Data(SHA256.hash(data: bytes))
+    )
+    let cached = try files.installStagedFile(
+      staged,
+      namespaceKey: namespace,
+      relativePath: relativePath
+    )
+
+    XCTAssertEqual(try Data(contentsOf: cached), bytes)
+    let dangling = try files.cacheRoot(namespaceKey: namespace)
+      .appendingPathComponent("Files", isDirectory: true)
+      .appendingPathComponent("dangling-payload")
+    try FileManager.default.createSymbolicLink(
+      at: dangling,
+      withDestinationURL: root.appendingPathComponent("missing-payload")
+    )
+    XCTAssertThrowsError(
+      try files.cacheFileURL(relativePath: "Files/dangling-payload", namespaceKey: namespace)
+    ) { error in
+      XCTAssertEqual(error as? CloudAttachmentStorageError, .symbolicLinkDescendant)
+    }
+  }
+
+  func testCachePathsStillRejectInvalidRelativeComponents() throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let files = CloudAttachmentCacheFiles(
+      attachmentRootURL: root.appendingPathComponent("Attachments", isDirectory: true),
+      lockURL: root.appendingPathComponent("snips.store.lock", isDirectory: false)
+    )
+
+    let invalidPaths = [
+      "", "/outside", "../outside", "Files//payload", "Files/./payload", "\u{0}",
+      "..\u{0}/outside", "Files/..\u{0}/..\u{0}/outside",
+    ]
+    for relativePath in invalidPaths {
+      XCTAssertThrowsError(
+        try files.cacheFileURL(
+          relativePath: relativePath,
+          namespaceKey: "invalid-cache-relative-path"
+        )
+      ) { error in
+        XCTAssertEqual(error as? CloudAttachmentStorageError, .invalidRelativePath)
+      }
+    }
+  }
+
+  func testCachePathsRejectDanglingSymlinkDescendants() throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let files = CloudAttachmentCacheFiles(
+      attachmentRootURL: root.appendingPathComponent("Attachments", isDirectory: true),
+      lockURL: root.appendingPathComponent("snips.store.lock", isDirectory: false)
+    )
+    let namespace = "dangling-cache-symlink"
+    let cacheRoot = try files.cacheRoot(namespaceKey: namespace)
+    let filesRoot = cacheRoot.appendingPathComponent("Files", isDirectory: true)
+    try FileManager.default.createDirectory(at: filesRoot, withIntermediateDirectories: true)
+
+    let danglingDirectory = filesRoot.appendingPathComponent("dangling-directory")
+    try FileManager.default.createSymbolicLink(
+      at: danglingDirectory,
+      withDestinationURL: root.appendingPathComponent("missing-directory")
+    )
+    XCTAssertThrowsError(
+      try files.cacheFileURL(
+        relativePath: "Files/dangling-directory/payload",
+        namespaceKey: namespace
+      )
+    ) { error in
+      XCTAssertEqual(error as? CloudAttachmentStorageError, .symbolicLinkDescendant)
+    }
+
+    let danglingLeaf = filesRoot.appendingPathComponent("dangling-leaf")
+    try FileManager.default.createSymbolicLink(
+      at: danglingLeaf,
+      withDestinationURL: root.appendingPathComponent("missing-leaf")
+    )
+    XCTAssertThrowsError(
+      try files.cacheFileURL(relativePath: "Files/dangling-leaf", namespaceKey: namespace)
+    ) { error in
+      XCTAssertEqual(error as? CloudAttachmentStorageError, .symbolicLinkDescendant)
+    }
+  }
+
+  func testNonCachePathsStillRejectASymlinkRoot() throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let actualRoot = root.appendingPathComponent("ActualUploadRoot", isDirectory: true)
+    let symlinkRoot = root.appendingPathComponent("UploadRoot", isDirectory: true)
+    try FileManager.default.createDirectory(at: actualRoot, withIntermediateDirectories: true)
+    try FileManager.default.createSymbolicLink(at: symlinkRoot, withDestinationURL: actualRoot)
+
+    XCTAssertThrowsError(
+      try CloudAttachmentCacheFiles.validatedChild(relativePath: "record/payload", root: symlinkRoot)
+    ) { error in
+      XCTAssertEqual(error as? CloudAttachmentStorageError, .symbolicLinkRoot)
+    }
+  }
+
   func testContainmentRejectsCanonicalSiblingOfAliasedRoot() throws {
     let root = temporaryDirectory()
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -1040,6 +1168,20 @@ final class CloudAttachmentStorageTests: XCTestCase {
         outside.appendingPathComponent("payload"),
         of: aliasedRoot
       )
+    ) { error in
+      XCTAssertEqual(error as? CloudAttachmentStorageError, .pathOutsideRoot)
+    }
+  }
+
+  func testContainmentRejectsTraversalFromAReceiptURL() throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let stagingRoot = root.appendingPathComponent("Staging", isDirectory: true)
+    let traversal = stagingRoot.appendingPathComponent("../outside")
+
+    XCTAssertThrowsError(
+      try CloudAttachmentCacheFiles.requireChild(traversal, of: stagingRoot)
     ) { error in
       XCTAssertEqual(error as? CloudAttachmentStorageError, .pathOutsideRoot)
     }
