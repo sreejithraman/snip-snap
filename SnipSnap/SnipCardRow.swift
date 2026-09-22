@@ -42,23 +42,16 @@ struct SnipCardRow: View {
             ZStack {
                 Group {
                     if snip.isPinned {
-                        Button {
-                            Task {
-                                guard await onCopy() else { return }
-                                isCopied = true
-                                copyConfirmationID = UUID()
+                        PanelCopyButton(
+                            isCopied: isCopied,
+                            action: {
+                                Task {
+                                    guard await onCopy() else { return }
+                                    isCopied = true
+                                    copyConfirmationID = UUID()
+                                }
                             }
-                        } label: {
-                            Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
-                                .frame(
-                                    width: PanelCardLeadingMetrics.controlSide,
-                                    height: PanelCardLeadingMetrics.controlSide
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(SnipSnapColors.controlTint)
-                        .help(isCopied ? "Copied" : "Copy")
-                        .accessibilityLabel(isCopied ? "Copied" : "Copy")
+                        )
                         .task(id: copyConfirmationID) {
                             guard isCopied else { return }
                             try? await Task.sleep(for: .seconds(1.5))

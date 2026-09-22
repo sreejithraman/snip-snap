@@ -10,6 +10,43 @@ enum PanelCardLeadingMetrics {
     static let controlSide: CGFloat = 20
 }
 
+struct PanelCopyButton: View {
+    let isCopied: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                shape.fill(SnipSnapColors.compactActionFill)
+                Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 10, weight: .medium))
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(SnipSnapColors.textPrimary)
+            }
+            .frame(
+                width: PanelCardLeadingMetrics.controlSide,
+                height: PanelCardLeadingMetrics.controlSide
+            )
+            .contentShape(shape)
+            .clipShape(shape)
+        }
+        .buttonStyle(.plain)
+        .frame(
+            width: PanelCardLeadingMetrics.controlSide,
+            height: PanelCardLeadingMetrics.controlSide
+        )
+        .help(isCopied ? "Copied" : "Copy")
+        .accessibilityLabel(isCopied ? "Copied" : "Copy")
+    }
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(
+            cornerRadius: PanelCardLeadingMetrics.cornerRadius,
+            style: .continuous
+        )
+    }
+}
+
 struct PanelContentCardState: Equatable {
     var isSelected = false
     var isSubdued = false
