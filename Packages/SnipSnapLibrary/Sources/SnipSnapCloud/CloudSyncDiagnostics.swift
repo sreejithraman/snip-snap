@@ -97,6 +97,10 @@ enum CloudSyncDiagnostics {
     if let error = error as? CloudAttachmentStorageError {
       switch error {
       case .invalidPath: return "storage.invalidPath"
+      case .invalidRelativePath: return "storage.invalidRelativePath"
+      case .pathOutsideRoot: return "storage.pathOutsideRoot"
+      case .symbolicLinkRoot: return "storage.symbolicLinkRoot"
+      case .symbolicLinkDescendant: return "storage.symbolicLinkDescendant"
       case .invalidMetadata: return "storage.invalidMetadata"
       case .staleTransition: return "storage.staleTransition"
       case .missingPublication: return "storage.missingPublication"

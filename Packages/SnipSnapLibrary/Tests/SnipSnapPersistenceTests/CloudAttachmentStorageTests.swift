@@ -693,7 +693,7 @@ final class CloudAttachmentStorageTests: XCTestCase {
         relativePath: "Files/\(aliasedDirectoryName)/payload"
       )
     ) { error in
-      XCTAssertEqual(error as? CloudAttachmentStorageError, .invalidPath)
+      XCTAssertEqual(error as? CloudAttachmentStorageError, .symbolicLinkDescendant)
     }
   }
 

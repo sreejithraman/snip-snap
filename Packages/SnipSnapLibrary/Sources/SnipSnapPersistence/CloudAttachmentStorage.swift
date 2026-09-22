@@ -138,6 +138,10 @@ package struct CloudAttachmentStorageSnapshot: Equatable, Sendable {
 
 package enum CloudAttachmentStorageError: Error, Equatable, Sendable {
   case invalidPath
+  case invalidRelativePath
+  case pathOutsideRoot
+  case symbolicLinkRoot
+  case symbolicLinkDescendant
   case invalidMetadata
   case staleTransition
   case missingPublication

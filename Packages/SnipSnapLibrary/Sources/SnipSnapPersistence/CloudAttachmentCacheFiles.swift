@@ -267,7 +267,7 @@ struct CloudAttachmentCacheFiles {
     guard !relativePath.isEmpty, !relativePath.hasPrefix("/"),
       !relativePath.split(separator: "/", omittingEmptySubsequences: false)
         .contains(where: { $0 == "." || $0 == ".." || $0.isEmpty })
-    else { throw CloudAttachmentStorageError.invalidPath }
+    else { throw CloudAttachmentStorageError.invalidRelativePath }
     let candidate = root.appendingPathComponent(relativePath).standardizedFileURL
     try requireChild(candidate, of: root)
     try requireNoSymlinkComponents(candidate, root: root, checkingRoot: checkingRoot)
@@ -278,7 +278,7 @@ struct CloudAttachmentCacheFiles {
     let rootPath = root.standardizedFileURL.path
     let candidatePath = candidate.standardizedFileURL.path
     guard candidatePath.hasPrefix(rootPath + "/") else {
-      throw CloudAttachmentStorageError.invalidPath
+      throw CloudAttachmentStorageError.pathOutsideRoot
     }
   }
 
@@ -292,7 +292,7 @@ struct CloudAttachmentCacheFiles {
     if checkingRoot {
       let rootValues = try root.resourceValues(forKeys: [.isSymbolicLinkKey])
       guard rootValues.isSymbolicLink != true else {
-        throw CloudAttachmentStorageError.invalidPath
+        throw CloudAttachmentStorageError.symbolicLinkRoot
       }
     }
     let suffix = candidate.path.dropFirst(root.path.count)
@@ -302,7 +302,7 @@ struct CloudAttachmentCacheFiles {
       guard FileManager.default.fileExists(atPath: current.path) else { continue }
       let values = try current.resourceValues(forKeys: [.isSymbolicLinkKey])
       guard values.isSymbolicLink != true else {
-        throw CloudAttachmentStorageError.invalidPath
+        throw CloudAttachmentStorageError.symbolicLinkDescendant
       }
     }
   }
