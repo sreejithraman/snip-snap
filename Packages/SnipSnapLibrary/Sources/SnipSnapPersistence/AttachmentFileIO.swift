@@ -94,7 +94,8 @@ package enum AttachmentFileIO {
   }
 
   /// Hashes a file whose leaf access was granted without requiring directory enumeration.
-  /// The caller remains responsible for validating the path and its ancestor components.
+  /// Trusts ancestor resolution but rejects a symlink or non-regular file at the leaf.
+  /// Use RootedDirectory for paths within an imported or otherwise untrusted tree.
   package static func digestGrantedRegularFile(at fileURL: URL) throws -> Data {
     let opened = try openGrantedRegularFile(fileURL)
     defer { close(opened.descriptor) }
