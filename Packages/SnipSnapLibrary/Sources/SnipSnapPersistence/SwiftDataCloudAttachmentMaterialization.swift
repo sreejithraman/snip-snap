@@ -132,6 +132,11 @@ extension SwiftDataSnipLibrary {
       context: context
     )
       .filter { attachmentIDs.contains($0.attachmentID) }
-      .compactMap { try? Self.validatedChild(relativePath: $0.relativePath, root: root) }
+      .compactMap {
+        try? CloudAttachmentCacheFiles.validatedCacheChild(
+          relativePath: $0.relativePath,
+          root: root
+        )
+      }
   }
 }

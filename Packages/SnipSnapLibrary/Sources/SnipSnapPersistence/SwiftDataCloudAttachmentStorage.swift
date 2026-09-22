@@ -384,7 +384,10 @@ extension SwiftDataSnipLibrary {
         CloudAttachmentCacheEntry(
           attachmentID: $0.attachmentID,
           payloadIdentity: $0.payloadIdentity,
-          fileURL: try Self.validatedChild(relativePath: $0.relativePath, root: cacheRoot),
+          fileURL: try CloudAttachmentCacheFiles.validatedCacheChild(
+            relativePath: $0.relativePath,
+            root: cacheRoot
+          ),
           byteCount: $0.byteCount,
           lastAccessedAt: $0.lastAccessedAt
         )
@@ -540,7 +543,10 @@ extension SwiftDataSnipLibrary {
       context: context
     ).first(where: { $0.id == key })
     {
-      if let oldURL = try? Self.validatedChild(relativePath: old.relativePath, root: cacheRoot) {
+      if let oldURL = try? CloudAttachmentCacheFiles.validatedCacheChild(
+        relativePath: old.relativePath,
+        root: cacheRoot
+      ) {
         filesToRemoveAfterCommit.append(oldURL)
       }
       context.delete(old)
@@ -575,7 +581,10 @@ extension SwiftDataSnipLibrary {
       }
     var total = entries.reduce(Int64(0)) { $0 + $1.byteCount }
     for entry in entries where total > maximumBytes && entry.attachmentID != attachmentID {
-      let url = try Self.validatedChild(relativePath: entry.relativePath, root: cacheRoot)
+      let url = try CloudAttachmentCacheFiles.validatedCacheChild(
+        relativePath: entry.relativePath,
+        root: cacheRoot
+      )
       filesToRemoveAfterCommit.append(url)
       total -= entry.byteCount
       context.delete(entry)
@@ -636,7 +645,10 @@ extension SwiftDataSnipLibrary {
     var removedEntryIDs: Set<String> = []
     for entry in entries {
       try lock.check()
-      guard let url = try? Self.validatedChild(relativePath: entry.relativePath, root: root) else {
+      guard let url = try? CloudAttachmentCacheFiles.validatedCacheChild(
+        relativePath: entry.relativePath,
+        root: root
+      ) else {
         context.delete(entry)
         removedEntryIDs.insert(entry.id)
         continue
@@ -709,7 +721,10 @@ extension SwiftDataSnipLibrary {
       publication.payloadIdentity == row.payloadIdentity
     else {
       let root = try cloudAttachmentCacheRoot(namespaceKey: namespaceKey)
-      if let url = try? Self.validatedChild(relativePath: row.relativePath, root: root) {
+      if let url = try? CloudAttachmentCacheFiles.validatedCacheChild(
+        relativePath: row.relativePath,
+        root: root
+      ) {
         CloudAttachmentCacheFiles.remove(url, includingParentDirectory: true)
       }
       context.delete(row)
@@ -718,7 +733,10 @@ extension SwiftDataSnipLibrary {
       return nil
     }
     let root = try cloudAttachmentCacheRoot(namespaceKey: namespaceKey)
-    guard let url = try? Self.validatedChild(relativePath: row.relativePath, root: root) else {
+    guard let url = try? CloudAttachmentCacheFiles.validatedCacheChild(
+      relativePath: row.relativePath,
+      root: root
+    ) else {
       context.delete(row)
       try lock.check()
       try context.save()

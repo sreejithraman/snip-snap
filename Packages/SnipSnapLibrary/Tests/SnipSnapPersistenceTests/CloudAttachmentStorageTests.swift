@@ -626,6 +626,77 @@ final class CloudAttachmentStorageTests: XCTestCase {
     )
   }
 
+  func testCacheInstallTrustsAppOwnedDirectoryAliases() throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let files = CloudAttachmentCacheFiles(
+      attachmentRootURL: root.appendingPathComponent("Attachments", isDirectory: true),
+      lockURL: root.appendingPathComponent("snips.store.lock", isDirectory: false)
+    )
+    let namespace = "app-owned-cache-alias"
+    let cacheRoot = try files.cacheRoot(namespaceKey: namespace)
+    let actualCacheRoot = root.appendingPathComponent("ActualCache", isDirectory: true)
+    try FileManager.default.moveItem(at: cacheRoot, to: actualCacheRoot)
+    try FileManager.default.createSymbolicLink(
+      at: cacheRoot,
+      withDestinationURL: actualCacheRoot
+    )
+    let stagingRoot = try files.stagingRoot(namespaceKey: namespace)
+    let bytes = Data("downloaded through an app-owned cache alias".utf8)
+    let staged = stagingRoot.appendingPathComponent("cloud-asset")
+    try bytes.write(to: staged)
+    let relativePath = "Files/\(UUID().uuidString.lowercased())/payload"
+
+    try files.validateStagedFile(
+      staged,
+      namespaceKey: namespace,
+      expectedByteCount: Int64(bytes.count),
+      expectedSHA256: Data(SHA256.hash(data: bytes))
+    )
+    let cached = try files.installStagedFile(
+      staged,
+      namespaceKey: namespace,
+      relativePath: relativePath
+    )
+
+    XCTAssertEqual(try Data(contentsOf: cached), bytes)
+  }
+
+  func testCacheInstallStillRejectsSymlinkDestinationDescendant() throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let files = CloudAttachmentCacheFiles(
+      attachmentRootURL: root.appendingPathComponent("Attachments", isDirectory: true),
+      lockURL: root.appendingPathComponent("snips.store.lock", isDirectory: false)
+    )
+    let namespace = "symlink-destination-descendant"
+    let stagingRoot = try files.stagingRoot(namespaceKey: namespace)
+    let staged = stagingRoot.appendingPathComponent("cloud-asset")
+    try Data("downloaded bytes".utf8).write(to: staged)
+    let cacheRoot = try files.cacheRoot(namespaceKey: namespace)
+    let filesRoot = cacheRoot.appendingPathComponent("Files", isDirectory: true)
+    let outside = root.appendingPathComponent("Outside", isDirectory: true)
+    try FileManager.default.createDirectory(at: filesRoot, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+    let aliasedDirectoryName = UUID().uuidString.lowercased()
+    try FileManager.default.createSymbolicLink(
+      at: filesRoot.appendingPathComponent(aliasedDirectoryName, isDirectory: true),
+      withDestinationURL: outside
+    )
+
+    XCTAssertThrowsError(
+      try files.installStagedFile(
+        staged,
+        namespaceKey: namespace,
+        relativePath: "Files/\(aliasedDirectoryName)/payload"
+      )
+    ) { error in
+      XCTAssertEqual(error as? CloudAttachmentStorageError, .invalidPath)
+    }
+  }
+
   func testStagedFileValidationStillRejectsSymlinkLeaf() throws {
     let root = temporaryDirectory()
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
