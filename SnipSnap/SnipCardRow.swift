@@ -86,20 +86,32 @@ struct SnipCardRow: View {
                         reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom))
                     )
             } else {
-                draggableBody
-                    .transition(.opacity)
-            }
-        }
-        .overlay(alignment: .topTrailing) {
-            if isRecovered && !isEditing {
-                Text("Recovered")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(.thinMaterial, in: Capsule())
-                    .padding(8)
-                    .accessibilityLabel("Recovered Snip")
+                HStack(alignment: .top, spacing: SnipSnapSpacing.relatedContent) {
+                    draggableBody
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if snip.isPinned || isRecovered {
+                        VStack(alignment: .trailing, spacing: 4) {
+                            if snip.isPinned {
+                                Image(systemName: "pin.fill")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .padding(6)
+                                    .background(.thinMaterial, in: Circle())
+                                    .accessibilityLabel("Pinned Snip")
+                            }
+                            if isRecovered {
+                                Text("Recovered")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .background(.thinMaterial, in: Capsule())
+                                    .accessibilityLabel("Recovered Snip")
+                            }
+                        }
+                    }
+                }
+                .transition(.opacity)
             }
         }
         .onTapGesture(count: 2) {
@@ -147,11 +159,6 @@ struct SnipCardRow: View {
             }
         } content: {
             VStack(alignment: .leading, spacing: 4) {
-                if snip.isPinned {
-                    Label("Pinned", systemImage: "pin.fill")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
                 if snip.origin == .agent {
                     AgentSnipContextLabel(contextLabel: snip.agentContextLabel)
                 }
