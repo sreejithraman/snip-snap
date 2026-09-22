@@ -42,7 +42,7 @@ final class AppDiagnosticsTests: XCTestCase {
 
   func testFailureEventUsesStableCodeWithoutDescriptionOrPath() {
     struct PrivateFailure: LocalizedError {
-      let errorDescription: String? = "private file /Users/person/secret.txt"
+      let errorDescription: String? = "private file /private/secret.txt"
     }
 
     let event = AppDiagnosticEvent.failure(
@@ -53,7 +53,7 @@ final class AppDiagnosticsTests: XCTestCase {
 
     XCTAssertEqual(event.errorCode, "other.UnknownError")
     XCTAssertFalse(event.line.contains("private file"))
-    XCTAssertFalse(event.line.contains("/Users/person"))
+    XCTAssertFalse(event.line.contains("/private/secret.txt"))
   }
 
   func testClipboardPersistenceOperationKeepsItsCode() {
@@ -129,7 +129,7 @@ final class AppDiagnosticsTests: XCTestCase {
     let legacyURL = temporaryDirectory.appendingPathComponent("attachment-events.txt")
     try """
       2026-09-22T05:00:28Z attachment_download stage=cache_install outcome=failed error=storage.pathOutsideRoot
-      2026-09-22T05:00:29Z attachment_download stage=cache_install outcome=failed path=/Users/person/private.txt
+      2026-09-22T05:00:29Z attachment_download stage=cache_install outcome=failed path=/private/private.txt
       2026-09-22T05:00:30Z attachment_download stage=cache_install outcome=failed record_id=privateRecord
       2026-09-22T05:00:31Z attachment_download stage=cache_install outcome=failed hash=privateHash
       2026-09-22T05:00:32Z attachment_download stage=cache_install outcome=failed error=PrivateFilename
