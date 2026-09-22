@@ -275,11 +275,7 @@ struct CloudAttachmentCacheFiles {
   }
 
   static func requireChild(_ candidate: URL, of root: URL) throws {
-    let rootPath = root.standardizedFileURL.path
-    let candidatePath = candidate.standardizedFileURL.path
-    guard candidatePath.hasPrefix(rootPath + "/") else {
-      throw CloudAttachmentStorageError.pathOutsideRoot
-    }
+    _ = try childPath(candidate, of: root)
   }
 
   private static func requireNoSymlinkComponents(
@@ -287,23 +283,55 @@ struct CloudAttachmentCacheFiles {
     root: URL,
     checkingRoot: Bool = true
   ) throws {
-    let root = root.standardizedFileURL
-    let candidate = candidate.standardizedFileURL
+    let standardizedRoot = root.standardizedFileURL
     if checkingRoot {
-      let rootValues = try root.resourceValues(forKeys: [.isSymbolicLinkKey])
+      let rootValues = try standardizedRoot.resourceValues(forKeys: [.isSymbolicLinkKey])
       guard rootValues.isSymbolicLink != true else {
         throw CloudAttachmentStorageError.symbolicLinkRoot
       }
     }
-    let suffix = candidate.path.dropFirst(root.path.count)
-    var current = root
-    for component in suffix.split(separator: "/") {
-      current.appendPathComponent(String(component))
+    let childPath = try childPath(candidate, of: root)
+    var current = childPath.root
+    for component in childPath.components {
+      current.appendPathComponent(component)
       guard FileManager.default.fileExists(atPath: current.path) else { continue }
       let values = try current.resourceValues(forKeys: [.isSymbolicLinkKey])
       guard values.isSymbolicLink != true else {
         throw CloudAttachmentStorageError.symbolicLinkDescendant
       }
     }
+  }
+
+  /// Returns the path to a descendant while allowing the app-owned root to be
+  /// represented by either its container alias or its canonical filesystem path.
+  private static func childPath(
+    _ candidate: URL,
+    of root: URL
+  ) throws -> (root: URL, components: ArraySlice<String>) {
+    let root = root.standardizedFileURL
+    let candidate = candidate.standardizedFileURL
+    if let components = relativeComponents(of: candidate, beneath: root) {
+      return (root, components)
+    }
+
+    let resolvedRoot = root.resolvingSymlinksInPath()
+    let resolvedCandidate = candidate.resolvingSymlinksInPath()
+    guard let components = relativeComponents(of: resolvedCandidate, beneath: resolvedRoot)
+    else {
+      throw CloudAttachmentStorageError.pathOutsideRoot
+    }
+    return (resolvedRoot, components)
+  }
+
+  private static func relativeComponents(
+    of candidate: URL,
+    beneath root: URL
+  ) -> ArraySlice<String>? {
+    let rootComponents = root.pathComponents
+    let candidateComponents = candidate.pathComponents
+    guard candidateComponents.count > rootComponents.count,
+      candidateComponents.starts(with: rootComponents)
+    else { return nil }
+    return candidateComponents.dropFirst(rootComponents.count)
   }
 }
