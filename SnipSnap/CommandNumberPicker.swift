@@ -328,29 +328,3 @@ final class CommandNumberPicker: ObservableObject {
     }
 
 }
-
-struct CommandNumberBadge: View {
-    let number: Int
-
-    var body: some View {
-        Text(String(number))
-            .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
-            .foregroundStyle(SnipSnapColors.textPrimary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background {
-                RoundedRectangle(
-                    cornerRadius: PanelCardLeadingMetrics.cornerRadius,
-                    style: .continuous
-                )
-                .fill(SnipSnapColors.compactActionFill)
-                .overlay {
-                    RoundedRectangle(
-                        cornerRadius: PanelCardLeadingMetrics.cornerRadius,
-                        style: .continuous
-                    )
-                    .strokeBorder(SnipSnapColors.contentCardEdge, lineWidth: 1)
-                }
-            }
-            .accessibilityHidden(true)
-    }
-}

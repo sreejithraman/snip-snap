@@ -39,49 +39,45 @@ struct SnipCardRow: View {
                 isSubdued: snip.isDone && !snip.isPinned
             )
         ) {
-            ZStack {
-                Group {
-                    if snip.isPinned {
-                        PanelCopyButton(
-                            isCopied: isCopied,
-                            action: {
-                                Task {
-                                    guard await onCopy() else { return }
-                                    isCopied = true
-                                    copyConfirmationID = UUID()
-                                }
-                            }
-                        )
-                        .task(id: copyConfirmationID) {
-                            guard isCopied else { return }
-                            try? await Task.sleep(for: .seconds(1.5))
-                            guard !Task.isCancelled else { return }
-                            isCopied = false
+            if snip.isPinned {
+                PanelCopySlot(
+                    isCopied: isCopied,
+                    commandNumber: commandNumber,
+                    copy: {
+                        Task {
+                            guard await onCopy() else { return }
+                            isCopied = true
+                            copyConfirmationID = UUID()
                         }
-                    } else {
-                        Toggle(
-                            SnipCompletionLanguage.done,
-                            isOn: Binding(
-                                get: { snip.isDone },
-                                set: { _ in onToggleDone() }
-                            )
-                        )
-                        .toggleStyle(.checkbox)
-                        .labelsHidden()
-                        .tint(SnipSnapColors.controlTint)
-                        .help(SnipCompletionLanguage.actionTitle(isDone: snip.isDone))
-                    }
+                    },
+                    onPickCommandNumber: onPickCommandNumber
+                )
+                .disabled(isEditing)
+                .task(id: copyConfirmationID) {
+                    guard isCopied else { return }
+                    try? await Task.sleep(for: .seconds(1.5))
+                    guard !Task.isCancelled else { return }
+                    isCopied = false
                 }
+            } else if let commandNumber {
+                PanelCommandNumberButton(
+                    number: commandNumber,
+                    action: onPickCommandNumber
+                )
+            } else {
+                Toggle(
+                    SnipCompletionLanguage.done,
+                    isOn: Binding(
+                        get: { snip.isDone },
+                        set: { _ in onToggleDone() }
+                    )
+                )
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .tint(SnipSnapColors.controlTint)
+                .help(SnipCompletionLanguage.actionTitle(isDone: snip.isDone))
                 .focusable(false)
-                .disabled(isEditing || commandNumber != nil)
-                .opacity(commandNumber == nil ? 1 : 0)
-                if let commandNumber {
-                    Button(action: onPickCommandNumber) {
-                        CommandNumberBadge(number: commandNumber)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(String(localized: "Copy \(commandNumber)"))
-                }
+                .disabled(isEditing)
             }
         } main: {
             if isEditing {

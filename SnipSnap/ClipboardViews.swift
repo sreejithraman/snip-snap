@@ -233,20 +233,12 @@ struct ClipboardEntryRow: View {
 
     var body: some View {
         PanelContentCard(alignment: .top) {
-            ZStack {
-                PanelCopyButton(
-                    isCopied: isShowingCopyConfirmation,
-                    action: performCopy
-                )
-                .opacity(commandNumber == nil || isShowingCopyConfirmation ? 1 : 0)
-                if let commandNumber, !isShowingCopyConfirmation {
-                    Button(action: onPickCommandNumber) {
-                        CommandNumberBadge(number: commandNumber)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(String(localized: "Copy \(commandNumber)"))
-                }
-            }
+            PanelCopySlot(
+                isCopied: isShowingCopyConfirmation,
+                commandNumber: commandNumber,
+                copy: performCopy,
+                onPickCommandNumber: onPickCommandNumber
+            )
         } main: {
             PanelContentCardMain {
                 if !liveAttachmentPreviewItems.isEmpty {
