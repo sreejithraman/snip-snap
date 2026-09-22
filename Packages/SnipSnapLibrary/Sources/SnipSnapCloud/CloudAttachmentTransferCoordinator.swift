@@ -192,34 +192,30 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
       }
       throw error
     }
-    CloudSyncDiagnostics.attachmentStarted(.receiptValidation)
-    guard receipt.recordID == recordID,
-      receipt.field == CloudAttachmentRecordCodec.assetField
-    else {
-      Self.removeStagedFileIfSafe(receipt.fileURL, stagingRoot: stagingRoot)
-      CloudSyncDiagnostics.attachmentFailed(
-        .receiptValidation,
-        error: CloudAttachmentStorageError.invalidMetadata
-      )
-      throw CloudAttachmentStorageError.invalidMetadata
-    }
-    CloudSyncDiagnostics.attachmentSucceeded(.receiptValidation)
     CloudSyncDiagnostics.attachmentStarted(.cacheInstall)
     do {
-      let installedURL = try await library.installCloudAttachmentCacheFile(
+      let installedURL = try await library.installCloudAttachmentDownload(
         namespaceKey: namespaceKey,
         attachmentID: attachmentID,
         expectedPayloadIdentity: publication.metadata.payloadIdentity,
-        stagedURL: receipt.fileURL,
-        expectedByteCount: publication.metadata.byteCount,
-        expectedSHA256: publication.metadata.sha256,
+        expectedField: CloudAttachmentRecordCodec.assetField,
+        download: CloudAttachmentCacheDownload(
+          payloadIdentity: CloudTextStorageIdentity(
+            zoneName: receipt.recordID.zone.name,
+            ownerName: receipt.recordID.zone.ownerName,
+            recordName: receipt.recordID.name
+          ),
+          field: receipt.field,
+          fileURL: receipt.fileURL,
+          byteCount: receipt.byteCount,
+          sha256: receipt.sha256
+        ),
         maximumBytes: maximumCacheBytes,
         now: now()
       )
       CloudSyncDiagnostics.attachmentSucceeded(.cacheInstall, byteCount: receipt.byteCount)
       return installedURL
     } catch {
-      Self.removeStagedFileIfSafe(receipt.fileURL, stagingRoot: stagingRoot)
       CloudSyncDiagnostics.attachmentFailed(.cacheInstall, error: error)
       throw error
     }
@@ -377,21 +373,4 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
     try AttachmentFileIO.digest(at: url)
   }
 
-  private static func removeStagedFileIfSafe(_ fileURL: URL, stagingRoot: URL) {
-    let root = stagingRoot.standardizedFileURL
-    let file = fileURL.standardizedFileURL
-    guard root.isFileURL, file.isFileURL, file != root,
-      file.path.hasPrefix(root.path + "/")
-    else { return }
-    var current = file
-    while current != root {
-      guard let values = try? current.resourceValues(forKeys: [.isSymbolicLinkKey]),
-        values.isSymbolicLink != true
-      else { return }
-      let parent = current.deletingLastPathComponent()
-      guard parent != current else { return }
-      current = parent
-    }
-    try? FileManager.default.removeItem(at: file)
-  }
 }

@@ -487,31 +487,31 @@ extension SwiftDataSnipLibrary {
     try cloudAttachmentFiles.stagingRoot(namespaceKey: namespaceKey.rawValue)
   }
 
-  package func installCloudAttachmentCacheFile(
+  /// Validates a transport receipt and its staged bytes, installs the file, commits the
+  /// matching cache row, rolls back an uncommitted install, and discards safe staging leaves.
+  package func installCloudAttachmentDownload(
     namespaceKey: CloudSyncNamespaceKey,
     attachmentID: UUID,
     expectedPayloadIdentity: CloudTextStorageIdentity,
-    stagedURL: URL,
-    expectedByteCount: Int64,
-    expectedSHA256: Data,
+    expectedField: String,
+    download: CloudAttachmentCacheDownload,
     maximumBytes: Int64,
     now: Date,
     afterSave: @Sendable () -> Void = {}
   ) throws -> URL {
     let namespaceKey = namespaceKey.rawValue
-    guard maximumBytes >= 0, let container else { throw SnipLibraryError.storeUnavailable }
-    guard expectedByteCount <= maximumBytes else {
-      throw CloudAttachmentStorageError.sizeMismatch
+    defer {
+      cloudAttachmentFiles.discardStagedFileIfSafe(
+        download.fileURL,
+        namespaceKey: namespaceKey
+      )
     }
+    guard maximumBytes >= 0, let container else { throw SnipLibraryError.storeUnavailable }
+    guard download.payloadIdentity == expectedPayloadIdentity,
+      download.field == expectedField
+    else { throw CloudAttachmentStorageError.invalidMetadata }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
-    let cacheRoot = try cloudAttachmentCacheRoot(namespaceKey: namespaceKey)
-    try cloudAttachmentFiles.validateStagedFile(
-      stagedURL,
-      namespaceKey: namespaceKey,
-      expectedByteCount: expectedByteCount,
-      expectedSHA256: expectedSHA256
-    )
     let context = Self.makeContext(container: container)
     var filesToRemoveAfterCommit: [URL] = []
     guard let publication = try Self.cloudAttachmentPublications(
@@ -520,15 +520,30 @@ extension SwiftDataSnipLibrary {
     ).first(where: { $0.attachmentID == attachmentID })
     else { throw CloudAttachmentStorageError.missingPublication }
     guard publication.payloadIdentity == expectedPayloadIdentity,
-      publication.byteCount == expectedByteCount,
-      publication.sha256 == expectedSHA256
-    else { throw CloudAttachmentStorageError.staleTransition }
+      publication.byteCount == download.byteCount,
+      publication.sha256 == download.sha256
+    else {
+      if publication.payloadIdentity != expectedPayloadIdentity {
+        throw CloudAttachmentStorageError.staleTransition
+      }
+      throw CloudAttachmentStorageError.invalidMetadata
+    }
+    guard publication.byteCount <= maximumBytes else {
+      throw CloudAttachmentStorageError.sizeMismatch
+    }
+    let cacheRoot = try cloudAttachmentCacheRoot(namespaceKey: namespaceKey)
+    try cloudAttachmentFiles.validateStagedFile(
+      download.fileURL,
+      namespaceKey: namespaceKey,
+      expectedByteCount: publication.byteCount,
+      expectedSHA256: publication.sha256
+    )
     let relativePath = CloudAttachmentCacheFiles.cacheEntryRelativePath(
       attachmentID: attachmentID,
       fileName: publication.fileName
     )
     let destination = try cloudAttachmentFiles.installStagedFile(
-      stagedURL,
+      download.fileURL,
       namespaceKey: namespaceKey,
       relativePath: relativePath
     )
@@ -556,7 +571,7 @@ extension SwiftDataSnipLibrary {
       attachmentID: attachmentID,
       payloadIdentity: publication.payloadIdentity,
       relativePath: relativePath,
-      byteCount: expectedByteCount,
+      byteCount: publication.byteCount,
       lastAccessedAt: now
     ))
     let domainRelativePath = "CloudDownloads/"

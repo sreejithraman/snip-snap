@@ -488,13 +488,18 @@ final class CloudAttachmentStorageTests: XCTestCase {
       at: staged.deletingLastPathComponent(), withIntermediateDirectories: true
     )
     try bytes.write(to: staged)
-    let cached = try await library.installCloudAttachmentCacheFile(
+    let cached = try await library.installCloudAttachmentDownload(
       namespaceKey: namespace,
       attachmentID: attachmentID,
       expectedPayloadIdentity: payload,
-      stagedURL: staged,
-      expectedByteCount: Int64(bytes.count),
-      expectedSHA256: Data(SHA256.hash(data: bytes)),
+      expectedField: "asset",
+      download: CloudAttachmentCacheDownload(
+        payloadIdentity: payload,
+        field: "asset",
+        fileURL: staged,
+        byteCount: Int64(bytes.count),
+        sha256: Data(SHA256.hash(data: bytes))
+      ),
       maximumBytes: 1_024,
       now: .distantPast
     )
@@ -582,13 +587,18 @@ final class CloudAttachmentStorageTests: XCTestCase {
     if directory >= 0 { close(directory) }
     XCTAssertEqual(directory, -1)
 
-    let cached = try await library.installCloudAttachmentCacheFile(
+    let cached = try await library.installCloudAttachmentDownload(
       namespaceKey: namespace,
       attachmentID: attachmentID,
       expectedPayloadIdentity: payload,
-      stagedURL: staged,
-      expectedByteCount: Int64(bytes.count),
-      expectedSHA256: metadata.sha256,
+      expectedField: "asset",
+      download: CloudAttachmentCacheDownload(
+        payloadIdentity: payload,
+        field: "asset",
+        fileURL: staged,
+        byteCount: Int64(bytes.count),
+        sha256: metadata.sha256
+      ),
       maximumBytes: 1_024,
       now: .distantPast
     )
@@ -624,6 +634,46 @@ final class CloudAttachmentStorageTests: XCTestCase {
         expectedSHA256: Data(SHA256.hash(data: bytes))
       )
     )
+  }
+
+  func testUnavailableStoreStillDiscardsItsStagedDownload() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let library = SwiftDataSnipLibrary.unavailable(storeURL: root.appendingPathComponent("store"))
+    let namespace = CloudSyncNamespaceKey(rawValue: "unavailable-store")
+    let stagingRoot = try await library.cloudAttachmentStagingRoot(namespaceKey: namespace)
+    let staged = stagingRoot.appendingPathComponent("download/payload")
+    try FileManager.default.createDirectory(
+      at: staged.deletingLastPathComponent(), withIntermediateDirectories: true
+    )
+    let bytes = Data("discard me".utf8)
+    try bytes.write(to: staged)
+    let payload = CloudTextStorageIdentity(
+      zoneName: "payload", ownerName: "owner", recordName: "record"
+    )
+
+    do {
+      _ = try await library.installCloudAttachmentDownload(
+        namespaceKey: namespace,
+        attachmentID: UUID(),
+        expectedPayloadIdentity: payload,
+        expectedField: "asset",
+        download: CloudAttachmentCacheDownload(
+          payloadIdentity: payload,
+          field: "asset",
+          fileURL: staged,
+          byteCount: Int64(bytes.count),
+          sha256: Data(SHA256.hash(data: bytes))
+        ),
+        maximumBytes: 1_024,
+        now: .distantPast
+      )
+      XCTFail("Expected an unavailable store")
+    } catch {
+      XCTAssertEqual(error as? SnipLibraryError, .storeUnavailable)
+    }
+    XCTAssertFalse(FileManager.default.fileExists(atPath: staged.path))
   }
 
   func testCacheInstallTrustsAppOwnedDirectoryAliases() throws {

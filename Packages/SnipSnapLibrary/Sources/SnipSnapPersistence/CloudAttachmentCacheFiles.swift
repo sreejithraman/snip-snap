@@ -115,6 +115,21 @@ struct CloudAttachmentCacheFiles {
     }
   }
 
+  /// Removes a staging leaf only after proving that its lexical path stays inside the
+  /// app-owned staging root and no descendant is a symlink. The root itself may resolve
+  /// through a permitted container alias.
+  func discardStagedFileIfSafe(_ stagedURL: URL, namespaceKey: String) {
+    guard let root = try? stagingRoot(namespaceKey: namespaceKey),
+      (try? Self.requireChild(stagedURL, of: root)) != nil,
+      (try? Self.requireNoSymlinkComponents(
+        stagedURL,
+        root: root,
+        checkingRoot: false
+      )) != nil
+    else { return }
+    try? FileManager.default.removeItem(at: stagedURL)
+  }
+
   func cacheFileIsValid(
     _ url: URL,
     expectedByteCount: Int64,
