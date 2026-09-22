@@ -51,6 +51,18 @@ A skip or a prior run against changed code is not proof of the current change.
   `AttachmentFileIO.copyGrantedRegularFile` for that trusted SDK URL. Keep its
   regular-file and leaf-symlink checks. Keep untrusted imports on `RootedDirectory`;
   the granted-file API trusts path ancestors.
+- **Attachment caches:** Put re-downloadable attachment bytes in the app-group
+  `Library/Caches` subtree on iOS and the user cache directory on macOS,
+  isolated by sync-mode store and sync generation.
+  Treat system eviction as a cache miss while retaining accepted metadata for
+  re-download. Cache sweeps verify and copy legacy store-local downloads before
+  removing the old file. Keep user-added attachment bytes and queued upload
+  bytes in durable storage. Trust the app-owned cache namespace root when iOS
+  reports it through a directory alias, but reject malformed relative paths and
+  every symlink below that root through the cache-owned resolver. Upload and
+  import roots retain their stricter validation. Before leaving iCloud, promote
+  every attachment into durable local storage; recover cache misses while the
+  account is available, and abort without deleting metadata when it is not.
 - **Failure evidence:** read the runner's stage error and saved test summary
   before diagnosing an app failure. The original live test failed because its
   startup sequence was wrong; the expanded test then found a real file-access

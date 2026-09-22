@@ -164,6 +164,10 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let libraryStoreURL = SwiftDataSnipLibrary.defaultStoreURL()
         let store = Self.openLibrary(storeURL: libraryStoreURL)
         let library = store.library
+        let attachmentCacheRootURL = FileManager.default.urls(
+            for: .cachesDirectory,
+            in: .userDomainMask
+        ).first.map(SnipSnapAppGroupContainer.cloudAttachmentCacheRootURL(inCachesDirectory:))
         let syncModeRootURL = LocalSnipStorePaths(storeURL: libraryStoreURL).rootDirectory
             .appendingPathComponent("SyncMode", isDirectory: true)
         agentImports = AgentImportStore(
@@ -178,6 +182,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let assembly = SnipLibraryAssembly(
             library: library,
             syncModeRootURL: syncModeRootURL,
+            attachmentCacheRootURL: attachmentCacheRootURL,
             initializeSyncModeStore: initializeSyncModeStore
         )
         let model = AppModel(
@@ -194,6 +199,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_ENABLE"] == "1" {
             cloudServices = SnipSnapCloudAppAssembly.simulatedLocalOnlyServices(
                 rootURL: syncModeRootURL,
+                attachmentCacheRootURL: attachmentCacheRootURL,
                 sourceLibrary: library
             )
         } else if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1" {
@@ -204,6 +210,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         } else {
             cloudServices = SnipSnapCloudAppAssembly.services(
                 rootURL: syncModeRootURL,
+                attachmentCacheRootURL: attachmentCacheRootURL,
                 sourceLibrary: library,
                 syncModeStore: assembly.syncModeStore,
                 containerIdentifier: Bundle.main.object(
@@ -214,6 +221,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
 #else
         cloudServices = SnipSnapCloudAppAssembly.services(
             rootURL: syncModeRootURL,
+            attachmentCacheRootURL: attachmentCacheRootURL,
             sourceLibrary: library,
             syncModeStore: assembly.syncModeStore,
             containerIdentifier: Bundle.main.object(

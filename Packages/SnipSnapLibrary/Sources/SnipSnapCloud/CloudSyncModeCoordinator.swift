@@ -342,15 +342,25 @@ package actor ICloudSyncModeCoordinator {
     @discardableResult
     package func refreshAccountState() async throws -> ICloudSyncModeStatus {
         let accountState = await accountStateSource.currentAccountState()
-        try await persistence.reconcileAccountIsolationResolution()
-        let storage = try await persistence.snapshot()
-        if let isolation = storage.accountIsolation,
+        let initialStorage = try await persistence.snapshot()
+        if let isolation = initialStorage.accountIsolation,
+           isolation.resolution != .removing,
            case .available(let accountLineage) = accountState,
            accountLineage == isolation.namespace.accountLineage,
            isolation.namespace == namespace.binding {
+            let recoveredMissingBytes = try await preserveIsolatedAttachmentsForLocalCopy(
+                storeID: isolation.storeID
+            )
             try await persistence.resolveAccountIsolation(.keepLocalCopy)
+            if recoveredMissingBytes {
+                // Finish the safety copy first. A later explicit enable can start a
+                // fresh remote-first transition without holding account isolation open.
+                return try await statusUnchecked(accountState: accountState)
+            }
             return try await enableOrRetry()
         }
+        try await persistence.reconcileAccountIsolationResolution()
+        let storage = try await persistence.snapshot()
         if storage.activeStore.kind == .iCloudSync, storage.accountIsolation == nil {
             switch accountState {
             case .noAccount:
@@ -641,6 +651,20 @@ package actor ICloudSyncModeCoordinator {
             }
         }
 
+        if initial.transition == nil {
+            do {
+                try await preserveAttachmentsForLocalCopy(storeID: initial.activeStore.id)
+            } catch {
+                if error is ICloudAccountGateError {
+                    return try await refreshAccountState()
+                }
+                if !isRetryableConnectivity(error) {
+                    try? await persistence.recordAttention(.terminalFetchFailure)
+                }
+                throw error
+            }
+        }
+
         var transition = try await persistence.beginTransition(to: .localOnly, namespace: nil)
         if transition.phase == .candidateReady {
             try await persistence.recordPreparationComplete()
@@ -699,6 +723,35 @@ package actor ICloudSyncModeCoordinator {
             let raw = try await fullBridge(storeID: storeID)
             return FullRecordSyncAdapter(raw: raw, transport: makeTransport())
         }
+    }
+
+    private func preserveAttachmentsForLocalCopy(storeID: UUID) async throws {
+        guard let payloadZone else { return }
+        let lease = try await persistence.activeCloudMutationLease(storeID: storeID)
+        try await lease.run {
+            let library = try await self.persistence.libraryForTransition(storeID: storeID)
+            let coordinator = CloudAttachmentTransferCoordinator(
+                library: library,
+                namespace: self.namespace,
+                payloadZone: payloadZone,
+                transport: self.makeTransport(),
+                maximumCacheBytes: CloudAttachmentTransferCoordinator.standardMaximumCacheBytes
+            )
+            _ = try await coordinator.preserveAllAttachmentsForLocalCopy()
+        }
+    }
+
+    private func preserveIsolatedAttachmentsForLocalCopy(storeID: UUID) async throws -> Bool {
+        guard let payloadZone else { return false }
+        let library = try await persistence.libraryForTransition(storeID: storeID)
+        let coordinator = CloudAttachmentTransferCoordinator(
+            library: library,
+            namespace: namespace,
+            payloadZone: payloadZone,
+            transport: makeTransport(),
+            maximumCacheBytes: CloudAttachmentTransferCoordinator.standardMaximumCacheBytes
+        )
+        return try await coordinator.preserveAllAttachmentsForLocalCopy()
     }
 
     private func rawBridge(storeID: UUID) async throws -> SwiftDataCloudTextPersistence {

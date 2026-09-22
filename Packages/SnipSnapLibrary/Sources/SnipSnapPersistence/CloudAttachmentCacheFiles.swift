@@ -5,15 +5,166 @@ import Foundation
 struct CloudAttachmentCacheFiles {
   let attachmentRootURL: URL
   let lockURL: URL
+  let cacheContainerURL: URL
+
+  init(attachmentRootURL: URL, lockURL: URL, cacheContainerURL: URL? = nil) {
+    self.attachmentRootURL = attachmentRootURL
+    self.lockURL = lockURL
+    self.cacheContainerURL = cacheContainerURL ?? attachmentRootURL
+  }
 
   func cacheRoot(namespaceKey: String) throws -> URL {
-    let root =
-      attachmentRootURL
-      .appendingPathComponent("CloudDownloads", isDirectory: true)
-      .appendingPathComponent(Self.namespaceDigest(namespaceKey), isDirectory: true)
+    let root = cacheRootURL(namespaceKey: namespaceKey)
     try DurableFile.createDirectory(root)
     try DurableFile.excludeFromBackup(root)
     return root
+  }
+
+  private func cacheRootURL(namespaceKey: String) -> URL {
+    cacheContainerURL
+      .appendingPathComponent("CloudDownloads", isDirectory: true)
+      .appendingPathComponent(Self.namespaceDigest(namespaceKey), isDirectory: true)
+  }
+
+  func cacheFileURL(relativePath: String, namespaceKey: String) throws -> URL {
+    let preferredRoot = cacheRootURL(namespaceKey: namespaceKey)
+    let legacyRoot = legacyCacheRoot(namespaceKey: namespaceKey)
+    return try cacheFileURL(
+      relativePath: relativePath,
+      preferredRoot: preferredRoot,
+      legacyRoot: legacyRoot
+    )
+  }
+
+  /// Resolves a stored `CloudDownloads/<namespace digest>/...` path without exposing
+  /// cache-root alias policy to the library's general attachment reader.
+  func cacheFileURL(domainRelativePath: String) throws -> URL {
+    let components = domainRelativePath.split(
+      separator: "/",
+      omittingEmptySubsequences: false
+    )
+    guard components.count >= 4, components[0] == "CloudDownloads",
+      components[1].count == 64,
+      components[1].allSatisfy({ $0.isHexDigit && !$0.isUppercase })
+    else { throw CloudAttachmentStorageError.invalidPath }
+    let namespaceDigest = String(components[1])
+    let relativePath = components.dropFirst(2).joined(separator: "/")
+    let preferredRoot = cacheContainerURL
+      .appendingPathComponent("CloudDownloads", isDirectory: true)
+      .appendingPathComponent(namespaceDigest, isDirectory: true)
+    let legacyRoot = attachmentRootURL
+      .appendingPathComponent("CloudDownloads", isDirectory: true)
+      .appendingPathComponent(namespaceDigest, isDirectory: true)
+    return try cacheFileURL(
+      relativePath: relativePath,
+      preferredRoot: preferredRoot,
+      legacyRoot: legacyRoot
+    )
+  }
+
+  private func cacheFileURL(
+    relativePath: String,
+    preferredRoot: URL,
+    legacyRoot: URL
+  ) throws -> URL {
+    let preferred = try Self.validatedCacheChild(relativePath: relativePath, root: preferredRoot)
+    guard cacheContainerURL.standardizedFileURL != attachmentRootURL.standardizedFileURL,
+      !FileManager.default.fileExists(atPath: preferred.path)
+    else { return preferred }
+    guard FileManager.default.fileExists(atPath: legacyRoot.path) else { return preferred }
+    let legacy = try Self.validatedCacheChild(relativePath: relativePath, root: legacyRoot)
+    return FileManager.default.fileExists(atPath: legacy.path) ? legacy : preferred
+  }
+
+  /// Returns verified cached bytes, preferring the purgeable location and opportunistically
+  /// migrating a valid legacy file without allowing crash residue to mask it.
+  func verifiedCacheFileURL(
+    relativePath: String,
+    namespaceKey: String,
+    expectedByteCount: Int64,
+    expectedSHA256: Data,
+    migrateLegacy: Bool
+  ) throws -> URL? {
+    let preferredRoot = cacheRootURL(namespaceKey: namespaceKey)
+    let preferred: URL
+    do {
+      preferred = try Self.validatedCacheChild(relativePath: relativePath, root: preferredRoot)
+    } catch CloudAttachmentStorageError.symbolicLinkDescendant {
+      guard try Self.removeCacheLeafSymlink(relativePath: relativePath, root: preferredRoot)
+      else { return nil }
+      preferred = try Self.validatedCacheChild(relativePath: relativePath, root: preferredRoot)
+    }
+    if FileManager.default.fileExists(atPath: preferred.path) {
+      if cacheFileIsValid(
+        preferred,
+        expectedByteCount: expectedByteCount,
+        expectedSHA256: expectedSHA256
+      ) {
+        return preferred
+      }
+      try FileManager.default.removeItem(at: preferred)
+    }
+
+    let legacyRoot = legacyCacheRoot(namespaceKey: namespaceKey)
+    let legacy: URL
+    do {
+      legacy = try Self.validatedCacheChild(relativePath: relativePath, root: legacyRoot)
+    } catch CloudAttachmentStorageError.symbolicLinkDescendant {
+      guard try Self.removeCacheLeafSymlink(relativePath: relativePath, root: legacyRoot)
+      else { return nil }
+      legacy = try Self.validatedCacheChild(relativePath: relativePath, root: legacyRoot)
+    }
+    guard cacheFileIsValid(
+      legacy,
+      expectedByteCount: expectedByteCount,
+      expectedSHA256: expectedSHA256
+    ) else { return nil }
+    guard migrateLegacy else { return legacy }
+
+    do {
+      return try migrateCacheFile(
+        from: legacy,
+        to: preferred,
+        preferredRoot: preferredRoot,
+        expectedByteCount: expectedByteCount,
+        expectedSHA256: expectedSHA256
+      )
+    } catch {
+      return legacy
+    }
+  }
+
+  private func migrateCacheFile(
+    from source: URL,
+    to destination: URL,
+    preferredRoot: URL,
+    expectedByteCount: Int64,
+    expectedSHA256: Data
+  ) throws -> URL {
+    try DurableFile.createDirectory(preferredRoot)
+    try DurableFile.excludeFromBackup(preferredRoot)
+    let directory = destination.deletingLastPathComponent()
+    try DurableFile.createDirectory(directory)
+    let staging = directory.appendingPathComponent(
+      "migration-\(UUID().uuidString.lowercased()).tmp",
+      isDirectory: false
+    )
+    defer { try? FileManager.default.removeItem(at: staging) }
+    let copied = try AttachmentFileIO.copyRegularFile(
+      from: source,
+      to: staging,
+      expectedByteCount: expectedByteCount
+    )
+    guard copied.byteCount == expectedByteCount, copied.digest == expectedSHA256 else {
+      throw CloudAttachmentStorageError.hashMismatch
+    }
+    try DurableFile.excludeFromBackup(staging)
+    try DurableFile.syncFile(staging)
+    try FileManager.default.moveItem(at: staging, to: destination)
+    try DurableFile.syncDirectory(directory)
+    try FileManager.default.removeItem(at: source)
+    try? FileManager.default.removeItem(at: source.deletingLastPathComponent())
+    return destination
   }
 
   func uploadRoot(namespaceKey: String) throws -> URL {
@@ -26,8 +177,8 @@ struct CloudAttachmentCacheFiles {
   }
 
   func stagingRoot(namespaceKey: String) throws -> URL {
-    let root = try cacheRoot(namespaceKey: namespaceKey)
-      .appendingPathComponent("Staging", isDirectory: true)
+    let namespaceRoot = try cacheRoot(namespaceKey: namespaceKey)
+    let root = try Self.validatedCacheChild(relativePath: "Staging", root: namespaceRoot)
     try DurableFile.createDirectory(root)
     return root
   }
@@ -72,8 +223,8 @@ struct CloudAttachmentCacheFiles {
     relativePath: String
   ) throws -> URL {
     let cacheRoot = try cacheRoot(namespaceKey: namespaceKey)
-    try Self.requireChild(stagedURL, of: try stagingRoot(namespaceKey: namespaceKey))
-    let filesRoot = cacheRoot.appendingPathComponent("Files", isDirectory: true)
+    try requireValidStagedFile(stagedURL, namespaceKey: namespaceKey, cacheRoot: cacheRoot)
+    let filesRoot = try Self.validatedCacheChild(relativePath: "Files", root: cacheRoot)
     try DurableFile.createDirectory(filesRoot)
     let destination = try Self.validatedCacheChild(relativePath: relativePath, root: cacheRoot)
     try DurableFile.createDirectory(destination.deletingLastPathComponent())
@@ -97,11 +248,7 @@ struct CloudAttachmentCacheFiles {
     expectedByteCount: Int64,
     expectedSHA256: Data
   ) throws {
-    let root = try stagingRoot(namespaceKey: namespaceKey)
-    try Self.requireChild(stagedURL, of: root)
-    // The staging root is app-owned and may resolve through a permitted directory alias.
-    // Descendants remain untrusted until each component and the leaf have been checked.
-    try Self.requireNoSymlinkComponents(stagedURL, root: root, checkingRoot: false)
+    try requireValidStagedFile(stagedURL, namespaceKey: namespaceKey)
     let values = try stagedURL.resourceValues(
       forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
     )
@@ -116,18 +263,34 @@ struct CloudAttachmentCacheFiles {
   }
 
   /// Removes a staging leaf only after proving that its lexical path stays inside the
-  /// app-owned staging root and no descendant is a symlink. The root itself may resolve
-  /// through a permitted container alias.
+  /// namespace cache root and no component below that permitted root alias is a symlink.
   func discardStagedFileIfSafe(_ stagedURL: URL, namespaceKey: String) {
-    guard let root = try? stagingRoot(namespaceKey: namespaceKey),
-      (try? Self.requireChild(stagedURL, of: root)) != nil,
-      (try? Self.requireNoSymlinkComponents(
-        stagedURL,
-        root: root,
-        checkingRoot: false
-      )) != nil
+    guard (try? requireValidStagedFile(stagedURL, namespaceKey: namespaceKey)) != nil else {
+      return
+    }
+    guard let values = try? stagedURL.resourceValues(
+      forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+    ), values.isRegularFile == true, values.isSymbolicLink != true
     else { return }
     try? FileManager.default.removeItem(at: stagedURL)
+  }
+
+  private func requireValidStagedFile(
+    _ stagedURL: URL,
+    namespaceKey: String,
+    cacheRoot suppliedCacheRoot: URL? = nil
+  ) throws {
+    let namespaceRoot = suppliedCacheRoot ?? cacheRootURL(namespaceKey: namespaceKey)
+    let stagingRoot = try Self.validatedCacheChild(
+      relativePath: "Staging",
+      root: namespaceRoot
+    )
+    try Self.requireChild(stagedURL, of: stagingRoot)
+    try Self.requireNoSymlinkComponents(
+      stagedURL,
+      root: namespaceRoot,
+      checkingRoot: false
+    )
   }
 
   func cacheFileIsValid(
@@ -147,29 +310,34 @@ struct CloudAttachmentCacheFiles {
   }
 
   func clearCacheDirectories(namespaceKey: String) throws {
-    let root = try cacheRoot(namespaceKey: namespaceKey)
-    for directoryName in ["Files", "Staging"] {
-      let directory = root.appendingPathComponent(directoryName, isDirectory: true)
-      if FileManager.default.fileExists(atPath: directory.path) {
-        try FileManager.default.removeItem(at: directory)
+    for root in try cacheRoots(namespaceKey: namespaceKey) {
+      let files = try Self.validatedCacheChild(relativePath: "Files", root: root)
+      if FileManager.default.fileExists(atPath: files.path) {
+        try FileManager.default.removeItem(at: files)
+      }
+      let staging = try Self.validatedCacheChild(relativePath: "Staging", root: root)
+      if FileManager.default.fileExists(atPath: staging.path) {
+        try FileManager.default.removeItem(at: staging)
       }
     }
   }
 
   func clearStaging(namespaceKey: String) throws {
-    let staging = try cacheRoot(namespaceKey: namespaceKey)
-      .appendingPathComponent("Staging", isDirectory: true)
-    if FileManager.default.fileExists(atPath: staging.path) {
-      try FileManager.default.removeItem(at: staging)
+    for root in try cacheRoots(namespaceKey: namespaceKey) {
+      let staging = try Self.validatedCacheChild(relativePath: "Staging", root: root)
+      if FileManager.default.fileExists(atPath: staging.path) {
+        try FileManager.default.removeItem(at: staging)
+      }
     }
   }
 
   func removeNamespaceFiles(namespaceKey: String) throws {
-    for root in [
-      try cacheRoot(namespaceKey: namespaceKey),
-      try uploadRoot(namespaceKey: namespaceKey),
-    ] where FileManager.default.fileExists(atPath: root.path) {
-      try FileManager.default.removeItem(at: root)
+    for root in try cacheRoots(namespaceKey: namespaceKey) {
+      try Self.removeTrustedCacheRoot(root)
+    }
+    let uploadRoot = try uploadRoot(namespaceKey: namespaceKey)
+    if FileManager.default.fileExists(atPath: uploadRoot.path) {
+      try FileManager.default.removeItem(at: uploadRoot)
     }
   }
 
@@ -177,6 +345,25 @@ struct CloudAttachmentCacheFiles {
     try? FileManager.default.removeItem(at: url)
     if includingParentDirectory {
       try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+    }
+  }
+
+  /// Removes a per-store cache container while following only its app-owned namespace roots.
+  static func removeCacheContainer(_ root: URL) throws {
+    let downloads = root.appendingPathComponent("CloudDownloads", isDirectory: true)
+    if let namespaces = try? FileManager.default.contentsOfDirectory(
+      at: downloads,
+      includingPropertiesForKeys: nil,
+      options: [.skipsHiddenFiles]
+    ) {
+      for namespace in namespaces where namespace.lastPathComponent.count == 64
+        && namespace.lastPathComponent.allSatisfy({ $0.isHexDigit && !$0.isUppercase })
+      {
+        try removeTrustedCacheRoot(namespace)
+      }
+    }
+    if FileManager.default.fileExists(atPath: root.path) {
+      try FileManager.default.removeItem(at: root)
     }
   }
 
@@ -205,8 +392,18 @@ struct CloudAttachmentCacheFiles {
     }
   }
 
-  static func removeOrphans(under root: URL, keeping paths: Set<String>) throws {
+  func removeCacheOrphans(namespaceKey: String, keeping paths: Set<String>) throws {
+    for cacheRoot in try cacheRoots(namespaceKey: namespaceKey) {
+      let filesRoot = try Self.validatedCacheChild(relativePath: "Files", root: cacheRoot)
+      try Self.removeOrphans(under: filesRoot, keeping: paths)
+    }
+  }
+
+  private static func removeOrphans(under root: URL, keeping paths: Set<String>) throws {
     guard FileManager.default.fileExists(atPath: root.path) else { return }
+    let resolvedPaths = Set(paths.map {
+      URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path
+    })
     guard
       let enumerator = FileManager.default.enumerator(
         at: root,
@@ -225,7 +422,7 @@ struct CloudAttachmentCacheFiles {
       } else if values.isDirectory == true {
         emptyDirectories.append(url)
       } else if values.isRegularFile == true,
-        !paths.contains(url.standardizedFileURL.path)
+        !resolvedPaths.contains(url.resolvingSymlinksInPath().standardizedFileURL.path)
       {
         try FileManager.default.removeItem(at: url)
       }
@@ -234,6 +431,31 @@ struct CloudAttachmentCacheFiles {
     where (try FileManager.default.contentsOfDirectory(atPath: directory.path)).isEmpty {
       try FileManager.default.removeItem(at: directory)
     }
+  }
+
+  /// The cache namespace root is app-owned and may itself be a container alias. Remove the
+  /// resolved directory and, when the last component is a symlink, its now-dangling alias.
+  private static func removeTrustedCacheRoot(_ root: URL) throws {
+    let root = root.standardizedFileURL
+    let rootValues = try? root.resourceValues(forKeys: [.isSymbolicLinkKey])
+    guard FileManager.default.fileExists(atPath: root.path)
+      || rootValues?.isSymbolicLink == true
+    else { return }
+    let rootIsSymlink = rootValues?.isSymbolicLink == true
+    let resolved = root.resolvingSymlinksInPath().standardizedFileURL
+    if FileManager.default.fileExists(atPath: resolved.path) {
+      try FileManager.default.removeItem(at: resolved)
+    }
+    if rootIsSymlink {
+      try FileManager.default.removeItem(at: root)
+    }
+  }
+
+  private func cacheRoots(namespaceKey: String) throws -> [URL] {
+    let preferred = cacheRootURL(namespaceKey: namespaceKey)
+    let legacy = legacyCacheRoot(namespaceKey: namespaceKey)
+    return preferred.standardizedFileURL == legacy.standardizedFileURL
+      ? [preferred] : [preferred, legacy]
   }
 
   static func cacheRelativePath(
@@ -248,6 +470,12 @@ struct CloudAttachmentCacheFiles {
   static func cacheEntryRelativePath(attachmentID: UUID, fileName: String) -> String {
     "Files/\(attachmentID.uuidString.lowercased())/"
       + "\(UUID().uuidString.lowercased())-\(safeFileName(fileName))"
+  }
+
+  private func legacyCacheRoot(namespaceKey: String) -> URL {
+    attachmentRootURL
+      .appendingPathComponent("CloudDownloads", isDirectory: true)
+      .appendingPathComponent(Self.namespaceDigest(namespaceKey), isDirectory: true)
   }
 
   static func namespaceDigest(_ namespaceKey: String) -> String {
@@ -270,8 +498,31 @@ struct CloudAttachmentCacheFiles {
 
   /// Validates a relative path beneath a cache root returned by `cacheRoot(namespaceKey:)`.
   /// The app-owned root may resolve through a permitted container alias; descendants may not.
-  static func validatedCacheChild(relativePath: String, root: URL) throws -> URL {
+  private static func validatedCacheChild(relativePath: String, root: URL) throws -> URL {
     try validatedChild(relativePath: relativePath, root: root, checkingRoot: false)
+  }
+
+  /// Unlinks only a symlink at the cache entry leaf. Parent validation still rejects
+  /// every descendant symlink, so cleanup can never follow an entry outside the cache.
+  private static func removeCacheLeafSymlink(relativePath: String, root: URL) throws -> Bool {
+    let components = relativePath.split(separator: "/", omittingEmptySubsequences: false)
+    guard let leaf = components.last, !leaf.isEmpty else {
+      throw CloudAttachmentStorageError.invalidRelativePath
+    }
+    let parent: URL
+    if components.count == 1 {
+      parent = root.standardizedFileURL
+    } else {
+      parent = try validatedCacheChild(
+        relativePath: components.dropLast().joined(separator: "/"),
+        root: root
+      )
+    }
+    let candidate = parent.appendingPathComponent(String(leaf)).standardizedFileURL
+    let values = try candidate.resourceValues(forKeys: [.isSymbolicLinkKey])
+    guard values.isSymbolicLink == true else { return false }
+    try FileManager.default.removeItem(at: candidate)
+    return true
   }
 
   private static func validatedChild(
@@ -329,9 +580,12 @@ struct CloudAttachmentCacheFiles {
       return (root, components)
     }
 
+    // The cache root belongs to the app and iOS may report that container root
+    // through an alias. Resolve only that trusted root. Resolving the candidate
+    // would erase evidence of a symlink in an untrusted descendant before the
+    // caller has a chance to reject it.
     let resolvedRoot = root.resolvingSymlinksInPath()
-    let resolvedCandidate = candidate.resolvingSymlinksInPath()
-    guard let components = relativeComponents(of: resolvedCandidate, beneath: resolvedRoot)
+    guard let components = relativeComponents(of: candidate, beneath: resolvedRoot)
     else {
       throw CloudAttachmentStorageError.pathOutsideRoot
     }

@@ -206,6 +206,7 @@ package actor SwiftDataSyncModePersistence {
   }
 
   let rootURL: URL
+  let attachmentCacheRootURL: URL?
   let manifestURL: URL
   let crashHook: @Sendable (SyncModeCrashPoint) throws -> Void
   let manifestWriter: ManifestWriter
@@ -229,6 +230,7 @@ package actor SwiftDataSyncModePersistence {
 
   package init(
     rootURL: URL,
+    attachmentCacheRootURL: URL? = nil,
     defaultSyncProtocol: SyncModeSyncProtocol = .fullRecordV1,
     crashHook: @escaping @Sendable (SyncModeCrashPoint) throws -> Void = { _ in },
     manifestWriter: @escaping ManifestWriter = { try DurableFile.write($0, to: $1) },
@@ -237,6 +239,7 @@ package actor SwiftDataSyncModePersistence {
     recoveryQuarantineHook: @escaping RecoveryQuarantineHook = {}
   ) throws {
     self.rootURL = rootURL
+    self.attachmentCacheRootURL = attachmentCacheRootURL
     manifestURL = rootURL.appendingPathComponent("activation.json", isDirectory: false)
     self.crashHook = crashHook
     self.manifestWriter = manifestWriter
@@ -248,7 +251,11 @@ package actor SwiftDataSyncModePersistence {
     if FileManager.default.fileExists(atPath: manifestURL.path) {
       do {
         var loaded = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: manifestURL))
-        try Self.recover(&loaded, rootURL: rootURL)
+        try Self.recover(
+          &loaded,
+          rootURL: rootURL,
+          attachmentCacheRootURL: attachmentCacheRootURL
+        )
         try Self.validate(loaded)
         manifest = loaded
         try Self.write(loaded, to: manifestURL, using: manifestWriter)
@@ -273,7 +280,11 @@ package actor SwiftDataSyncModePersistence {
       try Self.write(declared, to: manifestURL, using: manifestWriter)
       let storeURL = rootURL.appendingPathComponent(store.relativeRoot, isDirectory: true)
       _ = try SwiftDataSnipLibrary(
-        storeURL: storeURL.appendingPathComponent("snips.store", isDirectory: false)
+        storeURL: storeURL.appendingPathComponent("snips.store", isDirectory: false),
+        attachmentCacheRootURL: Self.cacheRootURL(
+          base: attachmentCacheRootURL,
+          storeID: store.id
+        )
       )
       try DurableFile.syncDirectory(storeURL)
       store.lifecycle = .ready
@@ -352,7 +363,11 @@ package actor SwiftDataSyncModePersistence {
     let replacementRoot = storeURL(replacement)
     try crashHook(.beforeAccountIsolationDurability)
     _ = try SwiftDataSnipLibrary(
-      storeURL: replacementRoot.appendingPathComponent("snips.store", isDirectory: false)
+      storeURL: replacementRoot.appendingPathComponent("snips.store", isDirectory: false),
+      attachmentCacheRootURL: Self.cacheRootURL(
+        base: attachmentCacheRootURL,
+        storeID: replacement.id
+      )
     )
     try DurableFile.syncDirectory(replacementRoot)
     try DurableFile.syncDirectory(replacementRoot.deletingLastPathComponent())
@@ -399,8 +414,11 @@ package actor SwiftDataSyncModePersistence {
     else { return }
     if isolation.resolution == .keepingLocalCopy {
       let sourceStore = try storeForIsolation(id: isolation.storeID)
-      let source = try await libraryForTransition(storeID: sourceStore.id)
-        .transferSnapshot(revision: sourceStore.revision)
+      let sourceLibrary = try libraryForTransition(storeID: sourceStore.id)
+      try await sourceLibrary.prepareCloudAttachmentsForLocalCopy(
+        namespaceKey: isolation.namespace.namespaceKey
+      )
+      let source = try await sourceLibrary.transferSnapshot(revision: sourceStore.revision)
       let target = try libraryForTransition(storeID: manifest.activeStoreID)
       _ = try await target.mergeTransferSnapshot(source, transitionID: isolation.id)
       try crashHook(.afterAccountLocalCopyMerge)
@@ -416,7 +434,9 @@ package actor SwiftDataSyncModePersistence {
       isolation.storeID != manifest.activeStoreID
     else { throw SyncModePersistenceError.transitionInProgress }
     let roots = try Self.validatedStoreRoots(manifest.stores, rootURL: rootURL)
-    guard let isolatedRoot = roots[isolation.storeID] else {
+    guard roots[isolation.storeID] != nil,
+      let isolatedStore = store(id: isolation.storeID)
+    else {
       throw SyncModePersistenceError.invalidManifest
     }
     var deleting = manifest
@@ -432,9 +452,7 @@ package actor SwiftDataSyncModePersistence {
     try commit(deleting)
     try crashHook(.afterAccountIsolationRemovalCommit)
     do {
-      if FileManager.default.fileExists(atPath: isolatedRoot.path) {
-        try FileManager.default.removeItem(at: isolatedRoot)
-      }
+      try removeStoreFiles(isolatedStore)
     } catch {
       try? recordAttention(.storageFailure)
       throw error
@@ -458,7 +476,13 @@ package actor SwiftDataSyncModePersistence {
       throw SyncModePersistenceError.missingStore
     }
     guard store.lifecycle != .creating else { throw SyncModePersistenceError.missingStore }
-    return try SwiftDataSnipLibrary(storeURL: storeURL(store).appendingPathComponent("snips.store"))
+    return try SwiftDataSnipLibrary(
+      storeURL: storeURL(store).appendingPathComponent("snips.store"),
+      attachmentCacheRootURL: Self.cacheRootURL(
+        base: attachmentCacheRootURL,
+        storeID: store.id
+      )
+    )
   }
 
   package func candidateRevision(transitionID: UUID) throws -> UInt64 {
@@ -533,7 +557,11 @@ package actor SwiftDataSyncModePersistence {
       try crashHook(.beforeCandidateDurability)
       let candidateRoot = storeURL(candidate)
       _ = try SwiftDataSnipLibrary(
-        storeURL: candidateRoot.appendingPathComponent("snips.store", isDirectory: false)
+        storeURL: candidateRoot.appendingPathComponent("snips.store", isDirectory: false),
+        attachmentCacheRootURL: Self.cacheRootURL(
+          base: attachmentCacheRootURL,
+          storeID: candidate.id
+        )
       )
       try DurableFile.syncDirectory(candidateRoot)
       try DurableFile.syncDirectory(candidateRoot.deletingLastPathComponent())
@@ -649,7 +677,7 @@ package actor SwiftDataSyncModePersistence {
         try commit(deleting)
       }
       do {
-        try FileManager.default.removeItem(at: storeURL(value))
+        try removeStoreFiles(value)
         var removed = manifest
         removed.stores.removeAll { $0.id == value.id }
         try commit(removed)
@@ -689,7 +717,11 @@ package actor SwiftDataSyncModePersistence {
     do {
       let candidateRoot = storeURL(candidate)
       _ = try SwiftDataSnipLibrary(
-        storeURL: candidateRoot.appendingPathComponent("snips.store", isDirectory: false)
+        storeURL: candidateRoot.appendingPathComponent("snips.store", isDirectory: false),
+        attachmentCacheRootURL: Self.cacheRootURL(
+          base: attachmentCacheRootURL,
+          storeID: candidate.id
+        )
       )
       try DurableFile.syncDirectory(candidateRoot)
       try DurableFile.syncDirectory(candidateRoot.deletingLastPathComponent())
@@ -714,7 +746,7 @@ package actor SwiftDataSyncModePersistence {
       }
       var restored = manifest
       restored.stores.removeAll { $0.id == candidate.id }
-      try? FileManager.default.removeItem(at: storeURL(candidate))
+      try? removeStoreFiles(candidate)
       try? commit(restored)
       throw error
     }
@@ -763,7 +795,11 @@ package actor SwiftDataSyncModePersistence {
     do {
       let candidateRoot = storeURL(candidate)
       _ = try SwiftDataSnipLibrary(
-        storeURL: candidateRoot.appendingPathComponent("snips.store", isDirectory: false)
+        storeURL: candidateRoot.appendingPathComponent("snips.store", isDirectory: false),
+        attachmentCacheRootURL: Self.cacheRootURL(
+          base: attachmentCacheRootURL,
+          storeID: candidate.id
+        )
       )
       try DurableFile.syncDirectory(candidateRoot)
       try DurableFile.syncDirectory(candidateRoot.deletingLastPathComponent())
@@ -783,7 +819,7 @@ package actor SwiftDataSyncModePersistence {
         try? await currentLibrary.removeReadOnlyRecoveryMarker()
       }
       try commit(original)
-      try? FileManager.default.removeItem(at: storeURL(candidate))
+      try? removeStoreFiles(candidate)
       throw error
     }
   }
@@ -852,9 +888,7 @@ package actor SwiftDataSyncModePersistence {
     var next = manifest
     if let candidate = store(id: transition.candidateStoreID) {
       do {
-        if FileManager.default.fileExists(atPath: storeURL(candidate).path) {
-          try FileManager.default.removeItem(at: storeURL(candidate))
-        }
+        try removeStoreFiles(candidate)
         next.stores.removeAll { $0.id == transition.candidateStoreID }
       } catch {
         next.stores[try storeIndex(id: candidate.id)].lifecycle = .deleting
@@ -878,6 +912,23 @@ package actor SwiftDataSyncModePersistence {
 
   func storeURL(_ store: SyncModeStore) -> URL {
     rootURL.appendingPathComponent(store.relativeRoot, isDirectory: true)
+  }
+
+  nonisolated static func cacheRootURL(base: URL?, storeID: UUID) -> URL? {
+    base?
+      .appendingPathComponent(storeID.uuidString.lowercased(), isDirectory: true)
+  }
+
+  func removeStoreFiles(_ store: SyncModeStore) throws {
+    if let cacheRoot = Self.cacheRootURL(base: attachmentCacheRootURL, storeID: store.id),
+      FileManager.default.fileExists(atPath: cacheRoot.path)
+    {
+      try CloudAttachmentCacheFiles.removeCacheContainer(cacheRoot)
+    }
+    let root = storeURL(store)
+    if FileManager.default.fileExists(atPath: root.path) {
+      try FileManager.default.removeItem(at: root)
+    }
   }
 
   func commit(_ next: Manifest) throws {

@@ -95,6 +95,8 @@ package protocol CloudAttachmentTransferring: Sendable {
 }
 
 package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
+  package static let standardMaximumCacheBytes: Int64 = 512 * 1_024 * 1_024
+
   private let library: SwiftDataSnipLibrary
   private let namespaceKey: CloudSyncNamespaceKey
   private let payloadZone: CloudZoneID
@@ -160,8 +162,7 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
         }
         return local
       } catch {
-        guard !FileManager.default.fileExists(atPath: local.path), publication.metadataAccepted
-        else { throw error }
+        guard publication.metadataAccepted else { throw error }
       }
     }
     guard publication.metadataAccepted else {
@@ -225,6 +226,30 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
   package func prepare(attachmentID: UUID, for use: SyncedAttachmentUse) async throws -> URL {
     _ = use
     return try await download(attachmentID: attachmentID)
+  }
+
+  /// Promotes every attachment into durable local storage, downloading cache misses first.
+  /// Returns whether any missing bytes had to be recovered from CloudKit.
+  package func preserveAllAttachmentsForLocalCopy() async throws -> Bool {
+    let snapshot = try await library.checkedSnapshot(sortedBy: .manual)
+    let attachmentIDs = snapshot.snips.flatMap(\.attachments).map(\.id)
+    var recoveredMissingBytes = false
+    for attachmentID in attachmentIDs {
+      // Re-evaluate each entry because an earlier download may evict a later one.
+      let isReady = try await library.materializeCloudAttachmentForLocalCopy(
+        namespaceKey: namespaceKey,
+        attachmentID: attachmentID
+      )
+      if !isReady {
+        recoveredMissingBytes = true
+        _ = try await download(attachmentID: attachmentID)
+        guard try await library.materializeCloudAttachmentForLocalCopy(
+          namespaceKey: namespaceKey,
+          attachmentID: attachmentID
+        ) else { throw SnipLibraryError.attachmentCopyFailed }
+      }
+    }
+    return recoveredMissingBytes
   }
 
   package func clearDownloads() async throws {
