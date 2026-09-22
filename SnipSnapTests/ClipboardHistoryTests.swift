@@ -4,6 +4,21 @@ import XCTest
 @testable import SnipSnap
 @testable import SnipSnapPersistence
 
+private final class ClipboardDiagnosticProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedEvents: [AppDiagnosticEvent] = []
+
+    var recorder: AppDiagnosticRecorder {
+        AppDiagnosticRecorder { [self] event in
+            lock.withLock { storedEvents.append(event) }
+        }
+    }
+
+    var events: [AppDiagnosticEvent] {
+        lock.withLock { storedEvents }
+    }
+}
+
 @MainActor
 final class ClipboardHistoryTests: XCTestCase {
     func testCapturesAndRestoresEveryPasteboardItem() throws {
@@ -561,6 +576,30 @@ final class ClipboardHistoryTests: XCTestCase {
         await reopened.flushPersistence()
     }
 
+    func testMissingOwnedFileCopyRecordsVisibleFailure() async throws {
+        let diagnostics = ClipboardDiagnosticProbe()
+        let context = try makeContext(diagnostics: diagnostics.recorder)
+        let directory = context.storeURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("private-source.txt")
+        try Data("Private file bytes".utf8).write(to: source)
+        writeFileURLs([source], to: context.pasteboard)
+        context.history.poll()
+        let id = try XCTUnwrap(context.history.entries.first?.id)
+        await context.history.togglePinned(id: id)
+        let entry = try XCTUnwrap(context.history.entry(id: id))
+        let ownedURL = try XCTUnwrap(context.history.ownedFileStore.resolvedFileURLs(for: entry).first)
+        try FileManager.default.removeItem(at: ownedURL)
+
+        XCTAssertFalse(context.history.restore(entry))
+
+        XCTAssertNotNil(context.history.persistenceError)
+        XCTAssertEqual(diagnostics.events.count, 1)
+        XCTAssertEqual(diagnostics.events.first?.operation, "clipboard.copy_file")
+        XCTAssertEqual(diagnostics.events.first?.errorCode, "clipboard.unreadable")
+        XCTAssertFalse(diagnostics.events.first?.line.contains("private-source.txt") ?? true)
+    }
+
     func testMissingFileCannotBecomePinned() async throws {
         let context = try makeContext()
         let missing = context.storeURL.deletingLastPathComponent().appendingPathComponent("missing.txt")
@@ -575,7 +614,8 @@ final class ClipboardHistoryTests: XCTestCase {
     }
 
     private func makeContext(
-        persistedEntries: [ClipboardEntry] = []
+        persistedEntries: [ClipboardEntry] = [],
+        diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared
     ) throws -> (
         history: ClipboardHistory,
         pasteboard: NSPasteboard,
@@ -603,7 +643,12 @@ final class ClipboardHistoryTests: XCTestCase {
             try? FileManager.default.removeItem(at: directory)
         }
         return (
-            ClipboardHistory(pasteboard: pasteboard, defaults: defaults, storeURL: storeURL),
+            ClipboardHistory(
+                pasteboard: pasteboard,
+                defaults: defaults,
+                storeURL: storeURL,
+                diagnostics: diagnostics
+            ),
             pasteboard,
             storeURL,
             defaults

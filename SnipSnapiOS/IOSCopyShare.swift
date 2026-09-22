@@ -307,6 +307,7 @@ struct IOSShareRequest: Identifiable {
 final class IOSCopyShareCoordinator {
     private let pasteboard: any IOSPasteboardWriting
     private let payloadBuilder: IOSCopySharePayloadBuilder
+    private let diagnostics: any AppDiagnosticRecording
     private var copyGeneration = 0
 
     var unavailableFilesNotice: IOSUnavailableFilesNotice?
@@ -315,10 +316,12 @@ final class IOSCopyShareCoordinator {
 
     init(
         pasteboard: any IOSPasteboardWriting = IOSSystemPasteboard(),
-        payloadBuilder: IOSCopySharePayloadBuilder = IOSCopySharePayloadBuilder()
+        payloadBuilder: IOSCopySharePayloadBuilder = IOSCopySharePayloadBuilder(),
+        diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared
     ) {
         self.pasteboard = pasteboard
         self.payloadBuilder = payloadBuilder
+        self.diagnostics = diagnostics
     }
 
     @discardableResult
@@ -328,10 +331,12 @@ final class IOSCopyShareCoordinator {
         let current = currentSnips(for: snips, model: model)
         guard !current.isEmpty else { return false }
         let versions = model.copiedSnipVersions(ids: Set(current.map(\.id)))
-        let payload = await makePreparedPayload(snips: current, model: model, use: .copy)
+        let preparation = await makePreparedPayload(snips: current, model: model, use: .copy)
+        guard let payload = preparation.payload, !Task.isCancelled else { return false }
         guard generation == copyGeneration else { return false }
         guard requireAllFiles(
             in: payload,
+            preparationErrorCode: preparation.failureCode,
             versions: versions,
             model: model,
             interaction: interaction
@@ -370,10 +375,12 @@ final class IOSCopyShareCoordinator {
         let current = currentSnips(for: snips, model: model)
         guard !current.isEmpty else { return false }
         let versions = model.copiedSnipVersions(ids: Set(current.map(\.id)))
-        let payload = await makePreparedPayload(snips: current, model: model, use: .copy)
+        let preparation = await makePreparedPayload(snips: current, model: model, use: .copy)
+        guard let payload = preparation.payload, !Task.isCancelled else { return false }
         guard generation == copyGeneration else { return false }
         guard requireAllFiles(
             in: payload,
+            preparationErrorCode: preparation.failureCode,
             versions: versions,
             model: model,
             interaction: interaction
@@ -394,9 +401,11 @@ final class IOSCopyShareCoordinator {
         let current = currentSnips(for: snips, model: model)
         guard !current.isEmpty else { return }
         let versions = model.copiedSnipVersions(ids: Set(current.map(\.id)))
-        let payload = await makePreparedPayload(snips: current, model: model, use: .export)
+        let preparation = await makePreparedPayload(snips: current, model: model, use: .export)
+        guard let payload = preparation.payload, !Task.isCancelled else { return }
         guard requireAllFiles(
             in: payload,
+            preparationErrorCode: preparation.failureCode,
             versions: versions,
             model: model,
             interaction: nil
@@ -466,24 +475,41 @@ final class IOSCopyShareCoordinator {
         snips: [Snip],
         model: IOSAppModel,
         use: SyncedAttachmentUse
-    ) async -> IOSCopySharePayload {
+    ) async -> (payload: IOSCopySharePayload?, failureCode: String?) {
+        var firstFailureCode: String?
+        var cancelled = false
         for attachment in payloadBuilder.uniqueAttachments(in: snips) {
-            _ = await model.prepareAttachment(attachment.id, for: use)
+            guard !Task.isCancelled else { return (nil, nil) }
+            _ = await model.prepareAttachment(
+                attachment.id,
+                for: use,
+                onFailure: { code in
+                    if firstFailureCode == nil { firstFailureCode = code }
+                },
+                onCancellation: { cancelled = true }
+            )
+            if cancelled || Task.isCancelled { return (nil, nil) }
         }
-        return makePayload(snips: snips, model: model)
+        return (makePayload(snips: snips, model: model), firstFailureCode)
     }
 
     private func requireAllFiles(
         in payload: IOSCopySharePayload,
+        preparationErrorCode: String?,
         versions: IOSCopiedSnipVersions,
         model: IOSAppModel,
         interaction: UUID?
     ) -> Bool {
         guard payload.unavailableFileNames.isEmpty else {
-            unavailableFilesNotice = IOSUnavailableFilesNotice(
-                payload: payload,
-                versions: versions
-            )
+            let notice = IOSUnavailableFilesNotice(payload: payload, versions: versions)
+            if unavailableFilesNotice?.message != notice.message {
+                diagnostics.record(.failure(
+                    operation: "attachment.prepare",
+                    errorCode: preparationErrorCode ?? "attachment.unavailableAfterPrepare",
+                    visibility: .user
+                ))
+            }
+            unavailableFilesNotice = notice
             model.haptics.emit(.warning, for: interaction)
             return false
         }
@@ -501,6 +527,11 @@ final class IOSCopyShareCoordinator {
     ) async -> Bool {
         guard generation == copyGeneration else { return false }
         guard pasteboard.write(items) else {
+            diagnostics.record(.failure(
+                operation: "clipboard.write",
+                errorCode: "pasteboard.writeFailed",
+                visibility: .user
+            ))
             errorMessage = String(localized: "Couldn’t copy that content. Try again.")
             model.haptics.emit(.error, for: interaction)
             return false

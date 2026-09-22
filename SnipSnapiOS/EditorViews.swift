@@ -166,7 +166,9 @@ struct SnipEditorView: View {
 
     private func stage(_ result: Result<[URL], any Error>) {
         guard case .success(let urls) = result else {
-            if case .failure(let error) = result { model.errorMessage = error.localizedDescription }
+            if case .failure(let error) = result {
+                model.presentError(error, operation: "attachment.import_select")
+            }
             replacementID = nil
             return
         }
@@ -185,8 +187,7 @@ struct SnipEditorView: View {
                     attachments.append(contentsOf: staged.map(AttachmentDraft.added))
                 }
             } catch {
-                model.errorMessage = (error as? LocalizedError)?.errorDescription
-                    ?? error.localizedDescription
+                model.presentError(error, operation: "attachment.import_stage")
             }
             stagingTask = nil
         }

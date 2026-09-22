@@ -1,5 +1,6 @@
 import CloudKit
 import Foundation
+import SnipSnapCore
 import SnipSnapPersistence
 
 package struct CloudZoneID: Codable, Equatable, Hashable, Sendable {
@@ -270,6 +271,37 @@ package enum CloudTransportError: Error, Equatable, Sendable {
     case wrongBatchConfirmation
     case notStarted
     case syncAlreadyRunning
+}
+
+extension CloudRecordError: AppDiagnosticErrorCodeProviding {
+    package var appDiagnosticCode: String {
+        switch self {
+        case .invalidShadow: "record.invalidShadow"
+        case .mismatchedShadow: "record.mismatchedShadow"
+        case .unsupportedValue: "record.unsupportedValue"
+        case .missingField: "record.missingField"
+        case .invalidField: "record.invalidField"
+        case .projectedSnapshot: "record.projectedSnapshot"
+        case .wrongRecordType: "record.wrongRecordType"
+        case .invalidAssetDestination: "record.invalidAssetDestination"
+        case .missingAsset: "record.missingAsset"
+        }
+    }
+}
+
+extension CloudTransportError: AppDiagnosticErrorCodeProviding {
+    package var appDiagnosticCode: String {
+        switch self {
+        case .stateNamespaceMismatch: "transport.stateNamespaceMismatch"
+        case .invalidEngineState: "transport.invalidEngineState"
+        case .invalidRecord: "transport.invalidRecord"
+        case .fetchFailed: "transport.fetchFailed"
+        case .sendFailed: "transport.sendFailed"
+        case .wrongBatchConfirmation: "transport.wrongBatchConfirmation"
+        case .notStarted: "transport.notStarted"
+        case .syncAlreadyRunning: "transport.syncAlreadyRunning"
+        }
+    }
 }
 
 package struct CloudSyncNamespace: Codable, Equatable, Sendable {

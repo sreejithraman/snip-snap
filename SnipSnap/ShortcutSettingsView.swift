@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import SnipSnapCore
 import SwiftUI
 
 struct ShortcutSettingsView: View {
@@ -82,6 +83,11 @@ struct ShortcutSettingsView: View {
             try change()
             errorMessage = nil
         } catch {
+            AppDiagnostics.shared.record(.failure(
+                operation: "shortcut.save",
+                error: error,
+                visibility: .user
+            ))
             errorMessage = error.localizedDescription
         }
     }

@@ -172,9 +172,9 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
         defer { try? FileManager.default.removeItem(at: client.root) }
 
         let running = Task { try await client.run() }
-        for _ in 0..<10_000 {
-            if sleep.isWaiting { break }
-            await Task.yield()
+        let deadline = ContinuousClock.now + .seconds(10)
+        while !sleep.isWaiting && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
         }
         #expect(sleep.isWaiting)
         client.sync.stop()

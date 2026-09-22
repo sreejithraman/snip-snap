@@ -4,6 +4,10 @@ import Foundation
 import SnipSnapCore
 import UniformTypeIdentifiers
 
+struct ArchiveAttachmentPreparationError: Error {
+    let underlying: any Error
+}
+
 @MainActor
 final class AppModel: ObservableObject {
 
@@ -48,6 +52,7 @@ final class AppModel: ObservableObject {
     @Published var editingID: UUID?
     @Published var presentedError: String?
     @Published private(set) var presentedErrorTitle: String?
+    private var presentedErrorOperation: String?
     @Published private(set) var latestAddedSnipID: UUID?
     @Published private(set) var sortMode: SnipSortMode
     @Published private(set) var appearance: AppAppearance
@@ -68,6 +73,7 @@ final class AppModel: ObservableObject {
 
     private let session: SavedSnipsSession
     private let attachmentPreparation: AttachmentPreparationCoordinator
+    private let diagnostics: any AppDiagnosticRecording
     private var cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private let defaults: UserDefaults
     private let composerDrafts: ComposerDraftStore
@@ -131,7 +137,8 @@ final class AppModel: ObservableObject {
                 text: $0,
                 attachmentURLs: $1
             )
-        }
+        },
+        diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared
     ) {
         self.defaults = defaults
         composerDrafts = ComposerDraftStore(
@@ -158,27 +165,73 @@ final class AppModel: ObservableObject {
         )
         self.cloudSyncHandler = cloudSyncHandler
         self.preparePasteboardExport = preparePasteboardExport
-        presentError(initialError)
+        self.diagnostics = diagnostics
+        presentError(
+            initialError,
+            operation: "app.startup",
+            diagnosticCode: "presentation.startup"
+        )
         Task { await reload() }
     }
 
-    func presentError(_ error: any Error) {
-        presentError(
-            error.localizedDescription,
-            title: (error as? SnipLibraryError) == .duplicateList
-                ? String(localized: "Name Already Used")
-                : nil
+    func presentError(
+        _ error: any Error,
+        operation: StaticString = "app.user_action"
+    ) {
+        let operationName = String(describing: operation)
+        let message = error.localizedDescription
+        let title = (error as? SnipLibraryError) == .duplicateList
+            ? String(localized: "Name Already Used") : nil
+        if shouldRecordPresentedFailure(operationName, message: message, title: title) {
+            diagnostics.record(.failure(operation: operation, error: error, visibility: .user))
+        }
+        setPresentedError(
+            message,
+            title: title,
+            operation: operationName
         )
     }
 
-    func presentError(_ message: String?, title: String? = nil) {
+    func presentError(
+        _ message: String?,
+        title: String? = nil,
+        operation: StaticString = "app.user_action",
+        diagnosticCode: String = "presentation.message"
+    ) {
+        let operationName = String(describing: operation)
+        if let message,
+           shouldRecordPresentedFailure(operationName, message: message, title: title) {
+            diagnostics.record(.failure(
+                operation: operation,
+                errorCode: diagnosticCode,
+                visibility: .user
+            ))
+        }
+        setPresentedError(message, title: title, operation: operationName)
+    }
+
+    private func shouldRecordPresentedFailure(
+        _ operation: String,
+        message: String,
+        title: String?
+    ) -> Bool {
+        operation != "attachment.prepare" || presentedError == nil
+            || presentedErrorOperation != operation
+            || presentedError != message || presentedErrorTitle != title
+    }
+
+    private func setPresentedError(
+        _ message: String?,
+        title: String? = nil,
+        operation: String? = nil
+    ) {
         presentedErrorTitle = title
         presentedError = message
+        presentedErrorOperation = message == nil ? nil : operation
     }
 
     func dismissPresentedError() {
-        presentedErrorTitle = nil
-        presentedError = nil
+        setPresentedError(nil)
     }
 
     func setCloudSyncHandler(_ handler: (any OptionalCloudSyncHandling)?) {
@@ -209,8 +262,10 @@ final class AppModel: ObservableObject {
         do {
             _ = try await prepareAttachments(attachments, for: .export)
             return true
+        } catch is CancellationError {
+            return false
         } catch {
-            presentError(error)
+            presentError(error, operation: "attachment.prepare")
             return false
         }
     }
@@ -236,10 +291,17 @@ final class AppModel: ObservableObject {
     }
 
     func exportArchive() async throws -> SnipLibraryArchive {
-        let prepared = try await prepareAttachments(
-            snips.flatMap(\.attachments),
-            for: .export
-        )
+        let prepared: [UUID: URL]
+        do {
+            prepared = try await prepareAttachments(
+                snips.flatMap(\.attachments),
+                for: .export
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw ArchiveAttachmentPreparationError(underlying: error)
+        }
         let archive = try await session.withExclusiveAccess { session in
             try await session.archive()
         }
@@ -1004,8 +1066,10 @@ final class AppModel: ObservableObject {
             _ = try await prepareAttachments(snip.attachments, for: .open)
             editingID = id
             return true
+        } catch is CancellationError {
+            return false
         } catch {
-            presentError(error)
+            presentError(error, operation: "attachment.prepare")
             return false
         }
     }
@@ -1172,9 +1236,23 @@ final class AppModel: ObservableObject {
     ) async -> Bool {
         guard !snips.isEmpty else { return false }
         let attachments = attachmentPreparation.unique(snips.flatMap(\.attachments))
+        let prepared: [UUID: URL]
+        do {
+            prepared = try await prepareAttachments(attachments, for: .copy)
+        } catch is CancellationError {
+            return false
+        } catch {
+            if shouldPresentClipboardError(
+                generation: generation,
+                pasteboard: pasteboard,
+                expectedChangeCount: expectedChangeCount
+            ) {
+                presentError(error, operation: "attachment.prepare")
+            }
+            return false
+        }
         let export: SnipPasteboardExport
         do {
-            let prepared = try await prepareAttachments(attachments, for: .copy)
             let text = SnipFormatter.formatForClipboard(snips: snips)
             guard generation == clipboardWriteGeneration,
                   pasteboard.changeCount == expectedChangeCount else { return false }
@@ -1190,7 +1268,7 @@ final class AppModel: ObservableObject {
                 pasteboard: pasteboard,
                 expectedChangeCount: expectedChangeCount
             ) {
-                presentError(error)
+                presentError(error, operation: "clipboard.export")
             }
             return false
         }

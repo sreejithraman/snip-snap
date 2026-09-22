@@ -771,8 +771,10 @@ struct SnipListView: View {
                     selected: selected
                 ) else { return }
                 onPreviewAttachments(preview.urls, preview.selectedURL)
+            } catch is CancellationError {
+                return
             } catch {
-                model.presentError(error)
+                model.presentError(error, operation: "attachment.prepare")
             }
         }
     }

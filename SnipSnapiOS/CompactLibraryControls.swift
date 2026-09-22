@@ -467,8 +467,10 @@ struct CompactLibraryControls: View {
             } catch is CancellationError {
                 return
             } catch {
-                model.errorMessage = String(
-                    localized: "Couldn’t prepare pasted text. Try again."
+                model.presentError(
+                    String(localized: "Couldn’t prepare pasted text. Try again."),
+                    operation: "composer.paste_stage",
+                    diagnosticCode: diagnosticErrorCode(error)
                 )
             }
         }
@@ -479,7 +481,7 @@ struct CompactLibraryControls: View {
             if case .failure(let error) = result,
                 (error as NSError).code != NSUserCancelledError
             {
-                model.errorMessage = error.localizedDescription
+                model.presentError(error, operation: "attachment.import_select")
             }
             return
         }
@@ -504,8 +506,7 @@ struct CompactLibraryControls: View {
                 AttachmentDraftStager.clean(stagedFiles)
                 return
             } catch {
-                model.errorMessage = (error as? LocalizedError)?.errorDescription
-                    ?? error.localizedDescription
+                model.presentError(error, operation: "attachment.import_stage")
             }
         }
     }

@@ -31,6 +31,7 @@ final class IOSAppModel {
     private let session: SavedSnipsSession
     let haptics: IOSHapticFeedback
     private let cloudSyncHandler: (any OptionalCloudSyncHandling)?
+    private let diagnostics: any AppDiagnosticRecording
 
     private(set) var snips: [Snip]
     private(set) var lists: [SnipList]
@@ -82,7 +83,8 @@ final class IOSAppModel {
         ),
         startupError: String? = nil,
         cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
-        haptics: IOSHapticFeedback = IOSHapticFeedback()
+        haptics: IOSHapticFeedback = IOSHapticFeedback(),
+        diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared
     ) {
         session = SavedSnipsSession(
             library: library,
@@ -92,12 +94,19 @@ final class IOSAppModel {
         )
         self.cloudSyncHandler = cloudSyncHandler
         self.haptics = haptics
+        self.diagnostics = diagnostics
         hasKnownCloudSyncActivity = cloudSyncHandler == nil
         snips = initialSnapshot.snips
         lists = initialSnapshot.lists
         attachmentURLs = initialSnapshot.attachmentURLs
         selectedListID = SnipList.inboxID
-        errorMessage = startupError
+        if let startupError {
+            presentError(
+                startupError,
+                operation: "app.startup",
+                diagnosticCode: "presentation.startup"
+            )
+        }
     }
 
     var selectedList: SnipList {
@@ -475,7 +484,12 @@ final class IOSAppModel {
         return attachmentURLs[attachmentID] == nil ? .waiting : .available
     }
 
-    func prepareAttachment(_ attachmentID: UUID, for use: SyncedAttachmentUse) async -> URL? {
+    func prepareAttachment(
+        _ attachmentID: UUID,
+        for use: SyncedAttachmentUse,
+        onFailure: ((String) -> Void)? = nil,
+        onCancellation: (() -> Void)? = nil
+    ) async -> URL? {
         if let preparedURL = preparedAttachmentURLs[attachmentID],
            isAvailablePreparedAttachment(preparedURL)
         {
@@ -500,13 +514,26 @@ final class IOSAppModel {
             preparedAttachmentURLs[attachmentID] = url
             attachmentTransferStates[attachmentID] = .available
             return url
+        } catch is CancellationError {
+            attachmentTransferStates[attachmentID] = .waiting
+            onCancellation?()
+            return nil
         } catch {
             attachmentTransferStates[attachmentID] = .failed
+            let code = diagnosticErrorCode(error)
             switch use {
             case .preview, .open:
-                errorMessage = String(localized: "Couldn’t download this file. Try again.")
+                let message = String(localized: "Couldn’t download this file. Try again.")
+                if errorMessage != message {
+                    diagnostics.record(.failure(
+                        operation: "attachment.prepare",
+                        errorCode: code,
+                        visibility: .user
+                    ))
+                }
+                errorMessage = message
             case .copy, .export:
-                break
+                onFailure?(code)
             }
             return nil
         }
@@ -529,6 +556,11 @@ final class IOSAppModel {
             apply(await session.state(sortedBy: .chronological))
             await refreshAttachmentTransferStates()
         } catch {
+            diagnostics.record(.failure(
+                operation: "attachment.cache_clear",
+                error: error,
+                visibility: .user
+            ))
             errorMessage = String(localized: "Couldn’t clear downloaded files. Try again.")
         }
     }
@@ -759,12 +791,32 @@ final class IOSAppModel {
         }
     }
 
-    private func presentError(_ error: any Error) {
+    func presentError(
+        _ error: any Error,
+        operation: StaticString = "app.user_action"
+    ) {
+        diagnostics.record(.failure(operation: operation, error: error, visibility: .user))
         presentedError = PresentedError(
             title: error as? SnipLibraryError == .duplicateList
                 ? String(localized: "Name Already Used")
                 : String(localized: "Something Went Wrong"),
             message: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        )
+    }
+
+    func presentError(
+        _ message: String,
+        operation: StaticString,
+        diagnosticCode: String
+    ) {
+        diagnostics.record(.failure(
+            operation: operation,
+            errorCode: diagnosticCode,
+            visibility: .user
+        ))
+        presentedError = PresentedError(
+            title: String(localized: "Something Went Wrong"),
+            message: message
         )
     }
 
