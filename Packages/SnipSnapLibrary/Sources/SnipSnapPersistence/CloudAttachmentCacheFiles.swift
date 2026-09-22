@@ -99,7 +99,9 @@ struct CloudAttachmentCacheFiles {
   ) throws {
     let root = try stagingRoot(namespaceKey: namespaceKey)
     try Self.requireChild(stagedURL, of: root)
-    try Self.requireNoSymlinkComponents(stagedURL, root: root)
+    // The staging root is app-owned and may resolve through a permitted directory alias.
+    // Descendants remain untrusted until each component and the leaf have been checked.
+    try Self.requireNoSymlinkComponents(stagedURL, root: root, checkingRoot: false)
     let values = try stagedURL.resourceValues(
       forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
     )
@@ -266,12 +268,18 @@ struct CloudAttachmentCacheFiles {
     }
   }
 
-  private static func requireNoSymlinkComponents(_ candidate: URL, root: URL) throws {
+  private static func requireNoSymlinkComponents(
+    _ candidate: URL,
+    root: URL,
+    checkingRoot: Bool = true
+  ) throws {
     let root = root.standardizedFileURL
     let candidate = candidate.standardizedFileURL
-    let rootValues = try root.resourceValues(forKeys: [.isSymbolicLinkKey])
-    guard rootValues.isSymbolicLink != true else {
-      throw CloudAttachmentStorageError.invalidPath
+    if checkingRoot {
+      let rootValues = try root.resourceValues(forKeys: [.isSymbolicLinkKey])
+      guard rootValues.isSymbolicLink != true else {
+        throw CloudAttachmentStorageError.invalidPath
+      }
     }
     let suffix = candidate.path.dropFirst(root.path.count)
     var current = root

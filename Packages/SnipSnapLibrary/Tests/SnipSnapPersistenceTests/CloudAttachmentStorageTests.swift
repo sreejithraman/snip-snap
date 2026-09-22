@@ -596,6 +596,62 @@ final class CloudAttachmentStorageTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: cached), bytes)
   }
 
+  func testStagedFileValidationTrustsAppOwnedDirectoryAliases() throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let files = CloudAttachmentCacheFiles(
+      attachmentRootURL: root.appendingPathComponent("Attachments", isDirectory: true),
+      lockURL: root.appendingPathComponent("snips.store.lock", isDirectory: false)
+    )
+    let namespace = "app-owned-directory-alias"
+    let stagingRoot = try files.stagingRoot(namespaceKey: namespace)
+    let actualStagingRoot = root.appendingPathComponent("ActualStaging", isDirectory: true)
+    try FileManager.default.moveItem(at: stagingRoot, to: actualStagingRoot)
+    try FileManager.default.createSymbolicLink(
+      at: stagingRoot,
+      withDestinationURL: actualStagingRoot
+    )
+    let bytes = Data("downloaded through an app-owned alias".utf8)
+    let staged = stagingRoot.appendingPathComponent("cloud-asset")
+    try bytes.write(to: staged)
+
+    XCTAssertNoThrow(
+      try files.validateStagedFile(
+        staged,
+        namespaceKey: namespace,
+        expectedByteCount: Int64(bytes.count),
+        expectedSHA256: Data(SHA256.hash(data: bytes))
+      )
+    )
+  }
+
+  func testStagedFileValidationStillRejectsSymlinkLeaf() throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let files = CloudAttachmentCacheFiles(
+      attachmentRootURL: root.appendingPathComponent("Attachments", isDirectory: true),
+      lockURL: root.appendingPathComponent("snips.store.lock", isDirectory: false)
+    )
+    let namespace = "symlink-leaf"
+    let stagingRoot = try files.stagingRoot(namespaceKey: namespace)
+    let bytes = Data("outside bytes".utf8)
+    let outside = root.appendingPathComponent("outside")
+    try bytes.write(to: outside)
+    let staged = stagingRoot.appendingPathComponent("cloud-asset")
+    try FileManager.default.createSymbolicLink(at: staged, withDestinationURL: outside)
+
+    XCTAssertThrowsError(
+      try files.validateStagedFile(
+        staged,
+        namespaceKey: namespace,
+        expectedByteCount: Int64(bytes.count),
+        expectedSHA256: Data(SHA256.hash(data: bytes))
+      )
+    )
+  }
+
   private func temporaryDirectory() -> URL {
     FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudAttachmentStorageTests-\(UUID().uuidString)", isDirectory: true)
