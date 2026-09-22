@@ -2458,7 +2458,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     )
   }
 
-  func testCacheInstallRejectsOversizeBeforeConsumingStagedFile() async throws {
+  func testCacheInstallRejectsOversizeAndCleansStagedFile() async throws {
     let root = temporaryDirectory()
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -2498,13 +2498,18 @@ final class CloudAttachmentTransferTests: XCTestCase {
     try bytes.write(to: staged)
 
     do {
-      _ = try await library.installCloudAttachmentCacheFile(
+      _ = try await library.installCloudAttachmentDownload(
         namespaceKey: namespace.namespaceKey,
         attachmentID: publication.metadata.attachmentID,
         expectedPayloadIdentity: publication.metadata.payloadIdentity,
-        stagedURL: staged,
-        expectedByteCount: Int64(bytes.count),
-        expectedSHA256: Data(SHA256.hash(data: bytes)),
+        expectedField: CloudAttachmentRecordCodec.assetField,
+        download: CloudAttachmentCacheDownload(
+          payloadIdentity: publication.metadata.payloadIdentity,
+          field: CloudAttachmentRecordCodec.assetField,
+          fileURL: staged,
+          byteCount: Int64(bytes.count),
+          sha256: Data(SHA256.hash(data: bytes))
+        ),
         maximumBytes: Int64(bytes.count - 1),
         now: .distantPast
       )
@@ -2512,7 +2517,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     } catch {
       XCTAssertEqual(error as? CloudAttachmentStorageError, .sizeMismatch)
     }
-    XCTAssertTrue(FileManager.default.fileExists(atPath: staged.path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: staged.path))
   }
 
   func testCacheInstallRejectsPayloadReplacedDuringDownload() async throws {
@@ -2579,13 +2584,18 @@ final class CloudAttachmentTransferTests: XCTestCase {
     )
 
     do {
-      _ = try await library.installCloudAttachmentCacheFile(
+      _ = try await library.installCloudAttachmentDownload(
         namespaceKey: namespace.namespaceKey,
         attachmentID: publication.metadata.attachmentID,
         expectedPayloadIdentity: publication.metadata.payloadIdentity,
-        stagedURL: staged,
-        expectedByteCount: Int64(oldBytes.count),
-        expectedSHA256: Data(SHA256.hash(data: oldBytes)),
+        expectedField: CloudAttachmentRecordCodec.assetField,
+        download: CloudAttachmentCacheDownload(
+          payloadIdentity: publication.metadata.payloadIdentity,
+          field: CloudAttachmentRecordCodec.assetField,
+          fileURL: staged,
+          byteCount: Int64(oldBytes.count),
+          sha256: Data(SHA256.hash(data: oldBytes))
+        ),
         maximumBytes: 1_024,
         now: .distantPast
       )
@@ -2593,7 +2603,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     } catch {
       XCTAssertEqual(error as? CloudAttachmentStorageError, .staleTransition)
     }
-    XCTAssertTrue(FileManager.default.fileExists(atPath: staged.path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: staged.path))
   }
 
   func testTouchRemovesCachedFileWhenPublicationIsNotAvailable() async throws {
@@ -2634,13 +2644,18 @@ final class CloudAttachmentTransferTests: XCTestCase {
       at: staged.deletingLastPathComponent(), withIntermediateDirectories: true
     )
     try bytes.write(to: staged)
-    let cached = try await library.installCloudAttachmentCacheFile(
+    let cached = try await library.installCloudAttachmentDownload(
       namespaceKey: namespace.namespaceKey,
       attachmentID: publication.metadata.attachmentID,
       expectedPayloadIdentity: publication.metadata.payloadIdentity,
-      stagedURL: staged,
-      expectedByteCount: Int64(bytes.count),
-      expectedSHA256: Data(SHA256.hash(data: bytes)),
+      expectedField: CloudAttachmentRecordCodec.assetField,
+      download: CloudAttachmentCacheDownload(
+        payloadIdentity: publication.metadata.payloadIdentity,
+        field: CloudAttachmentRecordCodec.assetField,
+        fileURL: staged,
+        byteCount: Int64(bytes.count),
+        sha256: Data(SHA256.hash(data: bytes))
+      ),
       maximumBytes: 1_024,
       now: .distantPast
     )
@@ -2879,13 +2894,18 @@ final class CloudAttachmentTransferTests: XCTestCase {
       at: staged.deletingLastPathComponent(), withIntermediateDirectories: true
     )
     try bytes.write(to: staged)
-    let cachedURL = try await library.installCloudAttachmentCacheFile(
+    let cachedURL = try await library.installCloudAttachmentDownload(
       namespaceKey: namespace.namespaceKey,
       attachmentID: publication.metadata.attachmentID,
       expectedPayloadIdentity: publication.metadata.payloadIdentity,
-      stagedURL: staged,
-      expectedByteCount: Int64(bytes.count),
-      expectedSHA256: Data(SHA256.hash(data: bytes)),
+      expectedField: CloudAttachmentRecordCodec.assetField,
+      download: CloudAttachmentCacheDownload(
+        payloadIdentity: publication.metadata.payloadIdentity,
+        field: CloudAttachmentRecordCodec.assetField,
+        fileURL: staged,
+        byteCount: Int64(bytes.count),
+        sha256: Data(SHA256.hash(data: bytes))
+      ),
       maximumBytes: 1_024,
       now: .distantPast
     )
