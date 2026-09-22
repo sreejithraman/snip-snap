@@ -71,6 +71,13 @@ final class ShareImportStoreTests: XCTestCase {
     XCTAssertEqual(container?.identifier, "group.org.example.snipsnap")
     XCTAssertEqual(container?.url, expected)
     XCTAssertEqual(resolvedIdentifiers, ["group.org.example.snipsnap"])
+    XCTAssertEqual(
+      container?.cloudAttachmentCacheRootURL,
+      expected.appendingPathComponent(
+        "Library/Caches/SnipSnap/CloudAttachments",
+        isDirectory: true
+      )
+    )
   }
 
   func testOrdinaryStoreDoesNotPublishShareCatalogOutsideItsLayout() throws {

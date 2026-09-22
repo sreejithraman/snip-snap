@@ -71,6 +71,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
 
   let lockURL: URL
   let attachmentRootURL: URL
+  let attachmentCacheRootURL: URL
   let readOnlyRecoveryMarkerURL: URL
   let recoveryQuarantineCompleteMarkerURL: URL
   let container: ModelContainer?
@@ -87,6 +88,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
 
   package init(
     storeURL: URL,
+    attachmentCacheRootURL: URL? = nil,
     afterMutationBeforeSave: @escaping @Sendable () throws -> Void = {},
     beforeImportCommit: @escaping @Sendable () async throws -> Void = {},
     metadataBackfillHook: @escaping @Sendable (LibraryMetadataBackfillPoint) throws -> Void = { _ in },
@@ -104,8 +106,10 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       throw SnipLibraryError.invalidStore
     }
 
+    let attachmentRootURL = Self.attachmentRootURL(forStoreURL: storeURL)
     self.lockURL = lockURL
-    attachmentRootURL = Self.attachmentRootURL(forStoreURL: storeURL)
+    self.attachmentRootURL = attachmentRootURL
+    self.attachmentCacheRootURL = attachmentCacheRootURL ?? attachmentRootURL
     readOnlyRecoveryMarkerURL = Self.readOnlyRecoveryMarkerURL(forStoreURL: storeURL)
     recoveryQuarantineCompleteMarkerURL = Self.recoveryQuarantineCompleteMarkerURL(
       forStoreURL: storeURL
@@ -152,9 +156,11 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     try? Self.publishShareDestinations(loaded.state.lists, storeURL: storeURL)
   }
 
-  private init(unavailableAt storeURL: URL) {
+  private init(unavailableAt storeURL: URL, attachmentCacheRootURL: URL?) {
+    let attachmentRootURL = Self.attachmentRootURL(forStoreURL: storeURL)
     lockURL = storeURL.appendingPathExtension("lock")
-    attachmentRootURL = Self.attachmentRootURL(forStoreURL: storeURL)
+    self.attachmentRootURL = attachmentRootURL
+    self.attachmentCacheRootURL = attachmentCacheRootURL ?? attachmentRootURL
     readOnlyRecoveryMarkerURL = Self.readOnlyRecoveryMarkerURL(forStoreURL: storeURL)
     recoveryQuarantineCompleteMarkerURL = Self.recoveryQuarantineCompleteMarkerURL(
       forStoreURL: storeURL
@@ -169,9 +175,13 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
   }
 
   public static func unavailable(
-    storeURL: URL = SwiftDataSnipLibrary.defaultStoreURL()
+    storeURL: URL = SwiftDataSnipLibrary.defaultStoreURL(),
+    attachmentCacheRootURL: URL? = nil
   ) -> SwiftDataSnipLibrary {
-    SwiftDataSnipLibrary(unavailableAt: storeURL)
+    SwiftDataSnipLibrary(
+      unavailableAt: storeURL,
+      attachmentCacheRootURL: attachmentCacheRootURL
+    )
   }
 
   public static func defaultStoreURL(fileManager: FileManager = .default) -> URL {
@@ -326,9 +336,9 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       snips: loaded.state.snips,
       lists: loaded.state.allLists(),
       seenRequestIDs: loaded.state.seenRequestIDs,
-      attachmentURLs: Dictionary(
+      attachmentURLs: try Dictionary(
         loaded.state.snips.flatMap(\.attachments).map {
-          ($0.id, attachmentRootURL.appendingPathComponent($0.relativePath))
+          ($0.id, try attachmentURL(relativePath: $0.relativePath))
         },
         uniquingKeysWith: { first, _ in first }
       )
@@ -449,7 +459,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       lists: state.allLists(),
       attachmentURLs: Dictionary(
         orderedSnips.flatMap(\.attachments).compactMap {
-          let url = attachmentRootURL.appendingPathComponent($0.relativePath)
+          guard let url = try? attachmentURL(relativePath: $0.relativePath) else { return nil }
           return FileManager.default.fileExists(atPath: url.path) ? ($0.id, url) : nil
         },
         uniquingKeysWith: { first, _ in first }
@@ -464,10 +474,10 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     guard !sourceURLs.isEmpty else {
       return PreparedAttachments(attachments: [], createdDirectories: [])
     }
-    let existingByPath = Dictionary(
+    let existingByPath = try Dictionary(
       currentSnips.flatMap(\.attachments).map { attachment in
         (
-          attachmentRootURL.appendingPathComponent(attachment.relativePath).standardizedFileURL
+          try attachmentURL(relativePath: attachment.relativePath).standardizedFileURL
             .path,
           attachment
         )
@@ -522,6 +532,16 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       state.snips.flatMap(\.attachments).map { ($0.id, $0.relativePath) },
       uniquingKeysWith: { _, latest in latest }
     )
+  }
+
+  func attachmentURL(relativePath: String) throws -> URL {
+    guard relativePath.hasPrefix("CloudDownloads/") else {
+      return try CloudAttachmentCacheFiles.validatedChild(
+        relativePath: relativePath,
+        root: attachmentRootURL
+      )
+    }
+    return try cloudAttachmentFiles.cacheFileURL(domainRelativePath: relativePath)
   }
 
   func removeAttachmentDirectories(_ directories: [URL]) {

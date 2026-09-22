@@ -38,6 +38,7 @@ public enum SnipSnapCloudAppAssembly {
   @MainActor
   public static func services(
     rootURL: URL,
+    attachmentCacheRootURL: URL? = nil,
     sourceLibrary: (any SnipLibrary)? = nil,
     syncModeStore: SnipSyncModeStore?,
     containerIdentifier: String?
@@ -60,6 +61,7 @@ public enum SnipSnapCloudAppAssembly {
     let automaticResults = AsyncStream.makeStream(of: SnipSnapCloudSyncResult.self)
     let lifecycle = SnipSnapICloudSyncLifecycle(
       rootURL: rootURL,
+      attachmentCacheRootURL: attachmentCacheRootURL,
       sourceLibrary: sourceLibrary,
       syncModeStore: syncModeStore,
       cloudScope: namespace?.scope ?? "private",
@@ -209,11 +211,13 @@ public enum SnipSnapCloudAppAssembly {
   @MainActor
   public static func simulatedLocalOnlyServices(
     rootURL: URL,
+    attachmentCacheRootURL: URL? = nil,
     sourceLibrary: any SnipLibrary
   ) -> SnipSnapCloudAppServices {
     let server = FakeCloudServer()
     let lifecycle = SnipSnapICloudSyncLifecycle(
       rootURL: rootURL,
+      attachmentCacheRootURL: attachmentCacheRootURL,
       sourceLibrary: sourceLibrary,
       syncModeStore: nil,
       cloudScope: "private",

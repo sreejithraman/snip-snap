@@ -41,6 +41,7 @@ public struct SnipLibraryAssembly: Sendable {
   public init(
     library: any SnipLibrary,
     syncModeRootURL: URL,
+    attachmentCacheRootURL: URL? = nil,
     initializeSyncModeStore: Bool = false
   ) {
     let namespace = SyncModeActivationManifestReader.activeCloudNamespace(
@@ -52,7 +53,10 @@ public struct SnipLibraryAssembly: Sendable {
     )
     let resolvedLibrary: any SnipLibrary
     if (initializeSyncModeStore || FileManager.default.fileExists(atPath: manifestURL.path)),
-      let persistence = try? SwiftDataSyncModePersistence(rootURL: syncModeRootURL)
+      let persistence = try? SwiftDataSyncModePersistence(
+        rootURL: syncModeRootURL,
+        attachmentCacheRootURL: attachmentCacheRootURL
+      )
     {
       resolvedLibrary = persistence.activeLibrary(fallback: library)
       syncModeStore = SnipSyncModeStore(persistence)

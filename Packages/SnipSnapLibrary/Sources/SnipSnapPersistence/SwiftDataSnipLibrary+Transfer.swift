@@ -150,7 +150,7 @@ extension SwiftDataSnipLibrary {
     var currentAttachmentData: [UUID: Data] = [:]
     for attachment in currentSnips.flatMap(\.attachments) {
       try lock.check()
-      let url = attachmentRootURL.appendingPathComponent(attachment.relativePath)
+      let url = try attachmentURL(relativePath: attachment.relativePath)
       do {
         currentAttachmentData[attachment.id] = try Data(contentsOf: url)
       } catch {
@@ -257,7 +257,7 @@ extension SwiftDataSnipLibrary {
     var currentAttachmentData: [UUID: Data] = [:]
     for attachment in currentSnips.flatMap(\.attachments) {
       try lock.check()
-      let url = attachmentRootURL.appendingPathComponent(attachment.relativePath)
+      let url = try attachmentURL(relativePath: attachment.relativePath)
       currentAttachmentData[attachment.id] = try Data(contentsOf: url)
     }
     let transferMetadata = try Self.transferMetadata(context: context)

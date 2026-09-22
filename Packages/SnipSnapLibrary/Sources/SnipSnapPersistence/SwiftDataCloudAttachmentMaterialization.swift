@@ -126,16 +126,15 @@ extension SwiftDataSnipLibrary {
         break
       }
     }
-    let root = try cloudAttachmentCacheRoot(namespaceKey: namespaceKey)
     return try Self.cloudAttachmentCacheEntries(
       namespaceKey: namespaceKey,
       context: context
     )
       .filter { attachmentIDs.contains($0.attachmentID) }
       .compactMap {
-        try? CloudAttachmentCacheFiles.validatedCacheChild(
+        try? cloudAttachmentCacheFileURL(
           relativePath: $0.relativePath,
-          root: root
+          namespaceKey: namespaceKey
         )
       }
   }
