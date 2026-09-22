@@ -642,9 +642,11 @@ final class CloudAttachmentStorageTests: XCTestCase {
       at: cacheRoot,
       withDestinationURL: actualCacheRoot
     )
-    let stagingRoot = try files.stagingRoot(namespaceKey: namespace)
+    _ = try files.stagingRoot(namespaceKey: namespace)
     let bytes = Data("downloaded through an app-owned cache alias".utf8)
-    let staged = stagingRoot.appendingPathComponent("cloud-asset")
+    let staged = actualCacheRoot
+      .appendingPathComponent("Staging", isDirectory: true)
+      .appendingPathComponent("cloud-asset")
     try bytes.write(to: staged)
     let relativePath = "Files/\(UUID().uuidString.lowercased())/payload"
 
@@ -661,6 +663,30 @@ final class CloudAttachmentStorageTests: XCTestCase {
     )
 
     XCTAssertEqual(try Data(contentsOf: cached), bytes)
+  }
+
+  func testContainmentRejectsCanonicalSiblingOfAliasedRoot() throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let actualRoot = root.appendingPathComponent("ActualCache", isDirectory: true)
+    let aliasedRoot = root.appendingPathComponent("CacheAlias", isDirectory: true)
+    let outside = root.appendingPathComponent("ActualCacheSibling", isDirectory: true)
+    try FileManager.default.createDirectory(at: actualRoot, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+    try FileManager.default.createSymbolicLink(
+      at: aliasedRoot,
+      withDestinationURL: actualRoot
+    )
+
+    XCTAssertThrowsError(
+      try CloudAttachmentCacheFiles.requireChild(
+        outside.appendingPathComponent("payload"),
+        of: aliasedRoot
+      )
+    ) { error in
+      XCTAssertEqual(error as? CloudAttachmentStorageError, .pathOutsideRoot)
+    }
   }
 
   func testCacheInstallStillRejectsSymlinkDestinationDescendant() throws {
