@@ -10,6 +10,91 @@ enum PanelCardLeadingMetrics {
     static let controlSide: CGFloat = 20
 }
 
+/// Filled chip chrome shared by every control in a card's leading slot, so the
+/// slot keeps one look when its control swaps between copy and a command number.
+struct PanelLeadingChip<Content: View>: View {
+    private let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        ZStack {
+            shape.fill(SnipSnapColors.compactActionFill)
+            content.foregroundStyle(SnipSnapColors.textPrimary)
+        }
+        .frame(
+            width: PanelCardLeadingMetrics.controlSide,
+            height: PanelCardLeadingMetrics.controlSide
+        )
+        .contentShape(shape)
+        .clipShape(shape)
+    }
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(
+            cornerRadius: PanelCardLeadingMetrics.cornerRadius,
+            style: .continuous
+        )
+    }
+}
+
+struct PanelCopyButton: View {
+    let isCopied: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            PanelLeadingChip {
+                Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 10, weight: .medium))
+                    .symbolRenderingMode(.monochrome)
+            }
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .help(isCopied ? "Copied" : "Copy")
+        .accessibilityLabel(isCopied ? "Copied" : "Copy")
+    }
+}
+
+struct PanelCommandNumberButton: View {
+    let number: Int
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            PanelLeadingChip {
+                Text(String(number))
+                    .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(String(localized: "Copy \(number)"))
+    }
+}
+
+/// The copy chip and its command-number stand-in, swapping in one leading slot.
+/// A running copy confirmation keeps the chip visible and stands the number down.
+struct PanelCopySlot: View {
+    let isCopied: Bool
+    let commandNumber: Int?
+    let copy: () -> Void
+    let onPickCommandNumber: () -> Void
+
+    var body: some View {
+        if let commandNumber, !isCopied {
+            PanelCommandNumberButton(
+                number: commandNumber,
+                action: onPickCommandNumber
+            )
+        } else {
+            PanelCopyButton(isCopied: isCopied, action: copy)
+        }
+    }
+}
+
 struct PanelContentCardState: Equatable {
     var isSelected = false
     var isSubdued = false

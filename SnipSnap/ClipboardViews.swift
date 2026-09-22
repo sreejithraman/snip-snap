@@ -233,20 +233,12 @@ struct ClipboardEntryRow: View {
 
     var body: some View {
         PanelContentCard(alignment: .top) {
-            ZStack {
-                ClipboardEntryCopyButton(
-                    isCopied: isShowingCopyConfirmation,
-                    action: performCopy
-                )
-                .opacity(commandNumber == nil || isShowingCopyConfirmation ? 1 : 0)
-                if let commandNumber, !isShowingCopyConfirmation {
-                    Button(action: onPickCommandNumber) {
-                        CommandNumberBadge(number: commandNumber)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(String(localized: "Copy \(commandNumber)"))
-                }
-            }
+            PanelCopySlot(
+                isCopied: isShowingCopyConfirmation,
+                commandNumber: commandNumber,
+                copy: performCopy,
+                onPickCommandNumber: onPickCommandNumber
+            )
         } main: {
             PanelContentCardMain {
                 if !liveAttachmentPreviewItems.isEmpty {
@@ -431,42 +423,5 @@ private struct ClipboardEntryCardContent: View {
                 .font(.caption2)
                 .foregroundStyle(SnipSnapColors.textSecondary)
         }
-    }
-}
-
-private struct ClipboardEntryCopyButton: View {
-    let isCopied: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            ZStack {
-                shape.fill(SnipSnapColors.compactActionFill)
-                Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
-                    .font(.system(size: 10, weight: .medium))
-                    .symbolRenderingMode(.monochrome)
-                    .foregroundStyle(SnipSnapColors.textPrimary)
-            }
-            .frame(
-                width: PanelCardLeadingMetrics.controlSide,
-                height: PanelCardLeadingMetrics.controlSide
-            )
-            .contentShape(shape)
-            .clipShape(shape)
-        }
-        .buttonStyle(.plain)
-        .frame(
-            width: PanelCardLeadingMetrics.controlSide,
-            height: PanelCardLeadingMetrics.controlSide
-        )
-        .help(isCopied ? "Copied" : "Copy")
-        .accessibilityLabel(isCopied ? "Copied" : "Copy")
-    }
-
-    private var shape: RoundedRectangle {
-        RoundedRectangle(
-            cornerRadius: PanelCardLeadingMetrics.cornerRadius,
-            style: .continuous
-        )
     }
 }
