@@ -131,6 +131,29 @@ public enum SyncedContentSyncIssue: Codable, Equatable, Sendable {
       false
     }
   }
+
+  fileprivate var diagnosticCode: String {
+    switch self {
+    case .waitingForConnection: "sync.waitingForConnection"
+    case .iCloudUnavailable: "sync.iCloudUnavailable"
+    case .retryingSoon: "sync.retryingSoon"
+    case .checkingAccount: "sync.checkingAccount"
+    case .signInRequired: "sync.signInRequired"
+    case .accountRestricted: "sync.accountRestricted"
+    case .accountTemporarilyUnavailable: "sync.accountTemporarilyUnavailable"
+    case .iCloudStorageFull: "sync.iCloudStorageFull"
+    case .updateRequired: "sync.updateRequired"
+    case .accessDenied: "sync.accessDenied"
+    case .someChangesPending: "sync.someChangesPending"
+    case .attachmentMissing: "sync.attachmentMissing"
+    case .attachmentUnavailable: "sync.attachmentUnavailable"
+    case .attachmentStorageUnavailable: "sync.attachmentStorageUnavailable"
+    case .setupBlocked: "sync.setupBlocked"
+    case .iCloudDataReset: "sync.iCloudDataReset"
+    case .iCloudAccountChanged: "sync.iCloudAccountChanged"
+    case .appDataIssue: "sync.appDataIssue"
+    }
+  }
 }
 
 public enum SyncedContentSettingsState: Equatable, Sendable {
@@ -176,6 +199,7 @@ public final class SyncedContentSettingsModel {
   private let cancelEnableAction: CancelEnableAction?
   private let disableAction: DisableAction?
   private let deleteAction: DeleteAction?
+  private let diagnostics: any AppDiagnosticRecording
   private var enableCompletionAction: DeleteCompletionAction?
   private var disableCompletionAction: DeleteCompletionAction?
   private var deleteCompletionAction: DeleteCompletionAction?
@@ -187,7 +211,8 @@ public final class SyncedContentSettingsModel {
     enableAction: EnableAction? = nil,
     cancelEnableAction: CancelEnableAction? = nil,
     disableAction: DisableAction? = nil,
-    deleteAction: DeleteAction? = nil
+    deleteAction: DeleteAction? = nil,
+    diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared
   ) {
     self.mode = mode
     self.issueMapper = issueMapper
@@ -195,6 +220,7 @@ public final class SyncedContentSettingsModel {
     self.cancelEnableAction = cancelEnableAction
     self.disableAction = disableAction
     self.deleteAction = deleteAction
+    self.diagnostics = diagnostics
     state = initialState
   }
 
@@ -296,10 +322,16 @@ public final class SyncedContentSettingsModel {
         mode = .iCloudSync
         state = .ready
       case .settingUp(let issue):
+        if let issue { record(issue, operation: "sync.setup") }
         mode = .localOnly
         state = .enabling(issue)
       }
     } catch {
+      diagnostics.record(.failure(
+        operation: "sync.enable",
+        error: error,
+        visibility: .user
+      ))
       state = .failed(issueMapper(error))
     }
   }
@@ -313,6 +345,11 @@ public final class SyncedContentSettingsModel {
       mode = .localOnly
       state = .ready
     } catch {
+      diagnostics.record(.failure(
+        operation: "sync.disable",
+        error: error,
+        visibility: .user
+      ))
       state = .failed(issueMapper(error))
     }
   }
@@ -324,6 +361,11 @@ public final class SyncedContentSettingsModel {
       mode = .localOnly
       state = .ready
     } catch {
+      diagnostics.record(.failure(
+        operation: "sync.cancel_setup",
+        error: error,
+        visibility: .user
+      ))
       state = .failed(issueMapper(error))
     }
   }
@@ -367,11 +409,18 @@ public final class SyncedContentSettingsModel {
 
   public func recordSyncFailure(_ issue: SyncedContentSyncIssue) {
     switch (mode, state) {
+    case (.iCloudSync, .failed(let existing)) where existing == issue:
+      break
     case (.iCloudSync, .ready), (.iCloudSync, .syncing), (.iCloudSync, .failed):
+      record(issue, operation: "sync.run")
       state = .failed(issue)
+    case (.localOnly, .enabling(let existing)) where existing == issue:
+      break
     case (.localOnly, .enabling) where issue.retriesAutomatically:
+      record(issue, operation: "sync.setup")
       state = .enabling(issue)
     case (.localOnly, .enabling):
+      record(issue, operation: "sync.setup")
       state = .failed(issue)
     default:
       break
@@ -379,11 +428,15 @@ public final class SyncedContentSettingsModel {
   }
 
   public func recordSyncStopped(_ issue: SyncedContentSyncIssue) {
+    if mode == .localOnly, state == .failed(issue) { return }
+    record(issue, operation: "sync.stop")
     mode = .localOnly
     state = .failed(issue)
   }
 
   public func recordEnableSettingUp(_ issue: SyncedContentSyncIssue? = nil) {
+    if mode == .localOnly, state == .enabling(issue) { return }
+    if let issue { record(issue, operation: "sync.setup") }
     mode = .localOnly
     state = .enabling(issue)
   }
@@ -401,7 +454,20 @@ public final class SyncedContentSettingsModel {
       try await deleteCompletionAction?()
       state = outcome == .completed ? .deleted : .removalPending
     } catch {
+      diagnostics.record(.failure(
+        operation: "sync.delete",
+        error: error,
+        visibility: .user
+      ))
       state = .failed(issueMapper(error))
     }
+  }
+
+  private func record(_ issue: SyncedContentSyncIssue, operation: StaticString) {
+    diagnostics.record(.failure(
+      operation: operation,
+      errorCode: issue.diagnosticCode,
+      visibility: .user
+    ))
   }
 }

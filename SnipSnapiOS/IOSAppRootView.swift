@@ -229,7 +229,7 @@ struct IOSAppRootView: View {
                 Task { await model.previewBackupImport(from: url) }
             case .failure(let error):
                 if (error as NSError).code != NSUserCancelledError {
-                    model.errorMessage = error.localizedDescription
+                    model.presentError(error, operation: "backup.import_select")
                 }
             }
         }

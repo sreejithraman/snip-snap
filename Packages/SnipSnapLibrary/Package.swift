@@ -29,6 +29,10 @@ let package = Package(
             dependencies: ["SnipSnapCore", "SnipSnapPersistence"]
         ),
         .testTarget(
+            name: "SnipSnapCoreTests",
+            dependencies: ["SnipSnapCore"]
+        ),
+        .testTarget(
             name: "SnipSnapPersistenceTests",
             dependencies: ["SnipSnapCore", "SnipSnapPersistence"]
         ),

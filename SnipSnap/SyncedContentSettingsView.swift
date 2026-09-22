@@ -82,6 +82,11 @@ struct SyncedContentSettingsView: View {
                         try await clipboard.deleteSyncedHistory()
                         await model.deleteSyncedContent()
                     } catch {
+                        AppDiagnostics.shared.record(.failure(
+                            operation: "clipboard.delete_synced",
+                            error: error,
+                            visibility: .user
+                        ))
                         clipboardDeleteError = ClipboardSyncErrorMessage.deleteSyncedHistory(for: error)
                     }
                 }
@@ -170,6 +175,11 @@ struct SyncedContentSettingsView: View {
                             do {
                                 try await attachmentActions.clearDownloads()
                             } catch {
+                                AppDiagnostics.shared.record(.failure(
+                                    operation: "attachment.cache_clear",
+                                    error: error,
+                                    visibility: .user
+                                ))
                                 clearDownloadsError = String(localized: "Couldn’t clear downloaded files. Try again.")
                             }
                             isClearingDownloads = false

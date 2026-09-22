@@ -290,6 +290,35 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(pending, 0)
     }
 
+    func testClipboardLoadFailureRecordsOncePerVisibleFailureEpisode() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let history = root.appendingPathComponent("clipboard.json")
+        try FileManager.default.createDirectory(at: history, withIntermediateDirectories: true)
+        let diagnostics = IOSDiagnosticRecorderProbe()
+        let model = IOSClipboardModel(
+            rootURL: root,
+            settings: SyncedContentSettingsModel(mode: .localOnly),
+            preferences: UserDefaults(suiteName: UUID().uuidString)!,
+            diagnostics: diagnostics.recorder
+        )
+
+        await model.load()
+        await model.load()
+
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertEqual(diagnostics.events.count, 1)
+        XCTAssertEqual(diagnostics.events.first?.operation, "clipboard.load")
+        XCTAssertEqual(diagnostics.events.first?.visibility, .user)
+
+        try FileManager.default.removeItem(at: history)
+        await model.load()
+        XCTAssertNil(model.errorMessage)
+        try FileManager.default.createDirectory(at: history, withIntermediateDirectories: true)
+        await model.load()
+        XCTAssertEqual(diagnostics.events.count, 2)
+    }
+
     func testPinnedSnipsStayFirstAndCannotBeMarkedDone() async {
         let pinned = Snip(content: "Reusable", origin: .quickEntry, pinnedAt: Date())
         let ordinary = Snip(content: "Task", origin: .quickEntry)
@@ -1178,7 +1207,12 @@ final class IOSAppModelTests: XCTestCase {
     func testRemoteAttachmentFailureStaysVisibleForRetry() async {
         let id = UUID()
         let handler = IOSCloudSyncHandlerProbe(states: [id: .available])
-        let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
+        let diagnostics = IOSDiagnosticRecorderProbe()
+        let model = IOSAppModel(
+            library: ModelTestLibrary(),
+            cloudSyncHandler: handler,
+            diagnostics: diagnostics.recorder
+        )
         await model.load()
         let preparing = Task { await model.prepareAttachment(id, for: .open) }
         await handler.waitUntilPrepareStarts()
@@ -1187,6 +1221,82 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertNil(preparedURL)
         XCTAssertEqual(model.attachmentTransferState(for: id), .failed)
         XCTAssertNotNil(model.errorMessage)
+        XCTAssertEqual(
+            diagnostics.events,
+            [.failure(
+                operation: "attachment.prepare",
+                error: SnipLibraryError.attachmentCopyFailed,
+                visibility: .user
+            )]
+        )
+    }
+
+    func testCachePreflightAttachmentFailureRecordsOneTerminalEvent() async {
+        let id = UUID()
+        let handler = IOSCloudSyncHandlerProbe(states: [id: .available])
+        let diagnostics = IOSDiagnosticRecorderProbe()
+        let model = IOSAppModel(
+            library: ModelTestLibrary(),
+            cloudSyncHandler: handler,
+            diagnostics: diagnostics.recorder
+        )
+        await model.load()
+        let preparing = Task { await model.prepareAttachment(id, for: .preview) }
+        await handler.waitUntilPrepareStarts()
+        await handler.finishPrepare(with: .failure(IOSCachePreflightFailure.pathOutsideRoot))
+
+        let preparedURL = await preparing.value
+        XCTAssertNil(preparedURL)
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertEqual(diagnostics.events.count, 1)
+        XCTAssertEqual(diagnostics.events.first?.operation, "attachment.prepare")
+        XCTAssertEqual(diagnostics.events.first?.outcome, .failed)
+        XCTAssertEqual(diagnostics.events.first?.errorCode, "storage.pathOutsideRoot")
+    }
+
+    func testRepeatedPreviewFailureRecordsOneEventWhileAlertIsVisible() async {
+        let id = UUID()
+        let handler = IOSCopyShareActionHandlerProbe(
+            states: [id: .waiting],
+            results: Array(repeating: .failure(SnipLibraryError.attachmentCopyFailed), count: 3)
+        )
+        let diagnostics = IOSDiagnosticRecorderProbe()
+        let model = IOSAppModel(
+            library: ModelTestLibrary(),
+            cloudSyncHandler: handler,
+            diagnostics: diagnostics.recorder
+        )
+        await model.load()
+
+        _ = await model.prepareAttachment(id, for: .preview)
+        _ = await model.prepareAttachment(id, for: .preview)
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertEqual(diagnostics.events.count, 1)
+
+        model.errorMessage = nil
+        _ = await model.prepareAttachment(id, for: .preview)
+        XCTAssertEqual(diagnostics.events.count, 2)
+    }
+
+    func testCancelledAttachmentPreparationShowsNoErrorOrFailureEvent() async {
+        let id = UUID()
+        let handler = IOSCloudSyncHandlerProbe(states: [id: .available])
+        let diagnostics = IOSDiagnosticRecorderProbe()
+        let model = IOSAppModel(
+            library: ModelTestLibrary(),
+            cloudSyncHandler: handler,
+            diagnostics: diagnostics.recorder
+        )
+        await model.load()
+        let preparing = Task { await model.prepareAttachment(id, for: .preview) }
+        await handler.waitUntilPrepareStarts()
+        await handler.finishPrepare(with: .failure(CancellationError()))
+
+        let preparedURL = await preparing.value
+        XCTAssertNil(preparedURL)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.attachmentTransferState(for: id), .waiting)
+        XCTAssertTrue(diagnostics.events.isEmpty)
     }
 
     func testSyncedLocalAttachmentStillUsesVerifiedTransferPath() async throws {
@@ -2212,6 +2322,119 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertNil(coordinator.unavailableFilesNotice)
         let calls = await handler.prepareCalls()
         XCTAssertEqual(calls.map(\.use), [.copy, .copy])
+    }
+
+    func testCopyNoticeRecordsOnePreflightFailureForTheVisibleNotice() async throws {
+        let attachment = try testAttachment(id: UUID(), fileName: "private.txt")
+        let snip = Snip(content: "Copy", origin: .quickEntry, attachments: [attachment])
+        let diagnostics = IOSDiagnosticRecorderProbe()
+        let handler = IOSCopyShareActionHandlerProbe(
+            states: [attachment.id: .waiting],
+            results: Array(repeating: .failure(IOSCachePreflightFailure.pathOutsideRoot), count: 2)
+        )
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: [snip]),
+            cloudSyncHandler: handler,
+            diagnostics: diagnostics.recorder
+        )
+        await model.load()
+        let coordinator = IOSCopyShareCoordinator(
+            pasteboard: RecordingPasteboard(),
+            diagnostics: diagnostics.recorder
+        )
+
+        _ = await coordinator.copy(snips: [snip], model: model)
+        _ = await coordinator.copy(snips: [snip], model: model)
+
+        XCTAssertNotNil(coordinator.unavailableFilesNotice)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(diagnostics.events.count, 1)
+        XCTAssertEqual(diagnostics.events.first?.operation, "attachment.prepare")
+        XCTAssertEqual(diagnostics.events.first?.errorCode, "storage.pathOutsideRoot")
+        XCTAssertFalse(diagnostics.events.first?.line.contains("private.txt") ?? true)
+    }
+
+    func testUnavailableLocalPayloadRecordsOneAttachmentFailureAtNotice() async throws {
+        let attachment = try testAttachment(id: UUID(), fileName: "missing.txt")
+        let snip = Snip(content: "Copy", origin: .quickEntry, attachments: [attachment])
+        let missingURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let diagnostics = IOSDiagnosticRecorderProbe()
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: [snip], attachmentURLs: [attachment.id: missingURL]),
+            diagnostics: diagnostics.recorder
+        )
+        await model.load()
+        let coordinator = IOSCopyShareCoordinator(
+            pasteboard: RecordingPasteboard(),
+            diagnostics: diagnostics.recorder
+        )
+
+        _ = await coordinator.copy(snips: [snip], model: model)
+
+        XCTAssertNotNil(coordinator.unavailableFilesNotice)
+        XCTAssertEqual(diagnostics.events.count, 1)
+        XCTAssertEqual(diagnostics.events.first?.operation, "attachment.prepare")
+        XCTAssertEqual(diagnostics.events.first?.errorCode, "attachment.unavailableAfterPrepare")
+    }
+
+    func testDifferentUnavailableFilesReplaceNoticeWithAnotherEvent() async throws {
+        let first = try testAttachment(id: UUID(), fileName: "private-first.txt")
+        let second = try testAttachment(id: UUID(), fileName: "private-second.txt")
+        let firstSnip = Snip(content: "First", origin: .quickEntry, attachments: [first])
+        let secondSnip = Snip(content: "Second", origin: .quickEntry, attachments: [second])
+        let missingRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let diagnostics = IOSDiagnosticRecorderProbe()
+        let model = IOSAppModel(
+            library: ModelTestLibrary(
+                snips: [firstSnip, secondSnip],
+                attachmentURLs: [
+                    first.id: missingRoot.appendingPathComponent("first"),
+                    second.id: missingRoot.appendingPathComponent("second"),
+                ]
+            ),
+            diagnostics: diagnostics.recorder
+        )
+        await model.load()
+        let coordinator = IOSCopyShareCoordinator(
+            pasteboard: RecordingPasteboard(),
+            diagnostics: diagnostics.recorder
+        )
+
+        _ = await coordinator.copy(snips: [firstSnip], model: model)
+        _ = await coordinator.copy(snips: [secondSnip], model: model)
+
+        XCTAssertEqual(coordinator.unavailableFilesNotice?.payload.unavailableFileNames, ["private-second.txt"])
+        XCTAssertEqual(diagnostics.events.count, 2)
+        XCTAssertTrue(diagnostics.events.allSatisfy { $0.operation == "attachment.prepare" })
+        XCTAssertFalse(diagnostics.events.map(\.line).joined().contains("private-"))
+    }
+
+    func testCancelledCopyAndShareDoNotPresentUnavailableFileNotice() async throws {
+        let attachment = try testAttachment(id: UUID(), fileName: "private.txt")
+        let snip = Snip(content: "Copy", origin: .quickEntry, attachments: [attachment])
+        let diagnostics = IOSDiagnosticRecorderProbe()
+        let handler = IOSCopyShareActionHandlerProbe(
+            states: [attachment.id: .waiting],
+            results: Array(repeating: .failure(CancellationError()), count: 2)
+        )
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: [snip]),
+            cloudSyncHandler: handler,
+            diagnostics: diagnostics.recorder
+        )
+        await model.load()
+        let coordinator = IOSCopyShareCoordinator(
+            pasteboard: RecordingPasteboard(),
+            diagnostics: diagnostics.recorder
+        )
+
+        let copied = await coordinator.copy(snips: [snip], model: model)
+        XCTAssertFalse(copied)
+        await coordinator.share(snips: [snip], model: model)
+
+        XCTAssertNil(coordinator.unavailableFilesNotice)
+        XCTAssertNil(coordinator.shareRequest)
+        XCTAssertTrue(diagnostics.events.isEmpty)
     }
 
     func testCopyAttachmentsFailureShowsTheTextFallbackNotice() async throws {
@@ -3461,6 +3684,27 @@ private actor IOSAccountLibraryRebindCounter {
 
     func record() { count += 1 }
     func value() -> Int { count }
+}
+
+private final class IOSDiagnosticRecorderProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedEvents: [AppDiagnosticEvent] = []
+
+    var recorder: AppDiagnosticRecorder {
+        AppDiagnosticRecorder { [self] event in
+            lock.withLock { storedEvents.append(event) }
+        }
+    }
+
+    var events: [AppDiagnosticEvent] {
+        lock.withLock { storedEvents }
+    }
+}
+
+private enum IOSCachePreflightFailure: Error, AppDiagnosticErrorCodeProviding {
+    case pathOutsideRoot
+
+    var appDiagnosticCode: String { "storage.pathOutsideRoot" }
 }
 
 private actor IOSCloudSyncHandlerProbe: OptionalCloudSyncHandling {

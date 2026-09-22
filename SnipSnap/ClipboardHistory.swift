@@ -274,6 +274,7 @@ final class ClipboardHistory: ObservableObject {
     private var lastChangeCount: Int
     private let pollingTimer = ClipboardPollingTimer()
     private let defaults: UserDefaults
+    private let diagnostics: any AppDiagnosticRecording
     private var suppressionTokens: Set<UUID> = []
     private var initialLoadTask: Task<Void, Never>?
     private var clearTask: Task<Void, Never>?
@@ -285,10 +286,12 @@ final class ClipboardHistory: ObservableObject {
     init(
         pasteboard: NSPasteboard = .general,
         defaults: UserDefaults = .standard,
-        storeURL: URL = ClipboardHistory.defaultStoreURL()
+        storeURL: URL = ClipboardHistory.defaultStoreURL(),
+        diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared
     ) {
         self.pasteboard = pasteboard
         self.defaults = defaults
+        self.diagnostics = diagnostics
         pendingUploadIDs = Set((defaults.stringArray(forKey: "clipboardPendingUploadIDs") ?? []).compactMap(UUID.init(uuidString:)))
         sharedStore = ClipboardHistoryStore(url: storeURL)
         ownedFileStore = ClipboardFileStore(rootURL: storeURL.deletingLastPathComponent().appendingPathComponent("ClipboardFiles", isDirectory: true))
@@ -304,7 +307,13 @@ final class ClipboardHistory: ObservableObject {
                 self.state.merge(loaded)
                 self.entries = self.state.entries
             } catch {
-                self?.persistenceError = String(
+                guard !Task.isCancelled, let self else { return }
+                self.diagnostics.record(.failure(
+                    operation: "clipboard.load",
+                    error: error,
+                    visibility: .user
+                ))
+                self.persistenceError = String(
                     localized: "Couldn’t load clipboard history. Try again."
                 )
             }
@@ -356,7 +365,10 @@ final class ClipboardHistory: ObservableObject {
             await initialLoadTask?.value
             state.clearUnpinned()
             entries = state.entries
-            persist(errorMessage: String(localized: "Couldn’t clear clipboard history. Try again."))
+            persist(
+                errorMessage: String(localized: "Couldn’t clear clipboard history. Try again."),
+                operation: "clipboard.clear"
+            )
         }
     }
 
@@ -421,7 +433,14 @@ final class ClipboardHistory: ObservableObject {
             pendingUploadIDs.subtract(updated.entries.map(\.id))
             syncError = nil
         } catch is CancellationError { }
-        catch { syncError = ClipboardSyncErrorMessage.sync(for: error) }
+        catch {
+            diagnostics.record(.failure(
+                operation: "clipboard.sync",
+                error: error,
+                visibility: .user
+            ))
+            syncError = ClipboardSyncErrorMessage.sync(for: error)
+        }
     }
 
     func resetCloudAccount() async {
@@ -435,6 +454,11 @@ final class ClipboardHistory: ObservableObject {
             entries = state.entries
             syncError = nil
         } catch {
+            diagnostics.record(.failure(
+                operation: "clipboard.account_reset",
+                error: error,
+                visibility: .user
+            ))
             syncError = ClipboardSyncErrorMessage.accountReset(for: error)
         }
     }
@@ -470,6 +494,11 @@ final class ClipboardHistory: ObservableObject {
         let resolved = resolvedEntry(entry)
         if !entry.ownedFiles.isEmpty,
            !resolved.fileURLs.allSatisfy({ FileManager.default.isReadableFile(atPath: $0.path) }) {
+            diagnostics.record(.failure(
+                operation: "clipboard.copy_file",
+                errorCode: "clipboard.unreadable",
+                visibility: .user
+            ))
             persistenceError = String(localized: "This file isn’t on this Mac. Find the original file and copy it again.")
             return false
         }
@@ -597,7 +626,8 @@ final class ClipboardHistory: ObservableObject {
     }
 
     private func persist(
-        errorMessage: String = String(localized: "Couldn’t save clipboard history. Try again.")
+        errorMessage: String = String(localized: "Couldn’t save clipboard history. Try again."),
+        operation: StaticString = "clipboard.persist"
     ) {
         let loadTask = initialLoadTask
         let previousTask = persistenceScheduleTask
@@ -611,6 +641,11 @@ final class ClipboardHistory: ObservableObject {
                 entries = state.entries
                 onChange?()
             } catch {
+                diagnostics.record(.failure(
+                    operation: operation,
+                    error: error,
+                    visibility: .user
+                ))
                 persistenceError = errorMessage
             }
         }
@@ -621,7 +656,10 @@ final class ClipboardHistory: ObservableObject {
     func delete(id: UUID) {
         state.delete(id: id)
         entries = state.entries
-        persist(errorMessage: String(localized: "Couldn’t delete this clipboard entry. Try again."))
+        persist(
+            errorMessage: String(localized: "Couldn’t delete this clipboard entry. Try again."),
+            operation: "clipboard.delete"
+        )
     }
 
     func togglePinned(id: UUID) async {
@@ -633,6 +671,11 @@ final class ClipboardHistory: ObservableObject {
             pendingUploadIDs.insert(id)
             onChange?()
         } catch {
+            diagnostics.record(.failure(
+                operation: "clipboard.pin",
+                error: error,
+                visibility: .user
+            ))
             persistenceError = String(localized: "Couldn’t update the pin. Try again.")
         }
     }

@@ -1,6 +1,5 @@
 import Foundation
 import Observation
-import OSLog
 import SnipSnapCloud
 import SnipSnapCore
 import SnipSnapPersistence
@@ -16,6 +15,7 @@ final class IOSClipboardModel {
     private let cloud: ClipboardCloudSyncService?
     private let generation: @MainActor () async throws -> String?
     private let preferences: UserDefaults
+    private let diagnostics: any AppDiagnosticRecording
     private(set) var entries: [ClipboardEntry] = []
     private(set) var pendingUploadIDs: Set<UUID> = []
     private(set) var isSyncing = false
@@ -31,7 +31,6 @@ final class IOSClipboardModel {
     private(set) var isPasting = false
     private static let representationTypes: [UTType] = [.utf8PlainText, .plainText, .url, .rtf, .html, .png, .jpeg, .tiff]
     static let pasteContentTypes: [UTType] = representationTypes + [.image]
-    private static let pasteLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "SnipSnap", category: "ClipboardPaste")
     var syncIsActive: Bool {
         guard syncEnabled, settings.mode == .iCloudSync else { return false }
         switch settings.state {
@@ -46,7 +45,8 @@ final class IOSClipboardModel {
 
     init(rootURL: URL, settings: SyncedContentSettingsModel, containerIdentifier: String? = nil,
          preferences: UserDefaults = .standard,
-         generation: @escaping @MainActor () async throws -> String? = { nil }) {
+         generation: @escaping @MainActor () async throws -> String? = { nil },
+         diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared) {
         let store = ClipboardHistoryStore(url: rootURL.appendingPathComponent("clipboard.json"))
         let files = ClipboardFileStore(rootURL: rootURL.appendingPathComponent("ClipboardFiles", isDirectory: true))
         self.store = store
@@ -55,6 +55,7 @@ final class IOSClipboardModel {
         self.settings = settings
         self.generation = generation
         self.preferences = preferences
+        self.diagnostics = diagnostics
         syncEnabled = preferences.bool(forKey: "syncClipboardHistory")
         pendingUploadIDs = Set((preferences.stringArray(forKey: "clipboardPendingUploads") ?? []).compactMap(UUID.init(uuidString:)))
         cloud = containerIdentifier.flatMap {
@@ -82,6 +83,13 @@ final class IOSClipboardModel {
             entries = try await store.load().entries
             loadErrorMessage = nil
         } catch {
+            if loadErrorMessage == nil {
+                diagnostics.record(.failure(
+                    operation: "clipboard.load",
+                    error: error,
+                    visibility: .user
+                ))
+            }
             loadErrorMessage = String(localized: "Couldn’t load clipboard history. Try again.")
         }
     }
@@ -119,7 +127,16 @@ final class IOSClipboardModel {
             pendingUploadIDs.formUnion(entries.filter { $0.isSyncEligible && !previousIDs.contains($0.id) }.map(\.id))
             savePendingUploads()
         }
-        importErrorMessage = summary.failed > 0 ? String(localized: "Some shared items couldn’t be added. Try again.") : nil
+        if summary.failed > 0 {
+            diagnostics.record(.failure(
+                operation: "clipboard.share_import",
+                errorCode: "import.partialFailure",
+                visibility: .user
+            ))
+            importErrorMessage = String(localized: "Some shared items couldn’t be added. Try again.")
+        } else {
+            importErrorMessage = nil
+        }
         await synchronize()
     }
 
@@ -141,6 +158,11 @@ final class IOSClipboardModel {
             savePendingUploads()
         } catch {
             if error is CancellationError { return }
+            diagnostics.record(.failure(
+                operation: "clipboard.sync",
+                error: error,
+                visibility: .user
+            ))
             pendingUploadIDs.formUnion(cloud.pendingEntryIDs)
             savePendingUploads()
             errorMessage = ClipboardSyncErrorMessage.sync(for: error)
@@ -161,6 +183,11 @@ final class IOSClipboardModel {
             await load()
             errorMessage = nil
         } catch {
+            diagnostics.record(.failure(
+                operation: "clipboard.account_reset",
+                error: error,
+                visibility: .user
+            ))
             errorMessage = ClipboardSyncErrorMessage.accountReset(for: error)
         }
     }
@@ -175,6 +202,11 @@ final class IOSClipboardModel {
             errorMessage = nil
             await synchronize()
         } catch {
+            diagnostics.record(.failure(
+                operation: "clipboard.pin",
+                error: error,
+                visibility: .user
+            ))
             errorMessage = String(localized: "Couldn’t update the pin. Try again.")
         }
     }
@@ -187,6 +219,11 @@ final class IOSClipboardModel {
             await synchronize()
         }
         catch {
+            diagnostics.record(.failure(
+                operation: "clipboard.delete",
+                error: error,
+                visibility: .user
+            ))
             errorMessage = String(localized: "Couldn’t delete this clipboard entry. Try again.")
         }
     }
@@ -199,6 +236,11 @@ final class IOSClipboardModel {
             await synchronize()
         }
         catch {
+            diagnostics.record(.failure(
+                operation: "clipboard.clear",
+                error: error,
+                visibility: .user
+            ))
             errorMessage = String(localized: "Couldn’t clear clipboard history. Try again.")
         }
     }
@@ -208,7 +250,15 @@ final class IOSClipboardModel {
             Dictionary(item.representations.filter { $0.type != UTType.fileURL.identifier }.map { ($0.type, $0.data as Any) }, uniquingKeysWith: { first, _ in first })
         }.filter { !$0.isEmpty }
         for url in files.resolvedFileURLs(for: entry) {
-            guard let data = try? Data(contentsOf: url) else {
+            let data: Data
+            do {
+                data = try Data(contentsOf: url)
+            } catch {
+                diagnostics.record(.failure(
+                    operation: "clipboard.copy_file",
+                    error: error,
+                    visibility: .user
+                ))
                 errorMessage = String(localized: "This file isn’t on this device. If it synced before, sync your clipboard and try again.")
                 return
             }
@@ -252,7 +302,18 @@ final class IOSClipboardModel {
 
     func dismissPasteError() { pasteErrorMessage = nil }
 
-    private enum PasteError: Error { case empty, unsupported, unreadable, tooLarge }
+    private enum PasteError: Error, AppDiagnosticErrorCodeProviding {
+        case empty, unsupported, unreadable, tooLarge
+
+        var appDiagnosticCode: String {
+            switch self {
+            case .empty: "clipboard.empty"
+            case .unsupported: "clipboard.unsupported"
+            case .unreadable: "clipboard.unreadable"
+            case .tooLarge: "clipboard.tooLarge"
+            }
+        }
+    }
 
     func capture(_ providers: [NSItemProvider]) async {
         guard !isPasting else { return }
@@ -279,9 +340,11 @@ final class IOSClipboardModel {
                             }
                         }
                     } catch {
-                        // Record codes only; provider descriptions can contain copied content or file paths.
-                        let failure = error as NSError
-                        Self.pasteLogger.error("Clipboard read failed: code=\(failure.code)")
+                        diagnostics.record(.failure(
+                            operation: "clipboard.paste_read",
+                            error: error,
+                            visibility: .background
+                        ))
                         continue
                     }
                     guard data.count <= ClipboardHistoryState.representationByteLimit else { throw PasteError.tooLarge }
@@ -301,15 +364,41 @@ final class IOSClipboardModel {
             errorMessage = nil
             await synchronize()
         } catch PasteError.empty {
+            recordPasteFailure(.empty)
             pasteErrorMessage = String(localized: "There’s nothing to paste. Copy text or an image, then try again.")
         } catch PasteError.unsupported {
+            recordPasteFailure(.unsupported)
             pasteErrorMessage = String(localized: "This clipboard content isn’t supported. Try copying text or an image.")
         } catch PasteError.unreadable {
+            recordPasteFailure(.unreadable)
             pasteErrorMessage = String(localized: "Couldn’t read the clipboard. Copy the content again, then tap Paste.")
         } catch PasteError.tooLarge {
+            recordPasteFailure(.tooLarge)
             pasteErrorMessage = String(localized: "This clipboard content is too large to paste.")
         } catch {
+            diagnostics.record(.failure(
+                operation: "clipboard.paste",
+                error: error,
+                visibility: .user
+            ))
             pasteErrorMessage = String(localized: "Couldn’t save the pasted content. Try again.")
         }
+    }
+
+    func presentError(
+        _ error: any Error,
+        operation: StaticString,
+        message: String
+    ) {
+        diagnostics.record(.failure(operation: operation, error: error, visibility: .user))
+        operationErrorMessage = message
+    }
+
+    private func recordPasteFailure(_ error: PasteError) {
+        diagnostics.record(.failure(
+            operation: "clipboard.paste",
+            error: error,
+            visibility: .user
+        ))
     }
 }

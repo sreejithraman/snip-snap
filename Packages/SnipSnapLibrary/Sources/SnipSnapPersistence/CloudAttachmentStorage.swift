@@ -1,4 +1,5 @@
 import Foundation
+import SnipSnapCore
 
 package struct CloudAttachmentMetadataValue: Codable, Equatable, Sendable {
   package let attachmentID: UUID
@@ -173,6 +174,24 @@ package enum CloudAttachmentStorageError: Error, Equatable, Sendable {
   case hashMismatch
   case sizeMismatch
   case missingPayload
+}
+
+extension CloudAttachmentStorageError: AppDiagnosticErrorCodeProviding {
+  package var appDiagnosticCode: String {
+    switch self {
+    case .invalidPath: "storage.invalidPath"
+    case .invalidRelativePath: "storage.invalidRelativePath"
+    case .pathOutsideRoot: "storage.pathOutsideRoot"
+    case .symbolicLinkRoot: "storage.symbolicLinkRoot"
+    case .symbolicLinkDescendant: "storage.symbolicLinkDescendant"
+    case .invalidMetadata: "storage.invalidMetadata"
+    case .staleTransition: "storage.staleTransition"
+    case .missingPublication: "storage.missingPublication"
+    case .hashMismatch: "storage.hashMismatch"
+    case .sizeMismatch: "storage.sizeMismatch"
+    case .missingPayload: "storage.missingPayload"
+    }
+  }
 }
 
 package enum CloudAttachmentTransition: Codable, Equatable, Sendable {

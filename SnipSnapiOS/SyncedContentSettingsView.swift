@@ -148,7 +148,11 @@ struct SyncedContentSettingsView: View {
                         try await clipboard?.deleteSyncedHistory()
                         await model.deleteSyncedContent()
                     } catch {
-                        clipboard?.errorMessage = ClipboardSyncErrorMessage.deleteSyncedHistory(for: error)
+                        clipboard?.presentError(
+                            error,
+                            operation: "clipboard.delete_synced",
+                            message: ClipboardSyncErrorMessage.deleteSyncedHistory(for: error)
+                        )
                     }
                 }
             }
@@ -268,6 +272,11 @@ struct SyncedContentSettingsView: View {
             let url = try CloudSyncDiagnosticsExport.makeShareableFile()
             diagnosticsShareRequest = IOSShareRequest(items: [.file(url)])
         } catch {
+            AppDiagnostics.shared.record(.failure(
+                operation: "diagnostics.export",
+                error: error,
+                visibility: .user
+            ))
             diagnosticsMessage = String(localized: "Couldn’t prepare the diagnostic log. Try again.")
         }
     }
@@ -277,6 +286,11 @@ struct SyncedContentSettingsView: View {
             try CloudSyncDiagnosticsExport.clear()
             diagnosticsMessage = String(localized: "Diagnostic log cleared.")
         } catch {
+            AppDiagnostics.shared.record(.failure(
+                operation: "diagnostics.clear",
+                error: error,
+                visibility: .user
+            ))
             diagnosticsMessage = String(localized: "Couldn’t clear the diagnostic log. Try again.")
         }
     }

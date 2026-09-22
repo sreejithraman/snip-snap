@@ -1,31 +1,40 @@
 import CloudKit
 import Foundation
-import OSLog
 import SnipSnapCore
 import SnipSnapPersistence
 
 enum CloudSyncDiagnostics {
-  private static let logger = Logger(subsystem: "SnipSnap", category: "iCloudSync")
-  private static let eventStore = CloudDiagnosticEventStore.live
+  enum AttachmentStage {
+    case cloudKitRequest
+    case cloudKitRecord
+    case cloudKitAssetURL
+    case assetCopy
+    case remoteFetch
+    case receiptValidation
+    case cacheInstall
 
-  enum AttachmentStage: String {
-    case cloudKitRequest = "cloudkit_request"
-    case cloudKitRecord = "cloudkit_record"
-    case cloudKitAssetURL = "cloudkit_asset_url"
-    case assetCopy = "asset_copy"
-    case remoteFetch = "remote_fetch"
-    case receiptValidation = "receipt_validation"
-    case cacheInstall = "cache_install"
+    var operation: StaticString {
+      switch self {
+      case .cloudKitRequest: "attachment.cloudkit_request"
+      case .cloudKitRecord: "attachment.cloudkit_record"
+      case .cloudKitAssetURL: "attachment.cloudkit_asset_url"
+      case .assetCopy: "attachment.asset_copy"
+      case .remoteFetch: "attachment.remote_fetch"
+      case .receiptValidation: "attachment.receipt_validation"
+      case .cacheInstall: "attachment.cache_install"
+      }
+    }
   }
 
   static func record(_ error: Error, operation: String) {
-    guard let error = error as? CKError else {
-      logger.error("\(operation, privacy: .public): non-CloudKit failure")
-      return
-    }
-    let retry = (error.userInfo[CKErrorRetryAfterKey] as? NSNumber)?.doubleValue ?? 0
-    logger.error(
-      "\(operation, privacy: .public): CKError \(error.errorCode, privacy: .public), retryAfter \(retry, privacy: .public)"
+    let retry = ((error as? CKError)?.userInfo[CKErrorRetryAfterKey] as? NSNumber)?.doubleValue
+    AppDiagnostics.shared.record(
+      .failure(
+        operation: diagnosticOperation(operation),
+        errorCode: attachmentErrorCode(error),
+        visibility: .background,
+        retryAfterSeconds: retry
+      )
     )
   }
 
@@ -35,137 +44,64 @@ enum CloudSyncDiagnostics {
     selectedDelay: Duration?,
     nextAttemptIn: Duration?
   ) {
-    guard let error = error as? CKError else {
-      record(error, operation: operation)
-      return
-    }
-    let delay = seconds(selectedDelay)
-    let wait = seconds(nextAttemptIn)
-    let nextPermittedAt = Date().addingTimeInterval(wait).ISO8601Format()
-    logger.error(
-      "\(operation, privacy: .public): CKError \(error.errorCode, privacy: .public), selectedDelay \(delay, privacy: .public), nextAttemptIn \(wait, privacy: .public), nextPermittedAt \(nextPermittedAt, privacy: .public)"
+    AppDiagnostics.shared.record(
+      .failure(
+        operation: diagnosticOperation(operation),
+        errorCode: attachmentErrorCode(error),
+        visibility: .background,
+        retryAfterSeconds: seconds(selectedDelay),
+        nextAttemptSeconds: seconds(nextAttemptIn)
+      )
     )
   }
 
   static func attachmentStarted(_ stage: AttachmentStage) {
-    let message = attachmentEvent(stage: stage, outcome: "started")
-    logger.info(
-      "\(message, privacy: .public)"
-    )
-    eventStore.append(message)
+    AppDiagnostics.shared.record(.started(operation: stage.operation))
   }
 
   static func attachmentSucceeded(_ stage: AttachmentStage, byteCount: Int64? = nil) {
-    let message = attachmentEvent(stage: stage, outcome: "succeeded", byteCount: byteCount)
-    logger.info("\(message, privacy: .public)")
-    eventStore.append(message)
+    AppDiagnostics.shared.record(.succeeded(operation: stage.operation, byteCount: byteCount))
   }
 
   static func attachmentMissing(_ stage: AttachmentStage) {
-    let message = attachmentEvent(stage: stage, outcome: "missing")
-    logger.error("\(message, privacy: .public)")
-    eventStore.append(message)
+    AppDiagnostics.shared.record(.missing(operation: stage.operation))
   }
 
   static func attachmentFailed(_ stage: AttachmentStage, error: Error) {
-    let code = attachmentErrorCode(error)
-    let message = attachmentEvent(stage: stage, outcome: "failed", errorCode: code)
-    logger.error("\(message, privacy: .public)")
-    eventStore.append(message)
-  }
-
-  static func attachmentEvent(
-    stage: AttachmentStage,
-    outcome: String,
-    errorCode: String? = nil,
-    byteCount: Int64? = nil
-  ) -> String {
-    var fields = [
-      "attachment_download",
-      "stage=\(stage.rawValue)",
-      "outcome=\(outcome)",
-    ]
-    if let errorCode { fields.append("error=\(errorCode)") }
-    if let byteCount { fields.append("bytes=\(byteCount)") }
-    return fields.joined(separator: " ")
+    AppDiagnostics.shared.record(
+      .failure(
+        operation: stage.operation,
+        errorCode: attachmentErrorCode(error),
+        visibility: .background
+      )
+    )
   }
 
   static func attachmentErrorCode(_ error: Error) -> String {
     if let error = error as? CKError {
       return "cloudkit.\(error.errorCode)"
     }
-    if let error = error as? CloudAttachmentStorageError {
-      switch error {
-      case .invalidPath: return "storage.invalidPath"
-      case .invalidRelativePath: return "storage.invalidRelativePath"
-      case .pathOutsideRoot: return "storage.pathOutsideRoot"
-      case .symbolicLinkRoot: return "storage.symbolicLinkRoot"
-      case .symbolicLinkDescendant: return "storage.symbolicLinkDescendant"
-      case .invalidMetadata: return "storage.invalidMetadata"
-      case .staleTransition: return "storage.staleTransition"
-      case .missingPublication: return "storage.missingPublication"
-      case .hashMismatch: return "storage.hashMismatch"
-      case .sizeMismatch: return "storage.sizeMismatch"
-      case .missingPayload: return "storage.missingPayload"
-      }
-    }
-    if let error = error as? CloudRecordError {
-      switch error {
-      case .invalidShadow: return "record.invalidShadow"
-      case .mismatchedShadow: return "record.mismatchedShadow"
-      case .unsupportedValue: return "record.unsupportedValue"
-      case .missingField: return "record.missingField"
-      case .invalidField: return "record.invalidField"
-      case .projectedSnapshot: return "record.projectedSnapshot"
-      case .wrongRecordType: return "record.wrongRecordType"
-      case .invalidAssetDestination: return "record.invalidAssetDestination"
-      case .missingAsset: return "record.missingAsset"
-      }
-    }
-    if let error = error as? CloudTransportError {
-      switch error {
-      case .stateNamespaceMismatch: return "transport.stateNamespaceMismatch"
-      case .invalidEngineState: return "transport.invalidEngineState"
-      case .invalidRecord: return "transport.invalidRecord"
-      case .fetchFailed: return "transport.fetchFailed"
-      case .sendFailed: return "transport.sendFailed"
-      case .wrongBatchConfirmation: return "transport.wrongBatchConfirmation"
-      case .notStarted: return "transport.notStarted"
-      case .syncAlreadyRunning: return "transport.syncAlreadyRunning"
-      }
-    }
-    if let error = error as? SnipLibraryError {
-      switch error {
-      case .emptyContent: return "library.emptyContent"
-      case .snipNotFound: return "library.snipNotFound"
-      case .invalidStore: return "library.invalidStore"
-      case .storeUnavailable: return "library.storeUnavailable"
-      case .requiresMultipleSnips: return "library.requiresMultipleSnips"
-      case .snipChanged: return "library.snipChanged"
-      case .duplicateList: return "library.duplicateList"
-      case .invalidList: return "library.invalidList"
-      case .invalidCommand: return "library.invalidCommand"
-      case .attachmentCopyFailed: return "library.attachmentCopyFailed"
-      case .modeTransitionInProgress: return "library.modeTransitionInProgress"
-      case .readOnlyRecovery: return "library.readOnlyRecovery"
-      case .transferUnsupported: return "library.transferUnsupported"
-      case .transferConflict: return "library.transferConflict"
-      case .recoveryNotFound: return "library.recoveryNotFound"
-      case .recoveryChanged: return "library.recoveryChanged"
-      case .invalidRecoveryChoice: return "library.invalidRecoveryChoice"
-      case .importChanged: return "library.importChanged"
-      case .deviceActionChanged: return "library.deviceActionChanged"
-      }
-    }
-    if let error = error as? CocoaError {
-      return "cocoa.\(error.errorCode)"
-    }
-    return "other.\(String(describing: type(of: error)))"
+    return diagnosticErrorCode(error)
   }
 
   private static func seconds(_ duration: Duration?) -> Double {
     guard let components = duration?.components else { return 0 }
     return Double(components.seconds) + Double(components.attoseconds) / 1e18
+  }
+
+  private static func diagnosticOperation(_ operation: String) -> StaticString {
+    switch operation {
+    case "record fetch": "cloudkit.record_fetch"
+    case "record send": "cloudkit.record_send"
+    case "control fetch": "cloudkit.control_fetch"
+    case "control create zones": "cloudkit.control_create_zones"
+    case "control save": "cloudkit.control_save"
+    case "control delete zones": "cloudkit.control_delete_zones"
+    case "clipboard fetch": "cloudkit.clipboard_fetch"
+    case "clipboard save": "cloudkit.clipboard_save"
+    case "clipboard delete": "cloudkit.clipboard_delete"
+    default: "cloudkit.request"
+    }
   }
 
 }
@@ -174,10 +110,10 @@ enum CloudSyncDiagnostics {
 /// The file contains only stable stage, outcome, error, byte-count, version, and timestamp fields.
 public enum CloudSyncDiagnosticsExport {
   public static func makeShareableFile() throws -> URL {
-    try CloudDiagnosticEventStore.live.makeShareableFile()
+    try AppDiagnosticsExport.makeShareableFile()
   }
 
   public static func clear() throws {
-    try CloudDiagnosticEventStore.live.clear()
+    try AppDiagnosticsExport.clear()
   }
 }

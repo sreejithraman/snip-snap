@@ -6,7 +6,39 @@ import UniformTypeIdentifiers
 @testable import SnipSnap
 @testable import SnipSnapPersistence
 
+private final class MacDiagnosticRecorderProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedEvents: [AppDiagnosticEvent] = []
+
+    var recorder: AppDiagnosticRecorder {
+        AppDiagnosticRecorder { [self] event in
+            lock.withLock { storedEvents.append(event) }
+        }
+    }
+
+    var events: [AppDiagnosticEvent] {
+        lock.withLock { storedEvents }
+    }
+}
+
 final class AppModelTests: StoreBackedTestCase {
+    @MainActor
+    func testStartupErrorUsesStartupDiagnosticCode() throws {
+        let probe = MacDiagnosticRecorderProbe()
+        let model = AppModel(
+            library: try JSONSnipLibrary(fileURL: storeURL()),
+            defaults: defaults(),
+            initialError: "Private file /private/secret.txt",
+            diagnostics: probe.recorder
+        )
+
+        XCTAssertNotNil(model.presentedError)
+        XCTAssertEqual(probe.events.count, 1)
+        XCTAssertEqual(probe.events.first?.operation, "app.startup")
+        XCTAssertEqual(probe.events.first?.errorCode, "presentation.startup")
+        XCTAssertFalse(probe.events.first?.line.contains("secret.txt") ?? true)
+    }
+
     @MainActor
     func testAgentImportUsesInboxWhenQueuedDestinationDisappears() async throws {
         let library = try JSONSnipLibrary(fileURL: storeURL())
@@ -99,6 +131,26 @@ final class AppModelTests: StoreBackedTestCase {
         model.dismissPresentedError()
         XCTAssertNil(model.presentedErrorTitle)
         XCTAssertNil(model.presentedError)
+    }
+
+    @MainActor
+    func testPresentedFailuresUsePrivacySafeDiagnosticCodesOnce() throws {
+        let library = try JSONSnipLibrary(fileURL: storeURL())
+        let probe = MacDiagnosticRecorderProbe()
+        let model = AppModel(
+            library: library,
+            defaults: defaults(),
+            diagnostics: probe.recorder
+        )
+
+        model.presentError(SnipLibraryError.attachmentCopyFailed, operation: "attachment.prepare")
+        model.presentError("Private attachment name", operation: "import.file", diagnosticCode: "import.readFailed")
+        model.dismissPresentedError()
+
+        XCTAssertEqual(probe.events.count, 2)
+        XCTAssertEqual(probe.events.map(\.errorCode), ["library.attachmentCopyFailed", "import.readFailed"])
+        XCTAssertEqual(probe.events.map(\.visibility), [.user, .user])
+        XCTAssertFalse(probe.events.map(\.line).joined().contains("Private attachment name"))
     }
 
     @MainActor
@@ -1463,6 +1515,80 @@ final class AppModelTests: StoreBackedTestCase {
 
         XCTAssertEqual(retried[attachment.id], downloadedURL)
         XCTAssertEqual(requests.count, 2)
+    }
+
+    @MainActor
+    func testEditingDownloadFailureRecordsOneAttachmentPrepareEvent() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("preflight.md")
+        try Data("Attachment".utf8).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let addedResult = try await repository.add(
+            content: "Open attachment",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let added = try XCTUnwrap(addedResult)
+        let attachment = try XCTUnwrap(added.attachments.first)
+        try FileManager.default.removeItem(at: repository.attachmentURL(for: attachment))
+        let handler = MacOptionalCloudSyncHandlerProbe(
+            urls: [:],
+            failuresRemaining: 2
+        )
+        let diagnostics = MacDiagnosticRecorderProbe()
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [added]),
+            defaults: defaults(),
+            cloudSyncHandler: handler,
+            diagnostics: diagnostics.recorder
+        )
+        await model.reload()
+
+        let didBeginEditing = await model.beginEditing(added.id)
+        XCTAssertFalse(didBeginEditing)
+        XCTAssertNotNil(model.presentedError)
+        XCTAssertEqual(diagnostics.events.count, 1)
+        XCTAssertEqual(diagnostics.events.first?.operation, "attachment.prepare")
+        XCTAssertEqual(diagnostics.events.first?.outcome, .failed)
+        XCTAssertEqual(diagnostics.events.first?.visibility, .user)
+        XCTAssertEqual(diagnostics.events.first?.errorCode, "other.UnknownError")
+
+        model.presentError(
+            model.presentedError,
+            operation: "attachment.prepare",
+            diagnosticCode: "other.UnknownError"
+        )
+        XCTAssertEqual(diagnostics.events.count, 1)
+        model.presentError(
+            "A different attachment failure",
+            operation: "attachment.prepare",
+            diagnosticCode: "storage.pathOutsideRoot"
+        )
+        XCTAssertEqual(diagnostics.events.count, 2)
+        XCTAssertEqual(diagnostics.events.last?.errorCode, "storage.pathOutsideRoot")
+        XCTAssertEqual(model.presentedError, "A different attachment failure")
+        model.presentError(
+            "A different attachment failure",
+            operation: "attachment.prepare",
+            diagnosticCode: "storage.pathOutsideRoot"
+        )
+        XCTAssertEqual(diagnostics.events.count, 2)
+        model.dismissPresentedError()
+        model.presentError(
+            SnipLibraryError.attachmentCopyFailed,
+            operation: "attachment.prepare"
+        )
+        XCTAssertEqual(diagnostics.events.count, 3)
+
+        do {
+            _ = try await model.exportArchive()
+            XCTFail("Expected backup export to preserve the attachment preparation failure")
+        } catch let error as ArchiveAttachmentPreparationError {
+            XCTAssertEqual(
+                diagnosticErrorCode(error.underlying),
+                "other.MacAttachmentPreparationError"
+            )
+        }
     }
 
     @MainActor

@@ -753,8 +753,12 @@ private struct SnipCommands: Commands {
                     try await Task.detached {
                         try JSONSnipArchiveTransfer.write(archive, to: url)
                     }.value
+                } catch is CancellationError {
+                    return
+                } catch let error as ArchiveAttachmentPreparationError {
+                    model.presentError(error.underlying, operation: "attachment.prepare")
                 } catch {
-                    model.presentError(error)
+                    model.presentError(error, operation: "backup.export")
                 }
             }
         }

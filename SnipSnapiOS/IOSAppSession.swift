@@ -425,8 +425,10 @@ final class IOSShareImportCoordinator {
 
     private func report(_ importFailures: Int) {
         if importFailures > 0 {
-            model.errorMessage = String(
-                localized: "Some shared items couldn’t be added. Snip Snap will try again when you reopen the app."
+            model.presentError(
+                String(localized: "Some shared items couldn’t be added. Snip Snap will try again when you reopen the app."),
+                operation: "share.import",
+                diagnosticCode: "import.partialFailure"
             )
         }
     }
