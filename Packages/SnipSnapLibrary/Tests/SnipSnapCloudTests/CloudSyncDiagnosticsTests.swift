@@ -30,6 +30,12 @@ final class CloudSyncDiagnosticsTests: XCTestCase {
       "storage.hashMismatch"
     )
     XCTAssertEqual(
+      CloudSyncDiagnostics.attachmentErrorCode(
+        CloudAttachmentStorageError.symbolicLinkDescendant
+      ),
+      "storage.symbolicLinkDescendant"
+    )
+    XCTAssertEqual(
       CloudSyncDiagnostics.attachmentErrorCode(CloudRecordError.missingAsset),
       "record.missingAsset"
     )
