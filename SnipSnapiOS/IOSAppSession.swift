@@ -44,6 +44,7 @@ struct IOSLibraryStartup {
     let recoveryScope: SnipRecoveryScope?
     let syncModeStore: SnipSyncModeStore?
     let syncModeRootURL: URL
+    let attachmentCacheRootURL: URL?
 }
 
 @MainActor

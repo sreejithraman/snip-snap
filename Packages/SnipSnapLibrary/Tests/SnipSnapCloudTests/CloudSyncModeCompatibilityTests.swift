@@ -198,4 +198,55 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(try Data(contentsOf: sentinel), sentinelBytes)
     }
 
+    func testRecoveryRemovesCacheContainerForADeletingStore() throws {
+        let parent = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let root = parent.appendingPathComponent("SyncMode", isDirectory: true)
+        let cacheBase = parent.appendingPathComponent("Caches", isDirectory: true)
+        _ = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            attachmentCacheRootURL: cacheBase,
+            defaultSyncProtocol: .legacyTextV1
+        )
+        let doomedID = UUID()
+        let relativeRoot = "stores/localOnly-\(doomedID.uuidString.lowercased())"
+        let doomedStoreRoot = root.appendingPathComponent(relativeRoot, isDirectory: true)
+        let doomedCacheRoot = cacheBase.appendingPathComponent(
+            doomedID.uuidString.lowercased(),
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: doomedStoreRoot,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: doomedCacheRoot,
+            withIntermediateDirectories: true
+        )
+        try Data("cached bytes".utf8).write(
+            to: doomedCacheRoot.appendingPathComponent("sentinel")
+        )
+        try mutateManifest(at: root.appendingPathComponent("activation.json")) { manifest in
+            var stores = try XCTUnwrap(manifest["stores"] as? [[String: Any]])
+            stores.append([
+                "id": doomedID.uuidString,
+                "kind": SyncModeStoreKind.localOnly.rawValue,
+                "relativeRoot": relativeRoot,
+                "syncProtocol": SyncModeSyncProtocol.legacyTextV1.rawValue,
+                "revision": 0,
+                "lifecycle": SyncModeStoreLifecycle.deleting.rawValue,
+            ])
+            manifest["stores"] = stores
+        }
+
+        _ = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            attachmentCacheRootURL: cacheBase,
+            defaultSyncProtocol: .legacyTextV1
+        )
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: doomedStoreRoot.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: doomedCacheRoot.path))
+    }
+
 }

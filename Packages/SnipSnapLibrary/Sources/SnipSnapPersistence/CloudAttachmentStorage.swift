@@ -130,6 +130,31 @@ package struct CloudAttachmentCacheEntry: Equatable, Sendable {
   package let lastAccessedAt: Date
 }
 
+/// The transport's claim about a file it placed in the attachment staging directory.
+/// Cache installation treats every field as untrusted until it matches the requested
+/// payload and the staged file's actual bytes.
+package struct CloudAttachmentCacheDownload: Equatable, Sendable {
+  package let payloadIdentity: CloudTextStorageIdentity
+  package let field: String
+  package let fileURL: URL
+  package let byteCount: Int64
+  package let sha256: Data
+
+  package init(
+    payloadIdentity: CloudTextStorageIdentity,
+    field: String,
+    fileURL: URL,
+    byteCount: Int64,
+    sha256: Data
+  ) {
+    self.payloadIdentity = payloadIdentity
+    self.field = field
+    self.fileURL = fileURL
+    self.byteCount = byteCount
+    self.sha256 = sha256
+  }
+}
+
 package struct CloudAttachmentStorageSnapshot: Equatable, Sendable {
   package let publications: [CloudAttachmentPublication]
   package let cleanups: [CloudAttachmentCleanup]

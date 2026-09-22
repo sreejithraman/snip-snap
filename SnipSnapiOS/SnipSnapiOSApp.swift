@@ -32,6 +32,7 @@ struct SnipSnapiOSApp: App {
         if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_ENABLE"] == "1" {
             cloudServices = SnipSnapCloudAppAssembly.simulatedLocalOnlyServices(
                 rootURL: startup.syncModeRootURL,
+                attachmentCacheRootURL: startup.attachmentCacheRootURL,
                 sourceLibrary: startup.sourceLibrary
             )
         } else if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1" {
@@ -42,6 +43,7 @@ struct SnipSnapiOSApp: App {
         } else {
             cloudServices = SnipSnapCloudAppAssembly.services(
                 rootURL: startup.syncModeRootURL,
+                attachmentCacheRootURL: startup.attachmentCacheRootURL,
                 sourceLibrary: startup.sourceLibrary,
                 syncModeStore: startup.syncModeStore,
                 containerIdentifier: Bundle.main.object(
@@ -52,6 +54,7 @@ struct SnipSnapiOSApp: App {
 #else
         cloudServices = SnipSnapCloudAppAssembly.services(
             rootURL: startup.syncModeRootURL,
+            attachmentCacheRootURL: startup.attachmentCacheRootURL,
             sourceLibrary: startup.sourceLibrary,
             syncModeStore: startup.syncModeStore,
             containerIdentifier: Bundle.main.object(
@@ -135,12 +138,14 @@ struct SnipSnapiOSApp: App {
                 syncModeStore: nil,
                 syncModeRootURL: FileManager.default.temporaryDirectory.appendingPathComponent(
                     "SnipSnap-Recovery-UI-Test-SyncMode", isDirectory: true
-                )
+                ),
+                attachmentCacheRootURL: nil
             )
         }
 #endif
         let storeURL: URL
         let syncModeRootURL: URL
+        let attachmentCacheRootURL: URL?
         let shareImports: ShareImportStore?
 #if DEBUG
         var uiTestShareStoreUnavailable = false
@@ -161,6 +166,9 @@ struct SnipSnapiOSApp: App {
         if let sharedRootURL = uiTestSharedRootURL ?? SnipSnapAppGroupContainer.resolve()?.url {
             storeURL = ShareImportStore.storeURL(in: sharedRootURL)
             syncModeRootURL = sharedRootURL.appendingPathComponent("SyncMode", isDirectory: true)
+            attachmentCacheRootURL = SnipSnapAppGroupContainer.cloudAttachmentCacheRootURL(
+                in: sharedRootURL
+            )
             shareImports = ShareImportStore(sharedRootURL: sharedRootURL)
 #if DEBUG
             if uiTestSharedRootURL == nil {
@@ -175,6 +183,7 @@ struct SnipSnapiOSApp: App {
             syncModeRootURL = storeURL.deletingLastPathComponent()
                 .appendingPathComponent("SyncMode", isDirectory: true)
             shareImports = nil
+            attachmentCacheRootURL = nil
         }
 
         do {
@@ -205,6 +214,7 @@ struct SnipSnapiOSApp: App {
             let assembly = SnipLibraryAssembly(
                 library: sourceLibrary,
                 syncModeRootURL: syncModeRootURL,
+                attachmentCacheRootURL: attachmentCacheRootURL,
                 initializeSyncModeStore: initializeSyncModeStore
             )
             return IOSLibraryStartup(
@@ -218,13 +228,15 @@ struct SnipSnapiOSApp: App {
                 seedsCopyShareFixtures: seedsCopyShareFixtures,
                 recoveryScope: assembly.recoveryScope,
                 syncModeStore: assembly.syncModeStore,
-                syncModeRootURL: syncModeRootURL
+                syncModeRootURL: syncModeRootURL,
+                attachmentCacheRootURL: attachmentCacheRootURL
             )
         } catch {
             let sourceLibrary = SwiftDataSnipLibrary.unavailable(storeURL: storeURL)
             let assembly = SnipLibraryAssembly(
                 library: sourceLibrary,
-                syncModeRootURL: syncModeRootURL
+                syncModeRootURL: syncModeRootURL,
+                attachmentCacheRootURL: attachmentCacheRootURL
             )
             return IOSLibraryStartup(
                 library: assembly.library,
@@ -237,7 +249,8 @@ struct SnipSnapiOSApp: App {
                 seedsCopyShareFixtures: false,
                 recoveryScope: assembly.recoveryScope,
                 syncModeStore: assembly.syncModeStore,
-                syncModeRootURL: syncModeRootURL
+                syncModeRootURL: syncModeRootURL,
+                attachmentCacheRootURL: attachmentCacheRootURL
             )
         }
     }

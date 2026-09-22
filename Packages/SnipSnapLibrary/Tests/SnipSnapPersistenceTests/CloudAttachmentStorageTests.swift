@@ -7,6 +7,43 @@ import XCTest
 @testable import SnipSnapPersistence
 
 final class CloudAttachmentStorageTests: XCTestCase {
+  func testSeparateManifestsSharingACacheBaseDoNotDeleteEachOthersCaches() async throws {
+    let parent = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: parent) }
+    let cacheRoot = parent.appendingPathComponent("Cache", isDirectory: true)
+    let first = try SwiftDataSyncModePersistence(
+      rootURL: parent.appendingPathComponent("FirstManifest", isDirectory: true),
+      attachmentCacheRootURL: cacheRoot
+    )
+    let firstStoreID = try await first.snapshot().activeStore.id
+    let firstCache = try XCTUnwrap(
+      SwiftDataSyncModePersistence.cacheRootURL(base: cacheRoot, storeID: firstStoreID)
+    )
+    try FileManager.default.createDirectory(at: firstCache, withIntermediateDirectories: true)
+    let firstMarker = firstCache.appendingPathComponent("first")
+    try Data("first cached bytes".utf8).write(to: firstMarker)
+
+    let second = try SwiftDataSyncModePersistence(
+      rootURL: parent.appendingPathComponent("SecondManifest", isDirectory: true),
+      attachmentCacheRootURL: cacheRoot
+    )
+    let secondStoreID = try await second.snapshot().activeStore.id
+    let secondCache = try XCTUnwrap(
+      SwiftDataSyncModePersistence.cacheRootURL(base: cacheRoot, storeID: secondStoreID)
+    )
+    try FileManager.default.createDirectory(at: secondCache, withIntermediateDirectories: true)
+    let secondMarker = secondCache.appendingPathComponent("second")
+    try Data("second cached bytes".utf8).write(to: secondMarker)
+
+    _ = try SwiftDataSyncModePersistence(
+      rootURL: parent.appendingPathComponent("FirstManifest", isDirectory: true),
+      attachmentCacheRootURL: cacheRoot
+    )
+
+    XCTAssertTrue(FileManager.default.fileExists(atPath: firstMarker.path))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: secondMarker.path))
+  }
+
   func testPreparationPersistsOpaquePayloadIdentityBeforeUploadAndReusesItAfterReopen() async throws {
     let root = temporaryDirectory()
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -488,13 +525,18 @@ final class CloudAttachmentStorageTests: XCTestCase {
       at: staged.deletingLastPathComponent(), withIntermediateDirectories: true
     )
     try bytes.write(to: staged)
-    let cached = try await library.installCloudAttachmentCacheFile(
+    let cached = try await library.installCloudAttachmentDownload(
       namespaceKey: namespace,
       attachmentID: attachmentID,
       expectedPayloadIdentity: payload,
-      stagedURL: staged,
-      expectedByteCount: Int64(bytes.count),
-      expectedSHA256: Data(SHA256.hash(data: bytes)),
+      expectedField: "asset",
+      download: CloudAttachmentCacheDownload(
+        payloadIdentity: payload,
+        field: "asset",
+        fileURL: staged,
+        byteCount: Int64(bytes.count),
+        sha256: Data(SHA256.hash(data: bytes))
+      ),
       maximumBytes: 1_024,
       now: .distantPast
     )
@@ -502,6 +544,16 @@ final class CloudAttachmentStorageTests: XCTestCase {
     XCTAssertEqual(
       try cached.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup,
       true
+    )
+
+    let namespaceRoot = cached.deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let actualNamespaceRoot = root.appendingPathComponent("AliasedCacheNamespace")
+    try FileManager.default.moveItem(at: namespaceRoot, to: actualNamespaceRoot)
+    try FileManager.default.createSymbolicLink(
+      at: namespaceRoot,
+      withDestinationURL: actualNamespaceRoot
     )
 
     try await library.quarantineCloudNamespaceState(namespaceKey: namespace)
@@ -515,6 +567,7 @@ final class CloudAttachmentStorageTests: XCTestCase {
     XCTAssertTrue(cloudState.cleanups.isEmpty)
     XCTAssertTrue(cloudState.cacheEntries.isEmpty)
     XCTAssertFalse(FileManager.default.fileExists(atPath: cached.path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: actualNamespaceRoot.path))
   }
 
   func testCacheInstallDoesNotRequireDirectoryReadAccessToAStagedFile() async throws {
@@ -582,13 +635,18 @@ final class CloudAttachmentStorageTests: XCTestCase {
     if directory >= 0 { close(directory) }
     XCTAssertEqual(directory, -1)
 
-    let cached = try await library.installCloudAttachmentCacheFile(
+    let cached = try await library.installCloudAttachmentDownload(
       namespaceKey: namespace,
       attachmentID: attachmentID,
       expectedPayloadIdentity: payload,
-      stagedURL: staged,
-      expectedByteCount: Int64(bytes.count),
-      expectedSHA256: metadata.sha256,
+      expectedField: "asset",
+      download: CloudAttachmentCacheDownload(
+        payloadIdentity: payload,
+        field: "asset",
+        fileURL: staged,
+        byteCount: Int64(bytes.count),
+        sha256: metadata.sha256
+      ),
       maximumBytes: 1_024,
       now: .distantPast
     )
@@ -596,7 +654,166 @@ final class CloudAttachmentStorageTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: cached), bytes)
   }
 
-  func testStagedFileValidationTrustsAppOwnedDirectoryAliases() throws {
+  func testLegacyDownloadMigratesToPurgeableCacheAndEvictionBecomesCacheMiss() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let storeURL = root.appendingPathComponent("store")
+    var legacyLibrary: SwiftDataSnipLibrary? = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let added = try await legacyLibrary!.perform(
+      .add(
+        content: "remote attachment",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [],
+        requestID: UUID(),
+        now: .distantPast
+      ),
+      sortedBy: .manual
+    )
+    guard case .add(.added(let snipID)) = added.outcome else {
+      return XCTFail("Expected a saved snip")
+    }
+    let namespace = CloudSyncNamespaceKey(rawValue: "cache-location-migration")
+    let attachmentID = UUID()
+    let payload = CloudTextStorageIdentity(
+      zoneName: "payload", ownerName: "owner", recordName: UUID().uuidString.lowercased()
+    )
+    let bytes = Data("re-downloadable legacy cache".utf8)
+    let digest = Data(SHA256.hash(data: bytes))
+    let metadata = CloudAttachmentMetadataValue(
+      attachmentID: attachmentID,
+      snipID: snipID,
+      position: 0,
+      fileName: "cached.txt",
+      contentType: "text/plain",
+      byteCount: Int64(bytes.count),
+      sha256: digest,
+      payloadIdentity: payload
+    )
+    try await legacyLibrary!.commitCloudAttachmentTransitions(
+      namespaceKey: namespace,
+      transitions: [.remoteMetadataAccepted(
+        metadata: metadata,
+        metadataIdentity: CloudTextStorageIdentity(
+          zoneName: "data", ownerName: "owner", recordName: "a-\(attachmentID)"
+        ),
+        shadowData: Data("shadow".utf8),
+        systemFields: Data("fields".utf8)
+      )]
+    )
+    let stagingRoot = try await legacyLibrary!.cloudAttachmentStagingRoot(namespaceKey: namespace)
+    let staged = stagingRoot.appendingPathComponent("download/payload")
+    try FileManager.default.createDirectory(
+      at: staged.deletingLastPathComponent(), withIntermediateDirectories: true
+    )
+    try bytes.write(to: staged)
+    let legacyURL = try await legacyLibrary!.installCloudAttachmentDownload(
+      namespaceKey: namespace,
+      attachmentID: attachmentID,
+      expectedPayloadIdentity: payload,
+      expectedField: "asset",
+      download: CloudAttachmentCacheDownload(
+        payloadIdentity: payload,
+        field: "asset",
+        fileURL: staged,
+        byteCount: Int64(bytes.count),
+        sha256: digest
+      ),
+      maximumBytes: 1_024,
+      now: .distantPast
+    )
+    XCTAssertTrue(legacyURL.path.contains("/Attachments/CloudDownloads/"))
+    legacyLibrary = nil
+
+    let cacheContainer = root
+      .appendingPathComponent("Group", isDirectory: true)
+      .appendingPathComponent("Library", isDirectory: true)
+      .appendingPathComponent("Caches", isDirectory: true)
+      .appendingPathComponent("SnipSnap", isDirectory: true)
+      .appendingPathComponent("CloudAttachments", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: cacheContainer.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try Data("temporarily blocks cache creation".utf8).write(to: cacheContainer)
+    let library = try SwiftDataSnipLibrary(
+      storeURL: storeURL,
+      attachmentCacheRootURL: cacheContainer
+    )
+    let compatible = try await library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(compatible.attachmentURLs[attachmentID], legacyURL)
+
+    try await library.sweepCloudAttachmentCache(namespaceKey: namespace, maximumBytes: 1_024)
+    let afterFailedMigration = try await library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(afterFailedMigration.attachmentURLs[attachmentID], legacyURL)
+    XCTAssertEqual(try Data(contentsOf: legacyURL), bytes)
+
+    try FileManager.default.removeItem(at: cacheContainer)
+    let legacyRelativePath = legacyURL.pathComponents.suffix(3).joined(separator: "/")
+    let interruptedDestination = cacheContainer
+      .appendingPathComponent("CloudDownloads", isDirectory: true)
+      .appendingPathComponent(CloudAttachmentCacheFiles.namespaceDigest(namespace.rawValue))
+      .appendingPathComponent(legacyRelativePath)
+    try FileManager.default.createDirectory(
+      at: interruptedDestination.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try Data("partial interrupted copy".utf8).write(to: interruptedDestination)
+    try await library.sweepCloudAttachmentCache(namespaceKey: namespace, maximumBytes: 1_024)
+
+    let migratedStorage = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespace)
+    let migratedURL = try XCTUnwrap(migratedStorage.cacheEntries.first?.fileURL)
+    XCTAssertTrue(migratedURL.path.hasPrefix(cacheContainer.path + "/"))
+    XCTAssertEqual(try Data(contentsOf: migratedURL), bytes)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: legacyURL.path))
+    XCTAssertEqual(
+      try migratedURL.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup,
+      true
+    )
+    let migratedSnapshot = try await library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(migratedSnapshot.attachmentURLs[attachmentID], migratedURL)
+
+    let namespaceRoot = migratedURL
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let actualNamespaceRoot = root.appendingPathComponent(
+      "ActualPurgeableNamespace",
+      isDirectory: true
+    )
+    try FileManager.default.moveItem(at: namespaceRoot, to: actualNamespaceRoot)
+    try FileManager.default.createSymbolicLink(
+      at: namespaceRoot,
+      withDestinationURL: actualNamespaceRoot
+    )
+    let aliasedSnapshot = try await library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(aliasedSnapshot.attachmentURLs[attachmentID], migratedURL)
+    XCTAssertEqual(try Data(contentsOf: migratedURL), bytes)
+    try await library.sweepCloudAttachmentCache(namespaceKey: namespace, maximumBytes: 1_024)
+    let touchedThroughAlias = try await library.touchCloudAttachmentCache(
+      namespaceKey: namespace,
+      attachmentID: attachmentID,
+      now: Date(timeIntervalSince1970: 1)
+    )
+    XCTAssertEqual(touchedThroughAlias, migratedURL)
+
+    try FileManager.default.removeItem(at: migratedURL)
+    let evicted = try await library.touchCloudAttachmentCache(
+      namespaceKey: namespace,
+      attachmentID: attachmentID,
+      now: Date(timeIntervalSince1970: 1)
+    )
+    XCTAssertNil(evicted)
+    let afterEviction = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespace)
+    XCTAssertTrue(afterEviction.cacheEntries.isEmpty)
+    XCTAssertEqual(afterEviction.publications.map(\.metadata.attachmentID), [attachmentID])
+    let missingBytes = try await library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertNil(missingBytes.attachmentURLs[attachmentID])
+  }
+
+  func testStagedFileValidationTrustsOnlyTheAppOwnedNamespaceRootAlias() throws {
     let root = temporaryDirectory()
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -606,11 +823,12 @@ final class CloudAttachmentStorageTests: XCTestCase {
     )
     let namespace = "app-owned-directory-alias"
     let stagingRoot = try files.stagingRoot(namespaceKey: namespace)
-    let actualStagingRoot = root.appendingPathComponent("ActualStaging", isDirectory: true)
-    try FileManager.default.moveItem(at: stagingRoot, to: actualStagingRoot)
+    let namespaceRoot = stagingRoot.deletingLastPathComponent()
+    let actualNamespaceRoot = root.appendingPathComponent("ActualNamespace", isDirectory: true)
+    try FileManager.default.moveItem(at: namespaceRoot, to: actualNamespaceRoot)
     try FileManager.default.createSymbolicLink(
-      at: stagingRoot,
-      withDestinationURL: actualStagingRoot
+      at: namespaceRoot,
+      withDestinationURL: actualNamespaceRoot
     )
     let bytes = Data("downloaded through an app-owned alias".utf8)
     let staged = stagingRoot.appendingPathComponent("cloud-asset")
@@ -624,6 +842,144 @@ final class CloudAttachmentStorageTests: XCTestCase {
         expectedSHA256: Data(SHA256.hash(data: bytes))
       )
     )
+  }
+
+  func testStagedFileValidationRejectsAStagingDirectorySymlink() throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let files = CloudAttachmentCacheFiles(
+      attachmentRootURL: root.appendingPathComponent("Attachments", isDirectory: true),
+      lockURL: root.appendingPathComponent("snips.store.lock", isDirectory: false)
+    )
+    let namespace = "staging-descendant-alias"
+    let stagingRoot = try files.stagingRoot(namespaceKey: namespace)
+    let outside = root.appendingPathComponent("OutsideStaging", isDirectory: true)
+    try FileManager.default.moveItem(at: stagingRoot, to: outside)
+    try FileManager.default.createSymbolicLink(at: stagingRoot, withDestinationURL: outside)
+    let staged = stagingRoot.appendingPathComponent("cloud-asset")
+    let bytes = Data("must not escape through staging".utf8)
+    try bytes.write(to: staged)
+
+    XCTAssertThrowsError(
+      try files.validateStagedFile(
+        staged,
+        namespaceKey: namespace,
+        expectedByteCount: Int64(bytes.count),
+        expectedSHA256: Data(SHA256.hash(data: bytes))
+      )
+    ) { error in
+      XCTAssertEqual(error as? CloudAttachmentStorageError, .symbolicLinkDescendant)
+    }
+    files.discardStagedFileIfSafe(staged, namespaceKey: namespace)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: staged.path))
+  }
+
+  func testCanonicalStagedReceiptRejectsAnIntermediateSymlinkBelowAliasedRoot() throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let files = CloudAttachmentCacheFiles(
+      attachmentRootURL: root.appendingPathComponent("Attachments", isDirectory: true),
+      lockURL: root.appendingPathComponent("snips.store.lock", isDirectory: false)
+    )
+    let namespace = "canonical-receipt-descendant-alias"
+    let stagingRoot = try files.stagingRoot(namespaceKey: namespace)
+    let namespaceRoot = stagingRoot.deletingLastPathComponent()
+    let actualNamespaceRoot = root.appendingPathComponent("ActualNamespace", isDirectory: true)
+    try FileManager.default.moveItem(at: namespaceRoot, to: actualNamespaceRoot)
+    try FileManager.default.createSymbolicLink(
+      at: namespaceRoot,
+      withDestinationURL: actualNamespaceRoot
+    )
+    let actualStagingRoot = actualNamespaceRoot.appendingPathComponent(
+      "Staging", isDirectory: true
+    )
+    let target = actualStagingRoot.appendingPathComponent("Target", isDirectory: true)
+    try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+    let link = actualStagingRoot.appendingPathComponent("Link", isDirectory: true)
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+    let staged = link.appendingPathComponent("payload")
+    let bytes = Data("must retain descendant symlink evidence".utf8)
+    try bytes.write(to: staged)
+
+    XCTAssertThrowsError(
+      try files.validateStagedFile(
+        staged,
+        namespaceKey: namespace,
+        expectedByteCount: Int64(bytes.count),
+        expectedSHA256: Data(SHA256.hash(data: bytes))
+      )
+    ) { error in
+      XCTAssertEqual(error as? CloudAttachmentStorageError, .symbolicLinkDescendant)
+    }
+    files.discardStagedFileIfSafe(staged, namespaceKey: namespace)
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: target.appendingPathComponent("payload").path)
+    )
+  }
+
+  func testStagedCleanupRefusesADirectoryReceipt() throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let files = CloudAttachmentCacheFiles(
+      attachmentRootURL: root.appendingPathComponent("Attachments", isDirectory: true),
+      lockURL: root.appendingPathComponent("snips.store.lock", isDirectory: false)
+    )
+    let namespace = "directory-receipt"
+    let stagedDirectory = try files.stagingRoot(namespaceKey: namespace)
+      .appendingPathComponent("download", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: stagedDirectory,
+      withIntermediateDirectories: true
+    )
+    let otherDownload = stagedDirectory.appendingPathComponent("other-download")
+    try Data("must survive".utf8).write(to: otherDownload)
+
+    files.discardStagedFileIfSafe(stagedDirectory, namespaceKey: namespace)
+
+    XCTAssertEqual(try Data(contentsOf: otherDownload), Data("must survive".utf8))
+  }
+
+  func testUnavailableStoreStillDiscardsItsStagedDownload() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let library = SwiftDataSnipLibrary.unavailable(storeURL: root.appendingPathComponent("store"))
+    let namespace = CloudSyncNamespaceKey(rawValue: "unavailable-store")
+    let stagingRoot = try await library.cloudAttachmentStagingRoot(namespaceKey: namespace)
+    let staged = stagingRoot.appendingPathComponent("download/payload")
+    try FileManager.default.createDirectory(
+      at: staged.deletingLastPathComponent(), withIntermediateDirectories: true
+    )
+    let bytes = Data("discard me".utf8)
+    try bytes.write(to: staged)
+    let payload = CloudTextStorageIdentity(
+      zoneName: "payload", ownerName: "owner", recordName: "record"
+    )
+
+    do {
+      _ = try await library.installCloudAttachmentDownload(
+        namespaceKey: namespace,
+        attachmentID: UUID(),
+        expectedPayloadIdentity: payload,
+        expectedField: "asset",
+        download: CloudAttachmentCacheDownload(
+          payloadIdentity: payload,
+          field: "asset",
+          fileURL: staged,
+          byteCount: Int64(bytes.count),
+          sha256: Data(SHA256.hash(data: bytes))
+        ),
+        maximumBytes: 1_024,
+        now: .distantPast
+      )
+      XCTFail("Expected an unavailable store")
+    } catch {
+      XCTAssertEqual(error as? SnipLibraryError, .storeUnavailable)
+    }
+    XCTAssertFalse(FileManager.default.fileExists(atPath: staged.path))
   }
 
   func testCacheInstallTrustsAppOwnedDirectoryAliases() throws {

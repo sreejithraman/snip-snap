@@ -210,6 +210,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     uuidString: "7b4f8730-42bd-4b56-9117-cc7db03ec46e"
   )!
   private let rootURL: URL
+  private let attachmentCacheRootURL: URL?
   private let sourceLibrary: any SnipLibrary
   private let cloudScope: String
   private var accountLineage: String
@@ -228,6 +229,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
 
   package init(
     rootURL: URL,
+    attachmentCacheRootURL: URL? = nil,
     sourceLibrary: any SnipLibrary,
     syncModeStore: SnipSyncModeStore?,
     cloudScope: String,
@@ -243,6 +245,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     automaticResultHandler: @escaping @Sendable (SnipSnapCloudSyncResult) -> Void = { _ in }
   ) {
     self.rootURL = rootURL
+    self.attachmentCacheRootURL = attachmentCacheRootURL
     self.sourceLibrary = sourceLibrary
     persistence = syncModeStore?.persistence
     self.cloudScope = cloudScope
@@ -291,7 +294,10 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     } else {
       let manifest = rootURL.appendingPathComponent("activation.json", isDirectory: false)
       activePersistence = FileManager.default.fileExists(atPath: manifest.path)
-        ? try SwiftDataSyncModePersistence(rootURL: rootURL) : nil
+        ? try SwiftDataSyncModePersistence(
+          rootURL: rootURL,
+          attachmentCacheRootURL: attachmentCacheRootURL
+        ) : nil
     }
     try await activePersistence?.cancelPendingICloudEnable()
     persistence = activePersistence
@@ -535,7 +541,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
           transport: makeRecordTransport(CloudCollectionSyncContext(namespace: namespace,
             metadataZone: descriptor.metadataZone,
             payloadZone: descriptor.payloadZone)),
-          maximumCacheBytes: 512 * 1_024 * 1_024
+          maximumCacheBytes: CloudAttachmentTransferCoordinator.standardMaximumCacheBytes
         )
       },
       ownerName: ownerName, reservedZones: reservedZones, operationGate: operationGate,
@@ -556,7 +562,10 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     if let persistence {
       value = persistence
     } else {
-      value = try SwiftDataSyncModePersistence(rootURL: rootURL)
+      value = try SwiftDataSyncModePersistence(
+        rootURL: rootURL,
+        attachmentCacheRootURL: attachmentCacheRootURL
+      )
       persistence = value
     }
     let marker = rootURL.appendingPathComponent("local-source-imported", isDirectory: false)

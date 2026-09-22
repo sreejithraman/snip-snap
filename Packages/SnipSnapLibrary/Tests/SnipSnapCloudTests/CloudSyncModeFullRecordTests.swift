@@ -379,6 +379,198 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertNotNil(remoteMetadata)
     }
 
+    func testOptOutRedownloadsAnEvictedAttachmentBeforeMakingTheLocalCopy() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let firstBytes = Data(repeating: 0xA1, count: 32)
+        let secondBytes = Data(repeating: 0xB2, count: 32)
+        let firstSourceURL = root.appendingPathComponent("first.txt")
+        let secondSourceURL = root.appendingPathComponent("second.txt")
+        try firstBytes.write(to: firstSourceURL)
+        try secondBytes.write(to: secondSourceURL)
+        let dataZone = CloudZoneID(name: "metadata", ownerName: "owner")
+        let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
+        let namespace = CloudSyncNamespace(
+            cloudScope: "private",
+            accountLineage: "account",
+            generation: UUID(),
+            zones: [dataZone, payloadZone]
+        )
+        let server = FakeCloudServer()
+        let cacheRoot = root.appendingPathComponent("AppGroup/Library/Caches/CloudAttachments")
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            attachmentCacheRootURL: cacheRoot
+        )
+        let library = try await persistence.activeLibrary()
+        let added = try await library.perform(
+            .add(
+                content: "attachment from another device",
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inbox.id,
+                attachmentURLs: [firstSourceURL, secondSourceURL],
+                requestID: UUID(),
+                now: .distantPast
+            ),
+            sortedBy: .manual
+        )
+        let attachments = try XCTUnwrap(added.snapshot.snips.first?.attachments)
+        XCTAssertEqual(attachments.count, 2)
+        let firstAttachmentID = attachments[0].id
+        let secondAttachmentID = attachments[1].id
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: dataZone,
+            payloadZone: payloadZone,
+            makeTransport: {
+                FakeCloudRecordTransport(server: server, namespace: namespace)
+            }
+        )
+        let enabled = try await coordinator.enableOrRetry()
+        XCTAssertEqual(enabled.state, .on)
+        let storage = try await persistence.snapshot()
+        let activeLibrary = try await persistence.libraryForTransition(
+            storeID: storage.activeStore.id
+        )
+        let beforeDownload = await activeLibrary.snapshot(sortedBy: .manual)
+        let firstDurableURL = try XCTUnwrap(beforeDownload.attachmentURLs[firstAttachmentID])
+        let secondDurableURL = try XCTUnwrap(beforeDownload.attachmentURLs[secondAttachmentID])
+        let attachmentStorage = try await activeLibrary.cloudAttachmentStorageSnapshot(
+            namespaceKey: namespace.namespaceKey
+        )
+        let publication = try XCTUnwrap(attachmentStorage.publications.first(where: {
+            $0.metadata.attachmentID == secondAttachmentID
+        }))
+        let stagingRoot = try await activeLibrary.cloudAttachmentStagingRoot(
+            namespaceKey: namespace.namespaceKey
+        )
+        let staged = stagingRoot.appendingPathComponent("test-download/payload")
+        try FileManager.default.createDirectory(
+            at: staged.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try secondBytes.write(to: staged)
+        _ = try await activeLibrary.installCloudAttachmentDownload(
+            namespaceKey: namespace.namespaceKey,
+            attachmentID: secondAttachmentID,
+            expectedPayloadIdentity: publication.metadata.payloadIdentity,
+            expectedField: CloudAttachmentRecordCodec.assetField,
+            download: CloudAttachmentCacheDownload(
+                payloadIdentity: publication.metadata.payloadIdentity,
+                field: CloudAttachmentRecordCodec.assetField,
+                fileURL: staged,
+                byteCount: Int64(secondBytes.count),
+                sha256: Data(SHA256.hash(data: secondBytes))
+            ),
+            maximumBytes: Int64(secondBytes.count),
+            now: .distantPast
+        )
+        let cachedSnapshot = await activeLibrary.snapshot(sortedBy: .manual)
+        let cached = try XCTUnwrap(cachedSnapshot.attachmentURLs[secondAttachmentID])
+        XCTAssertTrue(cached.path.hasPrefix(cacheRoot.path + "/"))
+        try await activeLibrary.reconcileCloudAttachments(
+            namespaceKey: namespace.namespaceKey,
+            metadataZoneName: dataZone.name,
+            metadataOwnerName: dataZone.ownerName,
+            payloadZoneName: payloadZone.name,
+            payloadOwnerName: payloadZone.ownerName
+        )
+        try FileManager.default.removeItem(at: firstDurableURL)
+        try FileManager.default.removeItem(at: secondDurableURL)
+        let beforeOptOut = await activeLibrary.snapshot(sortedBy: .manual)
+        XCTAssertNil(beforeOptOut.attachmentURLs[firstAttachmentID])
+        XCTAssertEqual(beforeOptOut.attachmentURLs[secondAttachmentID], cached)
+
+        let downloads = CloudAttachmentTransferCoordinator(
+            library: activeLibrary,
+            namespace: namespace,
+            payloadZone: payloadZone,
+            transport: FakeCloudRecordTransport(server: server, namespace: namespace),
+            maximumCacheBytes: Int64(firstBytes.count)
+        )
+        let recoveredMissingBytes = try await downloads.preserveAllAttachmentsForLocalCopy()
+        XCTAssertTrue(recoveredMissingBytes)
+        let preserved = await activeLibrary.snapshot(sortedBy: .manual)
+        let preservedFirst = try XCTUnwrap(preserved.attachmentURLs[firstAttachmentID])
+        let preservedSecond = try XCTUnwrap(preserved.attachmentURLs[secondAttachmentID])
+        XCTAssertEqual(try Data(contentsOf: preservedFirst), firstBytes)
+        XCTAssertEqual(try Data(contentsOf: preservedSecond), secondBytes)
+        XCTAssertFalse(preservedFirst.path.contains("CloudDownloads"))
+        XCTAssertFalse(preservedSecond.path.contains("CloudDownloads"))
+
+        let optedOut = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
+        XCTAssertEqual(optedOut.state, .off)
+        let local = try await persistence.activeLibrary()
+        let localSnapshot = await local.snapshot(sortedBy: .manual)
+        let firstLocalURL = try XCTUnwrap(localSnapshot.attachmentURLs[firstAttachmentID])
+        let secondLocalURL = try XCTUnwrap(localSnapshot.attachmentURLs[secondAttachmentID])
+        XCTAssertEqual(try Data(contentsOf: firstLocalURL), firstBytes)
+        XCTAssertEqual(try Data(contentsOf: secondLocalURL), secondBytes)
+        XCTAssertFalse(firstLocalURL.path.contains("CloudDownloads"))
+        XCTAssertFalse(secondLocalURL.path.contains("CloudDownloads"))
+    }
+
+    func testOptOutPreservesNewLocalAttachmentBeforeCloudReconciliation() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let dataZone = CloudZoneID(name: "metadata", ownerName: "owner")
+        let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
+        let namespace = CloudSyncNamespace(
+            cloudScope: "private",
+            accountLineage: "account",
+            generation: UUID(),
+            zones: [dataZone, payloadZone]
+        )
+        let server = FakeCloudServer()
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: dataZone,
+            payloadZone: payloadZone,
+            makeTransport: {
+                FakeCloudRecordTransport(server: server, namespace: namespace)
+            }
+        )
+        let enabled = try await coordinator.enableOrRetry()
+        XCTAssertEqual(enabled.state, .on)
+
+        let bytes = Data("local attachment before reconciliation".utf8)
+        let sourceURL = root.appendingPathComponent("new-local.txt")
+        try bytes.write(to: sourceURL)
+        let modeStorage = try await persistence.snapshot()
+        let cloudLibrary = try await persistence.libraryForTransition(
+            storeID: modeStorage.activeStore.id
+        )
+        let added = try await cloudLibrary.perform(
+            .add(
+                content: "new local attachment",
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inbox.id,
+                attachmentURLs: [sourceURL],
+                requestID: UUID(),
+                now: .distantPast
+            ),
+            sortedBy: .manual
+        )
+        let attachmentID = try XCTUnwrap(added.snapshot.snips.first?.attachments.first?.id)
+        let storage = try await cloudLibrary.cloudAttachmentStorageSnapshot(
+            namespaceKey: namespace.namespaceKey
+        )
+        XCTAssertTrue(storage.publications.isEmpty)
+
+        let optedOut = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
+        XCTAssertEqual(optedOut.state, .off)
+        let local = try await persistence.activeLibrary()
+        let localSnapshot = await local.snapshot(sortedBy: .manual)
+        let localURL = try XCTUnwrap(localSnapshot.attachmentURLs[attachmentID])
+        XCTAssertEqual(try Data(contentsOf: localURL), bytes)
+    }
+
     func testEnableWithExistingAttachmentKeepsPartialPayloadOwnedAcrossHardReopen() async throws {
         let root = temporaryDirectory()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

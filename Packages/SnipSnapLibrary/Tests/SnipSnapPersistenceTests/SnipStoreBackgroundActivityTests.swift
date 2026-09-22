@@ -437,19 +437,25 @@ extension CloudFullRecordPersistenceTests {
       at: staged.deletingLastPathComponent(), withIntermediateDirectories: true
     )
     try bytes.write(to: staged)
-    let oldFile = try await library.installCloudAttachmentCacheFile(
+    let oldFile = try await library.installCloudAttachmentDownload(
       namespaceKey: namespace, attachmentID: metadata.attachmentID,
-      expectedPayloadIdentity: metadata.payloadIdentity, stagedURL: staged,
-      expectedByteCount: metadata.byteCount, expectedSHA256: metadata.sha256,
+      expectedPayloadIdentity: metadata.payloadIdentity, expectedField: "asset",
+      download: CloudAttachmentCacheDownload(
+        payloadIdentity: metadata.payloadIdentity, field: "asset", fileURL: staged,
+        byteCount: metadata.byteCount, sha256: metadata.sha256
+      ),
       maximumBytes: 1_024, now: .distantPast
     )
     try bytes.write(to: staged)
     let activity = TestStoreActivity()
     let installed = try await SnipStoreBackgroundActivity.$runner.withValue(activity.runner) {
-      try await library.installCloudAttachmentCacheFile(
+      try await library.installCloudAttachmentDownload(
         namespaceKey: namespace, attachmentID: metadata.attachmentID,
-        expectedPayloadIdentity: metadata.payloadIdentity, stagedURL: staged,
-        expectedByteCount: metadata.byteCount, expectedSHA256: metadata.sha256,
+        expectedPayloadIdentity: metadata.payloadIdentity, expectedField: "asset",
+        download: CloudAttachmentCacheDownload(
+          payloadIdentity: metadata.payloadIdentity, field: "asset", fileURL: staged,
+          byteCount: metadata.byteCount, sha256: metadata.sha256
+        ),
         maximumBytes: 1_024, now: .distantPast, afterSave: { activity.expire() }
       )
     }

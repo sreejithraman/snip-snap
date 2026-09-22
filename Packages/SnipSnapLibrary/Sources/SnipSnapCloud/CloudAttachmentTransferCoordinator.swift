@@ -95,6 +95,8 @@ package protocol CloudAttachmentTransferring: Sendable {
 }
 
 package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
+  package static let standardMaximumCacheBytes: Int64 = 512 * 1_024 * 1_024
+
   private let library: SwiftDataSnipLibrary
   private let namespaceKey: CloudSyncNamespaceKey
   private let payloadZone: CloudZoneID
@@ -160,8 +162,7 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
         }
         return local
       } catch {
-        guard !FileManager.default.fileExists(atPath: local.path), publication.metadataAccepted
-        else { throw error }
+        guard publication.metadataAccepted else { throw error }
       }
     }
     guard publication.metadataAccepted else {
@@ -192,34 +193,30 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
       }
       throw error
     }
-    CloudSyncDiagnostics.attachmentStarted(.receiptValidation)
-    guard receipt.recordID == recordID,
-      receipt.field == CloudAttachmentRecordCodec.assetField
-    else {
-      Self.removeStagedFileIfSafe(receipt.fileURL, stagingRoot: stagingRoot)
-      CloudSyncDiagnostics.attachmentFailed(
-        .receiptValidation,
-        error: CloudAttachmentStorageError.invalidMetadata
-      )
-      throw CloudAttachmentStorageError.invalidMetadata
-    }
-    CloudSyncDiagnostics.attachmentSucceeded(.receiptValidation)
     CloudSyncDiagnostics.attachmentStarted(.cacheInstall)
     do {
-      let installedURL = try await library.installCloudAttachmentCacheFile(
+      let installedURL = try await library.installCloudAttachmentDownload(
         namespaceKey: namespaceKey,
         attachmentID: attachmentID,
         expectedPayloadIdentity: publication.metadata.payloadIdentity,
-        stagedURL: receipt.fileURL,
-        expectedByteCount: publication.metadata.byteCount,
-        expectedSHA256: publication.metadata.sha256,
+        expectedField: CloudAttachmentRecordCodec.assetField,
+        download: CloudAttachmentCacheDownload(
+          payloadIdentity: CloudTextStorageIdentity(
+            zoneName: receipt.recordID.zone.name,
+            ownerName: receipt.recordID.zone.ownerName,
+            recordName: receipt.recordID.name
+          ),
+          field: receipt.field,
+          fileURL: receipt.fileURL,
+          byteCount: receipt.byteCount,
+          sha256: receipt.sha256
+        ),
         maximumBytes: maximumCacheBytes,
         now: now()
       )
       CloudSyncDiagnostics.attachmentSucceeded(.cacheInstall, byteCount: receipt.byteCount)
       return installedURL
     } catch {
-      Self.removeStagedFileIfSafe(receipt.fileURL, stagingRoot: stagingRoot)
       CloudSyncDiagnostics.attachmentFailed(.cacheInstall, error: error)
       throw error
     }
@@ -229,6 +226,30 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
   package func prepare(attachmentID: UUID, for use: SyncedAttachmentUse) async throws -> URL {
     _ = use
     return try await download(attachmentID: attachmentID)
+  }
+
+  /// Promotes every attachment into durable local storage, downloading cache misses first.
+  /// Returns whether any missing bytes had to be recovered from CloudKit.
+  package func preserveAllAttachmentsForLocalCopy() async throws -> Bool {
+    let snapshot = try await library.checkedSnapshot(sortedBy: .manual)
+    let attachmentIDs = snapshot.snips.flatMap(\.attachments).map(\.id)
+    var recoveredMissingBytes = false
+    for attachmentID in attachmentIDs {
+      // Re-evaluate each entry because an earlier download may evict a later one.
+      let isReady = try await library.materializeCloudAttachmentForLocalCopy(
+        namespaceKey: namespaceKey,
+        attachmentID: attachmentID
+      )
+      if !isReady {
+        recoveredMissingBytes = true
+        _ = try await download(attachmentID: attachmentID)
+        guard try await library.materializeCloudAttachmentForLocalCopy(
+          namespaceKey: namespaceKey,
+          attachmentID: attachmentID
+        ) else { throw SnipLibraryError.attachmentCopyFailed }
+      }
+    }
+    return recoveredMissingBytes
   }
 
   package func clearDownloads() async throws {
@@ -377,21 +398,4 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
     try AttachmentFileIO.digest(at: url)
   }
 
-  private static func removeStagedFileIfSafe(_ fileURL: URL, stagingRoot: URL) {
-    let root = stagingRoot.standardizedFileURL
-    let file = fileURL.standardizedFileURL
-    guard root.isFileURL, file.isFileURL, file != root,
-      file.path.hasPrefix(root.path + "/")
-    else { return }
-    var current = file
-    while current != root {
-      guard let values = try? current.resourceValues(forKeys: [.isSymbolicLinkKey]),
-        values.isSymbolicLink != true
-      else { return }
-      let parent = current.deletingLastPathComponent()
-      guard parent != current else { return }
-      current = parent
-    }
-    try? FileManager.default.removeItem(at: file)
-  }
 }

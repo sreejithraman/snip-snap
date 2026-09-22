@@ -2,7 +2,11 @@ import Foundation
 import SnipSnapCore
 
 extension SwiftDataSyncModePersistence {
-  static func recover(_ value: inout Manifest, rootURL: URL) throws {
+  static func recover(
+    _ value: inout Manifest,
+    rootURL: URL,
+    attachmentCacheRootURL: URL? = nil
+  ) throws {
     let storeRoots = try validatedStoreRoots(value.stores, rootURL: rootURL)
     // The revision advances before the store write starts. A leftover reservation means the
     // write may or may not have reached SwiftData, so keep that revision and reopen writes.
@@ -18,7 +22,11 @@ extension SwiftDataSyncModePersistence {
         throw SyncModePersistenceError.invalidManifest
       }
       _ = try SwiftDataSnipLibrary(
-        storeURL: replacementRoot.appendingPathComponent("snips.store")
+        storeURL: replacementRoot.appendingPathComponent("snips.store"),
+        attachmentCacheRootURL: cacheRootURL(
+          base: attachmentCacheRootURL,
+          storeID: isolation.replacementStoreID
+        )
       )
       value.stores[replacementIndex].lifecycle = .ready
       value.stores[sourceIndex].lifecycle = .isolated
@@ -30,7 +38,13 @@ extension SwiftDataSyncModePersistence {
       guard let root = storeRoots[value.stores[activeIndex].id] else {
         throw SyncModePersistenceError.invalidManifest
       }
-      _ = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("snips.store"))
+      _ = try SwiftDataSnipLibrary(
+        storeURL: root.appendingPathComponent("snips.store"),
+        attachmentCacheRootURL: cacheRootURL(
+          base: attachmentCacheRootURL,
+          storeID: value.stores[activeIndex].id
+        )
+      )
       value.stores[activeIndex].lifecycle = .ready
     }
     if let active = value.stores.first(where: { $0.id == value.activeStoreID }),
@@ -57,6 +71,11 @@ extension SwiftDataSyncModePersistence {
         throw SyncModePersistenceError.invalidManifest
       }
       do {
+        if let cacheRoot = cacheRootURL(base: attachmentCacheRootURL, storeID: store.id),
+          FileManager.default.fileExists(atPath: cacheRoot.path)
+        {
+          try CloudAttachmentCacheFiles.removeCacheContainer(cacheRoot)
+        }
         if FileManager.default.fileExists(atPath: storeRoot.path) {
           try FileManager.default.removeItem(at: storeRoot)
         }

@@ -1,9 +1,150 @@
+import CryptoKit
 import SnipSnapCore
 @testable import SnipSnapPersistence
 @testable import SnipSnapCloud
 import XCTest
 
 extension ICloudSyncModeCoordinatorTests {
+    func testKeepLocalCopyIsolationRetainsCloudStoreWhenAttachmentBytesAreUnverified() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let cacheRoot = root.appendingPathComponent("AppGroup/Library/Caches/CloudAttachments")
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            attachmentCacheRootURL: cacheRoot
+        )
+        let sourceURL = root.appendingPathComponent("account-a-attachment.txt")
+        let bytes = Data("account A attachment".utf8)
+        try bytes.write(to: sourceURL)
+        let library = try await persistence.activeLibrary()
+        let added = try await library.perform(
+            .add(
+                content: "account A cache",
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inbox.id,
+                attachmentURLs: [sourceURL],
+                requestID: UUID(),
+                now: .distantPast
+            ),
+            sortedBy: .manual
+        )
+        let attachmentID = try XCTUnwrap(added.snapshot.snips.first?.attachments.first?.id)
+        let dataZone = CloudZoneID(name: "metadata", ownerName: "owner")
+        let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
+        let namespace = CloudSyncNamespace(
+            cloudScope: "private",
+            accountLineage: "account-a",
+            generation: UUID(),
+            zones: [dataZone, payloadZone]
+        )
+        let server = FakeCloudServer()
+        let account = InjectedICloudAccountStateSource(
+            state: .available(accountLineage: namespace.accountLineage)
+        )
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: dataZone,
+            payloadZone: payloadZone,
+            makeTransport: {
+                FakeCloudRecordTransport(server: server, namespace: namespace)
+            },
+            accountStateSource: account
+        )
+        let enabled = try await coordinator.enableOrRetry()
+        XCTAssertEqual(enabled.state, .on)
+        let activeStore = try await persistence.snapshot().activeStore
+        let activeLibrary = try await persistence.libraryForTransition(storeID: activeStore.id)
+        let beforeDownload = await activeLibrary.snapshot(sortedBy: .manual)
+        let durableURL = try XCTUnwrap(beforeDownload.attachmentURLs[attachmentID])
+        let cloudState = try await activeLibrary.cloudAttachmentStorageSnapshot(
+            namespaceKey: namespace.namespaceKey
+        )
+        let publication = try XCTUnwrap(cloudState.publications.first)
+        let stagingRoot = try await activeLibrary.cloudAttachmentStagingRoot(
+            namespaceKey: namespace.namespaceKey
+        )
+        let staged = stagingRoot.appendingPathComponent("account-isolation/payload")
+        try FileManager.default.createDirectory(
+            at: staged.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try bytes.write(to: staged)
+        let cachedURL = try await activeLibrary.installCloudAttachmentDownload(
+            namespaceKey: namespace.namespaceKey,
+            attachmentID: attachmentID,
+            expectedPayloadIdentity: publication.metadata.payloadIdentity,
+            expectedField: CloudAttachmentRecordCodec.assetField,
+            download: CloudAttachmentCacheDownload(
+                payloadIdentity: publication.metadata.payloadIdentity,
+                field: CloudAttachmentRecordCodec.assetField,
+                fileURL: staged,
+                byteCount: Int64(bytes.count),
+                sha256: Data(SHA256.hash(data: bytes))
+            ),
+            maximumBytes: 1_024,
+            now: .distantPast
+        )
+        try await activeLibrary.reconcileCloudAttachments(
+            namespaceKey: namespace.namespaceKey,
+            metadataZoneName: dataZone.name,
+            metadataOwnerName: dataZone.ownerName,
+            payloadZoneName: payloadZone.name,
+            payloadOwnerName: payloadZone.ownerName
+        )
+        try FileManager.default.removeItem(at: durableURL)
+        let downloads = CloudAttachmentTransferCoordinator(
+            library: activeLibrary,
+            namespace: namespace,
+            payloadZone: payloadZone,
+            transport: FakeCloudRecordTransport(server: server, namespace: namespace),
+            maximumCacheBytes: 1_024
+        )
+        await account.setState(.available(accountLineage: "account-b"))
+        let isolatedResult = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
+        XCTAssertEqual(isolatedResult.state, .needsAttention)
+        let isolatedStorage = try await persistence.snapshot()
+        let isolatedStoreID = try XCTUnwrap(isolatedStorage.accountIsolation?.storeID)
+        try Data(repeating: 0xA5, count: bytes.count).write(to: cachedURL)
+        do {
+            _ = try await coordinator.resolveAccountIsolation(.keepLocalCopy)
+            XCTFail("Corrupt attachment bytes must stop account-isolation copy")
+        } catch {
+            XCTAssertEqual(error as? SnipLibraryError, .attachmentCopyFailed)
+        }
+
+        try await downloads.clearDownloads()
+        let evicted = await activeLibrary.snapshot(sortedBy: .manual)
+        XCTAssertNil(evicted.attachmentURLs[attachmentID])
+        do {
+            _ = try await coordinator.resolveAccountIsolation(.keepLocalCopy)
+            XCTFail("Missing attachment bytes must stop account-isolation copy")
+        } catch {
+            XCTAssertEqual(error as? SnipLibraryError, .attachmentCopyFailed)
+        }
+
+        let retained = try await persistence.snapshot()
+        XCTAssertEqual(retained.accountIsolation?.storeID, isolatedStoreID)
+        let retainedLibrary = try await persistence.libraryForTransition(storeID: isolatedStoreID)
+        let retainedState = try await retainedLibrary.cloudAttachmentStorageSnapshot(
+            namespaceKey: namespace.namespaceKey
+        )
+        XCTAssertEqual(retainedState.publications.map(\.metadata.attachmentID), [attachmentID])
+        let retainedSnapshot = await retainedLibrary.snapshot(sortedBy: .manual)
+        XCTAssertEqual(retainedSnapshot.snips.first?.attachments.map(\.id), [attachmentID])
+
+        await account.setState(.available(accountLineage: namespace.accountLineage))
+        let resumed = try await coordinator.refreshAccountState()
+        XCTAssertEqual(resumed.state, .off)
+        let resumedStorage = try await persistence.snapshot()
+        XCTAssertNil(resumedStorage.accountIsolation)
+        let resumedLibrary = try await persistence.activeLibrary()
+        let resumedSnapshot = await resumedLibrary.snapshot(sortedBy: .manual)
+        let resumedURL = try XCTUnwrap(resumedSnapshot.attachmentURLs[attachmentID])
+        XCTAssertEqual(try Data(contentsOf: resumedURL), bytes)
+    }
+
     func testAccountChangeBeforeStaleCacheOptOutQuarantinesCacheFromNewAccount() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -503,7 +644,11 @@ extension ICloudSyncModeCoordinatorTests {
     func testKeepLocalCopyCombinesIsolatedAndNewLocalWorkWithoutCloudState() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let cacheRoot = root.appendingPathComponent("AttachmentCaches", isDirectory: true)
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            attachmentCacheRootURL: cacheRoot
+        )
         let namespace = makeNamespace()
         let server = FakeCloudServer()
         let account = InjectedICloudAccountStateSource(
@@ -520,10 +665,26 @@ extension ICloudSyncModeCoordinatorTests {
         try await add("isolated work", to: persistence.activeLibrary())
         await account.setState(.noAccount)
         _ = try await coordinator.refreshAccountState()
+        let isolatedStorage = try await persistence.snapshot()
+        let isolatedStoreID = try XCTUnwrap(isolatedStorage.accountIsolation?.storeID)
+        let isolatedCacheRoot = try XCTUnwrap(
+            SwiftDataSyncModePersistence.cacheRootURL(
+                base: cacheRoot,
+                storeID: isolatedStoreID
+            )
+        )
+        try FileManager.default.createDirectory(
+            at: isolatedCacheRoot,
+            withIntermediateDirectories: true
+        )
+        try Data("cached bytes".utf8).write(
+            to: isolatedCacheRoot.appendingPathComponent("payload")
+        )
         try await add("new local work", to: persistence.activeLibrary())
 
         let kept = try await coordinator.resolveAccountIsolation(.keepLocalCopy)
         XCTAssertEqual(kept.state, .off)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: isolatedCacheRoot.path))
         let storage = try await persistence.snapshot()
         XCTAssertNil(storage.accountIsolation)
         XCTAssertEqual(storage.activeStore.kind, .localOnly)
@@ -668,7 +829,11 @@ extension ICloudSyncModeCoordinatorTests {
         let sentinel = parent.appendingPathComponent("keep.data")
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         try Data("keep".utf8).write(to: sentinel)
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let cacheRoot = parent.appendingPathComponent("AttachmentCaches", isDirectory: true)
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            attachmentCacheRootURL: cacheRoot
+        )
         let namespace = makeNamespace()
         let account = InjectedICloudAccountStateSource(
             state: .available(accountLineage: namespace.accountLineage)
@@ -686,10 +851,26 @@ extension ICloudSyncModeCoordinatorTests {
         try await add("remove me", to: persistence.activeLibrary())
         await account.setState(.noAccount)
         _ = try await coordinator.refreshAccountState()
+        let isolatedStorage = try await persistence.snapshot()
+        let isolatedStoreID = try XCTUnwrap(isolatedStorage.accountIsolation?.storeID)
+        let isolatedCacheRoot = try XCTUnwrap(
+            SwiftDataSyncModePersistence.cacheRootURL(
+                base: cacheRoot,
+                storeID: isolatedStoreID
+            )
+        )
+        try FileManager.default.createDirectory(
+            at: isolatedCacheRoot,
+            withIntermediateDirectories: true
+        )
+        try Data("cached bytes".utf8).write(
+            to: isolatedCacheRoot.appendingPathComponent("payload")
+        )
         try await add("keep local", to: persistence.activeLibrary())
 
         let removed = try await coordinator.resolveAccountIsolation(.remove)
         XCTAssertEqual(removed.state, .off)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: isolatedCacheRoot.path))
         let removedStorage = try await persistence.snapshot()
         XCTAssertNil(removedStorage.accountIsolation)
         XCTAssertEqual(try Data(contentsOf: sentinel), Data("keep".utf8))
@@ -902,6 +1083,52 @@ extension ICloudSyncModeCoordinatorTests {
             let visible = await library.snapshot(sortedBy: .chronological)
             XCTAssertEqual(visible.snips.map(\.content), ["one isolated snip"], "point: \(point)")
         }
+    }
+
+    func testInterruptedRemovalFinishesWhenTheOriginalAccountReturns() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let crash = CrashInjector(point: .afterAccountResolutionIntent)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, crashHook: crash.hit)
+        let namespace = makeNamespace()
+        let account = InjectedICloudAccountStateSource(
+            state: .available(accountLineage: namespace.accountLineage)
+        )
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: textZone(namespace),
+            makeTransport: {
+                FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
+            },
+            accountStateSource: account
+        )
+        _ = try await coordinator.enableOrRetry()
+        try await add("remove after restart", to: persistence.activeLibrary())
+        await account.setState(.noAccount)
+        _ = try await coordinator.refreshAccountState()
+        do {
+            _ = try await coordinator.resolveAccountIsolation(.remove)
+            XCTFail("Expected the injected interruption")
+        } catch is CrashInjector.Failure {}
+
+        await account.setState(.available(accountLineage: namespace.accountLineage))
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+        let resumed = ICloudSyncModeCoordinator(
+            persistence: reopened,
+            namespace: namespace,
+            textZone: textZone(namespace),
+            makeTransport: {
+                FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
+            },
+            accountStateSource: account
+        )
+        let status = try await resumed.refreshAccountState()
+        XCTAssertEqual(status.state, .off)
+        let storage = try await reopened.snapshot()
+        XCTAssertNil(storage.accountIsolation)
+        let visible = await (try reopened.activeLibrary()).snapshot(sortedBy: .manual)
+        XCTAssertTrue(visible.snips.isEmpty)
     }
 
     func testUnknownAndRestrictedAccountStatesPauseWithoutIsolation() async throws {
