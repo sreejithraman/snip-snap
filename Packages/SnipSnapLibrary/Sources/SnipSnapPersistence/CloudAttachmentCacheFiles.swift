@@ -75,7 +75,7 @@ struct CloudAttachmentCacheFiles {
     try Self.requireChild(stagedURL, of: try stagingRoot(namespaceKey: namespaceKey))
     let filesRoot = cacheRoot.appendingPathComponent("Files", isDirectory: true)
     try DurableFile.createDirectory(filesRoot)
-    let destination = try Self.validatedChild(relativePath: relativePath, root: cacheRoot)
+    let destination = try Self.validatedCacheChild(relativePath: relativePath, root: cacheRoot)
     try DurableFile.createDirectory(destination.deletingLastPathComponent())
     try FileManager.default.moveItem(at: stagedURL, to: destination)
     do {
@@ -250,13 +250,27 @@ struct CloudAttachmentCacheFiles {
   }
 
   static func validatedChild(relativePath: String, root: URL) throws -> URL {
+    try validatedChild(relativePath: relativePath, root: root, checkingRoot: true)
+  }
+
+  /// Validates a relative path beneath a cache root returned by `cacheRoot(namespaceKey:)`.
+  /// The app-owned root may resolve through a permitted container alias; descendants may not.
+  static func validatedCacheChild(relativePath: String, root: URL) throws -> URL {
+    try validatedChild(relativePath: relativePath, root: root, checkingRoot: false)
+  }
+
+  private static func validatedChild(
+    relativePath: String,
+    root: URL,
+    checkingRoot: Bool
+  ) throws -> URL {
     guard !relativePath.isEmpty, !relativePath.hasPrefix("/"),
       !relativePath.split(separator: "/", omittingEmptySubsequences: false)
         .contains(where: { $0 == "." || $0 == ".." || $0.isEmpty })
     else { throw CloudAttachmentStorageError.invalidPath }
     let candidate = root.appendingPathComponent(relativePath).standardizedFileURL
     try requireChild(candidate, of: root)
-    try requireNoSymlinkComponents(candidate, root: root)
+    try requireNoSymlinkComponents(candidate, root: root, checkingRoot: checkingRoot)
     return candidate
   }
 
