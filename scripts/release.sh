@@ -91,14 +91,10 @@ embed_release_cli() {
         --options runtime \
         --timestamp \
         "$bundled_cli"
-    /usr/bin/codesign \
-        --force \
-        --sign "$signing_identity" \
-        --options runtime \
-        --entitlements "$mac_release_entitlements" \
-        --timestamp \
-        --generate-entitlement-der \
-        "$app_path"
+    signing_policy_resign_exported_mac_app \
+        "$archive_path/Products/Applications/Snip Snap.app" \
+        "$app_path" "$signing_identity" \
+        "$signing_temp_root/archive-entitlements.plist"
 }
 
 cleanup() {

@@ -433,6 +433,31 @@ done
 [[ "$(/usr/bin/grep -c \
     'signing_policy_verify_production_cloudkit_app' "$script_dir/release.sh")" == 2 ]] || \
     fail_test "the Mac release command must verify the archive and export"
+
+archive_app="$test_root/archive/Snip Snap.app"
+exported_app="$test_root/export/Snip Snap.app"
+/bin/mkdir -p "$archive_app/Contents/MacOS" "$test_root/export"
+/usr/libexec/PlistBuddy -c 'Add :CFBundleIdentifier string org.example.snipsnap' \
+    "$archive_app/Contents/Info.plist" >/dev/null
+/usr/libexec/PlistBuddy -c 'Add :CFBundleExecutable string SnipSnap' \
+    "$archive_app/Contents/Info.plist" >/dev/null
+/bin/cp /usr/bin/true "$archive_app/Contents/MacOS/SnipSnap"
+/usr/bin/codesign --force --sign - --entitlements "$production_entitlements" \
+    "$archive_app" >/dev/null 2>&1
+/usr/bin/ditto "$archive_app" "$exported_app"
+/bin/cp /usr/bin/true "$exported_app/Contents/MacOS/snipsnap"
+/usr/bin/codesign --force --sign - "$exported_app/Contents/MacOS/snipsnap" \
+    >/dev/null 2>&1
+signing_policy_resign_exported_mac_app \
+    "$archive_app" "$exported_app" - "$test_root/archive-entitlements.plist"
+/usr/bin/codesign --verify --deep --strict "$exported_app" >/dev/null 2>&1 || \
+    fail_test "the exported app is not signed after embedding the CLI"
+/usr/bin/codesign -d --entitlements :- "$exported_app" \
+    > "$test_root/exported-entitlements.plist" 2>/dev/null
+[[ "$(/usr/bin/plutil -extract \
+    'com\.apple\.developer\.icloud-container-identifiers.0' raw -o - \
+    "$test_root/exported-entitlements.plist")" == iCloud.org.example.snipsnap ]] || \
+    fail_test "the exported app lost the resolved CloudKit container"
 verify_lines=( ${(@f)$(/usr/bin/grep -n '^    verify_release_cloudkit$' \
     "$script_dir/release.sh" | /usr/bin/cut -d: -f1)} )
 [[ "${#verify_lines[@]}" == 2 ]] || \

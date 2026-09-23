@@ -5,6 +5,33 @@ signing_policy_fail() {
     return 1
 }
 
+signing_policy_resign_exported_mac_app() {
+    local archive_app="$1"
+    local exported_app="$2"
+    local signing_identity="$3"
+    local entitlements_path="$4"
+
+    # Xcode expands build settings in the archive's signed entitlements.
+    # codesign would preserve a literal $(...) from the source template.
+    /usr/bin/codesign -d --entitlements :- "$archive_app" \
+        > "$entitlements_path" 2>/dev/null || {
+        signing_policy_fail "could not read archived Mac app entitlements"
+        return 1
+    }
+    /usr/bin/plutil -lint "$entitlements_path" >/dev/null 2>&1 || {
+        signing_policy_fail "archived Mac app entitlements are invalid"
+        return 1
+    }
+    /usr/bin/codesign \
+        --force \
+        --sign "$signing_identity" \
+        --options runtime \
+        --entitlements "$entitlements_path" \
+        --timestamp \
+        --generate-entitlement-der \
+        "$exported_app"
+}
+
 signing_policy_resolve_setting() {
     local settings_file="$1"
     local setting_name="$2"
