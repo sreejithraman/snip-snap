@@ -40,11 +40,31 @@ struct ListPageMotion: Equatable {
         var cursor: CGFloat
     }
 
+    private struct EdgeDrag: Equatable {
+        let sourceIndex: Int
+        let neighborIndex: Int
+        let originPosition: CGFloat
+        let pageWidth: CGFloat
+        let direction: CGFloat
+
+        func clampedPosition(for translation: CGSize) -> CGFloat {
+            let position = originPosition - translation.width * direction / pageWidth
+            let lowerBound = min(CGFloat(min(sourceIndex, neighborIndex)), originPosition)
+            let upperBound = max(CGFloat(max(sourceIndex, neighborIndex)), originPosition)
+            return min(
+                upperBound,
+                max(lowerBound, position)
+            )
+        }
+    }
+
     private(set) var transition: Transition?
     private var drag: Drag?
+    private var edgeDrag: EdgeDrag?
     private var expansion = ListSelectorExpansion()
 
-    var isDragging: Bool { drag != nil }
+    var isDragging: Bool { drag != nil || edgeDrag != nil }
+    var isSelectorDragging: Bool { drag != nil }
     var dragCursor: CGFloat? { drag?.cursor }
     var dragDistance: CGFloat { expansion.distance }
 
@@ -60,6 +80,7 @@ struct ListPageMotion: Equatable {
             guard abs(translation.width) > abs(translation.height),
                   let selected = pages.firstIndex(of: selectedPage) else { return }
             let position = transition?.position(at: date) ?? CGFloat(selected)
+            edgeDrag = nil
             let origin = geometry.cursor(at: position)
             drag = Drag(
                 originCursor: origin,
@@ -74,6 +95,67 @@ struct ListPageMotion: Equatable {
         self.drag = drag
         expansion.update(distance: abs(drag.cursor - drag.originCursor))
         transition?.position = geometry.pagePosition(at: drag.cursor)
+    }
+
+    mutating func updateEdgeDrag(
+        translation: CGSize,
+        selectedPage: LibraryPage,
+        pages: [LibraryPage],
+        pageWidth: CGFloat,
+        layoutDirection: LayoutDirection,
+        isStart: Bool,
+        at date: Date
+    ) {
+        guard pageWidth > 0, pages.count > 1 else { return }
+        if edgeDrag == nil {
+            guard isStart, transition?.settlement == nil, drag == nil,
+                  abs(translation.width) > abs(translation.height),
+                  let source = pages.firstIndex(of: selectedPage) else { return }
+            let position = transition?.position(at: date) ?? CGFloat(source)
+            let direction: CGFloat = layoutDirection == .rightToLeft ? -1 : 1
+            let step = -translation.width * direction >= 0 ? 1 : -1
+            edgeDrag = EdgeDrag(
+                sourceIndex: source,
+                neighborIndex: min(pages.count - 1, max(0, source + step)),
+                originPosition: position,
+                pageWidth: pageWidth,
+                direction: direction
+            )
+            transition = Transition(pages: pages, source: selectedPage, position: position)
+        }
+        guard let edgeDrag else { return }
+        guard transition?.pages == pages else {
+            interrupt()
+            return
+        }
+        transition?.position = edgeDrag.clampedPosition(for: translation)
+    }
+
+    mutating func releaseEdgeDrag(
+        translation: CGSize,
+        predictedEndTranslation: CGSize,
+        reduceMotion: Bool,
+        at date: Date
+    ) -> Int? {
+        guard let edgeDrag, transition != nil else { return nil }
+        self.edgeDrag = nil
+        let distance = -translation.width * edgeDrag.direction
+        let projectedDistance = -predictedEndTranslation.width * edgeDrag.direction
+        transition?.position = edgeDrag.clampedPosition(for: translation)
+        let threshold = min(72, edgeDrag.pageWidth * 0.22)
+        let projectedThreshold = min(100, edgeDrag.pageWidth * 0.3)
+        let direction: CGFloat = edgeDrag.neighborIndex > edgeDrag.sourceIndex ? 1 : -1
+        let advances = distance * direction >= threshold
+            || projectedDistance * direction >= projectedThreshold
+        let destination = advances ? edgeDrag.neighborIndex : edgeDrag.sourceIndex
+        settle(to: destination, reduceMotion: reduceMotion, at: date)
+        return destination
+    }
+
+    mutating func cancelEdgeDrag(reduceMotion: Bool, at date: Date) {
+        guard let edgeDrag else { return }
+        self.edgeDrag = nil
+        settle(to: edgeDrag.sourceIndex, reduceMotion: reduceMotion, at: date)
     }
 
     enum Release: Equatable {
@@ -117,6 +199,7 @@ struct ListPageMotion: Equatable {
     ) {
         guard pages.indices.contains(destination), let source = pages.firstIndex(of: selectedPage) else { return }
         drag = nil
+        edgeDrag = nil
         if transition == nil {
             transition = Transition(pages: pages, source: selectedPage, position: CGFloat(source))
         }
@@ -143,6 +226,7 @@ struct ListPageMotion: Equatable {
     mutating func interrupt() {
         expansion.update(distance: nil)
         drag = nil
+        edgeDrag = nil
         transition = nil
     }
 
@@ -427,7 +511,7 @@ struct ListSelector: View {
             )
             .animation(animation, value: hoveringAdd)
             .onChange(of: hoveringAdd ? items.count : nearest) { _, destination in
-                guard motion.isDragging, !presentingCreation, sheet == nil else { return }
+                guard motion.isSelectorDragging, !presentingCreation, sheet == nil else { return }
                 model.haptics.emit(destination == items.count ? .snap : .selection, for: model.haptics.beginInteraction())
             }
             .onChange(of: gestureIsActive) { _, active in

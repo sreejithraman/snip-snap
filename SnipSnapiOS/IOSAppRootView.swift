@@ -2,6 +2,7 @@ import SnipSnapCloud
 import SnipSnapCore
 import Foundation
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct IOSAppRootView: View {
@@ -311,7 +312,9 @@ struct IOSAppRootView: View {
                         copyShare: copyShare,
                         sheet: $sheet,
                         editMode: $collectionEditMode,
+                        motion: $listPageMotion,
                         frame: frame,
+                        isComposerFocused: isCompactComposerFocused,
                         dismissComposerKeyboard: { isCompactComposerFocused = false },
                         libraryActions: compactLibraryActions
                     )
@@ -473,18 +476,25 @@ struct IOSAppRootView: View {
 private struct CompactLibraryPageStack: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.layoutDirection) private var layoutDirection
+    @State private var swipeBlockingPages: Set<LibraryPage> = []
     let model: IOSAppModel
     let clipboard: IOSClipboardModel
     let clipboardViewState: ClipboardViewState
     let copyShare: IOSCopyShareCoordinator
     @Binding var sheet: AppSheet?
     @Binding var editMode: EditMode
+    @Binding var motion: ListPageMotion
     let frame: ListPageFrame
+    let isComposerFocused: Bool
     let dismissComposerKeyboard: () -> Void
     let libraryActions: LibraryActionsMenu
 
     private var currentPage: LibraryPage {
         model.showsClipboard ? .clipboard : .list(model.selectedListID)
+    }
+
+    private enum EdgeSwipeSide {
+        case leading, trailing
     }
 
     var body: some View {
@@ -504,6 +514,20 @@ private struct CompactLibraryPageStack: View {
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .clipped()
+            .background {
+                ScreenEdgePanObserver(
+                    canBegin: { canSwipeFromEdge(side(for: $0)) },
+                    onPan: { physicalEdge, translation, predictedTranslation, phase in
+                        handleEdgePan(
+                            physicalEdge: physicalEdge,
+                            translation: translation,
+                            predictedTranslation: predictedTranslation,
+                            phase: phase,
+                            pageWidth: proxy.size.width
+                        )
+                    }
+                )
+            }
         }
     }
 
@@ -530,6 +554,7 @@ private struct CompactLibraryPageStack: View {
                         listID: listID,
                         isActivePage: isActivePage,
                         editMode: $editMode,
+                        blocksPageSwipe: swipeBlockedBinding(for: page),
                         dismissComposerKeyboard: dismissComposerKeyboard,
                         libraryActions: libraryActions
                     )
@@ -551,6 +576,111 @@ private struct CompactLibraryPageStack: View {
                 }
             }
         }
+    }
+
+    private var pages: [LibraryPage] {
+        [.clipboard] + model.lists.map { .list($0.id) }
+    }
+
+    private func swipeBlockedBinding(for page: LibraryPage) -> Binding<Bool> {
+        Binding(
+            get: { swipeBlockingPages.contains(page) },
+            set: { blocked in
+                if blocked {
+                    swipeBlockingPages.insert(page)
+                } else {
+                    swipeBlockingPages.remove(page)
+                }
+            }
+        )
+    }
+
+    private func handleEdgePan(
+        physicalEdge: UIRectEdge,
+        translation: CGSize,
+        predictedTranslation: CGSize?,
+        phase: UIGestureRecognizer.State,
+        pageWidth: CGFloat
+    ) {
+        guard abs(translation.height) <= max(30, abs(translation.width) * 1.2) else {
+            motion.cancelEdgeDrag(reduceMotion: reduceMotion, at: Date())
+            return
+        }
+        let side = side(for: physicalEdge)
+        guard canSwipeFromEdge(side),
+              (phase != .began || isInward(translation.width, from: side)) else {
+            if phase != .began { motion.cancelEdgeDrag(reduceMotion: reduceMotion, at: Date()) }
+            return
+        }
+        let inwardTranslation = clampedInward(translation, from: physicalEdge)
+        switch phase {
+        case .began, .changed:
+            motion.updateEdgeDrag(
+                translation: inwardTranslation,
+                selectedPage: currentPage,
+                pages: pages,
+                pageWidth: pageWidth,
+                layoutDirection: layoutDirection,
+                isStart: phase == .began,
+                at: Date()
+            )
+        case .ended:
+            guard let dragPages = motion.transition?.pages, dragPages == pages else {
+                motion.interrupt()
+                return
+            }
+            guard let destination = motion.releaseEdgeDrag(
+                translation: inwardTranslation,
+                predictedEndTranslation: clampedInward(
+                    predictedTranslation ?? translation, from: physicalEdge
+                ),
+                reduceMotion: reduceMotion,
+                at: Date()
+            ), dragPages.indices.contains(destination), dragPages[destination] != currentPage else { return }
+            if case .list(let listID) = dragPages[destination] {
+                model.selectList(listID)
+                model.haptics.emit(.selection, for: model.haptics.beginInteraction())
+            }
+        default:
+            motion.cancelEdgeDrag(reduceMotion: reduceMotion, at: Date())
+        }
+    }
+
+    private func side(for physicalEdge: UIRectEdge) -> EdgeSwipeSide {
+        return switch (physicalEdge, layoutDirection) {
+        case (.left, .leftToRight), (.right, .rightToLeft): .leading
+        default: .trailing
+        }
+    }
+
+    private func canSwipeFromEdge(_ side: EdgeSwipeSide) -> Bool {
+        guard !model.isSearchPresented, sheet == nil, !editMode.isEditing,
+              !isComposerFocused,
+              model.editingListID == nil,
+              motion.transition?.settlement == nil,
+              !motion.isSelectorDragging,
+              !swipeBlockingPages.contains(currentPage),
+              case .list = currentPage else { return false }
+        guard let index = pages.firstIndex(of: currentPage) else { return false }
+        switch side {
+        case .leading: return index > 1
+        case .trailing: return index < pages.count - 1
+        }
+    }
+
+    private func isInward(_ translation: CGFloat, from side: EdgeSwipeSide) -> Bool {
+        let logicalTranslation = translation * (layoutDirection == .rightToLeft ? -1 : 1)
+        return switch side {
+        case .leading: logicalTranslation > 0
+        case .trailing: logicalTranslation < 0
+        }
+    }
+
+    private func clampedInward(_ translation: CGSize, from physicalEdge: UIRectEdge) -> CGSize {
+        CGSize(
+            width: physicalEdge == .left ? max(0, translation.width) : min(0, translation.width),
+            height: translation.height
+        )
     }
 
 }

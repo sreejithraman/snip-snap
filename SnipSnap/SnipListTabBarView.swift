@@ -297,15 +297,7 @@ struct SnipListTabBarView: View {
                 currentTab
             },
             set: { tab in
-                switch tab {
-                case .clipboard:
-                    model.showClipboard()
-                case .list(let listID):
-                    guard let list = model.lists.first(where: { $0.id == listID }) else {
-                        return
-                    }
-                    model.selectList(list)
-                }
+                tab.select(in: model)
             }
         )
     }

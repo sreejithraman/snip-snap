@@ -90,6 +90,139 @@ final class SnipSnapiOSUITests: XCTestCase {
         expectHaptic("deleted")
     }
 
+    func testScreenEdgeSwipeSwitchesListsWhileRowSwipeStillWorks() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        createList("Work", in: app)
+        createSnip("Work edge swipe note", in: app)
+        let occupiedRow = row(named: "Work edge swipe note", in: app)
+        XCTAssertEqual(occupiedRow.value as? String, "Not Done")
+        let rowY = (occupiedRow.frame.midY - app.frame.minY) / app.frame.height
+
+        func swipeFromEdge(_ edge: CGFloat, distance: CGFloat, y: CGFloat = 0.45) {
+            let start = app.coordinate(withNormalizedOffset: CGVector(dx: edge, dy: y))
+                .withOffset(CGVector(dx: edge == 0 ? 8 : -8, dy: 0))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: distance, dy: 0)))
+        }
+
+        swipeFromEdge(0, distance: 130, y: rowY)
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+        createSnip("Inbox survives edge", in: app)
+        let inboxRow = row(named: "Inbox survives edge", in: app)
+        let inboxRowY = (inboxRow.frame.midY - app.frame.minY) / app.frame.height
+        swipeFromEdge(1, distance: -220, y: inboxRowY)
+        XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["done"].exists)
+        XCTAssertEqual(row(named: "Work edge swipe note", in: app).value as? String, "Not Done")
+
+        swipeFromEdge(0, distance: 130)
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+        XCTAssertEqual(row(named: "Inbox survives edge", in: app).value as? String, "Not Done")
+        swipeFromEdge(1, distance: -130)
+        XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
+
+        let workRow = row(named: "Work edge swipe note", in: app)
+        workRow.swipeRight()
+        XCTAssertTrue(app.buttons["done"].waitForExistence(timeout: 3))
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Edge navigation and row actions"
+        proof.lifetime = .keepAlways
+        add(proof)
+    }
+
+    func testEdgeSwipeDoesNotDiscardInlineSnipDraft() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        createList("Work", in: app)
+        createSnip("Keep draft", in: app)
+        row(named: "Keep draft", in: app).doubleTap()
+        let editor = app.descendants(matching: .any)["inline-snip-text"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        editor.tap()
+        editor.typeText(" unsaved")
+        app.swipeDown()
+        let draft = editor.value as? String
+
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.45))
+            .withOffset(CGVector(dx: 8, dy: 0))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 130, dy: 0)))
+        XCTAssertTrue(app.navigationBars["Work"].exists)
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        XCTAssertEqual(editor.value as? String, draft)
+    }
+
+    func testEdgeSwipeDoesNotLeaveFocusedComposer() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        createList("Work", in: app)
+        let composer = app.descendants(matching: .any)["composer-text"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        composer.tap()
+        composer.typeText("Unsent edge draft")
+
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.45))
+            .withOffset(CGVector(dx: 8, dy: 0))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 130, dy: 0)))
+
+        XCTAssertTrue(app.navigationBars["Work"].exists)
+        XCTAssertEqual(composer.value as? String, "Unsent edge draft")
+    }
+
+    func testLandscapeScreenEdgeSwipeSwitchesLists() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        createList("Work", in: app)
+        let body = app.staticTexts["empty-snips"]
+        XCTAssertTrue(body.waitForExistence(timeout: 3))
+        let start = body.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.3))
+            .withOffset(CGVector(dx: 8, dy: 0))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 180, dy: 0)))
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+    }
+
+    func testScreenEdgeSwipeDoesNotSwitchBehindAttachmentPreview() throws {
+        continueAfterFailure = false
+        let app = launchApp(withAttachments: true)
+        try requireCompactSelector(in: app)
+        createList("Work", in: app)
+        compactListTab(named: "Inbox", in: app).tap()
+        let preview = app.buttons["compact-attachment-preview-sample.png"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 5))
+        preview.tap()
+        let image = app.images["Image preview"]
+        XCTAssertTrue(image.waitForExistence(timeout: 5))
+
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.45))
+            .withOffset(CGVector(dx: -8, dy: 0))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -130, dy: 0)))
+        XCTAssertTrue(image.exists)
+        app.buttons["dismiss-attachment-image"].tap()
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+    }
+
+    func testUnavailableScreenEdgeLeavesRowSwipeAvailable() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        createList("Work", in: app)
+        createSnip("Last list row action", in: app)
+        let occupiedRow = row(named: "Last list row action", in: app)
+        let rowY = (occupiedRow.frame.midY - app.frame.minY) / app.frame.height
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: rowY))
+            .withOffset(CGVector(dx: -8, dy: 0))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -130, dy: 0)))
+
+        XCTAssertTrue(app.navigationBars["Work"].exists)
+        XCTAssertTrue(app.buttons["delete-snip"].waitForExistence(timeout: 3))
+        XCTAssertEqual(row(named: "Last list row action", in: app).value as? String, "Not Done")
+    }
+
     func testHapticsPreferenceCanChangeAndSurvivesRelaunch() {
         continueAfterFailure = false
         let app = launchApp()

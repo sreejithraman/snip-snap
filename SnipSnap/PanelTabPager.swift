@@ -18,6 +18,30 @@ enum PanelTabPage: Hashable {
               let destination = pages.firstIndex(of: other) else { return false }
         return source < destination
     }
+
+    func adjacent(
+        _ direction: PanelSwipeDirection,
+        in pages: [Self],
+        layoutDirection: LayoutDirection
+    ) -> Self? {
+        guard let index = pages.firstIndex(of: self) else { return nil }
+        let step = (direction == .next ? 1 : -1)
+            * (layoutDirection == .rightToLeft ? -1 : 1)
+        let destination = index + step
+        guard pages.indices.contains(destination) else { return nil }
+        return pages[destination]
+    }
+
+    @MainActor
+    func select(in model: AppModel) {
+        switch self {
+        case .clipboard:
+            model.showClipboard()
+        case .list(let listID):
+            guard let list = model.lists.first(where: { $0.id == listID }) else { return }
+            model.selectList(list)
+        }
+    }
 }
 
 /// Owns tab motion while the caller owns the contents and per-list drafts.
