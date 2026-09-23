@@ -11,3 +11,7 @@ Use one shared square attachment tile in drafts, snip cards, and editors. Genera
 ## Consequences
 
 Common file types get native previews and multi-file navigation without a custom preview controller. The preview needs a live readable URL, which saved snips provide through Snip Snap-owned attachment copies. Thumbnail work must remain cancellable, cached, and off the main actor. Finder-style Space-bar preview would need a later attachment selection model and may justify `QLPreviewPanel` then.
+
+## iOS image viewer update (2026-09-23)
+
+On iOS, open still images in a full-screen image viewer with pinch and double-tap zoom, panning, and a downward swipe to dismiss at the base zoom. Keep a visible Close button. Continue to use Quick Look for animated images and other files so animation and document preview stay native. The Mac preview remains in Quick Look. Classify the selected file away from SwiftUI's render path, and decode full-screen images to the display size off the main actor.

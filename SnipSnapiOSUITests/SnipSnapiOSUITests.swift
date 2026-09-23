@@ -552,6 +552,82 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertFalse(send.isEnabled)
     }
 
+    func testAttachmentAddMenuOffersFilesAndPhotos() {
+        continueAfterFailure = false
+        let app = launchApp(withAttachments: true)
+        app.buttons["composer-add-attachments"].tap()
+        XCTAssertTrue(app.buttons["Choose Files"].firstMatch.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Choose Photos"].firstMatch.exists)
+    }
+
+    func testPhotoPickerStagesAChosenImage() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        app.buttons["composer-add-attachments"].tap()
+        app.buttons["Choose Photos"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["Photos"].waitForExistence(timeout: 5))
+        let firstPhoto = app.images.matching(identifier: "PXGGridLayout-Info").firstMatch
+        guard firstPhoto.waitForExistence(timeout: 5) else {
+            throw XCTSkip("Seed one image in the test Simulator's Photos library to run.")
+        }
+        // The system Photos picker exposes grid images but does not report them as hittable.
+        firstPhoto.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        app.buttons["Done"].tap()
+        let attachment = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "composer-attachment-Photo."
+        )).firstMatch
+        XCTAssertTrue(attachment.waitForExistence(timeout: 8))
+        attachment.tap()
+        let image = app.images["Image preview"]
+        XCTAssertTrue(image.waitForExistence(timeout: 5))
+        app.buttons["dismiss-attachment-image"].tap()
+        XCTAssertTrue(image.waitForNonExistence(timeout: 3))
+    }
+
+    func testEditorKeepsStagedPhotoWhenPhotoPickerIsCancelled() throws {
+        continueAfterFailure = false
+        let storeName = "staged-photo-\(UUID().uuidString)"
+        var app = launchApp(storeName: storeName, withAttachments: true)
+        let search = openSearch(in: app)
+        search.typeText("Attachment fixture")
+        let searchResult = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "search-snip-"
+        )).firstMatch
+        XCTAssertTrue(searchResult.waitForExistence(timeout: 5))
+        searchResult.tap()
+        XCTAssertTrue(app.textViews["snip-text"].waitForExistence(timeout: 5))
+        app.buttons["add-attachments"].tap()
+        app.buttons["Choose Photos"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["Photos"].waitForExistence(timeout: 5))
+        let firstPhoto = app.images.matching(identifier: "PXGGridLayout-Info").firstMatch
+        guard firstPhoto.waitForExistence(timeout: 5) else {
+            throw XCTSkip("Seed one image in the test Simulator's Photos library to run.")
+        }
+        firstPhoto.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        app.buttons["Done"].tap()
+        let staged = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "attachment-row-Photo."
+        )).firstMatch
+        XCTAssertTrue(staged.waitForExistence(timeout: 8))
+
+        let replace = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "replace-attachment-Photo."
+        )).firstMatch
+        XCTAssertTrue(replace.waitForExistence(timeout: 5))
+        replace.tap()
+        app.buttons["Choose Photos"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["Photos"].waitForExistence(timeout: 5))
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.09, dy: 0.12)).tap()
+        XCTAssertTrue(staged.waitForExistence(timeout: 5))
+        app.buttons["save-snip"].tap()
+        XCTAssertTrue(app.buttons["save-snip"].waitForNonExistence(timeout: 8))
+
+        app.terminate()
+        app = launchApp(storeName: storeName, withAttachments: true)
+        openAttachmentFixture(in: app)
+        XCTAssertTrue(staged.waitForExistence(timeout: 5))
+    }
+
     func testCompactRowTapStaysUnselected() throws {
         continueAfterFailure = false
         let app = launchApp()
@@ -1416,6 +1492,27 @@ final class SnipSnapiOSUITests: XCTestCase {
         )
     }
 
+    func testAttachmentListImagePreviewAndSwipeDismiss() {
+        continueAfterFailure = false
+        let app = launchApp(withAttachments: true)
+        let compactPreview = app.buttons["compact-attachment-preview-sample.png"]
+        XCTAssertTrue(compactPreview.waitForExistence(timeout: 5))
+        let rowProof = XCTAttachment(screenshot: app.screenshot())
+        rowProof.name = "Attachment image preview in list"
+        rowProof.lifetime = .keepAlways
+        add(rowProof)
+        compactPreview.tap()
+        let fullScreenImage = app.images["Image preview"]
+        XCTAssertTrue(fullScreenImage.waitForExistence(timeout: 5))
+        let fullScreenProof = XCTAttachment(screenshot: app.screenshot())
+        fullScreenProof.name = "Full-screen attachment image"
+        fullScreenProof.lifetime = .keepAlways
+        add(fullScreenProof)
+        fullScreenImage.swipeDown()
+        XCTAssertTrue(fullScreenImage.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["dismiss-attachment-image"].waitForNonExistence(timeout: 3))
+    }
+
     func testLocalAttachmentsPreviewRemoveAndSurviveRelaunch() {
         continueAfterFailure = false
         let storeName = "attachments-\(UUID().uuidString)"
@@ -1424,10 +1521,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         let compactPreview = app.buttons["compact-attachment-preview-sample.png"]
         XCTAssertTrue(compactPreview.waitForExistence(timeout: 5))
         compactPreview.tap()
-        let compactQuickLook = app.otherElements["QLPreviewControllerView"]
-        XCTAssertTrue(compactQuickLook.waitForExistence(timeout: 5))
-        dismissQuickLook(compactQuickLook, in: app)
-        XCTAssertFalse(compactQuickLook.waitForExistence(timeout: 3))
+        let fullScreenImage = app.images["Image preview"]
+        XCTAssertTrue(fullScreenImage.waitForExistence(timeout: 5))
+        app.buttons["dismiss-attachment-image"].tap()
+        XCTAssertTrue(fullScreenImage.waitForNonExistence(timeout: 3))
 
         openAttachmentFixture(in: app)
         let imagePreview = app.buttons["attachment-row-sample.png"]
@@ -1435,6 +1532,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         let textPreview = app.buttons["attachment-row-notes.txt"]
         XCTAssertTrue(textPreview.waitForExistence(timeout: 3))
         imagePreview.tap()
+        XCTAssertTrue(fullScreenImage.waitForExistence(timeout: 5))
+        app.buttons["dismiss-attachment-image"].tap()
+        XCTAssertTrue(fullScreenImage.waitForNonExistence(timeout: 3))
+
+        textPreview.tap()
         let preview = app.otherElements["QLPreviewControllerView"]
         XCTAssertTrue(preview.waitForExistence(timeout: 5))
         dismissQuickLook(preview, in: app)
@@ -1479,6 +1581,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         composer.typeText("Picker flow")
 
         app.buttons["composer-add-attachments"].tap()
+        app.buttons["Choose Files"].firstMatch.tap()
         pickFile(named: "attachment-one.txt", in: app, confirmsSelection: true)
         let added = app.buttons["composer-attachment-attachment-one.txt"]
         XCTAssertTrue(added.waitForExistence(timeout: 5))
@@ -1490,6 +1593,7 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         app.buttons["composer-remove-attachment-attachment-one.txt"].tap()
         app.buttons["composer-add-attachments"].tap()
+        app.buttons["Choose Files"].firstMatch.tap()
         pickFile(named: "attachment-two.txt", in: app, confirmsSelection: false)
         XCTAssertTrue(
             app.buttons["composer-attachment-attachment-two.txt"].waitForExistence(timeout: 5)

@@ -1,4 +1,5 @@
 import Foundation
+import PhotosUI
 import QuickLook
 import SnipSnapCore
 import SwiftUI
@@ -13,6 +14,9 @@ struct SnipEditorView: View {
     @State private var attachments: [AttachmentDraft] = []
     @State private var previewURL: URL?
     @State private var isImporting = false
+    @State private var isPickingPhotos = false
+    @State private var selectedPhotos: [PhotosPickerItem] = []
+    @State private var isTakingPhoto = false
     @State private var replacementID: UUID?
     @State private var stagingTask: Task<Void, Never>?
     @State private var isSaving = false
@@ -34,17 +38,18 @@ struct SnipEditorView: View {
 
                 AttachmentEditorSection(
                     attachments: attachments,
+                    model: model,
                     isStaging: isStaging,
                     isDisabled: isSaving || isStaging,
                     preview: { previewAttachment($0) },
-                    replace: {
-                        replacementID = $0.id
-                        isImporting = true
+                    replace: { attachment, source in
+                        replacementID = attachment.id
+                        presentAttachmentSource(source)
                     },
                     remove: { removeAttachment(id: $0.id) },
-                    add: {
+                    add: { source in
                         replacementID = nil
-                        isImporting = true
+                        presentAttachmentSource(source)
                     }
                 )
             }
@@ -53,16 +58,16 @@ struct SnipEditorView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        cleanStagingDirectory()
-                        dismiss()
+                    Button(isStaging ? "Stop Import" : "Cancel") {
+                        if isStaging {
+                            stagingTask?.cancel()
+                        } else {
+                            cleanStagingDirectory()
+                            dismiss()
+                        }
                     }
-                    .disabled(
-                        !AttachmentDraftLifecycle.allowsDismissal(
-                            isSaving: isSaving,
-                            isStaging: isStaging
-                        )
-                    )
+                    .disabled(isSaving)
+                    .accessibilityIdentifier(isStaging ? "cancel-attachment-import" : "cancel-editor")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(isSaving ? "Saving…" : "Save") {
@@ -73,6 +78,7 @@ struct SnipEditorView: View {
                             isSaving: isSaving,
                             isStaging: isStaging,
                             isImporting: isImporting,
+                            isPickingMedia: isPickingPhotos || isTakingPhoto,
                             isPreviewing: previewURL != nil
                         )
                             || (content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -91,8 +97,9 @@ struct SnipEditorView: View {
                         id: attachment.id,
                         fileName: attachment.fileName,
                         byteCount: attachment.byteCount,
-                        url: model.attachmentURL(for: attachment.id),
-                        source: .existing(attachmentID: attachment.id)
+                        url: nil,
+                        source: .existing(attachmentID: attachment.id),
+                        contentType: attachment.contentType
                     )
                 }
             }
@@ -101,6 +108,7 @@ struct SnipEditorView: View {
                     isSaving: isSaving,
                     isStaging: isStaging,
                     isImporting: isImporting,
+                    isPickingMedia: isPickingPhotos || isTakingPhoto,
                     isPreviewing: previewURL != nil
                 ) {
                     cleanStagingDirectory()
@@ -119,7 +127,29 @@ struct SnipEditorView: View {
             ) { result in
                 stage(result)
             }
-            .quickLookPreview($previewURL, in: attachments.compactMap(\.url))
+            .photosPicker(
+                isPresented: $isPickingPhotos,
+                selection: $selectedPhotos,
+                maxSelectionCount: replacementID == nil ? nil : 1,
+                matching: .images
+            )
+            .onChange(of: selectedPhotos) { _, items in
+                guard !items.isEmpty else { return }
+                selectedPhotos = []
+                stageMedia(.photos(items))
+            }
+            .fullScreenCover(isPresented: $isTakingPhoto) {
+                AttachmentCameraPicker { image in
+                    isTakingPhoto = false
+                    if let image { stageMedia(.camera(image)) } else { replacementID = nil }
+                }
+            }
+            .attachmentPreview($previewURL, in: attachments.compactMap { attachment in
+                if case .existing = attachment.source {
+                    return model.usableAttachmentURL(for: attachment.id)
+                }
+                return attachment.url
+            })
         }
     }
 
@@ -128,6 +158,7 @@ struct SnipEditorView: View {
             isSaving: isSaving,
             isStaging: isStaging,
             isImporting: isImporting,
+            isPickingMedia: isPickingPhotos || isTakingPhoto,
             isPreviewing: previewURL != nil
         ) else { return }
         isSaving = true
@@ -155,41 +186,67 @@ struct SnipEditorView: View {
                   let index = attachments.firstIndex(where: { $0.id == attachment.id })
             else { return }
             let current = attachments[index]
-            guard let prepared = current.applyingPreparedURL(
-                url,
-                requestedDraft: attachment
-            ) else { return }
-            attachments[index] = prepared
-            previewURL = url
+            guard current == attachment else { return }
+            if case .existing = current.source {
+                previewURL = model.usableAttachmentURL(for: attachment.id) ?? url
+            } else {
+                previewURL = url
+            }
+        }
+    }
+
+    private func presentAttachmentSource(_ source: AttachmentSource) {
+        switch source {
+        case .files: isImporting = true
+        case .photos: isPickingPhotos = true
+        case .camera: isTakingPhoto = true
         }
     }
 
     private func stage(_ result: Result<[URL], any Error>) {
         guard case .success(let urls) = result else {
             if case .failure(let error) = result {
-                model.presentError(error, operation: "attachment.import_select")
+                let nsError = error as NSError
+                if nsError.domain != NSCocoaErrorDomain || nsError.code != NSUserCancelledError {
+                    model.presentError(error, operation: "attachment.import_select")
+                }
             }
             replacementID = nil
             return
         }
+        stageMedia(.files(urls))
+    }
+
+    private func stageMedia(_ input: AttachmentMediaInput) {
         guard stagingTask == nil else { return }
         let targetID = replacementID
         replacementID = nil
+        let selectedInput: AttachmentMediaInput
+        if case .files(let urls) = input, targetID != nil {
+            selectedInput = .files(Array(urls.prefix(1)))
+        } else {
+            selectedInput = input
+        }
         stagingTask = Task {
+            var staged: [StagedAttachment] = []
+            defer { stagingTask = nil }
             do {
-                let staged = try await AttachmentDraftStager.stage(
-                    targetID == nil ? urls : Array(urls.prefix(1)),
-                    in: stagingDirectory
-                )
-                if let targetID, let replacement = staged.first {
-                    replaceAttachment(id: targetID, with: replacement)
-                } else {
-                    attachments.append(contentsOf: staged.map(AttachmentDraft.added))
-                }
+                staged = try await AttachmentMediaStager.stage(selectedInput, in: stagingDirectory)
+                try Task.checkCancellation()
+                applyStaged(staged, replacing: targetID)
+            } catch is CancellationError {
+                AttachmentDraftStager.clean(staged)
             } catch {
                 model.presentError(error, operation: "attachment.import_stage")
             }
-            stagingTask = nil
+        }
+    }
+
+    private func applyStaged(_ staged: [StagedAttachment], replacing targetID: UUID?) {
+        if let targetID, let replacement = staged.first {
+            replaceAttachment(id: targetID, with: replacement)
+        } else {
+            attachments.append(contentsOf: staged.map(AttachmentDraft.added))
         }
     }
 

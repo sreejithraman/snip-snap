@@ -188,7 +188,7 @@ struct SnipCollectionView: View {
                 dismissComposerKeyboard()
             }
         )
-        .quickLookPreview($selectedPreviewURL, in: previewURLs)
+        .attachmentPreview($selectedPreviewURL, in: previewURLs)
         .modifier(CollectionScreenPresentation(
             title: isEditingList ? "" : displayedList.name,
             titleColor: displayedList.accent.color,
@@ -635,7 +635,7 @@ private struct SnipRow: View {
                                 )
                             } else {
                                 AttachmentStatusThumbnail(attachment: attachment, model: model)
-                                    .frame(width: 48, height: 48)
+                                    .frame(width: 64, height: 64)
                             }
                         }
                         if snip.attachments.count > 3 {
@@ -680,7 +680,7 @@ private struct CompactAttachmentPreviewButton: View {
     var body: some View {
         Button(action: action) {
             AttachmentStatusThumbnail(attachment: attachment, model: model)
-                .frame(width: 48, height: 48)
+                .frame(width: 64, height: 64)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Preview \(attachment.fileName)")
@@ -694,8 +694,14 @@ private struct AttachmentStatusThumbnail: View {
 
     var body: some View {
         Group {
-            if let url = model.attachmentURL(for: attachment.id) {
-                AttachmentThumbnail(url: url)
+            if let url = model.usableAttachmentURL(for: attachment.id) {
+                AttachmentThumbnail(
+                    url: url,
+                    fillsTile: AttachmentImageType.isImage(
+                        fileName: attachment.fileName,
+                        contentType: attachment.contentType
+                    )
+                )
             } else {
                 ZStack {
                     Rectangle().fill(.quaternary)
@@ -717,6 +723,12 @@ private struct AttachmentStatusThumbnail: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .accessibilityLabel("\(attachment.fileName), \(stateLabel)")
+        .modifier(VisibleAttachmentPreparation(
+            attachmentID: attachment.id,
+            fileName: attachment.fileName,
+            contentType: attachment.contentType,
+            model: model
+        ))
     }
 
     private var stateLabel: String {
@@ -839,7 +851,7 @@ struct LibrarySearchView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.background)
-        .quickLookPreview($previewURL)
+        .attachmentPreview($previewURL)
         .task { await clipboard.load() }
         .overlay(alignment: .bottom) {
             if clipboard.copied {

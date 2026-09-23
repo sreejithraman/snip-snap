@@ -286,10 +286,13 @@ struct SnipSnapiOSApp: App {
         let textURL = directory.appendingPathComponent("notes.txt", isDirectory: false)
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let png = Data(
-                base64Encoded:
-                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
-            ) ?? Data()
+            let png = UIGraphicsImageRenderer(size: CGSize(width: 240, height: 160))
+                .pngData { context in
+                    UIColor(red: 0.08, green: 0.55, blue: 0.62, alpha: 1).setFill()
+                    context.fill(CGRect(x: 0, y: 0, width: 240, height: 160))
+                    UIColor(red: 1, green: 0.68, blue: 0.35, alpha: 1).setFill()
+                    context.cgContext.fillEllipse(in: CGRect(x: 75, y: 35, width: 90, height: 90))
+                }
             try png.write(to: imageURL, options: .atomic)
             try Data("A local file attachment".utf8).write(to: textURL, options: .atomic)
             return [imageURL, textURL]

@@ -24,6 +24,8 @@
 	<string>public.app-category.productivity</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Take a photo to attach to a snip.</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>SnipSnapAppGroupIdentifier</key>

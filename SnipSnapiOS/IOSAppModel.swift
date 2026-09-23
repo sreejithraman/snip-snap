@@ -39,6 +39,18 @@ final class IOSAppModel {
     private(set) var recoverySnapshot: SnipRecoverySnapshot = .empty
     private var preparedAttachmentURLs: [UUID: URL] = [:]
     private(set) var attachmentTransferStates: [UUID: SyncedAttachmentTransferState] = [:]
+    @ObservationIgnored private var attachmentPreparations: [UUID: AttachmentPreparationGroup] = [:]
+    private struct AttachmentPreparationGroup {
+        var activeCount: Int
+        let initialState: SyncedAttachmentTransferState
+        var didSucceed = false
+        var didFail = false
+    }
+    private enum AttachmentPreparationOutcome {
+        case succeeded
+        case cancelled
+        case failed
+    }
     private(set) var isCloudSyncActive = false
     private var hasKnownCloudSyncActivity: Bool
     private var hasKnownCloudAttachmentStates = false
@@ -477,6 +489,12 @@ final class IOSAppModel {
         return attachmentURLs[attachmentID]
     }
 
+    func usableAttachmentURL(for attachmentID: UUID) -> URL? {
+        guard let url = attachmentURL(for: attachmentID),
+              isAvailablePreparedAttachment(url) else { return nil }
+        return url
+    }
+
     func attachmentTransferState(for attachmentID: UUID) -> SyncedAttachmentTransferState {
         if let state = attachmentTransferStates[attachmentID] { return state }
         if cloudSyncHandler != nil, !hasKnownCloudSyncActivity { return .waiting }
@@ -487,6 +505,7 @@ final class IOSAppModel {
     func prepareAttachment(
         _ attachmentID: UUID,
         for use: SyncedAttachmentUse,
+        showsFailureAlert: Bool = true,
         onFailure: ((String) -> Void)? = nil,
         onCancellation: (() -> Void)? = nil
     ) async -> URL? {
@@ -507,36 +526,82 @@ final class IOSAppModel {
         {
             return attachmentURLs[attachmentID]
         }
+        var group = attachmentPreparations[attachmentID] ?? AttachmentPreparationGroup(
+            activeCount: 0,
+            initialState: attachmentTransferStates[attachmentID] ?? .waiting
+        )
+        group.activeCount += 1
+        attachmentPreparations[attachmentID] = group
         attachmentTransferStates[attachmentID] = .syncing
         do {
             let url = try await cloudSyncHandler.prepareSyncedAttachment(attachmentID, for: use)
             attachmentURLs[attachmentID] = url
             preparedAttachmentURLs[attachmentID] = url
-            attachmentTransferStates[attachmentID] = .available
+            finishAttachmentPreparation(attachmentID, outcome: .succeeded)
             return url
         } catch is CancellationError {
-            attachmentTransferStates[attachmentID] = .waiting
+            finishAttachmentPreparation(attachmentID, outcome: .cancelled)
             onCancellation?()
             return nil
         } catch {
-            attachmentTransferStates[attachmentID] = .failed
+            if Task.isCancelled {
+                finishAttachmentPreparation(attachmentID, outcome: .cancelled)
+                onCancellation?()
+                return nil
+            }
+            if let preparedURL = preparedAttachmentURLs[attachmentID],
+               isAvailablePreparedAttachment(preparedURL) {
+                finishAttachmentPreparation(attachmentID, outcome: .cancelled)
+                return preparedURL
+            }
+            finishAttachmentPreparation(attachmentID, outcome: .failed)
             let code = diagnosticErrorCode(error)
             switch use {
             case .preview, .open:
-                let message = String(localized: "Couldn’t download this file. Try again.")
-                if errorMessage != message {
+                if showsFailureAlert {
+                    let message = String(localized: "Couldn’t download this file. Try again.")
+                    if errorMessage != message {
+                        diagnostics.record(.failure(
+                            operation: "attachment.prepare",
+                            errorCode: code,
+                            visibility: .user
+                        ))
+                    }
+                    errorMessage = message
+                } else {
                     diagnostics.record(.failure(
                         operation: "attachment.prepare",
                         errorCode: code,
-                        visibility: .user
+                        visibility: .background
                     ))
                 }
-                errorMessage = message
             case .copy, .export:
                 onFailure?(code)
             }
             return nil
         }
+    }
+
+    private func finishAttachmentPreparation(
+        _ attachmentID: UUID, outcome: AttachmentPreparationOutcome
+    ) {
+        guard var group = attachmentPreparations[attachmentID] else { return }
+        group.activeCount -= 1
+        switch outcome {
+        case .succeeded: group.didSucceed = true
+        case .failed: group.didFail = true
+        case .cancelled: break
+        }
+        if group.didSucceed {
+            attachmentTransferStates[attachmentID] = .available
+        } else if group.activeCount > 0 {
+            attachmentTransferStates[attachmentID] = .syncing
+        } else if group.didFail {
+            attachmentTransferStates[attachmentID] = .failed
+        } else if attachmentTransferStates[attachmentID] == .syncing {
+            attachmentTransferStates[attachmentID] = group.initialState
+        }
+        attachmentPreparations[attachmentID] = group.activeCount > 0 ? group : nil
     }
 
     private func isAvailablePreparedAttachment(_ url: URL) -> Bool {

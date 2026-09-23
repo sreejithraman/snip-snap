@@ -3,7 +3,6 @@ import ImageIO
 @preconcurrency import QuickLookThumbnailing
 import SnipSnapCore
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct AttachmentDraft: Equatable, Identifiable {
     enum Source: Equatable {
@@ -31,6 +30,7 @@ struct AttachmentDraft: Equatable, Identifiable {
     let byteCount: Int64
     let url: URL?
     let source: Source
+    var contentType: String? = nil
 
     static func added(_ file: StagedAttachment) -> AttachmentDraft {
         AttachmentDraft(
@@ -65,29 +65,17 @@ struct AttachmentDraft: Equatable, Identifiable {
         }
     }
 
-    func applyingPreparedURL(
-        _ preparedURL: URL,
-        requestedDraft: AttachmentDraft
-    ) -> AttachmentDraft? {
-        guard self == requestedDraft else { return nil }
-        return AttachmentDraft(
-            id: id,
-            fileName: fileName,
-            byteCount: byteCount,
-            url: preparedURL,
-            source: source
-        )
-    }
 }
 
 struct AttachmentEditorSection: View {
     let attachments: [AttachmentDraft]
+    let model: IOSAppModel
     let isStaging: Bool
     let isDisabled: Bool
     let preview: (AttachmentDraft) -> Void
-    let replace: (AttachmentDraft) -> Void
+    let replace: (AttachmentDraft, AttachmentSource) -> Void
     let remove: (AttachmentDraft) -> Void
-    let add: () -> Void
+    let add: (AttachmentSource) -> Void
 
     var body: some View {
         Section("Attachments") {
@@ -99,9 +87,10 @@ struct AttachmentEditorSection: View {
                     ForEach(attachments) { attachment in
                         AttachmentEditorTile(
                             attachment: attachment,
+                            model: model,
                             isDisabled: isDisabled,
                             preview: { preview(attachment) },
-                            replace: { replace(attachment) },
+                            replace: { replace(attachment, $0) },
                             remove: { remove(attachment) }
                         )
                     }
@@ -109,9 +98,11 @@ struct AttachmentEditorSection: View {
                 .padding(.vertical, 8)
             }
 
-            Button("Add files", systemImage: "paperclip", action: add)
-                .disabled(isDisabled)
-                .accessibilityIdentifier("add-attachments")
+            AttachmentSourceMenu(choose: add) {
+                Label("Add attachments", systemImage: "paperclip")
+            }
+            .disabled(isDisabled)
+            .accessibilityIdentifier("add-attachments")
 
             if isStaging {
                 HStack(spacing: 8) {
@@ -127,14 +118,15 @@ struct AttachmentEditorSection: View {
 
 private struct AttachmentEditorTile: View {
     let attachment: AttachmentDraft
+    let model: IOSAppModel
     let isDisabled: Bool
     let preview: () -> Void
-    let replace: () -> Void
+    let replace: (AttachmentSource) -> Void
     let remove: () -> Void
 
     var body: some View {
         VStack(spacing: 8) {
-            if let url = attachment.url {
+            if let url = displayURL {
                 AttachmentPreviewTile(
                     item: AttachmentPreviewItem(
                         id: attachment.id,
@@ -161,8 +153,9 @@ private struct AttachmentEditorTile: View {
             }
 
             HStack(spacing: 8) {
-                Button("Replace", systemImage: "arrow.triangle.2.circlepath", action: replace)
-                    .labelStyle(.iconOnly)
+                AttachmentSourceMenu(title: "Replace attachment", choose: replace) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                }
                     .frame(minWidth: 44, minHeight: 44)
                     .contentShape(Rectangle())
                     .disabled(isDisabled)
@@ -179,6 +172,54 @@ private struct AttachmentEditorTile: View {
             }
             .buttonStyle(.borderless)
         }
+        .modifier(VisibleAttachmentPreparation(
+            attachmentID: attachment.id,
+            fileName: attachment.fileName,
+            contentType: attachment.contentType,
+            model: model,
+            enabled: !attachment.source.isStaged
+        ))
+    }
+
+    private var displayURL: URL? {
+        if case .existing = attachment.source {
+            return model.usableAttachmentURL(for: attachment.id)
+        }
+        return attachment.url
+    }
+}
+
+struct VisibleAttachmentPreparation: ViewModifier {
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var preparationID = UUID()
+    let attachmentID: UUID
+    let fileName: String
+    let contentType: String?
+    let model: IOSAppModel
+    var enabled = true
+
+    func body(content: Content) -> some View {
+        content
+            .task(id: preparationID) {
+                guard enabled,
+                      AttachmentImageType.shouldPrepare(
+                        fileName: fileName, contentType: contentType
+                      ),
+                      model.usableAttachmentURL(for: attachmentID) == nil,
+                      model.attachmentTransferState(for: attachmentID) == .available else { return }
+                _ = await model.prepareAttachment(
+                    attachmentID, for: .preview, showsFailureAlert: false
+                )
+            }
+            .onChange(of: model.attachmentTransferState(for: attachmentID)) { _, state in
+                if state == .available { preparationID = UUID() }
+            }
+            .onChange(of: model.usableAttachmentURL(for: attachmentID)) { oldURL, newURL in
+                if oldURL != nil && newURL == nil { preparationID = UUID() }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { preparationID = UUID() }
+            }
     }
 }
 
@@ -197,9 +238,10 @@ enum AttachmentDraftLifecycle {
         isSaving: Bool,
         isStaging: Bool,
         isImporting: Bool,
+        isPickingMedia: Bool,
         isPreviewing: Bool
     ) -> Bool {
-        !isSaving && !isStaging && !isImporting && !isPreviewing
+        !isSaving && !isStaging && !isImporting && !isPickingMedia && !isPreviewing
     }
 
 }
@@ -316,23 +358,33 @@ struct AttachmentPreviewTile: View {
 
 struct AttachmentThumbnail: View {
     let url: URL
+    var fillsTile = false
     @Environment(\.displayScale) private var displayScale
     @State private var image: Image?
 
     var body: some View {
-        ZStack {
-            Rectangle()
-                .fill(.quaternary)
-            if let image {
-                image
-                    .resizable()
-                    .scaledToFit()
-                    .padding(8)
-            } else {
-                Image(systemName: "doc.fill")
-                    .font(.system(size: 32))
-                    .foregroundStyle(.secondary)
+        GeometryReader { geometry in
+            ZStack {
+                Rectangle()
+                    .fill(.quaternary)
+                if let image {
+                    let inset: CGFloat = fillsTile ? 0 : 8
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: fillsTile ? .fill : .fit)
+                        .frame(
+                            width: max(0, geometry.size.width - inset * 2),
+                            height: max(0, geometry.size.height - inset * 2)
+                        )
+                        .clipped()
+                } else {
+                    Image(systemName: "doc.fill")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.secondary)
+                }
             }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .clipped()
         }
         .task(id: url) {
             image = nil
@@ -375,7 +427,6 @@ private actor AttachmentThumbnailCache {
                 .fileResourceIdentifierKey,
                 .contentModificationDateKey,
                 .fileSizeKey,
-                .contentTypeKey,
             ]
         )
         let key = Key(
@@ -392,8 +443,7 @@ private actor AttachmentThumbnailCache {
             return cached
         }
 
-        if values?.contentType?.conforms(to: .image) == true,
-            !Task.isCancelled,
+        if !Task.isCancelled,
             let source = CGImageSourceCreateWithURL(url as CFURL, nil),
             let thumbnail = Self.makeImageThumbnail(source: source, size: size, scale: scale)
         {
