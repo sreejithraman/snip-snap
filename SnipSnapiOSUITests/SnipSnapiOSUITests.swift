@@ -1357,20 +1357,20 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         let snip = row(named: "Undo this", in: app)
         XCTAssertTrue(snip.waitForExistence(timeout: 3))
-        snip.press(forDuration: 1)
-        app.buttons["Delete"].tap()
+        snip.swipeLeft()
+        app.buttons["delete-snip"].tap()
 
         XCTAssertTrue(snip.waitForNonExistence(timeout: 3))
         let toast = app.descendants(matching: .any)["app-toast"]
         XCTAssertTrue(toast.waitForExistence(timeout: 3))
         XCTAssertLessThan(toast.frame.width, app.frame.width - 48)
+        XCTAssertLessThanOrEqual(toast.frame.height, 60)
         let composer = app.textFields["composer-text"]
-        let sendButton = app.buttons["composer-send"]
-        XCTAssertLessThanOrEqual(toast.frame.height, sendButton.frame.height + 4)
         XCTAssertLessThanOrEqual(
             toast.frame.maxY,
             composer.frame.minY
         )
+        XCTAssertGreaterThanOrEqual(app.buttons["toast-action"].frame.height, 44)
         let actionScreenshot = app.buttons["toast-action"].screenshot()
         let actionAttachment = XCTAttachment(screenshot: actionScreenshot)
         actionAttachment.name = "Filled toast action"
@@ -1385,8 +1385,59 @@ final class SnipSnapiOSUITests: XCTestCase {
         screenshot.name = "Delete toast above compact controls"
         screenshot.lifetime = .keepAlways
         add(screenshot)
-        app.buttons["toast-action"].tap()
+        app.buttons["toast-action"]
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1))
+            .tap()
         XCTAssertTrue(row(named: "Undo this", in: app).waitForExistence(timeout: 3))
+    }
+
+    func testDeleteToastStaysAboveSearchToolbar() {
+        continueAfterFailure = false
+        let app = launchApp()
+        createSnip("Search after deleting", in: app)
+
+        let snip = row(named: "Search after deleting", in: app)
+        XCTAssertTrue(snip.waitForExistence(timeout: 3))
+        snip.swipeLeft()
+        app.buttons["delete-snip"].tap()
+
+        let toast = app.descendants(matching: .any)["app-toast"]
+        XCTAssertTrue(toast.waitForExistence(timeout: 3))
+        app.buttons["Search"].tap()
+        let search = app.searchFields["Search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        XCTAssertTrue(toast.exists)
+        XCTAssertLessThanOrEqual(toast.frame.maxY, search.frame.minY)
+        XCTAssertGreaterThanOrEqual(toast.frame.minY, 0)
+        XCTAssertTrue(app.buttons["toast-action"].isHittable)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Delete toast beside active search"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        app.buttons["toast-action"].tap()
+        closeSearch(in: app)
+        XCTAssertTrue(row(named: "Search after deleting", in: app).waitForExistence(timeout: 3))
+    }
+
+    func testSearchDoesNotExtendDeleteUndoWindow() {
+        continueAfterFailure = false
+        let app = launchApp()
+        createSnip("Undo expires", in: app)
+
+        let snip = row(named: "Undo expires", in: app)
+        snip.swipeLeft()
+        app.buttons["delete-snip"].tap()
+        let deletedAt = Date()
+
+        let toast = app.descendants(matching: .any)["app-toast"]
+        XCTAssertTrue(toast.waitForExistence(timeout: 3))
+        Thread.sleep(forTimeInterval: 1.5)
+        app.buttons["Search"].tap()
+        XCTAssertTrue(app.searchFields["Search"].waitForExistence(timeout: 3))
+        XCTAssertTrue(toast.exists)
+        let remaining = deletedAt.addingTimeInterval(7).timeIntervalSinceNow
+        if remaining > 0 { Thread.sleep(forTimeInterval: remaining) }
+        XCTAssertFalse(toast.exists)
     }
 
     private func hasDarkPixelsInLabelArea(_ screenshot: XCUIScreenshot) -> Bool {
@@ -2087,7 +2138,7 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     private func createSnip(_ text: String, in app: XCUIApplication) {
-        let composer = app.descendants(matching: .any)["composer-text"]
+        let composer = app.textFields["composer-text"].firstMatch
         if composer.waitForExistence(timeout: 1) {
             composer.tap()
             composer.typeText(text)

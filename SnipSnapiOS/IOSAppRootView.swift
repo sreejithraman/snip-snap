@@ -315,12 +315,16 @@ struct IOSAppRootView: View {
                         dismissComposerKeyboard: { isCompactComposerFocused = false },
                         libraryActions: compactLibraryActions
                     )
+                    .libraryToast(
+                        model: model,
+                        isHidden: model.isSearchPresented,
+                        usesFixedExpiry: true
+                    )
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         libraryControls(pageFrame: frame, pageWidth: proxy.size.width)
                     }
                 }
             }
-            .libraryToast(model: model)
             .task(id: listPageMotion.transition?.settlement?.id) {
                 guard let settlement = listPageMotion.transition?.settlement else { return }
                 do { try await Task.sleep(for: .seconds(settlement.duration)) }
@@ -376,12 +380,12 @@ struct IOSAppRootView: View {
                         )
                         }
                     }
+                    .libraryToast(model: model)
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         libraryControls(showsListTabs: false)
                     }
                 }
             }
-            .libraryToast(model: model)
             .searchable(
                 text: Binding(get: { model.searchText }, set: { model.searchText = $0 }),
                 isPresented: Binding(get: { model.isSearchPresented }, set: { model.isSearchPresented = $0 }),
@@ -531,6 +535,11 @@ private struct CompactLibraryPageStack: View {
                     )
                 }
             }
+            .libraryToast(
+                model: model,
+                isHidden: !isActivePage || !model.isSearchPresented,
+                usesFixedExpiry: true
+            )
             .background {
                 if isActivePage && model.isSearchPresented {
                     CompactLibrarySearchHost(model: model)
@@ -619,7 +628,11 @@ private struct AppleAccountNoticeBanner: View {
 }
 
 private extension View {
-    func libraryToast(model: IOSAppModel) -> some View {
+    func libraryToast(
+        model: IOSAppModel,
+        isHidden: Bool = false,
+        usesFixedExpiry: Bool = false
+    ) -> some View {
         appToast(
             Binding(
                 get: { model.toast },
@@ -627,6 +640,9 @@ private extension View {
             ),
             alignment: .bottom,
             edge: .bottom,
+            isHidden: isHidden,
+            reservesSpace: true,
+            usesFixedExpiry: usesFixedExpiry,
             onAction: model.performToastAction,
             onDismiss: model.dismissToast
         )
