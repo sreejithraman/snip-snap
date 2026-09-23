@@ -4,6 +4,21 @@
         <title>Snip Snap</title>
         <item>
             <title>0.5.1</title>
+            <pubDate>Wed, 23 Sep 2026 20:51:16 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.5.1-beta.98</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.5.1-beta.98-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>98</sparkle:version>
+            <sparkle:shortVersionString>0.5.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.5.1-beta.98/Snip-Snap-0.5.1.zip" length="14601619" type="application/octet-stream" sparkle:edSignature="1JcYDUaodueKC6sYnLKJjO+d0+LuOVz3LzYd2NzSo8Zakx0Ry9F5TLLEfuFLL/yj2UxXmYSOoernX7RrWzVSBQ=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.5.1 Beta 98 — Mac
+
+- No Mac changes in this build.
+</description>
+        </item>
+        <item>
+            <title>0.5.1</title>
             <pubDate>Wed, 23 Sep 2026 06:13:34 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.5.1-beta.97</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.5.1-beta.97-mac.txt</sparkle:fullReleaseNotesLink>
