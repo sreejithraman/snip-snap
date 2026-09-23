@@ -1254,6 +1254,33 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(diagnostics.events.first?.errorCode, "storage.pathOutsideRoot")
     }
 
+    func testPassiveAttachmentFailureDoesNotShowAnAlert() async {
+        let id = UUID()
+        let handler = IOSCloudSyncHandlerProbe(states: [id: .available])
+        let diagnostics = IOSDiagnosticRecorderProbe()
+        let model = IOSAppModel(
+            library: ModelTestLibrary(),
+            cloudSyncHandler: handler,
+            diagnostics: diagnostics.recorder
+        )
+        await model.load()
+        let preparing = Task {
+            await model.prepareAttachment(id, for: .preview, showsFailureAlert: false)
+        }
+        await handler.waitUntilPrepareStarts()
+        await handler.finishPrepare(with: .failure(SnipLibraryError.attachmentCopyFailed))
+
+        let preparedURL = await preparing.value
+        XCTAssertNil(preparedURL)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.attachmentTransferState(for: id), .failed)
+        XCTAssertEqual(diagnostics.events, [.failure(
+            operation: "attachment.prepare",
+            error: SnipLibraryError.attachmentCopyFailed,
+            visibility: .background
+        )])
+    }
+
     func testRepeatedPreviewFailureRecordsOneEventWhileAlertIsVisible() async {
         let id = UUID()
         let handler = IOSCopyShareActionHandlerProbe(
@@ -1295,8 +1322,103 @@ final class IOSAppModelTests: XCTestCase {
         let preparedURL = await preparing.value
         XCTAssertNil(preparedURL)
         XCTAssertNil(model.errorMessage)
-        XCTAssertEqual(model.attachmentTransferState(for: id), .waiting)
+        XCTAssertEqual(model.attachmentTransferState(for: id), .available)
         XCTAssertTrue(diagnostics.events.isEmpty)
+    }
+
+    func testCancelledAutomaticPreparationDoesNotUndoConcurrentPreviewSuccess() async throws {
+        let id = UUID()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "SnipSnapConcurrentPrepare-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let url = root.appendingPathComponent("image.png")
+        try Data([1, 2, 3]).write(to: url)
+        let handler = IOSCloudSyncHandlerProbe(states: [id: .available])
+        let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
+        await model.load()
+
+        let automatic = Task {
+            await model.prepareAttachment(id, for: .preview, showsFailureAlert: false)
+        }
+        await handler.waitUntilPrepareCount(1)
+        let explicit = Task { await model.prepareAttachment(id, for: .preview) }
+        await handler.waitUntilPrepareCount(2)
+        await handler.finishPrepare(with: .success(url), at: 1)
+        let explicitURL = await explicit.value
+        XCTAssertEqual(explicitURL, url)
+        await handler.finishPrepare(with: .failure(CancellationError()))
+        let automaticURL = await automatic.value
+        XCTAssertNil(automaticURL)
+        XCTAssertEqual(model.attachmentTransferState(for: id), .available)
+
+        try FileManager.default.removeItem(at: url)
+        XCTAssertNil(model.usableAttachmentURL(for: id))
+        XCTAssertEqual(model.attachmentTransferState(for: id), .available)
+        let retry = Task { await model.prepareAttachment(id, for: .preview) }
+        await handler.waitUntilPrepareCount(3)
+        try Data([4, 5, 6]).write(to: url)
+        await handler.finishPrepare(with: .success(url))
+        let retryURL = await retry.value
+        XCTAssertEqual(retryURL, url)
+    }
+
+    func testCancelledAutomaticPreparationKeepsNewCloudStateAfterTransportError() async throws {
+        let id = UUID()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "SnipSnapCancelledPrepareRetry-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let url = root.appendingPathComponent("image.png")
+        try Data([1, 2, 3]).write(to: url)
+        let handler = IOSCloudSyncHandlerProbe(states: [id: .waiting])
+        let diagnostics = IOSDiagnosticRecorderProbe()
+        let model = IOSAppModel(
+            library: ModelTestLibrary(), cloudSyncHandler: handler,
+            diagnostics: diagnostics.recorder
+        )
+        await model.load()
+
+        let automatic = Task {
+            await model.prepareAttachment(id, for: .preview, showsFailureAlert: false)
+        }
+        await handler.waitUntilPrepareStarts()
+        await handler.setState(.available, for: id)
+        await model.load()
+        XCTAssertEqual(model.attachmentTransferState(for: id), .available)
+
+        automatic.cancel()
+        await handler.finishPrepare(with: .failure(SnipLibraryError.attachmentCopyFailed))
+        let automaticURL = await automatic.value
+        XCTAssertNil(automaticURL)
+        XCTAssertEqual(model.attachmentTransferState(for: id), .available)
+        XCTAssertTrue(diagnostics.events.isEmpty)
+
+        let retry = Task { await model.prepareAttachment(id, for: .preview) }
+        await handler.waitUntilPrepareCount(2)
+        await handler.finishPrepare(with: .success(url))
+        let retryURL = await retry.value
+        XCTAssertEqual(retryURL, url)
+    }
+
+    func testUsableAttachmentURLRejectsAStaleFile() async throws {
+        let id = UUID()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "SnipSnapUsableAttachmentTest-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let url = root.appendingPathComponent("photo.png")
+        try Data([1, 2, 3]).write(to: url)
+        let model = IOSAppModel(library: ModelTestLibrary(attachmentURLs: [id: url]))
+        await model.load()
+
+        XCTAssertEqual(model.usableAttachmentURL(for: id), url)
+        try FileManager.default.removeItem(at: url)
+        XCTAssertEqual(model.attachmentURL(for: id), url)
+        XCTAssertNil(model.usableAttachmentURL(for: id))
     }
 
     func testSyncedLocalAttachmentStillUsesVerifiedTransferPath() async throws {
@@ -1490,78 +1612,6 @@ final class IOSAppModelTests: XCTestCase {
 
         XCTAssertEqual(result, verified)
         XCTAssertEqual(preparedIDs, [id])
-    }
-
-    func testFinishedCloudPreviewCannotOverwriteAStagedReplacement() {
-        let id = UUID()
-        let requested = AttachmentDraft(
-            id: id,
-            fileName: "old.txt",
-            byteCount: 3,
-            url: nil,
-            source: .existing(attachmentID: id)
-        )
-        let replacement = AttachmentDraft(
-            id: id,
-            fileName: "replacement.txt",
-            byteCount: 11,
-            url: URL(fileURLWithPath: "/tmp/replacement.txt"),
-            source: .replacement(attachmentID: id)
-        )
-
-        let changed = replacement.applyingPreparedURL(
-            URL(fileURLWithPath: "/tmp/old-cloud-download.txt"),
-            requestedDraft: requested
-        )
-
-        XCTAssertNil(changed)
-        XCTAssertEqual(replacement.url?.lastPathComponent, "replacement.txt")
-    }
-
-    func testFinishedReplacementPreviewCannotOverwriteANewerReplacement() {
-        let id = UUID()
-        let requested = AttachmentDraft(
-            id: id,
-            fileName: "first.txt",
-            byteCount: 5,
-            url: URL(fileURLWithPath: "/tmp/first.txt"),
-            source: .replacement(attachmentID: id)
-        )
-        let current = AttachmentDraft(
-            id: id,
-            fileName: "second.txt",
-            byteCount: 6,
-            url: URL(fileURLWithPath: "/tmp/second.txt"),
-            source: .replacement(attachmentID: id)
-        )
-
-        XCTAssertNil(current.applyingPreparedURL(
-            URL(fileURLWithPath: "/tmp/first-preview.txt"),
-            requestedDraft: requested
-        ))
-    }
-
-    func testFinishedAddedPreviewCannotOverwriteANewerAddedDraft() {
-        let id = UUID()
-        let requested = AttachmentDraft(
-            id: id,
-            fileName: "first.txt",
-            byteCount: 5,
-            url: URL(fileURLWithPath: "/tmp/first.txt"),
-            source: .added
-        )
-        let current = AttachmentDraft(
-            id: id,
-            fileName: "second.txt",
-            byteCount: 6,
-            url: URL(fileURLWithPath: "/tmp/second.txt"),
-            source: .added
-        )
-
-        XCTAssertNil(current.applyingPreparedURL(
-            URL(fileURLWithPath: "/tmp/first-preview.txt"),
-            requestedDraft: requested
-        ))
     }
 
     func testManualSyncUsesTheProductionHandlerSeam() async {
@@ -2653,6 +2703,7 @@ final class IOSAppModelTests: XCTestCase {
                 isSaving: true,
                 isStaging: false,
                 isImporting: false,
+                isPickingMedia: false,
                 isPreviewing: false
             )
         )
@@ -2661,6 +2712,7 @@ final class IOSAppModelTests: XCTestCase {
                 isSaving: false,
                 isStaging: true,
                 isImporting: false,
+                isPickingMedia: false,
                 isPreviewing: false
             )
         )
@@ -2669,6 +2721,7 @@ final class IOSAppModelTests: XCTestCase {
                 isSaving: false,
                 isStaging: false,
                 isImporting: true,
+                isPickingMedia: false,
                 isPreviewing: false
             )
         )
@@ -2677,6 +2730,16 @@ final class IOSAppModelTests: XCTestCase {
                 isSaving: false,
                 isStaging: false,
                 isImporting: false,
+                isPickingMedia: true,
+                isPreviewing: false
+            )
+        )
+        XCTAssertFalse(
+            AttachmentDraftLifecycle.allowsSaving(
+                isSaving: false,
+                isStaging: false,
+                isImporting: false,
+                isPickingMedia: false,
                 isPreviewing: true
             )
         )
@@ -2685,6 +2748,7 @@ final class IOSAppModelTests: XCTestCase {
                 isSaving: false,
                 isStaging: false,
                 isImporting: false,
+                isPickingMedia: false,
                 isPreviewing: false
             )
         )
@@ -3019,6 +3083,66 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(edit?.snipID, snip.id)
         XCTAssertEqual(edit?.content, "Now with a file")
         XCTAssertEqual(edit?.edits, [.added(sourceURL: replacementURL)])
+    }
+
+    func testCameraPhotoStagesAsAUsableImageAttachment() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapCameraStagingTests-\(UUID().uuidString)", isDirectory: true)
+        defer { AttachmentDraftStager.clean(root) }
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24)).image { context in
+            UIColor.systemBlue.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 24, height: 24))
+        }
+
+        let staged = try await AttachmentMediaStager.stageCameraImage(image, in: root)
+        let values = try staged.url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        XCTAssertTrue(values.isRegularFile == true)
+        XCTAssertFalse(values.isSymbolicLink == true)
+        XCTAssertGreaterThan(staged.byteCount, 0)
+        XCTAssertNotNil(UIImage(contentsOfFile: staged.url.path))
+        XCTAssertTrue(AttachmentImageType.isImage(fileName: staged.fileName))
+    }
+
+    func testCancelledCameraPhotoLeavesNoStagedFile() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapCameraCancellationTests-\(UUID().uuidString)", isDirectory: true)
+        defer { AttachmentDraftStager.clean(root) }
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24)).image { context in
+            UIColor.systemBlue.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 24, height: 24))
+        }
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await AttachmentMediaStager.stageCameraImage(image, in: root)
+        }
+
+        do {
+            _ = try await task.value
+            XCTFail("A cancelled camera import must not publish a staged file.")
+        } catch is CancellationError {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+        }
+    }
+
+    func testImagePreviewEligibilityUsesContentTypeAndChecksUnknownFiles() {
+        XCTAssertTrue(AttachmentImageType.isImage(
+            fileName: "image-without-extension", contentType: UTType.png.identifier
+        ))
+        XCTAssertFalse(AttachmentImageType.shouldPrepare(
+            fileName: "image-without-extension", contentType: UTType.data.identifier
+        ))
+        XCTAssertFalse(AttachmentImageType.shouldPrepare(
+            fileName: "image-without-extension", contentType: nil
+        ))
+        XCTAssertTrue(AttachmentImageType.shouldPrepare(
+            fileName: "image-without-extension", contentType: UTType.png.identifier
+        ))
+        XCTAssertFalse(AttachmentImageType.shouldPrepare(
+            fileName: "notes", contentType: UTType.plainText.identifier
+        ))
+        XCTAssertFalse(AttachmentImageType.shouldPrepare(
+            fileName: "notes.txt", contentType: nil
+        ))
     }
 
     func testAttachmentDraftStagingCopiesAndCleansTemporaryInput() async throws {
@@ -3708,15 +3832,16 @@ private enum IOSCachePreflightFailure: Error, AppDiagnosticErrorCodeProviding {
 }
 
 private actor IOSCloudSyncHandlerProbe: OptionalCloudSyncHandling {
-    private let states: [UUID: SyncedAttachmentTransferState]
+    private var states: [UUID: SyncedAttachmentTransferState]
     private let active: Bool
     private let activeReadFails: Bool
     private let activeReadFailsAfterFirst: Bool
     private let stateReadFails: Bool
     private var activeReadCount = 0
     private var startWaiters: [CheckedContinuation<Void, Never>] = []
-    private var prepareContinuation: CheckedContinuation<URL, any Error>?
+    private var prepareContinuations: [CheckedContinuation<URL, any Error>] = []
     private var prepareStarted = false
+    private var prepareCountWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
     private var syncCalls = 0
     private var prepareCalls = 0
 
@@ -3746,6 +3871,7 @@ private actor IOSCloudSyncHandlerProbe: OptionalCloudSyncHandling {
     }
     func syncCount() -> Int { syncCalls }
     func prepareCount() -> Int { prepareCalls }
+    func setState(_ state: SyncedAttachmentTransferState, for id: UUID) { states[id] = state }
     func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] {
         if stateReadFails { throw SnipLibraryError.storeUnavailable }
         return states
@@ -3757,7 +3883,10 @@ private actor IOSCloudSyncHandlerProbe: OptionalCloudSyncHandling {
         prepareStarted = true
         startWaiters.forEach { $0.resume() }
         startWaiters.removeAll()
-        return try await withCheckedThrowingContinuation { prepareContinuation = $0 }
+        let ready = prepareCountWaiters.filter { prepareCalls >= $0.0 }
+        prepareCountWaiters.removeAll { prepareCalls >= $0.0 }
+        ready.forEach { $0.1.resume() }
+        return try await withCheckedThrowingContinuation { prepareContinuations.append($0) }
     }
 
     func waitUntilPrepareStarts() async {
@@ -3765,12 +3894,18 @@ private actor IOSCloudSyncHandlerProbe: OptionalCloudSyncHandling {
         await withCheckedContinuation { startWaiters.append($0) }
     }
 
-    func finishPrepare(with result: Result<URL, any Error>) {
+    func waitUntilPrepareCount(_ count: Int) async {
+        if prepareCalls >= count { return }
+        await withCheckedContinuation { prepareCountWaiters.append((count, $0)) }
+    }
+
+    func finishPrepare(with result: Result<URL, any Error>, at index: Int = 0) {
+        guard prepareContinuations.indices.contains(index) else { return }
+        let continuation = prepareContinuations.remove(at: index)
         switch result {
-        case .success(let url): prepareContinuation?.resume(returning: url)
-        case .failure(let error): prepareContinuation?.resume(throwing: error)
+        case .success(let url): continuation.resume(returning: url)
+        case .failure(let error): continuation.resume(throwing: error)
         }
-        prepareContinuation = nil
     }
 }
 

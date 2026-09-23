@@ -88,6 +88,7 @@ xcodebuild \
   -destination 'platform=iOS Simulator,name=Example iPhone' \
   -derivedDataPath /tmp/snip-snap-ios-ui-tests \
   CODE_SIGNING_ALLOWED=NO \
+  SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER= \
   -only-testing:SnipSnapiOSUITests \
   test
 ```

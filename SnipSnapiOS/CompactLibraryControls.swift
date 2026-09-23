@@ -1,4 +1,5 @@
 import Observation
+import PhotosUI
 import QuickLook
 import SnipSnapCore
 import SwiftUI
@@ -47,6 +48,9 @@ struct CompactLibraryControls: View {
     @State private var composerHeights: [LibraryPage: CGFloat] = [:]
     @State private var previewURL: URL?
     @State private var isImporting = false
+    @State private var isPickingPhotos = false
+    @State private var selectedPhotos: [PhotosPickerItem] = []
+    @State private var isTakingPhoto = false
     @State private var composerFieldID = UUID()
     @State private var stagingTask: Task<Void, Never>?
     @FocusState.Binding private var isComposerFocused: Bool
@@ -122,7 +126,23 @@ struct CompactLibraryControls: View {
         ) { result in
             stage(result)
         }
-        .quickLookPreview($previewURL, in: draft.attachments)
+        .photosPicker(
+            isPresented: $isPickingPhotos,
+            selection: $selectedPhotos,
+            matching: .images
+        )
+        .onChange(of: selectedPhotos) { _, items in
+            guard !items.isEmpty else { return }
+            selectedPhotos = []
+            stageMedia(.photos(items))
+        }
+        .fullScreenCover(isPresented: $isTakingPhoto) {
+            AttachmentCameraPicker { image in
+                isTakingPhoto = false
+                if let image { stageMedia(.camera(image)) }
+            }
+        }
+        .attachmentPreview($previewURL, in: draft.attachments)
         .onAppear {
             draftListID = model.selectedListID
             if storage.savingListID != model.selectedListID {
@@ -279,17 +299,22 @@ struct CompactLibraryControls: View {
 
     private func composer(for list: SnipList, draft: ComposerDraft, isPreview: Bool) -> some View {
         HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
-            CompactGlassCircleButton(
-                length: controlLength,
-                action: {
-                    guard !isPreview else { return }
-                    model.haptics.invalidatePendingFeedback()
-                    isImporting = true
+            AttachmentSourceMenu(choose: { source in
+                guard !isPreview else { return }
+                model.haptics.invalidatePendingFeedback()
+                switch source {
+                case .files: isImporting = true
+                case .photos: isPickingPhotos = true
+                case .camera: isTakingPhoto = true
                 }
-            ) {
+            }) {
                 Image(systemName: isPreview ? "plus" : (isStaging ? "hourglass" : "plus"))
                     .font(.title3.weight(.medium))
+                    .frame(width: controlLength, height: controlLength)
+                    .contentShape(Circle())
             }
+            .buttonStyle(.plain)
+            .glassEffect(.regular.interactive(), in: Circle())
             .disabled(storage.isSaving || isStaging)
             .accessibilityLabel("Add Attachments")
             .modifier(ComposerAccessibility(isPreview: isPreview, identifier: "composer-add-attachments"))
@@ -419,6 +444,7 @@ struct CompactLibraryControls: View {
             isSaving: storage.isSaving,
             isStaging: isStaging,
             isImporting: isImporting,
+            isPickingMedia: isPickingPhotos || isTakingPhoto,
             isPreviewing: previewURL != nil
         )
             && (!draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -478,36 +504,43 @@ struct CompactLibraryControls: View {
 
     private func stage(_ result: Result<[URL], any Error>) {
         guard case .success(let urls) = result else {
-            if case .failure(let error) = result,
-                (error as NSError).code != NSUserCancelledError
-            {
-                model.presentError(error, operation: "attachment.import_select")
+            if case .failure(let error) = result {
+                let nsError = error as NSError
+                if nsError.domain != NSCocoaErrorDomain || nsError.code != NSUserCancelledError {
+                    model.presentError(error, operation: "attachment.import_select")
+                }
             }
             return
         }
+        stageMedia(.files(urls))
+    }
+
+    private func stageMedia(_ input: AttachmentMediaInput) {
         guard stagingTask == nil else { return }
         let listID = model.selectedListID
         stagingTask = Task {
             var stagedFiles: [StagedAttachment] = []
             defer { stagingTask = nil }
             do {
-                stagedFiles = try await AttachmentDraftStager.stage(
-                    urls,
-                    in: storage.stagingDirectory
+                stagedFiles = try await AttachmentMediaStager.stage(
+                    input, in: storage.stagingDirectory
                 )
                 try Task.checkCancellation()
-                for file in stagedFiles {
-                    storage.draftStore.addTemporary(file.url, to: listID)
-                }
-                if model.selectedListID == listID {
-                    draft = storage.draftStore.draft(for: listID)
-                }
+                addStagedFiles(stagedFiles, to: listID)
             } catch is CancellationError {
                 AttachmentDraftStager.clean(stagedFiles)
-                return
             } catch {
                 model.presentError(error, operation: "attachment.import_stage")
             }
+        }
+    }
+
+    private func addStagedFiles(_ files: [StagedAttachment], to listID: UUID) {
+        for file in files {
+            storage.draftStore.addTemporary(file.url, to: listID)
+        }
+        if model.selectedListID == listID {
+            draft = storage.draftStore.draft(for: listID)
         }
     }
 
