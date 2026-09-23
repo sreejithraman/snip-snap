@@ -10,6 +10,7 @@ struct AppToast: Identifiable {
     let message: String
     let action: Action?
     let duration: Duration
+    let expiresAt: ContinuousClock.Instant
 
     init(
         id: UUID = UUID(),
@@ -23,6 +24,7 @@ struct AppToast: Identifiable {
         self.message = message
         self.action = action
         self.duration = duration
+        self.expiresAt = ContinuousClock().now.advanced(by: duration)
     }
 
     static func copied(count: Int) -> Self {
@@ -117,6 +119,8 @@ private struct AppToastPresenter: ViewModifier {
     let alignment: Alignment
     let edge: Edge
     let isHidden: Bool
+    let reservesSpace: Bool
+    let usesFixedExpiry: Bool
     let onAction: (AppToast) -> Void
     let onDismiss: (AppToast) -> Void
 
@@ -124,31 +128,47 @@ private struct AppToastPresenter: ViewModifier {
     @State private var isHovering = false
 
     func body(content: Content) -> some View {
-        content
-            .overlay(alignment: alignment) {
-                if !isHidden, let toast {
-                    toastView(toast)
-                        .padding(12)
-                        .transition(
-                            reduceMotion
-                                ? .opacity
-                                : .move(edge: edge).combined(with: .opacity)
-                        )
-                        .onHover { isHovering = $0 }
+        Group {
+            if reservesSpace {
+                content.safeAreaInset(edge: .bottom, spacing: 0) {
+                    presentedToast
+                }
+            } else {
+                content.overlay(alignment: alignment) {
+                    presentedToast
                 }
             }
-            .animation(reduceMotion ? nil : .snappy, value: toast?.id)
-            .task(id: timerID) {
-                guard let toast, !isHovering, !isHidden else { return }
-                do {
+        }
+        .animation(reduceMotion ? nil : .snappy, value: toast?.id)
+        .task(id: timerID) {
+            guard let toast, !isHovering, !isHidden else { return }
+            do {
+                if usesFixedExpiry {
+                    try await ContinuousClock().sleep(until: toast.expiresAt)
+                } else {
                     try await Task.sleep(for: toast.duration)
-                } catch {
-                    return
                 }
-                guard self.toast?.id == toast.id else { return }
-                self.toast = nil
-                onDismiss(toast)
+            } catch {
+                return
             }
+            guard self.toast?.id == toast.id else { return }
+            self.toast = nil
+            onDismiss(toast)
+        }
+    }
+
+    @ViewBuilder
+    private var presentedToast: some View {
+        if !isHidden, let toast {
+            toastView(toast)
+                .padding(12)
+                .transition(
+                    reduceMotion
+                        ? .opacity
+                        : .move(edge: edge).combined(with: .opacity)
+                )
+                .onHover { isHovering = $0 }
+        }
     }
 
     private var timerID: String {
@@ -172,11 +192,15 @@ private struct AppToastPresenter: ViewModifier {
                     }
                     .font(.subheadline.weight(.bold))
                     .controlSize(.small)
+#if os(iOS)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+#endif
                     .accessibilityIdentifier("toast-action")
                 }
             }
             .padding(.horizontal, SnipSnapSpacing.cardContentInset)
-            .padding(.vertical, SnipSnapSpacing.relatedContent)
+            .padding(.vertical, toastVerticalPadding(for: toast))
             .glassEffect(
                 toast.action == nil ? .regular : .regular.interactive(),
                 in: .capsule
@@ -187,6 +211,14 @@ private struct AppToastPresenter: ViewModifier {
         .accessibilityLabel(toast.message)
         .accessibilityIdentifier("app-toast")
     }
+
+    private func toastVerticalPadding(for toast: AppToast) -> CGFloat {
+#if os(iOS)
+        toast.action == nil ? SnipSnapSpacing.relatedContent : 4
+#else
+        SnipSnapSpacing.relatedContent
+#endif
+    }
 }
 
 extension View {
@@ -195,6 +227,8 @@ extension View {
         alignment: Alignment,
         edge: Edge,
         isHidden: Bool = false,
+        reservesSpace: Bool = false,
+        usesFixedExpiry: Bool = false,
         onAction: @escaping (AppToast) -> Void = { _ in },
         onDismiss: @escaping (AppToast) -> Void = { _ in }
     ) -> some View {
@@ -204,6 +238,8 @@ extension View {
                 alignment: alignment,
                 edge: edge,
                 isHidden: isHidden,
+                reservesSpace: reservesSpace,
+                usesFixedExpiry: usesFixedExpiry,
                 onAction: onAction,
                 onDismiss: onDismiss
             )
