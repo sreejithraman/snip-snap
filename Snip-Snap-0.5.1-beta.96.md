@@ -1,0 +1,29 @@
+# Snip Snap 0.5.1 Beta 96
+
+## Mac
+
+- Add agent snip capture workflow
+- Fix iCloud attachment cache install
+- Fix iCloud cache path validation
+- Fix aliased iCloud attachment cache roots
+- Classify iCloud cache path failures
+- Fix TestFlight iCloud cache path aliases
+- Deepen iCloud attachment cache installation
+- Move iCloud attachment downloads to caches
+- Share Mac leading-slot copy and command-number chrome
+- Show pinned snips as Mac card badges
+- Preserve app-owned CloudKit cache root aliases safely
+- Add privacy-safe attachment diagnostics across Mac and iOS
+
+## iOS
+
+- Add agent snip capture workflow
+- Fix iCloud attachment cache install
+- Fix iCloud cache path validation
+- Fix aliased iCloud attachment cache roots
+- Classify iCloud cache path failures
+- Fix TestFlight iCloud cache path aliases
+- Deepen iCloud attachment cache installation
+- Move iCloud attachment downloads to caches
+- Preserve app-owned CloudKit cache root aliases safely
+- Add privacy-safe attachment diagnostics across Mac and iOS
