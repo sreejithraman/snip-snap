@@ -14,6 +14,10 @@ private struct CompactInlineEditSession {
     var isSaving = false
 }
 
+private func listAppearance(for snip: Snip, in lists: [SnipList]) -> SnipListAppearance {
+    (lists.first { $0.id == snip.listID } ?? .inbox).accent
+}
+
 struct SnipCollectionView: View {
     let model: IOSAppModel
     let clipboard: IOSClipboardModel
@@ -462,6 +466,10 @@ private struct CompactInlineSnipEditor: View {
     let save: () -> Void
     let copy: () -> Void
 
+    private var appearance: SnipListAppearance {
+        listAppearance(for: snip, in: model.lists)
+    }
+
     private var canSave: Bool {
         !isSaving
             && (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -471,11 +479,10 @@ private struct CompactInlineSnipEditor: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             if snip.isPinned {
-                SnipCopyControl(action: copy)
+                SnipCopyControl(appearance: appearance, action: copy)
                 .accessibilityLabel("Copy Snip")
             } else {
-                Image(systemName: snip.isDone ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(.tertiary)
+                SnipCompletionIcon(isDone: snip.isDone, appearance: appearance)
                     .accessibilityHidden(true)
             }
 
@@ -557,7 +564,6 @@ struct CollectionEmptyState: View {
 }
 
 private struct SnipRow: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let snip: Snip
     let model: IOSAppModel
     let isRecovered: Bool
@@ -568,43 +574,37 @@ private struct SnipRow: View {
     var onCopy: (() -> Void)? = nil
     var onToggleDone: (() async -> Bool)? = nil
 
+    private var appearance: SnipListAppearance {
+        listAppearance(for: snip, in: model.lists)
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             if showsStatusIcon {
                 if snip.isPinned, let onCopy {
-                    SnipCopyControl(action: onCopy)
+                    SnipCopyControl(appearance: appearance, action: onCopy)
                     .accessibilityLabel("Copy Snip")
                     .accessibilityIdentifier("copy-pinned-snip-\(snip.id)")
                 } else {
-                    Image(systemName: "circle").hidden().overlay {
-                Button {
-                    guard !isChangingCompletion else { return }
-                    isChangingCompletion = true
-                    Task { @MainActor in
-                        if let onToggleDone {
-                            _ = await onToggleDone()
-                        } else {
-                            _ = await model.toggleDone(id: snip.id)
+                    Button {
+                        guard !isChangingCompletion else { return }
+                        isChangingCompletion = true
+                        Task { @MainActor in
+                            if let onToggleDone {
+                                _ = await onToggleDone()
+                            } else {
+                                _ = await model.toggleDone(id: snip.id)
+                            }
+                            isChangingCompletion = false
                         }
-                        isChangingCompletion = false
+                    } label: {
+                        SnipCompletionIcon(isDone: snip.isDone, appearance: appearance)
                     }
-                } label: {
-                    Image(systemName: snip.isDone ? "checkmark.circle.fill" : "circle")
-                        .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
-                        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: snip.isDone)
-                        .font(.body)
-                        .foregroundStyle(snip.isDone
-                            ? AnyShapeStyle((model.lists.first { $0.id == snip.listID } ?? .inbox).accent.color)
-                            : AnyShapeStyle(.tertiary))
-                        .frame(minWidth: 44, minHeight: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.borderless)
-                .disabled(isChangingCompletion)
-                .accessibilityLabel(SnipCompletionLanguage.menuActionTitle(isDone: snip.isDone))
-                .accessibilityValue(SnipCompletionLanguage.stateTitle(isDone: snip.isDone))
-                .accessibilityIdentifier("completion-\(snip.id)")
-                    }
+                    .buttonStyle(.borderless)
+                    .disabled(isChangingCompletion)
+                    .accessibilityLabel(SnipCompletionLanguage.menuActionTitle(isDone: snip.isDone))
+                    .accessibilityValue(SnipCompletionLanguage.stateTitle(isDone: snip.isDone))
+                    .accessibilityIdentifier("completion-\(snip.id)")
                 }
             }
             VStack(alignment: .leading, spacing: 8) {
@@ -741,24 +741,48 @@ private struct AttachmentStatusThumbnail: View {
     }
 }
 
-// Keep the checkbox's layout footprint while allowing a full touch target.
-struct SnipCopyControl: View {
-    let action: () -> Void
+private struct SnipCompletionIcon: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .body) private var diameter: CGFloat = 28
+    let isDone: Bool
+    let appearance: SnipListAppearance
 
     var body: some View {
-        Image(systemName: "circle")
-            .hidden()
-            .overlay {
-                Button(action: action) {
-                    Image(systemName: "doc.on.doc")
-                        .font(.subheadline)
-                        .imageScale(.small)
-                        .foregroundStyle(.secondary)
-                        .frame(minWidth: 44, minHeight: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.borderless)
+        Image(systemName: isDone ? "checkmark.circle.fill" : "circle")
+            .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isDone)
+            .font(.system(size: diameter))
+            .foregroundStyle(appearance.controlTint)
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+    }
+}
+
+struct SnipCopyControl: View {
+    @ScaledMetric(relativeTo: .body) private var controlDiameter: CGFloat = 28
+    @ScaledMetric(relativeTo: .body) private var symbolSize: CGFloat = 13
+    let appearance: SnipListAppearance
+    let action: () -> Void
+
+    init(appearance: SnipListAppearance = SnipListAppearance(preset: nil), action: @escaping () -> Void) {
+        self.appearance = appearance
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle().fill(appearance.controlTint)
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: symbolSize, weight: .semibold))
+                    .blendMode(.destinationOut)
             }
+                .frame(width: controlDiameter, height: controlDiameter)
+                .compositingGroup()
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
     }
 }
 
@@ -870,7 +894,7 @@ struct LibrarySearchView: View {
 
     private func snipResult(_ snip: Snip) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            SnipCopyControl {
+            SnipCopyControl(appearance: listAppearance(for: snip, in: model.lists)) {
                 Task { await copyShare.copy(snips: [snip], model: model) }
             }
             .accessibilityLabel("Copy Snip")

@@ -58,6 +58,10 @@ struct SnipListAppearance {
 
     var selectionFill: Color { color.opacity(0.16) }
 
+    var controlTint: Color {
+        preset == nil ? SnipSnapTheme.controlTint : color
+    }
+
     func sendIconColor(in colorScheme: ColorScheme) -> Color {
         preset == nil
             ? (colorScheme == .dark ? .black : .white)
