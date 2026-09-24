@@ -1,0 +1,9 @@
+# Snip Snap 0.5.1 Beta 99
+
+## Mac
+
+- Add swipe navigation between library tabs
+
+## iOS
+
+- Add swipe navigation between library tabs
