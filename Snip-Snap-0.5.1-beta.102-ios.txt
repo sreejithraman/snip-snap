@@ -1,0 +1,3 @@
+Snip Snap 0.5.1 Beta 102 — iOS
+
+- Fix iOS list scrolling and swipe actions
