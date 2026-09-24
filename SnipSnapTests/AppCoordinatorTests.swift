@@ -1157,7 +1157,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
         model.showClipboard()
         model.query = "search"
-        model.isSearchExpanded = true
+        model.enterSearch()
         coordinator.toggleClipboard()
 
         XCTAssertTrue(panel.isVisible)

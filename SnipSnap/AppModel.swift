@@ -20,9 +20,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var lists: [SnipList] = [.inbox]
     @Published var activeListID: UUID
     @Published var isShowingClipboard = false
-    @Published var isSearchExpanded = false
-    @Published var query = "" {
-        didSet {
+    @Published private(set) var isSearchExpanded = false
+    @Published private var storedQuery = ""
+    var query: String {
+        get { storedQuery }
+        set {
+            guard editingID == nil || newValue == storedQuery else { return }
+            storedQuery = newValue
             if isSearchExpanded && !hasActiveQuery {
                 selection = []
             } else {
@@ -34,7 +38,7 @@ final class AppModel: ObservableObject {
     var completionFilter: SnipCompletionFilter {
         get { storedCompletionFilter }
         set {
-            guard editingID == nil else { return }
+            guard editingID == nil || newValue == storedCompletionFilter else { return }
             storedCompletionFilter = newValue
             reconcileSelection()
         }
@@ -81,12 +85,13 @@ final class AppModel: ObservableObject {
     var canReorderSelection: Bool { canReorder(ids: selection) }
 
     func enterSearch() {
-        guard !isSearchExpanded else { return }
+        guard editingID == nil, !isSearchExpanded else { return }
         selection = []
         isSearchExpanded = true
     }
 
     func exitSearch() {
+        guard editingID == nil else { return }
         query = ""
         isSearchExpanded = false
     }
@@ -381,6 +386,7 @@ final class AppModel: ObservableObject {
     @discardableResult
     func resolveRecovery(_ id: UUID, choice: SnipRecoveryChoice) async -> Bool {
         return await withCommandLock {
+            guard editingID == nil else { return false }
             do {
                 guard let state = try await session.resolveRecovery(
                     id,
@@ -678,58 +684,89 @@ final class AppModel: ObservableObject {
         color: SnipListColorPreset? = nil,
         movingIDs: Set<UUID> = []
     ) async -> Bool {
-        guard editingID == nil else { return false }
-        let result = await performMutation {
-            let update = try await session.performLibraryCommand(
-                .createList(name: name, systemImage: systemImage, color: color),
-                sortedBy: sortMode
-            )
-            guard case .listCreated(let list) = update.outcome else {
-                preconditionFailure("The library returned the wrong list outcome.")
+        let result: Result<Void, Error>? = await withCommandLock {
+            guard editingID == nil else { return nil }
+            let creation = await performMutationUnlocked {
+                let update = try await session.performLibraryCommand(
+                    .createList(name: name, systemImage: systemImage, color: color),
+                    sortedBy: sortMode
+                )
+                guard case .listCreated(let list) = update.outcome else {
+                    preconditionFailure("The library returned the wrong list outcome.")
+                }
+                return (update, list)
             }
-            return (update, list)
+            switch creation {
+            case .failure(let error):
+                return .failure(error)
+            case .success(let list):
+                let selectedMovingIDs = selection.intersection(movingIDs)
+                selectList(list, preservingSelection: !movingIDs.isEmpty)
+                guard !movingIDs.isEmpty else { return .success(()) }
+                let orderedIDs = snips.filter { movingIDs.contains($0.id) }.map(\.id)
+                guard !orderedIDs.isEmpty else { return nil }
+                let move: SnipLibraryCommand
+                let nextSortMode: SnipSortMode?
+                if sortMode == .manual {
+                    move = .place(
+                        ids: orderedIDs,
+                        in: list.id,
+                        before: nil,
+                        basedOn: .manual
+                    )
+                    nextSortMode = .manual
+                } else {
+                    move = .moveChronologically(ids: orderedIDs, to: list.id)
+                    nextSortMode = nil
+                }
+                let moveResult = await performCommandUnlocked(
+                    command: move,
+                    afterSelection: selectedMovingIDs,
+                    afterSortMode: nextSortMode,
+                    affectedIDs: Set(orderedIDs)
+                )
+                return moveResult?.map { _ in () }
+            }
         }
-        switch result {
-        case .success(let list):
-            let selectedMovingIDs = selection.intersection(movingIDs)
-            selectList(list, preservingSelection: !movingIDs.isEmpty)
-            guard !movingIDs.isEmpty else { return true }
-            let orderedIDs = snips.filter { movingIDs.contains($0.id) }.map(\.id)
-            return await moveToList(
-                ids: orderedIDs,
-                listID: list.id,
-                selectionAfterMove: selectedMovingIDs
-            )
-        case .failure(let error):
+        guard let result else { return false }
+        if case .failure(let error) = result {
             presentError(error)
             return false
         }
+        return true
     }
 
     func deleteList(_ list: SnipList) async {
-        guard editingID == nil, list.id != SnipList.inboxID else { return }
-        let result = await performMutation {
-            let update = try await session.performLibraryCommand(
-                .deleteList(id: list.id),
-                sortedBy: sortMode
-            )
-            return (update, ())
+        guard list.id != SnipList.inboxID else { return }
+        let result: Result<Void, Error>? = await withCommandLock {
+            guard editingID == nil else { return nil }
+            return await performMutationUnlocked {
+                let update = try await session.performLibraryCommand(
+                    .deleteList(id: list.id),
+                    sortedBy: sortMode
+                )
+                return (update, ())
+            }
         }
-        if case .failure(let error) = result {
+        if case .some(.failure(let error)) = result {
             presentError(error)
-        } else {
+        } else if case .some(.success) = result {
             clearDraft(for: list.id)
         }
     }
 
     func updateList(_ list: SnipList, name: String, systemImage: String, color: SnipListColorChange = .keep) async -> Bool {
-        let result = await performMutation {
-            let update = try await session.performLibraryCommand(
-                .updateList(id: list.id, name: name, systemImage: systemImage, color: color),
-                sortedBy: sortMode
-            )
-            return (update, ())
+        let result: Result<Void, Error>? = await withCommandLock {
+            guard editingID == nil else { return nil }
+            return await performMutationUnlocked {
+                let update = try await session.performLibraryCommand(
+                    .updateList(id: list.id, name: name, systemImage: systemImage, color: color),
+                    sortedBy: sortMode
+                )
+                return (update, ())
+            }
         }
+        guard let result else { return false }
         if case .failure(let error) = result {
             presentError(error)
             return false
@@ -776,13 +813,15 @@ final class AppModel: ObservableObject {
 
     func deleteSelectionNow(ids targets: Set<UUID>? = nil) async {
         let ids = targets ?? selection
-        let snipsToDelete = snips.filter { ids.contains($0.id) }
-        guard !ids.isEmpty, !snipsToDelete.isEmpty else { return }
+        guard !ids.isEmpty else { return }
         let token = UUID()
         await withCommandLock {
+            let deletableIDs = Set(ids.filter { $0 != editingID })
+            let snipsToDelete = snips.filter { deletableIDs.contains($0.id) }
+            guard !snipsToDelete.isEmpty else { return }
             do {
                 let update = try await session.delete(
-                    ids: ids,
+                    ids: deletableIDs,
                     token: token,
                     sortedBy: sortMode
                 )
@@ -865,6 +904,7 @@ final class AppModel: ObservableObject {
     func confirmBackupImport() async {
         guard pendingImportPreview != nil, let id = pendingImportPreviewID else { return }
         await withCommandLock {
+            guard editingID == nil else { return }
             do {
                 guard let (result, recovery) = try await session.applyPendingImport(
                     id: id,
@@ -891,7 +931,7 @@ final class AppModel: ObservableObject {
     ) async {
         guard !ids.isEmpty else { return }
         let shouldMarkDone = snips.contains {
-            ids.contains($0.id) && !$0.isPinned && !$0.isDone
+            ids.contains($0.id) && $0.id != editingID && !$0.isPinned && !$0.isDone
         }
         await setDoneNow(shouldMarkDone, ids: ids, to: pasteboard)
     }
@@ -908,7 +948,7 @@ final class AppModel: ObservableObject {
     ) async {
         guard !ids.isEmpty else { return }
         let snipsToCheck = done ? snips.filter {
-            ids.contains($0.id) && !$0.isPinned && !$0.isDone
+            ids.contains($0.id) && $0.id != editingID && !$0.isPinned && !$0.isDone
         } : []
         if snipsToCheck.isEmpty {
             await withCommandLock {
@@ -916,7 +956,7 @@ final class AppModel: ObservableObject {
             }
         } else {
             let versions = copiedSnipVersions(snipsToCheck)
-            await copyBeforeCommandLock(snipsToCheck, to: pasteboard) {
+            _ = await copyBeforeCommandLock(snipsToCheck, to: pasteboard) {
                 await setDoneWithoutCopyUnlocked(
                     done,
                     ids: ids,
@@ -935,6 +975,7 @@ final class AppModel: ObservableObject {
     ) async {
         let eligibleIDs = Set(snips.lazy.filter {
             ids.contains($0.id)
+                && $0.id != self.editingID
                 && !$0.isPinned
                 && $0.isDone != done
                 && (versions == nil || versions?[$0.id] == $0.updatedAt)
@@ -963,20 +1004,27 @@ final class AppModel: ObservableObject {
     }
 
     func togglePinned(id: UUID) async {
-        await performUserMutation {
-            let update = try await session.performLibraryCommand(
-                .togglePinned(id: id), sortedBy: sortMode
-            )
-            return (update, ())
+        await withCommandLock {
+            guard editingID != id else { return }
+            await performUserMutationUnlocked {
+                let update = try await session.performLibraryCommand(
+                    .togglePinned(id: id), sortedBy: sortMode
+                )
+                return (update, ())
+            }
         }
     }
 
     func setPinned(ids: Set<UUID>, pinned: Bool) async {
-        await performUserMutation {
-            let update = try await session.performLibraryCommand(
-                .setPinned(ids: ids, pinned: pinned), sortedBy: sortMode
-            )
-            return (update, ())
+        await withCommandLock {
+            let eligibleIDs = ids.subtracting(editingID.map { [$0] } ?? [])
+            guard !eligibleIDs.isEmpty else { return }
+            await performUserMutationUnlocked {
+                let update = try await session.performLibraryCommand(
+                    .setPinned(ids: eligibleIDs, pinned: pinned), sortedBy: sortMode
+                )
+                return (update, ())
+            }
         }
     }
 
@@ -990,6 +1038,7 @@ final class AppModel: ObservableObject {
                 snips.lazy
                     .filter {
                         versions[$0.id] == $0.updatedAt && !$0.isDone && !$0.isPinned
+                            && $0.id != self.editingID
                     }
                     .map(\.id)
             )
@@ -1048,8 +1097,10 @@ final class AppModel: ObservableObject {
                 basedOn: currentSortMode
             ),
             afterSelection: selectionAfterMove,
-            afterSortMode: .manual
+            afterSortMode: .manual,
+            affectedIDs: Set(ids)
         )
+        guard let result else { return false }
         if case .success = result {
             return true
         }
@@ -1066,8 +1117,10 @@ final class AppModel: ObservableObject {
         guard !ids.isEmpty, !ids.contains(where: { $0 == editingID }) else { return false }
         let result = await performCommand(
             command: .moveChronologically(ids: ids, to: listID),
-            afterSelection: selectionAfterMove
+            afterSelection: selectionAfterMove,
+            affectedIDs: Set(ids)
         )
+        guard let result else { return false }
         if case .success = result {
             return true
         }
@@ -1103,23 +1156,31 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func beginEditing(_ id: UUID) async -> Bool {
-        guard let snip = snips.first(where: { $0.id == id }) else { return false }
+        if editingID == id { return true }
+        guard editingID == nil,
+              (!isSearchExpanded || hasActiveQuery),
+              (!isShowingClipboard || isSearchExpanded),
+              let snip = filteredSnips.first(where: { $0.id == id }) else { return false }
         let startingSearchState = isSearchExpanded
         let startingQuery = query
         let startingListID = activeListID
         let startingClipboardState = isShowingClipboard
         do {
             _ = try await prepareAttachments(snip.attachments, for: .open)
-            guard editingID == nil,
-                  isSearchExpanded == startingSearchState,
-                  query == startingQuery,
-                  activeListID == startingListID,
-                  isShowingClipboard == startingClipboardState,
-                  (!isSearchExpanded || hasActiveQuery),
-                  !isShowingClipboard || isSearchExpanded,
-                  filteredSnips.contains(where: { $0.id == id }) else { return false }
-            editingID = id
-            return true
+            return await withCommandLock {
+                if editingID == id { return true }
+                guard editingID == nil,
+                      isSearchExpanded == startingSearchState,
+                      query == startingQuery,
+                      activeListID == startingListID,
+                      isShowingClipboard == startingClipboardState,
+                      (!isSearchExpanded || hasActiveQuery),
+                      (!isShowingClipboard || isSearchExpanded),
+                      let current = filteredSnips.first(where: { $0.id == id }),
+                      current.attachments == snip.attachments else { return false }
+                editingID = id
+                return true
+            }
         } catch is CancellationError {
             return false
         } catch {
@@ -1375,8 +1436,10 @@ final class AppModel: ObservableObject {
         let snipsToMerge = snips.filter { ids.contains($0.id) }
         guard ids.count >= 2, snipsToMerge.count >= 2 else { return }
         let result = await performCommand(
-            command: .merge(ids: ids, now: Date())
+            command: .merge(ids: ids, now: Date()),
+            affectedIDs: ids
         )
+        guard let result else { return }
         switch result {
         case .success(.merged):
             break
@@ -1409,14 +1472,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func performUserMutation(
-        _ mutation: () async throws -> (SnipLibraryUpdate, Void)
-    ) async {
-        await withCommandLock {
-            await performUserMutationUnlocked(mutation)
-        }
-    }
-
     private func performUserMutationUnlocked(
         _ mutation: () async throws -> (SnipLibraryUpdate, Void)
     ) async {
@@ -1429,22 +1484,38 @@ final class AppModel: ObservableObject {
         command: SnipLibraryCommand,
         afterSelection: Set<UUID>? = nil,
         afterSortMode: SnipSortMode? = nil,
-    ) async -> Result<SnipLibraryOutcome, Error> {
+        affectedIDs: Set<UUID>
+    ) async -> Result<SnipLibraryOutcome, Error>? {
         await withCommandLock {
-            do {
-                let update = try await session.performUserCommand(
-                    command,
-                    sortedBy: sortMode
-                )
-                clearPendingDeletionToast()
-                apply(update.snapshot)
-                if let afterSortMode { setSortMode(afterSortMode) }
-                if let afterSelection { selection = afterSelection }
-                scheduleCloudSync()
-                return .success(update.outcome)
-            } catch {
-                return .failure(error)
-            }
+            await performCommandUnlocked(
+                command: command,
+                afterSelection: afterSelection,
+                afterSortMode: afterSortMode,
+                affectedIDs: affectedIDs
+            )
+        }
+    }
+
+    private func performCommandUnlocked(
+        command: SnipLibraryCommand,
+        afterSelection: Set<UUID>? = nil,
+        afterSortMode: SnipSortMode? = nil,
+        affectedIDs: Set<UUID>
+    ) async -> Result<SnipLibraryOutcome, Error>? {
+        if let editingID, affectedIDs.contains(editingID) { return nil }
+        do {
+            let update = try await session.performUserCommand(
+                command,
+                sortedBy: sortMode
+            )
+            clearPendingDeletionToast()
+            apply(update.snapshot)
+            if let afterSortMode { setSortMode(afterSortMode) }
+            if let afterSelection { selection = afterSelection }
+            scheduleCloudSync()
+            return .success(update.outcome)
+        } catch {
+            return .failure(error)
         }
     }
 

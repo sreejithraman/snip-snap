@@ -155,6 +155,7 @@ struct SnipListTabBarView: View {
                listID != SnipList.inboxID,
                let list = model.lists.first(where: { $0.id == listID }) {
                 Button("Edit List…") { editingList = list }
+                    .disabled(model.editingID != nil)
                 Divider()
                 Button("Delete List", role: .destructive) {
                     listPendingDeletion = list
