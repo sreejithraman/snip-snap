@@ -1,25 +1,6 @@
 import SnipSnapCore
 import SwiftUI
 
-struct SemanticSwipeAction: View {
-    let title: String
-    let systemImage: String
-    let tint: Color
-    let role: ButtonRole?
-    let accessibilityIdentifier: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(role: role, action: action) {
-            Label(title, systemImage: systemImage)
-                .labelStyle(.titleAndIcon)
-        }
-        .tint(tint)
-        .accessibilityLabel(title)
-        .accessibilityIdentifier(accessibilityIdentifier)
-    }
-}
-
 struct WorkflowOptionsMenu: View {
     let model: IOSAppModel
     var beginReordering: (() -> Void)? = nil

@@ -7,23 +7,22 @@ struct ListSidebarView: View {
     @Binding var editMode: EditMode
     var importBackup: () -> Void = {}
 
-    private var selection: Binding<UUID?> {
+    private var selection: Binding<LibraryPage?> {
         Binding(
-            get: { model.showsClipboard ? nil : model.selectedListID },
-            set: { id in
-                guard let id else { return }
-                model.selectList(id)
+            get: { model.selectedPage },
+            set: { page in
+                guard let page else { return }
+                model.selectPage(page)
             }
         )
     }
 
     var body: some View {
         List(selection: selection) {
-            Button {
-                model.showsClipboard = true
-            } label: {
+            NavigationLink(value: LibraryPage.clipboard) {
                 Label("Clipboard", systemImage: "clipboard")
             }
+            .tag(LibraryPage.clipboard)
             .accessibilityIdentifier("clipboard-sidebar")
             if model.recoverySnapshot.needsAttentionCount > 0 {
                 Section {
@@ -37,7 +36,7 @@ struct ListSidebarView: View {
                 }
             }
             ForEach(model.lists) { list in
-                NavigationLink(value: list.id) {
+                NavigationLink(value: LibraryPage.list(list.id)) {
                     Label {
                         Text(list.displayName)
                     } icon: {
@@ -45,7 +44,7 @@ struct ListSidebarView: View {
                     }
                 }
                 .tint(list.accent.color)
-                .tag(list.id)
+                .tag(LibraryPage.list(list.id))
                 .accessibilityIdentifier("list-\(list.name)")
                 .listContextActions(
                     list: list,
@@ -128,23 +127,25 @@ struct LibraryActionsMenu: View {
 
     @ViewBuilder
     private var menuActions: some View {
-        Button(
-            editMode.isEditing ? "Done Selecting" : "Select Snips",
-            systemImage: editMode.isEditing ? "checkmark" : "checkmark.circle"
-        ) {
-            model.endSelectingSnips()
-            editMode = editMode.isEditing ? .inactive : .active
-        }
-        .disabled(!editMode.isEditing && model.visibleSnips.isEmpty)
-        .accessibilityIdentifier("select-snips")
-        Divider()
-        if model.selectedListID != SnipList.inboxID, let editSelectedList {
-            Button("Edit List…", systemImage: "pencil", action: editSelectedList)
-            Button("Delete List", systemImage: "trash", role: .destructive) {
-                model.haptics.invalidatePendingFeedback()
-                confirmsDeleteList = true
+        if let listID = model.selectedPage.listID {
+            Button(
+                editMode.isEditing ? "Done Selecting" : "Select Snips",
+                systemImage: editMode.isEditing ? "checkmark" : "checkmark.circle"
+            ) {
+                model.endSelectingSnips()
+                editMode = editMode.isEditing ? .inactive : .active
             }
+            .disabled(!editMode.isEditing && model.visibleSnips(in: listID).isEmpty)
+            .accessibilityIdentifier("select-snips")
             Divider()
+            if listID != SnipList.inboxID, let editSelectedList {
+                Button("Edit List…", systemImage: "pencil", action: editSelectedList)
+                Button("Delete List", systemImage: "trash", role: .destructive) {
+                    model.haptics.invalidatePendingFeedback()
+                    confirmsDeleteList = true
+                }
+                Divider()
+            }
         }
         Button("Import backup…", systemImage: "square.and.arrow.down", action: importBackup)
         Button("Settings", systemImage: "gearshape", action: settings)

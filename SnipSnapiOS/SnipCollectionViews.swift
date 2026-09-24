@@ -88,6 +88,12 @@ struct SnipCollectionView: View {
                                 )
                                 .contentShape(Rectangle())
                                 .accessibilityAddTraits(.isButton)
+                                .accessibilityAction(named: Text(snip.isPinned ? "Unpin" : "Pin")) {
+                                    Task { await model.togglePinned(id: snip.id) }
+                                }
+                                .accessibilityAction(named: "Delete") {
+                                    Task { await model.deleteSnip(id: snip.id) }
+                                }
                                 .accessibilityIdentifier("snip-\(snip.id)")
                             } else {
                                 if inlineEditSession?.original.id == snip.id {
@@ -131,6 +137,9 @@ struct SnipCollectionView: View {
                                     .accessibilityAction(named: Text(snip.isPinned ? "Unpin" : "Pin")) {
                                         Task { await model.togglePinned(id: snip.id) }
                                     }
+                                    .accessibilityAction(named: "Delete") {
+                                        Task { await model.deleteSnip(id: snip.id) }
+                                    }
                                     .accessibilityActions {
                                         if snip.isPinned {
                                             Button("Copy") {
@@ -148,28 +157,6 @@ struct SnipCollectionView: View {
                         }
                         .tag(snip.id)
                         .listRowSeparator(.hidden)
-                        .swipeActions(edge: .leading) {
-                            SemanticSwipeAction(
-                                title: snip.isPinned ? String(localized: "Unpin") : String(localized: "Pin"),
-                                systemImage: snip.isPinned ? "pin.slash" : "pin",
-                                tint: displayedList.accent.color,
-                                role: nil,
-                                accessibilityIdentifier: snip.isPinned ? "unpin-snip" : "pin-snip"
-                            ) {
-                                Task { await model.togglePinned(id: snip.id) }
-                            }
-                        }
-                        .swipeActions(edge: .trailing) {
-                            SemanticSwipeAction(
-                                title: String(localized: "Delete"),
-                                systemImage: "trash",
-                                tint: .red,
-                                role: .destructive,
-                                accessibilityIdentifier: "delete-snip"
-                            ) {
-                                Task { await model.deleteSnip(id: snip.id) }
-                            }
-                        }
                         .contextMenu { itemContextActions(for: snip) }
                         .moveDisabled(snip.isPinned || !model.canReorderVisibleSnips || inlineEditSession != nil)
                     }

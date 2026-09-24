@@ -2,6 +2,16 @@ import Foundation
 import Observation
 import SnipSnapCore
 
+enum LibraryPage: Hashable {
+    case clipboard
+    case list(UUID)
+
+    var listID: UUID? {
+        guard case .list(let id) = self else { return nil }
+        return id
+    }
+}
+
 enum IOSMarkCopiedSnipsDoneResult: Sendable {
     case unchanged
     case markedDone
@@ -57,8 +67,11 @@ final class IOSAppModel {
     private(set) var pendingImportPreview: SnipImportPreview?
     private var pendingImportPreviewID: UUID?
     var toast: AppToast?
-    var showsClipboard = false
-    var selectedListID: UUID
+    private(set) var selectedPage: LibraryPage = .list(SnipList.inboxID)
+    private var lastSelectedListID: UUID
+    /// The last saved list stays available for drafts while Clipboard is selected.
+    var selectedListID: UUID { lastSelectedListID }
+    var pages: [LibraryPage] { [.clipboard] + lists.map { .list($0.id) } }
     var editingListID: UUID?
     var newListID: UUID?
     private var listDrafts: [UUID: InlineListDraft] = [:]
@@ -111,7 +124,7 @@ final class IOSAppModel {
         snips = initialSnapshot.snips
         lists = initialSnapshot.lists
         attachmentURLs = initialSnapshot.attachmentURLs
-        selectedListID = SnipList.inboxID
+        lastSelectedListID = SnipList.inboxID
         if let startupError {
             presentError(
                 startupError,
@@ -131,11 +144,20 @@ final class IOSAppModel {
     }
 
     func selectList(_ listID: UUID) {
-        showsClipboard = false
+        selectPage(.list(listID))
+    }
+
+    func selectPage(_ page: LibraryPage) {
         haptics.invalidatePendingFeedback()
-        selectedListID = listID
+        if case .list(let listID) = page { lastSelectedListID = listID }
+        selectedPage = page
         selectedSnipID = nil
         selectedSnipIDs = []
+    }
+
+    private func rememberSelectedList(_ listID: UUID) {
+        lastSelectedListID = listID
+        if case .list = selectedPage { selectedPage = .list(listID) }
     }
 
     func endSelectingSnips() {
@@ -471,7 +493,7 @@ final class IOSAppModel {
             feedbackInteraction: feedbackInteraction
         ) { outcome in
             if selectCreatedSnip, case .add(.added(let id)) = outcome {
-                selectedListID = listID
+                rememberSelectedList(listID)
                 selectedSnipID = id
             }
         }
@@ -667,7 +689,7 @@ final class IOSAppModel {
         return await performUserAction(
             .moveChronologically(ids: [id], to: listID), feedbackInteraction: feedbackInteraction
         ) { _ in
-            selectedListID = listID
+            rememberSelectedList(listID)
             selectedSnipID = id
         }
     }
@@ -734,10 +756,7 @@ final class IOSAppModel {
             .createList(name: name, systemImage: systemImage, color: color, namePolicy: namePolicy)
         ) { outcome in
             if case .listCreated(let list) = outcome {
-                showsClipboard = false
-                selectedListID = list.id
-                selectedSnipID = nil
-                selectedSnipIDs = []
+                selectList(list.id)
             }
         }
     }
@@ -759,7 +778,7 @@ final class IOSAppModel {
             .deleteList(id: id), feedbackInteraction: feedbackInteraction
         ) { _ in
             finishListEditing(id: id)
-            selectedListID = SnipList.inboxID
+            rememberSelectedList(SnipList.inboxID)
             selectedSnipID = nil
             selectedSnipIDs = []
         }
@@ -950,7 +969,7 @@ final class IOSAppModel {
         attachmentURLs = snapshot.attachmentURLs
         preparedAttachmentURLs.removeAll()
         if !lists.contains(where: { $0.id == selectedListID }) {
-            selectedListID = SnipList.inboxID
+            rememberSelectedList(SnipList.inboxID)
         }
         if let selectedSnipID, !snips.contains(where: { $0.id == selectedSnipID }) {
             self.selectedSnipID = nil

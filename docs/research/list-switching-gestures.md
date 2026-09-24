@@ -2,6 +2,8 @@
 
 Research date: 2026-09-23
 
+This is a historical proposal. The current iPhone design removes row swipe actions and allows horizontal list swipes from the list content.
+
 ## Recommendation
 
 On iPhone, keep the existing visible list picker and row swipe actions. Prototype list switching as a gesture that **starts at a screen edge** and moves inward, only on the list-content screen. Give the leading edge to the existing Back or sidebar navigation gesture wherever a navigation stack uses it; in that state, use a visible list picker or the opposite edge rather than overriding Back. This follows Apple's guidance to keep standard navigation available, avoid system-gesture conflicts, and treat custom gestures as shortcuts with another way to perform the same action. It is a design recommendation, not an Apple-prescribed sibling-list gesture. ([Gestures](https://developer.apple.com/design/human-interface-guidelines/gestures/), [UINavigationController interactive pop gesture](https://developer.apple.com/documentation/uikit/uinavigationcontroller/interactivepopgesturerecognizer))
