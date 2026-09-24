@@ -17,19 +17,20 @@ struct SnipListTabBarView: View {
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: SnipSnapSpacing.relatedContent) {
-                tabStrip
-                    .fixedSize(horizontal: true, vertical: false)
+            HStack(spacing: 0) {
+                tabButtons
                 newListButton
             }
             .fixedSize(horizontal: true, vertical: false)
 
-            HStack(spacing: SnipSnapSpacing.relatedContent) {
+            ZStack(alignment: .trailing) {
                 scrollingTabStrip
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 newListButton
             }
         }
+        .frame(minHeight: PanelControlMetrics.tabBarHeight)
+        .clipShape(Capsule())
+        .panelGlassSurface(in: Capsule())
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             PanelDragRegion()
@@ -64,7 +65,11 @@ struct SnipListTabBarView: View {
     private var scrollingTabStrip: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal) {
-                tabStrip
+                tabButtons
+                    .padding(
+                        .trailing,
+                        PanelControlMetrics.tabBarHeight + PanelControlMetrics.tabSelectionInset
+                    )
             }
             .scrollIndicators(.hidden)
             .onAppear { scrollSelectedTab(using: proxy) }
@@ -79,27 +84,33 @@ struct SnipListTabBarView: View {
 
     private var newListButton: some View {
         Button(action: createList) {
-            Image(systemName: "plus")
-                .font(.body.weight(.semibold))
-                .frame(
-                    width: PanelControlMetrics.floatingIconLength,
-                    height: PanelControlMetrics.floatingIconLength
-                )
-                .panelStandaloneActionControl()
+            GlassEffectContainer {
+                Image(systemName: "plus")
+                    .font(.body.weight(.semibold))
+                    .frame(
+                        width: PanelControlMetrics.floatingIconLength,
+                        height: PanelControlMetrics.floatingIconLength
+                    )
+                    .panelStandaloneActionControl(length: PanelControlMetrics.compactControlLength)
+            }
+            .frame(
+                width: PanelControlMetrics.tabBarHeight,
+                height: PanelControlMetrics.tabBarHeight
+            )
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("New List")
         .help("New List")
+        .disabled(model.editingID != nil)
     }
 
-    private var tabStrip: some View {
+    private var tabButtons: some View {
         HStack(spacing: 0) {
             ForEach(tabs, id: \.self) { tab in
                 tabButton(tab)
             }
         }
-        .frame(minHeight: PanelControlMetrics.floatingRowHeight)
-        .panelGlassSurface(in: Capsule())
     }
 
     private func tabButton(_ tab: TabSelection) -> some View {
@@ -129,7 +140,7 @@ struct SnipListTabBarView: View {
             }
             .frame(
                 width: PanelControlMetrics.tabItemWidth,
-                height: PanelControlMetrics.floatingRowHeight
+                height: PanelControlMetrics.tabBarHeight
             )
             .contentShape(Rectangle())
         }
@@ -138,6 +149,7 @@ struct SnipListTabBarView: View {
         .accessibilityLabel(name)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .help(name)
+        .disabled(model.editingID != nil)
         .contextMenu {
             if case .list(let listID) = tab,
                listID != SnipList.inboxID,
@@ -147,11 +159,12 @@ struct SnipListTabBarView: View {
                 Button("Delete List", role: .destructive) {
                     listPendingDeletion = list
                 }
+                .disabled(model.editingID != nil)
             }
         }
         .dropDestination(
             for: PanelDropPayload.self,
-            isEnabled: tab.listID != nil
+            isEnabled: tab.listID != nil && model.editingID == nil
         ) { payloads, _ in
             guard let listID = tab.listID else { return }
             performDrop(payloads, in: listID)
@@ -172,6 +185,7 @@ struct SnipListTabBarView: View {
     private func performDrop(_ payloads: [PanelDropPayload], in listID: UUID) {
         cancelHoverOpen()
         dropTargetTab = nil
+        guard model.editingID == nil else { return }
         guard payloads.count == 1, let payload = payloads.first else { return }
 
         switch payload {

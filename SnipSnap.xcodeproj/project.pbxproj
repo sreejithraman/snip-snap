@@ -34,6 +34,8 @@
 		10000000000000000000001A /* SelectionCaptureSnapshotReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000022 /* SelectionCaptureSnapshotReader.swift */; };
 		10000000000000000000001B /* SnipCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000023 /* SnipCommand.swift */; };
 		10000000000000000000001C /* PanelMoreButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000024 /* PanelMoreButton.swift */; };
+		A941E1000000000000000001 /* PanelHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A941E1000000000000000002 /* PanelHeaderView.swift */; };
+		A941E1000000000000000003 /* PanelEmptyStateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A941E1000000000000000004 /* PanelEmptyStateView.swift */; };
 		10000000000000000000001D /* SnipListSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000025 /* SnipListSheets.swift */; };
 		10000000000000000000001E /* SnipListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000026 /* SnipListView.swift */; };
 		C10000000000000000000006 /* SnipListReorderGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000006 /* SnipListReorderGeometry.swift */; };
@@ -222,6 +224,8 @@
 		200000000000000000000022 /* SelectionCaptureSnapshotReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionCaptureSnapshotReader.swift; sourceTree = "<group>"; };
 		200000000000000000000023 /* SnipCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipCommand.swift; sourceTree = "<group>"; };
 		200000000000000000000024 /* PanelMoreButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelMoreButton.swift; sourceTree = "<group>"; };
+		A941E1000000000000000002 /* PanelHeaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelHeaderView.swift; sourceTree = "<group>"; };
+		A941E1000000000000000004 /* PanelEmptyStateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelEmptyStateView.swift; sourceTree = "<group>"; };
 		200000000000000000000025 /* SnipListSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListSheets.swift; sourceTree = "<group>"; };
 		200000000000000000000026 /* SnipListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListView.swift; sourceTree = "<group>"; };
 		C20000000000000000000006 /* SnipListReorderGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListReorderGeometry.swift; sourceTree = "<group>"; };
@@ -433,6 +437,8 @@
 				200000000000000000000016 /* SnipCardRow.swift */,
 				200000000000000000000023 /* SnipCommand.swift */,
 				200000000000000000000024 /* PanelMoreButton.swift */,
+				A941E1000000000000000002 /* PanelHeaderView.swift */,
+				A941E1000000000000000004 /* PanelEmptyStateView.swift */,
 				20000000000000000000003E /* DevelopmentBuildBadge.swift */,
 				200000000000000000000025 /* SnipListSheets.swift */,
 				200000000000000000000040 /* SnipListIconCatalog.swift */,
@@ -882,6 +888,8 @@
 				10000000000000000000000E /* SnipCardRow.swift in Sources */,
 				10000000000000000000001B /* SnipCommand.swift in Sources */,
 				10000000000000000000001C /* PanelMoreButton.swift in Sources */,
+				A941E1000000000000000001 /* PanelHeaderView.swift in Sources */,
+				A941E1000000000000000003 /* PanelEmptyStateView.swift in Sources */,
 				100000000000000000000035 /* DevelopmentBuildBadge.swift in Sources */,
 				10000000000000000000001D /* SnipListSheets.swift in Sources */,
 				100000000000000000000037 /* SnipListIconCatalog.swift in Sources */,

@@ -20,8 +20,25 @@ final class AppModel: ObservableObject {
     @Published private(set) var lists: [SnipList] = [.inbox]
     @Published var activeListID: UUID
     @Published var isShowingClipboard = false
-    @Published var query = "" { didSet { reconcileSelection() } }
-    @Published var completionFilter: SnipCompletionFilter = .all { didSet { reconcileSelection() } }
+    @Published var isSearchExpanded = false
+    @Published var query = "" {
+        didSet {
+            if isSearchExpanded && !hasActiveQuery {
+                selection = []
+            } else {
+                reconcileSelection()
+            }
+        }
+    }
+    @Published private var storedCompletionFilter: SnipCompletionFilter = .all
+    var completionFilter: SnipCompletionFilter {
+        get { storedCompletionFilter }
+        set {
+            guard editingID == nil else { return }
+            storedCompletionFilter = newValue
+            reconcileSelection()
+        }
+    }
     @Published private(set) var selectionState = SnipSelection.Update(selection: [], anchor: nil, focus: nil)
     var selection: Set<UUID> {
         get { selectionState.selection }
@@ -63,8 +80,28 @@ final class AppModel: ObservableObject {
     @Published var clipboardCopyPulse: ClipboardCopyPulse?
     var canReorderSelection: Bool { canReorder(ids: selection) }
 
+    func enterSearch() {
+        guard !isSearchExpanded else { return }
+        selection = []
+        isSearchExpanded = true
+    }
+
+    func exitSearch() {
+        query = ""
+        isSearchExpanded = false
+    }
+
+    var hasActiveQuery: Bool {
+        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var canSelectVisibleSnips: Bool {
+        guard !filteredSnips.isEmpty else { return false }
+        return isSearchExpanded ? hasActiveQuery : !isShowingClipboard
+    }
+
     func canReorder(ids: Set<UUID>) -> Bool {
-        guard query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        guard !hasActiveQuery,
               completionFilter == .all,
               !ids.isEmpty,
               !snips.contains(where: { ids.contains($0.id) && $0.isPinned }) else { return false }
@@ -95,10 +132,11 @@ final class AppModel: ObservableObject {
             listNames: Dictionary(uniqueKeysWithValues: lists.map { ($0.id, $0.name) }),
             sourceLabel: { $0.displaySourceLabel }
         )
-        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard hasActiveQuery else {
             return matches.filter { $0.listID == listID }
         }
-        return matches
+        let matchesByList = Dictionary(grouping: matches, by: \.listID)
+        return lists.flatMap { matchesByList[$0.id] ?? [] }
     }
 
     var selectedSnips: [Snip] {
@@ -572,6 +610,7 @@ final class AppModel: ObservableObject {
     }
 
     func selectList(_ list: SnipList, preservingSelection: Bool = false) {
+        guard editingID == nil else { return }
         activeListID = list.id
         defaults.set(list.id.uuidString, forKey: Self.activeListDefaultsKey)
         isShowingClipboard = false
@@ -579,6 +618,7 @@ final class AppModel: ObservableObject {
     }
 
     func showClipboard() {
+        guard editingID == nil else { return }
         isShowingClipboard = true
         selection = []
     }
@@ -638,6 +678,7 @@ final class AppModel: ObservableObject {
         color: SnipListColorPreset? = nil,
         movingIDs: Set<UUID> = []
     ) async -> Bool {
+        guard editingID == nil else { return false }
         let result = await performMutation {
             let update = try await session.performLibraryCommand(
                 .createList(name: name, systemImage: systemImage, color: color),
@@ -666,7 +707,7 @@ final class AppModel: ObservableObject {
     }
 
     func deleteList(_ list: SnipList) async {
-        guard list.id != SnipList.inboxID else { return }
+        guard editingID == nil, list.id != SnipList.inboxID else { return }
         let result = await performMutation {
             let update = try await session.performLibraryCommand(
                 .deleteList(id: list.id),
@@ -997,7 +1038,7 @@ final class AppModel: ObservableObject {
         before destinationID: UUID?,
         selectionAfterMove: Set<UUID>? = nil
     ) async -> Bool {
-        guard !ids.isEmpty else { return false }
+        guard !ids.isEmpty, !ids.contains(where: { $0 == editingID }) else { return false }
         let currentSortMode = sortMode
         let result = await performCommand(
             command: .place(
@@ -1022,7 +1063,7 @@ final class AppModel: ObservableObject {
         to listID: UUID,
         selectionAfterMove: Set<UUID>? = nil
     ) async -> Bool {
-        guard !ids.isEmpty else { return false }
+        guard !ids.isEmpty, !ids.contains(where: { $0 == editingID }) else { return false }
         let result = await performCommand(
             command: .moveChronologically(ids: ids, to: listID),
             afterSelection: selectionAfterMove
@@ -1055,6 +1096,7 @@ final class AppModel: ObservableObject {
     }
 
     func selectAllVisible() {
+        guard canSelectVisibleSnips else { return }
         let ids = filteredSnips.map(\.id)
         applySelection(.init(selection: Set(ids), anchor: ids.first, focus: ids.last))
     }
@@ -1062,8 +1104,20 @@ final class AppModel: ObservableObject {
     @discardableResult
     func beginEditing(_ id: UUID) async -> Bool {
         guard let snip = snips.first(where: { $0.id == id }) else { return false }
+        let startingSearchState = isSearchExpanded
+        let startingQuery = query
+        let startingListID = activeListID
+        let startingClipboardState = isShowingClipboard
         do {
             _ = try await prepareAttachments(snip.attachments, for: .open)
+            guard editingID == nil,
+                  isSearchExpanded == startingSearchState,
+                  query == startingQuery,
+                  activeListID == startingListID,
+                  isShowingClipboard == startingClipboardState,
+                  (!isSearchExpanded || hasActiveQuery),
+                  !isShowingClipboard || isSearchExpanded,
+                  filteredSnips.contains(where: { $0.id == id }) else { return false }
             editingID = id
             return true
         } catch is CancellationError {

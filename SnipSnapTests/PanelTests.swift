@@ -413,6 +413,62 @@ final class PanelTests: StoreBackedTestCase {
         processLifetimePanelSearchWindows.append(window)
     }
 
+    @MainActor
+    func testGlobalSearchRefreshesWhenClipboardHistoryChanges() async throws {
+        let defaultsName = "Snip SnapLiveClipboardSearchTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        let pasteboard = NSPasteboard(
+            name: .init("world.sree.snipsnap.live-clipboard-search-tests.\(UUID().uuidString)")
+        )
+        let history = ClipboardHistory(
+            pasteboard: pasteboard,
+            defaults: defaults,
+            storeURL: try storeURL().deletingLastPathComponent().appendingPathComponent("clipboard.json")
+        )
+        await history.waitForInitialLoad()
+        let model = AppModel(
+            library: try JSONSnipLibrary(fileURL: storeURL()),
+            defaults: defaults,
+            clipboardHistory: history
+        )
+        model.enterSearch()
+        model.query = "live clipboard match"
+        let settings = ShortcutSettings(defaults: defaults)
+        let rootView = ContentView(
+            coordinator: AppCoordinator(model: model, shortcutSettings: settings),
+            fileDropController: PanelFileDropController(),
+            dragSessionController: PanelDragSessionController()
+        )
+        .environmentObject(model)
+        .environmentObject(settings)
+        let hostingView = NSHostingView(rootView: rootView)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 760, height: 760)
+        let window = NSWindow(contentRect: hostingView.frame, styleMask: [], backing: .buffered, defer: false)
+        window.contentView = hostingView
+        defer {
+            pasteboard.releaseGlobally()
+            defaults.removePersistentDomain(forName: defaultsName)
+            processLifetimePanelSearchWindows.append(window)
+        }
+
+        hostingView.layoutSubtreeIfNeeded()
+        XCTAssertEqual(scrollViews(in: hostingView).count, 0)
+
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("live clipboard match", forType: .string))
+        history.captureNow(from: pasteboard)
+        await history.waitForPendingCapture()
+        hostingView.layoutSubtreeIfNeeded()
+        XCTAssertEqual(model.clipboardSearchMatches.count, 1)
+        XCTAssertEqual(scrollViews(in: hostingView).count, 1)
+
+        let entry = try XCTUnwrap(history.entries.first)
+        history.delete(id: entry.id)
+        hostingView.layoutSubtreeIfNeeded()
+        XCTAssertTrue(model.clipboardSearchMatches.isEmpty)
+        XCTAssertEqual(scrollViews(in: hostingView).count, 0)
+    }
+
     func testListIconCatalogHasUsefulUniqueAvailableSymbols() {
         let icons = SnipListIconOptions.categories.flatMap(\.icons)
 
@@ -1160,16 +1216,32 @@ final class PanelTests: StoreBackedTestCase {
         )
     }
 
-    func testCompactComposerKeepsSmallVisualActionsInsideUsefulHitAreas() {
+    func testPanelControlsShareAVisibleHeight() {
         XCTAssertEqual(PanelControlMetrics.regularControlLength, 32)
         XCTAssertEqual(
             PanelControlMetrics.compactControlLength,
-            PanelControlMetrics.regularControlLength
+            PanelControlMetrics.floatingRowHeight
         )
-        XCTAssertEqual(PanelControlMetrics.inlineEntryBaseHeight, 40)
+        XCTAssertEqual(
+            PanelControlMetrics.compactComposerHeight,
+            PanelControlMetrics.floatingRowHeight
+        )
+        XCTAssertEqual(
+            PanelControlMetrics.inlineEntryBaseHeight,
+            PanelControlMetrics.floatingRowHeight + PanelControlMetrics.inlineEntryInset * 2
+        )
+        XCTAssertLessThan(
+            PanelControlMetrics.actionHeight,
+            PanelControlMetrics.compactComposerHeight
+        )
     }
 
     func testTabSelectionUsesTheNearRoundActionProportion() {
+        XCTAssertEqual(PanelControlMetrics.tabBarHeight, 40)
+        XCTAssertGreaterThan(
+            PanelControlMetrics.tabBarHeight,
+            PanelControlMetrics.floatingRowHeight
+        )
         XCTAssertGreaterThan(
             PanelControlMetrics.compactSelectionWidth,
             PanelControlMetrics.compactSelectionHeight
@@ -1180,7 +1252,7 @@ final class PanelTests: StoreBackedTestCase {
             PanelControlMetrics.tabSelectionInset
         )
         XCTAssertEqual(
-            (PanelControlMetrics.floatingRowHeight
+            (PanelControlMetrics.tabBarHeight
                 - PanelControlMetrics.compactSelectionHeight) / 2,
             PanelControlMetrics.tabSelectionInset
         )
@@ -1301,7 +1373,7 @@ final class PanelTests: StoreBackedTestCase {
 
         XCTAssertEqual(
             hostingView.fittingSize.height,
-            PanelControlMetrics.regularControlLength,
+            PanelControlMetrics.compactComposerHeight,
             accuracy: 0.5
         )
     }

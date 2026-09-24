@@ -1084,6 +1084,36 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testToggleFromHiddenClipboardSearchOpensTheActiveListComposer() async throws {
+        let model = AppModel(library: try JSONSnipLibrary(fileURL: storeURL()))
+        let coordinator = AppCoordinator(
+            model: model,
+            shortcutSettings: ShortcutSettings(),
+            isAccessibilityTrusted: { true }
+        )
+        let panel = NSWindow()
+        coordinator.attachPanelWindow(panel)
+        defer { panel.orderOut(nil) }
+        let focusRequested = expectation(description: "Composer focus requested")
+        let observation = coordinator.panelFocusRequests.sink { request in
+            if case .inlineEntry = request { focusRequested.fulfill() }
+        }
+        defer { observation.cancel() }
+
+        model.showClipboard()
+        model.enterSearch()
+        model.query = "draft"
+        coordinator.togglePanel()
+
+        XCTAssertTrue(panel.isVisible)
+        XCTAssertFalse(model.isShowingClipboard)
+        XCTAssertFalse(model.isSearchExpanded)
+        XCTAssertEqual(model.query, "")
+        await fulfillment(of: [focusRequested], timeout: 1)
+        withExtendedLifetime(coordinator) {}
+    }
+
+    @MainActor
     func testClipboardShortcutOpensClipboardThenHidesIt() throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let model = AppModel(library: repository)
@@ -1105,6 +1135,110 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         coordinator.toggleClipboard()
 
         XCTAssertFalse(panel.isVisible)
+    }
+
+    @MainActor
+    func testClipboardShortcutExitsSearchBeforeTogglingClipboard() async throws {
+        let model = AppModel(library: try JSONSnipLibrary(fileURL: storeURL()))
+        let coordinator = AppCoordinator(
+            model: model,
+            shortcutSettings: ShortcutSettings(),
+            isAccessibilityTrusted: { true }
+        )
+        let panel = NSWindow()
+        coordinator.attachPanelWindow(panel)
+        panel.orderFront(nil)
+        defer { panel.orderOut(nil) }
+        let focusRequested = expectation(description: "Clipboard focus requested")
+        let observation = coordinator.panelFocusRequests.sink { request in
+            if case .clipboard = request { focusRequested.fulfill() }
+        }
+        defer { observation.cancel() }
+
+        model.showClipboard()
+        model.query = "search"
+        model.isSearchExpanded = true
+        coordinator.toggleClipboard()
+
+        XCTAssertTrue(panel.isVisible)
+        XCTAssertTrue(model.isShowingClipboard)
+        XCTAssertFalse(model.isSearchExpanded)
+        XCTAssertEqual(model.query, "")
+        await fulfillment(of: [focusRequested], timeout: 1)
+        withExtendedLifetime(coordinator) {}
+    }
+
+    @MainActor
+    func testClipboardShortcutReopensHiddenPanelWithoutLosingAnEdit() throws {
+        let model = AppModel(library: try JSONSnipLibrary(fileURL: storeURL()))
+        let coordinator = AppCoordinator(
+            model: model,
+            shortcutSettings: ShortcutSettings(),
+            isAccessibilityTrusted: { true }
+        )
+        let panel = NSWindow()
+        coordinator.attachPanelWindow(panel)
+        defer { panel.orderOut(nil) }
+        model.editingID = UUID()
+
+        coordinator.toggleClipboard()
+
+        XCTAssertTrue(panel.isVisible)
+        XCTAssertNotNil(model.editingID)
+        XCTAssertFalse(model.isShowingClipboard)
+    }
+
+    @MainActor
+    func testSearchShortcutOpensHiddenPanelAndRequestsSearchFocus() async throws {
+        let model = AppModel(library: try JSONSnipLibrary(fileURL: storeURL()))
+        let coordinator = AppCoordinator(
+            model: model,
+            shortcutSettings: ShortcutSettings(),
+            isAccessibilityTrusted: { true }
+        )
+        let panel = NSWindow()
+        coordinator.attachPanelWindow(panel)
+        defer { panel.orderOut(nil) }
+        let focusRequested = expectation(description: "Search focus requested")
+        let observation = coordinator.panelFocusRequests.sink { request in
+            if case .search = request { focusRequested.fulfill() }
+        }
+        defer { observation.cancel() }
+
+        coordinator.focusPanelSearch()
+
+        XCTAssertTrue(panel.isVisible)
+        await fulfillment(of: [focusRequested], timeout: 1)
+        withExtendedLifetime(coordinator) {}
+    }
+
+    @MainActor
+    func testLaterClipboardShortcutSupersedesQueuedSearchFocus() async throws {
+        let model = AppModel(library: try JSONSnipLibrary(fileURL: storeURL()))
+        let coordinator = AppCoordinator(
+            model: model,
+            shortcutSettings: ShortcutSettings(),
+            isAccessibilityTrusted: { true }
+        )
+        let panel = NSWindow()
+        coordinator.attachPanelWindow(panel)
+        defer { panel.orderOut(nil) }
+        var requests: [PanelFocusRequest] = []
+        let clipboardFocusRequested = expectation(description: "Clipboard focus requested")
+        let observation = coordinator.panelFocusRequests.sink { request in
+            requests.append(request)
+            if case .clipboard = request { clipboardFocusRequested.fulfill() }
+        }
+        defer { observation.cancel() }
+
+        coordinator.focusPanelSearch()
+        coordinator.toggleClipboard()
+
+        await fulfillment(of: [clipboardFocusRequested], timeout: 1)
+        withExtendedLifetime(coordinator) {}
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertTrue(model.isShowingClipboard)
+        XCTAssertFalse(model.isSearchExpanded)
     }
 
     func testToggleHidesWhenVisibleOnActiveSpaceOrDialogIsPresented() {
@@ -1144,28 +1278,6 @@ final class AppCoordinatorTests: StoreBackedTestCase {
                 isOnActiveSpace: false
             )
         )
-    }
-
-    @MainActor
-    func testCoordinatorSendsSearchFocusRequest() throws {
-        let repository = try JSONSnipLibrary(fileURL: storeURL())
-        let model = AppModel(library: repository)
-        let coordinator = AppCoordinator(
-            model: model,
-            shortcutSettings: ShortcutSettings(),
-            isAccessibilityTrusted: { true }
-        )
-        var receivedSearchRequest = false
-        let subscription = coordinator.panelFocusRequests.sink { request in
-            if case .search = request {
-                receivedSearchRequest = true
-            }
-        }
-
-        coordinator.focusPanelSearch()
-
-        XCTAssertTrue(receivedSearchRequest)
-        withExtendedLifetime(subscription) {}
     }
 
     @MainActor

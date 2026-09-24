@@ -636,10 +636,16 @@
     "Clipboard" : {
 
     },
+    "Clipboard history" : {
+
+    },
     "Clipboard History Was Not Saved" : {
 
     },
     "Close" : {
+
+    },
+    "Close search" : {
 
     },
     "Communication" : {
@@ -733,6 +739,9 @@
 
     },
     "Filter: %@" : {
+
+    },
+    "Focus search" : {
 
     },
     "Food & Drink" : {
@@ -928,6 +937,9 @@
 
     },
     "Search" : {
+
+    },
+    "Search all lists and Clipboard" : {
 
     },
     "Search Snips" : {
