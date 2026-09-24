@@ -239,6 +239,7 @@ final class AppModelTests: StoreBackedTestCase {
 
     private actor InMemorySnipLibrary: SnipLibrary {
         private var snips: [Snip]
+        private var lists: [SnipList]
         private var attachmentURLs: [UUID: URL]
         private var recovery: SnipRecoverySnapshot
         private(set) var addedContents: [String] = []
@@ -251,11 +252,13 @@ final class AppModelTests: StoreBackedTestCase {
 
         init(
             snips: [Snip],
+            lists: [SnipList] = [.inbox],
             recovery: SnipRecoverySnapshot = .empty,
             attachmentURLs: [UUID: URL] = [:],
             suspendsFirstCommand: Bool = false
         ) {
             self.snips = snips
+            self.lists = lists
             self.recovery = recovery
             self.attachmentURLs = attachmentURLs
             self.suspendsFirstCommand = suspendsFirstCommand
@@ -273,7 +276,7 @@ final class AppModelTests: StoreBackedTestCase {
         private func makeSnapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
             SnipLibrarySnapshot(
                 snips: Snip.sorted(snips, by: sortMode),
-                lists: [.inbox],
+                lists: lists,
                 attachmentURLs: attachmentURLs.filter {
                     FileManager.default.fileExists(atPath: $0.value.path)
                 }
@@ -315,6 +318,31 @@ final class AppModelTests: StoreBackedTestCase {
             case .setDone(let ids, let done):
                 for index in snips.indices where ids.contains(snips[index].id) {
                     snips[index].isDone = done
+                }
+                outcome = .none
+            case .createList(let name, let systemImage, let color, _):
+                let list = SnipList(
+                    id: UUID(), name: name, systemImage: systemImage,
+                    color: color, position: lists.count
+                )
+                lists.append(list)
+                outcome = .listCreated(list)
+            case .updateList(let id, let name, let systemImage, _):
+                guard let index = lists.firstIndex(where: { $0.id == id }) else {
+                    throw SnipLibraryError.storeUnavailable
+                }
+                lists[index].name = name
+                lists[index].systemImage = systemImage
+                outcome = .none
+            case .moveChronologically(let ids, let listID):
+                for index in snips.indices where ids.contains(snips[index].id) {
+                    snips[index].listID = listID
+                }
+                outcome = .none
+            case .deleteList(let id):
+                lists.removeAll { $0.id == id }
+                for index in snips.indices where snips[index].listID == id {
+                    snips[index].listID = SnipList.inboxID
                 }
                 outcome = .none
             case .pruneAttachments:
@@ -560,6 +588,15 @@ final class AppModelTests: StoreBackedTestCase {
         await model.refreshRecovery()
         XCTAssertEqual(model.currentSnip(for: recovered)?.content, "Changed while open")
 
+        let opened = await model.beginEditing(current.id)
+        XCTAssertTrue(opened)
+        let blocked = await model.resolveRecovery(recovered.id, choice: .useRecovered)
+        XCTAssertFalse(blocked)
+        let choicesBeforeEditingEnds = await library.recordedRecoveryChoices()
+        XCTAssertTrue(choicesBeforeEditingEnds.isEmpty)
+        XCTAssertEqual(model.editingID, current.id)
+        model.editingID = nil
+
         let resolved = await model.resolveRecovery(recovered.id, choice: .keepCurrent)
         XCTAssertTrue(resolved)
         let choices = await library.recordedRecoveryChoices()
@@ -695,6 +732,305 @@ final class AppModelTests: StoreBackedTestCase {
             extending: false
         )
         XCTAssertEqual(moved.focus, inboxOld.id)
+    }
+
+    @MainActor
+    func testAccessibilityActionsPreserveAnInlineEditUnderNotDoneFilter() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let addedEdited = try await repository.add(content: "Keep my draft", origin: .quickEntry)
+        let addedOther = try await repository.add(content: "Other snip", origin: .quickEntry)
+        let edited = try XCTUnwrap(addedEdited)
+        let other = try XCTUnwrap(addedOther)
+        let model = AppModel(library: repository, defaults: defaults())
+        await model.reload()
+        model.completionFilter = .notDone
+        let opened = await model.beginEditing(edited.id)
+        XCTAssertTrue(opened)
+        let commands = SnipCommandDispatcher(model: model)
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-accessibility-done-\(UUID())"))
+        pasteboard.clearContents()
+        pasteboard.setString("Existing clipboard", forType: .string)
+
+        await model.toggleDoneNow(id: edited.id, to: pasteboard)
+        await commands.performNow(.toggleDone, on: [edited.id])
+        XCTAssertEqual(pasteboard.string(forType: .string), "Existing clipboard")
+        XCTAssertEqual(model.snips.first { $0.id == edited.id }?.isDone, false)
+        XCTAssertEqual(model.editingID, edited.id)
+        await model.togglePinned(id: edited.id)
+        XCTAssertEqual(model.snips.first { $0.id == edited.id }?.isPinned, false)
+        await commands.performNow(.delete, on: [edited.id])
+
+        XCTAssertEqual(model.editingID, edited.id)
+        XCTAssertEqual(model.filteredSnips.map(\.id).contains(edited.id), true)
+        XCTAssertEqual(model.snips.first { $0.id == edited.id }?.isDone, false)
+        XCTAssertEqual(model.snips.first { $0.id == edited.id }?.content, "Keep my draft")
+        XCTAssertNotNil(model.snips.first { $0.id == other.id })
+    }
+
+    @MainActor
+    func testVisibilityChangesStayUnavailableDuringInlineEdit() async throws {
+        let edited = Snip(content: "Draft", origin: .quickEntry)
+        let otherList = SnipList(id: UUID(), name: "Other", systemImage: "folder", position: 1)
+        let library = InMemorySnipLibrary(snips: [edited], lists: [.inbox, otherList])
+        let model = AppModel(library: library, defaults: defaults())
+        await model.reload()
+        model.completionFilter = .notDone
+        let opened = await model.beginEditing(edited.id)
+        XCTAssertTrue(opened)
+
+        model.query = "No match"
+        model.completionFilter = .done
+        model.enterSearch()
+        model.selectList(otherList)
+        model.showClipboard()
+
+        XCTAssertEqual(model.query, "")
+        XCTAssertEqual(model.completionFilter, .notDone)
+        XCTAssertFalse(model.isSearchExpanded)
+        XCTAssertEqual(model.activeListID, SnipList.inboxID)
+        XCTAssertFalse(model.isShowingClipboard)
+        XCTAssertEqual(model.editingID, edited.id)
+        XCTAssertTrue(model.filteredSnips.contains { $0.id == edited.id })
+
+        model.editingID = nil
+        model.selectList(otherList)
+        XCTAssertEqual(model.activeListID, otherList.id)
+    }
+
+    @MainActor
+    func testSearchModeCannotCloseOverAnInlineEdit() async throws {
+        let edited = Snip(content: "Draft", origin: .quickEntry)
+        let library = InMemorySnipLibrary(snips: [edited])
+        let model = AppModel(library: library, defaults: defaults())
+        await model.reload()
+        model.enterSearch()
+        model.query = "Draft"
+        let opened = await model.beginEditing(edited.id)
+        XCTAssertTrue(opened)
+
+        model.exitSearch()
+
+        XCTAssertTrue(model.isSearchExpanded)
+        XCTAssertEqual(model.query, "Draft")
+        XCTAssertEqual(model.editingID, edited.id)
+        XCTAssertTrue(model.filteredSnips.contains { $0.id == edited.id })
+    }
+
+    @MainActor
+    func testListRenamesRemainUnavailableDuringInlineEdit() async throws {
+        let source = SnipList(id: UUID(), name: "Project", systemImage: "folder", position: 1)
+        let other = SnipList(id: UUID(), name: "Other", systemImage: "folder", position: 2)
+        let edited = Snip(content: "Draft", origin: .quickEntry, listID: source.id)
+        let library = InMemorySnipLibrary(snips: [edited], lists: [.inbox, source, other])
+        let model = AppModel(library: library, defaults: defaults())
+        await model.reload()
+        model.selectList(source)
+        model.query = "Project"
+        let opened = await model.beginEditing(edited.id)
+        XCTAssertTrue(opened)
+
+        let hidden = await model.updateList(source, name: "Archive", systemImage: "folder")
+        XCTAssertFalse(hidden)
+        let indirect = await model.updateList(other, name: "Archive", systemImage: "folder")
+        XCTAssertFalse(indirect)
+        XCTAssertEqual(model.editingID, edited.id)
+        XCTAssertEqual(model.lists.first { $0.id == source.id }?.name, "Project")
+        XCTAssertEqual(model.lists.first { $0.id == other.id }?.name, "Other")
+        XCTAssertTrue(model.filteredSnips.contains { $0.id == edited.id })
+
+        model.editingID = nil
+        let visible = await model.updateList(source, name: "Project Archive", systemImage: "folder")
+        XCTAssertTrue(visible)
+        XCTAssertNil(model.editingID)
+        XCTAssertEqual(model.lists.first { $0.id == source.id }?.name, "Project Archive")
+        XCTAssertTrue(model.filteredSnips.contains { $0.id == edited.id })
+    }
+
+    @MainActor
+    func testBatchDeleteKeepsEditedSnipAndDeletesOtherTargets() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let addedEdited = try await repository.add(content: "Draft", origin: .quickEntry)
+        let addedOther = try await repository.add(content: "Delete me", origin: .quickEntry)
+        let edited = try XCTUnwrap(addedEdited)
+        let other = try XCTUnwrap(addedOther)
+        let model = AppModel(library: repository, defaults: defaults())
+        await model.reload()
+        let opened = await model.beginEditing(edited.id)
+        XCTAssertTrue(opened)
+
+        await model.deleteSelectionNow(ids: [edited.id, other.id])
+
+        XCTAssertEqual(model.editingID, edited.id)
+        XCTAssertTrue(model.snips.contains { $0.id == edited.id })
+        XCTAssertFalse(model.snips.contains { $0.id == other.id })
+    }
+
+    @MainActor
+    func testBatchDoneToggleUsesOnlySnipsOutsideTheInlineEdit() async throws {
+        let edited = Snip(content: "Draft", origin: .quickEntry)
+        let done = Snip(content: "Done", origin: .quickEntry, isDone: true)
+        let library = InMemorySnipLibrary(snips: [edited, done])
+        let model = AppModel(library: library, defaults: defaults())
+        await model.reload()
+        let opened = await model.beginEditing(edited.id)
+        XCTAssertTrue(opened)
+
+        await model.toggleDoneNow(ids: [edited.id, done.id])
+
+        XCTAssertEqual(model.editingID, edited.id)
+        XCTAssertEqual(model.snips.first { $0.id == edited.id }?.isDone, false)
+        XCTAssertEqual(model.snips.first { $0.id == done.id }?.isDone, false)
+    }
+
+    @MainActor
+    func testSuspendedListMoveFinishesBeforeInlineEditCanOpen() async throws {
+        let edited = Snip(content: "Keep my draft", origin: .quickEntry)
+        let destination = SnipList(
+            id: UUID(), name: "Archive", systemImage: "folder", position: 1
+        )
+        let library = InMemorySnipLibrary(
+            snips: [edited], lists: [.inbox, destination], suspendsFirstCommand: true
+        )
+        let model = AppModel(library: library, defaults: defaults())
+        await model.reload()
+
+        let move = Task { @MainActor in
+            await model.moveChronologically(ids: [edited.id], to: destination.id)
+        }
+        await library.waitUntilFirstCommandStarts()
+        let editRequested = expectation(description: "Edit requested during suspended move")
+        var editFinished = false
+        let edit = Task { @MainActor in
+            editRequested.fulfill()
+            let opened = await model.beginEditing(edited.id)
+            editFinished = true
+            return opened
+        }
+        await fulfillment(of: [editRequested], timeout: 1)
+        await Task.yield()
+        XCTAssertFalse(editFinished)
+        await library.resumeFirstCommand()
+
+        let moved = await move.value
+        let opened = await edit.value
+        XCTAssertTrue(moved)
+        XCTAssertFalse(opened)
+        XCTAssertNil(model.editingID)
+        XCTAssertEqual(model.snips.first?.listID, destination.id)
+        XCTAssertFalse(model.filteredSnips.contains { $0.id == edited.id })
+    }
+
+    @MainActor
+    func testMovingOrDeletingTheEditedSnipsListLeavesTheEditorOpen() async throws {
+        let source = SnipList(id: UUID(), name: "Source", systemImage: "folder", position: 1)
+        let destination = SnipList(id: UUID(), name: "Destination", systemImage: "folder", position: 2)
+        let edited = Snip(content: "Draft", origin: .quickEntry, listID: source.id)
+        let library = InMemorySnipLibrary(snips: [edited], lists: [.inbox, source, destination])
+        let model = AppModel(library: library, defaults: defaults())
+        await model.reload()
+        model.selectList(source)
+        let opened = await model.beginEditing(edited.id)
+        XCTAssertTrue(opened)
+
+        let moved = await model.moveChronologically(ids: [edited.id], to: destination.id)
+        await model.deleteList(source)
+
+        XCTAssertFalse(moved)
+        XCTAssertEqual(model.editingID, edited.id)
+        XCTAssertEqual(model.snips.first?.listID, source.id)
+        XCTAssertTrue(model.lists.contains(source))
+        XCTAssertTrue(model.filteredSnips.contains { $0.id == edited.id })
+    }
+
+    @MainActor
+    func testDeletingSelectedListCannotUnmountAnEditedSearchResultFromAnotherList() async throws {
+        let selected = SnipList(id: UUID(), name: "Selected", systemImage: "folder", position: 1)
+        let source = SnipList(id: UUID(), name: "Source", systemImage: "folder", position: 2)
+        let edited = Snip(content: "Draft", origin: .quickEntry, listID: source.id)
+        let library = InMemorySnipLibrary(snips: [edited], lists: [.inbox, selected, source])
+        let model = AppModel(library: library, defaults: defaults())
+        await model.reload()
+        model.selectList(selected)
+        model.enterSearch()
+        model.query = "Draft"
+        let opened = await model.beginEditing(edited.id)
+        XCTAssertTrue(opened)
+
+        await model.deleteList(selected)
+
+        XCTAssertEqual(model.activeListID, selected.id)
+        XCTAssertTrue(model.lists.contains(selected))
+        XCTAssertEqual(model.editingID, edited.id)
+        XCTAssertTrue(model.filteredSnips.contains { $0.id == edited.id })
+    }
+
+    @MainActor
+    func testSuspendedListDeletionCancelsPendingInlineEdit() async throws {
+        let source = SnipList(id: UUID(), name: "Source", systemImage: "folder", position: 1)
+        let edited = Snip(content: "Draft", origin: .quickEntry, listID: source.id)
+        let library = InMemorySnipLibrary(
+            snips: [edited], lists: [.inbox, source], suspendsFirstCommand: true
+        )
+        let model = AppModel(library: library, defaults: defaults())
+        await model.reload()
+        model.selectList(source)
+
+        let deletion = Task { @MainActor in await model.deleteList(source) }
+        await library.waitUntilFirstCommandStarts()
+        let editRequested = expectation(description: "Edit requested during suspended deletion")
+        var editFinished = false
+        let edit = Task { @MainActor in
+            editRequested.fulfill()
+            let opened = await model.beginEditing(edited.id)
+            editFinished = true
+            return opened
+        }
+        await fulfillment(of: [editRequested], timeout: 1)
+        await Task.yield()
+        XCTAssertNil(model.editingID)
+        XCTAssertFalse(editFinished)
+        await library.resumeFirstCommand()
+
+        await deletion.value
+        let opened = await edit.value
+        XCTAssertFalse(opened)
+        XCTAssertNil(model.editingID)
+        XCTAssertEqual(model.activeListID, SnipList.inboxID)
+        XCTAssertEqual(model.snips.first?.listID, SnipList.inboxID)
+        XCTAssertTrue(model.filteredSnips.contains { $0.id == edited.id })
+    }
+
+    @MainActor
+    func testCreatingListAndMovingSnipCancelPendingInlineEdit() async throws {
+        let edited = Snip(content: "Draft", origin: .quickEntry)
+        let library = InMemorySnipLibrary(snips: [edited], suspendsFirstCommand: true)
+        let model = AppModel(library: library, defaults: defaults())
+        await model.reload()
+        model.query = "Draft"
+
+        let creation = Task { @MainActor in
+            await model.createList(
+                name: "Destination", systemImage: "folder", movingIDs: [edited.id]
+            )
+        }
+        await library.waitUntilFirstCommandStarts()
+        let editRequested = expectation(description: "Edit requested during list creation")
+        let edit = Task { @MainActor in
+            editRequested.fulfill()
+            return await model.beginEditing(edited.id)
+        }
+        await fulfillment(of: [editRequested], timeout: 1)
+        await Task.yield()
+        XCTAssertNil(model.editingID)
+        await library.resumeFirstCommand()
+
+        let createdAndMoved = await creation.value
+        let opened = await edit.value
+        XCTAssertTrue(createdAndMoved)
+        XCTAssertFalse(opened)
+        XCTAssertNil(model.editingID)
+        XCTAssertEqual(model.snips.first?.listID, model.activeListID)
+        XCTAssertEqual(model.activeList.name, "Destination")
     }
 
     @MainActor
@@ -2646,6 +2982,40 @@ final class AppModelTests: StoreBackedTestCase {
         await model.confirmBackupImport()
 
         XCTAssertEqual(model.snips.map(\.id), [importedID])
+    }
+
+    @MainActor
+    func testBackupImportCannotReplaceAnEditedSearchResult() async throws {
+        let root = try storeURL().deletingLastPathComponent()
+        let target = try JSONSnipLibrary(fileURL: root.appendingPathComponent("target.json"))
+        let source = try await target.createList(name: "Work", systemImage: "folder")
+        let added = try await target.add(
+            content: "Draft", origin: .quickEntry, listID: source.id
+        )
+        let edited = try XCTUnwrap(added)
+        let backupURL = root.appendingPathComponent("backup.json")
+        let backup = try JSONSnipLibrary(fileURL: backupURL)
+        _ = try await backup.createList(name: "Work (2)", systemImage: "folder")
+        let model = AppModel(library: target, defaults: defaults(), userActions: userActions(for: target))
+        await model.reload()
+        await model.previewBackupImport(from: backupURL)
+        XCTAssertEqual(model.pendingImportPreview?.addedListCount, 1)
+        model.enterSearch()
+        model.query = "Work"
+        let opened = await model.beginEditing(edited.id)
+        XCTAssertTrue(opened)
+
+        await model.confirmBackupImport()
+
+        XCTAssertEqual(model.editingID, edited.id)
+        XCTAssertNotNil(model.pendingImportPreview)
+        XCTAssertEqual(model.lists.count, 2)
+        XCTAssertTrue(model.filteredSnips.contains { $0.id == edited.id })
+
+        model.editingID = nil
+        await model.confirmBackupImport()
+        XCTAssertNil(model.pendingImportPreview)
+        XCTAssertEqual(model.lists.count, 3)
     }
 
     @MainActor

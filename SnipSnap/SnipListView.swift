@@ -751,27 +751,29 @@ struct SnipListView: View {
             edit(snip.id)
         }
         .accessibilityActions {
-            Button(snip.isPinned ? "Unpin" : "Pin") {
-                Task { await model.togglePinned(id: snip.id) }
-            }
-            if !snip.isPinned {
-                Button(SnipCommand.toggleDone.title(allSelectedAreDone: snip.isDone)) {
-                    model.toggleDone(id: snip.id)
+            if model.editingID != snip.id {
+                Button(snip.isPinned ? "Unpin" : "Pin") {
+                    Task { await model.togglePinned(id: snip.id) }
                 }
-                if model.canReorder(ids: contextSelection(for: snip.id)) {
-                    Button("Move Up") {
-                        let ids = contextSelection(for: snip.id)
-                        Task { await model.moveSelectionNow(by: -1, ids: ids) }
+                if !snip.isPinned {
+                    Button(SnipCommand.toggleDone.title(allSelectedAreDone: snip.isDone)) {
+                        model.toggleDone(id: snip.id)
                     }
-                    Button("Move Down") {
-                        let ids = contextSelection(for: snip.id)
-                        Task { await model.moveSelectionNow(by: 1, ids: ids) }
+                    if model.canReorder(ids: contextSelection(for: snip.id)) {
+                        Button("Move Up") {
+                            let ids = contextSelection(for: snip.id)
+                            Task { await model.moveSelectionNow(by: -1, ids: ids) }
+                        }
+                        Button("Move Down") {
+                            let ids = contextSelection(for: snip.id)
+                            Task { await model.moveSelectionNow(by: 1, ids: ids) }
+                        }
                     }
                 }
+                Button(SnipCommand.delete.title) {
+                    snipCommands.perform(.delete, on: [snip.id])
+                }
             }
-        }
-        .accessibilityAction(named: SnipCommand.delete.title) {
-            snipCommands.perform(.delete, on: [snip.id])
         }
     }
 
@@ -933,13 +935,21 @@ struct SnipListView: View {
                 !selectedSnips.allSatisfy { $0.listID == list.id }
             }
             for list in destinations {
-                submenu.addPanelAction(list.displayName, systemImage: "folder") {
+                submenu.addPanelAction(
+                    list.displayName,
+                    isEnabled: model.editingID == nil,
+                    systemImage: "folder"
+                ) {
                     let orderedIDs = model.snips.filter { ids.contains($0.id) }.map(\.id)
                     Task { _ = await model.moveToList(ids: orderedIDs, listID: list.id) }
                 }
             }
             if !destinations.isEmpty { submenu.addItem(.separator()) }
-            submenu.addPanelAction(String(localized: "New List…"), systemImage: "folder.badge.plus") {
+            submenu.addPanelAction(
+                String(localized: "New List…"),
+                isEnabled: model.editingID == nil,
+                systemImage: "folder.badge.plus"
+            ) {
                 moveSelectionToNewList(ids)
             }
         }

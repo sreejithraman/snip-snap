@@ -112,6 +112,7 @@ struct PanelHeaderView: View {
                     .panelStandaloneActionControl()
             }
             .buttonStyle(.plain)
+            .disabled(model.editingID != nil)
             .accessibilityLabel("Needs attention (\(model.needsAttentionCount))")
             .help("Review recovered versions")
         } else {
@@ -119,6 +120,7 @@ struct PanelHeaderView: View {
                 Label("Needs attention (\(model.needsAttentionCount))", systemImage: "exclamationmark.circle.fill")
             }
             .buttonStyle(.bordered)
+            .disabled(model.editingID != nil)
             .help("Review recovered versions")
         }
     }

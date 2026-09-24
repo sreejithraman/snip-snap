@@ -708,7 +708,7 @@ private struct SnipCommands: Commands {
             Button(String(localized: "Import backup…")) {
                 beginBackupImport()
             }
-            .disabled(model == nil || panelDialogs.isPresented)
+            .disabled(model == nil || model?.editingID != nil || panelDialogs.isPresented)
             Button("Export backup…") {
                 exportJSONBackup(from: applicationModel)
             }
