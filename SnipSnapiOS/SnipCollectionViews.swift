@@ -27,6 +27,7 @@ struct SnipCollectionView: View {
     var listID: UUID? = nil
     var isActivePage = true
     @Binding var editMode: EditMode
+    var blocksPageSwipe: Binding<Bool> = .constant(false)
     var dismissComposerKeyboard: () -> Void = {}
     var libraryActions: LibraryActionsMenu?
     @State private var isReordering = false
@@ -225,6 +226,10 @@ struct SnipCollectionView: View {
         .onChange(of: isActivePage) { _, isActive in
             if !isActive { isInlineEditorFocused = false }
         }
+        .onChange(of: isReordering || inlineEditSession != nil, initial: true) { _, blocked in
+            blocksPageSwipe.wrappedValue = blocked
+        }
+        .onDisappear { blocksPageSwipe.wrappedValue = false }
         .onChange(of: model.selectedListID) {
             guard isActivePage else { return }
             isReordering = false

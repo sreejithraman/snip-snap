@@ -31,6 +31,7 @@ struct ContentView: View {
     @EnvironmentObject private var shortcutSettings: ShortcutSettings
     @Environment(\.controlActiveState) private var controlActiveState
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.layoutDirection) private var layoutDirection
     let coordinator: AppCoordinator
     @ObservedObject private var accessibilityPermissions: AccessibilityPermissionController
     @ObservedObject private var panelDialogs: PanelDialogPresentationState
@@ -356,6 +357,21 @@ struct ContentView: View {
                     isEnabled: !model.isShowingClipboard
                 )
             }
+            .background {
+                PanelTrackpadSwipeObserver(
+                    excludedBottomHeight: model.isShowingClipboard
+                        ? 0
+                        : inlineEntryHeight(for: model.activeListID),
+                    canNavigate: {
+                        !panelDialogs.isPresented
+                            && model.editingID == nil
+                            && model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            && selectedPreviewURL == nil
+                            && !model.lists.isEmpty
+                    },
+                    navigate: selectAdjacentPage
+                )
+            }
             .clipShape(shape)
             .panelGlassSurface(in: shape)
             .panelDropTargetState(
@@ -377,6 +393,16 @@ struct ContentView: View {
 
     private var selectedPage: PanelTabPage {
         model.isShowingClipboard ? .clipboard : .list(model.activeListID)
+    }
+
+    private func selectAdjacentPage(_ direction: PanelSwipeDirection) {
+        let pages = PanelTabPage.ordered(lists: model.lists)
+        guard let destination = selectedPage.adjacent(
+            direction,
+            in: pages,
+            layoutDirection: layoutDirection
+        ) else { return }
+        destination.select(in: model)
     }
 
     private var hasCommandNumberFocus: Bool {

@@ -10,6 +10,141 @@ import XCTest
 
 @MainActor
 final class IOSAppModelTests: XCTestCase {
+    func testEdgeSwipeTracksOnePageAndSelectsAdjacentList() {
+        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID())]
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        var motion = ListPageMotion()
+        motion.updateEdgeDrag(
+            translation: CGSize(width: -80, height: 0), selectedPage: pages[1], pages: pages,
+            pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
+        )
+        XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[1], at: now).position, 1.2, accuracy: 0.001)
+        XCTAssertEqual(
+            motion.releaseEdgeDrag(
+                translation: CGSize(width: -80, height: 0),
+                predictedEndTranslation: CGSize(width: -100, height: 0),
+                reduceMotion: false, at: now
+            ), 2
+        )
+        XCTAssertFalse(motion.isDragging)
+        XCTAssertEqual(motion.transition?.settlement?.destination, 2)
+        motion.cancelEdgeDrag(reduceMotion: false, at: now)
+        XCTAssertEqual(motion.transition?.settlement?.destination, 2)
+    }
+
+    func testEdgeSwipeCancelsAndClampsAtPageBoundary() throws {
+        let pages: [LibraryPage] = [.clipboard, .list(UUID())]
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        var motion = ListPageMotion()
+        motion.updateEdgeDrag(
+            translation: CGSize(width: -600, height: 0), selectedPage: pages[0], pages: pages,
+            pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
+        )
+        XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[0], at: now).position, 1)
+        motion.cancelEdgeDrag(reduceMotion: false, at: now)
+        XCTAssertEqual(motion.transition?.settlement?.destination, 0)
+        let settlement = try XCTUnwrap(motion.transition?.settlement)
+        motion.finishSettlement(settlement.id)
+        motion.updateEdgeDrag(
+            translation: CGSize(width: -80, height: 0), selectedPage: pages[1], pages: pages,
+            pageWidth: 400, layoutDirection: .rightToLeft, isStart: true, at: now
+        )
+        XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[1], at: now).position, 0.8, accuracy: 0.001)
+        XCTAssertEqual(motion.releaseEdgeDrag(
+            translation: CGSize(width: -80, height: 0),
+            predictedEndTranslation: CGSize(width: -100, height: 0),
+            reduceMotion: false, at: now
+        ), 0)
+    }
+
+    func testLongEdgeDragNeverPreviewsPastAdjacentList() {
+        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID()), .list(UUID()), .list(UUID())]
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        var motion = ListPageMotion()
+        motion.updateEdgeDrag(
+            translation: CGSize(width: -1_200, height: 0), selectedPage: pages[1], pages: pages,
+            pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
+        )
+        XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[1], at: now).position, 2)
+        XCTAssertEqual(motion.releaseEdgeDrag(
+            translation: CGSize(width: -1_200, height: 0),
+            predictedEndTranslation: CGSize(width: -1_200, height: 0),
+            reduceMotion: false, at: now
+        ), 2)
+    }
+
+    func testEdgeDragWaitsForExistingSettlement() {
+        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID()), .list(UUID()), .list(UUID())]
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        var motion = ListPageMotion()
+        motion.select(4, selectedPage: pages[1], pages: pages, reduceMotion: false, at: now)
+        let settlement = motion.transition?.settlement
+
+        motion.updateEdgeDrag(
+            translation: CGSize(width: 80, height: 0), selectedPage: pages[4], pages: pages,
+            pageWidth: 400, layoutDirection: .leftToRight, isStart: true,
+            at: now.addingTimeInterval(0.05)
+        )
+
+        XCTAssertFalse(motion.isDragging)
+        XCTAssertEqual(motion.transition?.settlement, settlement)
+    }
+
+    func testEdgeDragReversedPastOriginDoesNotSelectNeighbor() {
+        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID()), .list(UUID())]
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        var motion = ListPageMotion()
+        motion.updateEdgeDrag(
+            translation: CGSize(width: -80, height: 0), selectedPage: pages[2], pages: pages,
+            pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
+        )
+
+        XCTAssertEqual(motion.releaseEdgeDrag(
+            translation: CGSize(width: 100, height: 0),
+            predictedEndTranslation: CGSize(width: 100, height: 0),
+            reduceMotion: false, at: now
+        ), 2)
+        XCTAssertEqual(motion.transition?.settlement?.destination, 2)
+    }
+
+    func testEdgeSwipeReversalCannotChooseOppositePage() {
+        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID()), .list(UUID())]
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        var motion = ListPageMotion()
+        motion.updateEdgeDrag(
+            translation: CGSize(width: -80, height: 0), selectedPage: pages[2], pages: pages,
+            pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
+        )
+        XCTAssertEqual(motion.releaseEdgeDrag(
+            translation: CGSize(width: -80, height: 0),
+            predictedEndTranslation: CGSize(width: 200, height: 0),
+            reduceMotion: false, at: now
+        ), 3)
+    }
+
+    func testEdgeSwipeStopsWhenPageOrderChanges() {
+        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID())]
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        var motion = ListPageMotion()
+        motion.updateEdgeDrag(
+            translation: CGSize(width: -80, height: 0), selectedPage: pages[1], pages: pages,
+            pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
+        )
+        motion.updateEdgeDrag(
+            translation: CGSize(width: -90, height: 0), selectedPage: pages[1],
+            pages: [pages[0], pages[2], pages[1]], pageWidth: 400,
+            layoutDirection: .leftToRight, isStart: false, at: now
+        )
+        XCTAssertNil(motion.transition)
+        XCTAssertFalse(motion.isDragging)
+        motion.updateEdgeDrag(
+            translation: CGSize(width: -110, height: 0), selectedPage: pages[1],
+            pages: [pages[0], pages[2], pages[1]], pageWidth: 400,
+            layoutDirection: .leftToRight, isStart: false, at: now
+        )
+        XCTAssertNil(motion.transition)
+    }
+
     func testListPagingFollowsEveryVariableWidthSegmentAndReversal() throws {
         let geometry = ListSelectorGeometry(widths: [80, 160, 100, 200])
         let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID()), .list(UUID())]

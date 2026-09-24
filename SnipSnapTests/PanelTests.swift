@@ -93,6 +93,41 @@ private final class PanelTextValue {
 }
 
 final class PanelTests: StoreBackedTestCase {
+    func testTrackpadSwipeSwitchesOncePerHorizontalGesture() {
+        var swipe = PanelTrackpadSwipeState()
+
+        XCTAssertNil(swipe.update(horizontal: 30, vertical: 2, phase: .began))
+        XCTAssertEqual(swipe.update(horizontal: 43, vertical: 1, phase: .changed), .previous)
+        XCTAssertNil(swipe.update(horizontal: 100, vertical: 0, phase: .changed))
+        XCTAssertNil(swipe.update(horizontal: 0, vertical: 0, phase: .ended))
+        XCTAssertNil(swipe.update(horizontal: -40, vertical: 0, phase: .began))
+        XCTAssertEqual(swipe.update(horizontal: -35, vertical: 0, phase: .changed), .next)
+    }
+
+    func testTrackpadSwipeLeavesVerticalScrollingAndCancelledGesturesAlone() {
+        var swipe = PanelTrackpadSwipeState()
+
+        XCTAssertNil(swipe.update(horizontal: 5, vertical: 25, phase: .began))
+        XCTAssertNil(swipe.update(horizontal: 100, vertical: 0, phase: .changed))
+        XCTAssertNil(swipe.update(horizontal: 0, vertical: 0, phase: .cancelled))
+        XCTAssertNil(swipe.update(horizontal: 40, vertical: 0, phase: .began))
+        XCTAssertEqual(swipe.update(horizontal: 40, vertical: 0, phase: .changed), .previous)
+    }
+
+    func testTrackpadSwipeRegionExcludesInlineComposer() {
+        let bounds = NSRect(x: 0, y: 0, width: 400, height: 500)
+
+        XCTAssertFalse(PanelTrackpadSwipeRegion.contains(
+            NSPoint(x: 200, y: 30), in: bounds, excludingBottom: 48
+        ))
+        XCTAssertTrue(PanelTrackpadSwipeRegion.contains(
+            NSPoint(x: 200, y: 250), in: bounds, excludingBottom: 48
+        ))
+        XCTAssertFalse(PanelTrackpadSwipeRegion.contains(
+            NSPoint(x: 500, y: 250), in: bounds, excludingBottom: 48
+        ))
+    }
+
     @MainActor
     func testTabPagerDisablesDepartingPagesAndRecoversAfterReversal() async throws {
         let probe = PanelPagerProbe()
@@ -124,6 +159,30 @@ final class PanelTests: StoreBackedTestCase {
         let work = SnipList(id: UUID(), name: "Work", systemImage: "briefcase", position: 1)
         let pages = PanelTabPage.ordered(lists: [.inbox, work])
         XCTAssertEqual(pages, [.clipboard, .list(SnipList.inboxID), .list(work.id)])
+        XCTAssertEqual(
+            PanelTabPage.list(SnipList.inboxID).adjacent(
+                .previous, in: pages, layoutDirection: .leftToRight
+            ),
+            .clipboard
+        )
+        XCTAssertEqual(
+            PanelTabPage.clipboard.adjacent(
+                .next, in: pages, layoutDirection: .leftToRight
+            ),
+            .list(SnipList.inboxID)
+        )
+        XCTAssertEqual(
+            PanelTabPage.clipboard.adjacent(
+                .previous, in: pages, layoutDirection: .leftToRight
+            ),
+            nil
+        )
+        XCTAssertEqual(
+            PanelTabPage.clipboard.adjacent(
+                .previous, in: pages, layoutDirection: .rightToLeft
+            ),
+            .list(SnipList.inboxID)
+        )
         for (index, source) in pages.enumerated() {
             for (otherIndex, target) in pages.enumerated() where source != target {
                 XCTAssertEqual(source.precedes(target, in: pages), index < otherIndex)
