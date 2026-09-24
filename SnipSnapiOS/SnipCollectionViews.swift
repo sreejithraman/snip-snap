@@ -149,17 +149,14 @@ struct SnipCollectionView: View {
                         .tag(snip.id)
                         .listRowSeparator(.hidden)
                         .swipeActions(edge: .leading) {
-                            if !snip.isPinned {
-                                SemanticSwipeAction(
-                                    title: SnipCompletionLanguage.actionTitle(isDone: snip.isDone),
-                                    systemImage: snip.isDone ? "arrow.uturn.backward" : "checkmark",
-                                    tint: snip.isDone ? .gray : .green,
-                                    role: nil,
-                                    accessibilityIdentifier: snip.isDone ? "not-done" : "done"
-                                ) {
-                                    Task { await copyShare.toggleDone(snip: snip, model: model) }
-                                }
-                                .id(snip.isDone)
+                            SemanticSwipeAction(
+                                title: snip.isPinned ? String(localized: "Unpin") : String(localized: "Pin"),
+                                systemImage: snip.isPinned ? "pin.slash" : "pin",
+                                tint: displayedList.accent.color,
+                                role: nil,
+                                accessibilityIdentifier: snip.isPinned ? "unpin-snip" : "pin-snip"
+                            ) {
+                                Task { await model.togglePinned(id: snip.id) }
                             }
                         }
                         .swipeActions(edge: .trailing) {

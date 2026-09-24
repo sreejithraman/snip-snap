@@ -159,12 +159,26 @@ struct IOSClipboardView: View {
                     Button("Delete", role: .destructive) { Task { await model.delete(entry) } }
                 }
                 .swipeActions(edge: .leading) {
-                    Button(entry.isPinned ? "Unpin" : "Pin", systemImage: entry.isPinned ? "pin.slash" : "pin") {
+                    SemanticSwipeAction(
+                        title: entry.isPinned ? String(localized: "Unpin") : String(localized: "Pin"),
+                        systemImage: entry.isPinned ? "pin.slash" : "pin",
+                        tint: .primary,
+                        role: nil,
+                        accessibilityIdentifier: entry.isPinned ? "unpin-clipboard-entry" : "pin-clipboard-entry"
+                    ) {
                         Task { await model.togglePin(entry) }
-                    }.tint(.orange)
+                    }
                 }
-                .swipeActions {
-                    Button("Delete", role: .destructive) { Task { await model.delete(entry) } }
+                .swipeActions(edge: .trailing) {
+                    SemanticSwipeAction(
+                        title: String(localized: "Delete"),
+                        systemImage: "trash",
+                        tint: .red,
+                        role: .destructive,
+                        accessibilityIdentifier: "delete-clipboard-entry"
+                    ) {
+                        Task { await model.delete(entry) }
+                    }
                 }
             }
         }
