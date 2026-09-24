@@ -29,11 +29,13 @@ enum StandaloneFileImporter {
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var shortcutSettings: ShortcutSettings
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.controlActiveState) private var controlActiveState
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.layoutDirection) private var layoutDirection
     let coordinator: AppCoordinator
     @ObservedObject private var accessibilityPermissions: AccessibilityPermissionController
+    @ObservedObject private var clipboardHistory: ClipboardHistory
     @ObservedObject private var panelDialogs: PanelDialogPresentationState
     @ObservedObject private var fileDropController: PanelFileDropController
     private let accountNoticeModel: AppleAccountNoticeModel?
@@ -66,6 +68,7 @@ struct ContentView: View {
         _accessibilityPermissions = ObservedObject(
             wrappedValue: coordinator.accessibilityPermissions
         )
+        _clipboardHistory = ObservedObject(wrappedValue: coordinator.clipboardHistory)
         _panelDialogs = ObservedObject(wrappedValue: coordinator.panelDialogs)
         self.dragSessionController = dragSessionController
         _fileDropController = ObservedObject(wrappedValue: fileDropController)
@@ -114,7 +117,19 @@ struct ContentView: View {
 
     private var panelShell: some View {
         VStack(spacing: SnipSnapSpacing.relatedContent) {
-            floatingHeader
+            PanelHeaderView(
+                model: model,
+                accessibilityPermissions: accessibilityPermissions,
+                focusedTarget: $focusedTarget,
+                expandSearch: { expandSearch() },
+                collapseSearch: { collapseSearch() },
+                reviewRecovery: { showingRecoveryReview = true },
+                moveSelectionToNewList: {
+                    newListMovingIDs = model.selection
+                    showingNewList = true
+                },
+                selectAllVisible: selectAllVisible
+            )
 
             if let accountNoticeModel, accountNoticeModel.notice != nil {
                 AppleAccountNoticeView(
@@ -129,13 +144,15 @@ struct ContentView: View {
 
             mainPanel
 
-            SnipListTabBarView(
-                model: model,
-                coordinator: coordinator,
-                dragSessionController: dragSessionController
-            ) {
-                newListMovingIDs = []
-                showingNewList = true
+            if !model.isSearchExpanded {
+                SnipListTabBarView(
+                    model: model,
+                    coordinator: coordinator,
+                    dragSessionController: dragSessionController
+                ) {
+                    newListMovingIDs = []
+                    showingNewList = true
+                }
             }
         }
         .panelControlBaseline()
@@ -148,7 +165,10 @@ struct ContentView: View {
         )
         .onAppear {
             cacheComposerDraft(for: model.activeListID)
-            focusedTarget = .list
+            if model.hasActiveQuery { model.enterSearch() }
+            focusedTarget = model.isSearchExpanded
+                ? .search
+                : (model.isShowingClipboard ? .clipboard : .list)
             commandNumberPicker.startMonitoring(onPick: pickCommandNumber)
             commandNumberPicker.setEnabled(hasCommandNumberFocus)
         }
@@ -164,12 +184,38 @@ struct ContentView: View {
         .onChange(of: model.isShowingClipboard) { _, _ in
             updatePanelComposerExpansion(for: inlineEntryHeight(for: model.activeListID))
         }
+        .onChange(of: model.isSearchExpanded) { _, _ in
+            updatePanelComposerExpansion(for: inlineEntryHeight(for: model.activeListID))
+        }
+        .onChange(of: model.query) { _, _ in
+            if model.hasActiveQuery && !model.isSearchExpanded {
+                expandSearch(focus: false)
+            }
+        }
+        .onChange(of: model.filteredSnips.isEmpty && model.clipboardSearchMatches.isEmpty) { _, hasNoMatches in
+            if hasNoMatches,
+               model.isSearchExpanded,
+               model.editingID == nil,
+               (focusedTarget == .list || focusedTarget == nil) {
+                focusedTarget = .search
+            }
+        }
         .onReceive(coordinator.panelFocusRequests) { request in
             switch request {
             case .search:
-                focusedTarget = .search
+                expandSearch()
+            case .clipboard:
+                focusedTarget = nil
+                Task { @MainActor in
+                    await Task.yield()
+                    if model.isShowingClipboard,
+                       !model.isSearchExpanded,
+                       model.editingID == nil {
+                        focusedTarget = .clipboard
+                    }
+                }
             case .inlineEntry:
-                focusedTarget = .inlineEntry
+                collapseSearch(focus: .inlineEntry)
             }
         }
         .focusedValue(
@@ -345,7 +391,7 @@ struct ContentView: View {
         return PanelTabPager(
             selectedPage: selectedPage,
             pages: PanelTabPage.ordered(lists: model.lists),
-            animatesChanges: model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            animatesChanges: !model.isSearchExpanded,
             onSelectionChange: { commandNumberPicker.setOrderedTargets([]) }
         ) { page, isInteractive in
             tabPage(page, isInteractive: isInteractive)
@@ -354,18 +400,18 @@ struct ContentView: View {
             .background {
                 PanelFileDropRegion(
                     controller: fileDropController,
-                    isEnabled: !model.isShowingClipboard
+                    isEnabled: acceptsFileDrops
                 )
             }
             .background {
                 PanelTrackpadSwipeObserver(
-                    excludedBottomHeight: model.isShowingClipboard
+                    excludedBottomHeight: model.isShowingClipboard || model.isSearchExpanded
                         ? 0
                         : inlineEntryHeight(for: model.activeListID),
                     canNavigate: {
                         !panelDialogs.isPresented
                             && model.editingID == nil
-                            && model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            && !model.isSearchExpanded
                             && selectedPreviewURL == nil
                             && !model.lists.isEmpty
                     },
@@ -376,7 +422,7 @@ struct ContentView: View {
             .panelGlassSurface(in: shape)
             .panelDropTargetState(
                 in: shape,
-                isTargeted: !model.isShowingClipboard && fileDropController.isTargeted
+                isTargeted: acceptsFileDrops && fileDropController.isTargeted
             )
             .overlay {
                 PanelResizeSurface()
@@ -405,6 +451,10 @@ struct ContentView: View {
         destination.select(in: model)
     }
 
+    private var acceptsFileDrops: Bool {
+        model.editingID != nil || (!model.isSearchExpanded && !model.isShowingClipboard)
+    }
+
     private var hasCommandNumberFocus: Bool {
         !panelDialogs.isPresented && controlActiveState == .key && model.editingID == nil
     }
@@ -420,47 +470,32 @@ struct ContentView: View {
         }
     }
 
-    private var floatingHeader: some View {
-        HStack(spacing: SnipSnapSpacing.relatedContent) {
-            HStack(spacing: SnipSnapSpacing.relatedContent) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(SnipSnapColors.textSecondary)
-                    .accessibilityHidden(true)
-                searchField
+    private func expandSearch(focus: Bool = true) {
+        guard model.editingID == nil else { return }
+        if !model.isSearchExpanded {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+                model.enterSearch()
             }
-            .padding(.horizontal, SnipSnapSpacing.controlContentInset)
-            .panelInputSurface()
-
-            if model.needsAttentionCount > 0 {
-                Button {
-                    showingRecoveryReview = true
-                } label: {
-                    Label("Needs attention (\(model.needsAttentionCount))", systemImage: "exclamationmark.circle.fill")
-                }
-                .buttonStyle(.bordered)
-                .help("Review recovered versions")
-            }
-
-            PanelMoreButton(
-                model: model,
-                accessibilityPermissions: accessibilityPermissions,
-                focusedTarget: $focusedTarget,
-                moveSelectionToNewList: {
-                    newListMovingIDs = model.selection
-                    showingNewList = true
-                },
-                selectAllVisible: selectAllVisible
-            )
         }
-        .background {
-            PanelDragRegion()
+        guard focus else { return }
+        Task { @MainActor in
+            await Task.yield()
+            if model.isSearchExpanded { focusedTarget = .search }
         }
     }
 
-    private var searchField: some View {
-        TextField("Search", text: $model.query)
-            .panelInputStyle()
-            .focused($focusedTarget, equals: .search)
+    private func collapseSearch(focus: PanelFocusTarget? = nil) {
+        guard model.editingID == nil else { return }
+        focusedTarget = nil
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.14)) {
+            model.exitSearch()
+        }
+        Task { @MainActor in
+            await Task.yield()
+            guard !model.isSearchExpanded, model.editingID == nil else { return }
+            guard focus != .inlineEntry || !model.isShowingClipboard else { return }
+            focusedTarget = focus ?? (model.isShowingClipboard ? .clipboard : .list)
+        }
     }
 
     @ViewBuilder
@@ -468,7 +503,7 @@ struct ContentView: View {
         ZStack(alignment: .bottom) {
             pageContent(for: page, isInteractive: isInteractive)
 
-            if case .list(let listID) = page {
+            if !model.isSearchExpanded, case .list(let listID) = page {
                 inlineEntry(for: listID, isInteractive: isInteractive)
                     .padding(PanelControlMetrics.inlineEntryInset)
                     .background {
@@ -502,13 +537,18 @@ struct ContentView: View {
         for page: PanelTabPage,
         isInteractive: Bool
     ) -> some View {
-        if !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            globalSearchResults(for: page, isInteractive: isInteractive)
+        if model.isSearchExpanded {
+            if model.hasActiveQuery {
+                globalSearchResults(for: page, isInteractive: isInteractive)
+            } else {
+                emptyState
+            }
         } else if case .clipboard = page {
             ClipboardListView(
                 model: model,
                 dragSessionController: dragSessionController,
                 commandNumberPicker: commandNumberPicker,
+                focusedTarget: $focusedTarget,
                 isInteractive: isInteractive,
                 showingClearConfirmation: $showingClearClipboard,
                 onPreviewAttachments: openAttachmentPreview
@@ -567,7 +607,7 @@ struct ContentView: View {
             },
             pendingEditAttachmentImport: $pendingEditAttachmentImport,
             captureScreenAreaForEdit: captureScreenAreaForEdit,
-            bottomContentInset: inlineEntryHeight(for: listID),
+            bottomContentInset: model.isSearchExpanded ? 0 : inlineEntryHeight(for: listID),
             clipboardEntries: model.clipboardSearchMatches,
             onPreviewAttachments: openAttachmentPreview,
             onRemovePreviewURL: removePreviewURL
@@ -575,42 +615,10 @@ struct ContentView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: SnipSnapSpacing.relatedContent) {
-            Spacer()
-            Image(systemName: emptyStateIcon)
-                .font(.system(size: 19, weight: .regular))
-                .foregroundStyle(SnipSnapColors.textTertiary)
-            Text(emptyStateTitle)
-                .font(.system(size: 12.5, weight: .medium))
-                .foregroundStyle(SnipSnapColors.textSecondary)
-            if model.query.isEmpty, model.completionFilter == .all {
-                Text("Select text, then press \(shortcutSettings.configuration.captureSelection.displayName) to save it.")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(SnipSnapColors.textTertiary)
-            }
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background {
-            PanelDragRegion()
-        }
-    }
-
-    private var emptyStateIcon: String {
-        if !model.query.isEmpty {
-            return "magnifyingglass"
-        }
-        if model.completionFilter != .all {
-            return "line.3.horizontal.decrease.circle"
-        }
-        return "tray"
-    }
-
-    private var emptyStateTitle: String {
-        if !model.query.isEmpty {
-            return String(localized: "No results")
-        }
-        return model.completionFilter.emptyStateTitle
+        PanelEmptyStateView(
+            model: model,
+            captureShortcutName: shortcutSettings.configuration.captureSelection.displayName
+        )
     }
 
     private func inlineEntry(for listID: UUID, isInteractive: Bool) -> some View {
@@ -900,7 +908,7 @@ struct ContentView: View {
     }
 
     private func updatePanelComposerExpansion(for height: CGFloat) {
-        let expansion = model.isShowingClipboard
+        let expansion = model.isShowingClipboard || model.isSearchExpanded
             ? 0
             : max(height - PanelControlMetrics.inlineEntryBaseHeight, 0)
         coordinator.updatePanelComposerExpansion(expansion)
@@ -968,6 +976,7 @@ struct ContentView: View {
     }
 
     private func selectAllVisible() {
+        guard model.editingID == nil, model.canSelectVisibleSnips else { return }
         model.selectAllVisible()
         focusedTarget = .list
     }
@@ -978,8 +987,9 @@ struct ContentView: View {
 
     private func handleCancel() {
         guard !panelDialogs.isPresented else { return }
-        if focusedTarget == .search {
-            focusedTarget = .list
+        guard model.editingID == nil else { return }
+        if model.isSearchExpanded {
+            collapseSearch()
         } else if focusedTarget == .inlineEntry {
             let listID = model.activeListID
             let draft = composerDraft(for: listID)

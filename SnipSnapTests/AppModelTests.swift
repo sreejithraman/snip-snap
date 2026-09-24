@@ -642,6 +642,62 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testMixedListSearchSelectionFollowsDisplayedOrderAfterSortChange() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let review = try await repository.createList(name: "Review", systemImage: "star")
+        let start = Date(timeIntervalSince1970: 1_000)
+        let inboxOldResult = try await repository.add(
+            content: "shared old", origin: .quickEntry, now: start
+        )
+        let reviewMiddleResult = try await repository.add(
+            content: "shared review", origin: .quickEntry,
+            listID: review.id, now: start.addingTimeInterval(1)
+        )
+        let inboxNewResult = try await repository.add(
+            content: "shared new", origin: .quickEntry,
+            now: start.addingTimeInterval(2)
+        )
+        let inboxOld = try XCTUnwrap(inboxOldResult)
+        let reviewMiddle = try XCTUnwrap(reviewMiddleResult)
+        let inboxNew = try XCTUnwrap(inboxNewResult)
+        let model = AppModel(library: repository, defaults: defaults())
+        await model.reload()
+        model.setSortMode(.manual)
+        model.setSortMode(.chronological)
+        model.query = "shared"
+
+        XCTAssertEqual(model.snips.map(\.id), [inboxNew.id, reviewMiddle.id, inboxOld.id])
+        let visibleIDs = model.filteredSnips.map(\.id)
+        XCTAssertEqual(visibleIDs, [inboxNew.id, inboxOld.id, reviewMiddle.id])
+        let snapshot = SnipListSnapshot(
+            visibleSnips: model.filteredSnips,
+            allSnips: model.snips,
+            lists: model.lists,
+            selection: []
+        )
+        XCTAssertEqual(snapshot.orderedVisibleIDs, visibleIDs)
+
+        model.selectSnip(inboxNew.id, modifiers: .command)
+        model.selectSnip(inboxOld.id, modifiers: .shift)
+        XCTAssertEqual(model.selection, [inboxNew.id, inboxOld.id])
+
+        model.applySelection(.init(
+            selection: [inboxNew.id],
+            anchor: inboxNew.id,
+            focus: inboxNew.id
+        ))
+        let moved = SnipSelection.move(
+            by: 1,
+            orderedIDs: visibleIDs,
+            selection: model.selection,
+            anchor: model.selectionState.anchor,
+            focus: model.selectionState.focus,
+            extending: false
+        )
+        XCTAssertEqual(moved.focus, inboxOld.id)
+    }
+
+    @MainActor
     func testFilteringPrunesSelectionAndItsAnchorTogether() async throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         _ = try await repository.add(content: "Keep", origin: .quickEntry)
@@ -658,6 +714,121 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(model.selectionState.focus, keep.id)
         model.query = ""
         XCTAssertEqual(model.selection, [keep.id])
+    }
+
+    @MainActor
+    func testEmptySearchCannotKeepAnInvisibleSnipSelected() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let added = try await repository.add(content: "Keep", origin: .quickEntry)
+        let snip = try XCTUnwrap(added)
+        let model = AppModel(library: repository, defaults: defaults())
+        await model.reload()
+        model.selection = [snip.id]
+
+        model.enterSearch()
+        XCTAssertTrue(model.selection.isEmpty)
+
+        model.query = "Keep"
+        model.selection = [snip.id]
+        model.query = ""
+        XCTAssertTrue(model.selection.isEmpty)
+
+        model.exitSearch()
+        XCTAssertFalse(model.isSearchExpanded)
+    }
+
+    @MainActor
+    func testCompletionFilterCannotHideAnActiveEdit() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let addedResult = try await repository.add(
+            content: "Draft",
+            origin: .quickEntry
+        )
+        let added = try XCTUnwrap(addedResult)
+        let model = AppModel(library: repository, defaults: defaults())
+        await model.reload()
+        model.enterSearch()
+        model.query = "Draft"
+        model.editingID = added.id
+
+        model.completionFilter = .done
+
+        XCTAssertEqual(model.completionFilter, .all)
+        XCTAssertEqual(model.filteredSnips.map(\.id), [added.id])
+    }
+
+    @MainActor
+    func testTabNavigationKeepsThePageOfAnActiveEdit() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let added = try await repository.add(content: "Unsaved draft", origin: .quickEntry)
+        let snip = try XCTUnwrap(added)
+        let review = try await repository.createList(name: "Review", systemImage: "star")
+        let model = AppModel(library: repository, defaults: defaults())
+        await model.reload()
+        model.editingID = snip.id
+
+        model.selectList(review)
+        model.showClipboard()
+
+        XCTAssertEqual(model.activeListID, SnipList.inboxID)
+        XCTAssertFalse(model.isShowingClipboard)
+        XCTAssertEqual(model.editingID, snip.id)
+
+        model.editingID = nil
+        model.selectList(review)
+        XCTAssertEqual(model.activeListID, review.id)
+        model.showClipboard()
+        XCTAssertTrue(model.isShowingClipboard)
+    }
+
+    @MainActor
+    func testListMutationsCannotMoveOrDeleteAnActiveEdit() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let review = try await repository.createList(name: "Review", systemImage: "star")
+        let added = try await repository.add(
+            content: "Unsaved draft", origin: .quickEntry, listID: review.id
+        )
+        let snip = try XCTUnwrap(added)
+        let model = AppModel(library: repository, defaults: defaults())
+        await model.reload()
+        model.selectList(review)
+        model.editingID = snip.id
+
+        let movedByTabDrop = await model.moveToList(ids: [snip.id], listID: SnipList.inboxID)
+        let movedManually = await model.move(
+            ids: [snip.id], to: SnipList.inboxID, before: nil
+        )
+        await model.deleteList(review)
+        let created = await model.createList(name: "Later", systemImage: "star")
+
+        XCTAssertFalse(movedByTabDrop)
+        XCTAssertFalse(movedManually)
+        XCTAssertFalse(created)
+        XCTAssertEqual(model.activeListID, review.id)
+        XCTAssertEqual(model.snips.first { $0.id == snip.id }?.listID, review.id)
+        XCTAssertTrue(model.lists.contains { $0.id == review.id })
+        XCTAssertFalse(model.lists.contains { $0.name == "Later" })
+        XCTAssertEqual(model.editingID, snip.id)
+    }
+
+    @MainActor
+    func testSelectAllDoesNotSelectHiddenSnipsOnClipboard() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let addedResult = try await repository.add(content: "Visible in search", origin: .quickEntry)
+        let added = try XCTUnwrap(addedResult)
+        let model = AppModel(library: repository, defaults: defaults())
+        await model.reload()
+        model.showClipboard()
+
+        XCTAssertFalse(model.canSelectVisibleSnips)
+        model.selectAllVisible()
+        XCTAssertTrue(model.selection.isEmpty)
+
+        model.enterSearch()
+        model.query = "Visible in search"
+        XCTAssertTrue(model.canSelectVisibleSnips)
+        model.selectAllVisible()
+        XCTAssertEqual(model.selection, [added.id])
     }
 
     @MainActor
@@ -1589,6 +1760,39 @@ final class AppModelTests: StoreBackedTestCase {
                 "other.MacAttachmentPreparationError"
             )
         }
+    }
+
+    @MainActor
+    func testPendingAttachmentEditDoesNotOpenAfterSearchHidesItsRow() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("search-edit.md")
+        try Data("Attachment".utf8).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let addedResult = try await repository.add(
+            content: "Edit me",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let added = try XCTUnwrap(addedResult)
+        let attachment = try XCTUnwrap(added.attachments.first)
+        try FileManager.default.removeItem(at: repository.attachmentURL(for: attachment))
+        let handler = GatedMacAttachmentHandler(url: source)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [added]),
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        await model.reload()
+
+        let pendingEdit = Task { @MainActor in await model.beginEditing(added.id) }
+        await handler.waitUntilPreparationStarts()
+        model.enterSearch()
+        await handler.releasePreparation()
+
+        let didBeginEditing = await pendingEdit.value
+        XCTAssertFalse(didBeginEditing)
+        XCTAssertNil(model.editingID)
+        XCTAssertTrue(model.isSearchExpanded)
     }
 
     @MainActor
@@ -2796,6 +3000,41 @@ private actor CancellableMacAttachmentHandler: OptionalCloudSyncHandling {
         observedCancellation
     }
 
+}
+
+private actor GatedMacAttachmentHandler: OptionalCloudSyncHandling {
+    private let url: URL
+    private var preparationStarted = false
+    private var preparationContinuation: CheckedContinuation<URL, Error>?
+
+    init(url: URL) { self.url = url }
+
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
+    func syncWhenPossible() async {}
+    func isCloudSyncActive() async throws -> Bool { true }
+    func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { [:] }
+
+    func prepareSyncedAttachment(
+        _ id: UUID,
+        for use: SyncedAttachmentUse
+    ) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            preparationContinuation = continuation
+            preparationStarted = true
+        }
+    }
+
+    func clearDownloadedFiles() async throws {}
+
+    func waitUntilPreparationStarts() async {
+        while !preparationStarted { await Task.yield() }
+    }
+
+    func releasePreparation() {
+        preparationContinuation?.resume(returning: url)
+        preparationContinuation = nil
+    }
 }
 
 private actor PausingPasteboardExportPreparer {

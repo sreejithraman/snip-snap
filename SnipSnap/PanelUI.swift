@@ -18,14 +18,15 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 }
 
 enum PanelControlMetrics {
-    static let floatingRowHeight: CGFloat = 40
-    static let floatingIconLength: CGFloat = 18
     static let regularControlLength: CGFloat = 32
+    static let floatingRowHeight = regularControlLength
+    static let floatingIconLength: CGFloat = 18
     static let compactComposerHeight = regularControlLength
     static let compactControlLength = regularControlLength
+    static let tabBarHeight: CGFloat = 40
     static let tabSelectionInset: CGFloat = 4
-    static let compactSelectionWidth: CGFloat = 40
-    static let compactSelectionHeight = floatingRowHeight - tabSelectionInset * 2
+    static let compactSelectionWidth = tabBarHeight
+    static let compactSelectionHeight = tabBarHeight - tabSelectionInset * 2
     static let actionIconLength: CGFloat = 12
     static let sendInset: CGFloat = 4
     static let actionHeight = compactComposerHeight - sendInset * 2

@@ -6,6 +6,7 @@ import Combine
 import SwiftUI
 
 enum PanelFocusRequest {
+    case clipboard
     case search
     case inlineEntry
 }
@@ -47,6 +48,7 @@ final class AppCoordinator {
     ) -> Void
 
     private let model: AppModel
+    var clipboardHistory: ClipboardHistory { model.clipboardHistory }
     let shortcutSettings: ShortcutSettings
     private let makeHotKeyManager: (@escaping (GlobalHotKeyAction) -> Void) -> any GlobalHotKeyManaging
     let accessibilityPermissions: AccessibilityPermissionController
@@ -60,6 +62,7 @@ final class AppCoordinator {
     private var requestedPanelComposerExpansion: CGFloat = 0
     private var appliedPanelComposerExpansion: CGFloat = 0
     private var previousExternalApplication: NSRunningApplication?
+    private var panelFocusRequestGeneration = 0
     private var applicationActivationObserver: NSObjectProtocol?
     private let beginFilePanel: BeginFilePanel
     private let cancelFilePanel: (NSSavePanel) -> Void
@@ -165,13 +168,28 @@ final class AppCoordinator {
             )
             return
         }
-        showPanel(panelWindow, focusing: .inlineEntry)
+        if model.editingID == nil {
+            if model.isShowingClipboard {
+                let activeList = model.lists.first(where: { $0.id == model.activeListID }) ?? .inbox
+                model.selectList(activeList)
+            }
+            model.exitSearch()
+        }
+        showPanel(panelWindow, focusing: model.editingID == nil ? .inlineEntry : nil)
     }
 
     func toggleClipboard() {
         guard let panelWindow else { return }
         guard !panelDialogs.isPresented else { return }
+        if model.editingID != nil {
+            if !panelWindow.isVisible || panelWindow.isMiniaturized
+                || !panelWindow.isOnActiveSpace || !panelWindow.isKeyWindow {
+                showPanel(panelWindow, focusing: nil)
+            }
+            return
+        }
         if model.isShowingClipboard,
+           !model.isSearchExpanded,
            Self.shouldHidePanel(
                isVisible: panelWindow.isVisible,
                isMiniaturized: panelWindow.isMiniaturized,
@@ -181,12 +199,16 @@ final class AppCoordinator {
             return
         }
         model.showClipboard()
-        model.query = ""
-        showPanel(panelWindow, focusing: .search)
+        model.exitSearch()
+        showPanel(panelWindow, focusing: .clipboard)
     }
 
     private func showPanel(_ panelWindow: NSWindow, focusing target: PanelFocusRequest?) {
-        previousExternalApplication = frontmostExternalApplication()
+        panelFocusRequestGeneration += 1
+        let focusRequestGeneration = panelFocusRequestGeneration
+        if let externalApplication = frontmostExternalApplication() {
+            previousExternalApplication = externalApplication
+        }
         NSApp.activate(ignoringOtherApps: true)
         if panelWindow.isMiniaturized {
             panelWindow.deminiaturize(nil)
@@ -199,7 +221,9 @@ final class AppCoordinator {
         }
         if let target {
             DispatchQueue.main.async { [weak self] in
-                self?.panelFocusRequests.send(target)
+                guard let self,
+                      self.panelFocusRequestGeneration == focusRequestGeneration else { return }
+                self.panelFocusRequests.send(target)
             }
         }
     }
@@ -230,8 +254,10 @@ final class AppCoordinator {
     }
 
     func focusPanelSearch() {
-        guard !panelDialogs.isPresented else { return }
-        panelFocusRequests.send(.search)
+        guard !panelDialogs.isPresented,
+              model.editingID == nil,
+              let panelWindow else { return }
+        showPanel(panelWindow, focusing: .search)
     }
 
     func setSnipCommandFocusActive(_ isActive: Bool) {
@@ -241,6 +267,7 @@ final class AppCoordinator {
     }
 
     func hidePanel(restoringPreviousApplication: Bool = true) {
+        panelFocusRequestGeneration += 1
         dismissFilePanel()
         dismissPendingPanelDialogs()
         panelDialogPresenter.dismissForParentHide()

@@ -6,6 +6,7 @@ struct ClipboardListView: View {
     @ObservedObject var model: AppModel
     let dragSessionController: PanelDragSessionController
     @ObservedObject var commandNumberPicker: CommandNumberPicker
+    @FocusState.Binding var focusedTarget: PanelFocusTarget?
     let isInteractive: Bool
     @Binding var showingClearConfirmation: Bool
     let onPreviewAttachments: ([URL], URL) -> Void
@@ -15,6 +16,7 @@ struct ClipboardListView: View {
         model: AppModel,
         dragSessionController: PanelDragSessionController,
         commandNumberPicker: CommandNumberPicker,
+        focusedTarget: FocusState<PanelFocusTarget?>.Binding,
         isInteractive: Bool,
         showingClearConfirmation: Binding<Bool>,
         onPreviewAttachments: @escaping ([URL], URL) -> Void
@@ -22,6 +24,7 @@ struct ClipboardListView: View {
         self.model = model
         self.dragSessionController = dragSessionController
         self.commandNumberPicker = commandNumberPicker
+        _focusedTarget = focusedTarget
         self.isInteractive = isInteractive
         _showingClearConfirmation = showingClearConfirmation
         self.onPreviewAttachments = onPreviewAttachments
@@ -34,6 +37,7 @@ struct ClipboardListView: View {
             model: model,
             dragSessionController: dragSessionController,
             commandNumberPicker: commandNumberPicker,
+            focusedTarget: $focusedTarget,
             isInteractive: isInteractive,
             verticalContentPadding: PanelListMetrics.verticalContentInset,
             maxHeight: .infinity,
@@ -59,6 +63,7 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
     @ObservedObject var model: AppModel
     let dragSessionController: PanelDragSessionController
     @ObservedObject var commandNumberPicker: CommandNumberPicker
+    @FocusState.Binding var focusedTarget: PanelFocusTarget?
     let isInteractive: Bool
     let verticalContentPadding: CGFloat
     let maxHeight: CGFloat
@@ -140,6 +145,16 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
             .panelMeasuredHeight($contentHeight)
         }
         .scrollEdgeEffectStyle(.hard, for: .top)
+        .overlay(alignment: .topLeading) {
+            if isInteractive {
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .focusable()
+                    .focusEffectDisabled()
+                    .focused($focusedTarget, equals: .clipboard)
+                    .accessibilityHidden(true)
+            }
+        }
         .onScrollGeometryChange(for: Bool.self) { geometry in
             geometry.contentOffset.y > PanelGeometryChange.minimumMeaningfulChange
         } action: { _, hasScrolled in
@@ -168,6 +183,14 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
                 entries.map { .clipboardEntry($0.id) },
                 owner: commandNumberOwner
             )
+            Task { @MainActor in
+                await Task.yield()
+                if model.isShowingClipboard,
+                   !model.isSearchExpanded,
+                   model.editingID == nil {
+                    focusedTarget = .clipboard
+                }
+            }
         }
         .onChange(of: entries.map(\.id)) { _, ids in
             guard isInteractive else { return }

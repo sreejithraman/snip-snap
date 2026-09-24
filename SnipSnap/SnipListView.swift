@@ -5,6 +5,7 @@ import SwiftUI
 
 enum PanelFocusTarget: Hashable {
     case list
+    case clipboard
     case search
     case inlineEntry
 }
@@ -73,12 +74,10 @@ struct SnipListView: View {
             allSnips: model.snips,
             lists: model.lists,
             selection: model.selection,
-            keepsEmptyListID: model.query.trimmingCharacters(
-                in: .whitespacesAndNewlines
-            ).isEmpty ? displayedListID : nil,
+            keepsEmptyListID: model.hasActiveQuery ? nil : displayedListID,
             attachmentURL: model.attachmentURL
         )
-        let showsSearchLists = snapshot.groups.count > 1
+        let showsSearchLists = model.hasActiveQuery
         let showsActiveListHeader = !showsSearchLists
             && (clipboardEntries.isEmpty || !snapshot.orderedVisibleIDs.isEmpty)
         ScrollViewReader { proxy in
@@ -130,7 +129,7 @@ struct SnipListView: View {
                                 clipboardEntryRow(entry)
                             }
                         } header: {
-                            listSectionHeader("Clipboard")
+                            listSectionHeader(String(localized: "Clipboard history"))
                         }
                     }
                     bottomSpacer
@@ -229,6 +228,16 @@ struct SnipListView: View {
                 commandNumberTargets(snapshot: snapshot),
                 owner: commandNumberOwner
             )
+            Task { @MainActor in
+                await Task.yield()
+                if !model.isShowingClipboard,
+                   !model.isSearchExpanded,
+                   model.activeListID == displayedListID,
+                   model.editingID == nil,
+                   focusedTarget != .inlineEntry {
+                    focusedTarget = .list
+                }
+            }
         }
         .onChange(of: snapshot.orderedVisibleIDs) { _, _ in
             guard isInteractive else { return }
@@ -332,7 +341,7 @@ struct SnipListView: View {
     private var canDragReorder: Bool {
         model.editingID == nil
             && model.completionFilter == .all
-            && model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !model.hasActiveQuery
     }
 
     private func listSectionHeader(_ title: String) -> some View {
@@ -708,7 +717,11 @@ struct SnipListView: View {
                 )
                 guard saved else { return false }
                 model.editingID = nil
-                focusedTarget = .list
+                focusedTarget = model.isSearchExpanded
+                    && model.filteredSnips.isEmpty
+                    && model.clipboardSearchMatches.isEmpty
+                    ? .search
+                    : .list
                 return true
             },
             onEditError: { model.presentError($0) }
@@ -745,13 +758,15 @@ struct SnipListView: View {
                 Button(SnipCommand.toggleDone.title(allSelectedAreDone: snip.isDone)) {
                     model.toggleDone(id: snip.id)
                 }
-                Button("Move Up") {
-                    let ids = contextSelection(for: snip.id)
-                    Task { await model.moveSelectionNow(by: -1, ids: ids) }
-                }
-                Button("Move Down") {
-                    let ids = contextSelection(for: snip.id)
-                    Task { await model.moveSelectionNow(by: 1, ids: ids) }
+                if model.canReorder(ids: contextSelection(for: snip.id)) {
+                    Button("Move Up") {
+                        let ids = contextSelection(for: snip.id)
+                        Task { await model.moveSelectionNow(by: -1, ids: ids) }
+                    }
+                    Button("Move Down") {
+                        let ids = contextSelection(for: snip.id)
+                        Task { await model.moveSelectionNow(by: 1, ids: ids) }
+                    }
                 }
             }
         }
@@ -827,7 +842,11 @@ struct SnipListView: View {
         focusedTarget = nil
         Task { @MainActor in
             let opened = await model.beginEditing(id)
-            if !opened { focusedTarget = .list }
+            if !opened && model.editingID == nil && focusedTarget == nil {
+                focusedTarget = model.isSearchExpanded
+                    ? .search
+                    : (model.isShowingClipboard ? .clipboard : .list)
+            }
         }
     }
 

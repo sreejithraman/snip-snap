@@ -32,11 +32,12 @@ struct PanelMoreButton: View {
 
     @ViewBuilder
     private var actions: some View {
-        Picker("Show: \(completionFilterTitle)", selection: $model.completionFilter) {
+        Picker("Show: \(completionFilterTitle)", selection: completionFilterBinding) {
             Text("All").tag(SnipCompletionFilter.all)
             Text(SnipCompletionLanguage.done).tag(SnipCompletionFilter.done)
             Text(SnipCompletionLanguage.notDone).tag(SnipCompletionFilter.notDone)
         }
+        .disabled(model.editingID != nil)
 
         Picker("Sort: \(sortModeTitle)", selection: sortModeBinding) {
             Text("Newest first").tag(SnipSortMode.chronological)
@@ -48,13 +49,13 @@ struct PanelMoreButton: View {
         Button("Select All") {
             selectAllVisible()
         }
-        .disabled(model.filteredSnips.isEmpty)
+        .disabled(model.editingID != nil || !model.canSelectVisibleSnips)
 
         Button("Move to New List…") {
             focusedTarget = nil
             moveSelectionToNewList()
         }
-        .disabled(model.selection.isEmpty)
+        .disabled(model.editingID != nil || !model.canSelectVisibleSnips || model.selection.isEmpty)
 
         Divider()
 
@@ -82,6 +83,13 @@ struct PanelMoreButton: View {
         Binding(
             get: { model.sortMode },
             set: { model.setSortMode($0) }
+        )
+    }
+
+    private var completionFilterBinding: Binding<SnipCompletionFilter> {
+        Binding(
+            get: { model.completionFilter },
+            set: { model.completionFilter = $0 }
         )
     }
 
