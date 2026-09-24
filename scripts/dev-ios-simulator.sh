@@ -6,6 +6,7 @@ repo_dir="${script_dir:h}"
 source "$script_dir/signing-policy.sh"
 simulator_id=""
 build_log=""
+ui_test=""
 while (( $# )); do
     case "$1" in
         --simulator-id|--build-log)
@@ -13,8 +14,14 @@ while (( $# )); do
             if [[ "$1" == --simulator-id ]]; then simulator_id="$2"; else build_log="$2"; fi
             shift 2
             ;;
+        --ui-test)
+            (( $# >= 2 )) || { print -u2 "Missing value for $1"; exit 2; }
+            [[ -n "$2" ]] || { print -u2 "Missing value for $1"; exit 2; }
+            ui_test="$2"
+            shift 2
+            ;;
         *)
-            print -u2 "Usage: scripts/run.sh --ios-simulator [--simulator-id UUID] [--build-log PATH]"
+            print -u2 "Usage: scripts/run.sh --ios-simulator [--simulator-id UUID] [--build-log PATH] [--ui-test TEST_NAME]"
             exit 2
             ;;
     esac
@@ -54,19 +61,24 @@ app_path="$derived_data/Build/Products/Debug-iphonesimulator/$product_name.app"
 build_log="${build_log:-$derived_data/build.log}"
 /bin/mkdir -p "${build_log:h}"
 print "Building Snip Snap iOS Dev $slot. Log: $build_log"
-xcodebuild -project "$repo_dir/SnipSnap.xcodeproj" -scheme SnipSnapiOS \
-    -configuration Debug -destination "$destination" -derivedDataPath "$derived_data" \
-    CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_STYLE=Manual \
-    CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= "PROVISIONING_PROFILE_SPECIFIER=" \
-    "SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS=$repo_dir/SnipSnapiOS/SnipSnapiOS.entitlements" \
-    SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER= \
-    ASSETCATALOG_COMPILER_APPICON_NAME=AppIconDev \
-    "SNIP_SNAP_IOS_PRODUCT_BUNDLE_IDENTIFIER=$bundle_identifier" \
-    "SNIP_SNAP_IOS_SHARE_PRODUCT_BUNDLE_IDENTIFIER=$bundle_identifier.share" \
-    "SNIP_SNAP_APP_GROUP_IDENTIFIER=group.$bundle_identifier" \
-    "SNIP_SNAP_DISPLAY_NAME=Snip Snap Dev $slot" \
-    "SNIP_SNAP_SHARE_DISPLAY_NAME=Save to Snip Snap Dev $slot" \
-    build > "$build_log" 2>&1 || { /usr/bin/tail -n 60 "$build_log"; exit 1; }
+build_arguments=(
+    -project "$repo_dir/SnipSnap.xcodeproj" -scheme SnipSnapiOS
+    -configuration Debug -destination "$destination" -derivedDataPath "$derived_data"
+    CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_STYLE=Manual
+    CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= "PROVISIONING_PROFILE_SPECIFIER="
+    "SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS=$repo_dir/SnipSnapiOS/SnipSnapiOS.entitlements"
+    SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER=
+    ASSETCATALOG_COMPILER_APPICON_NAME=AppIconDev
+    "SNIP_SNAP_IOS_PRODUCT_BUNDLE_IDENTIFIER=$bundle_identifier"
+    "SNIP_SNAP_IOS_SHARE_PRODUCT_BUNDLE_IDENTIFIER=$bundle_identifier.share"
+    "SNIP_SNAP_APP_GROUP_IDENTIFIER=group.$bundle_identifier"
+    "SNIP_SNAP_DISPLAY_NAME=Snip Snap Dev $slot"
+    "SNIP_SNAP_SHARE_DISPLAY_NAME=Save to Snip Snap Dev $slot"
+)
+xcodebuild "${build_arguments[@]}" build > "$build_log" 2>&1 || {
+    /usr/bin/tail -n 60 "$build_log"
+    exit 1
+}
 
 # Verify the build before any install can touch a simulator application.
 actual_identifier="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Info.plist")"
@@ -79,3 +91,13 @@ print "Simulator: $simulator_id"
 print "Bundle: $bundle_identifier"
 print "App: $app_path"
 print "App group: group.$bundle_identifier"
+if [[ -n "$ui_test" ]]; then
+    xcodebuild "${build_arguments[@]}" \
+        -parallel-testing-enabled NO \
+        "-only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/$ui_test" \
+        test > "${build_log:r}-ui-test.log" 2>&1 || {
+            /usr/bin/tail -n 80 "${build_log:r}-ui-test.log"
+            exit 1
+        }
+    print "UI test passed: $ui_test"
+fi

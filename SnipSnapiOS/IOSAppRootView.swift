@@ -253,6 +253,10 @@ struct IOSAppRootView: View {
         .task {
             model.sortMode = SnipSortMode(rawValue: savedSortMode) ?? .chronological
             await session.launch()
+#if DEBUG
+            await seedLongListFixtureIfRequested()
+            await seedClipboardFixtureIfRequested()
+#endif
             if seedsCopyShareFixtures, model.snips.isEmpty {
                 await seedCopyShareFixtures()
             } else if !uiTestAttachmentURLs.isEmpty, model.snips.isEmpty {
@@ -305,25 +309,27 @@ struct IOSAppRootView: View {
                     at: context.date
                 )
                 GeometryReader { proxy in
-                    CompactLibraryPageStack(
-                        model: model,
-                        clipboard: session.clipboard,
-                        clipboardViewState: clipboardViewState,
-                        copyShare: copyShare,
-                        sheet: $sheet,
-                        editMode: $collectionEditMode,
-                        motion: $listPageMotion,
-                        frame: frame,
-                        isComposerFocused: isCompactComposerFocused,
-                        dismissComposerKeyboard: { isCompactComposerFocused = false },
-                        libraryActions: compactLibraryActions
-                    )
-                    .libraryToast(
-                        model: model,
-                        isHidden: model.isSearchPresented,
-                        usesFixedExpiry: true
-                    )
-                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                    VStack(spacing: 0) {
+                        CompactLibraryPageStack(
+                            model: model,
+                            clipboard: session.clipboard,
+                            clipboardViewState: clipboardViewState,
+                            copyShare: copyShare,
+                            sheet: $sheet,
+                            editMode: $collectionEditMode,
+                            motion: $listPageMotion,
+                            frame: frame,
+                            isComposerFocused: isCompactComposerFocused,
+                            dismissComposerKeyboard: { isCompactComposerFocused = false },
+                            libraryActions: compactLibraryActions
+                        )
+                        .libraryToast(
+                            model: model,
+                            isHidden: model.isSearchPresented,
+                            usesFixedExpiry: true
+                        )
+                        .frame(maxHeight: .infinity)
+
                         libraryControls(pageFrame: frame, pageWidth: proxy.size.width)
                     }
                 }
@@ -470,6 +476,23 @@ struct IOSAppRootView: View {
             }
         }
     }
+
+#if DEBUG
+    private func seedLongListFixtureIfRequested() async {
+        guard ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_LONG_LIST"] == "1",
+              model.snips.isEmpty else { return }
+        for index in 0..<24 {
+            let content = index == 0 ? "Fixture oldest" : "Fixture \(index)"
+            _ = await model.createSnip(content: content, in: SnipList.inboxID)
+        }
+    }
+
+    private func seedClipboardFixtureIfRequested() async {
+        guard ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_CLIPBOARD_ENTRY"] == "1",
+              session.clipboard.entries.isEmpty else { return }
+        await session.clipboard.capture([NSItemProvider(object: "Clipboard swipe fixture" as NSString)])
+    }
+#endif
 
 }
 

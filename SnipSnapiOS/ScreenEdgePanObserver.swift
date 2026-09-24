@@ -98,27 +98,39 @@ struct ScreenEdgePanObserver: UIViewRepresentable {
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
             guard let recognizer = gestureRecognizer as? UIPanGestureRecognizer,
-                  let window = attachedWindow, let attachmentView,
-                  window.rootViewController?.presentedViewController == nil else { return false }
+                  let window = attachedWindow,
+                  let edge = availableEdge(for: recognizer) else { return false }
             let translation = recognizer.translation(in: window)
-            let location = recognizer.location(in: window)
-            let start = CGPoint(x: location.x - translation.x, y: location.y - translation.y)
-            let contentFrame = attachmentView.convert(attachmentView.bounds, to: window)
-            guard contentFrame.contains(start),
-                  abs(translation.x) > abs(translation.y) else { return false }
-            if start.x <= contentFrame.minX + 24 && translation.x > 0 {
-                return canBegin(.left)
-            }
-            if start.x >= contentFrame.maxX - 24 && translation.x < 0 {
-                return canBegin(.right)
-            }
-            return false
+            guard abs(translation.x) > abs(translation.y) else { return false }
+            return edge == .left ? translation.x > 0 : translation.x < 0
         }
 
         func gestureRecognizer(
             _ gestureRecognizer: UIGestureRecognizer,
             shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
         ) -> Bool { true }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            guard otherGestureRecognizer is UIPanGestureRecognizer,
+                  let recognizer = gestureRecognizer as? UIPanGestureRecognizer else { return false }
+            return availableEdge(for: recognizer) != nil
+        }
+
+        private func availableEdge(for recognizer: UIPanGestureRecognizer) -> UIRectEdge? {
+            guard let window = attachedWindow, let attachmentView,
+                  window.rootViewController?.presentedViewController == nil else { return nil }
+            let translation = recognizer.translation(in: window)
+            let location = recognizer.location(in: window)
+            let start = CGPoint(x: location.x - translation.x, y: location.y - translation.y)
+            let contentFrame = attachmentView.convert(attachmentView.bounds, to: window)
+            guard contentFrame.contains(start) else { return nil }
+            if start.x <= contentFrame.minX + 24, canBegin(.left) { return .left }
+            if start.x >= contentFrame.maxX - 24, canBegin(.right) { return .right }
+            return nil
+        }
 
     }
 }
