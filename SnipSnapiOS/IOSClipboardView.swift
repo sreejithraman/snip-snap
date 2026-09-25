@@ -144,6 +144,9 @@ struct IOSClipboardView: View {
                 .accessibilityAction(named: Text(entry.isPinned ? "Unpin" : "Pin")) {
                     Task { await model.togglePin(entry) }
                 }
+                .accessibilityAction(named: "Delete") {
+                    Task { await model.delete(entry) }
+                }
                 .accessibilityAction(named: "Copy") {
                     copyShare.copyClipboardEntry(entry, clipboard: model)
                 }
@@ -157,28 +160,6 @@ struct IOSClipboardView: View {
                         Task { await model.togglePin(entry) }
                     }
                     Button("Delete", role: .destructive) { Task { await model.delete(entry) } }
-                }
-                .swipeActions(edge: .leading) {
-                    SemanticSwipeAction(
-                        title: entry.isPinned ? String(localized: "Unpin") : String(localized: "Pin"),
-                        systemImage: entry.isPinned ? "pin.slash" : "pin",
-                        tint: .primary,
-                        role: nil,
-                        accessibilityIdentifier: entry.isPinned ? "unpin-clipboard-entry" : "pin-clipboard-entry"
-                    ) {
-                        Task { await model.togglePin(entry) }
-                    }
-                }
-                .swipeActions(edge: .trailing) {
-                    SemanticSwipeAction(
-                        title: String(localized: "Delete"),
-                        systemImage: "trash",
-                        tint: .red,
-                        role: .destructive,
-                        accessibilityIdentifier: "delete-clipboard-entry"
-                    ) {
-                        Task { await model.delete(entry) }
-                    }
                 }
             }
         }

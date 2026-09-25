@@ -94,7 +94,7 @@
 		E10000000000000000000032 /* WorkflowControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000012 /* WorkflowControls.swift */; };
 		E10000000000000000000003 /* AppPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000003 /* AppPresentation.swift */; };
 		E10000000000000000000004 /* IOSAppRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000004 /* IOSAppRootView.swift */; };
-		B0E000000000000000000001 /* ScreenEdgePanObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0E000000000000000000002 /* ScreenEdgePanObserver.swift */; };
+		B0E000000000000000000001 /* ListPagePanObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0E000000000000000000002 /* ListPagePanObserver.swift */; };
 		E10000000000000000000005 /* SnipCollectionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000005 /* SnipCollectionViews.swift */; };
 		C10000000000000000000003 /* LibrarySidebarViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000003 /* LibrarySidebarViews.swift */; };
 		C10000000000000000000004 /* RecoveryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000004 /* RecoveryViews.swift */; };
@@ -291,7 +291,7 @@
 		E20000000000000000000012 /* WorkflowControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkflowControls.swift; sourceTree = "<group>"; };
 		E20000000000000000000003 /* AppPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPresentation.swift; sourceTree = "<group>"; };
 		E20000000000000000000004 /* IOSAppRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAppRootView.swift; sourceTree = "<group>"; };
-		B0E000000000000000000002 /* ScreenEdgePanObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenEdgePanObserver.swift; sourceTree = "<group>"; };
+		B0E000000000000000000002 /* ListPagePanObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListPagePanObserver.swift; sourceTree = "<group>"; };
 		E20000000000000000000005 /* SnipCollectionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipCollectionViews.swift; sourceTree = "<group>"; };
 		C20000000000000000000003 /* LibrarySidebarViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySidebarViews.swift; sourceTree = "<group>"; };
 		C20000000000000000000004 /* RecoveryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryViews.swift; sourceTree = "<group>"; };
@@ -542,7 +542,7 @@
 				E20000000000000000000012 /* WorkflowControls.swift */,
 				E20000000000000000000003 /* AppPresentation.swift */,
 				E20000000000000000000004 /* IOSAppRootView.swift */,
-				B0E000000000000000000002 /* ScreenEdgePanObserver.swift */,
+				B0E000000000000000000002 /* ListPagePanObserver.swift */,
 				C20000000000000000000003 /* LibrarySidebarViews.swift */,
 				E20000000000000000000005 /* SnipCollectionViews.swift */,
 				A940E1000000000000000004 /* CollectionScreenPresentation.swift */,
@@ -952,7 +952,7 @@
 				E10000000000000000000032 /* WorkflowControls.swift in Sources */,
 				E10000000000000000000003 /* AppPresentation.swift in Sources */,
 				E10000000000000000000004 /* IOSAppRootView.swift in Sources */,
-				B0E000000000000000000001 /* ScreenEdgePanObserver.swift in Sources */,
+				B0E000000000000000000001 /* ListPagePanObserver.swift in Sources */,
 				C10000000000000000000003 /* LibrarySidebarViews.swift in Sources */,
 				E10000000000000000000005 /* SnipCollectionViews.swift in Sources */,
 				A940E1000000000000000003 /* CollectionScreenPresentation.swift in Sources */,

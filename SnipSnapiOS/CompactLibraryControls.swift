@@ -87,11 +87,12 @@ struct CompactLibraryControls: View {
     }
 
     private var isStaging: Bool { stagingTask != nil }
+    private var isClipboardSelected: Bool { model.selectedPage == .clipboard }
 
-    private var showsComposer: Bool { !model.isSearchPresented && !model.showsClipboard && !isSelecting }
+    private var showsComposer: Bool { !model.isSearchPresented && !isClipboardSelected && !isSelecting }
 
     private var showsListEditor: Bool {
-        !model.showsClipboard && !model.isSearchPresented
+        !isClipboardSelected && !model.isSearchPresented
             && model.editingListID == model.selectedListID
     }
 
@@ -103,7 +104,7 @@ struct CompactLibraryControls: View {
 
             if !showsListTabs {
                 GlassEffectContainer {
-                    if model.showsClipboard {
+                    if isClipboardSelected {
                         pasteButton
                             .transition(.opacity)
                     }
@@ -202,11 +203,11 @@ struct CompactLibraryControls: View {
 
             HStack {
                 pasteButton
-                    .opacity(model.showsClipboard ? 1 : 0)
-                    .animation(model.showsClipboard ? contentTransition : nil, value: model.showsClipboard)
+                    .opacity(isClipboardSelected ? 1 : 0)
+                    .animation(isClipboardSelected ? contentTransition : nil, value: isClipboardSelected)
                     .offset(x: -travel)
-                    .allowsHitTesting(model.showsClipboard && !motion.isDragging)
-                    .accessibilityHidden(!model.showsClipboard || motion.isDragging)
+                    .allowsHitTesting(isClipboardSelected && !motion.isDragging)
+                    .accessibilityHidden(!isClipboardSelected || motion.isDragging)
 
                 Spacer(minLength: 0)
 
@@ -235,20 +236,17 @@ struct CompactLibraryControls: View {
             Image(systemName: "doc.on.clipboard")
                 .font(showsListTabs ? .system(size: navigationControlLength * 20 / 48, weight: .medium) : .title3.weight(.medium))
         }
-        .disabled(clipboard.isPasting || !model.showsClipboard || motion.isDragging)
+        .disabled(clipboard.isPasting || !isClipboardSelected || motion.isDragging)
         .accessibilityLabel("Paste")
         .accessibilityIdentifier("paste-to-clipboard")
         .glassEffectID("paste", in: composerGlass)
         .glassEffectTransition(.materialize)
     }
 
-    private var currentPage: LibraryPage {
-        model.showsClipboard ? .clipboard : .list(model.selectedListID)
-    }
-
     private var frame: ListPageFrame {
         pageFrame ?? ListPageFrame(
-            pages: [currentPage], position: 0, retainedPages: [currentPage], isMoving: false
+            pages: [model.selectedPage], position: 0,
+            retainedPages: [model.selectedPage], isMoving: false
         )
     }
 
@@ -274,7 +272,7 @@ struct CompactLibraryControls: View {
             ForEach(visibleComposerPages, id: \.self) { page in
                 if case .list(let id) = page,
                    let list = model.lists.first(where: { $0.id == id }) {
-                    let isPreview = page != currentPage
+                    let isPreview = page != model.selectedPage
                     composer(
                         for: list,
                         draft: draft(for: id),

@@ -61,7 +61,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         return app
     }
 
-    func testSwipeAndContextActionsPublishHapticOutcomes() {
+    func testContextActionsPublishHapticOutcomes() {
         continueAfterFailure = false
         let app = launchApp(withHapticsTrace: true)
         func expectHaptic(_ kind: String) {
@@ -71,19 +71,11 @@ final class SnipSnapiOSUITests: XCTestCase {
             )
             XCTAssertEqual(XCTWaiter.wait(for: [expected], timeout: 4), .completed)
         }
-        createSnip("Swipe feedback", in: app)
-        expectHaptic("saved")
-        let swiped = row(named: "Swipe feedback", in: app)
-        swiped.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.2)).tap()
-        expectHaptic("markedDone")
-        swiped.swipeLeft()
-        app.buttons["delete-snip"].tap()
-        XCTAssertTrue(swiped.waitForNonExistence(timeout: 4))
-        expectHaptic("deleted")
-
         createSnip("Menu feedback", in: app)
         expectHaptic("saved")
         let menuRow = row(named: "Menu feedback", in: app)
+        menuRow.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.2)).tap()
+        expectHaptic("markedDone")
         menuRow.press(forDuration: 1)
         app.buttons["copy-snip"].tap()
         expectHaptic("copied")
@@ -93,78 +85,120 @@ final class SnipSnapiOSUITests: XCTestCase {
         expectHaptic("deleted")
     }
 
-    func testScreenEdgeSwipeSwitchesListsWhileRowSwipeStillWorks() throws {
+    func testListSwipeSwitchesListsFromAVisibleRow() throws {
         continueAfterFailure = false
         let app = launchApp()
         try requireCompactSelector(in: app)
         createList("Work", in: app)
-        createSnip("Work edge swipe note", in: app)
-        let occupiedRow = row(named: "Work edge swipe note", in: app)
-        XCTAssertEqual(occupiedRow.value as? String, "Not Done")
-        let rowY = (occupiedRow.frame.midY - app.frame.minY) / app.frame.height
+        createSnip("Work page note", in: app)
+        let workRow = row(named: "Work page note", in: app)
+        XCTAssertEqual(workRow.value as? String, "Not Done")
 
-        func swipeFromEdge(
-            _ edge: CGFloat, distance: CGFloat, y: CGFloat = 0.45, inset: CGFloat = 8
-        ) {
-            let start = app.coordinate(withNormalizedOffset: CGVector(dx: edge, dy: y))
-                .withOffset(CGVector(dx: edge == 0 ? inset : -inset, dy: 0))
-            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: distance, dy: 0)))
-        }
-
-        func shortSwipeFromEdge(
-            _ edge: CGFloat, distance: CGFloat, y: CGFloat, inset: CGFloat = 8
-        ) {
-            let start = app.coordinate(withNormalizedOffset: CGVector(dx: edge, dy: y))
-                .withOffset(CGVector(dx: edge == 0 ? inset : -inset, dy: 0))
-            start.press(
-                forDuration: 0.05,
-                thenDragTo: start.withOffset(CGVector(dx: distance, dy: 0)),
-                withVelocity: .slow,
-                thenHoldForDuration: 0
-            )
-        }
-
-        shortSwipeFromEdge(0, distance: 65, y: rowY)
+        let start = workRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(
+            forDuration: 0.05,
+            thenDragTo: start.withOffset(CGVector(dx: 60, dy: 0)),
+            withVelocity: .slow,
+            thenHoldForDuration: 0
+        )
         XCTAssertTrue(app.navigationBars["Work"].exists)
-        XCTAssertFalse(app.buttons["pin-snip"].exists)
-        shortSwipeFromEdge(0, distance: 65, y: rowY, inset: 13)
-        XCTAssertTrue(app.navigationBars["Work"].exists)
-        XCTAssertFalse(app.buttons["pin-snip"].exists)
+        XCTAssertTrue(workRow.exists)
 
-        swipeFromEdge(0, distance: 220, y: rowY, inset: 13)
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 180, dy: 0)))
         XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
-        XCTAssertFalse(app.buttons["pin-snip"].exists)
-        XCTAssertFalse(app.buttons["delete-snip"].exists)
-        createSnip("Inbox survives edge", in: app)
-        let inboxRow = row(named: "Inbox survives edge", in: app)
-        let inboxRowY = (inboxRow.frame.midY - app.frame.minY) / app.frame.height
-        shortSwipeFromEdge(1, distance: -65, y: inboxRowY)
-        XCTAssertTrue(app.navigationBars["Inbox"].exists)
-        XCTAssertFalse(app.buttons["delete-snip"].exists)
-
-        shortSwipeFromEdge(1, distance: -65, y: inboxRowY, inset: 13)
-        XCTAssertTrue(app.navigationBars["Inbox"].exists)
-        XCTAssertFalse(app.buttons["delete-snip"].exists)
-
-        swipeFromEdge(1, distance: -220, y: inboxRowY, inset: 13)
+        createSnip("Inbox page note", in: app)
+        let inboxRow = row(named: "Inbox page note", in: app)
+        let back = inboxRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        back.press(forDuration: 0.05, thenDragTo: back.withOffset(CGVector(dx: -180, dy: 0)))
         XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
-        XCTAssertFalse(app.buttons["pin-snip"].exists)
-        XCTAssertFalse(app.buttons["delete-snip"].exists)
-        XCTAssertEqual(row(named: "Work edge swipe note", in: app).value as? String, "Not Done")
-
-        swipeFromEdge(0, distance: 130)
-        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
-        XCTAssertEqual(row(named: "Inbox survives edge", in: app).value as? String, "Not Done")
-        swipeFromEdge(1, distance: -130)
-        XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
-
-        let workRow = row(named: "Work edge swipe note", in: app)
-        workRow.swipeRight()
-        XCTAssertTrue(app.buttons["pin-snip"].waitForExistence(timeout: 3))
+        XCTAssertEqual(row(named: "Work page note", in: app).value as? String, "Not Done")
         let proof = XCTAttachment(screenshot: app.screenshot())
-        proof.name = "Edge navigation and row actions"
+        proof.name = "List swipe from row content"
         proof.lifetime = .keepAlways
         add(proof)
+    }
+
+    func testListSwipeSwitchesEmptyListsFromContent() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        createList("Work", in: app)
+        XCTAssertTrue(app.navigationBars["Work"].exists)
+        XCTAssertTrue(app.staticTexts["empty-snips"].exists)
+
+        let center = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        center.press(forDuration: 0.05, thenDragTo: center.withOffset(CGVector(dx: 160, dy: 0)))
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+
+        center.press(forDuration: 0.05, thenDragTo: center.withOffset(CGVector(dx: -160, dy: 0)))
+        XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
+    }
+
+    func testPageSwipeMovesBetweenInboxAndClipboard() throws {
+        continueAfterFailure = false
+        let app = launchApp(withClipboardEntry: true)
+        try requireCompactSelector(in: app)
+        createSnip("Inbox page note", in: app)
+
+        let inboxRow = row(named: "Inbox page note", in: app)
+        let toClipboard = inboxRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        toClipboard.press(forDuration: 0.05, thenDragTo: toClipboard.withOffset(CGVector(dx: 180, dy: 0)))
+        XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["clipboard-tab"].isSelected)
+        let clipboardProof = XCTAttachment(screenshot: app.screenshot())
+        clipboardProof.name = "Clipboard reached by page swipe"
+        clipboardProof.lifetime = .keepAlways
+        add(clipboardProof)
+
+        let entry = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "clipboard-entry-")
+        ).firstMatch
+        XCTAssertTrue(entry.waitForExistence(timeout: 5))
+        let entryY = (entry.frame.midY - app.frame.minY) / app.frame.height
+        let toInbox = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: entryY))
+        toInbox.press(forDuration: 0.05, thenDragTo: toInbox.withOffset(CGVector(dx: -180, dy: 0)))
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+        XCTAssertTrue(row(named: "Inbox page note", in: app).exists)
+        let inboxProof = XCTAttachment(screenshot: app.screenshot())
+        inboxProof.name = "Inbox reached from Clipboard row"
+        inboxProof.lifetime = .keepAlways
+        add(inboxProof)
+    }
+
+    func testPageSwipeReachesClipboardFromScreenEdge() throws {
+        continueAfterFailure = false
+        let app = launchApp(withClipboardEntry: true)
+        try requireCompactSelector(in: app)
+
+        let fromLeftEdge = app.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.55))
+        fromLeftEdge.press(forDuration: 0.05, thenDragTo: fromLeftEdge.withOffset(CGVector(dx: 180, dy: 0)))
+        XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+
+        let fromRightEdge = app.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.55))
+        fromRightEdge.press(forDuration: 0.05, thenDragTo: fromRightEdge.withOffset(CGVector(dx: -180, dy: 0)))
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+    }
+
+    func testClipboardHidesSavedListActionsOnIPad() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        if app.descendants(matching: .any)["list-selector"].exists {
+            throw XCTSkip("The sidebar is limited to regular-width iPad.")
+        }
+        createList("Work", in: app)
+        let clipboard = app.buttons["clipboard-sidebar"]
+        XCTAssertTrue(clipboard.waitForExistence(timeout: 3))
+        clipboard.tap()
+        XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+        XCTAssertTrue(clipboard.isSelected)
+
+        let actions = app.navigationBars["Lists"].buttons["library-actions"]
+        XCTAssertTrue(actions.waitForExistence(timeout: 3))
+        actions.tap()
+        XCTAssertFalse(app.buttons["select-snips"].exists)
+        XCTAssertFalse(app.menuItems["Edit List…"].exists)
+        XCTAssertFalse(app.menuItems["Delete List"].exists)
+        XCTAssertTrue(app.buttons["settings"].exists)
     }
 
     func testLastSnipCanScrollAboveCompactControls() throws {
@@ -189,6 +223,24 @@ final class SnipSnapiOSUITests: XCTestCase {
         add(proof)
         XCTAssertTrue(oldest.isHittable, "The final snip must be reachable by scrolling")
         XCTAssertLessThanOrEqual(oldest.frame.maxY, composer.frame.minY)
+    }
+
+    func testVerticalScrollFromRowCenterDoesNotSwitchLists() throws {
+        continueAfterFailure = false
+        let app = launchApp(withLongList: true)
+        try requireCompactSelector(in: app)
+        createList("Work", in: app)
+        compactListTab(named: "Inbox", in: app).tap()
+
+        let newest = collectionRow(named: "Fixture 23", in: app)
+        let lowerRow = collectionRow(named: "Fixture 17", in: app)
+        XCTAssertTrue(newest.isHittable)
+        XCTAssertTrue(lowerRow.isHittable)
+        let start = lowerRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 25, dy: -300)))
+
+        XCTAssertFalse(newest.exists, "Vertical scrolling must work from row content")
+        XCTAssertTrue(app.navigationBars["Inbox"].exists)
     }
 
     func testEdgeSwipeDoesNotDiscardInlineSnipDraft() throws {
@@ -266,21 +318,20 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
     }
 
-    func testUnavailableScreenEdgeLeavesRowSwipeAvailable() throws {
+    func testUnavailableListSwipeKeepsRowContextActionsAvailable() throws {
         continueAfterFailure = false
         let app = launchApp()
         try requireCompactSelector(in: app)
         createList("Work", in: app)
         createSnip("Last list row action", in: app)
         let occupiedRow = row(named: "Last list row action", in: app)
-        let rowY = (occupiedRow.frame.midY - app.frame.minY) / app.frame.height
-        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: rowY))
-            .withOffset(CGVector(dx: -8, dy: 0))
+        let start = occupiedRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -130, dy: 0)))
 
         XCTAssertTrue(app.navigationBars["Work"].exists)
-        XCTAssertTrue(app.buttons["delete-snip"].waitForExistence(timeout: 3))
-        XCTAssertEqual(row(named: "Last list row action", in: app).value as? String, "Not Done")
+        XCTAssertEqual(occupiedRow.value as? String, "Not Done")
+        occupiedRow.press(forDuration: 1)
+        XCTAssertTrue(app.buttons["delete-context-snip"].waitForExistence(timeout: 3))
     }
 
     func testHapticsPreferenceCanChangeAndSurvivesRelaunch() {
@@ -895,11 +946,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         add(screenshot)
     }
 
-    func testClipboardSwipesUseNeutralPinAndRedDelete() throws {
+    func testClipboardContextMenuKeepsPinAndDeleteAvailable() throws {
         continueAfterFailure = false
-        let originalAppearance = XCUIDevice.shared.appearance
-        XCUIDevice.shared.appearance = .light
-        defer { XCUIDevice.shared.appearance = originalAppearance }
         let app = launchApp(withClipboardEntry: true)
         try requireCompactSelector(in: app)
         app.buttons["clipboard-tab"].tap()
@@ -908,37 +956,14 @@ final class SnipSnapiOSUITests: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH %@", "clipboard-entry-")
         ).firstMatch
         XCTAssertTrue(entry.waitForExistence(timeout: 5))
-        func swipeEntry(_ distance: CGFloat) {
-            let rowY = (entry.frame.midY - app.frame.minY) / app.frame.height
-            let start = app.coordinate(withNormalizedOffset: CGVector(
-                dx: distance > 0 ? 0.25 : 0.75, dy: rowY
-            ))
-            start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: distance, dy: 0)))
-        }
-        swipeEntry(140)
-        let pin = app.buttons["pin-clipboard-entry"]
-        XCTAssertTrue(pin.waitForExistence(timeout: 3))
-        XCTAssertTrue(containsSemanticNeutralAction(pin.screenshot().image))
-        let pinProof = XCTAttachment(screenshot: app.screenshot())
-        pinProof.name = "Clipboard Pin swipe"
-        pinProof.lifetime = .keepAlways
-        add(pinProof)
-
-        pin.tap()
-        swipeEntry(140)
-        let unpin = app.buttons["unpin-clipboard-entry"]
-        XCTAssertTrue(unpin.waitForExistence(timeout: 3))
-        XCTAssertTrue(containsSemanticNeutralAction(unpin.screenshot().image))
-        unpin.tap()
-
-        swipeEntry(-140)
-        let delete = app.buttons["delete-clipboard-entry"]
-        XCTAssertTrue(delete.waitForExistence(timeout: 3))
-        XCTAssertTrue(containsSemanticRedAction(delete.screenshot().image))
-        let deleteProof = XCTAttachment(screenshot: app.screenshot())
-        deleteProof.name = "Clipboard Delete swipe"
-        deleteProof.lifetime = .keepAlways
-        add(deleteProof)
+        entry.press(forDuration: 1)
+        app.buttons["Pin"].tap()
+        XCTAssertEqual(entry.value as? String, "Pinned")
+        entry.press(forDuration: 1)
+        app.buttons["Unpin"].tap()
+        entry.press(forDuration: 1)
+        app.buttons["Delete"].tap()
+        XCTAssertTrue(entry.waitForNonExistence(timeout: 3))
     }
 
     func testClipboardUsesListScreenControls() throws {
@@ -1103,7 +1128,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         add(proof)
     }
 
-    func testTabDragKeepsEachListsContentDraftAndRowActions() throws {
+    func testTabDragKeepsEachListsContentDraftAndContextActions() throws {
         continueAfterFailure = false
         let originalAppearance = XCUIDevice.shared.appearance
         XCUIDevice.shared.appearance = .dark
@@ -1149,9 +1174,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(composer.value as? String, "Work unsent draft")
 
         let workRow = row(named: "Work page note", in: app)
-        workRow.swipeRight()
-        XCTAssertTrue(app.buttons["pin-snip"].waitForExistence(timeout: 3))
-        app.buttons["pin-snip"].tap()
+        workRow.press(forDuration: 1)
+        app.buttons["Pin"].tap()
         XCTAssertTrue(compactListTab(named: "Work", in: app).isSelected)
         XCTAssertEqual(composer.value as? String, "Work unsent draft")
 
@@ -1596,8 +1620,8 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         let snip = row(named: "Undo this", in: app)
         XCTAssertTrue(snip.waitForExistence(timeout: 3))
-        snip.swipeLeft()
-        app.buttons["delete-snip"].tap()
+        snip.press(forDuration: 1)
+        app.buttons["delete-context-snip"].tap()
 
         XCTAssertTrue(snip.waitForNonExistence(timeout: 3))
         let toast = app.descendants(matching: .any)["app-toast"]
@@ -1637,8 +1661,8 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         let snip = row(named: "Search after deleting", in: app)
         XCTAssertTrue(snip.waitForExistence(timeout: 3))
-        snip.swipeLeft()
-        app.buttons["delete-snip"].tap()
+        snip.press(forDuration: 1)
+        app.buttons["delete-context-snip"].tap()
 
         let toast = app.descendants(matching: .any)["app-toast"]
         XCTAssertTrue(toast.waitForExistence(timeout: 3))
@@ -1664,8 +1688,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         createSnip("Undo expires", in: app)
 
         let snip = row(named: "Undo expires", in: app)
-        snip.swipeLeft()
-        app.buttons["delete-snip"].tap()
+        snip.press(forDuration: 1)
+        app.buttons["delete-context-snip"].tap()
         let deletedAt = Date()
 
         let toast = app.descendants(matching: .any)["app-toast"]
@@ -1733,62 +1757,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["selection-actions"].isEnabled)
         XCTAssertEqual(row(named: "Tap the completion circle", in: app).value as? String, "Not Done")
         app.buttons["finish-selecting"].tap()
-    }
-
-    func testRowSwipeShowsAVisibleDestructiveDeleteAction() {
-        continueAfterFailure = false
-        let app = launchApp()
-        createSnip("Swipe this", in: app)
-
-        let snip = row(named: "Swipe this", in: app)
-        let start = snip.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5))
-        let end = snip.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.5))
-        start.press(forDuration: 0.1, thenDragTo: end)
-
-        let delete = app.buttons["delete-snip"]
-        XCTAssertTrue(delete.waitForExistence(timeout: 3))
-        let screenshot = delete.screenshot()
-        let attachment = XCTAttachment(screenshot: screenshot)
-        attachment.name = "Revealed row delete action"
-        attachment.lifetime = .keepAlways
-        add(attachment)
-        XCTAssertTrue(
-            containsSemanticRedAction(screenshot.image),
-            "The revealed Delete action did not render with its red semantic tint."
-        )
-    }
-
-    func testRowSwipesUseListColorForPinAndRedForDelete() throws {
-        continueAfterFailure = false
-        let app = launchApp()
-        createList("Blue", color: "blue", in: app)
-        createSnip("Pin this", in: app)
-
-        row(named: "Pin this", in: app).swipeRight()
-        let pin = app.buttons["pin-snip"]
-        XCTAssertTrue(pin.waitForExistence(timeout: 3))
-        XCTAssertFalse(app.buttons["delete-snip"].exists)
-        XCTAssertTrue(containsSemanticBlueAction(pin.screenshot().image))
-        let pinProof = XCTAttachment(screenshot: app.screenshot())
-        pinProof.name = "List-colored Pin swipe"
-        pinProof.lifetime = .keepAlways
-        add(pinProof)
-
-        pin.tap()
-        row(named: "Pin this", in: app).swipeRight()
-        XCTAssertTrue(app.buttons["unpin-snip"].waitForExistence(timeout: 3))
-        XCTAssertTrue(containsSemanticBlueAction(app.buttons["unpin-snip"].screenshot().image))
-        app.buttons["unpin-snip"].tap()
-
-        row(named: "Pin this", in: app).swipeLeft()
-        let delete = app.buttons["delete-snip"]
-        XCTAssertTrue(delete.waitForExistence(timeout: 3))
-        XCTAssertFalse(app.buttons["pin-snip"].exists)
-        XCTAssertTrue(containsSemanticRedAction(delete.screenshot().image))
-        let deleteProof = XCTAttachment(screenshot: app.screenshot())
-        deleteProof.name = "Red Delete swipe"
-        deleteProof.lifetime = .keepAlways
-        add(deleteProof)
     }
 
     func testAttachmentListImagePreviewAndSwipeDismiss() {
@@ -2551,52 +2519,4 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["new-list"].waitForExistence(timeout: 3))
     }
 
-}
-
-private func containsSemanticRedAction(_ image: UIImage) -> Bool {
-    semanticColorRatio(in: image) { red, green, blue in
-        red > 180 && green < 120 && blue < 120
-    }.map { $0 > 0.20 } ?? false
-}
-
-private func containsSemanticBlueAction(_ image: UIImage) -> Bool {
-    semanticColorRatio(in: image) { red, green, blue in
-        red < 110 && green > 85 && green < 190 && blue > 180
-    }.map { $0 > 0.20 } ?? false
-}
-
-private func containsSemanticNeutralAction(_ image: UIImage) -> Bool {
-    semanticColorRatio(in: image) { red, green, blue in
-        red < 100 && green < 100 && blue < 100
-    }.map { $0 > 0.20 } ?? false
-}
-
-private func semanticColorRatio(
-    in image: UIImage,
-    matches: (UInt8, UInt8, UInt8) -> Bool
-) -> Double? {
-    guard let cgImage = image.cgImage else { return nil }
-    let width = cgImage.width
-    let height = cgImage.height
-    let bytesPerRow = width * 4
-    var pixels = [UInt8](repeating: 0, count: height * bytesPerRow)
-    guard let context = CGContext(
-        data: &pixels,
-        width: width,
-        height: height,
-        bitsPerComponent: 8,
-        bytesPerRow: bytesPerRow,
-        space: CGColorSpaceCreateDeviceRGB(),
-        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-    ) else { return nil }
-    context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-
-    var matchingPixels = 0
-    for offset in stride(from: 0, to: pixels.count, by: 4) {
-        if matches(pixels[offset], pixels[offset + 1], pixels[offset + 2]),
-           pixels[offset + 3] > 245 {
-            matchingPixels += 1
-        }
-    }
-    return Double(matchingPixels) / Double(width * height)
 }

@@ -10,17 +10,17 @@ import XCTest
 
 @MainActor
 final class IOSAppModelTests: XCTestCase {
-    func testEdgeSwipeTracksOnePageAndSelectsAdjacentList() {
+    func testPageSwipeTracksOnePageAndSelectsAdjacentList() {
         let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID())]
         let now = Date(timeIntervalSinceReferenceDate: 100)
         var motion = ListPageMotion()
-        motion.updateEdgeDrag(
+        motion.updatePageDrag(
             translation: CGSize(width: -80, height: 0), selectedPage: pages[1], pages: pages,
             pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
         )
         XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[1], at: now).position, 1.2, accuracy: 0.001)
         XCTAssertEqual(
-            motion.releaseEdgeDrag(
+            motion.releasePageDrag(
                 translation: CGSize(width: -80, height: 0),
                 predictedEndTranslation: CGSize(width: -100, height: 0),
                 reduceMotion: false, at: now
@@ -28,59 +28,103 @@ final class IOSAppModelTests: XCTestCase {
         )
         XCTAssertFalse(motion.isDragging)
         XCTAssertEqual(motion.transition?.settlement?.destination, 2)
-        motion.cancelEdgeDrag(reduceMotion: false, at: now)
+        motion.cancelPageDrag(reduceMotion: false, at: now)
         XCTAssertEqual(motion.transition?.settlement?.destination, 2)
     }
 
-    func testEdgeSwipeCancelsAndClampsAtPageBoundary() throws {
+    func testPageSelectionKeepsTheLastListWhileClipboardIsActive() async throws {
+        let model = makeModel(library: ModelTestLibrary())
+        await model.load()
+        let created = await model.createList(name: "Work")
+        XCTAssertTrue(created)
+        let workID = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" })?.id)
+        XCTAssertEqual(model.pages, [.clipboard, .list(SnipList.inboxID), .list(workID)])
+        XCTAssertEqual(model.selectedPage, .list(workID))
+
+        model.selectedSnipID = UUID()
+        model.selectedSnipIDs = [UUID()]
+        model.selectPage(.clipboard)
+        XCTAssertEqual(model.selectedPage, .clipboard)
+        XCTAssertEqual(model.selectedListID, workID)
+        XCTAssertNil(model.selectedSnipID)
+        XCTAssertTrue(model.selectedSnipIDs.isEmpty)
+
+        model.selectPage(.list(SnipList.inboxID))
+        XCTAssertEqual(model.selectedPage, .list(SnipList.inboxID))
+        XCTAssertEqual(model.selectedListID, SnipList.inboxID)
+    }
+
+    func testDeletingTheLastListKeepsTheSelectedPageValid() async throws {
+        let model = makeModel(library: ModelTestLibrary())
+        await model.load()
+        let created = await model.createList(name: "Work")
+        XCTAssertTrue(created)
+        let workID = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" })?.id)
+
+        let deleted = await model.deleteList(id: workID)
+        XCTAssertTrue(deleted)
+        XCTAssertEqual(model.selectedPage, .list(SnipList.inboxID))
+        XCTAssertEqual(model.selectedListID, SnipList.inboxID)
+
+        let createdAgain = await model.createList(name: "Work")
+        XCTAssertTrue(createdAgain)
+        let nextWorkID = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" })?.id)
+        model.selectPage(.clipboard)
+        let deletedWhileOnClipboard = await model.deleteList(id: nextWorkID)
+        XCTAssertTrue(deletedWhileOnClipboard)
+        XCTAssertEqual(model.selectedPage, .clipboard)
+        XCTAssertEqual(model.selectedListID, SnipList.inboxID)
+    }
+
+    func testPageSwipeCancelsAndClampsAtPageBoundary() throws {
         let pages: [LibraryPage] = [.clipboard, .list(UUID())]
         let now = Date(timeIntervalSinceReferenceDate: 100)
         var motion = ListPageMotion()
-        motion.updateEdgeDrag(
+        motion.updatePageDrag(
             translation: CGSize(width: -600, height: 0), selectedPage: pages[0], pages: pages,
             pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
         )
         XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[0], at: now).position, 1)
-        motion.cancelEdgeDrag(reduceMotion: false, at: now)
+        motion.cancelPageDrag(reduceMotion: false, at: now)
         XCTAssertEqual(motion.transition?.settlement?.destination, 0)
         let settlement = try XCTUnwrap(motion.transition?.settlement)
         motion.finishSettlement(settlement.id)
-        motion.updateEdgeDrag(
+        motion.updatePageDrag(
             translation: CGSize(width: -80, height: 0), selectedPage: pages[1], pages: pages,
             pageWidth: 400, layoutDirection: .rightToLeft, isStart: true, at: now
         )
         XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[1], at: now).position, 0.8, accuracy: 0.001)
-        XCTAssertEqual(motion.releaseEdgeDrag(
+        XCTAssertEqual(motion.releasePageDrag(
             translation: CGSize(width: -80, height: 0),
             predictedEndTranslation: CGSize(width: -100, height: 0),
             reduceMotion: false, at: now
         ), 0)
     }
 
-    func testLongEdgeDragNeverPreviewsPastAdjacentList() {
+    func testLongPageDragNeverPreviewsPastAdjacentList() {
         let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID()), .list(UUID()), .list(UUID())]
         let now = Date(timeIntervalSinceReferenceDate: 100)
         var motion = ListPageMotion()
-        motion.updateEdgeDrag(
+        motion.updatePageDrag(
             translation: CGSize(width: -1_200, height: 0), selectedPage: pages[1], pages: pages,
             pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
         )
         XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[1], at: now).position, 2)
-        XCTAssertEqual(motion.releaseEdgeDrag(
+        XCTAssertEqual(motion.releasePageDrag(
             translation: CGSize(width: -1_200, height: 0),
             predictedEndTranslation: CGSize(width: -1_200, height: 0),
             reduceMotion: false, at: now
         ), 2)
     }
 
-    func testEdgeDragWaitsForExistingSettlement() {
+    func testPageDragWaitsForExistingSettlement() {
         let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID()), .list(UUID()), .list(UUID())]
         let now = Date(timeIntervalSinceReferenceDate: 100)
         var motion = ListPageMotion()
         motion.select(4, selectedPage: pages[1], pages: pages, reduceMotion: false, at: now)
         let settlement = motion.transition?.settlement
 
-        motion.updateEdgeDrag(
+        motion.updatePageDrag(
             translation: CGSize(width: 80, height: 0), selectedPage: pages[4], pages: pages,
             pageWidth: 400, layoutDirection: .leftToRight, isStart: true,
             at: now.addingTimeInterval(0.05)
@@ -90,16 +134,16 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(motion.transition?.settlement, settlement)
     }
 
-    func testEdgeDragReversedPastOriginDoesNotSelectNeighbor() {
+    func testPageDragReversedPastOriginDoesNotSelectNeighbor() {
         let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID()), .list(UUID())]
         let now = Date(timeIntervalSinceReferenceDate: 100)
         var motion = ListPageMotion()
-        motion.updateEdgeDrag(
+        motion.updatePageDrag(
             translation: CGSize(width: -80, height: 0), selectedPage: pages[2], pages: pages,
             pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
         )
 
-        XCTAssertEqual(motion.releaseEdgeDrag(
+        XCTAssertEqual(motion.releasePageDrag(
             translation: CGSize(width: 100, height: 0),
             predictedEndTranslation: CGSize(width: 100, height: 0),
             reduceMotion: false, at: now
@@ -107,37 +151,37 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(motion.transition?.settlement?.destination, 2)
     }
 
-    func testEdgeSwipeReversalCannotChooseOppositePage() {
+    func testPageSwipeReversalCannotChooseOppositePage() {
         let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID()), .list(UUID())]
         let now = Date(timeIntervalSinceReferenceDate: 100)
         var motion = ListPageMotion()
-        motion.updateEdgeDrag(
+        motion.updatePageDrag(
             translation: CGSize(width: -80, height: 0), selectedPage: pages[2], pages: pages,
             pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
         )
-        XCTAssertEqual(motion.releaseEdgeDrag(
+        XCTAssertEqual(motion.releasePageDrag(
             translation: CGSize(width: -80, height: 0),
             predictedEndTranslation: CGSize(width: 200, height: 0),
             reduceMotion: false, at: now
         ), 3)
     }
 
-    func testEdgeSwipeStopsWhenPageOrderChanges() {
+    func testPageSwipeStopsWhenPageOrderChanges() {
         let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID())]
         let now = Date(timeIntervalSinceReferenceDate: 100)
         var motion = ListPageMotion()
-        motion.updateEdgeDrag(
+        motion.updatePageDrag(
             translation: CGSize(width: -80, height: 0), selectedPage: pages[1], pages: pages,
             pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
         )
-        motion.updateEdgeDrag(
+        motion.updatePageDrag(
             translation: CGSize(width: -90, height: 0), selectedPage: pages[1],
             pages: [pages[0], pages[2], pages[1]], pageWidth: 400,
             layoutDirection: .leftToRight, isStart: false, at: now
         )
         XCTAssertNil(motion.transition)
         XCTAssertFalse(motion.isDragging)
-        motion.updateEdgeDrag(
+        motion.updatePageDrag(
             translation: CGSize(width: -110, height: 0), selectedPage: pages[1],
             pages: [pages[0], pages[2], pages[1]], pageWidth: 400,
             layoutDirection: .leftToRight, isStart: false, at: now
@@ -381,7 +425,7 @@ final class IOSAppModelTests: XCTestCase {
         let draft = model.listDraft(for: list)
         draft.name = "Reading plans"
         draft.systemImage = "book"
-        model.showsClipboard = true
+        model.selectPage(.clipboard)
         model.selectList(SnipList.inboxID)
         model.selectList(list.id)
         XCTAssertTrue(model.listDraft(for: list) === draft)
@@ -2925,7 +2969,7 @@ final class IOSAppModelTests: XCTestCase {
         let createdList = await model.createList(name: "Work")
         XCTAssertTrue(createdList)
         let workID = try XCTUnwrap(model.lists.first(where: { $0.name == "Work" })?.id)
-        model.selectedListID = SnipList.inboxID
+        model.selectList(SnipList.inboxID)
         model.selectedSnipID = nil
 
         let created = await model.createSnip(

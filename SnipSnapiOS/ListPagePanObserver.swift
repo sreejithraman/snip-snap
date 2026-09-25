@@ -1,9 +1,20 @@
 import SwiftUI
 import UIKit
 
-struct ScreenEdgePanObserver: UIViewRepresentable {
-    let canBegin: (UIRectEdge) -> Bool
-    let onPan: (UIRectEdge, CGSize, CGSize?, UIGestureRecognizer.State) -> Void
+enum ListPagePanDirection: Equatable {
+    case left, right
+
+    func clamped(_ translation: CGSize) -> CGSize {
+        CGSize(
+            width: self == .right ? max(0, translation.width) : min(0, translation.width),
+            height: translation.height
+        )
+    }
+}
+
+struct ListPagePanObserver: UIViewRepresentable {
+    let canBegin: (ListPagePanDirection) -> Bool
+    let onPan: (ListPagePanDirection, CGSize, CGSize?, UIGestureRecognizer.State) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(canBegin: canBegin, onPan: onPan) }
 
@@ -35,17 +46,18 @@ struct ScreenEdgePanObserver: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        var canBegin: (UIRectEdge) -> Bool
-        var onPan: (UIRectEdge, CGSize, CGSize?, UIGestureRecognizer.State) -> Void
+        var canBegin: (ListPagePanDirection) -> Bool
+        var onPan: (ListPagePanDirection, CGSize, CGSize?, UIGestureRecognizer.State) -> Void
         weak var attachmentView: UIView?
         private weak var attachedWindow: UIWindow?
         private var recognizer: UIPanGestureRecognizer?
+        private var direction: ListPagePanDirection?
         private var becameVertical = false
         private var presentationInterrupted = false
 
         init(
-            canBegin: @escaping (UIRectEdge) -> Bool,
-            onPan: @escaping (UIRectEdge, CGSize, CGSize?, UIGestureRecognizer.State) -> Void
+            canBegin: @escaping (ListPagePanDirection) -> Bool,
+            onPan: @escaping (ListPagePanDirection, CGSize, CGSize?, UIGestureRecognizer.State) -> Void
         ) {
             self.canBegin = canBegin
             self.onPan = onPan
@@ -78,31 +90,36 @@ struct ScreenEdgePanObserver: UIViewRepresentable {
             if window.rootViewController?.presentedViewController != nil {
                 presentationInterrupted = true
             }
-            let startX = recognizer.location(in: window).x - translation.x
-            let edge: UIRectEdge = startX < window.bounds.midX ? .left : .right
+            guard let direction else { return }
             let projected = CGSize(
                 width: translation.x + velocity.x * 0.12,
                 height: translation.y + velocity.y * 0.12
             )
             onPan(
-                edge,
+                direction,
                 CGSize(width: translation.x, height: translation.y),
                 projected,
                 becameVertical || presentationInterrupted ? .cancelled : recognizer.state
             )
-            if recognizer.state == .ended || recognizer.state == .cancelled {
+            if recognizer.state == .ended || recognizer.state == .cancelled || recognizer.state == .failed {
                 becameVertical = false
                 presentationInterrupted = false
+                self.direction = nil
             }
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            direction = nil
             guard let recognizer = gestureRecognizer as? UIPanGestureRecognizer,
                   let window = attachedWindow,
-                  let edge = availableEdge(for: recognizer) else { return false }
+                  let direction = availableDirection(for: recognizer) else { return false }
             let translation = recognizer.translation(in: window)
-            guard abs(translation.x) > abs(translation.y) else { return false }
-            return edge == .left ? translation.x > 0 : translation.x < 0
+            let velocity = recognizer.velocity(in: window)
+            // A physical device can report zero translation at shouldBegin.
+            let initialMovement = velocity == .zero ? translation : velocity
+            guard abs(initialMovement.x) > abs(initialMovement.y) else { return false }
+            self.direction = direction
+            return true
         }
 
         func gestureRecognizer(
@@ -110,25 +127,18 @@ struct ScreenEdgePanObserver: UIViewRepresentable {
             shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
         ) -> Bool { true }
 
-        func gestureRecognizer(
-            _ gestureRecognizer: UIGestureRecognizer,
-            shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer
-        ) -> Bool {
-            guard otherGestureRecognizer is UIPanGestureRecognizer,
-                  let recognizer = gestureRecognizer as? UIPanGestureRecognizer else { return false }
-            return availableEdge(for: recognizer) != nil
-        }
-
-        private func availableEdge(for recognizer: UIPanGestureRecognizer) -> UIRectEdge? {
+        private func availableDirection(for recognizer: UIPanGestureRecognizer) -> ListPagePanDirection? {
             guard let window = attachedWindow, let attachmentView,
                   window.rootViewController?.presentedViewController == nil else { return nil }
             let translation = recognizer.translation(in: window)
+            let velocity = recognizer.velocity(in: window)
             let location = recognizer.location(in: window)
             let start = CGPoint(x: location.x - translation.x, y: location.y - translation.y)
             let contentFrame = attachmentView.convert(attachmentView.bounds, to: window)
             guard contentFrame.contains(start) else { return nil }
-            if start.x <= contentFrame.minX + 24, canBegin(.left) { return .left }
-            if start.x >= contentFrame.maxX - 24, canBegin(.right) { return .right }
+            let initialMovement = velocity == .zero ? translation : velocity
+            let direction: ListPagePanDirection = initialMovement.x > 0 ? .right : .left
+            if canBegin(direction) { return direction }
             return nil
         }
 

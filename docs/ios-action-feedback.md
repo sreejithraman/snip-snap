@@ -6,8 +6,8 @@ result succeeds. Views never select a haptic pattern.
 | Action | UI entry points | Shared execution seam | Feedback |
 | --- | --- | --- | --- |
 | Copy + Done | Row and selection menus; Copy, Copy Text, Copy Attachments, Copy Text Only | `IOSCopyShareCoordinator.writeAndMarkDone` after the pasteboard accepts the payload and the model marks it Done when needed | `copied`, plus `markedDone` when the state changes |
-| Done + Copy / Mark Not Done | Row button, swipe, context menu, selection menu | `IOSCopyShareCoordinator.toggleDone` when marking Done; `IOSAppModel.setDoneUnlocked` when marking Not Done | `copied` and `markedDone`, or `reopened` |
-| Delete snips | Row and selection menus, swipe | `IOSAppModel.deleteSnips` after the deletion snapshot applies | `deleted` |
+| Done + Copy / Mark Not Done | Row button, context menu, selection menu | `IOSCopyShareCoordinator.toggleDone` when marking Done; `IOSAppModel.setDoneUnlocked` when marking Not Done | `copied` and `markedDone`, or `reopened` |
+| Delete snips | Row and selection menus, accessibility action | `IOSAppModel.deleteSnips` after the deletion snapshot applies | `deleted` |
 | Delete list | List menu | `IOSAppModel.performUserAction` after the deletion snapshot applies | `deleted` |
 | Undo delete | Undo toast | `IOSAppModel.restoreDeletion` after the restored snapshot applies | `restored` |
 | Move | Row and selection menus | `IOSAppModel.performUserAction`, checking source lists before the move | `moved` |
@@ -49,7 +49,7 @@ plays one system response: error or warning first, otherwise the last outcome.
 operations finish. A failed copy leaves the snip unchecked.
 
 Tests cover the action paths, repeated outcomes, failures, preferences, and stale
-work. A UI test exercises swipe Done/Delete and context-menu Copy/Delete. These
+work. A UI test exercises row Done and context-menu Copy/Delete. These
 checks prove requests, not tactile quality; feel must be checked on the phone.
 
 Reordering keeps the native drag feedback. The app adds no extra reorder tick.
