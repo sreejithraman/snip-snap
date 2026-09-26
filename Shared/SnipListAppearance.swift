@@ -76,15 +76,26 @@ extension SnipList {
 
 struct SnipListColorPicker: View {
     @Binding var selection: SnipListColorPreset?
+    var usesWideGrid = false
+    var showsTitle = true
     private static let options = [nil] + SnipListColorPreset.allCases.map(Optional.some)
+
+    private var columns: [GridItem] {
+        if usesWideGrid {
+            return Array(repeating: GridItem(.flexible(minimum: 64), spacing: 12), count: 3)
+        }
+        return Array(repeating: GridItem(.flexible(minimum: 44), spacing: SnipSnapSpacing.cardContentInset), count: 4)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
-            Text("Color").font(.subheadline.weight(.semibold))
+            if showsTitle {
+                Text("Color").font(.subheadline.weight(.semibold))
+            }
             GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
                 LazyVGrid(
-                    columns: Array(repeating: GridItem(.flexible(minimum: 44), spacing: SnipSnapSpacing.cardContentInset), count: 4),
-                    spacing: SnipSnapSpacing.paneContentInset
+                    columns: columns,
+                    spacing: usesWideGrid ? SnipSnapSpacing.relatedContent : SnipSnapSpacing.paneContentInset
                 ) {
                     ForEach(Self.options, id: \.self) { preset in
                         let selected = selection == preset
@@ -93,7 +104,8 @@ struct SnipListColorPicker: View {
                         } label: {
                             SnipListColorSwatch(
                                 color: SnipListAppearance(preset: preset).color,
-                                isSelected: selected
+                                isSelected: selected,
+                                diameter: usesWideGrid ? 64 : 32
                             )
                             .contentShape(Rectangle())
                         }
@@ -105,6 +117,8 @@ struct SnipListColorPicker: View {
                     }
                 }
             }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("List color")
         }
     }
 }
@@ -115,7 +129,7 @@ struct SnipListColorSwatch: View {
     @Environment(\.colorSchemeContrast) private var contrast
     let color: Color
     let isSelected: Bool
-    private let diameter: CGFloat = 32
+    var diameter: CGFloat = 32
 
     var body: some View {
         Group {

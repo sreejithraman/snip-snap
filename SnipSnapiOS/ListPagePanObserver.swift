@@ -52,7 +52,6 @@ struct ListPagePanObserver: UIViewRepresentable {
         private weak var attachedWindow: UIWindow?
         private var recognizer: UIPanGestureRecognizer?
         private var direction: ListPagePanDirection?
-        private var becameVertical = false
         private var presentationInterrupted = false
 
         init(
@@ -81,11 +80,7 @@ struct ListPagePanObserver: UIViewRepresentable {
             let translation = recognizer.translation(in: window)
             let velocity = recognizer.velocity(in: window)
             if recognizer.state == .began {
-                becameVertical = false
                 presentationInterrupted = false
-            }
-            if abs(translation.y) > max(30, abs(translation.x) * 1.2) {
-                becameVertical = true
             }
             if window.rootViewController?.presentedViewController != nil {
                 presentationInterrupted = true
@@ -99,10 +94,9 @@ struct ListPagePanObserver: UIViewRepresentable {
                 direction,
                 CGSize(width: translation.x, height: translation.y),
                 projected,
-                becameVertical || presentationInterrupted ? .cancelled : recognizer.state
+                presentationInterrupted ? .cancelled : recognizer.state
             )
             if recognizer.state == .ended || recognizer.state == .cancelled || recognizer.state == .failed {
-                becameVertical = false
                 presentationInterrupted = false
                 self.direction = nil
             }
@@ -125,7 +119,17 @@ struct ListPagePanObserver: UIViewRepresentable {
         func gestureRecognizer(
             _ gestureRecognizer: UIGestureRecognizer,
             shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
-        ) -> Bool { true }
+        ) -> Bool { !isScrollPan(otherGestureRecognizer) }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool { isScrollPan(otherGestureRecognizer) }
+
+        private func isScrollPan(_ recognizer: UIGestureRecognizer) -> Bool {
+            guard let scrollView = recognizer.view as? UIScrollView else { return false }
+            return recognizer === scrollView.panGestureRecognizer
+        }
 
         private func availableDirection(for recognizer: UIPanGestureRecognizer) -> ListPagePanDirection? {
             guard let window = attachedWindow, let attachmentView,

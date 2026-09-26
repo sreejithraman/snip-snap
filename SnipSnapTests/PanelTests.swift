@@ -96,22 +96,141 @@ final class PanelTests: StoreBackedTestCase {
     func testTrackpadSwipeSwitchesOncePerHorizontalGesture() {
         var swipe = PanelTrackpadSwipeState()
 
-        XCTAssertNil(swipe.update(horizontal: 30, vertical: 2, phase: .began))
-        XCTAssertEqual(swipe.update(horizontal: 43, vertical: 1, phase: .changed), .previous)
-        XCTAssertNil(swipe.update(horizontal: 100, vertical: 0, phase: .changed))
-        XCTAssertNil(swipe.update(horizontal: 0, vertical: 0, phase: .ended))
-        XCTAssertNil(swipe.update(horizontal: -40, vertical: 0, phase: .began))
-        XCTAssertEqual(swipe.update(horizontal: -35, vertical: 0, phase: .changed), .next)
+        XCTAssertEqual(swipe.update(horizontal: 30, vertical: 2, phase: .began), .consume)
+        XCTAssertEqual(swipe.update(horizontal: 43, vertical: 1, phase: .changed), .navigate(.previous))
+        XCTAssertEqual(swipe.update(horizontal: 100, vertical: 0, phase: .changed), .consume)
+        XCTAssertEqual(swipe.update(horizontal: 0, vertical: 0, phase: .ended), .consume)
+        XCTAssertEqual(swipe.update(horizontal: -40, vertical: 0, phase: .began), .consume)
+        XCTAssertEqual(swipe.update(horizontal: -35, vertical: 0, phase: .changed), .navigate(.next))
     }
 
     func testTrackpadSwipeLeavesVerticalScrollingAndCancelledGesturesAlone() {
         var swipe = PanelTrackpadSwipeState()
 
-        XCTAssertNil(swipe.update(horizontal: 5, vertical: 25, phase: .began))
-        XCTAssertNil(swipe.update(horizontal: 100, vertical: 0, phase: .changed))
-        XCTAssertNil(swipe.update(horizontal: 0, vertical: 0, phase: .cancelled))
-        XCTAssertNil(swipe.update(horizontal: 40, vertical: 0, phase: .began))
-        XCTAssertEqual(swipe.update(horizontal: 40, vertical: 0, phase: .changed), .previous)
+        XCTAssertEqual(swipe.update(horizontal: 5, vertical: 25, phase: .began), .pass)
+        XCTAssertEqual(swipe.update(horizontal: 100, vertical: 0, phase: .changed), .pass)
+        XCTAssertEqual(swipe.update(horizontal: 0, vertical: 0, phase: .cancelled), .pass)
+        XCTAssertEqual(swipe.update(horizontal: 40, vertical: 0, phase: .began), .consume)
+        XCTAssertEqual(swipe.update(horizontal: 40, vertical: 0, phase: .changed), .navigate(.previous))
+    }
+
+    func testHorizontalTrackpadSwipeConsumesVerticalDriftAndMomentum() {
+        var swipe = PanelTrackpadSwipeState()
+
+        XCTAssertEqual(swipe.update(horizontal: 12, vertical: 3, phase: .began), .consume)
+        XCTAssertEqual(swipe.update(horizontal: 65, vertical: 7, phase: .changed), .navigate(.previous))
+        XCTAssertEqual(swipe.update(horizontal: 4, vertical: 5, phase: .changed), .consume)
+        XCTAssertEqual(swipe.update(horizontal: 0, vertical: 0, phase: .ended), .consume)
+        XCTAssertEqual(swipe.update(horizontal: 2, vertical: 6, phase: [], momentumPhase: .began), .consume)
+        XCTAssertEqual(swipe.update(horizontal: 0, vertical: 0, phase: [], momentumPhase: .ended), .consume)
+
+        XCTAssertEqual(swipe.update(horizontal: 2, vertical: 18, phase: .began), .pass)
+        XCTAssertEqual(swipe.update(horizontal: 1, vertical: 20, phase: .changed), .pass)
+    }
+
+    func testHorizontalSwipeKeepsAdmissionWhenDestinationExcludesItsStartPoint() {
+        let bounds = NSRect(x: 0, y: 0, width: 400, height: 500)
+        let point = NSPoint(x: 200, y: 30)
+        XCTAssertTrue(PanelTrackpadSwipeRegion.contains(point, in: bounds, excludingBottom: 0))
+        var swipe = PanelTrackpadSwipeState()
+        XCTAssertEqual(swipe.update(horizontal: 40, vertical: 0, phase: .began), .consume)
+        XCTAssertEqual(swipe.update(horizontal: 40, vertical: 0, phase: .changed), .navigate(.previous))
+
+        XCTAssertFalse(PanelTrackpadSwipeRegion.contains(point, in: bounds, excludingBottom: 48))
+        XCTAssertTrue(swipe.keepsHorizontalAdmission(for: .changed))
+        XCTAssertEqual(swipe.update(horizontal: 0, vertical: 70, phase: .changed), .consume)
+        XCTAssertTrue(swipe.keepsHorizontalAdmission(for: .ended))
+        XCTAssertEqual(swipe.update(horizontal: 0, vertical: 0, phase: .ended), .consume)
+        XCTAssertFalse(swipe.keepsHorizontalAdmission(for: .began))
+    }
+
+    func testOpeningDirectionDeterminesTrackpadGestureAxis() {
+        var swipe = PanelTrackpadSwipeState()
+
+        XCTAssertEqual(swipe.update(horizontal: 3, vertical: 5, phase: .began), .pass)
+        XCTAssertEqual(swipe.update(horizontal: 100, vertical: 0, phase: .changed), .pass)
+
+        swipe.reset()
+        XCTAssertEqual(swipe.update(horizontal: 10, vertical: 9, phase: .began), .consume)
+        XCTAssertEqual(swipe.update(horizontal: 70, vertical: 0, phase: .changed), .navigate(.previous))
+
+        swipe.reset()
+        XCTAssertEqual(swipe.update(horizontal: 2, vertical: 7, phase: .began), .pass)
+        XCTAssertEqual(swipe.update(horizontal: 100, vertical: 0, phase: .changed), .pass)
+    }
+
+    func testHorizontalOpeningKeepsVerticalDriftFromScrolling() {
+        var swipe = PanelTrackpadSwipeState()
+
+        XCTAssertEqual(swipe.update(horizontal: 5, vertical: 3, phase: .began), .consume)
+        XCTAssertEqual(swipe.update(horizontal: 0, vertical: 40, phase: .changed), .consume)
+        XCTAssertEqual(swipe.update(horizontal: 100, vertical: 0, phase: .changed), .navigate(.previous))
+    }
+
+    func testTrackpadSwipeKeepsItsOpeningHorizontalDirectionUntilLift() {
+        var swipe = PanelTrackpadSwipeState()
+
+        XCTAssertEqual(swipe.update(horizontal: 10, vertical: 0, phase: .began), .consume)
+        XCTAssertEqual(swipe.update(horizontal: -100, vertical: 0, phase: .changed), .consume)
+        XCTAssertEqual(swipe.update(horizontal: 65, vertical: 0, phase: .changed), .navigate(.previous))
+        XCTAssertEqual(swipe.update(horizontal: 0, vertical: 0, phase: .ended), .consume)
+
+        XCTAssertEqual(swipe.update(horizontal: -10, vertical: 0, phase: .began), .consume)
+        XCTAssertEqual(swipe.update(horizontal: 100, vertical: 0, phase: .changed), .consume)
+        XCTAssertEqual(swipe.update(horizontal: -65, vertical: 0, phase: .changed), .navigate(.next))
+    }
+
+    func testDiagonalHorizontalTrackpadGestureStillNavigates() {
+        var swipe = PanelTrackpadSwipeState()
+
+        XCTAssertEqual(swipe.update(horizontal: 5, vertical: 4, phase: .began), .consume)
+        XCTAssertEqual(swipe.update(horizontal: 100, vertical: 80, phase: .changed), .navigate(.previous))
+        XCTAssertEqual(swipe.update(horizontal: 0, vertical: 100, phase: .changed), .consume)
+    }
+
+    func testShortVerticalTrackpadScrollPassesThrough() {
+        var swipe = PanelTrackpadSwipeState()
+
+        XCTAssertEqual(swipe.update(horizontal: 0, vertical: 5, phase: .began), .pass)
+        XCTAssertEqual(swipe.update(horizontal: 0, vertical: 5, phase: .changed), .pass)
+        XCTAssertEqual(swipe.update(horizontal: 0, vertical: 0, phase: .ended), .pass)
+
+        XCTAssertEqual(swipe.update(horizontal: 1, vertical: 5, phase: .began), .pass)
+        XCTAssertEqual(swipe.update(horizontal: 1, vertical: 5, phase: .changed), .pass)
+
+        XCTAssertEqual(swipe.update(horizontal: 2, vertical: 4, phase: .began), .pass)
+        XCTAssertEqual(swipe.update(horizontal: 2, vertical: 4, phase: .changed), .pass)
+    }
+
+    func testOnePointOpeningNoiseDoesNotChooseSwipeAxis() {
+        var swipe = PanelTrackpadSwipeState()
+
+        XCTAssertEqual(swipe.update(horizontal: 1, vertical: 0, phase: .began), .consume)
+        XCTAssertEqual(swipe.update(horizontal: 0, vertical: 5, phase: .changed), .pass)
+
+        swipe.reset()
+        XCTAssertEqual(swipe.update(horizontal: 0, vertical: 1, phase: .began), .consume)
+        XCTAssertEqual(swipe.update(horizontal: 5, vertical: 0, phase: .changed), .consume)
+        XCTAssertEqual(swipe.update(horizontal: 70, vertical: 0, phase: .changed), .navigate(.previous))
+    }
+
+    func testTwoPointOpeningNoiseDoesNotLockTheWrongAxis() {
+        var swipe = PanelTrackpadSwipeState()
+
+        XCTAssertEqual(swipe.update(horizontal: 1, vertical: 2, phase: .began), .consume)
+        XCTAssertEqual(swipe.update(horizontal: 100, vertical: 0, phase: .changed), .navigate(.previous))
+
+        swipe.reset()
+        XCTAssertEqual(swipe.update(horizontal: 2, vertical: 1, phase: .began), .consume)
+        XCTAssertEqual(swipe.update(horizontal: 0, vertical: 100, phase: .changed), .pass)
+    }
+
+    func testDiagonalTrackpadScrollResolvesToVertical() {
+        var swipe = PanelTrackpadSwipeState()
+
+        XCTAssertEqual(swipe.update(horizontal: 12, vertical: 12, phase: .began), .pass)
+        XCTAssertEqual(swipe.update(horizontal: 12, vertical: 12, phase: .changed), .pass)
+        XCTAssertEqual(swipe.update(horizontal: 100, vertical: 0, phase: .changed), .pass)
     }
 
     func testTrackpadSwipeRegionExcludesInlineComposer() {

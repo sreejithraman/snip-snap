@@ -6,49 +6,87 @@ enum PanelSwipeDirection: Equatable {
     case next
 }
 
+enum PanelSwipeDecision: Equatable {
+    case pass
+    case consume
+    case navigate(PanelSwipeDirection)
+}
+
 struct PanelTrackpadSwipeState {
+    private enum Axis {
+        case undecided
+        case horizontal
+        case vertical
+    }
+
     private(set) var isActive = false
     private var horizontalDistance: CGFloat = 0
     private var verticalDistance: CGFloat = 0
-    private var hasResolved = false
+    private var hasNavigated = false
+    private var axis: Axis = .undecided
+    private var horizontalDirection: CGFloat = 0
+
+    func keepsHorizontalAdmission(for phase: NSEvent.Phase) -> Bool {
+        axis == .horizontal && phase != .began && phase != .mayBegin
+    }
 
     mutating func reset() {
         isActive = false
         horizontalDistance = 0
         verticalDistance = 0
-        hasResolved = false
+        hasNavigated = false
+        axis = .undecided
+        horizontalDirection = 0
     }
 
     mutating func update(
         horizontal: CGFloat,
         vertical: CGFloat,
-        phase: NSEvent.Phase
-    ) -> PanelSwipeDirection? {
+        phase: NSEvent.Phase,
+        momentumPhase: NSEvent.Phase = []
+    ) -> PanelSwipeDecision {
         if phase == .mayBegin {
             reset()
-            return nil
+            return .pass
+        }
+        if !momentumPhase.isEmpty {
+            let decision: PanelSwipeDecision = axis == .horizontal ? .consume : .pass
+            if momentumPhase == .ended || momentumPhase == .cancelled { reset() }
+            return decision
         }
         if phase == .began {
             reset()
             isActive = true
         }
         if phase == .ended || phase == .cancelled {
-            reset()
-            return nil
+            let decision: PanelSwipeDecision = axis == .horizontal ? .consume : .pass
+            if phase == .cancelled { reset() } else { isActive = false }
+            return decision
         }
-        guard isActive, !hasResolved else { return nil }
+        guard isActive else { return .pass }
 
-        horizontalDistance += horizontal
-        verticalDistance += vertical
-        if abs(verticalDistance) > max(18, abs(horizontalDistance) * 1.25) {
-            hasResolved = true
-            return nil
+        if axis != .horizontal || horizontal * horizontalDirection >= 0 {
+            horizontalDistance += horizontal
         }
-        guard abs(horizontalDistance) >= 72,
-              abs(horizontalDistance) > abs(verticalDistance) * 1.4 else { return nil }
-        hasResolved = true
+        verticalDistance += vertical
+        if axis == .undecided {
+            guard horizontalDistance != 0 || verticalDistance != 0 else { return .pass }
+            // Do not commit an axis from a couple of noisy opening deltas.
+            guard max(abs(horizontalDistance), abs(verticalDistance)) >= 4 else { return .consume }
+            axis = abs(horizontalDistance) > abs(verticalDistance) ? .horizontal : .vertical
+            if axis == .horizontal { horizontalDirection = horizontalDistance > 0 ? 1 : -1 }
+        }
+        if axis == .vertical {
+            return .pass
+        }
+        guard !hasNavigated,
+              axis == .horizontal,
+              abs(horizontalDistance) >= 72 else {
+            return .consume
+        }
+        hasNavigated = true
         // AppKit has already applied the user's scroll direction preference.
-        return horizontalDistance > 0 ? .previous : .next
+        return .navigate(horizontalDistance > 0 ? .previous : .next)
     }
 }
 
@@ -62,7 +100,7 @@ enum PanelTrackpadSwipeRegion {
     }
 }
 
-/// Observes fluid swipes in the panel without taking vertical scrolling from its rows.
+/// Routes horizontal trackpad swipes to tabs while preserving vertical list scrolling.
 struct PanelTrackpadSwipeObserver: NSViewRepresentable {
     let excludedBottomHeight: CGFloat
     let canNavigate: () -> Bool
@@ -116,8 +154,8 @@ struct PanelTrackpadSwipeObserver: NSViewRepresentable {
         func start() {
             guard monitor == nil else { return }
             monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
-                self?.observe(event)
-                return event
+                guard let self else { return event }
+                return self.observe(event)
             }
         }
 
@@ -128,39 +166,51 @@ struct PanelTrackpadSwipeObserver: NSViewRepresentable {
             isOverHorizontalScroller = false
         }
 
-        private func observe(_ event: NSEvent) {
+        private func observe(_ event: NSEvent) -> NSEvent? {
             guard let view = observedView,
                   let window = view.window,
                   event.window === window,
                   window.attachedSheet == nil,
-                  NSApp.modalWindow == nil,
-                  PanelTrackpadSwipeRegion.contains(
-                    view.convert(event.locationInWindow, from: nil),
-                    in: view.bounds,
-                    excludingBottom: excludedBottomHeight
-                  ),
-                  canNavigate() else {
+                  NSApp.modalWindow == nil else {
                 swipe.reset()
                 isOverHorizontalScroller = false
-                return
+                return event
             }
 
             guard event.hasPreciseScrollingDeltas,
-                  event.momentumPhase.isEmpty,
-                  !event.phase.isEmpty else { return }
+                  (!event.phase.isEmpty || !event.momentumPhase.isEmpty) else { return event }
+            if !swipe.keepsHorizontalAdmission(for: event.phase),
+               !(PanelTrackpadSwipeRegion.contains(
+                    view.convert(event.locationInWindow, from: nil),
+                    in: view.bounds,
+                    excludingBottom: excludedBottomHeight
+                  ) && canNavigate()) {
+                swipe.reset()
+                isOverHorizontalScroller = false
+                return event
+            }
             if event.phase == .began {
                 isOverHorizontalScroller = isOverHorizontalScrollView(event, in: window)
+                if isOverHorizontalScroller { swipe.reset() }
             }
-            if event.phase == .ended || event.phase == .cancelled {
+            if event.phase == .ended || event.phase == .cancelled
+                || event.momentumPhase == .ended || event.momentumPhase == .cancelled {
                 isOverHorizontalScroller = false
             }
-            guard !isOverHorizontalScroller else { return }
-            if let direction = swipe.update(
+            guard !isOverHorizontalScroller else { return event }
+            switch swipe.update(
                 horizontal: event.scrollingDeltaX,
                 vertical: event.scrollingDeltaY,
-                phase: event.phase
+                phase: event.phase,
+                momentumPhase: event.momentumPhase
             ) {
-                navigate(direction)
+            case .pass:
+                return event
+            case .consume:
+                return nil
+            case .navigate(let direction):
+                if canNavigate() { navigate(direction) }
+                return nil
             }
         }
 

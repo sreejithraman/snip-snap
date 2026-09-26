@@ -27,6 +27,7 @@ final class InlineListDraft {
     var systemImage: String
     var color: SnipListColorPreset?
     var isSaving = false
+    var isCancelling = false
 
     init(list: SnipList, isNew: Bool) {
         name = isNew ? "" : list.name
@@ -68,17 +69,34 @@ final class IOSAppModel {
     private var pendingImportPreviewID: UUID?
     var toast: AppToast?
     private(set) var selectedPage: LibraryPage = .list(SnipList.inboxID)
+    private var selectionRevision: UInt64 = 0
     private var lastSelectedListID: UUID
     /// The last saved list stays available for drafts while Clipboard is selected.
     var selectedListID: UUID { lastSelectedListID }
     var pages: [LibraryPage] { [.clipboard] + lists.map { .list($0.id) } }
     var editingListID: UUID?
     var newListID: UUID?
+    private struct NewListOrigin {
+        let page: LibraryPage
+        let selectedListID: UUID
+    }
+    private var newListOrigin: NewListOrigin?
+    var newListOriginPage: LibraryPage? { newListOrigin?.page }
     private var listDrafts: [UUID: InlineListDraft] = [:]
     private(set) var isCreatingList = false
+    private var isCancellingNewList = false
+    private struct QueuedNewListRequest {
+        let page: LibraryPage
+        let selectionRevision: UInt64
+    }
+    private var queuedNewListAfterCancel: QueuedNewListRequest?
     var selectedSnipID: UUID?
     var selectedSnipIDs: Set<UUID> = []
-    var isSearchPresented = false
+    var isSearchPresented = false {
+        didSet {
+            if isSearchPresented != oldValue { selectionRevision &+= 1 }
+        }
+    }
     var searchText = ""
     var completionFilter: SnipCompletionFilter = .all
     var sortMode: SnipSortMode = .chronological
@@ -150,14 +168,20 @@ final class IOSAppModel {
     func selectPage(_ page: LibraryPage) {
         haptics.invalidatePendingFeedback()
         if case .list(let listID) = page { lastSelectedListID = listID }
-        selectedPage = page
+        setSelectedPage(page)
         selectedSnipID = nil
         selectedSnipIDs = []
     }
 
+    private func setSelectedPage(_ page: LibraryPage) {
+        guard selectedPage != page else { return }
+        selectionRevision &+= 1
+        selectedPage = page
+    }
+
     private func rememberSelectedList(_ listID: UUID) {
         lastSelectedListID = listID
-        if case .list = selectedPage { selectedPage = .list(listID) }
+        if case .list = selectedPage { setSelectedPage(.list(listID)) }
     }
 
     func endSelectingSnips() {
@@ -369,19 +393,98 @@ final class IOSAppModel {
         }
     }
 
-    func openNewList() async {
+    func openNewList(ifSelectedPageIs expectedPage: LibraryPage? = nil) async {
+        guard !isSearchPresented else { return }
+        if isCancellingNewList {
+            if expectedPage.map({ selectedPage == $0 }) ?? true {
+                queuedNewListAfterCancel = QueuedNewListRequest(
+                    page: selectedPage, selectionRevision: selectionRevision
+                )
+            }
+            return
+        }
+        guard expectedPage.map({ selectedPage == $0 }) ?? true else { return }
+        if let newListID {
+            if lists.contains(where: { $0.id == newListID }) {
+                selectList(newListID)
+                editingListID = newListID
+                return
+            }
+            finishListEditing(id: newListID)
+        }
         guard !isCreatingList else { return }
+        let origin = NewListOrigin(page: selectedPage, selectedListID: selectedListID)
+        let originSelectionRevision = selectionRevision
         isCreatingList = true
         defer { isCreatingList = false }
         await withUserMutation { _ in
-            guard await createListUnlocked(
+            guard !Task.isCancelled,
+                  !isSearchPresented,
+                  selectionRevision == originSelectionRevision,
+                  expectedPage.map({ selectedPage == $0 }) ?? true else { return }
+            var shouldRollBack = false
+            guard let createdID = await createListUnlocked(
                 name: String(localized: "New List"), systemImage: "list.bullet", color: nil,
-                namePolicy: .available
+                namePolicy: .available, selectCreatedList: false,
+                onCreated: { createdID in
+                    if Task.isCancelled || self.isSearchPresented
+                        || self.selectionRevision != originSelectionRevision
+                        || self.selectedPage != origin.page {
+                        shouldRollBack = true
+                        return
+                    }
+                    // Showing the editor commits creation. A later refresh may
+                    // suspend, but cancelling it must not erase a visible draft.
+                    self.searchText = ""
+                    self.newListOrigin = origin
+                    self.selectList(createdID)
+                    self.newListID = createdID
+                    self.editingListID = createdID
+                }
             ) else { return }
-            searchText = ""
-            newListID = selectedListID
-            editingListID = selectedListID
+            if shouldRollBack {
+                let removed = await deleteListUnlocked(
+                    id: createdID, feedbackInteraction: nil, preservesSelection: true
+                )
+                if !removed {
+                    newListOrigin = origin
+                    newListID = createdID
+                    selectList(createdID)
+                    editingListID = createdID
+                }
+            }
         }
+    }
+
+    @discardableResult
+    func cancelNewList(id: UUID) async -> Bool {
+        guard newListID == id, editingListID == id, !isCancellingNewList else { return false }
+        guard listDrafts[id]?.isSaving != true || listDrafts[id]?.isCancelling == true else { return false }
+        isCancellingNewList = true
+        let origin = newListOrigin ?? NewListOrigin(
+            page: .list(SnipList.inboxID), selectedListID: SnipList.inboxID
+        )
+        let previousPage = selectedPage
+        lastSelectedListID = lists.contains(where: { $0.id == origin.selectedListID })
+            ? origin.selectedListID : SnipList.inboxID
+        let originPage = pages.contains(origin.page) ? origin.page : .list(SnipList.inboxID)
+        selectPage(originPage)
+        let originSelectionRevision = selectionRevision
+        let cancelled = await withUserMutation { interaction in
+            await deleteListUnlocked(id: id, feedbackInteraction: interaction, preservesSelection: true)
+        }
+        if !cancelled, selectionRevision == originSelectionRevision,
+           pages.contains(previousPage) {
+            selectPage(previousPage)
+        }
+        isCancellingNewList = false
+        if let queuedRequest = queuedNewListAfterCancel {
+            queuedNewListAfterCancel = nil
+            if selectionRevision == queuedRequest.selectionRevision {
+                await openNewList(ifSelectedPageIs: queuedRequest.page)
+            }
+        }
+        return cancelled
     }
 
     func listDraft(for list: SnipList) -> InlineListDraft {
@@ -391,10 +494,17 @@ final class IOSAppModel {
         return draft
     }
 
+    func isListDraftSaving(id: UUID) -> Bool {
+        listDrafts[id]?.isSaving == true
+    }
+
     func finishListEditing(id: UUID) {
         listDrafts[id] = nil
         if editingListID == id { editingListID = nil }
-        if newListID == id { newListID = nil }
+        if newListID == id {
+            newListID = nil
+            newListOrigin = nil
+        }
     }
 
     func editListInline(id: UUID) {
@@ -406,13 +516,14 @@ final class IOSAppModel {
     @discardableResult
     func createList(name: String, systemImage: String = "list.bullet", color: SnipListColorPreset? = nil) async -> Bool {
         await withUserMutation { _ in
-            await createListUnlocked(name: name, systemImage: systemImage, color: color)
+            await createListUnlocked(name: name, systemImage: systemImage, color: color) != nil
         }
     }
 
     @discardableResult
     func renameList(_ list: SnipList, name: String, systemImage: String, color: SnipListColorChange = .keep) async -> Bool {
-        await withUserMutation { _ in
+        guard !(isCancellingNewList && newListID == list.id) else { return false }
+        return await withUserMutation { _ in
             await renameListUnlocked(list, name: name, systemImage: systemImage, color: color)
         }
     }
@@ -750,15 +861,20 @@ final class IOSAppModel {
 
     private func createListUnlocked(
         name: String, systemImage: String, color: SnipListColorPreset?,
-        namePolicy: SnipListNamePolicy = .exact
-    ) async -> Bool {
-        await performUserAction(
+        namePolicy: SnipListNamePolicy = .exact, selectCreatedList: Bool = true,
+        onCreated: ((UUID) -> Void)? = nil
+    ) async -> UUID? {
+        var createdID: UUID?
+        let succeeded = await performUserAction(
             .createList(name: name, systemImage: systemImage, color: color, namePolicy: namePolicy)
         ) { outcome in
             if case .listCreated(let list) = outcome {
-                selectList(list.id)
+                createdID = list.id
+                if selectCreatedList { selectList(list.id) }
+                onCreated?(list.id)
             }
         }
+        return succeeded ? createdID : nil
     }
 
     private func renameListUnlocked(
@@ -772,13 +888,15 @@ final class IOSAppModel {
         )
     }
 
-    private func deleteListUnlocked(id: UUID, feedbackInteraction: UUID?) async -> Bool {
+    private func deleteListUnlocked(
+        id: UUID, feedbackInteraction: UUID?, preservesSelection: Bool = false
+    ) async -> Bool {
         guard lists.contains(where: { $0.id == id }) else { return false }
         return await performUserAction(
             .deleteList(id: id), feedbackInteraction: feedbackInteraction
         ) { _ in
             finishListEditing(id: id)
-            rememberSelectedList(SnipList.inboxID)
+            if !preservesSelection { rememberSelectedList(SnipList.inboxID) }
             selectedSnipID = nil
             selectedSnipIDs = []
         }
@@ -863,9 +981,9 @@ final class IOSAppModel {
             if let feedback, update.outcome != .add(.duplicate) {
                 haptics.emit(feedback, for: feedbackInteraction)
             }
+            afterSuccess(update.outcome)
             recoverySnapshot = await session.refreshRecovery()
             await refreshAttachmentTransferStates()
-            afterSuccess(update.outcome)
             scheduleCloudSync()
             return true
         } catch {
@@ -968,6 +1086,12 @@ final class IOSAppModel {
         lists = snapshot.lists
         attachmentURLs = snapshot.attachmentURLs
         preparedAttachmentURLs.removeAll()
+        if let newListID, !lists.contains(where: { $0.id == newListID }) {
+            finishListEditing(id: newListID)
+        }
+        if let editingListID, !lists.contains(where: { $0.id == editingListID }) {
+            finishListEditing(id: editingListID)
+        }
         if !lists.contains(where: { $0.id == selectedListID }) {
             rememberSelectedList(SnipList.inboxID)
         }

@@ -16,6 +16,8 @@ struct IOSAppRootView: View {
     @State private var compactComposerStorage = CompactComposerStorage()
     @State private var collectionEditMode: EditMode = .inactive
     @State private var listPageMotion = ListPageMotion()
+    @State private var edgeCreationTask: Task<Void, Never>?
+    @State private var edgeCreationTaskID: UUID?
     @State private var clipboardViewState = ClipboardViewState()
     @State private var isImportingBackup = false
     @State private var isExplainingBackupImport = false
@@ -315,6 +317,7 @@ struct IOSAppRootView: View {
                             frame: frame,
                             isComposerFocused: isCompactComposerFocused,
                             dismissComposerKeyboard: { isCompactComposerFocused = false },
+                            cancelNewList: cancelNewList,
                             libraryActions: compactLibraryActions
                         )
                         .libraryToast(
@@ -332,23 +335,96 @@ struct IOSAppRootView: View {
                 guard let settlement = listPageMotion.transition?.settlement else { return }
                 do { try await Task.sleep(for: .seconds(settlement.duration)) }
                 catch { return }
-                listPageMotion.finishSettlement(settlement.id)
+                guard let transition = listPageMotion.transition,
+                      transition.settlement?.id == settlement.id else { return }
+                switch settlement.completion {
+                case .cancelNewList:
+                    guard case .list(let id) = transition.source,
+                          model.newListID == id,
+                          model.editingListID == id,
+                          model.selectedPage == .list(id) else {
+                        listPageMotion.finishSettlement(settlement.id)
+                        return
+                    }
+                    Task { @MainActor in
+                        guard listPageMotion.transition?.settlement?.id == settlement.id,
+                              scenePhase == .active, sheet == nil,
+                              !model.isSearchPresented,
+                              model.newListID == id,
+                              model.editingListID == id,
+                              model.selectedPage == .list(id) else {
+                            if listPageMotion.transition?.settlement?.id == settlement.id {
+                                listPageMotion.interrupt()
+                            }
+                            return
+                        }
+                        _ = await cancelNewList(id)
+                        if listPageMotion.transition?.settlement?.id == settlement.id {
+                            listPageMotion.interrupt()
+                        }
+                    }
+                case .createList:
+                    await createListFromEdge(
+                        transition.source, pages: transition.pages, settlementID: settlement.id
+                    )
+                case .navigate:
+                    listPageMotion.finishSettlement(settlement.id)
+                }
             }
             .onChange(of: model.selectedPage) { _, page in
                 guard let transition = listPageMotion.transition else { return }
+                if listPageMotion.isCreatingFromEdge,
+                   let newListID = model.newListID,
+                   page == .list(newListID) { return }
                 let destination = transition.settlement.map { Int($0.destination) }
                 guard let destination, transition.pages.indices.contains(destination),
                       transition.pages[destination] == page else {
+                    cancelEdgeCreation()
                     listPageMotion.interrupt()
                     return
                 }
             }
-            .onChange(of: sheet) { _, _ in listPageMotion.interrupt() }
+            .onChange(of: model.pages) { _, pages in
+                if listPageMotion.isCreatingFromEdge,
+                   let newListID = model.newListID,
+                   pages.last == .list(newListID) { return }
+                if listPageMotion.transition?.pages != pages {
+                    cancelEdgeCreation()
+                    listPageMotion.interrupt()
+                }
+            }
+            .onChange(of: model.newListID) { _, id in
+                guard let id,
+                      model.selectedPage == .list(id),
+                      model.pages.last == .list(id),
+                      let origin = model.newListOriginPage,
+                      model.pages.contains(origin),
+                      scenePhase == .active, sheet == nil,
+                      !model.isSearchPresented else { return }
+                listPageMotion.beginNewListEntrance(
+                    pages: model.pages, cancellationOrigin: origin,
+                    reduceMotion: reduceMotion, at: Date()
+                )
+            }
+            .onChange(of: sheet) { _, _ in
+                cancelEdgeCreation()
+                listPageMotion.interrupt()
+            }
             .onChange(of: scenePhase) { _, phase in
-                if phase != .active { listPageMotion.interrupt() }
+                if phase != .active {
+                    cancelEdgeCreation()
+                    listPageMotion.interrupt()
+                }
             }
             .onChange(of: model.isSearchPresented) { _, isPresented in
-                if isPresented { listPageMotion.interrupt() }
+                if isPresented {
+                    cancelEdgeCreation()
+                    listPageMotion.interrupt()
+                }
+            }
+            .onDisappear {
+                cancelEdgeCreation()
+                listPageMotion.interrupt()
             }
         } else {
             NavigationSplitView {
@@ -356,7 +432,8 @@ struct IOSAppRootView: View {
                     model: model,
                     sheet: $sheet,
                     editMode: $collectionEditMode,
-                    importBackup: beginBackupImport
+                    importBackup: beginBackupImport,
+                    deleteList: deleteList
                 )
             } detail: {
                 NavigationStack {
@@ -377,6 +454,7 @@ struct IOSAppRootView: View {
                             sheet: $sheet,
                             layout: .inlineList,
                             editMode: $collectionEditMode,
+                            cancelNewList: cancelNewList,
                             dismissComposerKeyboard: {
                                 isCompactComposerFocused = false
                             }
@@ -398,6 +476,26 @@ struct IOSAppRootView: View {
         }
     }
 
+    private func cancelNewList(_ id: UUID) async -> Bool {
+        let cancelled = await model.cancelNewList(id: id)
+        if cancelled {
+            compactComposerStorage.draftStore.clear(listID: id)
+        }
+        return cancelled
+    }
+
+    private func cancelEdgeCreation() {
+        edgeCreationTask?.cancel()
+        edgeCreationTask = nil
+        edgeCreationTaskID = nil
+    }
+
+    private func deleteList(_ id: UUID) async {
+        if await model.deleteList(id: id) {
+            compactComposerStorage.draftStore.clear(listID: id)
+        }
+    }
+
     private var compactLibraryActions: LibraryActionsMenu {
         LibraryActionsMenu(
             model: model,
@@ -409,7 +507,8 @@ struct IOSAppRootView: View {
                 ? { sheet = .recoveryCenter }
                 : nil,
             editSelectedList: model.selectedListID == SnipList.inboxID
-                ? nil : { model.editListInline(id: model.selectedListID) }
+                ? nil : { model.editListInline(id: model.selectedListID) },
+            deleteList: deleteList
         )
     }
 
@@ -428,7 +527,11 @@ struct IOSAppRootView: View {
             sheet: $sheet,
             motion: $listPageMotion,
             pageFrame: pageFrame,
-            pageWidth: pageWidth
+            pageWidth: pageWidth,
+            deleteList: deleteList,
+            createList: { sourcePage, pages in
+                await createListFromEdge(sourcePage, pages: pages)
+            }
         )
         .frame(height: model.isSearchPresented ? 0 : nil)
         .clipped()
@@ -467,6 +570,65 @@ struct IOSAppRootView: View {
         }
     }
 
+    private func canCreateListFromEdge(_ sourcePage: LibraryPage?, pages: [LibraryPage]?) -> Bool {
+        guard let sourcePage, sourcePage == model.selectedPage,
+              pages == model.pages, scenePhase == .active, sheet == nil,
+              !model.isSearchPresented else { return false }
+        return model.editingListID == nil || model.editingListID != sourcePage.listID
+    }
+
+    private func createListFromEdge(
+        _ sourcePage: LibraryPage, pages: [LibraryPage], settlementID: UUID? = nil
+    ) async {
+        guard canCreateListFromEdge(sourcePage, pages: pages) else {
+            if settlementID != nil {
+                listPageMotion.returnFromCommittedCreation(reduceMotion: reduceMotion, at: Date())
+            } else {
+                listPageMotion.interrupt()
+            }
+            return
+        }
+        cancelEdgeCreation()
+        let requestID = UUID()
+        edgeCreationTaskID = requestID
+        let task = Task { @MainActor in
+            defer {
+                if edgeCreationTaskID == requestID {
+                    edgeCreationTask = nil
+                    edgeCreationTaskID = nil
+                }
+            }
+            guard !Task.isCancelled,
+                  settlementID.map({ listPageMotion.transition?.settlement?.id == $0 }) ?? true,
+                  canCreateListFromEdge(sourcePage, pages: pages) else {
+                if settlementID != nil {
+                    listPageMotion.returnFromCommittedCreation(reduceMotion: reduceMotion, at: Date())
+                } else {
+                    listPageMotion.interrupt()
+                }
+                return
+            }
+            let pendingListID = model.newListID
+            await model.openNewList(ifSelectedPageIs: sourcePage)
+            guard !Task.isCancelled, edgeCreationTaskID == requestID,
+                  settlementID.map({ listPageMotion.transition?.settlement?.id == $0 }) ?? true,
+                  model.newListID == pendingListID else { return }
+            if let pendingListID, !model.isSearchPresented,
+               model.selectedPage == .list(pendingListID) {
+                listPageMotion.returnFromAdd(
+                    to: .list(pendingListID), pages: model.pages,
+                    reduceMotion: reduceMotion, at: Date()
+                )
+            } else if settlementID != nil {
+                listPageMotion.returnFromCommittedCreation(reduceMotion: reduceMotion, at: Date())
+            } else {
+                listPageMotion.interrupt()
+            }
+        }
+        edgeCreationTask = task
+        await task.value
+    }
+
 #if DEBUG
     private func seedLongListFixtureIfRequested() async {
         guard ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_LONG_LIST"] == "1",
@@ -486,178 +648,8 @@ struct IOSAppRootView: View {
 
 }
 
-private struct CompactLibraryPageStack: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.layoutDirection) private var layoutDirection
-    @State private var swipeBlockingPages: Set<LibraryPage> = []
-    let model: IOSAppModel
-    let clipboard: IOSClipboardModel
-    let clipboardViewState: ClipboardViewState
-    let copyShare: IOSCopyShareCoordinator
-    @Binding var sheet: AppSheet?
-    @Binding var editMode: EditMode
-    @Binding var motion: ListPageMotion
-    let frame: ListPageFrame
-    let isComposerFocused: Bool
-    let dismissComposerKeyboard: () -> Void
-    let libraryActions: LibraryActionsMenu
-
-    var body: some View {
-        GeometryReader { proxy in
-            ZStack {
-                ForEach(frame.retainedPages, id: \.self) { page in
-                    libraryPage(page, isActivePage: page == model.selectedPage)
-                        .offset(x: frame.offset(
-                            for: page, width: proxy.size.width,
-                            layoutDirection: layoutDirection, reduceMotion: reduceMotion
-                        ))
-                        .opacity(frame.opacity(for: page, reduceMotion: reduceMotion))
-                        .accessibilityHidden(page != model.selectedPage)
-                        .disabled(frame.isMoving || page != model.selectedPage)
-                        .allowsHitTesting(!frame.isMoving && page == model.selectedPage)
-                }
-            }
-            .frame(width: proxy.size.width, height: proxy.size.height)
-            .clipped()
-            .background {
-                ListPagePanObserver(
-                    canBegin: { canSwipe($0) },
-                    onPan: { direction, translation, predictedTranslation, phase in
-                        handlePagePan(
-                            direction: direction,
-                            translation: translation,
-                            predictedTranslation: predictedTranslation,
-                            phase: phase,
-                            pageWidth: proxy.size.width
-                        )
-                    }
-                )
-            }
-        }
-    }
-
-    private func libraryPage(_ page: LibraryPage, isActivePage: Bool) -> some View {
-        NavigationStack {
-            Group {
-                switch page {
-                case .clipboard:
-                    IOSClipboardView(
-                        model: clipboard,
-                        libraryModel: model,
-                        copyShare: copyShare,
-                        sheet: $sheet,
-                        settings: { sheet = .settings },
-                        viewState: clipboardViewState
-                    )
-                case .list(let listID):
-                    SnipCollectionView(
-                        model: model,
-                        clipboard: clipboard,
-                        copyShare: copyShare,
-                        sheet: $sheet,
-                        layout: .compactStack,
-                        listID: listID,
-                        isActivePage: isActivePage,
-                        editMode: $editMode,
-                        blocksPageSwipe: swipeBlockedBinding(for: page),
-                        dismissComposerKeyboard: dismissComposerKeyboard,
-                        libraryActions: libraryActions
-                    )
-                }
-            }
-            .libraryToast(
-                model: model,
-                isHidden: !isActivePage || !model.isSearchPresented,
-                usesFixedExpiry: true
-            )
-            .background {
-                if isActivePage && model.isSearchPresented {
-                    CompactLibrarySearchHost(model: model)
-                }
-            }
-            .toolbar {
-                if isActivePage && model.isSearchPresented {
-                    DefaultToolbarItem(kind: .search, placement: .bottomBar)
-                }
-            }
-        }
-    }
-
-    private func swipeBlockedBinding(for page: LibraryPage) -> Binding<Bool> {
-        Binding(
-            get: { swipeBlockingPages.contains(page) },
-            set: { blocked in
-                if blocked {
-                    swipeBlockingPages.insert(page)
-                } else {
-                    swipeBlockingPages.remove(page)
-                }
-            }
-        )
-    }
-
-    private func handlePagePan(
-        direction: ListPagePanDirection,
-        translation: CGSize,
-        predictedTranslation: CGSize?,
-        phase: UIGestureRecognizer.State,
-        pageWidth: CGFloat
-    ) {
-        guard canSwipe(direction) else {
-            if phase != .began { motion.cancelPageDrag(reduceMotion: reduceMotion, at: Date()) }
-            return
-        }
-        let inwardTranslation = direction.clamped(translation)
-        switch phase {
-        case .began, .changed:
-            motion.updatePageDrag(
-                translation: inwardTranslation,
-                selectedPage: model.selectedPage,
-                pages: model.pages,
-                pageWidth: pageWidth,
-                layoutDirection: layoutDirection,
-                // The .began event may have no translation; start on its first horizontal update.
-                isStart: !motion.isDragging,
-                at: Date()
-            )
-        case .ended:
-            guard let dragPages = motion.transition?.pages, dragPages == model.pages else {
-                motion.interrupt()
-                return
-            }
-            guard let destination = motion.releasePageDrag(
-                translation: inwardTranslation,
-                predictedEndTranslation: direction.clamped(predictedTranslation ?? translation),
-                reduceMotion: reduceMotion,
-                at: Date()
-            ), dragPages.indices.contains(destination), dragPages[destination] != model.selectedPage else { return }
-            model.selectPage(dragPages[destination])
-            model.haptics.emit(.selection, for: model.haptics.beginInteraction())
-        default:
-            motion.cancelPageDrag(reduceMotion: reduceMotion, at: Date())
-        }
-    }
-
-    private func canSwipe(_ direction: ListPagePanDirection) -> Bool {
-        guard !model.isSearchPresented, sheet == nil, !editMode.isEditing,
-              !isComposerFocused,
-              model.editingListID == nil,
-              motion.transition?.settlement == nil,
-              !motion.isSelectorDragging,
-              !swipeBlockingPages.contains(model.selectedPage) else { return false }
-        guard let index = model.pages.firstIndex(of: model.selectedPage) else { return false }
-        let step = switch (direction, layoutDirection) {
-        case (.left, .leftToRight), (.right, .rightToLeft): 1
-        default: -1
-        }
-        let destination = index + step
-        return model.pages.indices.contains(destination)
-    }
-
-}
-
 // Scope the native search host to the background so opening it keeps screen state alive.
-private struct CompactLibrarySearchHost: View {
+struct CompactLibrarySearchHost: View {
     let model: IOSAppModel
     @State private var isPresented = false
 
@@ -728,7 +720,7 @@ private struct AppleAccountNoticeBanner: View {
 
 }
 
-private extension View {
+extension View {
     func libraryToast(
         model: IOSAppModel,
         isHidden: Bool = false,

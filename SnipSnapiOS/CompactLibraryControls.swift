@@ -39,6 +39,8 @@ struct CompactLibraryControls: View {
     @Binding var motion: ListPageMotion
     let pageFrame: ListPageFrame?
     let pageWidth: CGFloat
+    let deleteList: (UUID) async -> Void
+    let createList: (LibraryPage, [LibraryPage]) async -> Void
     @Namespace private var composerGlass
     @Binding var sheet: AppSheet?
 
@@ -72,7 +74,9 @@ struct CompactLibraryControls: View {
         sheet: Binding<AppSheet?>,
         motion: Binding<ListPageMotion> = .constant(ListPageMotion()),
         pageFrame: ListPageFrame? = nil,
-        pageWidth: CGFloat = 0
+        pageWidth: CGFloat = 0,
+        deleteList: @escaping (UUID) async -> Void,
+        createList: @escaping (LibraryPage, [LibraryPage]) async -> Void
     ) {
         self.model = model
         self.clipboard = clipboard
@@ -82,6 +86,8 @@ struct CompactLibraryControls: View {
         _motion = motion
         self.pageFrame = pageFrame
         self.pageWidth = pageWidth
+        self.deleteList = deleteList
+        self.createList = createList
         _isComposerFocused = isComposerFocused
         _sheet = sheet
     }
@@ -195,6 +201,7 @@ struct CompactLibraryControls: View {
                 controlLength: length,
                 sheet: $sheet,
                 deleteList: deleteList,
+                createList: createList,
                 labelViewport: listToolbarWidth,
                 motion: $motion,
                 pageFrame: frame
@@ -259,10 +266,9 @@ struct CompactLibraryControls: View {
         guard !model.isSearchPresented, !isSelecting else { return 0 }
         // Interpolate the occupied height as Clipboard (which has no composer)
         // enters, keeping the last frame identical to the resting layout.
-        return frame.pages.enumerated().reduce(0) { result, element in
-            let (index, page) = element
+        return frame.retainedPages.reduce(0) { result, page in
             guard case .list = page else { return result }
-            let weight = max(0, 1 - abs(CGFloat(index) - frame.position))
+            let weight = frame.weight(for: page)
             return result + weight * (composerHeights[page] ?? controlLength)
         }
     }
@@ -480,11 +486,18 @@ struct CompactLibraryControls: View {
         guard stagingTask == nil else { return }
         let listID = model.selectedListID
         stagingTask = Task {
-            defer { stagingTask = nil }
+            var unclaimedURL: URL?
+            defer {
+                if let unclaimedURL { try? FileManager.default.removeItem(at: unclaimedURL) }
+                stagingTask = nil
+            }
             do {
                 let url = try LargePastedText.write(text, to: storage.stagingDirectory)
+                unclaimedURL = url
                 try Task.checkCancellation()
+                guard model.lists.contains(where: { $0.id == listID }) else { return }
                 storage.draftStore.addTemporary(url, to: listID)
+                unclaimedURL = nil
                 if model.selectedListID == listID {
                     draft = storage.draftStore.draft(for: listID)
                 }
@@ -524,6 +537,10 @@ struct CompactLibraryControls: View {
                     input, in: storage.stagingDirectory
                 )
                 try Task.checkCancellation()
+                if !model.lists.contains(where: { $0.id == listID }) {
+                    AttachmentDraftStager.clean(stagedFiles)
+                    return
+                }
                 addStagedFiles(stagedFiles, to: listID)
             } catch is CancellationError {
                 AttachmentDraftStager.clean(stagedFiles)
@@ -548,11 +565,6 @@ struct CompactLibraryControls: View {
         draft = storage.draftStore.draft(for: model.selectedListID)
     }
 
-    private func deleteList(_ listID: UUID) async {
-        if await model.deleteList(id: listID) {
-            storage.draftStore.clear(listID: listID)
-        }
-    }
 }
 
 private struct ComposerFieldFocus: ViewModifier {

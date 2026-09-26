@@ -27,6 +27,7 @@ struct SnipCollectionView: View {
     var listID: UUID? = nil
     var isActivePage = true
     @Binding var editMode: EditMode
+    let cancelNewList: (UUID) async -> Bool
     var blocksPageSwipe: Binding<Bool> = .constant(false)
     var dismissComposerKeyboard: () -> Void = {}
     var libraryActions: LibraryActionsMenu?
@@ -187,7 +188,7 @@ struct SnipCollectionView: View {
         ))
         .overlay(alignment: .top) {
             if isEditingList {
-                InlineListEditor(model: model, list: displayedList)
+                InlineListEditor(model: model, list: displayedList, cancelNewList: cancelNewList)
                     .id(displayedListID)
                     .frame(height: model.isSearchPresented ? 0 : nil)
                     .opacity(model.isSearchPresented ? 0 : 1)
