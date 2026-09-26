@@ -1,0 +1,9 @@
+# Snip Snap 0.5.1 Beta 104
+
+## Mac
+
+- Lock list swipes and refine Add List motion
+
+## iOS
+
+- Lock list swipes and refine Add List motion
