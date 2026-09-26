@@ -10,28 +10,6 @@ import XCTest
 
 @MainActor
 final class IOSAppModelTests: XCTestCase {
-    func testPageSwipeTracksOnePageAndSelectsAdjacentList() {
-        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID())]
-        let now = Date(timeIntervalSinceReferenceDate: 100)
-        var motion = ListPageMotion()
-        motion.updatePageDrag(
-            translation: CGSize(width: -80, height: 0), selectedPage: pages[1], pages: pages,
-            pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
-        )
-        XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[1], at: now).position, 1.2, accuracy: 0.001)
-        XCTAssertEqual(
-            motion.releasePageDrag(
-                translation: CGSize(width: -80, height: 0),
-                predictedEndTranslation: CGSize(width: -100, height: 0),
-                reduceMotion: false, at: now
-            ), 2
-        )
-        XCTAssertFalse(motion.isDragging)
-        XCTAssertEqual(motion.transition?.settlement?.destination, 2)
-        motion.cancelPageDrag(reduceMotion: false, at: now)
-        XCTAssertEqual(motion.transition?.settlement?.destination, 2)
-    }
-
     func testPageSelectionKeepsTheLastListWhileClipboardIsActive() async throws {
         let model = makeModel(library: ModelTestLibrary())
         await model.load()
@@ -74,289 +52,6 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertTrue(deletedWhileOnClipboard)
         XCTAssertEqual(model.selectedPage, .clipboard)
         XCTAssertEqual(model.selectedListID, SnipList.inboxID)
-    }
-
-    func testPageSwipeCancelsAndClampsAtPageBoundary() throws {
-        let pages: [LibraryPage] = [.clipboard, .list(UUID())]
-        let now = Date(timeIntervalSinceReferenceDate: 100)
-        var motion = ListPageMotion()
-        motion.updatePageDrag(
-            translation: CGSize(width: -600, height: 0), selectedPage: pages[0], pages: pages,
-            pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
-        )
-        XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[0], at: now).position, 1)
-        motion.cancelPageDrag(reduceMotion: false, at: now)
-        XCTAssertEqual(motion.transition?.settlement?.destination, 0)
-        let settlement = try XCTUnwrap(motion.transition?.settlement)
-        motion.finishSettlement(settlement.id)
-        motion.updatePageDrag(
-            translation: CGSize(width: -80, height: 0), selectedPage: pages[1], pages: pages,
-            pageWidth: 400, layoutDirection: .rightToLeft, isStart: true, at: now
-        )
-        XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[1], at: now).position, 0.8, accuracy: 0.001)
-        XCTAssertEqual(motion.releasePageDrag(
-            translation: CGSize(width: -80, height: 0),
-            predictedEndTranslation: CGSize(width: -100, height: 0),
-            reduceMotion: false, at: now
-        ), 0)
-    }
-
-    func testLongPageDragNeverPreviewsPastAdjacentList() {
-        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID()), .list(UUID()), .list(UUID())]
-        let now = Date(timeIntervalSinceReferenceDate: 100)
-        var motion = ListPageMotion()
-        motion.updatePageDrag(
-            translation: CGSize(width: -1_200, height: 0), selectedPage: pages[1], pages: pages,
-            pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
-        )
-        XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[1], at: now).position, 2)
-        XCTAssertEqual(motion.releasePageDrag(
-            translation: CGSize(width: -1_200, height: 0),
-            predictedEndTranslation: CGSize(width: -1_200, height: 0),
-            reduceMotion: false, at: now
-        ), 2)
-    }
-
-    func testPageDragWaitsForExistingSettlement() {
-        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID()), .list(UUID()), .list(UUID())]
-        let now = Date(timeIntervalSinceReferenceDate: 100)
-        var motion = ListPageMotion()
-        motion.select(4, selectedPage: pages[1], pages: pages, reduceMotion: false, at: now)
-        let settlement = motion.transition?.settlement
-
-        motion.updatePageDrag(
-            translation: CGSize(width: 80, height: 0), selectedPage: pages[4], pages: pages,
-            pageWidth: 400, layoutDirection: .leftToRight, isStart: true,
-            at: now.addingTimeInterval(0.05)
-        )
-
-        XCTAssertFalse(motion.isDragging)
-        XCTAssertEqual(motion.transition?.settlement, settlement)
-    }
-
-    func testPageDragReversedPastOriginDoesNotSelectNeighbor() {
-        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID()), .list(UUID())]
-        let now = Date(timeIntervalSinceReferenceDate: 100)
-        var motion = ListPageMotion()
-        motion.updatePageDrag(
-            translation: CGSize(width: -80, height: 0), selectedPage: pages[2], pages: pages,
-            pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
-        )
-
-        XCTAssertEqual(motion.releasePageDrag(
-            translation: CGSize(width: 100, height: 0),
-            predictedEndTranslation: CGSize(width: 100, height: 0),
-            reduceMotion: false, at: now
-        ), 2)
-        XCTAssertEqual(motion.transition?.settlement?.destination, 2)
-    }
-
-    func testPageSwipeReversalCannotChooseOppositePage() {
-        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID()), .list(UUID())]
-        let now = Date(timeIntervalSinceReferenceDate: 100)
-        var motion = ListPageMotion()
-        motion.updatePageDrag(
-            translation: CGSize(width: -80, height: 0), selectedPage: pages[2], pages: pages,
-            pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
-        )
-        XCTAssertEqual(motion.releasePageDrag(
-            translation: CGSize(width: -80, height: 0),
-            predictedEndTranslation: CGSize(width: 200, height: 0),
-            reduceMotion: false, at: now
-        ), 3)
-    }
-
-    func testPageSwipeStopsWhenPageOrderChanges() {
-        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID())]
-        let now = Date(timeIntervalSinceReferenceDate: 100)
-        var motion = ListPageMotion()
-        motion.updatePageDrag(
-            translation: CGSize(width: -80, height: 0), selectedPage: pages[1], pages: pages,
-            pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
-        )
-        motion.updatePageDrag(
-            translation: CGSize(width: -90, height: 0), selectedPage: pages[1],
-            pages: [pages[0], pages[2], pages[1]], pageWidth: 400,
-            layoutDirection: .leftToRight, isStart: false, at: now
-        )
-        XCTAssertNil(motion.transition)
-        XCTAssertFalse(motion.isDragging)
-        motion.updatePageDrag(
-            translation: CGSize(width: -110, height: 0), selectedPage: pages[1],
-            pages: [pages[0], pages[2], pages[1]], pageWidth: 400,
-            layoutDirection: .leftToRight, isStart: false, at: now
-        )
-        XCTAssertNil(motion.transition)
-    }
-
-    func testListPagingFollowsEveryVariableWidthSegmentAndReversal() throws {
-        let geometry = ListSelectorGeometry(widths: [80, 160, 100, 200])
-        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID()), .list(UUID())]
-        let now = Date(timeIntervalSinceReferenceDate: 100)
-        var motion = ListPageMotion()
-        let positions: [CGFloat] = [0.25, 0.75, 1, 1.5, 2, 2.75, 1.5, 0.25]
-        var peakDistance: CGFloat = 0
-        for position in positions {
-            let cursor = geometry.cursor(at: position)
-            motion.updateDrag(
-                translation: CGSize(width: geometry.centers[0] - cursor, height: 0),
-                selectedPage: pages[0], pages: pages, geometry: geometry,
-                layoutDirection: .leftToRight, at: now
-            )
-            peakDistance = max(peakDistance, abs(cursor - geometry.centers[0]))
-            XCTAssertEqual(motion.dragDistance, peakDistance)
-            let frame = motion.frame(pages: pages, selectedPage: pages[0], at: now)
-            XCTAssertEqual(frame.position, position, accuracy: 0.0001)
-            XCTAssertEqual(geometry.pagePosition(at: cursor), position, accuracy: 0.0001)
-            XCTAssertTrue(frame.retainedPages.contains(pages[0]))
-            XCTAssertTrue(frame.retainedPages.contains(pages[Int(floor(position))]))
-            XCTAssertTrue(frame.retainedPages.contains(pages[Int(ceil(position))]))
-            XCTAssertLessThanOrEqual(frame.retainedPages.count, 3)
-        }
-        XCTAssertTrue(motion.isDragging)
-    }
-
-    func testListPagingMirrorsDragAndOffsetsInRTL() {
-        let geometry = ListSelectorGeometry(widths: [80, 160, 100])
-        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID())]
-        let now = Date(timeIntervalSinceReferenceDate: 100)
-        for direction in [LayoutDirection.leftToRight, .rightToLeft] {
-            var motion = ListPageMotion()
-            let sign: CGFloat = direction == .leftToRight ? -1 : 1
-            motion.updateDrag(
-                translation: CGSize(width: sign * 197, height: 0),
-                selectedPage: pages[0], pages: pages, geometry: geometry,
-                layoutDirection: direction, at: now
-            )
-            let frame = motion.frame(pages: pages, selectedPage: pages[0], at: now)
-            XCTAssertEqual(frame.position, 1.5, accuracy: 0.0001)
-            XCTAssertEqual(frame.offset(for: pages[1], width: 400, layoutDirection: direction, reduceMotion: false), sign * 200)
-            XCTAssertEqual(frame.offset(for: pages[2], width: 400, layoutDirection: direction, reduceMotion: false), -sign * 200)
-        }
-    }
-
-    func testCancelledListDragReturnsToSourceAndClearsSettlement() throws {
-        let geometry = ListSelectorGeometry(widths: [80, 160, 100])
-        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID())]
-        let now = Date(timeIntervalSinceReferenceDate: 100)
-        var motion = ListPageMotion()
-        motion.updateDrag(
-            translation: CGSize(width: -197, height: 0), selectedPage: pages[0],
-            pages: pages, geometry: geometry, layoutDirection: .leftToRight, at: now
-        )
-        motion.cancelDrag(reduceMotion: false, at: now)
-        XCTAssertEqual(motion.dragDistance, 0)
-        XCTAssertFalse(motion.isDragging)
-        let settlement = try XCTUnwrap(motion.transition?.settlement)
-        XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[0], at: now).position, 1.5)
-        XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[0], at: now.addingTimeInterval(1)).position, 0)
-        motion.finishSettlement(settlement.id)
-        XCTAssertNil(motion.transition)
-        XCTAssertFalse(motion.frame(pages: pages, selectedPage: pages[0], at: now).isMoving)
-    }
-
-    func testDiagonalReleaseStillCompletesAnAcceptedHorizontalDrag() throws {
-        let geometry = ListSelectorGeometry(widths: [80, 160, 100])
-        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID())]
-        let now = Date(timeIntervalSinceReferenceDate: 100)
-        var motion = ListPageMotion()
-        motion.updateDrag(
-            translation: CGSize(width: -100, height: 0), selectedPage: pages[0],
-            pages: pages, geometry: geometry, layoutDirection: .leftToRight, at: now
-        )
-        XCTAssertEqual(motion.release(translation: CGSize(width: -128, height: 200), geometry: geometry, reduceMotion: false, at: now), .select(1))
-        XCTAssertFalse(motion.isDragging)
-        XCTAssertEqual(motion.dragDistance, 0)
-        let settlement = try XCTUnwrap(motion.transition?.settlement)
-        motion.cancelDrag(reduceMotion: false, at: now)
-        XCTAssertEqual(motion.transition?.settlement?.id, settlement.id, "A later GestureState reset must not cancel a released drag")
-        motion.finishSettlement(settlement.id)
-        XCTAssertNil(motion.transition)
-    }
-
-    func testNewDragStartsFromVisibleSettlingPositionAndIgnoresOldCompletion() throws {
-        let geometry = ListSelectorGeometry(widths: [80, 160, 100])
-        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID())]
-        let now = Date(timeIntervalSinceReferenceDate: 100)
-        var motion = ListPageMotion()
-        motion.select(2, selectedPage: pages[0], pages: pages, reduceMotion: false, at: now)
-        let previous = try XCTUnwrap(motion.transition?.settlement)
-        let interruptedAt = now.addingTimeInterval(previous.duration / 2)
-        let visible = motion.frame(pages: pages, selectedPage: pages[2], at: interruptedAt).position
-        XCTAssertGreaterThan(visible, 0)
-        XCTAssertLessThan(visible, 2)
-        motion.updateDrag(
-            translation: CGSize(width: 10, height: 0), selectedPage: pages[2],
-            pages: pages, geometry: geometry, layoutDirection: .leftToRight, at: interruptedAt
-        )
-        XCTAssertEqual(
-            motion.frame(pages: pages, selectedPage: pages[2], at: interruptedAt).position,
-            geometry.pagePosition(at: geometry.cursor(at: visible) - 10), accuracy: 0.0001
-        )
-        motion.finishSettlement(previous.id)
-        XCTAssertTrue(motion.isDragging)
-        XCTAssertNotNil(motion.transition)
-        motion.cancelDrag(reduceMotion: false, at: interruptedAt)
-        XCTAssertEqual(motion.transition?.settlement?.destination, 2)
-    }
-
-    func testRepeatedTabSelectionRetargetsFromVisiblePosition() throws {
-        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID()), .list(UUID())]
-        let now = Date(timeIntervalSinceReferenceDate: 100)
-        var motion = ListPageMotion()
-        motion.select(3, selectedPage: pages[0], pages: pages, reduceMotion: false, at: now)
-        let previous = try XCTUnwrap(motion.transition?.settlement)
-        let interruptedAt = now.addingTimeInterval(previous.duration / 2)
-        let before = motion.frame(pages: pages, selectedPage: pages[3], at: interruptedAt)
-        motion.select(1, selectedPage: pages[3], pages: pages, reduceMotion: false, at: interruptedAt)
-        let after = motion.frame(pages: pages, selectedPage: pages[1], at: interruptedAt)
-        XCTAssertEqual(after.position, before.position)
-        XCTAssertLessThanOrEqual(after.retainedPages.count, 4)
-        motion.finishSettlement(previous.id)
-        XCTAssertNotNil(motion.transition)
-        XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[1], at: interruptedAt.addingTimeInterval(1)).position, 1)
-    }
-
-    func testInterruptedListMotionClearsGestureAndSettlingState() throws {
-        let geometry = ListSelectorGeometry(widths: [80, 160])
-        let pages: [LibraryPage] = [.clipboard, .list(UUID())]
-        let now = Date(timeIntervalSinceReferenceDate: 100)
-        var motion = ListPageMotion()
-        motion.updateDrag(
-            translation: CGSize(width: -50, height: 0), selectedPage: pages[0],
-            pages: pages, geometry: geometry, layoutDirection: .leftToRight, at: now
-        )
-        motion.interrupt()
-        XCTAssertFalse(motion.isDragging)
-        XCTAssertNil(motion.transition)
-        XCTAssertNil(motion.release(translation: CGSize(width: -50, height: 0), geometry: geometry, reduceMotion: false, at: now))
-        motion.select(1, selectedPage: pages[0], pages: pages, reduceMotion: false, at: now)
-        let settlement = try XCTUnwrap(motion.transition?.settlement)
-        motion.interrupt()
-        motion.finishSettlement(settlement.id)
-        XCTAssertNil(motion.transition)
-    }
-
-    func testReducedMotionFadesTheSamePagesWithoutSidewaysMovement() {
-        let geometry = ListSelectorGeometry(widths: [80, 160, 100])
-        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID())]
-        let now = Date(timeIntervalSinceReferenceDate: 100)
-        var motion = ListPageMotion()
-        motion.updateDrag(
-            translation: CGSize(width: -64, height: 0), selectedPage: pages[0],
-            pages: pages, geometry: geometry, layoutDirection: .leftToRight, at: now
-        )
-        let frame = motion.frame(pages: pages, selectedPage: pages[0], at: now)
-        for page in frame.retainedPages {
-            XCTAssertEqual(frame.offset(for: page, width: 400, layoutDirection: .leftToRight, reduceMotion: true), 0)
-            XCTAssertEqual(frame.offset(for: page, width: 400, layoutDirection: .rightToLeft, reduceMotion: true), 0)
-            XCTAssertEqual(frame.opacity(for: page, reduceMotion: true), 0.5)
-        }
-        motion.cancelDrag(reduceMotion: true, at: now)
-        XCTAssertEqual(motion.transition?.settlement?.duration, 0.12)
-        let finished = motion.frame(pages: pages, selectedPage: pages[0], at: now.addingTimeInterval(1))
-        XCTAssertEqual(finished.opacity(for: pages[0], reduceMotion: true), 1)
-        XCTAssertEqual(finished.opacity(for: pages[1], reduceMotion: true), 0)
     }
 
     func testOpenNewListWithExistingDefaultNamesOpensANewEditor() async throws {
@@ -403,6 +98,365 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(model.editingListID, model.selectedListID)
         XCTAssertEqual(model.newListID, model.selectedListID)
         XCTAssertEqual(model.lists.count, 3)
+    }
+
+    func testCancelNewListRestoresOriginAndKeepsItsSnipsInInbox() async {
+        let model = makeModel(library: ModelTestLibrary())
+        await model.load()
+        let workCreated = await model.createList(name: "Work")
+        XCTAssertTrue(workCreated)
+        let workID = model.selectedListID
+        model.selectPage(.clipboard)
+        await model.openNewList()
+        let newListID = model.selectedListID
+        let created = await model.createSnip(content: "Keep this note", in: newListID)
+        XCTAssertTrue(created)
+
+        let cancelled = await model.cancelNewList(id: newListID)
+
+        XCTAssertTrue(cancelled)
+        XCTAssertEqual(model.selectedPage, .clipboard)
+        XCTAssertEqual(model.selectedListID, workID)
+        XCTAssertFalse(model.lists.contains { $0.id == newListID })
+        XCTAssertEqual(model.snips.first?.listID, SnipList.inboxID)
+        XCTAssertNil(model.newListID)
+        XCTAssertNil(model.editingListID)
+    }
+
+    func testNewListCannotBeSwipeCancelledWhileCreateIsSaving() async {
+        let model = makeModel(library: ModelTestLibrary())
+        await model.load()
+        await model.openNewList()
+        guard let id = model.newListID else { return XCTFail("New List did not open") }
+        let draft = model.listDraft(for: model.selectedList)
+        draft.isSaving = true
+
+        let rejected = await model.cancelNewList(id: id)
+        XCTAssertFalse(rejected)
+        XCTAssertEqual(model.selectedPage, .list(id))
+        XCTAssertTrue(model.lists.contains { $0.id == id })
+
+        draft.isCancelling = true // The editor Cancel button claims this operation first.
+        let accepted = await model.cancelNewList(id: id)
+        XCTAssertTrue(accepted)
+        XCTAssertNil(model.newListID)
+    }
+
+    func testNewListRequestDuringCancelCreatesAnotherListAfterDeletion() async {
+        let library = ModelTestLibrary()
+        let model = makeModel(library: library)
+        await model.load()
+        await model.openNewList()
+        guard let cancelledID = model.newListID else { return XCTFail("New List did not open") }
+
+        await library.suspendNextCommand()
+        let cancellation = Task { await model.cancelNewList(id: cancelledID) }
+        await library.waitUntilFirstCommandStarts()
+        await model.openNewList()
+        XCTAssertEqual(model.newListID, cancelledID)
+        await library.resumeFirstCommand()
+
+        let cancelled = await cancellation.value
+        XCTAssertTrue(cancelled)
+        guard let replacementID = model.newListID else { return XCTFail("Replacement list did not open") }
+        XCTAssertNotEqual(replacementID, cancelledID)
+        XCTAssertEqual(model.editingListID, replacementID)
+        XCTAssertEqual(model.selectedPage, .list(replacementID))
+        XCTAssertEqual(model.lists.count, 2)
+    }
+
+    func testNewListRequestDuringCancelIsDroppedAfterLeavingItsSourcePage() async {
+        let library = ModelTestLibrary()
+        let model = makeModel(library: library)
+        await model.load()
+        model.selectPage(.clipboard)
+        await model.openNewList()
+        guard let cancelledID = model.newListID else { return XCTFail("New List did not open") }
+
+        await library.suspendNextCommand()
+        let cancellation = Task { await model.cancelNewList(id: cancelledID) }
+        await library.waitUntilFirstCommandStarts()
+        XCTAssertEqual(model.selectedPage, .clipboard)
+        await model.openNewList(ifSelectedPageIs: .clipboard)
+        model.selectPage(.list(SnipList.inboxID))
+        await library.resumeFirstCommand()
+
+        let cancelled = await cancellation.value
+        XCTAssertTrue(cancelled)
+        XCTAssertEqual(model.selectedPage, .list(SnipList.inboxID))
+        XCTAssertNil(model.newListID)
+        XCTAssertNil(model.editingListID)
+        XCTAssertEqual(model.lists.map(\.id), [SnipList.inboxID])
+    }
+
+    func testNewListRequestDuringCancelIsDroppedAfterLeavingAndReturning() async {
+        let library = ModelTestLibrary()
+        let model = makeModel(library: library)
+        await model.load()
+        model.selectPage(.clipboard)
+        await model.openNewList()
+        guard let cancelledID = model.newListID else { return XCTFail("New List did not open") }
+
+        await library.suspendNextCommand()
+        let cancellation = Task { await model.cancelNewList(id: cancelledID) }
+        await library.waitUntilFirstCommandStarts()
+        await model.openNewList(ifSelectedPageIs: .clipboard)
+        model.selectPage(.list(SnipList.inboxID))
+        model.selectPage(.clipboard)
+        await library.resumeFirstCommand()
+
+        let cancelled = await cancellation.value
+        XCTAssertTrue(cancelled)
+        XCTAssertEqual(model.selectedPage, .clipboard)
+        XCTAssertNil(model.newListID)
+        XCTAssertEqual(model.lists.map(\.id), [SnipList.inboxID])
+    }
+
+    func testFailedCancelDoesNotReplayNewListRequestAfterLeavingItsSourcePage() async {
+        let library = ModelTestLibrary(failsListDeletion: true)
+        let model = makeModel(library: library)
+        await model.load()
+        model.selectPage(.clipboard)
+        await model.openNewList()
+        guard let pendingID = model.newListID else { return XCTFail("New List did not open") }
+
+        await library.suspendNextCommand()
+        let cancellation = Task { await model.cancelNewList(id: pendingID) }
+        await library.waitUntilFirstCommandStarts()
+        XCTAssertEqual(model.selectedPage, .clipboard)
+        await model.openNewList(ifSelectedPageIs: .clipboard)
+        model.selectPage(.list(SnipList.inboxID))
+        await library.resumeFirstCommand()
+
+        let cancelled = await cancellation.value
+        XCTAssertFalse(cancelled)
+        XCTAssertEqual(model.selectedPage, .list(SnipList.inboxID))
+        XCTAssertEqual(model.newListID, pendingID)
+        XCTAssertEqual(model.editingListID, pendingID)
+        XCTAssertTrue(model.lists.contains { $0.id == pendingID })
+    }
+
+    func testFailedCancelKeepsReturnedOriginAfterInterveningNavigation() async {
+        let library = ModelTestLibrary(failsListDeletion: true)
+        let model = makeModel(library: library)
+        await model.load()
+        model.selectPage(.clipboard)
+        await model.openNewList()
+        guard let pendingID = model.newListID else { return XCTFail("New List did not open") }
+
+        await library.suspendNextCommand()
+        let cancellation = Task { await model.cancelNewList(id: pendingID) }
+        await library.waitUntilFirstCommandStarts()
+        await model.openNewList(ifSelectedPageIs: .clipboard)
+        model.selectPage(.list(SnipList.inboxID))
+        model.selectPage(.clipboard)
+        await library.resumeFirstCommand()
+
+        let cancelled = await cancellation.value
+        XCTAssertFalse(cancelled)
+        XCTAssertEqual(model.selectedPage, .clipboard)
+        XCTAssertEqual(model.newListID, pendingID)
+        XCTAssertEqual(model.editingListID, pendingID)
+        XCTAssertTrue(model.lists.contains { $0.id == pendingID })
+    }
+
+    func testRepeatedNewListRequestPreservesFirstEditorsCancelAction() async {
+        let model = makeModel(library: ModelTestLibrary())
+        await model.load()
+        let createdWork = await model.createList(name: "Work")
+        XCTAssertTrue(createdWork)
+        let workID = model.selectedListID
+        await model.openNewList()
+        let pendingID = model.newListID
+        let listCount = model.lists.count
+
+        model.selectList(workID)
+        model.editListInline(id: workID)
+        XCTAssertEqual(model.selectedListID, workID)
+        XCTAssertEqual(model.editingListID, workID)
+
+        model.selectList(workID)
+        await model.openNewList()
+
+        XCTAssertEqual(model.selectedListID, pendingID)
+        XCTAssertEqual(model.newListID, pendingID)
+        XCTAssertEqual(model.editingListID, pendingID)
+        XCTAssertEqual(model.lists.count, listCount)
+        guard let pendingID else { return XCTFail("New List did not open") }
+        let cancelled = await model.cancelNewList(id: pendingID)
+        XCTAssertTrue(cancelled)
+    }
+
+    func testNewListCreationDoesNotPullSelectionBackAfterLeavingItsSourcePage() async {
+        let library = ModelTestLibrary(suspendsFirstCommand: true)
+        let model = makeModel(library: library)
+        await model.load()
+        model.selectPage(.clipboard)
+
+        let creation = Task { await model.openNewList(ifSelectedPageIs: .clipboard) }
+        await library.waitUntilFirstCommandStarts()
+        model.selectPage(.list(SnipList.inboxID))
+        await library.resumeFirstCommand()
+        await creation.value
+
+        XCTAssertEqual(model.selectedPage, .list(SnipList.inboxID))
+        XCTAssertNil(model.newListID)
+        XCTAssertEqual(model.lists.map(\.id), [SnipList.inboxID])
+    }
+
+    func testCancelledNewListCreationRollsBackAfterStoreCompletes() async {
+        let library = ModelTestLibrary(suspendsFirstCommand: true)
+        let model = makeModel(library: library)
+        await model.load()
+        model.selectPage(.clipboard)
+
+        let creation = Task { await model.openNewList(ifSelectedPageIs: .clipboard) }
+        await library.waitUntilFirstCommandStarts()
+        creation.cancel()
+        await library.resumeFirstCommand()
+        await creation.value
+
+        XCTAssertEqual(model.selectedPage, .clipboard)
+        XCTAssertNil(model.newListID)
+        XCTAssertEqual(model.lists.map(\.id), [SnipList.inboxID])
+    }
+
+    func testCancelledNewListRequestPreservesVisibleEditorDuringRefresh() async {
+        let library = ModelTestLibrary()
+        let model = IOSAppModel(
+            library: library,
+            userActions: DirectSnipLibraryUserActions(library: library),
+            recoveryScope: SnipRecoveryScope("post-create-refresh")
+        )
+        await model.load()
+        model.selectPage(.clipboard)
+        await library.suspendNextRecovery()
+
+        let creation = Task { await model.openNewList(ifSelectedPageIs: .clipboard) }
+        await library.waitUntilRecoveryStarts()
+        guard let openedID = model.newListID else {
+            await library.resumeRecovery()
+            await creation.value
+            return XCTFail("New List editor was not opened before the refresh")
+        }
+        creation.cancel()
+        await library.resumeRecovery()
+        await creation.value
+
+        XCTAssertEqual(model.selectedPage, .list(openedID))
+        XCTAssertEqual(model.newListID, openedID)
+        XCTAssertEqual(model.editingListID, openedID)
+        XCTAssertEqual(model.lists.map(\.id), [SnipList.inboxID, openedID])
+    }
+
+    func testCancelVisibleNewListWaitsForCreationRefreshAndDeletesOnce() async {
+        let library = ModelTestLibrary()
+        let model = IOSAppModel(
+            library: library,
+            userActions: DirectSnipLibraryUserActions(library: library),
+            recoveryScope: SnipRecoveryScope("cancel-during-refresh")
+        )
+        await model.load()
+        model.selectPage(.clipboard)
+        await library.suspendNextRecovery()
+
+        let creation = Task { await model.openNewList(ifSelectedPageIs: .clipboard) }
+        await library.waitUntilRecoveryStarts()
+        guard let openedID = model.newListID else {
+            await library.resumeRecovery()
+            await creation.value
+            return XCTFail("New List editor was not opened before the refresh")
+        }
+        let cancellation = Task { await model.cancelNewList(id: openedID) }
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while model.selectedPage != .clipboard && clock.now < deadline {
+            await Task.yield()
+        }
+        XCTAssertEqual(model.selectedPage, .clipboard)
+        await library.resumeRecovery()
+        await creation.value
+
+        let cancelled = await cancellation.value
+        XCTAssertTrue(cancelled)
+        XCTAssertNil(model.newListID)
+        XCTAssertNil(model.editingListID)
+        XCTAssertEqual(model.lists.map(\.id), [SnipList.inboxID])
+    }
+
+    func testNewListCreationDoesNotPullSelectionBackAfterLeavingAndReturning() async {
+        let library = ModelTestLibrary(suspendsFirstCommand: true)
+        let model = makeModel(library: library)
+        await model.load()
+        model.selectPage(.clipboard)
+
+        let creation = Task { await model.openNewList(ifSelectedPageIs: .clipboard) }
+        await library.waitUntilFirstCommandStarts()
+        model.selectPage(.list(SnipList.inboxID))
+        model.selectPage(.clipboard)
+        await library.resumeFirstCommand()
+        await creation.value
+
+        XCTAssertEqual(model.selectedPage, .clipboard)
+        XCTAssertNil(model.newListID)
+        XCTAssertEqual(model.lists.map(\.id), [SnipList.inboxID])
+    }
+
+    func testSearchInvalidatesInFlightNewListCreationEvenAfterClosing() async {
+        for closesSearchBeforeCompletion in [false, true] {
+            let library = ModelTestLibrary(suspendsFirstCommand: true)
+            let model = makeModel(library: library)
+            await model.load()
+            model.selectPage(.clipboard)
+
+            let creation = Task { await model.openNewList(ifSelectedPageIs: .clipboard) }
+            await library.waitUntilFirstCommandStarts()
+            model.isSearchPresented = true
+            if closesSearchBeforeCompletion { model.isSearchPresented = false }
+            await library.resumeFirstCommand()
+            await creation.value
+
+            XCTAssertEqual(model.selectedPage, .clipboard)
+            XCTAssertNil(model.newListID)
+            XCTAssertEqual(model.lists.map(\.id), [SnipList.inboxID])
+        }
+    }
+
+    func testReplacingLibraryClearsPendingNewListBeforeAnotherCreation() async {
+        let model = makeModel(library: ModelTestLibrary())
+        await model.load()
+        await model.openNewList()
+        guard let oldID = model.newListID else { return XCTFail("New List did not open") }
+
+        await model.replaceLibrary(ModelTestLibrary(), recoveryScope: nil)
+        XCTAssertNil(model.newListID)
+        XCTAssertNil(model.editingListID)
+        XCTAssertEqual(model.selectedPage, .list(SnipList.inboxID))
+
+        await model.openNewList()
+        guard let replacementID = model.newListID else { return XCTFail("Replacement list did not open") }
+        XCTAssertNotEqual(replacementID, oldID)
+        XCTAssertEqual(model.selectedPage, .list(replacementID))
+        XCTAssertEqual(model.lists.count, 2)
+    }
+
+    func testFailedRollbackSurfacesCreatedListEditor() async {
+        let library = ModelTestLibrary(suspendsFirstCommand: true, failsListDeletion: true)
+        let model = makeModel(library: library)
+        await model.load()
+        model.selectPage(.clipboard)
+
+        let creation = Task { await model.openNewList(ifSelectedPageIs: .clipboard) }
+        await library.waitUntilFirstCommandStarts()
+        model.selectPage(.list(SnipList.inboxID))
+        await library.resumeFirstCommand()
+        await creation.value
+
+        guard let survivingID = model.newListID else { return XCTFail("List should remain after failed rollback") }
+        XCTAssertEqual(model.selectedPage, .list(survivingID))
+        XCTAssertEqual(model.editingListID, survivingID)
+        XCTAssertTrue(model.lists.contains { $0.id == survivingID })
+        XCTAssertNotNil(model.errorMessage)
     }
 
     func testDuplicateListErrorUsesASpecificTitleAndResetsForOtherErrors() async {
@@ -4280,11 +4334,15 @@ private actor ModelTestLibrary: SnipLibrary {
     private var attachmentRetentionCalls: [Set<UUID>] = []
     private let commandDelay: Duration?
     private let failsDeletion: Bool
+    private let failsListDeletion: Bool
     private var suspendsFirstCommand: Bool
     private var firstCommandStarted = false
     private var firstCommandStartWaiters: [CheckedContinuation<Void, Never>] = []
     private var firstCommandContinuation: CheckedContinuation<Void, Never>?
     private var recoveryStarted = false
+    private var suspendsNextRecovery = false
+    private var recoveryStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var recoveryContinuation: CheckedContinuation<Void, Never>?
     private var activeCommandCount = 0
     private var maximumActiveCommandCount = 0
 
@@ -4294,7 +4352,8 @@ private actor ModelTestLibrary: SnipLibrary {
         attachmentURLs: [UUID: URL] = [:],
         commandDelay: Duration? = nil,
         suspendsFirstCommand: Bool = false,
-        failsDeletion: Bool = false
+        failsDeletion: Bool = false,
+        failsListDeletion: Bool = false
     ) {
         self.snips = snips
         self.recovery = recovery
@@ -4302,6 +4361,7 @@ private actor ModelTestLibrary: SnipLibrary {
         self.commandDelay = commandDelay
         self.suspendsFirstCommand = suspendsFirstCommand
         self.failsDeletion = failsDeletion
+        self.failsListDeletion = failsListDeletion
     }
 
     func addedAttachmentURLs() -> [URL] {
@@ -4321,9 +4381,29 @@ private actor ModelTestLibrary: SnipLibrary {
         resolvedChoices
     }
 
-    func recoverySnapshot(in scope: SnipRecoveryScope) -> SnipRecoverySnapshot {
+    func recoverySnapshot(in scope: SnipRecoveryScope) async -> SnipRecoverySnapshot {
         _ = scope
+        if suspendsNextRecovery {
+            suspendsNextRecovery = false
+            recoveryStartWaiters.forEach { $0.resume() }
+            recoveryStartWaiters.removeAll()
+            await withCheckedContinuation { recoveryContinuation = $0 }
+        }
         return recovery
+    }
+
+    func suspendNextRecovery() {
+        suspendsNextRecovery = true
+    }
+
+    func waitUntilRecoveryStarts() async {
+        if recoveryContinuation != nil { return }
+        await withCheckedContinuation { recoveryStartWaiters.append($0) }
+    }
+
+    func resumeRecovery() {
+        recoveryContinuation?.resume()
+        recoveryContinuation = nil
     }
 
     func resolveRecovery(
@@ -4351,6 +4431,11 @@ private actor ModelTestLibrary: SnipLibrary {
     func waitUntilFirstCommandStarts() async {
         if firstCommandStarted { return }
         await withCheckedContinuation { firstCommandStartWaiters.append($0) }
+    }
+
+    func suspendNextCommand() {
+        firstCommandStarted = false
+        suspendsFirstCommand = true
     }
 
     func resumeFirstCommand() {
@@ -4524,6 +4609,7 @@ private actor ModelTestLibrary: SnipLibrary {
             if case .set(let value) = color { lists[index].color = value }
             outcome = .none
         case .deleteList(let id):
+            if failsListDeletion { throw SnipLibraryError.snipNotFound }
             lists.removeAll { $0.id == id }
             for index in snips.indices where snips[index].listID == id {
                 snips[index].listID = SnipList.inboxID
@@ -4841,7 +4927,7 @@ final class ListSelectorGeometryTests: XCTestCase {
         let geometry = ListSelectorGeometry(widths: [80])
         XCTAssertEqual(geometry.pullProgress(at: 40), 0)
         XCTAssertLessThan(geometry.pullProgress(at: 135), 1)
-        XCTAssertEqual(geometry.pullProgress(at: 136), 1)
+        XCTAssertEqual(geometry.pullProgress(at: 160), 1)
         XCTAssertEqual(geometry.pullProgress(at: 300), 1)
         XCTAssertLessThan(geometry.resisted(112), 112)
         XCTAssertEqual(geometry.nearestIndex(to: geometry.plusCenter), 0)

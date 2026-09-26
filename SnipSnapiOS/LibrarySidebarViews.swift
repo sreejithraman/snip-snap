@@ -6,6 +6,7 @@ struct ListSidebarView: View {
     @Binding var sheet: AppSheet?
     @Binding var editMode: EditMode
     var importBackup: () -> Void = {}
+    let deleteList: (UUID) async -> Void
 
     private var selection: Binding<LibraryPage?> {
         Binding(
@@ -50,7 +51,7 @@ struct ListSidebarView: View {
                     list: list,
                     beforeDelete: model.haptics.invalidatePendingFeedback,
                     edit: { model.editListInline(id: list.id) },
-                    delete: { Task { await model.deleteList(id: list.id) } }
+                    delete: { Task { await deleteList(list.id) } }
                 )
             }
         }
@@ -65,7 +66,8 @@ struct ListSidebarView: View {
                     reviewRecoveredEdits: model.recoverySnapshot.needsAttentionCount > 0
                         ? { sheet = .recoveryCenter }
                         : nil,
-                    editSelectedList: { model.editListInline(id: model.selectedListID) }
+                    editSelectedList: { model.editListInline(id: model.selectedListID) },
+                    deleteList: deleteList
                 )
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -91,6 +93,7 @@ struct LibraryActionsMenu: View {
     var includesCloudActions = false
     var reviewRecoveredEdits: (() -> Void)?
     var editSelectedList: (() -> Void)?
+    let deleteList: (UUID) async -> Void
     @State private var confirmsDeleteList = false
 
     @ViewBuilder
@@ -107,7 +110,7 @@ struct LibraryActionsMenu: View {
             .anchorPreference(key: DevelopmentMenuBoundsKey.self, value: .bounds) { $0 }
             .accessibilityIdentifier("library-actions")
             .listDeletionConfirmation(list: model.selectedList, isPresented: $confirmsDeleteList) {
-                Task { await model.deleteList(id: model.selectedListID) }
+                Task { await deleteList(model.selectedListID) }
             }
         } else {
             standardMenu
@@ -121,7 +124,7 @@ struct LibraryActionsMenu: View {
         Menu("Library actions", systemImage: "ellipsis") { menuActions }
             .accessibilityIdentifier("library-actions")
             .listDeletionConfirmation(list: model.selectedList, isPresented: $confirmsDeleteList) {
-                Task { await model.deleteList(id: model.selectedListID) }
+                Task { await deleteList(model.selectedListID) }
             }
     }
 

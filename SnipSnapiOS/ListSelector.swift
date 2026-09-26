@@ -2,341 +2,6 @@ import SnipSnapCore
 import SwiftUI
 import UIKit
 
-/// One page coordinate drives the strip, content, and composer. A settling
-/// transition keeps its starting value so a new drag can pick up mid-animation.
-struct ListPageMotion: Equatable {
-    struct Settlement: Equatable {
-        let id = UUID()
-        let startedAt: Date
-        let duration: TimeInterval
-        let destination: CGFloat
-    }
-
-    struct Transition: Equatable {
-        let pages: [LibraryPage]
-        let source: LibraryPage
-        var position: CGFloat
-        var settlement: Settlement?
-
-        func position(at date: Date) -> CGFloat {
-            guard let settlement else { return position }
-            let elapsed = date.timeIntervalSince(settlement.startedAt)
-            let progress = min(1, max(0, elapsed / settlement.duration))
-            let eased = 1 - pow(1 - progress, 3)
-            return position + (settlement.destination - position) * eased
-        }
-    }
-
-    private struct Drag: Equatable {
-        let originCursor: CGFloat
-        let sourceIndex: Int
-        let direction: CGFloat
-        var cursor: CGFloat
-    }
-
-    private struct PageDrag: Equatable {
-        let sourceIndex: Int
-        let neighborIndex: Int
-        let originPosition: CGFloat
-        let pageWidth: CGFloat
-        let direction: CGFloat
-
-        func clampedPosition(for translation: CGSize) -> CGFloat {
-            let position = originPosition - translation.width * direction / pageWidth
-            let lowerBound = min(CGFloat(min(sourceIndex, neighborIndex)), originPosition)
-            let upperBound = max(CGFloat(max(sourceIndex, neighborIndex)), originPosition)
-            return min(
-                upperBound,
-                max(lowerBound, position)
-            )
-        }
-    }
-
-    private(set) var transition: Transition?
-    private var drag: Drag?
-    private var pageDrag: PageDrag?
-    private var expansion = ListSelectorExpansion()
-
-    var isDragging: Bool { drag != nil || pageDrag != nil }
-    var isSelectorDragging: Bool { drag != nil }
-    var dragCursor: CGFloat? { drag?.cursor }
-    var dragDistance: CGFloat { expansion.distance }
-
-    mutating func updateDrag(
-        translation: CGSize,
-        selectedPage: LibraryPage,
-        pages: [LibraryPage],
-        geometry: ListSelectorGeometry,
-        layoutDirection: LayoutDirection,
-        at date: Date
-    ) {
-        if drag == nil {
-            guard abs(translation.width) > abs(translation.height),
-                  let selected = pages.firstIndex(of: selectedPage) else { return }
-            let position = transition?.position(at: date) ?? CGFloat(selected)
-            pageDrag = nil
-            let origin = geometry.cursor(at: position)
-            drag = Drag(
-                originCursor: origin,
-                sourceIndex: selected,
-                direction: layoutDirection == .rightToLeft ? -1 : 1,
-                cursor: origin
-            )
-            transition = Transition(pages: pages, source: selectedPage, position: position)
-        }
-        guard var drag else { return }
-        drag.cursor = drag.originCursor - translation.width * drag.direction
-        self.drag = drag
-        expansion.update(distance: abs(drag.cursor - drag.originCursor))
-        transition?.position = geometry.pagePosition(at: drag.cursor)
-    }
-
-    mutating func updatePageDrag(
-        translation: CGSize,
-        selectedPage: LibraryPage,
-        pages: [LibraryPage],
-        pageWidth: CGFloat,
-        layoutDirection: LayoutDirection,
-        isStart: Bool,
-        at date: Date
-    ) {
-        guard pageWidth > 0, pages.count > 1 else { return }
-        if pageDrag == nil {
-            guard isStart, transition?.settlement == nil, drag == nil,
-                  abs(translation.width) > abs(translation.height),
-                  let source = pages.firstIndex(of: selectedPage) else { return }
-            let position = transition?.position(at: date) ?? CGFloat(source)
-            let direction: CGFloat = layoutDirection == .rightToLeft ? -1 : 1
-            let step = -translation.width * direction >= 0 ? 1 : -1
-            pageDrag = PageDrag(
-                sourceIndex: source,
-                neighborIndex: min(pages.count - 1, max(0, source + step)),
-                originPosition: position,
-                pageWidth: pageWidth,
-                direction: direction
-            )
-            transition = Transition(pages: pages, source: selectedPage, position: position)
-        }
-        guard let pageDrag else { return }
-        guard transition?.pages == pages else {
-            interrupt()
-            return
-        }
-        transition?.position = pageDrag.clampedPosition(for: translation)
-    }
-
-    mutating func releasePageDrag(
-        translation: CGSize,
-        predictedEndTranslation: CGSize,
-        reduceMotion: Bool,
-        at date: Date
-    ) -> Int? {
-        guard let pageDrag, transition != nil else { return nil }
-        self.pageDrag = nil
-        let distance = -translation.width * pageDrag.direction
-        let projectedDistance = -predictedEndTranslation.width * pageDrag.direction
-        transition?.position = pageDrag.clampedPosition(for: translation)
-        let threshold = min(72, pageDrag.pageWidth * 0.22)
-        let projectedThreshold = min(100, pageDrag.pageWidth * 0.3)
-        let direction: CGFloat = pageDrag.neighborIndex > pageDrag.sourceIndex ? 1 : -1
-        let advances = distance * direction >= threshold
-            || projectedDistance * direction >= projectedThreshold
-        let destination = advances ? pageDrag.neighborIndex : pageDrag.sourceIndex
-        settle(to: destination, reduceMotion: reduceMotion, at: date)
-        return destination
-    }
-
-    mutating func cancelPageDrag(reduceMotion: Bool, at date: Date) {
-        guard let pageDrag else { return }
-        self.pageDrag = nil
-        settle(to: pageDrag.sourceIndex, reduceMotion: reduceMotion, at: date)
-    }
-
-    enum Release: Equatable {
-        case select(Int)
-        case createList
-    }
-
-    mutating func release(
-        translation: CGSize,
-        geometry: ListSelectorGeometry,
-        reduceMotion: Bool,
-        at date: Date
-    ) -> Release? {
-        guard var drag else { return nil }
-        // Once the drag has claimed the horizontal axis, a diagonal release
-        // still ends it. Gesture-state reset handles cancellation separately.
-        drag.cursor = drag.originCursor - translation.width * drag.direction
-        transition?.position = geometry.pagePosition(at: drag.cursor)
-        self.drag = nil
-        if geometry.pullProgress(at: drag.cursor) >= 1 {
-            interrupt()
-            return .createList
-        }
-        let destination = geometry.nearestIndex(to: drag.cursor)
-        settle(to: destination, reduceMotion: reduceMotion, at: date)
-        return .select(destination)
-    }
-
-    mutating func cancelDrag(reduceMotion: Bool, at date: Date) {
-        guard let drag else { return }
-        self.drag = nil
-        settle(to: drag.sourceIndex, reduceMotion: reduceMotion, at: date)
-    }
-
-    mutating func select(
-        _ destination: Int,
-        selectedPage: LibraryPage,
-        pages: [LibraryPage],
-        reduceMotion: Bool,
-        at date: Date
-    ) {
-        guard pages.indices.contains(destination), let source = pages.firstIndex(of: selectedPage) else { return }
-        drag = nil
-        pageDrag = nil
-        if transition == nil {
-            transition = Transition(pages: pages, source: selectedPage, position: CGFloat(source))
-        }
-        settle(to: destination, reduceMotion: reduceMotion, at: date)
-    }
-
-    private mutating func settle(to destination: Int, reduceMotion: Bool, at date: Date) {
-        expansion.update(distance: nil)
-        guard var transition else { return }
-        transition.position = transition.position(at: date)
-        transition.settlement = Settlement(
-            startedAt: date,
-            duration: Self.duration(reduceMotion: reduceMotion),
-            destination: CGFloat(destination)
-        )
-        self.transition = transition
-    }
-
-    mutating func finishSettlement(_ id: UUID) {
-        guard transition?.settlement?.id == id else { return }
-        interrupt()
-    }
-
-    mutating func interrupt() {
-        expansion.update(distance: nil)
-        drag = nil
-        pageDrag = nil
-        transition = nil
-    }
-
-    static func duration(reduceMotion: Bool) -> TimeInterval { reduceMotion ? 0.12 : 0.24 }
-
-    func frame(pages: [LibraryPage], selectedPage: LibraryPage, at date: Date) -> ListPageFrame {
-        guard let transition else {
-            return ListPageFrame(
-                pages: pages,
-                position: CGFloat(pages.firstIndex(of: selectedPage) ?? 0),
-                retainedPages: [selectedPage],
-                isMoving: false
-            )
-        }
-        let position = transition.position(at: date)
-        var indices = Set([Int(floor(position)), Int(ceil(position))])
-        if let source = transition.pages.firstIndex(of: transition.source) { indices.insert(source) }
-        if let target = transition.settlement?.destination { indices.insert(Int(target)) }
-        return ListPageFrame(
-            pages: transition.pages,
-            position: position,
-            retainedPages: indices.sorted().compactMap { transition.pages.indices.contains($0) ? transition.pages[$0] : nil },
-            isMoving: true
-        )
-    }
-}
-
-struct ListPageFrame {
-    let pages: [LibraryPage]
-    let position: CGFloat
-    let retainedPages: [LibraryPage]
-    let isMoving: Bool
-
-    func offset(for page: LibraryPage, width: CGFloat, layoutDirection: LayoutDirection, reduceMotion: Bool) -> CGFloat {
-        guard !reduceMotion, let index = pages.firstIndex(of: page) else { return 0 }
-        return (CGFloat(index) - position) * width * (layoutDirection == .rightToLeft ? -1 : 1)
-    }
-
-    func opacity(for page: LibraryPage, reduceMotion: Bool) -> Double {
-        guard reduceMotion, let index = pages.firstIndex(of: page) else { return 1 }
-        return Double(max(0, 1 - abs(CGFloat(index) - position)))
-    }
-}
-
-/// Geometry stays independent of list identity: the plus is an overscroll destination,
-/// never an entry in the library or in the strip's resting layout.
-struct ListSelectorGeometry {
-    let widths: [CGFloat]
-    static let spacing: CGFloat = 8
-    static let pullThreshold: CGFloat = 96
-
-    let centers: [CGFloat]
-
-    init(widths: [CGFloat]) {
-        self.widths = widths
-        var edge: CGFloat = 0
-        centers = widths.map { width in
-            defer { edge += width + Self.spacing }
-            return edge + width / 2
-        }
-    }
-
-    var plusCenter: CGFloat {
-        (centers.last ?? 0) + (widths.last ?? 0) / 2 + 32
-    }
-
-    func pagePosition(at cursor: CGFloat) -> CGFloat {
-        guard let first = centers.first, cursor > first else { return 0 }
-        guard let upper = centers.firstIndex(where: { $0 > cursor }) else { return CGFloat(max(0, centers.count - 1)) }
-        let lower = upper - 1
-        return CGFloat(lower) + (cursor - centers[lower]) / (centers[upper] - centers[lower])
-    }
-
-    func cursor(at pagePosition: CGFloat) -> CGFloat {
-        guard !centers.isEmpty else { return 0 }
-        let position = min(CGFloat(centers.count - 1), max(0, pagePosition))
-        let lower = Int(floor(position))
-        let upper = min(lower + 1, centers.count - 1)
-        return centers[lower] + (centers[upper] - centers[lower]) * (position - CGFloat(lower))
-    }
-
-    func nearestIndex(to position: CGFloat) -> Int {
-        centers.indices.min { abs(centers[$0] - position) < abs(centers[$1] - position) } ?? 0
-    }
-
-    func lensWidth(at position: CGFloat) -> CGFloat {
-        guard let first = widths.first else { return 96 }
-        guard let upper = centers.firstIndex(where: { $0 > position }) else { return widths.last ?? first }
-        guard upper > 0 else { return first }
-        let lower = upper - 1
-        let fraction = (position - centers[lower]) / (centers[upper] - centers[lower])
-        let blend = fraction * fraction * (3 - 2 * fraction)
-        return widths[lower] + (widths[upper] - widths[lower]) * blend
-    }
-
-    func pullProgress(at position: CGFloat) -> CGFloat {
-        min(1, max(0, position - (centers.last ?? 0)) / Self.pullThreshold)
-    }
-
-    func resisted(_ position: CGFloat) -> CGFloat {
-        let first = centers.first ?? 0
-        let last = centers.last ?? 0
-        if position < first { return first + (position - first) * 0.3 }
-        if position > last { return last + (position - last) * 0.35 }
-        return position
-    }
-}
-
-struct ListSelectorExpansion: Equatable {
-    private(set) var distance: CGFloat = 0
-
-    mutating func update(distance: CGFloat?) {
-        self.distance = distance.map { max(self.distance, $0) } ?? 0
-    }
-}
-
 private enum ListSelectorItem: Identifiable {
     case clipboard
     case list(SnipList)
@@ -390,6 +55,7 @@ struct ListSelector: View {
     let controlLength: CGFloat
     @Binding var sheet: AppSheet?
     let deleteList: (UUID) async -> Void
+    let createList: (LibraryPage, [LibraryPage]) async -> Void
     var labelViewport: CGFloat? = nil
     @Binding var motion: ListPageMotion
     let pageFrame: ListPageFrame
@@ -406,9 +72,11 @@ struct ListSelector: View {
     private var items: [ListSelectorItem] { [.clipboard] + model.lists.map(ListSelectorItem.list) }
 
     private func select(_ item: ListSelectorItem, feedback: Bool = true, animates: Bool = true) {
-        guard item.page != model.selectedPage else { return }
+        guard item.page != model.selectedPage, !motion.isEnteringNewList,
+              !motion.isCreatingFromEdge else { return }
         if animates, let destination = items.firstIndex(where: { $0.id == item.id }) {
-            motion.select(destination, selectedPage: model.selectedPage, pages: items.map(\.page), reduceMotion: reduceMotion, at: Date())
+            guard motion.select(destination, selectedPage: model.selectedPage,
+                                pages: items.map(\.page), reduceMotion: reduceMotion, at: Date()) else { return }
         }
         model.selectPage(item.page)
         if feedback {
@@ -419,84 +87,15 @@ struct ListSelector: View {
     var body: some View {
         GeometryReader { proxy in
             let geometry = ListSelectorGeometry(widths: items.map { width(for: $0, in: labelViewport ?? proxy.size.width) })
-            let selected = items.firstIndex { $0.page == model.selectedPage } ?? 0
-            let origin = geometry.centers.indices.contains(selected) ? geometry.centers[selected] : 0
-            let position = motion.dragCursor ?? (motion.transition != nil ? geometry.cursor(at: pageFrame.position) : origin)
-            let progress = presentingCreation ? 1 : geometry.pullProgress(at: position)
-            let hoveringAdd = progress >= 1
-            let cursor = hoveringAdd ? geometry.plusCenter : geometry.resisted(position)
-            let nearest = geometry.nearestIndex(to: cursor)
-            let baseWidth = geometry.lensWidth(at: cursor)
-            let lensWidth = baseWidth + (height - baseWidth) * progress
-            let tint = items.indices.contains(nearest) ? items[nearest].color : Color.primary
+            let presentation = motionPresentation(in: geometry)
 
-            ZStack {
-                // Render each glass surface separately so the pill keeps its own edge.
-                GlassEffectContainer(spacing: 0) {
-                    selectionGlass(width: lensWidth, tint: tint, addProgress: progress)
-                }
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-
-                // Foreground labels need their own refraction at the glass rim.
-                labels(geometry: geometry, cursor: cursor, viewport: proxy.size.width, progress: progress)
-                    .modifier(ListLensEffect(width: lensWidth, height: height, viewport: proxy.size.width, enabled: !reduceTransparency))
-                    .mask(edgeFade)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-            }
-            .background {
-                if reduceTransparency {
-                    Capsule().fill(Color(uiColor: .systemBackground))
-                } else {
-                    GlassEffectContainer(spacing: 0) {
-                        Color.clear.glassEffect(.regular, in: Capsule())
-                    }
-                }
-            }
-            .overlay {
-                hitTargets(geometry: geometry, cursor: cursor)
-            }
-            .contentShape(Capsule())
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 8, coordinateSpace: .global)
-                    .updating($gestureIsActive) { _, state, transaction in
-                        transaction.animation = nil
-                        state = true
-                    }
-                    .onChanged { value in
-                        guard !presentingCreation, sheet == nil else { return }
-                        motion.updateDrag(
-                            translation: value.translation,
-                            selectedPage: model.selectedPage,
-                            pages: items.map(\.page),
-                            geometry: geometry,
-                            layoutDirection: layoutDirection,
-                            at: Date()
-                        )
-                    }
-                    .onEnded { value in
-                        guard !presentingCreation, sheet == nil else {
-                            motion.interrupt()
-                            return
-                        }
-                        switch motion.release(
-                            translation: value.translation,
-                            geometry: geometry,
-                            reduceMotion: reduceMotion,
-                            at: Date()
-                        ) {
-                        case .createList:
-                            beginCreation()
-                        case .select(let index):
-                            if items.indices.contains(index) { select(items[index], feedback: false, animates: false) }
-                        case nil:
-                            break
-                        }
-                    }
+            selectorSurface(
+                geometry: geometry, cursor: presentation.cursor, progress: presentation.progress,
+                hoveringAdd: presentation.hoveringAdd, lensWidth: presentation.lensWidth, tint: presentation.tint,
+                viewport: proxy.size.width
             )
-            .animation(animation, value: hoveringAdd)
-            .onChange(of: hoveringAdd ? items.count : nearest) { _, destination in
+            .simultaneousGesture(selectorDragGesture(geometry: geometry))
+            .onChange(of: presentation.hoveringAdd ? items.count : presentation.nearest) { _, destination in
                 guard motion.isSelectorDragging, !presentingCreation, sheet == nil else { return }
                 model.haptics.emit(destination == items.count ? .snap : .selection, for: model.haptics.beginInteraction())
             }
@@ -514,17 +113,21 @@ struct ListSelector: View {
         .frame(height: height + 8)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("list-selector")
-        .accessibilityAction(named: Text("New List")) { Task { await model.openNewList() } }
+        .accessibilityAction(named: Text("New List")) {
+            Task { await createList(model.selectedPage, model.pages) }
+        }
         .onChange(of: sheet) { _, destination in
             motion.interrupt()
             if destination == nil { resetCreation() }
         }
-        .onChange(of: items.map(\.page)) { _, _ in motion.interrupt() }
         .onChange(of: model.selectedListID) { _, _ in
             if presentingCreation { resetCreation() }
         }
         .onChange(of: model.selectedPage) { _, _ in
             if presentingCreation { resetCreation() }
+        }
+        .onChange(of: model.isSearchPresented) { _, isPresented in
+            if isPresented && presentingCreation { resetCreation() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
@@ -544,6 +147,144 @@ struct ListSelector: View {
                 Task { await deleteList(target.id) }
             }
         )
+    }
+
+    private struct MotionPresentation {
+        let cursor: CGFloat
+        let progress: CGFloat
+        let hoveringAdd: Bool
+        let nearest: Int
+        let lensWidth: CGFloat
+        let tint: Color
+    }
+
+    private func motionPresentation(in geometry: ListSelectorGeometry) -> MotionPresentation {
+        let selected = items.firstIndex { $0.page == model.selectedPage } ?? 0
+        let origin = geometry.centers.indices.contains(selected) ? geometry.centers[selected] : 0
+        let directPresentation = pageFrame.selectorPresentation(in: geometry, reduceMotion: reduceMotion)
+        let holdsAtAdd = motion.isCreatingFromEdge || motion.transition?.settlement?.createsList == true
+        let creationProgress = pageFrame.creationProgress(
+            dragProgress: motion.pageCreationProgress,
+            holdsAtAdd: holdsAtAdd
+        )
+        let pagePullCursor = pageFrame.selectorPullCursor(
+            in: geometry, progress: creationProgress, holdsAtAdd: holdsAtAdd
+        )
+        let position: CGFloat
+        if let dragCursor = motion.dragCursor {
+            position = dragCursor
+        } else if reduceMotion, let settlement = motion.transition?.settlement,
+                  !settlement.createsList {
+            position = geometry.cursor(at: settlement.destination)
+        } else if creationProgress > 0 {
+            position = pagePullCursor
+        } else if let directPresentation {
+            position = directPresentation.cursor
+        } else if motion.transition != nil {
+            position = geometry.cursor(at: pageFrame.position)
+        } else {
+            position = origin
+        }
+        let settlesWithoutTravel = reduceMotion && motion.transition?.settlement != nil
+            && motion.transition?.settlement?.createsList != true
+        let progress = directPresentation?.addProgress ?? (settlesWithoutTravel ? 0
+            : presentingCreation ? 1 : max(geometry.pullProgress(at: position), creationProgress))
+        let hoveringAdd = directPresentation == nil && progress >= 1
+        let resistedCursor = geometry.resisted(position)
+        let pull = min(1, max(0, (progress - 0.2) / 0.8))
+        let pullEase = pull * pull * (3 - 2 * pull)
+        let cursor = directPresentation?.cursor
+            ?? resistedCursor + (geometry.plusCenter - resistedCursor) * pullEase
+        let nearest = geometry.nearestIndex(to: cursor)
+        let baseWidth = geometry.lensWidth(at: cursor)
+        let morph = min(1, max(0, (progress - 0.3) / 0.7))
+        let morphEase = morph * morph * (3 - 2 * morph)
+        let stretch = reduceMotion ? 0 : 30 * sin(.pi * progress) * (1 - morphEase)
+        let lensWidth = baseWidth + (height - baseWidth) * morphEase + stretch
+        let tint = items.indices.contains(nearest) ? items[nearest].color : Color.primary
+
+        return MotionPresentation(
+            cursor: cursor, progress: progress, hoveringAdd: hoveringAdd,
+            nearest: nearest, lensWidth: lensWidth, tint: tint
+        )
+    }
+
+    private func selectorSurface(
+        geometry: ListSelectorGeometry, cursor: CGFloat, progress: CGFloat,
+        hoveringAdd: Bool, lensWidth: CGFloat, tint: Color, viewport: CGFloat
+    ) -> some View {
+        ZStack {
+            // Render each glass surface separately so the pill keeps its own edge.
+            GlassEffectContainer(spacing: 0) {
+                selectionGlass(width: lensWidth, tint: tint, addProgress: progress)
+                    .scaleEffect(!reduceMotion && hoveringAdd ? 1.06 : 1)
+                    .animation(animation, value: hoveringAdd)
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+
+            // Foreground labels need their own refraction at the glass rim.
+            labels(geometry: geometry, cursor: cursor, viewport: viewport, progress: progress)
+                .id(pageFrame.directEntrance == nil ? "regular-labels" : "new-list-labels")
+                .transaction { $0.animation = nil }
+                .modifier(ListLensEffect(width: lensWidth, height: height, viewport: viewport, enabled: !reduceTransparency))
+                .mask(edgeFade)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+        .background {
+            if reduceTransparency {
+                Capsule().fill(Color(uiColor: .systemBackground))
+            } else {
+                GlassEffectContainer(spacing: 0) {
+                    Color.clear.glassEffect(.regular, in: Capsule())
+                }
+            }
+        }
+        .overlay {
+            hitTargets(geometry: geometry, cursor: cursor)
+        }
+        .contentShape(Capsule())
+    }
+
+    private func selectorDragGesture(geometry: ListSelectorGeometry) -> some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .global)
+            .updating($gestureIsActive) { _, state, transaction in
+                transaction.animation = nil
+                state = true
+            }
+            .onChanged { value in
+                guard !presentingCreation, sheet == nil else { return }
+                motion.updateDrag(
+                    translation: value.translation,
+                    selectedPage: model.selectedPage,
+                    pages: items.map(\.page),
+                    geometry: geometry,
+                    layoutDirection: layoutDirection,
+                    at: Date()
+                )
+            }
+            .onEnded { value in
+                guard !presentingCreation, sheet == nil else {
+                    motion.interrupt()
+                    return
+                }
+                switch motion.release(
+                    translation: value.translation,
+                    geometry: geometry,
+                    reduceMotion: reduceMotion,
+                    at: Date()
+                ) {
+                case .createList:
+                    beginCreation()
+                case .cancelNewList:
+                    break // Only page swipes can cancel a New List editor.
+                case .select(let index):
+                    if items.indices.contains(index) { select(items[index], feedback: false, animates: false) }
+                case nil:
+                    break
+                }
+            }
     }
 
     private var edgeFade: some View {
@@ -592,15 +333,18 @@ struct ListSelector: View {
                 }
                 .font(.system(size: fontSize, weight: .semibold, design: .rounded))
                 .foregroundStyle(item.color)
+                .opacity(pageFrame.directEntrance?.destination == item.page
+                    ? Double(pageFrame.directEntrance?.selectorProgress ?? 1) : 1)
                 .padding(.horizontal, 16)
                 .frame(width: geometry.widths[index], height: height)
                 .modifier(ListLabelPosition(x: labelOffset(geometry.centers[index], cursor: cursor)))
             }
             Image(systemName: "plus")
                 .foregroundStyle(.primary)
-                .font(.system(size: fontSize, weight: .semibold, design: .rounded))
+                .font(.system(size: fontSize + (reduceMotion ? 8 : 8 * progress),
+                              weight: .semibold, design: .rounded))
                 .frame(width: height, height: height)
-                .opacity(reduceMotion ? reveal : 1)
+                .opacity(reveal)
                 .position(x: plusX(viewport: viewport, reveal: reveal), y: (height + 8) / 2)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -614,13 +358,12 @@ struct ListSelector: View {
     }
 
     private func plusX(viewport: CGFloat, reveal: CGFloat) -> CGFloat {
-        if presentingCreation || reveal >= 1 { return viewport / 2 }
         // Hover over Add when ready; reversing the pull returns it to the edge.
         let halfIcon = fontSize / 2
         let inset = viewport * edgeFadeFraction + halfIcon
-        guard !reduceMotion else { return viewport / 2 + (viewport / 2 - inset) * direction }
-        let distance = viewport / 2 + halfIcon - (inset + halfIcon) * reveal
-        return viewport / 2 + distance * direction
+        guard !reduceMotion else { return viewport / 2 }
+        let edge = viewport / 2 + (viewport / 2 - inset) * direction
+        return edge + (viewport / 2 - edge) * reveal
     }
 
     private func hitTargets(geometry: ListSelectorGeometry, cursor: CGFloat) -> some View {
@@ -630,7 +373,9 @@ struct ListSelector: View {
                 Group {
                     if selected {
                         ListActionsMenu {
-                            var actions = [UIAction(title: String(localized: "New List"), image: UIImage(systemName: "plus"), identifier: UIAction.Identifier("new-list")) { _ in Task { await model.openNewList() } }]
+                            var actions = [UIAction(title: String(localized: "New List"), image: UIImage(systemName: "plus"), identifier: UIAction.Identifier("new-list")) { _ in
+                                Task { await createList(model.selectedPage, model.pages) }
+                            }]
                             if case .list(let list) = item, list.id != SnipList.inboxID {
                                 actions.append(UIAction(title: String(localized: "Edit List…"), image: UIImage(systemName: "pencil")) { _ in model.editListInline(id: list.id) })
                                 actions.append(UIAction(title: String(localized: "Delete List"), image: UIImage(systemName: "trash"), attributes: .destructive) { _ in
@@ -653,12 +398,15 @@ struct ListSelector: View {
                 .accessibilityHint(selected ? Text("List actions") : Text("Switch list"))
                 .accessibilityAddTraits(selected ? .isSelected : [])
                 .accessibilityIdentifier(item.id)
-                .accessibilityAction(named: Text("New List")) { Task { await model.openNewList() } }
+                .accessibilityAction(named: Text("New List")) {
+                    Task { await createList(model.selectedPage, model.pages) }
+                }
                 .accessibilityAdjustableAction { adjustment in
                     adjustItem(item.id, direction: adjustment)
                 }
                 .offset(x: labelOffset(geometry.centers[index], cursor: cursor))
-                .disabled(presentingCreation || motion.isDragging)
+                .disabled(presentingCreation || motion.isDragging || motion.isEnteringNewList
+                          || motion.isCreatingFromEdge)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -678,16 +426,33 @@ struct ListSelector: View {
     }
 
     private func beginCreation() {
-        guard !presentingCreation, sheet == nil else { return }
+        guard !presentingCreation, sheet == nil, !model.isSearchPresented else { return }
+        let sourcePage = model.selectedPage
+        let sourcePages = model.pages
+        if model.newListID != nil {
+            Task {
+                guard !model.isSearchPresented, sheet == nil,
+                      model.selectedPage == sourcePage else {
+                    motion.interrupt()
+                    return
+                }
+                await createList(sourcePage, sourcePages)
+            }
+            return
+        }
         let request = UUID()
         creationRequest = request
         withAnimation(animation, completionCriteria: .logicallyComplete) {
             presentingCreation = true
         } completion: {
-            guard presentingCreation, creationRequest == request, sheet == nil else { return }
+            guard presentingCreation, creationRequest == request,
+                  model.selectedPage == sourcePage,
+                  sheet == nil, !model.isSearchPresented else { return }
             Task {
-                guard presentingCreation, creationRequest == request, sheet == nil else { return }
-                await model.openNewList()
+                guard presentingCreation, creationRequest == request,
+                      model.selectedPage == sourcePage,
+                      sheet == nil, !model.isSearchPresented else { return }
+                await createList(sourcePage, sourcePages)
                 resetCreation()
             }
         }

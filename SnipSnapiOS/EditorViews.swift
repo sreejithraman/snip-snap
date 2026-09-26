@@ -313,6 +313,7 @@ struct ListEditorRecession: ViewModifier {
 struct InlineListEditor: View {
     let model: IOSAppModel
     let list: SnipList
+    let cancelNewList: (UUID) async -> Bool
     @Bindable private var draft: InlineListDraft
     @State private var showsIcons = false
     @State private var contentHeight: CGFloat?
@@ -321,19 +322,25 @@ struct InlineListEditor: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
 
-    init(model: IOSAppModel, list: SnipList) {
+    init(model: IOSAppModel, list: SnipList, cancelNewList: @escaping (UUID) async -> Bool) {
         self.model = model
         self.list = list
+        self.cancelNewList = cancelNewList
         draft = model.listDraft(for: list)
     }
 
     var body: some View {
-        ScrollView {
-            editorContent
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+        VStack(spacing: 0) {
+            ScrollView {
+                editorContent
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(maxHeight: contentHeight, alignment: .top)
+
+            editorFooter
         }
-        .scrollBounceBehavior(.basedOnSize)
-        .frame(maxHeight: contentHeight, alignment: .top)
+        .disabled(draft.isSaving)
         .background {
             let shape = RoundedRectangle(cornerRadius: 28, style: .continuous)
             if reduceTransparency || contrast == .increased {
@@ -346,7 +353,7 @@ struct InlineListEditor: View {
                 }
             }
         }
-        .padding(.horizontal, SnipSnapSpacing.paneContentInset)
+        .padding(.horizontal, SnipSnapSpacing.relatedContent)
         .padding(.top, SnipSnapSpacing.relatedContent)
         .padding(.bottom, SnipSnapSpacing.relatedContent)
         .task { isNameFocused = model.newListID == list.id && !model.isSearchPresented }
@@ -390,20 +397,8 @@ struct InlineListEditor: View {
                     .accessibilityLabel("List name")
                     .accessibilityIdentifier("list-name")
 
-                Button {
-                    Task { await save() }
-                } label: {
-                    Image(systemName: "checkmark")
-                        .font(.body.weight(.semibold))
-                        .frame(width: 44, height: 44)
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .accessibilityLabel("Done")
-                .accessibilityIdentifier("save-list")
             }
-            SnipListColorPicker(selection: $draft.color)
-                .padding(.top, SnipSnapSpacing.relatedContent)
+            SnipListColorPicker(selection: $draft.color, usesWideGrid: true, showsTitle: false)
                 .onChange(of: draft.color) { isNameFocused = false }
             if showsIcons {
                 InlineListIconPicker(selection: $draft.systemImage)
@@ -411,8 +406,56 @@ struct InlineListEditor: View {
                     .transition(.opacity)
             }
         }
-        .disabled(draft.isSaving)
         .padding(SnipSnapSpacing.paneContentInset)
+    }
+
+    private var editorFooter: some View {
+        Group {
+            if model.newListID == list.id {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: SnipSnapSpacing.paneContentInset) {
+                        cancelButton
+                        primaryButton(fullWidth: false)
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+
+                    VStack(spacing: SnipSnapSpacing.relatedContent) {
+                        primaryButton(fullWidth: true)
+                        cancelButton
+                    }
+                }
+            } else {
+                primaryButton(fullWidth: false)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.horizontal, SnipSnapSpacing.paneContentInset)
+        .padding(.top, SnipSnapSpacing.relatedContent)
+        .padding(.bottom, SnipSnapSpacing.paneContentInset)
+    }
+
+    private var cancelButton: some View {
+        Button(role: .cancel) {
+            Task { await cancelNewList() }
+        } label: {
+            Text("Cancel")
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .accessibilityIdentifier("cancel-new-list")
+    }
+
+    private func primaryButton(fullWidth: Bool) -> some View {
+        AppPrimaryActionButton {
+            Task { await save() }
+        } label: {
+            Text(model.newListID == list.id ? "Create" : "Save")
+                .font(.subheadline.weight(.semibold))
+                .frame(minWidth: 56, maxWidth: fullWidth ? .infinity : nil, minHeight: 30)
+        }
+        .accessibilityIdentifier("save-list")
     }
 
     private func save() async {
@@ -431,4 +474,16 @@ struct InlineListEditor: View {
             model.finishListEditing(id: list.id)
         }
     }
+
+    private func cancelNewList() async {
+        guard !draft.isSaving else { return }
+        draft.isCancelling = true
+        draft.isSaving = true
+        let cancelled = await cancelNewList(list.id)
+        if !cancelled {
+            draft.isSaving = false
+            draft.isCancelling = false
+        }
+    }
+
 }
