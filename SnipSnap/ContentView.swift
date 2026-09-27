@@ -110,7 +110,7 @@ struct ContentView: View {
             if isPresented { presentStandaloneFileImporter() }
         }
         .onReceive(fileDropController.fileDrops) { urls in
-            guard model.editingID == nil else { return }
+            guard !panelDialogs.isPresented, model.editingID == nil else { return }
             _ = attachDroppedFiles(urls)
         }
     }
@@ -452,7 +452,8 @@ struct ContentView: View {
     }
 
     private var acceptsFileDrops: Bool {
-        model.editingID != nil || (!model.isSearchExpanded && !model.isShowingClipboard)
+        !panelDialogs.isPresented
+            && (model.editingID != nil || (!model.isSearchExpanded && !model.isShowingClipboard))
     }
 
     private var hasCommandNumberFocus: Bool {
@@ -595,6 +596,7 @@ struct ContentView: View {
             ownsSharedEvents: ownsSharedEvents,
             dragSessionController: dragSessionController,
             fileDropController: fileDropController,
+            panelDialogs: panelDialogs,
             commandNumberPicker: commandNumberPicker,
             focusedTarget: $focusedTarget,
             moveSelectionToNewList: { ids in

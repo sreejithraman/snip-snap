@@ -1,6 +1,7 @@
 # Button and modal surface conventions
 
 Date: September 19, 2026
+Updated: September 27, 2026. [ADR 0030](adr/0030-keep-dialog-dimming-inside-the-floating-panel.md) governs Mac dialog presentation.
 
 This note checks Apple guidance and source code from Firefox for iOS, Ice Cubes,
 Maccy, and AltTab. Links to open-source code use fixed commits, so the cited
@@ -11,18 +12,18 @@ lines will not move.
 Snip Snap should share button *intent* across both apps, then let each platform
 draw that intent. It should not share raw fills or label colors.
 
-The Mac edit-list view uses a standard sheet on the clear floating panel. A Mac
-sheet dims its parent window, including the clear effect gutter. That rectangle
-is expected. The native parent relationship and motion are more important than
-keeping the gutter completely clear during a modal task.
+Native sheets dim the clear effect gutter as a rectangle on the Mac floating
+panel. App-owned dialogs now use a borderless child window and fade the parent
+window's content and shadows together. Native file pickers open beside the
+panel in the selected app appearance.
 
 For the current case:
 
-- Use a compact native sheet for list editing and other panel-owned forms.
-- Show short choices such as delete and discard in the same sheet host. Native
+- Use a compact child window for list editing and other panel-owned forms.
+- Show short choices such as delete and discard in the same dialog host. Native
   alerts presented from that host remain nested under the form task.
-- Attach open and save panels with `beginSheetModal(for:)` so file workflows
-  preserve the same parent relationship.
+- Open and save with standalone system panels positioned beside the parent when
+  screen space permits. Keep the parent dimmed and unavailable while they run.
 
 ## Button rules
 
@@ -45,8 +46,11 @@ The color rule is simple:
 3. Its paired label token keeps contrast stable in light and dark modes.
 4. The native button style owns the pressed state, edge, and disabled state.
 
-Do not set a prominent button's label to a fixed black, white, background, or
-`primary` color. Use the light-and-dark action label paired with the action fill.
+Use the light-and-dark action label paired with the action fill while a prominent
+button is enabled and its Mac window is key. In an inactive Mac window, use the
+semantic `primary` label so it follows the native button fill; when disabled,
+let the native style lower its contrast. Do not set a fixed black, white, or
+background label color.
 Do not use `Color.primary` for the button tint. `Color.primary` describes text
 against the current background, so it becomes black in a light appearance and
 white in a dark one. It does not describe an action fill.
@@ -84,7 +88,7 @@ Apple's current rules support this split:
 
 Apple treats Liquid Glass as a control and navigation layer, not a general fill.
 Standard SwiftUI controls already use the new material. Custom glass should be
-rare. Snip Snap's compact app-owned Mac sheet is the deliberate exception: its
+rare. Snip Snap's compact app-owned Mac dialog is the deliberate exception: its
 single rounded surface visually relates the modal card to the floating panel.
 
 - Use tint to call out a main action. Do not tint every action.
@@ -145,8 +149,8 @@ see
 [`beginSheet(_:completionHandler:)`](https://developer.apple.com/documentation/appkit/nswindow/beginsheet(_:completionhandler:)).
 
 Snip Snap's parent panel sets `isOpaque = false` and `backgroundColor = .clear`.
-The visible panel is a rounded surface inside that clear window. The screenshot
-shows the system dim layer across the parent window's full bounds, including the
+The visible panel is a rounded surface inside that clear window. The earlier sheet screenshot
+showed the system dim layer across the parent window's full bounds, including the
 clear area. The square is therefore the window that hosts the sheet. This cause
 is an inference from Apple's sheet rule, the panel setup, and the screenshot.
 
@@ -201,9 +205,9 @@ tasks. They show longer tasks in a normal window.
    disabled states.
 4. Give Mac confirm and cancel actions `.defaultAction` and `.cancelAction`.
    Use semantic toolbar placements when they sit in a sheet or editor toolbar.
-5. Attach every Mac root-panel dialog and file panel to the clear panel as a
-   native sheet. Keep app-owned sheet surfaces compact and reuse the shared
-   nested-glass treatment.
+5. Show Mac root-panel dialogs in a compact child window and file panels beside
+   the clear panel. Fade the parent window and block its input while either is
+   open, as described in [ADR 0030](adr/0030-keep-dialog-dimming-inside-the-floating-panel.md).
 6. Test light, dark, Increase Contrast, Reduce Transparency, enabled, disabled,
    hover, press, Return, Escape, and VoiceOver on both platforms.
 

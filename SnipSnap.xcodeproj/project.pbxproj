@@ -21,6 +21,7 @@
 		10000000000000000000000A /* ShortcutSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000012 /* ShortcutSettingsView.swift */; };
 		10000000000000000000000B /* SnipSnapPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000013 /* SnipSnapPanel.swift */; };
 		10000000000000000000000C /* AppCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000014 /* AppCoordinator.swift */; };
+		E40000000000000000000001 /* PanelDialogPresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E40000000000000000000002 /* PanelDialogPresenter.swift */; };
 		10000000000000000000000D /* CaptureHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000015 /* CaptureHUD.swift */; };
 		10000000000000000000000E /* SnipCardRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000016 /* SnipCardRow.swift */; };
 		100000000000000000000011 /* SnipListModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000019 /* SnipListModels.swift */; };
@@ -215,6 +216,7 @@
 		200000000000000000000012 /* ShortcutSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutSettingsView.swift; sourceTree = "<group>"; };
 		200000000000000000000013 /* SnipSnapPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipSnapPanel.swift; sourceTree = "<group>"; };
 		200000000000000000000014 /* AppCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoordinator.swift; sourceTree = "<group>"; };
+		E40000000000000000000002 /* PanelDialogPresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelDialogPresenter.swift; sourceTree = "<group>"; };
 		200000000000000000000015 /* CaptureHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureHUD.swift; sourceTree = "<group>"; };
 		200000000000000000000016 /* SnipCardRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipCardRow.swift; sourceTree = "<group>"; };
 		200000000000000000000019 /* SnipListModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListModels.swift; sourceTree = "<group>"; };
@@ -428,6 +430,7 @@
 				200000000000000000000022 /* SelectionCaptureSnapshotReader.swift */,
 				20000000000000000000001B /* PasteboardSnapshotStore.swift */,
 				200000000000000000000014 /* AppCoordinator.swift */,
+				E40000000000000000000002 /* PanelDialogPresenter.swift */,
 				B20000000000000000000001 /* AccessibilityPermissionController.swift */,
 				200000000000000000000015 /* CaptureHUD.swift */,
 				200000000000000000000011 /* ShortcutModel.swift */,
@@ -883,6 +886,7 @@
 				10000000000000000000001A /* SelectionCaptureSnapshotReader.swift in Sources */,
 				100000000000000000000013 /* PasteboardSnapshotStore.swift in Sources */,
 				10000000000000000000000C /* AppCoordinator.swift in Sources */,
+				E40000000000000000000001 /* PanelDialogPresenter.swift in Sources */,
 				B10000000000000000000001 /* AccessibilityPermissionController.swift in Sources */,
 				10000000000000000000000D /* CaptureHUD.swift in Sources */,
 				100000000000000000000009 /* ShortcutModel.swift in Sources */,

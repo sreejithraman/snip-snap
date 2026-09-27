@@ -1,5 +1,7 @@
 # 0008: Use native adaptive panel chrome
 
+The dialog presentation and sheet-dimmer clauses below are replaced by [ADR 0030](0030-keep-dialog-dimming-inside-the-floating-panel.md).
+
 ## Context
 
 Snip Snap floats over other apps, so its chrome must remain clear over backgrounds it does not control. Fixed white or black fills, custom blur plates, and outer glow layers fought macOS appearance and accessibility settings. Several one-off glass recipes also made similar controls look unrelated.

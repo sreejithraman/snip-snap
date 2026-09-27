@@ -28,6 +28,7 @@ struct SnipListView: View {
     let ownsSharedEvents: Bool
     let dragSessionController: PanelDragSessionController
     let fileDropController: PanelFileDropController
+    @ObservedObject var panelDialogs: PanelDialogPresentationState
     @ObservedObject var commandNumberPicker: CommandNumberPicker
     @FocusState.Binding var focusedTarget: PanelFocusTarget?
     let moveSelectionToNewList: (Set<UUID>) -> Void
@@ -254,7 +255,7 @@ struct SnipListView: View {
             )
         }
         .onReceive(fileDropController.fileDrops) { urls in
-            guard ownsSharedEvents else { return }
+            guard ownsSharedEvents, !panelDialogs.isPresented else { return }
             guard let editingID = model.editingID else { return }
             addEditAttachments(urls, to: editingID)
         }

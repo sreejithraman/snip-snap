@@ -58,6 +58,10 @@ enum AppPrimaryActionPresentation {
 }
 
 struct AppPrimaryActionButton<Label: View>: View {
+#if os(macOS)
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.controlActiveState) private var controlActiveState
+#endif
     var presentation: AppPrimaryActionPresentation = .content
     let action: () -> Void
     @ViewBuilder let label: () -> Label
@@ -88,7 +92,16 @@ struct AppPrimaryActionButton<Label: View>: View {
         }
         .buttonStyle(.borderedProminent)
         .tint(SnipSnapTheme.actionAccent)
-        .foregroundStyle(SnipSnapTheme.actionLabel)
+        .foregroundStyle(contentLabelColor)
+    }
+
+    private var contentLabelColor: Color {
+#if os(macOS)
+        isEnabled && controlActiveState == .key
+            ? SnipSnapTheme.actionLabel : .primary
+#else
+        SnipSnapTheme.actionLabel
+#endif
     }
 }
 

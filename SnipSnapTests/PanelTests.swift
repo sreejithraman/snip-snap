@@ -1957,6 +1957,22 @@ final class PanelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testSnipSnapPanelKeepsModalWindowEligibleForKeyboardFocus() {
+        let panel = SnipSnapPanel.make(
+            contentViewController: NSViewController(),
+            frameAutosaveName: nil
+        )
+        let dialog = NSWindow()
+
+        panel.setPresentedModalWindow(dialog)
+        XCTAssertFalse(panel.canBecomeKey)
+        XCTAssertTrue(dialog.canBecomeKey)
+
+        panel.setPresentedModalWindow(nil)
+        XCTAssertTrue(panel.canBecomeKey)
+    }
+
+    @MainActor
     func testSnipSnapPanelRestoresItsSavedSizeAndPosition() {
         let autosaveName = NSWindow.FrameAutosaveName("PanelTests-\(UUID().uuidString)")
         defer { NSWindow.removeFrame(usingName: autosaveName) }
