@@ -153,13 +153,10 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     let cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private var cloudAccountObserver: NSObjectProtocol?
     private var agentImportObserver: NSObjectProtocol?
-    private var cliRequestObserver: NSObjectProtocol?
     private var automaticSyncTask: Task<Void, Never>?
-    private var cliCleanupTask: Task<Void, Never>?
     private var mainPanel: SnipSnapPanel?
     private var isFlushingBeforeTermination = false
     private let agentImports: AgentImportStore
-    private let cliRequests: SnipCLIRequestStore
     private var agentListCatalogSubscription: AnyCancellable?
 
     override init() {
@@ -174,9 +171,6 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let syncModeRootURL = LocalSnipStorePaths(storeURL: libraryStoreURL).rootDirectory
             .appendingPathComponent("SyncMode", isDirectory: true)
         agentImports = AgentImportStore(
-            rootURL: LocalSnipStorePaths(storeURL: libraryStoreURL).rootDirectory
-        )
-        cliRequests = SnipCLIRequestStore(
             rootURL: LocalSnipStorePaths(storeURL: libraryStoreURL).rootDirectory
         )
 #if DEBUG
@@ -466,23 +460,6 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 await self?.importPendingAgentRequests()
             }
         }
-        cliRequestObserver = DistributedNotificationCenter.default().addObserver(
-            forName: SnipCLIRequestStore.pendingNotificationName,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                await self?.processPendingCLIRequests()
-            }
-        }
-        Task { try? await cliRequests.pruneAbandoned() }
-        cliCleanupTask = Task { [cliRequests] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(300))
-                guard !Task.isCancelled else { return }
-                try? await cliRequests.pruneAbandoned()
-            }
-        }
         if !panel.restoredSavedFrame {
             panel.center()
         }
@@ -507,13 +484,6 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         guard await agentImports.pendingImportCount() > 0 else { return }
         _ = await agentImports.importPending { [model] request in
             try await model.importAgentRequest(request)
-        }
-    }
-
-    private func processPendingCLIRequests() async {
-        guard !isFlushingBeforeTermination else { return }
-        await cliRequests.processPending { [model] request in
-            try await model.handleCLIRequest(request)
         }
     }
 
@@ -591,8 +561,6 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         }
         automaticSyncTask?.cancel()
         automaticSyncTask = nil
-        cliCleanupTask?.cancel()
-        cliCleanupTask = nil
         coordinator.savePanelWindowFrame(using: AppWindowDefaults.frameAutosaveName)
         Task { @MainActor [model] in
             model.flushComposerDrafts()
