@@ -2,6 +2,24 @@ import SnipSnapCore
 import SwiftUI
 import UIKit
 
+enum ListEdgeCueLayout {
+    enum Kind { case add, cancel }
+
+    static func stretch(progress: CGFloat) -> CGFloat {
+        32 * sin(.pi * progress)
+    }
+
+    static func centerX(
+        for kind: Kind, in width: CGFloat, progress: CGFloat,
+        layoutDirection: LayoutDirection
+    ) -> CGFloat {
+        let atLeadingEdge = kind == .cancel
+        let edgeInset = ListAddCueLayout.edgeInset + stretch(progress: progress) / 2
+        let inset = -edgeInset
+        return (layoutDirection == .rightToLeft) == atLeadingEdge ? width - inset : inset
+    }
+}
+
 struct CompactLibraryPageStack: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.layoutDirection) private var layoutDirection
@@ -26,17 +44,26 @@ struct CompactLibraryPageStack: View {
                 dragProgress: motion.pageCreationProgress,
                 holdsAtAdd: motion.isCreatingFromEdge || motion.transition?.settlement?.createsList == true
             )
+            let lastPageOffset = frame.pages.last.map {
+                frame.offset(for: $0, width: proxy.size.width,
+                             layoutDirection: layoutDirection, reduceMotion: reduceMotion)
+            } ?? 0
+            let cancelSource = frame.directEntrance?.source ?? frame.pages.last
+            let cancelSourceOffset = cancelSource.map {
+                frame.offset(for: $0, width: proxy.size.width,
+                             layoutDirection: layoutDirection, reduceMotion: reduceMotion)
+            } ?? 0
             ZStack {
-                if creationCueProgress > 0,
-                   (frame.directEntrance?.showsAddCue == true
-                    || frame.pages.last.map({ frame.weight(for: $0) > 0.95 }) == true) {
-                    edgeCue(systemImage: "plus", progress: creationCueProgress, atLeadingEdge: false)
+                // The incoming page covers this space during a direct entrance.
+                if !reduceMotion, creationCueProgress > 0, frame.directEntrance == nil {
+                    edgeCue(kind: .add, progress: creationCueProgress)
                         .frame(width: proxy.size.width, height: proxy.size.height)
-                        .zIndex(1)
+                        .offset(x: lastPageOffset)
                 }
-                if frame.edgeCancelProgress > 0 {
-                    edgeCue(systemImage: "xmark", progress: frame.edgeCancelProgress, atLeadingEdge: true)
+                if !reduceMotion, frame.edgeCancelProgress > 0 {
+                    edgeCue(kind: .cancel, progress: frame.edgeCancelProgress)
                         .frame(width: proxy.size.width, height: proxy.size.height)
+                        .offset(x: cancelSourceOffset)
                         .zIndex(1)
                 }
                 ForEach(frame.retainedPages, id: \.self) { page in
@@ -49,6 +76,7 @@ struct CompactLibraryPageStack: View {
                         .accessibilityHidden(page != model.selectedPage)
                         .disabled(frame.isMoving || page != model.selectedPage)
                         .allowsHitTesting(!frame.isMoving && page == model.selectedPage)
+                        .zIndex(!reduceMotion && frame.edgeCancelProgress > 0 && page == cancelSource ? 2 : 0)
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
@@ -70,22 +98,23 @@ struct CompactLibraryPageStack: View {
         }
     }
 
-    private func edgeCue(systemImage: String, progress: CGFloat, atLeadingEdge: Bool) -> some View {
-        let stretch = reduceMotion ? 0 : 32 * sin(.pi * progress)
-        let edgeInset = 42 + stretch / 2
+    private func edgeCue(kind: ListEdgeCueLayout.Kind, progress: CGFloat) -> some View {
+        let stretch = ListEdgeCueLayout.stretch(progress: progress)
         let armed = progress >= 1
         return GeometryReader { proxy in
-            Image(systemName: systemImage)
+            Image(systemName: kind == .add ? "plus" : "xmark")
                 .font(.system(size: 30, weight: .semibold))
-                .frame(width: 56 + stretch, height: 56)
+                .frame(width: ListAddCueLayout.diameter + stretch, height: ListAddCueLayout.diameter)
                 .background(Color.primary.opacity(0.10), in: Capsule())
                 .overlay { Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5) }
-                .scaleEffect(reduceMotion ? 1 : armed ? 1.06 : 1)
-                .animation(reduceMotion ? nil : .spring(duration: 0.24, bounce: 0.22), value: armed)
+                .scaleEffect(armed ? ListAddCueLayout.armedScale : 1)
+                .animation(.spring(duration: 0.24, bounce: 0.22), value: armed)
                 .opacity(Double(min(1, progress * 1.5)))
                 .position(
-                    x: (layoutDirection == .rightToLeft) == atLeadingEdge
-                        ? proxy.size.width - edgeInset : edgeInset,
+                    x: ListEdgeCueLayout.centerX(
+                        for: kind, in: proxy.size.width, progress: progress,
+                        layoutDirection: layoutDirection
+                    ),
                     y: proxy.size.height / 2
                 )
         }
@@ -229,14 +258,14 @@ struct CompactLibraryPageStack: View {
 
     private func newListSwipeBackTarget(for direction: ListPagePanDirection) -> LibraryPage? {
         let backDirection: ListPagePanDirection = layoutDirection == .rightToLeft ? .left : .right
+        let destination = model.newListCancellationPage
         guard direction == backDirection,
               let id = model.newListID,
               model.editingListID == id,
               !model.isListDraftSaving(id: id),
               model.selectedPage == .list(id),
-              let origin = model.newListOriginPage,
-              origin != .list(id), model.pages.contains(origin) else { return nil }
-        return origin
+              destination != .list(id), model.pages.contains(destination) else { return nil }
+        return destination
     }
 
     private func canPanPage(direction: ListPagePanDirection) -> Bool {

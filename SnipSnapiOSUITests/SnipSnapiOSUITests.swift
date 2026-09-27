@@ -190,7 +190,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Inbox"].exists)
         XCTAssertFalse(app.textFields["list-name"].exists)
 
-        edge.press(forDuration: 0.05, thenDragTo: edge.withOffset(CGVector(dx: -230, dy: 0)),
+        edge.press(forDuration: 0.05, thenDragTo: edge.withOffset(CGVector(dx: -250, dy: 0)),
                    withVelocity: .slow, thenHoldForDuration: 0.6)
         XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 4))
         XCTAssertTrue(compactListTab(named: "New List", in: app).isSelected)
@@ -206,7 +206,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         let app = launchApp()
         try requireCompactSelector(in: app)
         let edge = app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.55))
-        edge.press(forDuration: 0.05, thenDragTo: edge.withOffset(CGVector(dx: -230, dy: 0)),
+        edge.press(forDuration: 0.05, thenDragTo: edge.withOffset(CGVector(dx: -250, dy: 0)),
                    withVelocity: .slow, thenHoldForDuration: 0.6)
         XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 4))
 
@@ -1330,7 +1330,7 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         edge.press(
             forDuration: 0.05,
-            thenDragTo: edge.withOffset(CGVector(dx: -145, dy: 0)),
+            thenDragTo: edge.withOffset(CGVector(dx: -175, dy: 0)),
             withVelocity: XCUIGestureVelocity(rawValue: 40),
             thenHoldForDuration: 1
         )
@@ -1361,10 +1361,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
 
         let edge = app.descendants(matching: .any)["list-selector"]
-            .coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5))
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.99, dy: 0.5))
         edge.press(
             forDuration: 0.05,
-            thenDragTo: edge.withOffset(CGVector(dx: -265, dy: 0)),
+            thenDragTo: edge.withOffset(CGVector(dx: -min(300, edge.screenPoint.x - 4), dy: 0)),
             withVelocity: XCUIGestureVelocity(rawValue: 40),
             thenHoldForDuration: 0.8
         )
@@ -1471,7 +1471,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.55))
         start.press(
             forDuration: 0.05,
-            thenDragTo: start.withOffset(CGVector(dx: -200, dy: 0)),
+            thenDragTo: start.withOffset(CGVector(dx: -240, dy: 0)),
             withVelocity: XCUIGestureVelocity(rawValue: 40),
             thenHoldForDuration: 0.4
         )

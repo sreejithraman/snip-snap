@@ -123,6 +123,25 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertNil(model.editingListID)
     }
 
+    func testCancelNewListFallsBackToInboxWhenItsOriginWasDeleted() async throws {
+        let model = makeModel(library: ModelTestLibrary())
+        await model.load()
+        let created = await model.createList(name: "Work")
+        XCTAssertTrue(created)
+        let workID = model.selectedListID
+        await model.openNewList()
+        let newListID = try XCTUnwrap(model.newListID)
+        XCTAssertEqual(model.newListOriginPage, .list(workID))
+
+        let deletedOrigin = await model.deleteList(id: workID)
+        XCTAssertTrue(deletedOrigin)
+        XCTAssertEqual(model.newListCancellationPage, .list(SnipList.inboxID))
+        let cancelled = await model.cancelNewList(id: newListID)
+        XCTAssertTrue(cancelled)
+        XCTAssertEqual(model.selectedPage, .list(SnipList.inboxID))
+        XCTAssertNil(model.newListID)
+    }
+
     func testNewListCannotBeSwipeCancelledWhileCreateIsSaving() async {
         let model = makeModel(library: ModelTestLibrary())
         await model.load()
@@ -4927,7 +4946,7 @@ final class ListSelectorGeometryTests: XCTestCase {
         let geometry = ListSelectorGeometry(widths: [80])
         XCTAssertEqual(geometry.pullProgress(at: 40), 0)
         XCTAssertLessThan(geometry.pullProgress(at: 135), 1)
-        XCTAssertEqual(geometry.pullProgress(at: 160), 1)
+        XCTAssertEqual(geometry.pullProgress(at: 190), 1)
         XCTAssertEqual(geometry.pullProgress(at: 300), 1)
         XCTAssertLessThan(geometry.resisted(112), 112)
         XCTAssertEqual(geometry.nearestIndex(to: geometry.plusCenter), 0)

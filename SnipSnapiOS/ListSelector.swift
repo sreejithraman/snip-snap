@@ -53,6 +53,7 @@ struct ListSelector: View {
 
     let model: IOSAppModel
     let controlLength: CGFloat
+    let pageWidth: CGFloat
     @Binding var sheet: AppSheet?
     let deleteList: (UUID) async -> Void
     let createList: (LibraryPage, [LibraryPage]) async -> Void
@@ -260,6 +261,7 @@ struct ListSelector: View {
                     selectedPage: model.selectedPage,
                     pages: items.map(\.page),
                     geometry: geometry,
+                    pageWidth: pageWidth,
                     layoutDirection: layoutDirection,
                     at: Date()
                 )
@@ -325,6 +327,7 @@ struct ListSelector: View {
 
     private func labels(geometry: ListSelectorGeometry, cursor: CGFloat, viewport: CGFloat, progress: CGFloat) -> some View {
         let reveal = plusReveal(progress: progress)
+        let trailingLabelOpacity = 1 - min(1, reveal * 2)
         return ZStack {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 HStack(spacing: 8) {
@@ -333,8 +336,9 @@ struct ListSelector: View {
                 }
                 .font(.system(size: fontSize, weight: .semibold, design: .rounded))
                 .foregroundStyle(item.color)
-                .opacity(pageFrame.directEntrance?.destination == item.page
+                .opacity((pageFrame.directEntrance?.destination == item.page
                     ? Double(pageFrame.directEntrance?.selectorProgress ?? 1) : 1)
+                    * (index == items.count - 1 ? Double(trailingLabelOpacity) : 1))
                 .padding(.horizontal, 16)
                 .frame(width: geometry.widths[index], height: height)
                 .modifier(ListLabelPosition(x: labelOffset(geometry.centers[index], cursor: cursor)))
