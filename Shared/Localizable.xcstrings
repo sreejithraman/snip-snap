@@ -25,6 +25,7 @@
     "Agent, %@" : {},
     "The pending agent snip request is invalid." : {},
     "The request UUID is already being used for different snip content, context, or a different list." : {},
+    "This request ID belongs to a different Snip Snap command." : {},
     "Adding files…" : {},
     "Can’t read an attachment. Retry sync. If it still fails, contact support." : {},
     "Attachment unavailable" : {},

@@ -9,6 +9,11 @@ enum SnipSnapCLIError: Error, Equatable, CustomStringConvertible {
   case listNotFound(String)
   case invalidRequestID(String)
   case importFailed(String)
+  case appUnavailable
+  case commandInProgress(UUID)
+  case outcomeUnknown(UUID)
+  case requestNotFound
+  case requestFailed(UUID, String)
 
   var description: String {
     switch self {
@@ -17,6 +22,23 @@ enum SnipSnapCLIError: Error, Equatable, CustomStringConvertible {
     case .listNotFound(let value): "No list named or identified by '\(value)' exists."
     case .invalidRequestID(let value): "'\(value)' is not a valid request UUID."
     case .importFailed(let message): message
+    case .appUnavailable:
+      "Snip Snap did not process the request in time. Check that it is open, then retry. No command was queued."
+    case .commandInProgress(let id):
+      "The app is still processing request \(id). Check 'snipsnap status \(id)'."
+    case .outcomeUnknown(let id):
+      "The outcome of request \(id) is unknown. Inspect the snip or list before retrying."
+    case .requestNotFound: "No request with that UUID exists."
+    case .requestFailed(let id, let message):
+      "Request \(id.uuidString): \(message) Check 'snipsnap status \(id.uuidString)' before retrying if the outcome is unclear."
+    }
+  }
+
+  var isUsageError: Bool {
+    switch self {
+    case .usage, .missingContent, .invalidRequestID: true
+    case .listNotFound, .importFailed, .appUnavailable, .commandInProgress, .outcomeUnknown,
+         .requestNotFound, .requestFailed: false
     }
   }
 }
@@ -35,6 +57,8 @@ struct SnipSnapAddOptions: Equatable {
 enum SnipSnapCLICommand: Equatable {
   case help
   case add(SnipSnapAddOptions)
+  case request(SnipCLIOptions)
+  case status(id: UUID, json: Bool)
 }
 
 enum SnipSnapCLIParser {
@@ -42,18 +66,28 @@ enum SnipSnapCLIParser {
     Usage:
       snipsnap add [--list NAME|UUID] [--session-title TITLE] [--branch NAME]
         [--request-id UUID] [--json] [TEXT...]
+      snipsnap list [--list NAME|UUID] [--json]
+      snipsnap show UUID [--json]
+      snipsnap update UUID --if-updated-at SECONDS [TEXT...] [--json]
+      snipsnap delete UUID --if-snip-revision TOKEN --yes [--json]
+      snipsnap lists [list|show NAME|UUID|create NAME]
+      snipsnap lists rename UUID NAME --if-list-revision TOKEN
+      snipsnap lists delete UUID --if-list-revision TOKEN --yes
+      snipsnap status REQUEST_UUID [--json]
 
-    Add a saved snip marked as Agent. When TEXT is omitted or is '-', read it
-    from standard input. The UI shows the session title, or the current Git
-    branch when no title is provided. Reuse the same request ID when retrying.
+    Add marks a snip as Agent. Add and update read standard input when TEXT is
+    omitted or '-'. Add works while the app is closed; other commands require
+    the running app. Take SECONDS from list/show --json. Delete requires --yes.
+    Take the snip delete TOKEN from show/list --json and the list TOKEN from
+    'lists show UUID --json'. Every command except status accepts --request-id UUID
+    before or after arguments. Use it when you may need to retry, and check
+    an uncertain non-add outcome with status.
     """
 
   static func parse(_ arguments: [String]) throws -> SnipSnapCLICommand {
     guard let command = arguments.first else { return .help }
     if command == "help" || command == "--help" || command == "-h" { return .help }
-    guard command == "add" else {
-      throw SnipSnapCLIError.usage("Unknown command '\(command)'.")
-    }
+    guard command == "add" else { return try SnipCLIParser.parse(arguments) }
 
     var options = SnipSnapAddOptions()
     var index = 1
@@ -280,6 +314,32 @@ struct SnipSnapCLI {
       switch command {
       case .help:
         print(SnipSnapCLIParser.usage)
+      case .request(let options):
+        let request = SnipCLIRequest(
+          action: try options.action(), requestID: options.requestID ?? UUID()
+        )
+        let store = SnipCLIRequestStore(rootURL: importRoot(storeURL: nil))
+        do {
+          let receipt = try await SnipCLIService.execute(request, store: store)
+          try SnipCLIPrinter.printReceipt(receipt, json: options.json)
+        } catch {
+          if let cliError = error as? SnipSnapCLIError, case .importFailed = cliError {
+            try? await store.releaseReceipt(request.requestID)
+          }
+          let message = (error as? SnipSnapCLIError)?.description ?? error.localizedDescription
+          throw SnipSnapCLIError.requestFailed(request.requestID, message)
+        }
+        try? await store.releaseReceipt(request.requestID)
+      case .status(let id, let json):
+        let store = SnipCLIRequestStore(rootURL: importRoot(storeURL: nil))
+        let state = try await SnipCLIService.status(id, store: store)
+        do {
+          try SnipCLIPrinter.printState(state, requestID: id, json: json)
+        } catch {
+          if case .completed = state { try? await store.releaseReceipt(id) }
+          throw error
+        }
+        if case .completed = state { try? await store.releaseReceipt(id) }
       case .add(let options):
         var options = options
         if SnipAgentContext(
@@ -313,8 +373,10 @@ struct SnipSnapCLI {
       }
     } catch let error as SnipSnapCLIError {
       FileHandle.standardError.write(Data("snipsnap: \(error.description)\n".utf8))
-      FileHandle.standardError.write(Data("\(SnipSnapCLIParser.usage)\n".utf8))
-      exit(2)
+      if error.isUsageError {
+        FileHandle.standardError.write(Data("\(SnipSnapCLIParser.usage)\n".utf8))
+      }
+      exit(error.isUsageError ? 2 : 1)
     } catch {
       FileHandle.standardError.write(Data("snipsnap: \(error.localizedDescription)\n".utf8))
       exit(1)

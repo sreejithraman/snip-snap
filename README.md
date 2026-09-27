@@ -33,27 +33,53 @@ system-wide capture and Shift shortcuts can work.
 Everything stays in a small panel where you can edit, copy, or drag snips back
 into your work.
 
-## Add snips from an agent
+## Command-line access
 
-The `snipsnap` CLI adds text to Inbox or a named list and marks its origin as
-Agent. The Homebrew cask installs it with the app. Pass text as an argument or
-on standard input:
+The Homebrew cask installs the `snipsnap` CLI with the app. `add` saves text to
+Inbox or a named list and marks its origin as Agent. It works while the app is
+closed. Read, update, and delete commands require the running app. Use
+`snipsnap --help` for the full syntax.
 
 ```sh
+snipsnap lists create Research
 snipsnap add "Follow up tomorrow"
 printf '%s' "Review the release notes" | snipsnap add \
   --list Research --session-title "Release follow-ups"
+snipsnap list --json
+snipsnap show SNIP_UUID --json
+printf '%s' "Revised note" | snipsnap update SNIP_UUID \
+  --if-updated-at UPDATED_AT
+snipsnap show SNIP_UUID --json
+snipsnap delete SNIP_UUID --if-snip-revision SNIP_REVISION --yes
+snipsnap lists list
+snipsnap lists show Research --json
+snipsnap lists rename LIST_UUID Reading --if-list-revision LIST_REVISION
+snipsnap lists show LIST_UUID --json
+snipsnap lists delete LIST_UUID --if-list-revision LATEST_LIST_REVISION --yes
 ```
 
 Agent snips show a sparkle and their session title. When no title is supplied,
 the CLI records the current Git branch instead. Session IDs are never shown.
 
 Agents running in this checkout discover the repo skill at
-`.agents/skills/add-to-snip-snap`. The skill uses a stable request UUID so a
-retry does not add the same snip twice.
-The CLI asks the running app to import the request so the UI updates immediately
-and iCloud sync is scheduled. If the app is closed, the request stays queued
-until the next launch.
+`.agents/skills/snip-snap`. An explicit request UUID makes an uncertain
+read or edit safe to check with `snipsnap status REQUEST_UUID` before retrying.
+For an uncertain `add`, retry it with the same `--request-id`, text, and options.
+For snip updates, copy `updatedAt` from the latest `list` or `show --json`
+result. For deletion, copy that snip's value from `snipRevisions` in the same
+result. A content or metadata change invalidates the deletion revision.
+For list rename and delete, copy `listRevision` from the latest
+`lists show --json` result. A change to the list settings or its membership
+invalidates that revision; reread after a conflict.
+List create and rename return `resultListID` in JSON, including on a retry.
+The CLI asks the running app to process read and edit requests. The app updates
+the UI and schedules iCloud sync after writes. Only `add` stays queued when the
+app is closed, until its next launch. Write results are retained for seven days
+so a request UUID can be checked or retried during that period. Successful read
+results are removed after display.
+The private command handoff directory is excluded from backups. Expired files
+are pruned while the app runs, at its next launch, or on a later CLI read, edit,
+delete, or `status` command. `add` and `help` do not prune this directory.
 If a queued destination list disappears before import, the app preserves the
 snip in Inbox.
 
