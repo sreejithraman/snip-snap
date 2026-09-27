@@ -1,6 +1,16 @@
 import SnipSnapCore
 import SwiftUI
 
+enum ListAddCueLayout {
+    // Add overscroll uses a fixed point scale even when the page is wider or narrower.
+    static let pullCoordinateWidth: CGFloat = 320
+    static let diameter: CGFloat = 56
+    static let edgeInset: CGFloat = 42
+    static let armedScale: CGFloat = 1.06
+    static let clearance: CGFloat = edgeInset + diameter * armedScale / 2 + 8
+    static let revealFraction: CGFloat = clearance / pullCoordinateWidth
+}
+
 /// One page coordinate drives the strip, content, and composer. A settling
 /// transition keeps its starting value so a new drag can pick up mid-animation.
 struct ListPageMotion: Equatable {
@@ -10,6 +20,7 @@ struct ListPageMotion: Equatable {
             case navigate
             case createList
             case cancelNewList
+            case cancelNewListFromButton
         }
 
         let id = UUID()
@@ -25,8 +36,10 @@ struct ListPageMotion: Equatable {
         }
 
         var cancelsNewList: Bool {
-            if case .cancelNewList = completion { return true }
-            return false
+            switch completion {
+            case .cancelNewList, .cancelNewListFromButton: true
+            default: false
+            }
         }
     }
 
@@ -34,11 +47,13 @@ struct ListPageMotion: Equatable {
         let pages: [LibraryPage]
         let source: LibraryPage
         var position: CGFloat
+        var pageWidth: CGFloat = ListAddCueLayout.pullCoordinateWidth
         var settlement: Settlement?
         var directEntrance = false
         var directDestination: Int?
         var directEntranceInitialProgress: CGFloat = 0
         var showsAddCueDuringEntrance = false
+        var beganInSelector = false
         var creationProgressAtRelease: CGFloat = 0
         var cancelProgressAtRelease: CGFloat = 0
 
@@ -70,8 +85,31 @@ struct ListPageMotion: Equatable {
         let originCursor: CGFloat
         let sourceIndex: Int
         let direction: CGFloat
+        let pagePositionCorrection: CGFloat
+        let addProgressCorrection: CGFloat
         var cursor: CGFloat
         var reachedAdd = false
+
+        private func remainingCorrection(in geometry: ListSelectorGeometry) -> CGFloat {
+            let thresholdCursor = (geometry.centers.last ?? 0) + ListSelectorGeometry.pullThreshold
+            let outwardDistance = max(1, thresholdCursor - originCursor)
+            let fadeDistance = cursor >= originCursor
+                ? min(ListSelectorGeometry.pullThreshold, outwardDistance)
+                : ListSelectorGeometry.pullThreshold
+            return max(0, 1 - abs(cursor - originCursor) / fadeDistance)
+        }
+
+        func presentedAddProgress(in geometry: ListSelectorGeometry) -> CGFloat {
+            let rawProgress = geometry.pullProgress(at: cursor)
+            if rawProgress >= 1 { return 1 }
+            let progress = ListPageMotion.presentedAddProgress(rawProgress, reachedThreshold: reachedAdd)
+            return min(1, max(0, progress + addProgressCorrection * remainingCorrection(in: geometry)))
+        }
+
+        func pagePosition(in geometry: ListSelectorGeometry, presentedAddProgress: CGFloat) -> CGFloat {
+            return geometry.pagePosition(at: cursor, presentedAddProgress: presentedAddProgress)
+                + pagePositionCorrection * remainingCorrection(in: geometry)
+        }
     }
 
     private struct PageDrag: Equatable {
@@ -85,7 +123,7 @@ struct ListPageMotion: Equatable {
         var reachedCreationThreshold = false
         var reachedCancelThreshold = false
 
-        var creationThreshold: CGFloat { min(190, pageWidth * 0.48) }
+        var creationThreshold: CGFloat { min(220, pageWidth * 0.55) }
         var cancelThreshold: CGFloat { min(175, pageWidth * 0.45) }
 
         func cancelProgress(for translation: CGSize) -> CGFloat {
@@ -128,7 +166,19 @@ struct ListPageMotion: Equatable {
                 let pull = abs(outward) * pageWidth
                 let scaledPull = pull * 0.8
                 let resisted = limit * scaledPull / (limit + scaledPull)
-                return edge + (outward < 0 ? -resisted : resisted) / pageWidth
+                var extraReveal: CGFloat = 0
+                if isTrailingEdge {
+                    let thresholdPull = creationThreshold * 0.8
+                    let thresholdResisted = limit * thresholdPull / (limit + thresholdPull)
+                    let clearance = max(0, ListAddCueLayout.clearance - thresholdResisted)
+                    let progress = presentedCreationProgress(for: translation)
+                    let eased = progress * progress * (3 - 2 * progress)
+                    extraReveal = clearance * eased
+                }
+                let visiblePull = resisted + extraReveal
+                let coordinateWidth = isTrailingEdge
+                    ? ListAddCueLayout.pullCoordinateWidth : pageWidth
+                return edge + (outward < 0 ? -visiblePull : visiblePull) / coordinateWidth
             }
             let lowerBound = min(CGFloat(min(sourceIndex, neighborIndex)), originPosition)
             let upperBound = max(CGFloat(max(sourceIndex, neighborIndex)), originPosition)
@@ -166,6 +216,7 @@ struct ListPageMotion: Equatable {
         selectedPage: LibraryPage,
         pages: [LibraryPage],
         geometry: ListSelectorGeometry,
+        pageWidth: CGFloat = ListAddCueLayout.pullCoordinateWidth,
         layoutDirection: LayoutDirection,
         at date: Date
     ) {
@@ -180,7 +231,8 @@ struct ListPageMotion: Equatable {
             if let transition {
                 let position = transition.position(at: date)
                 let lastPage = CGFloat(max(0, transition.pages.count - 1))
-                if transition.directEntrance || position < 0 || position > lastPage {
+                if transition.directEntrance || position < 0
+                    || (position > lastPage && (!transition.beganInSelector || transition.settlement == nil)) {
                     rejectsSelectorDrag = true
                     return
                 }
@@ -194,16 +246,24 @@ struct ListPageMotion: Equatable {
             pageDrag = nil
             let origin = visibleFrame.selectorPresentation(in: geometry)?.cursor
                 ?? (visibleAddProgress > 0
-                    ? (geometry.centers.last ?? 0) + visibleAddProgress * ListSelectorGeometry.pullThreshold
+                    ? visibleFrame.selectorPullCursor(
+                        in: geometry, progress: visibleAddProgress, holdsAtAdd: false
+                    )
                     : geometry.cursor(at: position))
             drag = Drag(
                 originCursor: origin,
                 sourceIndex: selected,
                 direction: layoutDirection == .rightToLeft ? -1 : 1,
+                pagePositionCorrection: visibleFrame.position - geometry.pagePosition(
+                    at: origin, presentedAddProgress: visibleAddProgress
+                ),
+                addProgressCorrection: visibleAddProgress - geometry.pullProgress(at: origin),
                 cursor: origin
             )
             transition = Transition(
-                pages: pages, source: selectedPage, position: geometry.pagePosition(at: origin)
+                pages: pages, source: selectedPage, position: geometry.pagePosition(at: origin),
+                pageWidth: pageWidth,
+                beganInSelector: true
             )
         }
         guard var drag else { return }
@@ -211,9 +271,9 @@ struct ListPageMotion: Equatable {
         let rawProgress = geometry.pullProgress(at: drag.cursor)
         if rawProgress >= 1 { drag.reachedAdd = true }
         self.drag = drag
-        selectorCreationProgress = Self.presentedAddProgress(rawProgress, reachedThreshold: drag.reachedAdd)
+        selectorCreationProgress = drag.presentedAddProgress(in: geometry)
         expansion.update(distance: abs(drag.cursor - drag.originCursor))
-        transition?.position = geometry.pagePosition(at: drag.cursor)
+        transition?.position = drag.pagePosition(in: geometry, presentedAddProgress: selectorCreationProgress)
     }
 
     mutating func updatePageDrag(
@@ -245,7 +305,8 @@ struct ListPageMotion: Equatable {
                 isTrailingEdge: cancelTarget == nil && source == pages.count - 1 && step > 0,
                 isNewListCancel: cancelTarget != nil
             )
-            transition = Transition(pages: pages, source: selectedPage, position: position)
+            transition = Transition(pages: pages, source: selectedPage, position: position,
+                                    pageWidth: pageWidth)
             transition?.directEntrance = cancelTarget != nil
             transition?.directDestination = cancelTarget
         }
@@ -329,8 +390,8 @@ struct ListPageMotion: Equatable {
         // still ends it. Gesture-state reset handles cancellation separately.
         drag.cursor = drag.originCursor - translation.width * drag.direction
         let rawProgress = geometry.pullProgress(at: drag.cursor)
-        selectorCreationProgress = Self.presentedAddProgress(rawProgress, reachedThreshold: drag.reachedAdd)
-        transition?.position = geometry.pagePosition(at: drag.cursor)
+        selectorCreationProgress = drag.presentedAddProgress(in: geometry)
+        transition?.position = drag.pagePosition(in: geometry, presentedAddProgress: selectorCreationProgress)
         self.drag = nil
         if rawProgress >= 1 {
             expansion.update(distance: nil)
@@ -384,13 +445,18 @@ struct ListPageMotion: Equatable {
         let destination = pages.count - 1
         let fromAddPull = isCreatingFromEdge
         let visualSource = fromAddPull ? pages[pages.count - 2] : cancellationOrigin
-        if fromAddPull, transition?.settlement?.createsList == true,
+        if fromAddPull,
            let oldSourceIndex = transition?.pages.firstIndex(of: visualSource),
-           let heldPosition = transition?.position {
-            let initialProgress = min(0.5, max(0, heldPosition - CGFloat(oldSourceIndex)))
+           let heldPosition = transition?.position,
+           heldPosition > CGFloat(oldSourceIndex) {
+            let pageWidth = transition?.pageWidth ?? ListAddCueLayout.pullCoordinateWidth
+            let pulledDistance = (heldPosition - CGFloat(oldSourceIndex))
+                * ListAddCueLayout.pullCoordinateWidth
+            let initialProgress = min(0.5, max(0, pulledDistance / pageWidth))
             transition = Transition(
                 pages: pages, source: visualSource,
-                position: CGFloat(destination - 1) + initialProgress
+                position: CGFloat(destination - 1) + initialProgress,
+                pageWidth: pageWidth
             )
             transition?.directEntrance = true
             transition?.directDestination = destination
@@ -403,6 +469,42 @@ struct ListPageMotion: Equatable {
         select(destination, selectedPage: visualSource, pages: pages,
                reduceMotion: reduceMotion, directEntrance: true,
                fromAddPull: fromAddPull, at: date)
+    }
+
+    @discardableResult
+    mutating func beginNewListCancellation(
+        from source: LibraryPage, to origin: LibraryPage, pages: [LibraryPage],
+        reduceMotion: Bool, at date: Date
+    ) -> Bool {
+        guard let sourceIndex = pages.firstIndex(of: source),
+              let originIndex = pages.firstIndex(of: origin),
+              originIndex < sourceIndex,
+              transition?.settlement?.cancelsNewList != true else { return false }
+
+        var initialProgress: CGFloat = 0
+        if let current = transition, current.pages == pages, current.directEntrance {
+            if current.source == origin, current.directDestination == sourceIndex {
+                let forwardProgress = (current.position(at: date) - CGFloat(originIndex))
+                    / CGFloat(sourceIndex - originIndex)
+                initialProgress = 1 - min(1, max(0, forwardProgress))
+            } else if current.source == source, current.directDestination == originIndex {
+                let reverseProgress = (current.position(at: date) - CGFloat(sourceIndex))
+                    / CGFloat(originIndex - sourceIndex)
+                initialProgress = min(1, max(0, reverseProgress))
+            }
+        }
+
+        interrupt()
+        transition = Transition(
+            pages: pages, source: source,
+            position: CGFloat(sourceIndex)
+                + CGFloat(originIndex - sourceIndex) * initialProgress
+        )
+        transition?.directEntrance = true
+        transition?.directDestination = originIndex
+        settle(to: originIndex, reduceMotion: reduceMotion,
+               completion: .cancelNewListFromButton, at: date)
+        return true
     }
 
     mutating func returnFromCommittedCreation(reduceMotion: Bool, at date: Date) {
@@ -421,11 +523,20 @@ struct ListPageMotion: Equatable {
             interrupt()
             return
         }
-        let heldPagePosition = transition?.settlement?.createsList == true
-            ? transition?.position : nil
+        let heldPagePosition: CGFloat?
+        if isCreatingFromEdge, let position = transition?.position,
+           position > CGFloat(pages.count - 1) {
+            heldPagePosition = position
+        } else {
+            heldPagePosition = nil
+        }
+        let beganInSelector = transition?.beganInSelector == true
+        let pageWidth = transition?.pageWidth ?? ListAddCueLayout.pullCoordinateWidth
         transition = Transition(
             pages: pages, source: visualSource,
-            position: heldPagePosition ?? CGFloat(destination)
+            position: heldPagePosition ?? CGFloat(destination),
+            pageWidth: pageWidth,
+            beganInSelector: beganInSelector
         )
         transition?.creationProgressAtRelease = 1
         isCreatingFromEdge = false
@@ -620,7 +731,9 @@ struct ListPageFrame {
             return travel * direction * width * (layoutDirection == .rightToLeft ? -1 : 1)
         }
         guard !reduceMotion, let index = pages.firstIndex(of: page) else { return 0 }
-        return (CGFloat(index) - position) * width * (layoutDirection == .rightToLeft ? -1 : 1)
+        let coordinateWidth = index == pages.count - 1 && position > CGFloat(index)
+            ? ListAddCueLayout.pullCoordinateWidth : width
+        return (CGFloat(index) - position) * coordinateWidth * (layoutDirection == .rightToLeft ? -1 : 1)
     }
 
     func opacity(for page: LibraryPage, reduceMotion: Bool) -> Double {
@@ -676,7 +789,7 @@ struct ListPageFrame {
 struct ListSelectorGeometry {
     let widths: [CGFloat]
     static let spacing: CGFloat = 8
-    static let pullThreshold: CGFloat = 120
+    static let pullThreshold: CGFloat = 150
 
     let centers: [CGFloat]
 
@@ -693,9 +806,13 @@ struct ListSelectorGeometry {
         (centers.last ?? 0) + (widths.last ?? 0) / 2 + 32
     }
 
-    func pagePosition(at cursor: CGFloat) -> CGFloat {
+    func pagePosition(at cursor: CGFloat, presentedAddProgress: CGFloat? = nil) -> CGFloat {
         guard let first = centers.first, cursor > first else { return 0 }
-        guard let upper = centers.firstIndex(where: { $0 > cursor }) else { return CGFloat(max(0, centers.count - 1)) }
+        guard let upper = centers.firstIndex(where: { $0 > cursor }) else {
+            // Move the page enough to reveal the add cue while the tab strip stays centered.
+            return CGFloat(max(0, centers.count - 1))
+                + ListAddCueLayout.revealFraction * (presentedAddProgress ?? pullProgress(at: cursor))
+        }
         let lower = upper - 1
         return CGFloat(lower) + (cursor - centers[lower]) / (centers[upper] - centers[lower])
     }

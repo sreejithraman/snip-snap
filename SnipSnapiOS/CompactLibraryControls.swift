@@ -199,6 +199,7 @@ struct CompactLibraryControls: View {
             ListSelector(
                 model: model,
                 controlLength: length,
+                pageWidth: pageWidth,
                 sheet: $sheet,
                 deleteList: deleteList,
                 createList: createList,

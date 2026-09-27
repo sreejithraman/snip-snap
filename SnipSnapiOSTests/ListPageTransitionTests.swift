@@ -11,7 +11,7 @@ final class ListPageTransitionTests: XCTestCase {
         let geometry = ListSelectorGeometry(widths: [90, 110])
         let now = Date(timeIntervalSinceReferenceDate: 100)
         var motion = ListPageMotion()
-        let translation = CGSize(width: -140, height: 0)
+        let translation = CGSize(width: -170, height: 0)
         motion.updateDrag(
             translation: translation, selectedPage: pages[1], pages: pages,
             geometry: geometry, layoutDirection: .leftToRight, at: now
@@ -24,10 +24,21 @@ final class ListPageTransitionTests: XCTestCase {
         XCTAssertFalse(motion.isCreatingFromEdge)
         let returned = motion.frame(pages: pages, selectedPage: pages[1], at: now)
         XCTAssertEqual(returned.edgeAddProgress, 1)
-        XCTAssertFalse(returned.isMoving)
+        XCTAssertGreaterThan(returned.position, 1)
+        XCTAssertTrue(returned.isMoving)
         let returning = motion.frame(pages: pages, selectedPage: pages[1], at: now.addingTimeInterval(0.12))
         XCTAssertGreaterThan(returning.edgeAddProgress, 0)
         XCTAssertLessThan(returning.edgeAddProgress, 1)
+        XCTAssertLessThan(returning.position, returned.position)
+        motion.updateDrag(
+            translation: CGSize(width: -1, height: 0), selectedPage: pages[1], pages: pages,
+            geometry: geometry, layoutDirection: .leftToRight, at: now.addingTimeInterval(0.12)
+        )
+        XCTAssertTrue(motion.isSelectorDragging)
+        XCTAssertEqual(
+            motion.frame(pages: pages, selectedPage: pages[1], at: now.addingTimeInterval(0.12)).position,
+            returning.position, accuracy: 0.003
+        )
     }
 
     func testPagePullReopeningPendingListReturnsFromAddToItsTab() throws {
@@ -80,12 +91,12 @@ final class ListPageTransitionTests: XCTestCase {
         var motion = ListPageMotion()
 
         motion.updatePageDrag(
-            translation: CGSize(width: -142.5, height: 0), selectedPage: pages[1], pages: pages,
+            translation: CGSize(width: -165, height: 0), selectedPage: pages[1], pages: pages,
             pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
         )
         XCTAssertEqual(motion.pageCreationProgress, 0.75)
         XCTAssertEqual(motion.releasePageDrag(
-            translation: CGSize(width: -142.5, height: 0),
+            translation: CGSize(width: -165, height: 0),
             predictedEndTranslation: CGSize(width: -500, height: 0),
             reduceMotion: false, at: now
         ), .select(1))
@@ -139,6 +150,68 @@ final class ListPageTransitionTests: XCTestCase {
             predictedEndTranslation: CGSize(width: 180, height: 0),
             reduceMotion: false, at: now
         ), .select(0))
+    }
+
+    func testTrailingPagePullRequiresMoreDistance() {
+        let pages: [LibraryPage] = [.clipboard, .list(UUID())]
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        var motion = ListPageMotion()
+
+        let shortPull = CGSize(width: -200, height: 0)
+        motion.updatePageDrag(
+            translation: shortPull, selectedPage: pages[1], pages: pages,
+            pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
+        )
+        XCTAssertLessThan(motion.pageCreationProgress, 1)
+        XCTAssertEqual(motion.releasePageDrag(
+            translation: shortPull, predictedEndTranslation: CGSize(width: -400, height: 0),
+            reduceMotion: false, at: now
+        ), .select(1))
+
+        motion.interrupt()
+        let fullPull = CGSize(width: -230, height: 0)
+        motion.updatePageDrag(
+            translation: fullPull, selectedPage: pages[1], pages: pages,
+            pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
+        )
+        XCTAssertEqual(motion.releasePageDrag(
+            translation: fullPull, predictedEndTranslation: fullPull,
+            reduceMotion: false, at: now
+        ), .createList)
+    }
+
+    func testTrailingPageAddCueFitsAfterNarrowPageAtThreshold() {
+        let pages: [LibraryPage] = [.clipboard, .list(UUID())]
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        var motion = ListPageMotion()
+        let pull = CGSize(width: -176, height: 0)
+        motion.updatePageDrag(
+            translation: pull, selectedPage: pages[1], pages: pages,
+            pageWidth: 320, layoutDirection: .leftToRight, isStart: true, at: now
+        )
+        XCTAssertEqual(motion.pageCreationProgress, 1)
+        let frame = motion.frame(pages: pages, selectedPage: pages[1], at: now)
+        let pageOffset = frame.offset(for: pages[1], width: 320,
+                                      layoutDirection: .leftToRight, reduceMotion: false)
+        XCTAssertGreaterThanOrEqual(-pageOffset, ListAddCueLayout.clearance - 0.001,
+                                    "The scaled add capsule should fit beyond a narrow page")
+    }
+
+    func testTrailingPageKeepsMovingAfterAddArms() {
+        let pages: [LibraryPage] = [.clipboard, .list(UUID())]
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        var motion = ListPageMotion()
+        motion.updatePageDrag(
+            translation: CGSize(width: -220, height: 0), selectedPage: pages[1], pages: pages,
+            pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
+        )
+        let armedPosition = motion.frame(pages: pages, selectedPage: pages[1], at: now).position
+        motion.updatePageDrag(
+            translation: CGSize(width: -300, height: 0), selectedPage: pages[1], pages: pages,
+            pageWidth: 400, layoutDirection: .leftToRight, isStart: false, at: now
+        )
+        let extendedPosition = motion.frame(pages: pages, selectedPage: pages[1], at: now).position
+        XCTAssertGreaterThan(extendedPosition, armedPosition + 0.005)
     }
 
     func testCommittedPagePullContinuesIntoNewListEntranceWithoutReturning() {

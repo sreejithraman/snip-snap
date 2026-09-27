@@ -82,6 +82,10 @@ final class IOSAppModel {
     }
     private var newListOrigin: NewListOrigin?
     var newListOriginPage: LibraryPage? { newListOrigin?.page }
+    var newListCancellationPage: LibraryPage {
+        let origin = newListOriginPage ?? .list(SnipList.inboxID)
+        return pages.contains(origin) ? origin : .list(SnipList.inboxID)
+    }
     private var listDrafts: [UUID: InlineListDraft] = [:]
     private(set) var isCreatingList = false
     private var isCancellingNewList = false
@@ -467,7 +471,7 @@ final class IOSAppModel {
         let previousPage = selectedPage
         lastSelectedListID = lists.contains(where: { $0.id == origin.selectedListID })
             ? origin.selectedListID : SnipList.inboxID
-        let originPage = pages.contains(origin.page) ? origin.page : .list(SnipList.inboxID)
+        let originPage = newListCancellationPage
         selectPage(originPage)
         let originSelectionRevision = selectionRevision
         let cancelled = await withUserMutation { interaction in
