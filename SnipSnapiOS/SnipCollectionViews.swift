@@ -765,10 +765,9 @@ struct SnipCopyControl: View {
                 Circle().fill(appearance.controlTint)
                 Image(systemName: "doc.on.doc")
                     .font(.system(size: symbolSize, weight: .semibold))
-                    .blendMode(.destinationOut)
+                    .foregroundStyle(Color(uiColor: .systemBackground))
             }
                 .frame(width: controlDiameter, height: controlDiameter)
-                .compositingGroup()
                 .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
         }
