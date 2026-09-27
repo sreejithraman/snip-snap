@@ -1,0 +1,38 @@
+Snip Snap 0.5.1 — Mac
+
+- Use local signing settings for Mac test bundles
+- Fix iCloud sync scheduling and recovery on Mac and iPhone
+- Prepare 0.5.1 beta with iCloud sync fixes
+- Fix iCloud sync retry reliability
+- Recover iCloud sync health safely
+- Show cached iCloud data before sync
+- Move macOS capture toast to screen bottom
+- Fix interrupted double Shift shortcuts
+- Improve settings layout across macOS and iOS
+- Fix mixed snip copy and drag
+- Fix mixed snip copy for file-first inputs
+- Link snip copy and completion
+- Fix adaptive actions and Mac dialogs
+- Fix iCloud sync retry recovery
+- Fix iCloud re-enable receipt collision
+- Improve Mac dialog presentation
+- Use stable list color presets
+- Add shareable attachment download diagnostics
+- Improve attachment failure diagnostics
+- Add agent snip capture workflow
+- Fix iCloud attachment cache install
+- Fix iCloud cache path validation
+- Fix aliased iCloud attachment cache roots
+- Classify iCloud cache path failures
+- Fix TestFlight iCloud cache path aliases
+- Deepen iCloud attachment cache installation
+- Move iCloud attachment downloads to caches
+- Share Mac leading-slot copy and command-number chrome
+- Show pinned snips as Mac card badges
+- Preserve app-owned CloudKit cache root aliases safely
+- Add privacy-safe attachment diagnostics across Mac and iOS
+- Add swipe navigation between library tabs
+- Make search mode explicit and place Add List in tab bar
+- Protect inline snip drafts during mutations
+- Lock list swipes and refine Add List motion
+- Fix Mac dialog contrast and floating panel dimming

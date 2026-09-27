@@ -5,16 +5,50 @@
         <item>
             <title>0.5.1</title>
             <pubDate>Sun, 27 Sep 2026 15:39:06 +0000</pubDate>
-            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.5.1-beta.108</link>
-            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.5.1-beta.108-mac.txt</sparkle:fullReleaseNotesLink>
-            <sparkle:channel>beta</sparkle:channel>
-            <sparkle:version>108</sparkle:version>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.5.1</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.5.1-mac.txt</sparkle:fullReleaseNotesLink>
+<sparkle:version>108</sparkle:version>
             <sparkle:shortVersionString>0.5.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.5.1-beta.108/Snip-Snap-0.5.1.zip" length="14727879" type="application/octet-stream" sparkle:edSignature="1WkQr+8L+Y4RXGpQs1LcK24lPnvK+V4S98ANJTOaBqVhDs0r+SWriVn4wXQmLoanraGrscoQATHKkVnG3wVwDg=="/>
-            <description sparkle:format="plain-text">Snip Snap 0.5.1 Beta 108 — Mac
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.5.1/Snip-Snap-0.5.1.zip" length="14727879" type="application/octet-stream" sparkle:edSignature="1WkQr+8L+Y4RXGpQs1LcK24lPnvK+V4S98ANJTOaBqVhDs0r+SWriVn4wXQmLoanraGrscoQATHKkVnG3wVwDg=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.5.1 — Mac
 
-- No Mac changes in this build.
+- Use local signing settings for Mac test bundles
+- Fix iCloud sync scheduling and recovery on Mac and iPhone
+- Prepare 0.5.1 beta with iCloud sync fixes
+- Fix iCloud sync retry reliability
+- Recover iCloud sync health safely
+- Show cached iCloud data before sync
+- Move macOS capture toast to screen bottom
+- Fix interrupted double Shift shortcuts
+- Improve settings layout across macOS and iOS
+- Fix mixed snip copy and drag
+- Fix mixed snip copy for file-first inputs
+- Link snip copy and completion
+- Fix adaptive actions and Mac dialogs
+- Fix iCloud sync retry recovery
+- Fix iCloud re-enable receipt collision
+- Improve Mac dialog presentation
+- Use stable list color presets
+- Add shareable attachment download diagnostics
+- Improve attachment failure diagnostics
+- Add agent snip capture workflow
+- Fix iCloud attachment cache install
+- Fix iCloud cache path validation
+- Fix aliased iCloud attachment cache roots
+- Classify iCloud cache path failures
+- Fix TestFlight iCloud cache path aliases
+- Deepen iCloud attachment cache installation
+- Move iCloud attachment downloads to caches
+- Share Mac leading-slot copy and command-number chrome
+- Show pinned snips as Mac card badges
+- Preserve app-owned CloudKit cache root aliases safely
+- Add privacy-safe attachment diagnostics across Mac and iOS
+- Add swipe navigation between library tabs
+- Make search mode explicit and place Add List in tab bar
+- Protect inline snip drafts during mutations
+- Lock list swipes and refine Add List motion
+- Fix Mac dialog contrast and floating panel dimming
 </description>
         </item>
         <item>

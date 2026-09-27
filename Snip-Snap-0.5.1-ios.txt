@@ -1,0 +1,36 @@
+Snip Snap 0.5.1 — iOS
+
+- Fix iCloud sync scheduling and recovery on Mac and iPhone
+- Prepare 0.5.1 beta with iCloud sync fixes
+- Fix iCloud sync retry reliability
+- Recover iCloud sync health safely
+- Show cached iCloud data before sync
+- Improve settings layout across macOS and iOS
+- Fix mixed snip copy for file-first inputs
+- Link snip copy and completion
+- Fix adaptive actions and Mac dialogs
+- Fix iCloud sync retry recovery
+- Fix iCloud re-enable receipt collision
+- Use stable list color presets
+- Add shareable attachment download diagnostics
+- Improve attachment failure diagnostics
+- Add agent snip capture workflow
+- Fix iCloud attachment cache install
+- Fix iCloud cache path validation
+- Fix aliased iCloud attachment cache roots
+- Classify iCloud cache path failures
+- Fix TestFlight iCloud cache path aliases
+- Deepen iCloud attachment cache installation
+- Move iCloud attachment downloads to caches
+- Preserve app-owned CloudKit cache root aliases safely
+- Add privacy-safe attachment diagnostics across Mac and iOS
+- Improve iOS attachment previews and import options (#191) [skip ci]
+- Fix iOS Undo toast placement and sizing
+- Match iOS check and copy controls to list colors
+- Add swipe navigation between library tabs
+- Fix iOS list scrolling and swipe actions
+- Unify iOS library page swipes
+- Lock list swipes and refine Add List motion
+- Use native attachment source menus on iOS
+- Keep copy button contrast during page swipes
+- Keep page edge cues clear and animate list cancellation
