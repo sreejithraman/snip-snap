@@ -100,6 +100,8 @@ struct AttachmentEditorSection: View {
 
             AttachmentSourceMenu(choose: add) {
                 Label("Add attachments", systemImage: "paperclip")
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
             }
             .disabled(isDisabled)
             .accessibilityIdentifier("add-attachments")
@@ -153,14 +155,14 @@ private struct AttachmentEditorTile: View {
             }
 
             HStack(spacing: 8) {
-                AttachmentSourceMenu(title: "Replace attachment", choose: replace) {
+                AttachmentSourceMenu(choose: replace) {
                     Image(systemName: "arrow.triangle.2.circlepath")
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
-                    .frame(minWidth: 44, minHeight: 44)
-                    .contentShape(Rectangle())
-                    .disabled(isDisabled)
-                    .accessibilityLabel("Replace \(attachment.fileName)")
-                    .accessibilityIdentifier("replace-attachment-\(attachment.fileName)")
+                .disabled(isDisabled)
+                .accessibilityLabel("Replace \(attachment.fileName)")
+                .accessibilityIdentifier("replace-attachment-\(attachment.fileName)")
                 Spacer()
                 Button("Remove", systemImage: "trash", role: .destructive, action: remove)
                     .labelStyle(.iconOnly)
