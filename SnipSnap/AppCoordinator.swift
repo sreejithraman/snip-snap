@@ -68,6 +68,7 @@ final class AppCoordinator {
     private let cancelFilePanel: (NSSavePanel) -> Void
     private var presentedFilePanel: NSSavePanel?
     private var filePanelCompletion: ((NSApplication.ModalResponse) -> Void)?
+    private var filePanelParentAlphaValue: CGFloat?
     private var pendingPanelDialogs: [PendingPanelDialog] = []
     private var panelUsabilitySubscriptions: Set<AnyCancellable> = []
 
@@ -95,7 +96,11 @@ final class AppCoordinator {
         accessibilitySetupDefaults: UserDefaults = .standard,
         accessibilityNotificationCenter: NotificationCenter = .default,
         beginFilePanel: @escaping BeginFilePanel = { panel, parent, completion in
-            panel.beginSheetModal(for: parent, completionHandler: completion)
+            panel.begin(completionHandler: completion)
+            DispatchQueue.main.async { [weak panel, weak parent] in
+                guard let panel, let parent, panel.isVisible else { return }
+                AppCoordinator.positionFilePanel(panel, beside: parent)
+            }
         },
         cancelFilePanel: @escaping (NSSavePanel) -> Void = { panel in
             panel.cancel(nil)
@@ -116,6 +121,32 @@ final class AppCoordinator {
         accessibilityPermissions.onBecameGranted = { [weak self] in
             self?.restartShortcutsAfterAccessibilityGrant()
         }
+    }
+
+    private static func positionFilePanel(_ panel: NSSavePanel, beside parent: NSWindow) {
+        let bounds = parent.screen?.visibleFrame ?? parent.frame
+        let size = panel.frame.size
+        let gap: CGFloat = 16
+        let left = parent.frame.minX - size.width - gap
+        let right = parent.frame.maxX + gap
+        let x: CGFloat
+        if left >= bounds.minX {
+            x = left
+        } else if right + size.width <= bounds.maxX {
+            x = right
+        } else {
+            // The picker would obscure the dimmed panel on a narrow screen.
+            parent.alphaValue = 0
+            x = min(
+                max(parent.frame.midX - size.width / 2, bounds.minX),
+                max(bounds.minX, bounds.maxX - size.width)
+            )
+        }
+        let y = min(
+            max(parent.frame.midY - size.height / 2, bounds.minY),
+            max(bounds.minY, bounds.maxY - size.height)
+        )
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
     func start() {
@@ -568,6 +599,14 @@ final class AppCoordinator {
     ) -> Bool {
         guard !panelDialogs.isPresented, presentedFilePanel == nil else { return false }
         guard let panelWindow else { return false }
+        switch model.appearance {
+        case .system:
+            panel.appearance = nil
+        case .light:
+            panel.appearance = NSAppearance(named: .aqua)
+        case .dark:
+            panel.appearance = NSAppearance(named: .darkAqua)
+        }
         if !Self.shouldPresentPendingError(
             isVisible: panelWindow.isVisible,
             isMiniaturized: panelWindow.isMiniaturized,
@@ -578,6 +617,9 @@ final class AppCoordinator {
         guard !panelDialogs.isPresented else { return false }
         presentedFilePanel = panel
         filePanelCompletion = completion
+        filePanelParentAlphaValue = panelWindow.alphaValue
+        panelWindow.alphaValue = 0.45
+        (panelWindow as? SnipSnapPanel)?.setPresentedModalWindow(panel)
         panelDialogs.isPresented = true
         beginFilePanel(panel, panelWindow) { [weak self, weak panel] response in
             Task { @MainActor in
@@ -601,9 +643,17 @@ final class AppCoordinator {
     ) {
         guard presentedFilePanel === panel else { return }
         let completion = filePanelCompletion
+        if let filePanelParentAlphaValue {
+            panelWindow?.alphaValue = filePanelParentAlphaValue
+        }
+        (panelWindow as? SnipSnapPanel)?.setPresentedModalWindow(nil)
         presentedFilePanel = nil
         filePanelCompletion = nil
+        filePanelParentAlphaValue = nil
         panelDialogs.isPresented = false
+        if updateError, panelWindow?.isVisible == true {
+            panelWindow?.makeKeyAndOrderFront(nil)
+        }
         completion?(response)
         if updateError, !presentNextPendingPanelDialog() { updatePresentedError() }
     }
@@ -746,212 +796,6 @@ final class AppCoordinator {
         }
     }
 
-}
-
-private struct PanelDialogContent<Content: View>: View {
-    @ObservedObject var model: AppModel
-    let showsModelErrors: Bool
-    let content: Content
-
-    var body: some View {
-        content
-            .alert(
-                model.presentedErrorTitle ?? String(localized: "Something Went Wrong"),
-                isPresented: Binding(
-                    get: { showsModelErrors && model.presentedError != nil },
-                    set: { _ in }
-                )
-            ) {
-                Button("OK", role: .cancel) { model.dismissPresentedError() }
-            } message: {
-                Text(model.presentedError ?? "")
-            }
-    }
-}
-
-private struct PanelErrorDialog: View {
-    @ObservedObject var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: SnipSnapSpacing.paneContentInset) {
-            Text(model.presentedErrorTitle ?? String(localized: "Something Went Wrong"))
-                .font(.headline)
-            Text(model.presentedError ?? "")
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Spacer()
-                AppPrimaryActionButton(action: model.dismissPresentedError) {
-                    Text("OK")
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(SnipSnapSpacing.paneContentInset)
-        .onExitCommand(perform: model.dismissPresentedError)
-    }
-}
-
-struct PanelConfirmationDialog: View {
-    let title: String
-    let message: String
-    let confirmTitle: String
-    var isDestructive = false
-    let onConfirm: () -> Void
-    let onCancel: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: SnipSnapSpacing.paneContentInset) {
-            Text(title)
-                .font(.headline)
-            Text(message)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Spacer()
-                Button("Cancel", role: .cancel, action: onCancel)
-                    .keyboardShortcut(.cancelAction)
-                if isDestructive {
-                    Button(confirmTitle, role: .destructive, action: onConfirm)
-                        .buttonStyle(.bordered)
-                } else {
-                    AppPrimaryActionButton(action: onConfirm) {
-                        Text(confirmTitle)
-                    }
-                    .keyboardShortcut(.defaultAction)
-                }
-            }
-        }
-        .padding(SnipSnapSpacing.paneContentInset)
-    }
-}
-
-private struct PanelDialogGlassSurface: View {
-    let content: AnyView
-
-    var body: some View {
-        let shape = RoundedRectangle(
-            cornerRadius: PanelShapeMetrics.paneCornerRadius,
-            style: .continuous
-        )
-        content
-            .frame(width: PanelDialogMetrics.width)
-            .background {
-                shape
-                    .fill(.clear)
-                    .panelGlassSurface(
-                        in: shape,
-                        tint: SnipSnapColors.nestedGlassTint
-                    )
-            }
-            .clipShape(shape)
-    }
-}
-
-@MainActor
-private enum PanelDialogDismissalReason {
-    case close
-    case parentHide
-}
-
-private final class PanelDialogWindow: NSPanel {
-    override var canBecomeKey: Bool { true }
-}
-
-@MainActor
-private final class PanelDialogPresenter {
-    private var id: PanelDialogID?
-    private weak var parentWindow: NSWindow?
-    private var restoresParentOnDismissal = true
-    private var dismissalReason = PanelDialogDismissalReason.close
-    private var windowController: NSWindowController?
-    private var onDismiss: ((PanelDialogDismissalReason) -> Void)?
-
-    var isKeyWindow: Bool {
-        windowController?.window?.isKeyWindow == true
-    }
-
-    func present(
-        id: PanelDialogID,
-        title: String,
-        parent: NSWindow,
-        content: AnyView,
-        onDismiss: @escaping (PanelDialogDismissalReason) -> Void
-    ) {
-        guard windowController == nil else { return }
-
-        let hostingController = NSHostingController(
-            rootView: PanelDialogGlassSurface(content: content)
-        )
-        let window = PanelDialogWindow(
-            contentRect: .zero,
-            styleMask: [.borderless, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = title
-        window.animationBehavior = .utilityWindow
-        window.backgroundColor = .clear
-        window.isOpaque = false
-        window.hasShadow = true
-        window.hidesOnDeactivate = false
-        window.isReleasedWhenClosed = false
-        window.contentViewController = hostingController
-
-        hostingController.view.layoutSubtreeIfNeeded()
-        let size = hostingController.view.fittingSize
-        window.setContentSize(size)
-
-        self.parentWindow = parent
-        self.id = id
-        self.onDismiss = onDismiss
-        windowController = NSWindowController(window: window)
-        parent.beginSheet(window) { [weak self, weak window] _ in
-            guard let self, let window else { return }
-            window.close()
-            self.finishDismissal(for: window)
-        }
-    }
-
-    func dismiss(id: PanelDialogID, restoringParent: Bool = true) {
-        guard self.id == id else { return }
-        dismissCurrent(restoringParent: restoringParent)
-    }
-
-    func dismissForParentHide() {
-        dismissCurrent(restoringParent: false, reason: .parentHide)
-    }
-
-    private func dismissCurrent(
-        restoringParent: Bool = true,
-        reason: PanelDialogDismissalReason = .close
-    ) {
-        guard let window = windowController?.window else { return }
-        restoresParentOnDismissal = restoringParent
-        dismissalReason = reason
-        if let sheetParent = window.sheetParent {
-            sheetParent.endSheet(window)
-        } else {
-            window.close()
-            finishDismissal(for: window)
-        }
-    }
-
-    private func finishDismissal(for window: NSWindow) {
-        guard windowController?.window === window else { return }
-        let callback = onDismiss
-        let reason = dismissalReason
-        if restoresParentOnDismissal, parentWindow?.isVisible == true {
-            parentWindow?.makeKeyAndOrderFront(nil)
-        }
-        windowController = nil
-        parentWindow = nil
-        restoresParentOnDismissal = true
-        dismissalReason = .close
-        id = nil
-        onDismiss = nil
-        callback?(reason)
-    }
 }
 
 private extension NSMenu {

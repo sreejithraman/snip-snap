@@ -4,6 +4,11 @@ import SnipSnapCore
 @MainActor
 final class SnipSnapPanel: NSPanel {
     private(set) var restoredSavedFrame = false
+    private weak var presentedModalWindow: NSWindow?
+
+    func setPresentedModalWindow(_ window: NSWindow?) {
+        presentedModalWindow = window
+    }
 
     static func make(
         contentViewController: NSViewController,
@@ -45,6 +50,23 @@ final class SnipSnapPanel: NSPanel {
         return panel
     }
 
-    override var canBecomeKey: Bool { true }
+    override var canBecomeKey: Bool { presentedModalWindow == nil }
     override var canBecomeMain: Bool { false }
+
+    override func sendEvent(_ event: NSEvent) {
+        if let presentedModalWindow {
+            switch event.type {
+            case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+                (presentedModalWindow.attachedSheet ?? presentedModalWindow).makeKeyAndOrderFront(nil)
+                return
+            case .leftMouseUp, .rightMouseUp, .otherMouseUp,
+                 .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
+                 .scrollWheel:
+                return
+            default:
+                break
+            }
+        }
+        super.sendEvent(event)
+    }
 }
