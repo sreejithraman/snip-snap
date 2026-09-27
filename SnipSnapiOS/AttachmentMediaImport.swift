@@ -14,24 +14,20 @@ enum AttachmentSource {
 }
 
 struct AttachmentSourceMenu<Label: View>: View {
-    @State private var isChoosing = false
-    var title: LocalizedStringKey = "Add an attachment"
     let choose: (AttachmentSource) -> Void
     @ViewBuilder let label: () -> Label
 
     var body: some View {
-        Button(action: { isChoosing = true }, label: label)
-            .confirmationDialog(
-                title,
-                isPresented: $isChoosing,
-                titleVisibility: .visible
-            ) {
-                Button("Choose Files") { choose(.files) }
-                Button("Choose Photos") { choose(.photos) }
-                if UIImagePickerController.isSourceTypeAvailable(.camera) {
-                    Button("Take Photo") { choose(.camera) }
-                }
+        Menu {
+            Button("Choose Files", systemImage: "doc") { choose(.files) }
+            Button("Choose Photos", systemImage: "photo.on.rectangle") { choose(.photos) }
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                Button("Take Photo", systemImage: "camera") { choose(.camera) }
             }
+        } label: {
+            label()
+        }
+        .menuOrder(.fixed)
     }
 }
 
