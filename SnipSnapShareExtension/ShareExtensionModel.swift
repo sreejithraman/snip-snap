@@ -6,11 +6,6 @@ import SnipSnapPersistence
 @MainActor
 @Observable
 final class ShareExtensionModel {
-    enum Destination: String, CaseIterable {
-        case snips
-        case clipboard
-    }
-
     enum Phase: Equatable {
         case loading
         case editing
@@ -22,17 +17,17 @@ final class ShareExtensionModel {
     var attachments: [ShareImportAttachment] = []
     var lists: [SnipList] = [.inbox]
     var destinationListID = SnipList.inboxID
-    var destination: Destination = .snips
     private(set) var phase: Phase = .loading
+
+    var destinationList: SnipList? {
+        lists.first { $0.id == destinationListID }
+    }
 
     private let extensionContext: NSExtensionContext
     private let imports: ShareImportStore
-    private let clipboardImports: ShareClipboardImportStore
     private let staging: ShareImportStagingArea
     private let defaults: UserDefaults
     private var isCanceled = false
-    private var loadedText = ""
-    private var richTextRepresentations: [ClipboardRepresentation] = []
 
     init?(
         extensionContext: NSExtensionContext,
@@ -47,7 +42,6 @@ final class ShareExtensionModel {
         else { return nil }
         self.extensionContext = extensionContext
         imports = ShareImportStore(sharedRootURL: container.url)
-        clipboardImports = ShareClipboardImportStore(sharedRootURL: container.url)
         self.staging = staging
         defaults = UserDefaults(suiteName: container.identifier) ?? .standard
     }
@@ -71,8 +65,6 @@ final class ShareExtensionModel {
                 return
             }
             content = loaded.text
-            loadedText = loaded.text
-            richTextRepresentations = loaded.richTextRepresentations
             attachments = loaded.attachments
             lists = loadedLists
             let rememberedID = defaults.string(forKey: Self.destinationKey)
@@ -81,8 +73,6 @@ final class ShareExtensionModel {
                 rememberedListID: rememberedID,
                 in: lists
             )
-            destination = defaults.string(forKey: Self.destinationKindKey)
-                .flatMap(Destination.init(rawValue:)) ?? .snips
             phase = .editing
         } catch {
             staging.discard()
@@ -103,7 +93,7 @@ final class ShareExtensionModel {
     }
 
     func save() async {
-        guard canSave else { return }
+        guard canSave, !isCanceled else { return }
         phase = .saving
         let request = ShareImportRequest(
             content: content,
@@ -112,23 +102,15 @@ final class ShareExtensionModel {
             requestID: staging.requestID
         )
         do {
-            switch destination {
-            case .snips:
-                _ = try await imports.save(request)
-                defaults.set(destinationListID.uuidString, forKey: Self.destinationKey)
-            case .clipboard:
-                _ = try await clipboardImports.save(
-                    request,
-                    richTextRepresentations: content == loadedText ? richTextRepresentations : []
-                )
-            }
-            defaults.set(destination.rawValue, forKey: Self.destinationKindKey)
+            _ = try await imports.save(request)
+            guard !isCanceled else { return }
+            defaults.set(destinationListID.uuidString, forKey: Self.destinationKey)
             extensionContext.completeRequest(returningItems: nil)
         } catch {
+            guard !isCanceled else { return }
             phase = .failed(error.localizedDescription)
         }
     }
 
     private static let destinationKey = "share.lastDestinationListID"
-    private static let destinationKindKey = "share.lastDestinationKind"
 }

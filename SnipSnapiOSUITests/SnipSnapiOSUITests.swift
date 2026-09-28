@@ -706,7 +706,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         chooseDetailAction("share-snip", in: app)
         XCTAssertTrue(activityView(in: app).waitForExistence(timeout: 5))
 
-        let snipSnap = app.cells[shareAppName]
+        let snipSnap = shareActivityCell(in: app)
         XCTAssertTrue(snipSnap.waitForExistence(timeout: 5))
         snipSnap.tap()
 
@@ -719,6 +719,100 @@ final class SnipSnapiOSUITests: XCTestCase {
         proof.name = "Snip shared back into Snip Snap"
         proof.lifetime = .keepAlways
         add(proof)
+    }
+
+    func testSharePageShowsEveryListThenSaves() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        shareAppName = app.label
+        let suffix = String(UUID().uuidString.prefix(4))
+        let work = "Work \(suffix)"
+        let reading = "Reading \(suffix)"
+        createList(work, color: "red", in: app)
+        createList(reading, in: app)
+
+        let safari = shareURLFromSafari(token: "share-page-check-\(UUID().uuidString)")
+        let sharedText = safari.textViews["share-text"]
+        XCTAssertTrue(
+            sharedText.waitForExistence(timeout: 10),
+            "Share page did not open: \(safari.debugDescription)"
+        )
+        XCTAssertFalse(safari.otherElements["share-error"].exists)
+        XCTAssertFalse(safari.descendants(matching: .any)["share-destination-picker"].exists)
+
+        let page = XCTAttachment(screenshot: safari.screenshot())
+        page.name = "Share page saves into a list"
+        page.lifetime = .keepAlways
+        add(page)
+
+        let picker = safari.descendants(matching: .any)["share-list-picker"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 5))
+        picker.tap()
+        let options = safari.descendants(matching: .any)
+        for listName in ["Inbox", work, reading] {
+            XCTAssertTrue(
+                options.matching(NSPredicate(format: "label == %@", listName)).firstMatch
+                    .waitForExistence(timeout: 5),
+                "\(listName) is missing from the share picker: \(safari.debugDescription)"
+            )
+        }
+        XCTAssertFalse(options.matching(NSPredicate(format: "label == %@", "Clipboard")).firstMatch.exists)
+
+        let pickerProof = XCTAttachment(screenshot: safari.screenshot())
+        pickerProof.name = "Share page list picker shows every list"
+        pickerProof.lifetime = .keepAlways
+        add(pickerProof)
+
+        options.matching(NSPredicate(format: "label == %@", work)).firstMatch.tap()
+        Thread.sleep(forTimeInterval: 2)
+        let colorProof = XCTAttachment(screenshot: safari.screenshot())
+        colorProof.name = "Share page commits in the destination list color"
+        colorProof.lifetime = .keepAlways
+        add(colorProof)
+
+        let originalAppearance = XCUIDevice.shared.appearance
+        XCUIDevice.shared.appearance = .dark
+        defer { XCUIDevice.shared.appearance = originalAppearance }
+        Thread.sleep(forTimeInterval: 2)
+        let darkProof = XCTAttachment(screenshot: safari.screenshot())
+        darkProof.name = "Share page in dark mode"
+        darkProof.lifetime = .keepAlways
+        add(darkProof)
+
+        assertShareExtensionReportedLocalSave(in: safari)
+    }
+
+    private func shareActivityCell(in host: XCUIApplication) -> XCUIElement {
+        let named = host.cells.matching(
+            NSPredicate(format: "label == %@ OR label == %@", shareAppName, "Save to \(shareAppName)")
+        ).firstMatch
+        if !(named.exists && named.isHittable) {
+            let more = host.descendants(matching: .any).matching(
+                NSPredicate(format: "label == %@", "View More")
+            ).firstMatch
+            if more.exists && more.isHittable {
+                more.tap()
+            }
+        }
+        for _ in 0..<6 where !(named.exists && named.isHittable) {
+            scrollShareApps(in: host, towardLeft: true)
+        }
+        for _ in 0..<6 where !(named.exists && named.isHittable) {
+            scrollShareApps(in: host, towardLeft: false)
+        }
+        return named
+    }
+
+    private func scrollShareApps(in host: XCUIApplication, towardLeft: Bool) {
+        let row = host.cells.matching(identifier: "shareCell")
+        guard row.count > 1 else { return }
+        let anchor = row.element(boundBy: 1)
+        if towardLeft {
+            anchor.swipeLeft()
+        } else {
+            anchor.swipeRight()
+        }
     }
 
     func testShareExtensionImportsExactlyOnceWhileMainAppIsOpen() {
@@ -2212,7 +2306,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             "Safari did not expose Share after retrying its menu."
         )
         share.tap()
-        let activity = safari.cells[shareAppName]
+        let activity = shareActivityCell(in: safari)
         XCTAssertTrue(activity.waitForExistence(timeout: 8))
         activity.tap()
         return safari
@@ -2223,7 +2317,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(save.waitForExistence(timeout: 3))
         save.tap()
         XCTAssertTrue(
-            save.waitForNonExistence(timeout: 8),
+            safari.textViews["share-text"].waitForNonExistence(timeout: 8),
             "The extension did not report a completed local save to its host."
         )
         XCTAssertFalse(safari.otherElements["share-error"].exists)

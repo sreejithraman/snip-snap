@@ -38,7 +38,7 @@ struct IOSClipboardView: View {
 
     private var emptyDetail: String {
         return viewState.onlyPinned ? String(localized: "Pin a clipboard entry to keep it here.")
-            : String(localized: "Paste here or share content to Clipboard.")
+            : String(localized: "Paste here to add content.")
     }
 
     @ViewBuilder

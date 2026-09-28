@@ -44,7 +44,7 @@ final class ShareClipboardImportStoreTests: XCTestCase {
     XCTAssertEqual(savedSnipCount, 0)
 
     let reopened = ShareClipboardImportStore(sharedRootURL: root)
-    let summary = await reopened.importPending { imported, urls in
+    let summary = await reopened.importPendingWithRepresentations { imported, urls, _ in
       XCTAssertEqual(imported, request)
       XCTAssertTrue(urls.isEmpty)
     }
@@ -68,7 +68,7 @@ final class ShareClipboardImportStoreTests: XCTestCase {
     let store = ShareClipboardImportStore(sharedRootURL: root)
     _ = try await store.save(request)
     try FileManager.default.removeItem(at: source)
-    let first = await store.importPending { imported, urls in
+    let first = await store.importPendingWithRepresentations { imported, urls, _ in
       XCTAssertEqual(imported.requestID, request.requestID)
       XCTAssertEqual(try Data(contentsOf: XCTUnwrap(urls.first)), bytes)
       throw CocoaError(.fileWriteOutOfSpace)
@@ -77,7 +77,7 @@ final class ShareClipboardImportStoreTests: XCTestCase {
     let pending = await store.pendingImportCount()
     XCTAssertEqual(pending, 1)
     let destination = root.appendingPathComponent("owned.txt")
-    let retried = await store.importPending { imported, urls in
+    let retried = await store.importPendingWithRepresentations { imported, urls, _ in
       XCTAssertEqual(imported.requestID, request.requestID)
       try FileManager.default.copyItem(at: XCTUnwrap(urls.first), to: destination)
     }

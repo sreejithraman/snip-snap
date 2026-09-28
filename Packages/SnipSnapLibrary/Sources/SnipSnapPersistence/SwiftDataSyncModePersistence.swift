@@ -16,6 +16,20 @@ public enum SyncModeActivationManifestReader {
     }
   }
 
+  /// Whether sync mode has an activation manifest under its root. Presence, not
+  /// validity: when the manifest is broken, the app falls back to the legacy
+  /// store but the app's publisher still owns the shared catalogs, so a store
+  /// left behind by a mode change must stay quiet either way.
+  package static func hasActivationManifest(atSyncModeRootURL rootURL: URL) -> Bool {
+    let manifestURL = rootURL
+      .appendingPathComponent("activation.json", isDirectory: false)
+    guard rootURL.isFileURL else { return false }
+    let values = try? manifestURL.resourceValues(
+      forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+    )
+    return values?.isRegularFile == true && values?.isSymbolicLink != true
+  }
+
   /// Reads the Cloud namespace selected by an existing activation manifest.
   /// Missing, local-only, or invalid state fails closed without changing the file system.
   public static func activeCloudNamespace(
@@ -216,6 +230,7 @@ package actor SwiftDataSyncModePersistence {
   let defaultSyncProtocol: SyncModeSyncProtocol
   var manifest: Manifest
   var writeAdmissionInProgress = false
+  var shareDestinationRevision: UInt64 = 0
   struct ActiveMutationWaiter {
     let id: UUID
     let storeID: UUID

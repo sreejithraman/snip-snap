@@ -3,6 +3,8 @@ import Foundation
 import SnipSnapCore
 
 /// A separate inbox keeps clipboard shares out of the saved-snips import path.
+/// Sharing no longer targets Clipboard; this store remains only to drain items
+/// queued by earlier app versions.
 public actor ShareClipboardImportStore {
   private let paths: ShareImportPaths
   private let pendingRoot: URL
@@ -13,6 +15,8 @@ public actor ShareClipboardImportStore {
     pendingRoot = sharedRootURL.appendingPathComponent("Share/ClipboardImports", isDirectory: true)
   }
 
+  /// Accepts new envelopes for legacy fixtures only; sharing no longer targets
+  /// Clipboard.
   public func save(
     _ request: ShareImportRequest,
     richTextRepresentations: [ClipboardRepresentation] = []
@@ -42,14 +46,6 @@ public actor ShareClipboardImportStore {
   /// The receiver must persist the entry and copy its files before returning.
   /// Use requestID for idempotency: a crash after persistence can replay a request.
   /// Throwing retains the request and all files for the next foreground import.
-  public func importPending(
-    using receive: @Sendable (ShareImportRequest, [URL]) async throws -> Void
-  ) async -> ShareImportSummary {
-    await importPendingWithRepresentations { request, urls, _ in
-      try await receive(request, urls)
-    }
-  }
-
   public func importPendingWithRepresentations(
     using receive: @Sendable (ShareImportRequest, [URL], [ClipboardRepresentation]) async throws -> Void
   ) async -> ShareImportSummary {

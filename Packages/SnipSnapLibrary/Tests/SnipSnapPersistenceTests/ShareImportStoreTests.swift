@@ -96,6 +96,89 @@ final class ShareImportStoreTests: XCTestCase {
     )
   }
 
+  func testPublishedShareCatalogFeedsTheSharePicker() async throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let reading = SnipList(id: UUID(), name: "Reading", systemImage: "list.bullet", position: 1)
+    let imports = ShareImportStore(sharedRootURL: root)
+
+    try await imports.publishAvailableLists([.inbox, reading])
+
+    let lists = await imports.availableLists()
+    XCTAssertEqual(lists, [.inbox, reading])
+  }
+
+  func testLegacyStorePublishesItsListsWhenSyncModeIsAbsent() async throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let library = try SwiftDataSnipLibrary(storeURL: ShareImportStore.storeURL(in: root))
+
+    _ = try await library.perform(
+      .createList(name: "Work", systemImage: "list.bullet"),
+      sortedBy: .chronological
+    )
+
+    let lists = await ShareImportStore(sharedRootURL: root).availableLists()
+    XCTAssertEqual(lists.map(\.name), ["Inbox", "Work"])
+  }
+
+  func testLegacyStoreKeepsQuietWhileSyncModeOwnsTheLibrary() async throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let reading = SnipList(id: UUID(), name: "Reading", systemImage: "list.bullet", position: 1)
+    let imports = ShareImportStore(sharedRootURL: root)
+    try await imports.publishAvailableLists([.inbox, reading])
+    _ = try SwiftDataSyncModePersistence(
+      rootURL: root.appendingPathComponent("SyncMode", isDirectory: true)
+    )
+
+    let library = try SwiftDataSnipLibrary(storeURL: ShareImportStore.storeURL(in: root))
+    _ = try await library.perform(
+      .createList(name: "Work", systemImage: "list.bullet"),
+      sortedBy: .chronological
+    )
+
+    let lists = await imports.availableLists()
+    XCTAssertEqual(lists, [.inbox, reading])
+  }
+
+  func testSyncModeActiveLibraryPublishesItsListsToTheShareCatalog() async throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let persistence = try SwiftDataSyncModePersistence(
+      rootURL: root.appendingPathComponent("SyncMode", isDirectory: true)
+    )
+    let library = try await persistence.activeLibrary()
+
+    _ = try await library.perform(
+      .createList(name: "Work", systemImage: "list.bullet"),
+      sortedBy: .chronological
+    )
+
+    let lists = await ShareImportStore(sharedRootURL: root).availableLists()
+    XCTAssertEqual(lists.map(\.name), ["Inbox", "Work"])
+  }
+
+  func testSyncModeSnapshotRepublishesAStaleShareCatalog() async throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let persistence = try SwiftDataSyncModePersistence(
+      rootURL: root.appendingPathComponent("SyncMode", isDirectory: true)
+    )
+    let library = try await persistence.activeLibrary()
+    _ = try await library.perform(
+      .createList(name: "Work", systemImage: "list.bullet"),
+      sortedBy: .chronological
+    )
+    let imports = ShareImportStore(sharedRootURL: root)
+    try await imports.publishAvailableLists([.inbox])
+
+    _ = await library.snapshot(sortedBy: .chronological)
+
+    let lists = await imports.availableLists()
+    XCTAssertEqual(lists.map(\.name), ["Inbox", "Work"])
+  }
+
   func testShareDestinationStartsInInboxThenUsesAStillPresentRememberedList() {
     let reading = SnipList(id: UUID(), name: "Reading", systemImage: "list.bullet", position: 1)
     let lists: [SnipList] = [.inbox, reading]

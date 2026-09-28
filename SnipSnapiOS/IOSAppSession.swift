@@ -32,6 +32,41 @@ extension SnipSnapCloudSyncSession: IOSCloudSyncSessionHandling {
     }
 }
 
+@MainActor
+final class ShareDestinationListPublisher {
+    private let imports: ShareImportStore
+    private let beforePublish: (@Sendable () async -> Void)?
+    private var latest: Task<Void, Never>?
+    private var published: [SnipList]?
+
+    init(
+        imports: ShareImportStore,
+        beforePublish: (@Sendable () async -> Void)? = nil
+    ) {
+        self.imports = imports
+        self.beforePublish = beforePublish
+    }
+
+    func enqueue(_ lists: [SnipList], force: Bool = false) {
+        let previous = latest
+        latest = Task {
+            _ = await previous?.value
+            guard force || lists != published else { return }
+            await beforePublish?()
+            do {
+                try await imports.publishAvailableLists(lists)
+                published = lists
+            } catch {
+                // Unpublished lists stay eligible, so the next enqueue retries.
+            }
+        }
+    }
+
+    func flush() async {
+        await latest?.value
+    }
+}
+
 struct IOSLibraryStartup {
     let library: any SnipLibrary
     let sourceLibrary: any SnipLibrary
@@ -55,6 +90,7 @@ final class IOSAppSession {
     let accountNoticeModel: AppleAccountNoticeModel?
 
     private let shareImporter: IOSShareImportCoordinator?
+    private let shareDestinationPublisher: ShareDestinationListPublisher?
     private let cloudLifecycleHooks: SnipSnapCloudLifecycleHooks
     private let cloudSyncSession: (any IOSCloudSyncSessionHandling)?
     private var automaticSyncTask: Task<Void, Never>?
@@ -80,6 +116,9 @@ final class IOSAppSession {
         clipboardRootURL: URL? = nil,
         clipboardContainerIdentifier: String? = nil
     ) {
+        let shareDestinationPublisher = shareImports.map {
+            ShareDestinationListPublisher(imports: $0)
+        }
         let model = IOSAppModel(
             library: library,
             userActions: userActions,
@@ -87,9 +126,15 @@ final class IOSAppSession {
             recoveryScope: recoveryScope,
             initialSnapshot: initialSnapshot,
             startupError: startupError,
-            cloudSyncHandler: cloudSyncHandler
+            cloudSyncHandler: cloudSyncHandler,
+            publishShareDestinations: shareDestinationPublisher.map { publisher in
+                { lists in
+                    publisher.enqueue(lists)
+                }
+            }
         )
         self.model = model
+        self.shareDestinationPublisher = shareDestinationPublisher
         let clipboard = IOSClipboardModel(
             rootURL: clipboardRootURL ?? FileManager.default.temporaryDirectory.appendingPathComponent("Clipboard-Preview-" + UUID().uuidString),
             settings: syncedContentSettings,
@@ -172,6 +217,7 @@ final class IOSAppSession {
 
     func launch() async {
         await model.load()
+        shareDestinationPublisher?.enqueue(model.lists, force: true)
         await cloudLifecycleHooks.launch()
         await clipboard.foreground()
         if let shareImporter {
@@ -181,6 +227,7 @@ final class IOSAppSession {
     }
 
     func foreground() async {
+        shareDestinationPublisher?.enqueue(model.lists, force: true)
         await cloudLifecycleHooks.foreground()
         await clipboard.foreground()
         await shareImporter?.importPendingAndReload()

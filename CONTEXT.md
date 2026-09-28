@@ -9,7 +9,7 @@ A saved piece of text with optional file attachments.
 _Avoid_: Clip, item, capture item
 
 **Clipboard entry**:
-A record of content captured from the Mac clipboard or added through Paste or Share on iOS, kept in clipboard history.
+A record of content captured from the Mac clipboard or added through Paste on iOS, kept in clipboard history.
 _Avoid_: Snip, clipboard snip
 
 **Pinned snip**:

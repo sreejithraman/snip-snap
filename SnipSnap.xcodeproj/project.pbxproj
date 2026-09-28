@@ -139,6 +139,8 @@
 		AC1000000000000000000001 /* SnipListAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC2000000000000000000001 /* SnipListAppearance.swift */; };
 		A10000000000000000000002 /* SnipSnapTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* SnipSnapTheme.swift */; };
 		AC1000000000000000000002 /* SnipListAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC2000000000000000000001 /* SnipListAppearance.swift */; };
+		A10000000000000000000011 /* SnipSnapTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* SnipSnapTheme.swift */; };
+		AC1000000000000000000003 /* SnipListAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC2000000000000000000001 /* SnipListAppearance.swift */; };
 		A10000000000000000000003 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* AppIcon.icon */; };
 		A10000000000000000000004 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* AppIcon.icon */; };
 		A10000000000000000000005 /* SnipCompletionLanguage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* SnipCompletionLanguage.swift */; };
@@ -1035,6 +1037,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				A1000000000000000000000A /* SnipCompletionLanguage.swift in Sources */,
+				A10000000000000000000011 /* SnipSnapTheme.swift in Sources */,
+				AC1000000000000000000003 /* SnipListAppearance.swift in Sources */,
 				F10000000000000000000001 /* ShareViewController.swift in Sources */,
 				F10000000000000000000002 /* ShareExtensionModel.swift in Sources */,
 				F10000000000000000000003 /* ShareExtensionInputLoader.swift in Sources */,

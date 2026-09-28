@@ -200,6 +200,11 @@ public actor ShareImportStore {
     return ShareDestinationCatalog.read(from: paths.catalogURL)
   }
 
+  /// Keeps the share picker's list catalog in step with the library the app shows.
+  public func publishAvailableLists(_ lists: [SnipList]) async throws {
+    try ShareDestinationCatalog.write(lists, to: paths.catalogURL)
+  }
+
   public func save(_ request: ShareImportRequest) async throws -> ShareImportSaveResult {
     try validate(request)
     try publishPending(request)
@@ -393,6 +398,11 @@ package struct ShareImportPaths: Sendable {
     let libraryDirectory = localDirectory.deletingLastPathComponent()
     guard libraryDirectory.lastPathComponent == "Library" else { return nil }
     return libraryDirectory.deletingLastPathComponent()
+  }
+
+  static func sharedRoot(forSyncModeRootURL rootURL: URL) -> URL? {
+    guard rootURL.lastPathComponent == "SyncMode" else { return nil }
+    return rootURL.deletingLastPathComponent()
   }
 
   func attachmentURL(

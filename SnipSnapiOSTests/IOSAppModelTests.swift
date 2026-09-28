@@ -3504,6 +3504,27 @@ final class IOSAppModelTests: XCTestCase {
         return await probe.callCount() >= expected
     }
 
+    func testPublishesAllListsToTheShareDestinationCatalogWhenListsChange() async throws {
+        var published: [[SnipList]] = []
+        let library = ModelTestLibrary()
+        let model = IOSAppModel(
+            library: library,
+            userActions: DirectSnipLibraryUserActions(library: library),
+            publishShareDestinations: { published.append($0) }
+        )
+
+        await model.load()
+        XCTAssertEqual(published.map { $0.map(\.name) }, [["Inbox"]])
+
+        _ = await model.createList(name: "Work")
+        let afterCreate = try XCTUnwrap(published.last)
+        XCTAssertEqual(afterCreate.map(\.name), ["Inbox", "Work"])
+
+        let workID = try XCTUnwrap(afterCreate.first { $0.name == "Work" }?.id)
+        _ = await model.deleteList(id: workID)
+        XCTAssertEqual(published.last?.map(\.name), ["Inbox"])
+    }
+
     private func makeModel(library: any SnipLibrary) -> IOSAppModel {
         let actions = DirectSnipLibraryUserActions(library: library)
         return IOSAppModel(library: library, userActions: actions)
@@ -4973,5 +4994,86 @@ final class ListSelectorExpansionTests: XCTestCase {
         XCTAssertEqual(expansion.distance, 0)
         expansion.update(distance: 8)
         XCTAssertEqual(expansion.distance, 8)
+    }
+}
+
+@MainActor
+final class ShareDestinationListPublisherTests: XCTestCase {
+    func testOverlappingEnqueuesKeepTheLatestListsInTheCatalog() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let imports = ShareImportStore(sharedRootURL: root)
+        let probe = ShareDestinationWriteProbe()
+        let publisher = ShareDestinationListPublisher(
+            imports: imports,
+            beforePublish: { await probe.beforePublish() }
+        )
+        let work = SnipList(id: UUID(), name: "Work", systemImage: "list.bullet", position: 1)
+
+        publisher.enqueue([.inbox])
+        await probe.waitUntilFirstPublishStarted()
+        publisher.enqueue([.inbox, work])
+        await probe.openGate()
+        await publisher.flush()
+
+        let lists = await imports.availableLists()
+        XCTAssertEqual(lists.map(\.name), ["Inbox", "Work"])
+    }
+
+    func testForcedEnqueueRepublishesListsAnotherWriterOverwrote() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let imports = ShareImportStore(sharedRootURL: root)
+        let publisher = ShareDestinationListPublisher(imports: imports)
+        let work = SnipList(id: UUID(), name: "Work", systemImage: "list.bullet", position: 1)
+
+        publisher.enqueue([.inbox, work])
+        await publisher.flush()
+        try await imports.publishAvailableLists([.inbox])
+
+        publisher.enqueue([.inbox, work], force: true)
+        await publisher.flush()
+
+        let lists = await imports.availableLists()
+        XCTAssertEqual(lists.map(\.name), ["Inbox", "Work"])
+    }
+
+    private func makeRoot() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "ShareDestinationListPublisherTests-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+}
+
+/// Holds the first publish at a gate so a second enqueue must overtake it unless
+/// the publisher serializes its writes.
+private actor ShareDestinationWriteProbe {
+    private var firstPublishStarted = false
+    private var gateIsOpen = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var gateWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func beforePublish() async {
+        guard !firstPublishStarted else { return }
+        firstPublishStarted = true
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        guard !gateIsOpen else { return }
+        await withCheckedContinuation { gateWaiters.append($0) }
+    }
+
+    func waitUntilFirstPublishStarted() async {
+        guard !firstPublishStarted else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func openGate() {
+        gateIsOpen = true
+        gateWaiters.forEach { $0.resume() }
+        gateWaiters.removeAll()
     }
 }
