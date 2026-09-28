@@ -1,6 +1,6 @@
 import Foundation
 
-package enum SnipListNameAllocator {
+public enum SnipListNameAllocator {
   private static let locale = Locale(identifier: "en_US_POSIX")
 
   package static func cleaned(_ name: String) -> String {
@@ -14,6 +14,14 @@ package enum SnipListNameAllocator {
         locale: locale
       )
       .lowercased(with: locale)
+  }
+
+  public static func matching(_ selector: String, in lists: [SnipList]) -> SnipList? {
+    if let id = UUID(uuidString: selector), let list = lists.first(where: { $0.id == id }) {
+      return list
+    }
+    let name = normalized(selector)
+    return lists.first(where: { normalized($0.name) == name })
   }
 
   package static func availableName(startingWith proposedName: String, in lists: [SnipList]) -> String {

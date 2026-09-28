@@ -114,14 +114,14 @@ struct PanelHeaderView: View {
             .buttonStyle(.plain)
             .disabled(model.editingID != nil)
             .accessibilityLabel("Needs attention (\(model.needsAttentionCount))")
-            .help("Review recovered versions")
+            .help("Review items needing attention")
         } else {
             Button(action: reviewRecovery) {
                 Label("Needs attention (\(model.needsAttentionCount))", systemImage: "exclamationmark.circle.fill")
             }
             .buttonStyle(.bordered)
             .disabled(model.editingID != nil)
-            .help("Review recovered versions")
+            .help("Review items needing attention")
         }
     }
 }

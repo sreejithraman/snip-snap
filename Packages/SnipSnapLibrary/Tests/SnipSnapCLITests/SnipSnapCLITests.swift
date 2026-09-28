@@ -5,6 +5,40 @@ import SnipSnapPersistence
 import XCTest
 
 final class SnipSnapCLITests: XCTestCase {
+  func testParserAcceptsReadingSavedSnips() throws {
+    guard case .request(let options) = try SnipSnapCLIParser.parse([
+      "list", "--list", "Research", "--json",
+    ]) else { return XCTFail("Expected list command.") }
+    XCTAssertEqual(options.input, .action(.listSnips(list: "Research")))
+    XCTAssertTrue(options.json)
+  }
+
+  func testParserPassesEmptyUpdateToLibraryForAttachmentSnips() throws {
+    let id = UUID()
+    let timestamp = Date(timeIntervalSinceReferenceDate: 1_700_000_000)
+    guard case .request(let options) = try SnipSnapCLIParser.parse([
+      "update", id.uuidString, "--if-updated-at", "1700000000", "",
+    ]) else { return XCTFail("Expected update command.") }
+    XCTAssertEqual(try options.action(), .updateSnip(
+      id: id, content: "", expectedUpdatedAt: timestamp))
+  }
+
+  func testParserRequiresExplicitDeleteConfirmation() throws {
+    let id = UUID()
+    let revision = String(repeating: "a", count: 64)
+    XCTAssertThrowsError(try SnipSnapCLIParser.parse(["delete", id.uuidString]))
+    guard case .request(let options) = try SnipSnapCLIParser.parse([
+      "delete", id.uuidString, "--if-snip-revision", revision, "--yes",
+    ]) else { return XCTFail("Expected delete command.") }
+    XCTAssertEqual(options.input, .action(.deleteSnip(id: id, expectedRevision: revision)))
+
+    XCTAssertThrowsError(try SnipSnapCLIParser.parse(["lists", "delete", id.uuidString]))
+    guard case .request(let listOptions) = try SnipSnapCLIParser.parse([
+      "lists", "delete", id.uuidString, "--if-list-revision", revision, "--yes",
+    ]) else { return XCTFail("Expected list delete command.") }
+    XCTAssertEqual(listOptions.input, .action(.deleteList(id: id, expectedRevision: revision)))
+  }
+
   func testParserAcceptsAgentFriendlyAddOptions() throws {
     let requestID = UUID()
     let command = try SnipSnapCLIParser.parse([
@@ -51,6 +85,369 @@ final class SnipSnapCLITests: XCTestCase {
 
     XCTAssertNotEqual(base.fingerprint, otherList.fingerprint)
     XCTAssertNotEqual(base.fingerprint, emptySelector.fingerprint)
+    XCTAssertNotEqual(
+      base.fingerprint,
+      AgentImportRequest(
+        content: "Keep this", destinationListID: firstListID, scopeToken: "account-a"
+      ).fingerprint
+    )
+  }
+
+  func testQueuedAddWaitsForOriginalLibraryScope() async throws {
+    let fixture = try makeFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.directory) }
+    try await fixture.imports.publishAvailableLists([.inbox], scopeToken: "account-a")
+    var options = SnipSnapAddOptions()
+    options.requestID = UUID()
+    _ = try await SnipSnapCLIService.add(
+      options: options, content: "Scoped note", imports: fixture.imports,
+      scopeToken: "account-a"
+    )
+
+    let wrongScope = await fixture.imports.importPending(activeScopeToken: "account-b") { _ in
+      XCTFail("A queued add must not reach the wrong account")
+      throw AgentImportError.invalidRequest
+    }
+    XCTAssertEqual(wrongScope, AgentImportSummary(imported: 0, failed: 0))
+    let pendingBefore = await fixture.imports.pendingImportCount()
+    XCTAssertEqual(pendingBefore, 1)
+
+    let originalScope = await fixture.imports.importPending(activeScopeToken: "account-a") {
+      request in
+      XCTAssertEqual(request.scopeToken, "account-a")
+      return AgentImportReceipt(
+        status: .added, snipID: UUID(), listID: request.destinationListID,
+        listName: "Inbox", request: request
+      )
+    }
+    XCTAssertEqual(originalScope, AgentImportSummary(imported: 1, failed: 0))
+    let pendingAfter = await fixture.imports.pendingImportCount()
+    XCTAssertEqual(pendingAfter, 0)
+  }
+
+  func testQueuedAddStillReportsRequestIDIfLibrarySwitchesBeforeOutput() async throws {
+    let fixture = try makeFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.directory) }
+    let requests = SnipCLIRequestStore(rootURL: fixture.directory)
+    try await requests.publishActiveScopeToken("account-a")
+    try await fixture.imports.publishAvailableLists([.inbox], scopeToken: "account-a")
+    var options = SnipSnapAddOptions()
+    options.requestID = UUID()
+    let pending = try await SnipSnapCLIService.add(
+      options: options, content: "Scoped note", imports: fixture.imports,
+      scopeToken: "account-a"
+    )
+    XCTAssertEqual(pending.status, .pending)
+
+    try await requests.publishActiveScopeToken("account-b")
+    let output = try await SnipSnapCLIService.completedOrPendingResult(
+      pending, imports: fixture.imports, requests: requests, scopeToken: "account-a"
+    )
+    XCTAssertEqual(output.status, .pending)
+    XCTAssertEqual(output.requestID, options.requestID)
+    let pendingCount = await fixture.imports.pendingImportCount()
+    XCTAssertEqual(pendingCount, 1)
+  }
+
+  func testUnattributedAddKeepsRetryIdentityBeforeAndAfterInboxApproval() async throws {
+    let fixture = try makeFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.directory) }
+    let research = SnipList(
+      id: UUID(), name: "Research", systemImage: "folder", position: 1
+    )
+    try await fixture.imports.publishAvailableLists([.inbox, research])
+    var options = SnipSnapAddOptions()
+    options.list = "Research"
+    options.requestID = UUID()
+    let first = try await SnipSnapCLIService.add(
+      options: options, content: "Future idea", imports: fixture.imports
+    )
+    XCTAssertEqual(first.status, .pending)
+    XCTAssertEqual(first.listID, research.id)
+
+    // The app has now established a library scope, but the user has not approved
+    // this previously unattributed request for it yet.
+    try await fixture.imports.publishAvailableLists([.inbox], scopeToken: "account-b")
+    let beforeApproval = try await SnipSnapCLIService.add(
+      options: options, content: "Future idea", imports: fixture.imports,
+      scopeToken: "account-b"
+    )
+    XCTAssertEqual(beforeApproval.status, .pending)
+    XCTAssertEqual(beforeApproval.listID, research.id)
+
+    try await fixture.imports.bindPendingRequestToInbox(
+      options.requestID, scopeToken: "account-b"
+    )
+    let afterApproval = try await SnipSnapCLIService.add(
+      options: options, content: "Future idea", imports: fixture.imports,
+      scopeToken: "account-b"
+    )
+    XCTAssertEqual(afterApproval.status, .pending)
+    XCTAssertEqual(afterApproval.listID, SnipList.inboxID)
+    let summary = await fixture.imports.importPending(activeScopeToken: "account-b") { request in
+      XCTAssertNil(request.scopeToken)
+      XCTAssertEqual(request.destinationListID, research.id)
+      XCTAssertEqual(request.destinationSelector, "Research")
+      XCTAssertEqual(request.executionListID, SnipList.inboxID)
+      return AgentImportReceipt(
+        status: .added, snipID: UUID(), listID: request.executionListID,
+        listName: SnipList.inbox.name, request: request
+      )
+    }
+    XCTAssertEqual(summary, AgentImportSummary(imported: 1, failed: 0))
+
+    let completed = try await SnipSnapCLIService.add(
+      options: options, content: "Future idea", imports: fixture.imports,
+      scopeToken: "account-b"
+    )
+    XCTAssertEqual(completed.status, .unchanged)
+    XCTAssertEqual(completed.listID, SnipList.inboxID)
+    do {
+      _ = try await SnipSnapCLIService.add(
+        options: options, content: "Future idea", imports: fixture.imports,
+        scopeToken: "account-c"
+      )
+      XCTFail("Approved adds must stay in their chosen library")
+    } catch SnipCLIRequestError.scopeChanged {}
+  }
+
+  func testClosedAppAddForPreviousLibraryRequiresExplicitInboxChoice() async throws {
+    let fixture = try makeFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.directory) }
+    try await fixture.imports.publishAvailableLists([.inbox], scopeToken: "account-a")
+    var options = SnipSnapAddOptions()
+    options.requestID = UUID()
+    let queued = try await SnipSnapCLIService.add(
+      options: options, content: "From account A", imports: fixture.imports,
+      scopeToken: "account-a"
+    )
+    XCTAssertEqual(queued.status, .pending)
+    try await fixture.imports.publishAvailableLists([.inbox], scopeToken: "account-b")
+
+    let skipped = await fixture.imports.importPending(activeScopeToken: "account-b") { _ in
+      XCTFail("An add from account A must wait for a choice")
+      throw AgentImportError.invalidRequest
+    }
+    XCTAssertEqual(skipped, AgentImportSummary(imported: 0, failed: 0))
+    let needsAttention = try await fixture.imports.pendingRequestsRequiringAttention(
+      activeScopeToken: "account-b"
+    )
+    XCTAssertEqual(needsAttention.map(\.requestID), [options.requestID])
+
+    try await fixture.imports.bindPendingRequestToInbox(
+      options.requestID, scopeToken: "account-b"
+    )
+    let imported = await fixture.imports.importPending(activeScopeToken: "account-b") { request in
+      XCTAssertEqual(request.scopeToken, "account-a")
+      XCTAssertEqual(request.approvedInboxScopeToken, "account-b")
+      XCTAssertEqual(request.executionListID, SnipList.inboxID)
+      return AgentImportReceipt(
+        status: .added, snipID: UUID(), listID: request.executionListID,
+        listName: SnipList.inbox.name, request: request
+      )
+    }
+    XCTAssertEqual(imported, AgentImportSummary(imported: 1, failed: 0))
+    let retry = try await SnipSnapCLIService.add(
+      options: options, content: "From account A", imports: fixture.imports,
+      scopeToken: "account-b"
+    )
+    XCTAssertEqual(retry.status, .unchanged)
+    do {
+      _ = try await SnipSnapCLIService.add(
+        options: options, content: "From account A", imports: fixture.imports,
+        scopeToken: "account-a"
+      )
+      XCTFail("The approved add now belongs to account B")
+    } catch SnipCLIRequestError.scopeChanged {}
+  }
+
+  func testInterruptedLibraryTransitionStillQueuesOfflineAddForReview() async throws {
+    let fixture = try makeFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.directory) }
+    let requests = SnipCLIRequestStore(rootURL: fixture.directory)
+    try await requests.publishActiveScopeToken("account-a")
+    try await fixture.imports.publishAvailableLists([.inbox], scopeToken: "account-a")
+
+    try await requests.suspendActiveScope()
+    let unavailableScope = try await requests.activeScopeToken()
+    XCTAssertNil(unavailableScope)
+    var options = SnipSnapAddOptions()
+    options.requestID = UUID()
+    let queued = try await SnipSnapCLIService.add(
+      options: options, content: "Interrupted transition idea",
+      imports: fixture.imports, scopeToken: unavailableScope
+    )
+    XCTAssertEqual(queued.status, .pending)
+    let pending = try await fixture.imports.pendingRequestsRequiringAttention(
+      activeScopeToken: "account-b"
+    )
+    XCTAssertEqual(pending.map(\.requestID), [options.requestID])
+  }
+
+  func testAddCompletionWaitRejectsAnActiveLibrarySwitch() async throws {
+    let fixture = try makeFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.directory) }
+    let requests = SnipCLIRequestStore(rootURL: fixture.directory)
+    try await requests.publishActiveScopeToken("account-a")
+    let request = AgentImportRequest(
+      content: "Account A idea", destinationListID: SnipList.inboxID,
+      scopeToken: "account-a"
+    )
+    _ = try await fixture.imports.save(request)
+    let waiting = Task {
+      try await SnipSnapCLIService.completedResult(
+        requestID: request.requestID, imports: fixture.imports,
+        requests: requests, scopeToken: "account-a", timeout: .seconds(1)
+      )
+    }
+    await Task.yield()
+    try await requests.publishActiveScopeToken("account-b")
+    do {
+      _ = try await waiting.value
+      XCTFail("The original add must not report a result after the library switches")
+    } catch SnipCLIRequestError.scopeChanged {}
+  }
+
+  func testCompletedScopedAddReportsLibrarySwitchOnRetry() async throws {
+    let fixture = try makeFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.directory) }
+    try await fixture.imports.publishAvailableLists([.inbox], scopeToken: "account-a")
+    var options = SnipSnapAddOptions()
+    options.requestID = UUID()
+    _ = try await SnipSnapCLIService.add(
+      options: options, content: "Account A idea", imports: fixture.imports,
+      scopeToken: "account-a"
+    )
+    _ = await fixture.imports.importPending(activeScopeToken: "account-a") { request in
+      AgentImportReceipt(
+        status: .added, snipID: UUID(), listID: request.executionListID,
+        listName: SnipList.inbox.name, request: request
+      )
+    }
+
+    do {
+      _ = try await SnipSnapCLIService.add(
+        options: options, content: "Account A idea", imports: fixture.imports,
+        scopeToken: "account-b"
+      )
+      XCTFail("A completed add must remain owned by account A")
+    } catch SnipCLIRequestError.scopeChanged {}
+  }
+
+  func testLegacyCompletedAddRequiresLibraryVerificationAfterUpgrade() async throws {
+    let fixture = try makeFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.directory) }
+    var options = SnipSnapAddOptions()
+    options.requestID = UUID()
+    _ = try await SnipSnapCLIService.add(
+      options: options, content: "Older idea", imports: fixture.imports
+    )
+    _ = await fixture.imports.importPending { request in
+      AgentImportReceipt(
+        status: .added, snipID: UUID(), listID: request.destinationListID,
+        listName: SnipList.inbox.name, request: request
+      )
+    }
+    let receiptURL = fixture.directory.appendingPathComponent(
+      "Agent/Receipts/\(options.requestID.uuidString).json"
+    )
+    let oldReceipt = try JSONSerialization.jsonObject(
+      with: Data(contentsOf: receiptURL)
+    ) as? [String: Any]
+    XCTAssertNil(oldReceipt?["requestScopeToken"])
+    XCTAssertNil(oldReceipt?["approvedInboxScopeToken"])
+
+    do {
+      _ = try await SnipSnapCLIService.add(
+        options: options, content: "Older idea", imports: fixture.imports
+      )
+      XCTFail("An old receipt cannot prove library ownership while the app is closed")
+    } catch SnipSnapCLIError.legacyAddNeedsVerification(let id) {
+      XCTAssertEqual(id, options.requestID)
+    }
+    do {
+      _ = try await SnipSnapCLIService.add(
+        options: options, content: "Older idea", imports: fixture.imports,
+        scopeToken: "account-b"
+      )
+      XCTFail("An old receipt cannot prove which library owns the snip")
+    } catch SnipSnapCLIError.legacyAddNeedsVerification(let id) {
+      XCTAssertEqual(id, options.requestID)
+    }
+  }
+
+  func testScopedAddNeverResolvesAnotherAccountListCatalog() async throws {
+    let fixture = try makeFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.directory) }
+    let firstList = SnipList(
+      id: UUID(), name: "Research", systemImage: "folder", position: 1
+    )
+    let secondList = SnipList(
+      id: UUID(), name: "Research", systemImage: "folder", position: 1
+    )
+    try await fixture.imports.publishAvailableLists([.inbox, firstList], scopeToken: "account-a")
+    var options = SnipSnapAddOptions()
+    options.list = "Research"
+
+    do {
+      _ = try await SnipSnapCLIService.add(
+        options: options, content: "Account B note", imports: fixture.imports,
+        scopeToken: "account-b"
+      )
+      XCTFail("A new scope must not resolve the old account's list")
+    } catch SnipCLIRequestError.scopeChanged {}
+    let pendingBefore = await fixture.imports.pendingImportCount()
+    XCTAssertEqual(pendingBefore, 0)
+
+    try await fixture.imports.publishAvailableLists([.inbox, secondList], scopeToken: "account-b")
+    let added = try await SnipSnapCLIService.add(
+      options: options, content: "Account B note", imports: fixture.imports,
+      scopeToken: "account-b"
+    )
+    XCTAssertEqual(added.listID, secondList.id)
+  }
+
+  func testReturningToScopeImportsAfterPreviousImportFinishes() async throws {
+    let fixture = try makeFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.directory) }
+    let first = AgentImportRequest(
+      content: "Account B", destinationListID: SnipList.inboxID, scopeToken: "account-b"
+    )
+    let second = AgentImportRequest(
+      content: "Account A", destinationListID: SnipList.inboxID, scopeToken: "account-a"
+    )
+    _ = try await fixture.imports.save(first)
+    _ = try await fixture.imports.save(second)
+    let gate = TestGate()
+    let started = expectation(description: "account B import started")
+    let importingB = Task {
+      await fixture.imports.importPending(activeScopeToken: "account-b") { request in
+        started.fulfill()
+        await gate.wait()
+        return AgentImportReceipt(
+          status: .added, snipID: UUID(), listID: request.destinationListID,
+          listName: "Inbox", request: request
+        )
+      }
+    }
+    await fulfillment(of: [started])
+    let importingA = Task {
+      await fixture.imports.importPending(
+        activeScopeToken: "account-a", waitForCurrent: true
+      ) { request in
+        XCTAssertEqual(request.requestID, second.requestID)
+        return AgentImportReceipt(
+          status: .added, snipID: UUID(), listID: request.destinationListID,
+          listName: "Inbox", request: request
+        )
+      }
+    }
+    await Task.yield()
+    await gate.open()
+    let bSummary = await importingB.value
+    let aSummary = await importingA.value
+    XCTAssertEqual(bSummary, AgentImportSummary(imported: 1, failed: 0))
+    XCTAssertEqual(aSummary, AgentImportSummary(imported: 1, failed: 0))
   }
 
   func testParserUsesStandardInputWhenTextIsOmitted() throws {
@@ -103,7 +500,7 @@ final class SnipSnapCLITests: XCTestCase {
     )
   }
 
-  func testAddTargetsAListByCaseInsensitiveName() async throws {
+  func testAddTargetsAListByCanonicalName() async throws {
     let fixture = try makeFixture()
     defer { try? FileManager.default.removeItem(at: fixture.directory) }
     let listUpdate = try await fixture.library.perform(
@@ -114,7 +511,7 @@ final class SnipSnapCLITests: XCTestCase {
       return XCTFail("Expected a created list.")
     }
     var options = SnipSnapAddOptions()
-    options.list = "research"
+    options.list = "  Ｒｅｓｅａｒｃｈ  "
 
     let result = try await SnipSnapCLIService.add(
       options: options, content: "Read this", imports: fixture.imports
@@ -134,15 +531,17 @@ final class SnipSnapCLITests: XCTestCase {
     guard case .listCreated(let research) = update.outcome else {
       return XCTFail("Expected a created list.")
     }
+    try await fixture.imports.publishAvailableLists([.inbox, research], scopeToken: "account-a")
     let requestID = UUID()
     var firstOptions = SnipSnapAddOptions()
     firstOptions.list = research.name
     firstOptions.requestID = requestID
     _ = try await SnipSnapCLIService.add(
-      options: firstOptions, content: "Read this", imports: fixture.imports
+      options: firstOptions, content: "Read this", imports: fixture.imports,
+      scopeToken: "account-a"
     )
 
-    let summary = await fixture.imports.importPending { request in
+    let summary = await fixture.imports.importPending(activeScopeToken: "account-a") { request in
       let saved = try await fixture.library.perform(
         .add(
           content: request.content,
@@ -167,13 +566,14 @@ final class SnipSnapCLITests: XCTestCase {
       )
     }
     XCTAssertEqual(summary, AgentImportSummary(imported: 1, failed: 0))
-    try await fixture.imports.publishAvailableLists([.inbox])
+    try await fixture.imports.publishAvailableLists([.inbox], scopeToken: "account-a")
 
     var retryOptions = SnipSnapAddOptions()
     retryOptions.list = research.name
     retryOptions.requestID = requestID
     let retry = try await SnipSnapCLIService.add(
-      options: retryOptions, content: "Read this", imports: fixture.imports
+      options: retryOptions, content: "Read this", imports: fixture.imports,
+      scopeToken: "account-a"
     )
 
     XCTAssertEqual(retry.status, .unchanged)

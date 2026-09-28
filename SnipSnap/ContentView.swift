@@ -4,7 +4,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 private enum FileImportTarget {
-    case composer(UUID)
+    case composer(UUID, scope: String)
     case edit(UUID)
 }
 
@@ -375,9 +375,11 @@ struct ContentView: View {
                 snipID: snipID,
                 urls: urls
             )
-        case .composer(let listID):
+        case .composer(let listID, let scope) where scope == model.composerDraftScope:
             model.addDraftAttachments(urls, to: listID)
             cacheComposerDraft(for: listID)
+        case .composer:
+            break
         case .edit:
             break
         }
@@ -700,7 +702,7 @@ struct ContentView: View {
     private func inlineAttachmentMenu(for listID: UUID) -> some View {
         Menu {
             Button("Choose Files…") {
-                fileImportTarget = .composer(listID)
+                fileImportTarget = .composer(listID, scope: model.composerDraftScope)
                 showingFileImporter = true
             }
             Button("Capture Screen Area…") { captureScreenArea(for: listID) }
@@ -754,9 +756,11 @@ struct ContentView: View {
     }
 
     private func entryText(for listID: UUID) -> Binding<String> {
-        Binding(
+        let scope = model.composerDraftScope
+        return Binding(
             get: { composerDraft(for: listID).text },
             set: { value in
+                guard model.composerDraftScope == scope else { return }
                 let draft = composerDraft(for: listID)
                 if let pasted = LargePastedText.largeInsertion(
                     from: draft.text,
@@ -770,6 +774,9 @@ struct ContentView: View {
                     attachments: draft.attachments
                 )
                 model.saveComposerText(value, for: listID)
+                if !model.lists.contains(where: { $0.id == listID }) {
+                    cacheComposerDraft(for: listID)
+                }
             }
         )
     }
@@ -842,11 +849,16 @@ struct ContentView: View {
     }
 
     private func composerDraft(for listID: UUID) -> ComposerDraft {
-        entryDrafts[listID] ?? model.composerDraft(for: listID)
+        let current = model.composerDraft(for: listID)
+        if let cached = entryDrafts[listID], cached == current { return cached }
+        return current
     }
 
     private func cacheComposerDraft(for listID: UUID) {
         entryDrafts[listID] = model.composerDraft(for: listID)
+        if !model.lists.contains(where: { $0.id == listID }) {
+            entryDrafts[SnipList.inboxID] = model.composerDraft(for: SnipList.inboxID)
+        }
     }
 
     private func openAttachmentPreview(_ urls: [URL], selectedURL: URL) {
@@ -875,12 +887,17 @@ struct ContentView: View {
 
     @MainActor
     private func pasteLargeTextIntoComposer(_ text: String, for listID: UUID) {
+        let scope = model.composerDraftScope
         Task {
             let result = await Task.detached(priority: .userInitiated) {
                 Result { try LargePastedText.write(text) }
             }.value
             switch result {
             case .success(let url):
+                guard model.composerDraftScope == scope else {
+                    try? FileManager.default.removeItem(at: url)
+                    return
+                }
                 model.addTemporaryDraftAttachment(url, to: listID)
                 cacheComposerDraft(for: listID)
             case .failure:
@@ -893,12 +910,17 @@ struct ContentView: View {
 
     @MainActor
     private func pasteImagesIntoComposer(_ images: [PanelPastedImage], for listID: UUID) {
+        let scope = model.composerDraftScope
         Task {
             let result = await Task.detached(priority: .userInitiated) {
                 PanelPastedImageStaging.write(images)
             }.value
             switch result {
             case .success(let urls):
+                guard model.composerDraftScope == scope else {
+                    for url in urls { try? FileManager.default.removeItem(at: url) }
+                    return
+                }
                 for url in urls {
                     model.addTemporaryDraftAttachment(url, to: listID)
                 }
@@ -918,12 +940,18 @@ struct ContentView: View {
 
     private func saveInlineEntry(for listID: UUID) {
         let text = composerDraft(for: listID).text
+        let scope = model.composerDraftScope
         guard canSaveInlineEntry(for: listID) else { return }
         isSavingInlineEntry = true
         Task {
             defer { isSavingInlineEntry = false }
-            let saved = await model.saveComposerDraft(content: text, listID: listID)
+            let saved = await model.saveComposerDraft(
+                content: text, listID: listID, expectedScope: scope
+            )
             guard saved else {
+                if !model.lists.contains(where: { $0.id == listID }) {
+                    cacheComposerDraft(for: listID)
+                }
                 if model.activeListID == listID { focusedTarget = .inlineEntry }
                 return
             }
@@ -935,8 +963,13 @@ struct ContentView: View {
     }
 
     private func captureScreenArea(for listID: UUID) {
+        let scope = model.composerDraftScope
         let url = model.stageScreenCapture()
         runScreenCapture(to: url) { succeeded in
+            guard model.composerDraftScope == scope else {
+                try? FileManager.default.removeItem(at: url)
+                return
+            }
             model.finishScreenCapture(url, in: listID, succeeded: succeeded)
             if succeeded { cacheComposerDraft(for: listID) }
         }

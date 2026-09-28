@@ -29,6 +29,7 @@ public actor AgentImportStore {
   private let paths: Paths
   private var isImporting = false
   private var needsImportRescan = false
+  private var importWaiters: [CheckedContinuation<Void, Never>] = []
 
   public init(rootURL: URL) {
     paths = Paths(rootURL: rootURL)
@@ -38,11 +39,26 @@ public actor AgentImportStore {
     ShareDestinationCatalog.read(from: ShareImportPaths(rootURL: paths.rootURL).catalogURL)
   }
 
-  public func publishAvailableLists(_ lists: [SnipList]) throws {
+  public func availableLists(matchingScopeToken scopeToken: String) throws -> [SnipList] {
+    try withLock {
+      guard let data = try? Data(contentsOf: paths.scopedCatalogURL),
+        let catalog = try? Self.makeDecoder().decode(ScopedCatalog.self, from: data),
+        catalog.scopeToken == scopeToken else {
+        throw SnipCLIRequestError.scopeChanged
+      }
+      return catalog.lists
+    }
+  }
+
+  public func publishAvailableLists(_ lists: [SnipList], scopeToken: String? = nil) throws {
     try withLock {
       try ShareDestinationCatalog.write(
         lists,
         to: ShareImportPaths(rootURL: paths.rootURL).catalogURL
+      )
+      try DurableFile.write(
+        try Self.makeEncoder().encode(ScopedCatalog(lists: lists, scopeToken: scopeToken)),
+        to: paths.scopedCatalogURL
       )
     }
   }
@@ -83,16 +99,65 @@ public actor AgentImportStore {
     }
   }
 
+  public func pendingRequestsRequiringAttention(
+    activeScopeToken: String
+  ) throws -> [AgentImportRequest] {
+    try withLock {
+      try pendingRequestIDs().compactMap { id in
+        let request = try readRequest(requestID: id)
+        return request?.executionScopeToken != activeScopeToken ? request : nil
+      }.sorted { $0.createdAt < $1.createdAt }
+    }
+  }
+
+  public func bindPendingRequestToInbox(
+    _ requestID: UUID, scopeToken: String
+  ) throws {
+    try withLock {
+      guard let request = try readRequest(requestID: requestID),
+        request.approvedInboxScopeToken == nil,
+        request.scopeToken != scopeToken else { throw SnipCLIRequestError.scopeChanged }
+      let bound = AgentImportRequest(
+        content: request.content,
+        destinationListID: request.destinationListID,
+        destinationSelector: request.destinationSelector,
+        agentContext: request.agentContext,
+        scopeToken: request.scopeToken,
+        approvedInboxScopeToken: scopeToken,
+        requestID: request.requestID,
+        createdAt: request.createdAt
+      )
+      try DurableFile.write(
+        try Self.makeEncoder().encode(bound), to: paths.pendingURL(requestID)
+      )
+    }
+  }
+
   /// The receiver must persist the snip before returning. Throwing retains the request for retry.
   public func importPending(
+    activeScopeToken: String? = nil,
+    waitForCurrent: Bool = false,
     using receive: @MainActor @Sendable (AgentImportRequest) async throws -> AgentImportReceipt
   ) async -> AgentImportSummary {
     guard !isImporting else {
+      if waitForCurrent {
+        await withCheckedContinuation { importWaiters.append($0) }
+        return await importPending(
+          activeScopeToken: activeScopeToken,
+          waitForCurrent: true,
+          using: receive
+        )
+      }
       needsImportRescan = true
       return AgentImportSummary(imported: 0, failed: 0)
     }
     isImporting = true
-    defer { isImporting = false }
+    defer {
+      isImporting = false
+      let waiters = importWaiters
+      importWaiters.removeAll()
+      for waiter in waiters { waiter.resume() }
+    }
     var imported = 0
     var failed = 0
     var attempted = Set<UUID>()
@@ -119,6 +184,9 @@ public actor AgentImportStore {
           failed += 1
           continue
         }
+        guard request.executionScopeToken == activeScopeToken else {
+          continue
+        }
         do {
           let receipt = try await receive(request)
           guard receipt.matches(request) else { throw AgentImportError.invalidRequest }
@@ -132,8 +200,9 @@ public actor AgentImportStore {
           let receipt = AgentImportReceipt(
             status: .failed,
             snipID: nil,
-            listID: request.destinationListID,
-            listName: request.destinationSelector ?? SnipList.inbox.name,
+            listID: request.executionListID,
+            listName: request.approvedInboxScopeToken == nil
+              ? request.destinationSelector ?? SnipList.inbox.name : SnipList.inbox.name,
             request: request,
             error: error.localizedDescription
           )
@@ -231,6 +300,7 @@ public actor AgentImportStore {
     var invalidRootURL: URL { agentRootURL.appendingPathComponent("Invalid", isDirectory: true) }
     var receiptsRootURL: URL { agentRootURL.appendingPathComponent("Receipts", isDirectory: true) }
     var lockURL: URL { agentRootURL.appendingPathComponent("requests.lock") }
+    var scopedCatalogURL: URL { agentRootURL.appendingPathComponent("scoped-catalog.json") }
     func pendingURL(_ id: UUID) -> URL {
       pendingRootURL.appendingPathComponent("\(id.uuidString).json")
     }
@@ -240,6 +310,11 @@ public actor AgentImportStore {
     func invalidURL(_ id: UUID) -> URL {
       invalidRootURL.appendingPathComponent("\(id.uuidString).json")
     }
+  }
+
+  private struct ScopedCatalog: Codable {
+    let lists: [SnipList]
+    let scopeToken: String?
   }
 
   private static func makeEncoder() -> JSONEncoder {
