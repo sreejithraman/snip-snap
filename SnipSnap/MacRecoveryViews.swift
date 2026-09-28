@@ -43,31 +43,6 @@ struct MacRecoveryReviewSheet: View {
 
     private var recoveryList: some View {
         List {
-            if !model.queuedAddsRequiringAttention.isEmpty {
-                Section("Queued adds needing a library choice") {
-                    ForEach(model.queuedAddsRequiringAttention, id: \.requestID) { request in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(request.content).lineLimit(2)
-                            if request.approvedInboxScopeToken != nil {
-                                Text("Approved for another library. Switch back to finish this add.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                if request.scopeToken != nil {
-                                    Text("Queued for another library. Add it here only if you want it in this Inbox.")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Button("Add to this Inbox") {
-                                    Task {
-                                        await model.addQueuedRequestToThisInbox(request.requestID)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
             if !model.unattributedLegacyDrafts.isEmpty {
                 Section("Unsent drafts from before this update") {
                     ForEach(model.unattributedLegacyDrafts, id: \.id) { draft in

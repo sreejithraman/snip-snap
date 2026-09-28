@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SnipSnapCloud
 import SnipSnapCore
 import Sparkle
@@ -136,26 +135,6 @@ private struct AppSettingsContent: View {
 }
 
 @MainActor
-final class AgentListCatalogPublisher {
-    private let imports: AgentImportStore
-    private var latest: Task<Void, Error>?
-
-    init(imports: AgentImportStore) { self.imports = imports }
-
-    func enqueue(_ lists: [SnipList], scopeToken: String? = nil) {
-        let previous = latest
-        latest = Task {
-            _ = try? await previous?.value
-            try await imports.publishAvailableLists(lists, scopeToken: scopeToken)
-        }
-    }
-
-    func flush() async throws {
-        if let latest { try await latest.value }
-    }
-}
-
-@MainActor
 final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     let model: AppModel
     let shortcutSettings: ShortcutSettings
@@ -172,16 +151,12 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     let accountNoticeModel: AppleAccountNoticeModel?
     let cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private var cloudAccountObserver: NSObjectProtocol?
-    private var agentImportObserver: NSObjectProtocol?
     private var cliRequestObserver: NSObjectProtocol?
     private var automaticSyncTask: Task<Void, Never>?
     private var cliCleanupTask: Task<Void, Never>?
     private var mainPanel: SnipSnapPanel?
     private var isFlushingBeforeTermination = false
-    private let agentImports: AgentImportStore
-    private let agentListCatalogPublisher: AgentListCatalogPublisher
     private let cliRequests: SnipCLIRequestStore
-    private var agentListCatalogSubscription: AnyCancellable?
 
     override init() {
         let isReleaseApp = Bundle.main.bundleIdentifier == "world.sree.snipsnap"
@@ -194,10 +169,6 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         ).first.map(SnipSnapAppGroupContainer.cloudAttachmentCacheRootURL(inCachesDirectory:))
         let syncModeRootURL = LocalSnipStorePaths(storeURL: libraryStoreURL).rootDirectory
             .appendingPathComponent("SyncMode", isDirectory: true)
-        agentImports = AgentImportStore(
-            rootURL: LocalSnipStorePaths(storeURL: libraryStoreURL).rootDirectory
-        )
-        agentListCatalogPublisher = AgentListCatalogPublisher(imports: agentImports)
         cliRequests = SnipCLIRequestStore(
             rootURL: LocalSnipStorePaths(storeURL: libraryStoreURL).rootDirectory
         )
@@ -217,7 +188,6 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             library: assembly.library,
             initialError: store.errorMessage,
             recoveryScope: assembly.recoveryScope,
-            agentImports: agentImports,
             userActions: assembly.userActions,
             userActionsRebinder: assembly.userActionsRebinder
         )
@@ -288,15 +258,12 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         updateSettingsVisible = updateChecksEnabled
 #endif
         let cliRequestStore = cliRequests
-        let listPublisher = agentListCatalogPublisher
-        let importStore = agentImports
         let reloadActiveLibrary: SyncedContentSettingsModel.DeleteCompletionAction = {
             guard let session = cloudServices.syncSession else { return }
             try await cliRequestStore.suspendActiveScope()
             let active = try await session.activeLibrary()
             try await Self.replaceActiveLibrary(
-                active, model: model, cliRequests: cliRequestStore,
-                listPublisher: listPublisher, imports: importStore
+                active, model: model, cliRequests: cliRequestStore
             )
         }
         let performSync: @MainActor @Sendable (Bool) async -> Void = { retry in
@@ -424,12 +391,6 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             syncedContentSettings.setDeleteCompletionAction(reloadActiveLibrary)
         }
         super.init()
-        agentListCatalogSubscription = model.$lists
-            .dropFirst()
-            .removeDuplicates()
-            .sink { [agentListCatalogPublisher, model] lists in
-                agentListCatalogPublisher.enqueue(lists, scopeToken: model.cliScopeToken)
-            }
     }
 
     static func openLibrary(
@@ -471,7 +432,6 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 await cloudLifecycleHooks.launch()
                 await self.restoreCLIAvailabilityIfNeeded()
                 await accountNoticeModel?.refresh()
-                await self.importPendingAgentRequests()
             } catch {
                 model.presentError(error)
             }
@@ -494,15 +454,6 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 await self.cloudLifecycleHooks.foreground()
                 await self.accountNoticeModel?.refresh()
-            }
-        }
-        agentImportObserver = DistributedNotificationCenter.default().addObserver(
-            forName: AgentImportStore.pendingNotificationName,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                await self?.importPendingAgentRequests()
             }
         }
         cliRequestObserver = DistributedNotificationCenter.default().addObserver(
@@ -544,36 +495,17 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             await cloudLifecycleHooks.foreground()
             await accountNoticeModel?.refresh()
             await self.restoreCLIAvailabilityIfNeeded()
-            await self.importPendingAgentRequests()
         }
-    }
-
-    private func importPendingAgentRequests() async {
-        guard await agentImports.pendingImportCount() > 0 else { return }
-        _ = await agentImports.importPending(activeScopeToken: model.cliScopeToken) { [model] request in
-            try await model.importAgentRequest(request)
-        }
-        await model.refreshQueuedAddsRequiringAttention()
     }
 
     private static func replaceActiveLibrary(
         _ active: SnipSnapCloudActiveLibrary,
         model: AppModel,
-        cliRequests: SnipCLIRequestStore,
-        listPublisher: AgentListCatalogPublisher,
-        imports: AgentImportStore
+        cliRequests: SnipCLIRequestStore
     ) async throws {
         try await cliRequests.suspendActiveScope()
         await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
-        listPublisher.enqueue(model.lists, scopeToken: model.cliScopeToken)
-        try await listPublisher.flush()
         try await cliRequests.publishActiveScopeToken(model.cliScopeToken)
-        _ = await imports.importPending(
-            activeScopeToken: model.cliScopeToken, waitForCurrent: true
-        ) { [model] request in
-            try await model.importAgentRequest(request)
-        }
-        await model.refreshQueuedAddsRequiringAttention()
     }
 
     private func reloadActiveLibrary() async {
@@ -582,8 +514,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             try await cliRequests.suspendActiveScope()
             let active = try await cloudSyncSession.activeLibrary()
             try await Self.replaceActiveLibrary(
-                active, model: model, cliRequests: cliRequests,
-                listPublisher: agentListCatalogPublisher, imports: agentImports
+                active, model: model, cliRequests: cliRequests
             )
         } catch {
             model.presentError(error)
@@ -597,9 +528,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             await reloadActiveLibrary()
             return
         }
-        agentListCatalogPublisher.enqueue(model.lists, scopeToken: model.cliScopeToken)
         do {
-            try await agentListCatalogPublisher.flush()
             try await cliRequests.publishActiveScopeToken(model.cliScopeToken)
         } catch {
             model.presentError(error)
@@ -610,15 +539,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         guard !isFlushingBeforeTermination else { return }
         await cliRequests.processPending { [model] request in
             guard request.scopeToken != nil else { throw SnipCLIRequestError.scopeChanged }
-            let receipt = try await model.handleCLIRequest(request)
-            switch request.action {
-            case .createList, .updateList, .deleteList:
-                do { try await agentListCatalogPublisher.flush() }
-                catch { throw SnipCLIOutcomeUncertain() }
-            default:
-                break
-            }
-            return receipt
+            return try await model.handleCLIRequest(request)
         }
     }
 

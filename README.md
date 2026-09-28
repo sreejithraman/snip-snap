@@ -36,9 +36,8 @@ into your work.
 ## Command-line access
 
 The Homebrew cask installs the `snipsnap` CLI with the app. `add` saves text to
-Inbox or a named list and marks its origin as Agent. It works while the app is
-closed. Read, update, and delete commands require the running app. Use
-`snipsnap --help` for the full syntax.
+Inbox or a named list and marks its origin as Agent. Snip and list commands
+require the running app. Use `snipsnap --help` for the full syntax.
 
 ```sh
 snipsnap lists create Research
@@ -62,9 +61,10 @@ Agent snips show a sparkle and their session title. When no title is supplied,
 the CLI records the current Git branch instead. Session IDs are never shown.
 
 Agents running in this checkout discover the repo skill at
-`.agents/skills/snip-snap`. An explicit request UUID makes an uncertain
-read or edit safe to check with `snipsnap status REQUEST_UUID` before retrying.
-For an uncertain `add`, retry it with the same `--request-id`, text, and options.
+`.agents/skills/snip-snap`. An explicit request UUID lets you check a pending
+or uncertain command with `snipsnap status REQUEST_UUID`. Retry a pending add
+with the same ID, text, and options. If the outcome is unknown, inspect the
+library and use a new ID only if another add is needed.
 For snip updates, copy `updatedAt` from the latest `list` or `show --json`
 result. For deletion, copy that snip's value from `snipRevisions` in the same
 result. A content or metadata change invalidates the deletion revision.
@@ -72,20 +72,14 @@ For list rename and delete, copy `listRevision` from the latest
 `lists show --json` result. A change to the list settings or its membership
 invalidates that revision; reread after a conflict.
 List create and rename return `resultListID` in JSON, including on a retry.
-The CLI asks the running app to process read and edit requests. The app updates
-the UI and schedules iCloud sync after writes. Only `add` stays queued when the
-app is closed. If the same library is active at the next launch, the app imports
-the add. An add made before Snip Snap establishes a library, or one queued for
-a library that is no longer active, appears in Needs attention for an explicit
-Inbox choice. Compact write results and uncertain request markers remain on
-disk so reusing an old request UUID cannot run a mutation twice. Successful
+The CLI asks the running app to process reads and edits. The app updates
+the UI and schedules iCloud sync after writes. If the app is closed, a new
+command is not left queued. Compact write results and uncertain request markers
+remain on disk so reusing an old request UUID cannot run a mutation twice. Successful
 read results are removed after display.
 The private command handoff directory is excluded from backups. Expired pending
 requests and read results are pruned while the app runs, at its next launch, or
-on a later CLI read, edit, delete, or `status` command. `add` and `help` do not
-prune this directory.
-If a queued destination list disappears before import, the app preserves the
-snip in Inbox.
+on a later CLI command or `status` check. `help` does not prune this directory.
 
 ## Private by default
 

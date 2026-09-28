@@ -6,6 +6,7 @@ import SnipSnapPersistence
 struct SnipCLIOptions: Equatable {
   enum Input: Equatable {
     case action(SnipCLIAction)
+    case add(textArguments: [String], list: String?, sessionTitle: String?, branchName: String?)
     case updateSnip(id: UUID, expectedUpdatedAt: Date, textArguments: [String])
   }
 
@@ -16,19 +17,39 @@ struct SnipCLIOptions: Equatable {
   func action() throws -> SnipCLIAction {
     switch input {
     case .action(let action): return action
-    case .updateSnip(let id, let expectedUpdatedAt, let textArguments):
-      let content: String
-      if textArguments.isEmpty || textArguments == ["-"] {
-        guard isatty(STDIN_FILENO) == 0 else { throw SnipSnapCLIError.missingContent }
-        guard let value = String(
-          data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8
-        ) else { throw SnipSnapCLIError.usage("Standard input is not valid UTF-8 text.") }
-        content = value
-      } else {
-        content = textArguments.joined(separator: " ")
+    case .add(let textArguments, let list, let sessionTitle, let branchName):
+      let content = try Self.readText(textArguments)
+      guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        throw SnipSnapCLIError.missingContent
       }
+      var context = SnipAgentContext(
+        sessionTitle: sessionTitle, branchName: branchName
+      )
+      if context.displayLabel == nil {
+        context = SnipAgentContext(
+          sessionTitle: sessionTitle,
+          branchName: GitBranchDetector.currentBranchName(
+            at: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+          )
+        )
+      }
+      return .add(content: content, list: list,
+                  agentContext: context.displayLabel == nil ? nil : context)
+    case .updateSnip(let id, let expectedUpdatedAt, let textArguments):
+      let content = try Self.readText(textArguments)
       return .updateSnip(id: id, content: content, expectedUpdatedAt: expectedUpdatedAt)
     }
+  }
+
+  private static func readText(_ arguments: [String]) throws -> String {
+    guard arguments.isEmpty || arguments == ["-"] else {
+      return arguments.joined(separator: " ")
+    }
+    guard isatty(STDIN_FILENO) == 0 else { throw SnipSnapCLIError.missingContent }
+    guard let text = String(
+      data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8
+    ) else { throw SnipSnapCLIError.usage("Standard input is not valid UTF-8 text.") }
+    return text
   }
 }
 
@@ -43,6 +64,8 @@ enum SnipCLIParser {
     var expectedUpdatedAt: Date?
     var expectedSnipRevision: String?
     var expectedListRevision: String?
+    var sessionTitle: String?
+    var branchName: String?
     var index = 1
     var parsesOptions = true
     while index < arguments.count {
@@ -55,13 +78,17 @@ enum SnipCLIParser {
         json = true
       } else if parsesOptions && argument == "--yes" {
         confirmed = true
-      } else if parsesOptions && (argument == "--list" || argument == "--request-id" || argument == "--if-updated-at" || argument == "--if-snip-revision" || argument == "--if-list-revision") {
+      } else if parsesOptions && (argument == "--list" || argument == "--request-id" || argument == "--if-updated-at" || argument == "--if-snip-revision" || argument == "--if-list-revision" || argument == "--session-title" || argument == "--branch") {
         index += 1
         guard index < arguments.count else {
           throw SnipSnapCLIError.usage("\(argument) requires a value.")
         }
         if argument == "--list" {
           listSelector = arguments[index]
+        } else if argument == "--session-title" {
+          sessionTitle = arguments[index]
+        } else if argument == "--branch" {
+          branchName = arguments[index]
         } else if argument == "--request-id" {
           guard let id = UUID(uuidString: arguments[index]) else {
             throw SnipSnapCLIError.invalidRequestID(arguments[index])
@@ -89,8 +116,11 @@ enum SnipCLIParser {
       }
       index += 1
     }
-    if listSelector != nil && command != "list" {
-      throw SnipSnapCLIError.usage("--list applies only to 'list'.")
+    if listSelector != nil && command != "list" && command != "add" {
+      throw SnipSnapCLIError.usage("--list applies only to 'add' and 'list'.")
+    }
+    if (sessionTitle != nil || branchName != nil) && command != "add" {
+      throw SnipSnapCLIError.usage("--session-title and --branch apply only to 'add'.")
     }
     if expectedUpdatedAt != nil && command != "update" {
       throw SnipSnapCLIError.usage("--if-updated-at applies only to snip update.")
@@ -103,6 +133,12 @@ enum SnipCLIParser {
     }
     let input: SnipCLIOptions.Input
     switch command {
+    case "add":
+      guard !confirmed, !positionals.contains("-") || positionals == ["-"] else {
+        throw invalid(command)
+      }
+      input = .add(textArguments: positionals, list: listSelector,
+                   sessionTitle: sessionTitle, branchName: branchName)
     case "list":
       guard positionals.isEmpty, !confirmed else { throw invalid(command) }
       input = .action(.listSnips(list: listSelector))
@@ -183,6 +219,7 @@ enum SnipCLIService {
   ) async throws -> SnipCLIReceipt {
     let activeScope = try await store.activeScopeToken()
     let request = request.scopeToken == nil ? request.scoped(to: activeScope) : request
+    guard request.scopeToken != nil else { throw SnipSnapCLIError.appUnavailable }
     let initial = try await store.enqueue(request)
     if case .completed(let receipt) = initial {
       return try await completed(receipt, expectedScope: request.scopeToken, store: store)
@@ -267,6 +304,7 @@ enum SnipCLIPrinter {
     let updatedSnipID: UUID?
     let updatedAt: Date?
     let resultListID: UUID?
+    let resultSnipID: UUID?
     let message: String?
 
     init(_ receipt: SnipCLIReceipt) {
@@ -279,6 +317,7 @@ enum SnipCLIPrinter {
       updatedSnipID = receipt.updatedSnipID
       updatedAt = receipt.updatedAt
       resultListID = receipt.resultListID
+      resultSnipID = receipt.resultSnipID
       message = receipt.message
     }
   }
@@ -293,6 +332,11 @@ enum SnipCLIPrinter {
       return
     }
     switch receipt.action {
+    case .add:
+      guard let id = receipt.resultSnipID else {
+        throw SnipSnapCLIError.importFailed("Snip Snap did not return the added snip.")
+      }
+      print("Added agent snip \(id.uuidString).")
     case .listSnips:
       for snip in receipt.snips {
         let preview = snip.content.components(separatedBy: .newlines).first ?? ""

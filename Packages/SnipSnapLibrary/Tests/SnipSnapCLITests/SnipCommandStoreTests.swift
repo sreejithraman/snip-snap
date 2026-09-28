@@ -156,6 +156,41 @@ final class SnipCommandStoreTests: XCTestCase {
                           as: UTF8.self).contains("Private text"))
   }
 
+  func testCompletedAddKeepsIDsWithoutRetainingTextOrListName() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SnipCLIRequestStore(rootURL: root)
+    let request = SnipCLIRequest(action: .add(
+      content: "Private future idea", list: "Private list", agentContext: nil))
+    let snip = Snip(content: "Private future idea", origin: .agent)
+    let list = SnipList(id: UUID(), name: "Private list", systemImage: "folder", position: 1)
+    _ = try await store.enqueue(request)
+    await store.processPending { received in
+      SnipCLIReceipt(request: received, status: .success, snips: [snip], lists: [list])
+    }
+    guard case .completed(let delivered) = try await store.state(for: request.requestID) else {
+      return XCTFail("Expected compact add result")
+    }
+    XCTAssertEqual(delivered.resultSnipID, snip.id)
+    XCTAssertEqual(delivered.resultListID, list.id)
+    XCTAssertTrue(delivered.snips.isEmpty)
+    XCTAssertTrue(delivered.lists.isEmpty)
+
+    let receiptURL = root.appendingPathComponent(
+      "Agent/Commands/Receipts/\(request.requestID.uuidString).json")
+    let bytes = try Data(contentsOf: receiptURL)
+    let stored = String(decoding: bytes, as: UTF8.self)
+    XCTAssertFalse(stored.contains("Private future idea"))
+    XCTAssertFalse(stored.contains("Private list"))
+    try await store.releaseReceipt(request.requestID)
+    guard case .completed(let retried) = try await store.enqueue(request) else {
+      return XCTFail("Expected add retry receipt")
+    }
+    XCTAssertEqual(retried.resultSnipID, snip.id)
+    XCTAssertEqual(retried.resultListID, list.id)
+    XCTAssertTrue(retried.lists.isEmpty)
+  }
+
   func testCompletedListWriteDropsNameAfterDeliveryAndIfUnreadExpires() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }

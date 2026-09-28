@@ -21,8 +21,7 @@ public actor SnipCLIRequestStore {
     }
   }
 
-  /// A missing marker denies running-app commands and lets offline adds wait for
-  /// an explicit library choice if the transition cannot finish.
+  /// A missing marker denies commands until the app publishes the active library.
   public func suspendActiveScope() throws {
     try withLock {
       guard FileManager.default.fileExists(atPath: paths.activeScopeURL.path) else { return }

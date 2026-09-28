@@ -4,6 +4,7 @@ import Foundation
 
 /// Commands exchanged with the running main app. The CLI never opens its library.
 public enum SnipCLIAction: Codable, Equatable, Sendable {
+  case add(content: String, list: String?, agentContext: SnipAgentContext?)
   case listSnips(list: String?)
   case showSnip(id: UUID)
   case updateSnip(id: UUID, content: String, expectedUpdatedAt: Date)
@@ -24,6 +25,7 @@ public enum SnipCLIReceiptPolicy: Equatable, Sendable {
 public extension SnipCLIAction {
   var receiptPolicy: SnipCLIReceiptPolicy {
     switch self {
+    case .add: .compactWrite
     case .listSnips, .showSnip, .listLists, .showList: .transientRead
     case .createList, .updateList: .listWrite
     case .updateSnip, .deleteSnip, .deleteList: .compactWrite
@@ -119,6 +121,7 @@ public struct SnipCLIReceipt: Codable, Equatable, Sendable {
   public let updatedSnipID: UUID?
   public let updatedAt: Date?
   public let resultListID: UUID?
+  public let resultSnipID: UUID?
 
   public init(
     request: SnipCLIRequest,
@@ -148,8 +151,13 @@ public struct SnipCLIReceipt: Codable, Equatable, Sendable {
       updatedAt = nil
     }
     switch request.action {
-    case .createList, .updateList: resultListID = lists.first?.id
+    case .add, .createList, .updateList: resultListID = lists.first?.id
     default: resultListID = nil
+    }
+    if case .add = request.action {
+      resultSnipID = snips.first?.id
+    } else {
+      resultSnipID = nil
     }
   }
 
@@ -161,6 +169,11 @@ public struct SnipCLIReceipt: Codable, Equatable, Sendable {
     var storedAction = action
     var storedMessage = message
     switch action {
+    case .add:
+      storedAction = .add(content: "", list: nil, agentContext: nil)
+      if status == .success, let id = resultSnipID {
+        storedMessage = message ?? "Added agent snip \(id.uuidString)."
+      }
     case .updateSnip(let id, _, let expectedUpdatedAt):
       storedAction = .updateSnip(id: id, content: "", expectedUpdatedAt: expectedUpdatedAt)
       storedMessage = message ?? "Updated snip \(id.uuidString)."
@@ -182,7 +195,8 @@ public struct SnipCLIReceipt: Codable, Equatable, Sendable {
       scopeToken: scopeToken, action: storedAction,
       status: status, snips: [], lists: [], message: storedMessage,
       listRevision: nil, snipRevisions: [:],
-      updatedSnipID: updatedSnipID, updatedAt: updatedAt, resultListID: resultListID
+      updatedSnipID: updatedSnipID, updatedAt: updatedAt, resultListID: resultListID,
+      resultSnipID: resultSnipID
     )
   }
 
@@ -190,7 +204,7 @@ public struct SnipCLIReceipt: Codable, Equatable, Sendable {
     switch action {
     case .createList(let name), .updateList(_, let name, _):
       !name.isEmpty || !lists.isEmpty
-    case .listSnips, .showSnip, .updateSnip, .deleteSnip,
+    case .add, .listSnips, .showSnip, .updateSnip, .deleteSnip,
          .listLists, .showList, .deleteList: false
     }
   }
@@ -199,7 +213,8 @@ public struct SnipCLIReceipt: Codable, Equatable, Sendable {
                scopeToken: String?, action: SnipCLIAction,
                status: Status, snips: [Snip], lists: [SnipList], message: String?,
                listRevision: String?, snipRevisions: [String: String],
-               updatedSnipID: UUID?, updatedAt: Date?, resultListID: UUID?) {
+               updatedSnipID: UUID?, updatedAt: Date?, resultListID: UUID?,
+               resultSnipID: UUID?) {
     self.requestID = requestID
     self.requestFingerprint = requestFingerprint
     self.scopeToken = scopeToken
@@ -213,6 +228,7 @@ public struct SnipCLIReceipt: Codable, Equatable, Sendable {
     self.updatedSnipID = updatedSnipID
     self.updatedAt = updatedAt
     self.resultListID = resultListID
+    self.resultSnipID = resultSnipID
   }
 }
 
