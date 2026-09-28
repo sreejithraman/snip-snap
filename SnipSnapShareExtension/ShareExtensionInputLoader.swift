@@ -1,5 +1,4 @@
 import Foundation
-import SnipSnapCore
 import SnipSnapPersistence
 @preconcurrency import UIKit
 import UniformTypeIdentifiers
@@ -9,41 +8,25 @@ enum ShareExtensionInputLoader {
     static func load(
         items: [NSExtensionItem],
         staging: ShareImportStagingArea
-    ) async throws -> (
-        text: String, attachments: [ShareImportAttachment], richTextRepresentations: [ClipboardRepresentation]
-    ) {
+    ) async throws -> (text: String, attachments: [ShareImportAttachment]) {
         var textParts: [String] = []
         var attachments: [ShareImportAttachment] = []
-        var richTextCandidates: [(text: String, representation: ClipboardRepresentation)] = []
         for item in items {
             let attributedText = item.attributedContentText?.string
-            let hasAttributedText = attributedText?.isEmpty == false
-            if let attributedText, hasAttributedText {
+            if let attributedText, !attributedText.isEmpty {
                 textParts.append(attributedText)
-                if let richText = item.attributedContentText,
-                    let data = try? richText.data(
-                        from: NSRange(location: 0, length: richText.length),
-                        documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
-                    )
-                {
-                    richTextCandidates.append((attributedText,
-                        ClipboardRepresentation(type: UTType.rtf.identifier, data: data)))
-                }
             }
             for provider in item.attachments ?? [] {
                 let part = try await load(
                     provider: provider,
                     staging: staging,
-                    hasTextFallback: hasAttributedText
+                    hasTextFallback: attributedText?.isEmpty == false
                 )
                 switch part {
                 case .text(let text):
                     textParts.append(text)
                 case .attachment(let attachment):
                     attachments.append(attachment)
-                case .richText(let text, let representation):
-                    textParts.append(text)
-                    richTextCandidates.append((text, representation))
                 case .none:
                     break
                 }
@@ -56,18 +39,12 @@ enum ShareExtensionInputLoader {
                 if !parts.contains(value) { parts.append(value) }
             }
             .joined(separator: "\n\n")
-        // Keep a rich representation only when it covers all shared text.
-        // A separate caption or URL must never disappear when another app pastes RTF.
-        let richText = richTextCandidates.first {
-            $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == text
-        }.map { [$0.representation] } ?? []
-        return (text, attachments, richText)
+        return (text, attachments)
     }
 
     private enum Part {
         case text(String)
         case attachment(ShareImportAttachment)
-        case richText(String, ClipboardRepresentation)
         case none
     }
 
@@ -110,7 +87,7 @@ enum ShareExtensionInputLoader {
                 documentAttributes: nil
             )
         {
-            return .richText(attributed.string, ClipboardRepresentation(type: UTType.rtf.identifier, data: data))
+            return .text(attributed.string)
         }
 
         if provider.canLoadObject(ofClass: String.self) {

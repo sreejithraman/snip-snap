@@ -63,6 +63,8 @@ struct AppPrimaryActionButton<Label: View>: View {
     @Environment(\.controlActiveState) private var controlActiveState
 #endif
     var presentation: AppPrimaryActionPresentation = .content
+    var tint: Color = SnipSnapTheme.actionAccent
+    var labelColor: Color = SnipSnapTheme.actionLabel
     let action: () -> Void
     @ViewBuilder let label: () -> Label
 
@@ -80,8 +82,8 @@ struct AppPrimaryActionButton<Label: View>: View {
             }
             .buttonStyle(.glassProminent)
             .buttonBorderShape(.capsule)
-            .tint(SnipSnapTheme.actionAccent)
-            .foregroundStyle(SnipSnapTheme.actionLabel)
+            .tint(tint)
+            .foregroundStyle(labelColor)
         }
 #endif
     }
@@ -91,16 +93,16 @@ struct AppPrimaryActionButton<Label: View>: View {
             label()
         }
         .buttonStyle(.borderedProminent)
-        .tint(SnipSnapTheme.actionAccent)
+        .tint(tint)
         .foregroundStyle(contentLabelColor)
     }
 
     private var contentLabelColor: Color {
 #if os(macOS)
         isEnabled && controlActiveState == .key
-            ? SnipSnapTheme.actionLabel : .primary
+            ? labelColor : .primary
 #else
-        SnipSnapTheme.actionLabel
+        labelColor
 #endif
     }
 }
@@ -287,7 +289,13 @@ enum SnipSnapTheme {
             : .white
     })
 #else
-    static let actionAccent = Color("AccentColor")
+    /// Matches `AccentColor.colorset`; defined in code so extensions without the
+    /// asset catalog resolve the same accent.
+    static let actionAccent = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(white: 0.92, alpha: 1)
+            : UIColor(white: 0.16, alpha: 1)
+    })
     static let actionLabel = Color(uiColor: UIColor { traits in
         traits.userInterfaceStyle == .dark
             ? UIColor(white: 0.10, alpha: 1)

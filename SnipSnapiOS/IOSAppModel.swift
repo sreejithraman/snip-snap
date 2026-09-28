@@ -43,6 +43,7 @@ final class IOSAppModel {
     let haptics: IOSHapticFeedback
     private let cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private let diagnostics: any AppDiagnosticRecording
+    private let publishShareDestinations: (([SnipList]) -> Void)?
 
     private(set) var snips: [Snip]
     private(set) var lists: [SnipList]
@@ -131,7 +132,8 @@ final class IOSAppModel {
         startupError: String? = nil,
         cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
         haptics: IOSHapticFeedback = IOSHapticFeedback(),
-        diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared
+        diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared,
+        publishShareDestinations: (([SnipList]) -> Void)? = nil
     ) {
         session = SavedSnipsSession(
             library: library,
@@ -142,6 +144,7 @@ final class IOSAppModel {
         self.cloudSyncHandler = cloudSyncHandler
         self.haptics = haptics
         self.diagnostics = diagnostics
+        self.publishShareDestinations = publishShareDestinations
         hasKnownCloudSyncActivity = cloudSyncHandler == nil
         snips = initialSnapshot.snips
         lists = initialSnapshot.lists
@@ -1103,6 +1106,8 @@ final class IOSAppModel {
             self.selectedSnipID = nil
         }
         selectedSnipIDs.formIntersection(snips.map(\.id))
+        // The share picker reads this catalog from outside the app process.
+        publishShareDestinations?(lists)
     }
 
     private func refreshAttachmentTransferStates() async {

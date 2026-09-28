@@ -4,6 +4,12 @@ import SwiftUI
 struct ShareExtensionView: View {
     let model: ShareExtensionModel
 
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var destinationAccent: SnipListAppearance {
+        model.destinationList?.accent ?? SnipListAppearance(preset: nil)
+    }
+
     var body: some View {
         NavigationStack {
             content
@@ -11,8 +17,29 @@ struct ShareExtensionView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel", action: model.cancel)
-                            .disabled(model.phase == .saving)
+                        Button(action: model.cancel) {
+                            Image(systemName: "xmark")
+                        }
+                        .accessibilityLabel("Cancel")
+                        .disabled(model.phase == .saving)
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        if model.phase == .saving {
+                            ProgressView()
+                                .accessibilityLabel("Saving…")
+                        } else {
+                            AppPrimaryActionButton(
+                                presentation: .floatingGlass,
+                                tint: destinationAccent.controlTint,
+                                labelColor: destinationAccent.sendIconColor(in: colorScheme),
+                                action: { Task { await model.save() } }
+                            ) {
+                                Text("Save")
+                                    .fontWeight(.semibold)
+                            }
+                            .disabled(!model.canSave)
+                            .accessibilityIdentifier("share-save")
+                        }
                     }
                 }
         }
@@ -54,46 +81,17 @@ struct ShareExtensionView: View {
                     }
                 }
 
-                Section {
-                    Picker("Save to", selection: Bindable(model).destination) {
-                        Label("Snips", systemImage: "list.bullet")
-                            .tag(ShareExtensionModel.Destination.snips)
-                        Label("Clipboard", systemImage: "clipboard")
-                            .tag(ShareExtensionModel.Destination.clipboard)
-                    }
-                    .accessibilityIdentifier("share-destination-picker")
-
-                    if model.destination == .snips {
-                        Picker("List", selection: Bindable(model).destinationListID) {
-                            ForEach(model.lists) { list in
-                                Label(list.displayName, systemImage: list.systemImage)
-                                    .tag(list.id)
-                            }
+                Section("Save to") {
+                    Picker("List", selection: Bindable(model).destinationListID) {
+                        ForEach(model.lists) { list in
+                            Label(list.displayName, systemImage: list.systemImage)
+                                .tag(list.id)
                         }
-                        .accessibilityIdentifier("share-list-picker")
                     }
-                } footer: {
-                    if model.destination == .clipboard {
-                        Text("Open Snip Snap to add this to Clipboard. Files stay on this device until you pin them.")
-                    }
-                }
-
-                Section {
-                    Button("Save") {
-                        Task { await model.save() }
-                    }
-                    .disabled(!model.canSave)
-                    .accessibilityIdentifier("share-save")
+                    .accessibilityIdentifier("share-list-picker")
                 }
             }
             .disabled(model.phase == .saving)
-            .overlay {
-                if model.phase == .saving {
-                    ProgressView("Saving…")
-                        .padding()
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-                }
-            }
         case .failed(let message):
             ContentUnavailableView(
                 "Could Not Save",

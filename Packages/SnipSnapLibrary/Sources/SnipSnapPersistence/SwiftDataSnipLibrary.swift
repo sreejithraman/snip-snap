@@ -254,6 +254,13 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
 
   private static func publishShareDestinations(_ lists: [SnipList], storeURL: URL) throws {
     guard let rootURL = ShareImportPaths.sharedRoot(forStoreURL: storeURL) else { return }
+    // Sync mode publishes its active library's lists. A legacy store left behind
+    // by a mode change must not overwrite that catalog with its stale lists.
+    if SyncModeActivationManifestReader.hasActivationManifest(
+      atSyncModeRootURL: rootURL.appendingPathComponent("SyncMode", isDirectory: true)
+    ) {
+      return
+    }
     try ShareDestinationCatalog.write(
       lists,
       to: ShareImportPaths(rootURL: rootURL).catalogURL
