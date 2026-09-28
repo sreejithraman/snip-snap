@@ -1,0 +1,9 @@
+# Snip Snap 0.6.0 Beta 114
+
+## Mac
+
+- Show every list in the share page and drop save to Clipboard
+
+## iOS
+
+- Show every list in the share page and drop save to Clipboard
