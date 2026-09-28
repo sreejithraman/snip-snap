@@ -336,8 +336,7 @@ enum SnipCLIPrinter {
       guard let id = receipt.resultSnipID else {
         throw SnipSnapCLIError.importFailed("Snip Snap did not return the added snip.")
       }
-      let destination = receipt.lists.first?.name ?? receipt.resultListID?.uuidString ?? "Inbox"
-      print("Added agent snip \(id.uuidString) in \(destination).")
+      print("Added agent snip \(id.uuidString).")
     case .listSnips:
       for snip in receipt.snips {
         let preview = snip.content.components(separatedBy: .newlines).first ?? ""

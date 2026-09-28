@@ -25,7 +25,7 @@ public enum SnipCLIReceiptPolicy: Equatable, Sendable {
 public extension SnipCLIAction {
   var receiptPolicy: SnipCLIReceiptPolicy {
     switch self {
-    case .add: .listWrite
+    case .add: .compactWrite
     case .listSnips, .showSnip, .listLists, .showList: .transientRead
     case .createList, .updateList: .listWrite
     case .updateSnip, .deleteSnip, .deleteList: .compactWrite
@@ -202,10 +202,9 @@ public struct SnipCLIReceipt: Codable, Equatable, Sendable {
 
   public var hasListWritePayload: Bool {
     switch action {
-    case .add: !snips.isEmpty || !lists.isEmpty
     case .createList(let name), .updateList(_, let name, _):
       !name.isEmpty || !lists.isEmpty
-    case .listSnips, .showSnip, .updateSnip, .deleteSnip,
+    case .add, .listSnips, .showSnip, .updateSnip, .deleteSnip,
          .listLists, .showList, .deleteList: false
     }
   }

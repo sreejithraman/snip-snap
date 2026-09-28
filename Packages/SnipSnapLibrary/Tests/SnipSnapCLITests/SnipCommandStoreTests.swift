@@ -169,11 +169,12 @@ final class SnipCommandStoreTests: XCTestCase {
       SnipCLIReceipt(request: received, status: .success, snips: [snip], lists: [list])
     }
     guard case .completed(let delivered) = try await store.state(for: request.requestID) else {
-      return XCTFail("Expected full add result before delivery")
+      return XCTFail("Expected compact add result")
     }
     XCTAssertEqual(delivered.resultSnipID, snip.id)
-    XCTAssertEqual(delivered.lists.first?.name, list.name)
-    try await store.releaseReceipt(request.requestID)
+    XCTAssertEqual(delivered.resultListID, list.id)
+    XCTAssertTrue(delivered.snips.isEmpty)
+    XCTAssertTrue(delivered.lists.isEmpty)
 
     let receiptURL = root.appendingPathComponent(
       "Agent/Commands/Receipts/\(request.requestID.uuidString).json")
@@ -181,6 +182,7 @@ final class SnipCommandStoreTests: XCTestCase {
     let stored = String(decoding: bytes, as: UTF8.self)
     XCTAssertFalse(stored.contains("Private future idea"))
     XCTAssertFalse(stored.contains("Private list"))
+    try await store.releaseReceipt(request.requestID)
     guard case .completed(let retried) = try await store.enqueue(request) else {
       return XCTFail("Expected add retry receipt")
     }
