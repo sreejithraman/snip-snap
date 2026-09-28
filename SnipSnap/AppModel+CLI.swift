@@ -3,83 +3,60 @@ import SnipSnapCore
 
 @MainActor
 extension AppModel {
-    func importAgentRequest(_ request: AgentImportRequest) async throws -> AgentImportReceipt {
-        guard request.executionScopeToken != nil else { throw SnipCLIRequestError.scopeChanged }
-        return try await performCLIMutation(scopeToken: request.executionScopeToken, recover: { snapshot in
-            guard let snip = snapshot.snips.first(where: {
-                self.matchesAgentRequestIdentity($0, request: request)
-            }), let list = snapshot.lists.first(where: { $0.id == snip.listID })
-            else { return nil }
-            return AgentImportReceipt(
-                status: .unchanged, snipID: snip.id, listID: list.id,
-                listName: list.name, request: request
-            )
-        }) {
-            let archive = try await session.checkedSnapshot(sortedBy: sortMode)
-            let destinationListID = archive.lists.contains(where: {
-                $0.id == request.executionListID
-            }) ? request.executionListID : SnipList.inboxID
-            let update = try await session.performLibraryCommand(
-                .add(
-                    content: request.content,
-                    origin: .agent,
-                    source: request.agentContext.map {
-                        SnipSource(applicationName: "", agentContext: $0)
-                    },
-                    listID: destinationListID,
-                    attachmentURLs: [],
-                    requestID: request.requestID,
-                    now: request.createdAt
-                ),
-                sortedBy: sortMode
-            )
-            guard case .add(let outcome) = update.outcome else {
-                throw SnipLibraryError.invalidStore
-            }
-            guard let snip = update.snapshot.snips.first(where: {
-                $0.requestID == request.requestID
-            }) else {
-                guard case .duplicate = outcome,
-                      let list = update.snapshot.lists.first(where: {
-                          $0.id == destinationListID
-                      }) else { throw SnipLibraryError.invalidStore }
-                return (update, AgentImportReceipt(
-                    status: .failed,
-                    snipID: nil,
-                    listID: list.id,
-                    listName: list.name,
-                    request: request,
-                    error: "The original snip for this request is no longer available."
-                ))
-            }
-            if case .duplicate = outcome {
-                guard matchesAgentRequestIdentity(snip, request: request) else {
-                    throw AgentImportError.conflictingRequestID
-                }
-            }
-            guard let list = update.snapshot.lists.first(where: { $0.id == snip.listID }) else {
-                throw SnipLibraryError.invalidStore
-            }
-            let status: AgentImportReceipt.Status
-            switch outcome {
-            case .added:
-                status = .added
-            case .duplicate:
-                status = .unchanged
-            }
-            let receipt = AgentImportReceipt(
-                status: status,
-                snipID: snip.id,
-                listID: list.id,
-                listName: list.name,
-                request: request
-            )
-            return (update, receipt)
-        }
-    }
-
     func handleCLIRequest(_ request: SnipCLIRequest) async throws -> SnipCLIReceipt {
         switch request.action {
+        case .add(let content, let selector, let agentContext):
+            let source = agentContext.map {
+                SnipSource(applicationName: "", agentContext: $0)
+            }
+            let now = Date()
+            let cleanContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            return try await performCLIMutation(scopeToken: request.scopeToken, recover: { snapshot in
+                guard let snip = snapshot.snips.first(where: { $0.requestID == request.requestID }),
+                      let list = snapshot.lists.first(where: { $0.id == snip.listID })
+                else { return nil }
+                guard snip.origin == .agent,
+                      snip.source == source,
+                      abs(snip.createdAt.timeIntervalSince(now)) < 0.001
+                else { return nil }
+                if LargePastedText.shouldAttach(content) {
+                    guard snip.content.isEmpty,
+                          snip.attachments.contains(where: { attachment in
+                              guard let url = snapshot.attachmentURLs[attachment.id],
+                                    let data = try? Data(contentsOf: url) else { return false }
+                              return data == Data(content.utf8)
+                          }) else { return nil }
+                } else if snip.content != cleanContent {
+                    return nil
+                }
+                if let selector {
+                    guard SnipListNameAllocator.matching(selector, in: snapshot.lists)?.id
+                            == snip.listID else { return nil }
+                } else if snip.listID != SnipList.inboxID {
+                    return nil
+                }
+                return SnipCLIReceipt(request: request, status: .success,
+                                      snips: [snip], lists: [list])
+            }) {
+                let archive = try await session.checkedSnapshot(sortedBy: sortMode)
+                let listID = try selector.map { try cliList($0, in: archive.lists).id }
+                    ?? SnipList.inboxID
+                let update = try await session.performLibraryCommand(
+                    .add(content: content, origin: .agent, source: source, listID: listID,
+                         attachmentURLs: [], requestID: request.requestID, now: now),
+                    sortedBy: sortMode
+                )
+                guard case .add(.added) = update.outcome else {
+                    throw SnipCLIRequestError.conflictingRequestID
+                }
+                guard let snip = update.snapshot.snips.first(where: {
+                    $0.requestID == request.requestID
+                }), let list = update.snapshot.lists.first(where: { $0.id == snip.listID })
+                else { throw SnipLibraryError.invalidStore }
+                return (update, SnipCLIReceipt(request: request, status: .success,
+                                               snips: [snip], lists: [list]))
+            }
+
         case .listSnips(let selector):
             let archive = try await cliArchive(scopeToken: request.scopeToken)
             let listID = try selector.map { try cliList($0, in: archive.lists).id }
@@ -224,7 +201,7 @@ extension AppModel {
             case .success(let value):
                 return .success(value)
             case .failure(let error):
-                if error is SnipCLIRequestError || error is AgentImportError {
+                if error is SnipCLIRequestError {
                     return .failure(error)
                 }
                 if let libraryError = error as? SnipLibraryError {
@@ -255,19 +232,6 @@ extension AppModel {
             throw SnipLibraryError.invalidList
         }
         return list
-    }
-
-    private func matchesAgentRequestIdentity(
-        _ snip: Snip, request: AgentImportRequest
-    ) -> Bool {
-        snip.requestID == request.requestID
-            && snip.origin == .agent
-            && snip.source == request.agentContext.map {
-                SnipSource(applicationName: "", agentContext: $0)
-            }
-            && abs(snip.createdAt.timeIntervalSince(request.createdAt)) < 0.001
-            && (snip.updatedAt != snip.createdAt
-                || snip.content == request.content.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     private func cliListGuard(

@@ -80,7 +80,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var appearance: AppAppearance
     @Published private(set) var recoverySnapshot: SnipRecoverySnapshot = .empty
     @Published private(set) var legacyDraftCount = 0
-    @Published private(set) var queuedAddsRequiringAttention: [AgentImportRequest] = []
     @Published private(set) var pendingImportPreview: SnipImportPreview?
     private var pendingImportPreviewID: UUID?
     @Published var toast: AppToast?
@@ -122,7 +121,6 @@ final class AppModel: ObservableObject {
     private var cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private let defaults: UserDefaults
     let composerDrafts: ComposerDraftStore
-    private let agentImports: AgentImportStore?
     private var redirectedComposerTextByList: [UUID: String] = [:]
     private var redirectedInboxRevisionByList: [UUID: UInt64] = [:]
     private var inboxDraftRevision: UInt64 = 0
@@ -179,7 +177,6 @@ final class AppModel: ObservableObject {
         clipboardHistory: ClipboardHistory? = nil,
         initialError: String? = nil,
         recoveryScope: SnipRecoveryScope? = nil,
-        agentImports: AgentImportStore? = nil,
         cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
         userActions: (any SnipLibraryUserActions)? = nil,
         userActionsRebinder: SnipLibraryUserActionsRebinder = .direct,
@@ -193,7 +190,6 @@ final class AppModel: ObservableObject {
         diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared
     ) {
         self.defaults = defaults
-        self.agentImports = agentImports
         composerDrafts = ComposerDraftStore(
             defaults: defaults,
             textDefaultsKey: Self.listDraftsDefaultsKey,
@@ -391,35 +387,7 @@ final class AppModel: ObservableObject {
     }
 
     var needsAttentionCount: Int {
-        recoverySnapshot.needsAttentionCount + legacyDraftCount + queuedAddsRequiringAttention.count
-    }
-
-    func refreshQueuedAddsRequiringAttention() async {
-        guard let agentImports else { return }
-        do {
-            queuedAddsRequiringAttention = try await agentImports.pendingRequestsRequiringAttention(
-                activeScopeToken: cliScopeToken
-            )
-        } catch {
-            presentError(error)
-        }
-    }
-
-    func addQueuedRequestToThisInbox(_ requestID: UUID) async {
-        guard let agentImports else { return }
-        let scopeToken = cliScopeToken
-        do {
-            try await agentImports.bindPendingRequestToInbox(requestID, scopeToken: scopeToken)
-            _ = await agentImports.importPending(
-                activeScopeToken: scopeToken, waitForCurrent: true
-            ) { [self] request in
-                try await importAgentRequest(request)
-            }
-            await refreshQueuedAddsRequiringAttention()
-        } catch {
-            presentError(error)
-            await refreshQueuedAddsRequiringAttention()
-        }
+        recoverySnapshot.needsAttentionCount + legacyDraftCount
     }
     var unattributedLegacyDrafts: [(id: UUID, text: String)] {
         composerDrafts.unattributedLegacyDrafts()

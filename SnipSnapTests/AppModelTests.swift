@@ -23,6 +23,46 @@ private final class MacDiagnosticRecorderProbe: @unchecked Sendable {
 
 final class AppModelTests: StoreBackedTestCase {
     @MainActor
+    func testCLIAddUsesLiveLibraryAndRecordsAgentContext() async throws {
+        let library = try JSONSnipLibrary(fileURL: storeURL())
+        let model = AppModel(library: library, defaults: defaults())
+        let request = SnipCLIRequest(
+            action: .add(
+                content: "Future improvement", list: nil,
+                agentContext: SnipAgentContext(sessionTitle: "Current work")
+            ),
+            scopeToken: model.cliScopeToken
+        )
+
+        let receipt = try await model.handleCLIRequest(request)
+        let saved = try await library.checkedSnapshot(sortedBy: .chronological)
+
+        XCTAssertEqual(receipt.status, .success)
+        XCTAssertEqual(receipt.resultSnipID, saved.snips.first?.id)
+        XCTAssertEqual(saved.snips.first?.content, "Future improvement")
+        XCTAssertEqual(saved.snips.first?.origin, .agent)
+        XCTAssertEqual(saved.snips.first?.agentContextLabel, "Current work")
+    }
+
+    @MainActor
+    func testCLIAddRejectsMissingNamedListWithoutSaving() async throws {
+        let library = try JSONSnipLibrary(fileURL: storeURL())
+        let model = AppModel(library: library, defaults: defaults())
+        let request = SnipCLIRequest(
+            action: .add(content: "Future improvement", list: "Missing", agentContext: nil),
+            scopeToken: model.cliScopeToken
+        )
+
+        do {
+            _ = try await model.handleCLIRequest(request)
+            XCTFail("A missing named destination must not silently become Inbox.")
+        } catch SnipLibraryError.invalidList {}
+
+        let saved = try await library.checkedSnapshot(sortedBy: .chronological)
+        XCTAssertTrue(saved.snips.isEmpty)
+    }
+
+    @MainActor
     func testStartupErrorUsesStartupDiagnosticCode() throws {
         let probe = MacDiagnosticRecorderProbe()
         let model = AppModel(
@@ -37,131 +77,6 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(probe.events.first?.operation, "app.startup")
         XCTAssertEqual(probe.events.first?.errorCode, "presentation.startup")
         XCTAssertFalse(probe.events.first?.line.contains("secret.txt") ?? true)
-    }
-
-    @MainActor
-    func testAgentImportUsesInboxWhenQueuedDestinationDisappears() async throws {
-        let library = try JSONSnipLibrary(fileURL: storeURL())
-        let model = AppModel(library: library, defaults: defaults())
-        let request = AgentImportRequest(
-            content: "Keep this",
-            destinationListID: UUID(),
-            destinationSelector: "Deleted List",
-            agentContext: SnipAgentContext(
-                sessionTitle: "Agent provenance",
-                branchName: "feature/agent-context"
-            ),
-            scopeToken: model.cliScopeToken
-        )
-
-        let receipt = try await model.importAgentRequest(request)
-
-        XCTAssertEqual(receipt.status, .added)
-        XCTAssertEqual(receipt.listID, SnipList.inboxID)
-        XCTAssertEqual(model.snips.first?.origin, .agent)
-        XCTAssertEqual(model.snips.first?.agentContextLabel, "Agent provenance")
-        XCTAssertTrue(receipt.matches(request))
-    }
-
-    @MainActor
-    func testAgentImportReplayTerminatesWhenOriginalSnipWasDeleted() async throws {
-        let library = try JSONSnipLibrary(fileURL: storeURL())
-        let model = AppModel(library: library, defaults: defaults())
-        let request = AgentImportRequest(
-            content: "Ephemeral",
-            destinationListID: SnipList.inboxID,
-            scopeToken: model.cliScopeToken
-        )
-        let added = try await model.importAgentRequest(request)
-        let snipID = try XCTUnwrap(added.snipID)
-        _ = try await library.perform(
-            .delete(ids: [snipID]),
-            sortedBy: .chronological
-        )
-
-        let replay = try await model.importAgentRequest(request)
-
-        XCTAssertEqual(replay.status, .failed)
-        XCTAssertNil(replay.snipID)
-        XCTAssertNotNil(replay.error)
-    }
-
-    @MainActor
-    func testAgentImportRejectsARequestIDAlreadyUsedByDifferentSnip() async throws {
-        let library = try JSONSnipLibrary(fileURL: storeURL())
-        let requestID = UUID()
-        _ = try await library.perform(
-            .add(
-                content: "Unrelated",
-                origin: .quickEntry,
-                source: nil,
-                listID: SnipList.inboxID,
-                attachmentURLs: [],
-                requestID: requestID,
-                now: Date()
-            ),
-            sortedBy: .chronological
-        )
-        let model = AppModel(library: library, defaults: defaults())
-        let request = AgentImportRequest(
-            content: "Agent todo",
-            destinationListID: SnipList.inboxID,
-            scopeToken: model.cliScopeToken,
-            requestID: requestID
-        )
-
-        do {
-            _ = try await model.importAgentRequest(request)
-            XCTFail("Expected a request ID conflict.")
-        } catch {
-            XCTAssertEqual(error as? AgentImportError, .conflictingRequestID)
-        }
-    }
-
-    @MainActor
-    func testAgentImportRejectsAnUnrelatedAgentSnipWithSameRequestID() async throws {
-        let library = try JSONSnipLibrary(fileURL: storeURL())
-        let requestID = UUID()
-        let earlier = Date(timeIntervalSinceNow: -60)
-        _ = try await library.perform(
-            .add(content: "Unrelated agent text", origin: .agent, source: nil,
-                 listID: SnipList.inboxID, attachmentURLs: [],
-                 requestID: requestID, now: earlier),
-            sortedBy: .chronological
-        )
-        let model = AppModel(library: library, defaults: defaults())
-        let request = AgentImportRequest(
-            content: "New agent text", destinationListID: SnipList.inboxID,
-            scopeToken: model.cliScopeToken,
-            requestID: requestID, createdAt: Date()
-        )
-        do {
-            _ = try await model.importAgentRequest(request)
-            XCTFail("A matching UUID with a different creation time is not this request.")
-        } catch AgentImportError.conflictingRequestID {}
-    }
-
-    @MainActor
-    func testAgentImportRejectsSameTimeDifferentContentForUnusedRequestID() async throws {
-        let library = try JSONSnipLibrary(fileURL: storeURL())
-        let requestID = UUID()
-        let createdAt = Date(timeIntervalSinceReferenceDate: 812_000_000)
-        _ = try await library.perform(
-            .add(content: "Unrelated agent text", origin: .agent, source: nil,
-                 listID: SnipList.inboxID, attachmentURLs: [],
-                 requestID: requestID, now: createdAt),
-            sortedBy: .chronological
-        )
-        let model = AppModel(library: library, defaults: defaults())
-        let request = AgentImportRequest(
-            content: "Different agent text", destinationListID: SnipList.inboxID,
-            scopeToken: model.cliScopeToken, requestID: requestID, createdAt: createdAt
-        )
-
-        do {
-            _ = try await model.importAgentRequest(request)
-            XCTFail("A matching UUID and timestamp cannot justify different untouched text")
-        } catch AgentImportError.conflictingRequestID {}
     }
 
     @MainActor

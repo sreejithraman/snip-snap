@@ -6,45 +6,42 @@ import UniformTypeIdentifiers
 @testable import SnipSnap
 @testable import SnipSnapPersistence
 
+private actor ThrowAfterCommittedAdd: SnipLibrary {
+    let library: any SnipLibrary
+    let hideAttachmentsAfterCommit: Bool
+    private var shouldThrow = true
+    private var didCommit = false
+
+    init(library: any SnipLibrary, hideAttachmentsAfterCommit: Bool = false) {
+        self.library = library
+        self.hideAttachmentsAfterCommit = hideAttachmentsAfterCommit
+    }
+
+    func snapshot(sortedBy sortMode: SnipSortMode) async -> SnipLibrarySnapshot {
+        await library.snapshot(sortedBy: sortMode)
+    }
+
+    func checkedSnapshot(sortedBy sortMode: SnipSortMode) async throws -> SnipLibrarySnapshot {
+        let snapshot = try await library.checkedSnapshot(sortedBy: sortMode)
+        if didCommit && hideAttachmentsAfterCommit {
+            return SnipLibrarySnapshot(snips: snapshot.snips, lists: snapshot.lists)
+        }
+        return snapshot
+    }
+
+    func perform(_ command: SnipLibraryCommand,
+                 sortedBy sortMode: SnipSortMode) async throws -> SnipLibraryUpdate {
+        let update = try await library.perform(command, sortedBy: sortMode)
+        if shouldThrow {
+            shouldThrow = false
+            didCommit = true
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return update
+    }
+}
+
 final class AppModelCLITests: StoreBackedTestCase {
-    @MainActor
-    func testAgentListCatalogPublisherFlushesListChangesInOrder() async throws {
-        let imports = AgentImportStore(rootURL: try storeURL().deletingLastPathComponent())
-        let publisher = AgentListCatalogPublisher(imports: imports)
-        let research = SnipList(id: UUID(), name: "Research", systemImage: "books.vertical", position: 1)
-        publisher.enqueue([.inbox, research])
-        try await publisher.flush()
-        let createdCatalog = await imports.availableLists()
-        XCTAssertEqual(createdCatalog.map(\.id), [SnipList.inboxID, research.id])
-
-        publisher.enqueue([.inbox])
-        try await publisher.flush()
-        let deletedCatalog = await imports.availableLists()
-        XCTAssertEqual(deletedCatalog.map(\.id), [SnipList.inboxID])
-    }
-
-    @MainActor
-    func testCatalogPublisherCanRecoverAfterFailedFlush() async throws {
-        let root = try storeURL().deletingLastPathComponent()
-        let imports = AgentImportStore(rootURL: root)
-        let publisher = AgentListCatalogPublisher(imports: imports)
-        let catalogURL = root.appendingPathComponent("Agent/scoped-catalog.json")
-        try FileManager.default.createDirectory(
-            at: catalogURL, withIntermediateDirectories: true
-        )
-        publisher.enqueue([.inbox], scopeToken: "account-a")
-        do {
-            try await publisher.flush()
-            XCTFail("The directory occupying the catalog file must reject the write")
-        } catch {}
-
-        try FileManager.default.removeItem(at: catalogURL)
-        publisher.enqueue([.inbox], scopeToken: "account-a")
-        try await publisher.flush()
-        let lists = try await imports.availableLists(matchingScopeToken: "account-a")
-        XCTAssertEqual(lists.map(\.id), [SnipList.inboxID])
-    }
-
     @MainActor
     func testCLIReadsSavedSnipsFromTheActiveLibrary() async throws {
         let library = try JSONSnipLibrary(fileURL: storeURL())
@@ -102,36 +99,21 @@ final class AppModelCLITests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testAgentImportReconcilesAndSchedulesSyncWhenAddCommitsThenThrows() async throws {
+    func testCLIAddReconcilesAndSchedulesSyncWhenWriteCommitsThenThrows() async throws {
         let library = InMemorySnipLibrary(snips: [])
         let cloud = MacOptionalCloudSyncHandlerProbe()
         let model = AppModel(library: library, defaults: defaults(), cloudSyncHandler: cloud)
-        let request = AgentImportRequest(content: "  Committed add  ",
-                                         destinationListID: UUID(),
-                                         scopeToken: model.cliScopeToken)
-        let imports = AgentImportStore(rootURL: try storeURL().deletingLastPathComponent())
-        _ = try await imports.save(request)
-        await library.failAfterNextWrite()
-        let summary = await imports.importPending(activeScopeToken: model.cliScopeToken) { request in
-            try await model.importAgentRequest(request)
-        }
-        XCTAssertEqual(summary.imported, 1)
-
-        let stored = try await library.checkedSnapshot(sortedBy: .chronological)
-        XCTAssertEqual(stored.snips.first?.content, "Committed add")
-        XCTAssertEqual(stored.snips.first?.listID, SnipList.inboxID)
-        XCTAssertEqual(model.snips.first?.content, "Committed add")
-        let snip = try XCTUnwrap(stored.snips.first)
-        _ = try await library.perform(
-            .update(id: snip.id, content: "Edited later", attachmentURLs: nil,
-                    expectedUpdatedAt: snip.updatedAt, now: Date()),
-            sortedBy: .chronological
+        let request = SnipCLIRequest(
+            action: .add(content: "  Committed add  ", list: nil, agentContext: nil),
+            scopeToken: model.cliScopeToken
         )
-        let existing = try await imports.existingResult(for: request.requestID)
-        guard case .completed(let receipt) = existing else {
-            return XCTFail("The original add should have a durable receipt before later edits.")
-        }
-        XCTAssertEqual(receipt.snipID, snip.id)
+        await library.failAfterNextWrite()
+
+        let receipt = try await model.handleCLIRequest(request)
+        let stored = try await library.checkedSnapshot(sortedBy: .chronological)
+        XCTAssertEqual(receipt.resultSnipID, stored.snips.first?.id)
+        XCTAssertEqual(stored.snips.map(\.content), ["Committed add"])
+        XCTAssertEqual(model.snips.map(\.content), ["Committed add"])
         for _ in 0..<100 {
             if await cloud.syncCount() > 0 { break }
             try await Task.sleep(for: .milliseconds(10))
@@ -141,37 +123,75 @@ final class AppModelCLITests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testAgentImportRetryAfterUnknownCommitAndLaterEdit() async throws {
-        let library = InMemorySnipLibrary(snips: [])
-        let model = AppModel(library: library, defaults: defaults())
-        let request = AgentImportRequest(content: "  Original  ",
-                                         destinationListID: SnipList.inboxID,
-                                         scopeToken: model.cliScopeToken)
-        let imports = AgentImportStore(rootURL: try storeURL().deletingLastPathComponent())
-        _ = try await imports.save(request)
-        await library.failAfterNextWriteAndRecoveryRead()
-        let first = await imports.importPending(activeScopeToken: model.cliScopeToken) { request in
-            try await model.importAgentRequest(request)
-        }
-        XCTAssertEqual(first.imported, 0)
-        let pendingCount = await imports.pendingImportCount()
-        XCTAssertEqual(pendingCount, 1)
-        let afterCommit = try await library.checkedSnapshot(sortedBy: .chronological)
-        let snip = try XCTUnwrap(afterCommit.snips.first)
+    func testCLIAddRecoversCommittedFoldedText() async throws {
+        let library = try JSONSnipLibrary(fileURL: storeURL())
+        let model = AppModel(library: ThrowAfterCommittedAdd(library: library),
+                             defaults: defaults())
+        let content = String(repeating: "x", count: 2_000)
+        let request = SnipCLIRequest(
+            action: .add(content: content, list: nil, agentContext: nil),
+            scopeToken: model.cliScopeToken
+        )
+
+        let receipt = try await model.handleCLIRequest(request)
+        let stored = try await library.checkedSnapshot(sortedBy: .chronological)
+        XCTAssertEqual(receipt.resultSnipID, stored.snips.first?.id)
+        XCTAssertEqual(stored.snips.count, 1)
+        XCTAssertEqual(stored.snips.first?.content, "")
+        let attachment = try XCTUnwrap(stored.snips.first?.attachments.first)
+        let url = try XCTUnwrap(stored.attachmentURLs[attachment.id])
+        XCTAssertEqual(try Data(contentsOf: url), Data(content.utf8))
+    }
+
+    @MainActor
+    func testCLIAddDoesNotConfirmFoldedTextWhenAttachmentIsUnavailable() async throws {
+        let library = try JSONSnipLibrary(fileURL: storeURL())
+        let model = AppModel(
+            library: ThrowAfterCommittedAdd(library: library,
+                                            hideAttachmentsAfterCommit: true),
+            defaults: defaults()
+        )
+        let request = SnipCLIRequest(
+            action: .add(content: String(repeating: "x", count: 2_000),
+                         list: nil, agentContext: nil),
+            scopeToken: model.cliScopeToken
+        )
+
+        do {
+            _ = try await model.handleCLIRequest(request)
+            XCTFail("A missing text attachment cannot prove the add succeeded.")
+        } catch is SnipCLIOutcomeUncertain {}
+        let stored = try await library.checkedSnapshot(sortedBy: .chronological)
+        XCTAssertEqual(stored.snips.count, 1)
+    }
+
+    @MainActor
+    func testCLIAddRejectsRequestIDOfAnEditedExistingAgentSnip() async throws {
+        let library = try JSONSnipLibrary(fileURL: storeURL())
+        let requestID = UUID()
+        let added = try await library.perform(
+            .add(content: "Original idea", origin: .agent, source: nil,
+                 listID: SnipList.inboxID, attachmentURLs: [], requestID: requestID,
+                 now: Date(timeIntervalSinceNow: -60)),
+            sortedBy: .chronological
+        )
+        let snip = try XCTUnwrap(added.snapshot.snips.first)
         _ = try await library.perform(
-            .update(id: snip.id, content: "Edited later", attachmentURLs: nil,
+            .update(id: snip.id, content: "Edited original", attachmentURLs: nil,
                     expectedUpdatedAt: snip.updatedAt, now: Date()),
             sortedBy: .chronological
         )
-        let second = await imports.importPending(activeScopeToken: model.cliScopeToken) { request in
-            try await model.importAgentRequest(request)
-        }
-        XCTAssertEqual(second.imported, 1)
-        guard case .completed(let receipt) = try await imports.existingResult(
-            for: request.requestID) else {
-            return XCTFail("The retry should finish the original request.")
-        }
-        XCTAssertEqual(receipt.snipID, snip.id)
+        let model = AppModel(library: library, defaults: defaults())
+
+        do {
+            _ = try await model.handleCLIRequest(SnipCLIRequest(
+                action: .add(content: "Different idea", list: nil, agentContext: nil),
+                requestID: requestID, scopeToken: model.cliScopeToken
+            ))
+            XCTFail("An existing request ID must not stand in for a new add.")
+        } catch SnipCLIRequestError.conflictingRequestID {}
+        let stored = try await library.checkedSnapshot(sortedBy: .chronological)
+        XCTAssertEqual(stored.snips.map(\.content), ["Edited original"])
     }
 
     @MainActor
@@ -584,100 +604,6 @@ final class AppModelCLITests: StoreBackedTestCase {
         let snapshot = try await library.checkedSnapshot(sortedBy: .chronological)
         XCTAssertEqual(snapshot.snips.map(\.content), ["Send this"])
         XCTAssertEqual(model.composerDraft(for: SnipList.inboxID).text, "Keep editing this")
-    }
-
-    @MainActor
-    func testQueuedAddCannotImportIntoReplacementAccount() async throws {
-        let firstScope = SnipRecoveryScope("account-a")
-        let secondScope = SnipRecoveryScope("account-b")
-        let first = InMemorySnipLibrary(snips: [])
-        let second = InMemorySnipLibrary(snips: [])
-        let model = AppModel(library: first, defaults: defaults(), recoveryScope: firstScope)
-        let request = AgentImportRequest(
-            content: "Account A idea", destinationListID: SnipList.inboxID,
-            scopeToken: model.cliScopeToken
-        )
-
-        await model.replaceLibrary(second, recoveryScope: secondScope)
-        do {
-            _ = try await model.importAgentRequest(request)
-            XCTFail("The queued add must stay in its original account")
-        } catch SnipCLIRequestError.scopeChanged {}
-        let secondSnapshot = try await second.checkedSnapshot(sortedBy: .chronological)
-        XCTAssertTrue(secondSnapshot.snips.isEmpty)
-
-        await model.replaceLibrary(first, recoveryScope: firstScope)
-        let receipt = try await model.importAgentRequest(request)
-        XCTAssertEqual(receipt.status, .added)
-        let firstSnapshot = try await first.checkedSnapshot(sortedBy: .chronological)
-        XCTAssertEqual(firstSnapshot.snips.map(\.content), ["Account A idea"])
-    }
-
-    @MainActor
-    func testUnattributedQueuedAddWaitsForExplicitInboxChoice() async throws {
-        let library = InMemorySnipLibrary(snips: [])
-        let imports = AgentImportStore(rootURL: try storeURL().deletingLastPathComponent())
-        let model = AppModel(
-            library: library, defaults: defaults(),
-            recoveryScope: SnipRecoveryScope("current-account"),
-            agentImports: imports
-        )
-        let request = AgentImportRequest(
-            content: "Unattributed idea", destinationListID: UUID()
-        )
-        _ = try await imports.save(request)
-        let skipped = await imports.importPending(activeScopeToken: model.cliScopeToken) { _ in
-            XCTFail("Unattributed add must wait for a library choice")
-            throw AgentImportError.invalidRequest
-        }
-        XCTAssertEqual(skipped, AgentImportSummary(imported: 0, failed: 0))
-        await model.refreshQueuedAddsRequiringAttention()
-        XCTAssertEqual(model.needsAttentionCount, 1)
-        let before = try await library.checkedSnapshot(sortedBy: .chronological)
-        XCTAssertTrue(before.snips.isEmpty)
-
-        await model.addQueuedRequestToThisInbox(request.requestID)
-
-        let after = try await library.checkedSnapshot(sortedBy: .chronological)
-        XCTAssertEqual(after.snips.map(\.content), ["Unattributed idea"])
-        XCTAssertEqual(after.snips.first?.listID, SnipList.inboxID)
-        XCTAssertEqual(model.needsAttentionCount, 0)
-        let pendingCount = await imports.pendingImportCount()
-        XCTAssertEqual(pendingCount, 0)
-    }
-
-    @MainActor
-    func testQueuedAddFromPreviousLibraryAppearsForExplicitReview() async throws {
-        let library = InMemorySnipLibrary(snips: [])
-        let imports = AgentImportStore(rootURL: try storeURL().deletingLastPathComponent())
-        let model = AppModel(
-            library: library, defaults: defaults(),
-            recoveryScope: SnipRecoveryScope("account-b"),
-            agentImports: imports
-        )
-        let request = AgentImportRequest(
-            content: "Previous library idea", destinationListID: UUID(),
-            scopeToken: "account-a"
-        )
-        _ = try await imports.save(request)
-        let skipped = await imports.importPending(activeScopeToken: model.cliScopeToken) { _ in
-            XCTFail("The previous account's add must not import automatically")
-            throw AgentImportError.invalidRequest
-        }
-        XCTAssertEqual(skipped, AgentImportSummary(imported: 0, failed: 0))
-        await model.refreshQueuedAddsRequiringAttention()
-        XCTAssertEqual(model.queuedAddsRequiringAttention.map(\.requestID), [request.requestID])
-        XCTAssertEqual(model.needsAttentionCount, 1)
-
-        await model.addQueuedRequestToThisInbox(request.requestID)
-
-        let snapshot = try await library.checkedSnapshot(sortedBy: .chronological)
-        XCTAssertEqual(snapshot.snips.map(\.content), ["Previous library idea"])
-        XCTAssertEqual(snapshot.snips.first?.listID, SnipList.inboxID)
-        XCTAssertEqual(model.needsAttentionCount, 0)
-        let receipt = try await imports.receipt(for: request.requestID)
-        XCTAssertEqual(receipt?.requestScopeToken, "account-a")
-        XCTAssertEqual(receipt?.approvedInboxScopeToken, model.cliScopeToken)
     }
 
     @MainActor
