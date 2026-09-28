@@ -50,7 +50,8 @@ final class AppModelTests: StoreBackedTestCase {
             agentContext: SnipAgentContext(
                 sessionTitle: "Agent provenance",
                 branchName: "feature/agent-context"
-            )
+            ),
+            scopeToken: model.cliScopeToken
         )
 
         let receipt = try await model.importAgentRequest(request)
@@ -68,7 +69,8 @@ final class AppModelTests: StoreBackedTestCase {
         let model = AppModel(library: library, defaults: defaults())
         let request = AgentImportRequest(
             content: "Ephemeral",
-            destinationListID: SnipList.inboxID
+            destinationListID: SnipList.inboxID,
+            scopeToken: model.cliScopeToken
         )
         let added = try await model.importAgentRequest(request)
         let snipID = try XCTUnwrap(added.snipID)
@@ -104,6 +106,7 @@ final class AppModelTests: StoreBackedTestCase {
         let request = AgentImportRequest(
             content: "Agent todo",
             destinationListID: SnipList.inboxID,
+            scopeToken: model.cliScopeToken,
             requestID: requestID
         )
 
@@ -113,6 +116,52 @@ final class AppModelTests: StoreBackedTestCase {
         } catch {
             XCTAssertEqual(error as? AgentImportError, .conflictingRequestID)
         }
+    }
+
+    @MainActor
+    func testAgentImportRejectsAnUnrelatedAgentSnipWithSameRequestID() async throws {
+        let library = try JSONSnipLibrary(fileURL: storeURL())
+        let requestID = UUID()
+        let earlier = Date(timeIntervalSinceNow: -60)
+        _ = try await library.perform(
+            .add(content: "Unrelated agent text", origin: .agent, source: nil,
+                 listID: SnipList.inboxID, attachmentURLs: [],
+                 requestID: requestID, now: earlier),
+            sortedBy: .chronological
+        )
+        let model = AppModel(library: library, defaults: defaults())
+        let request = AgentImportRequest(
+            content: "New agent text", destinationListID: SnipList.inboxID,
+            scopeToken: model.cliScopeToken,
+            requestID: requestID, createdAt: Date()
+        )
+        do {
+            _ = try await model.importAgentRequest(request)
+            XCTFail("A matching UUID with a different creation time is not this request.")
+        } catch AgentImportError.conflictingRequestID {}
+    }
+
+    @MainActor
+    func testAgentImportRejectsSameTimeDifferentContentForUnusedRequestID() async throws {
+        let library = try JSONSnipLibrary(fileURL: storeURL())
+        let requestID = UUID()
+        let createdAt = Date(timeIntervalSinceReferenceDate: 812_000_000)
+        _ = try await library.perform(
+            .add(content: "Unrelated agent text", origin: .agent, source: nil,
+                 listID: SnipList.inboxID, attachmentURLs: [],
+                 requestID: requestID, now: createdAt),
+            sortedBy: .chronological
+        )
+        let model = AppModel(library: library, defaults: defaults())
+        let request = AgentImportRequest(
+            content: "Different agent text", destinationListID: SnipList.inboxID,
+            scopeToken: model.cliScopeToken, requestID: requestID, createdAt: createdAt
+        )
+
+        do {
+            _ = try await model.importAgentRequest(request)
+            XCTFail("A matching UUID and timestamp cannot justify different untouched text")
+        } catch AgentImportError.conflictingRequestID {}
     }
 
     @MainActor
@@ -235,181 +284,6 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(choices, [.keepLocalCopy])
         XCTAssertEqual(refreshCount, 2)
         XCTAssertEqual(rebindCount, 2)
-    }
-
-    private actor InMemorySnipLibrary: SnipLibrary {
-        private var snips: [Snip]
-        private var lists: [SnipList]
-        private var attachmentURLs: [UUID: URL]
-        private var recovery: SnipRecoverySnapshot
-        private(set) var addedContents: [String] = []
-        private(set) var snapshotCallCount = 0
-        private(set) var recoveryChoices: [SnipRecoveryChoice] = []
-        private var suspendsFirstCommand: Bool
-        private var firstCommandStarted = false
-        private var firstCommandStartWaiters: [CheckedContinuation<Void, Never>] = []
-        private var firstCommandContinuation: CheckedContinuation<Void, Never>?
-
-        init(
-            snips: [Snip],
-            lists: [SnipList] = [.inbox],
-            recovery: SnipRecoverySnapshot = .empty,
-            attachmentURLs: [UUID: URL] = [:],
-            suspendsFirstCommand: Bool = false
-        ) {
-            self.snips = snips
-            self.lists = lists
-            self.recovery = recovery
-            self.attachmentURLs = attachmentURLs
-            self.suspendsFirstCommand = suspendsFirstCommand
-        }
-
-        func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
-            snapshotCallCount += 1
-            return makeSnapshot(sortedBy: sortMode)
-        }
-
-        func checkedSnapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
-            makeSnapshot(sortedBy: sortMode)
-        }
-
-        private func makeSnapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
-            SnipLibrarySnapshot(
-                snips: Snip.sorted(snips, by: sortMode),
-                lists: lists,
-                attachmentURLs: attachmentURLs.filter {
-                    FileManager.default.fileExists(atPath: $0.value.path)
-                }
-            )
-        }
-
-        func perform(
-            _ command: SnipLibraryCommand,
-            sortedBy sortMode: SnipSortMode
-        ) async throws -> SnipLibraryUpdate {
-            if suspendsFirstCommand {
-                suspendsFirstCommand = false
-                firstCommandStarted = true
-                firstCommandStartWaiters.forEach { $0.resume() }
-                firstCommandStartWaiters.removeAll()
-                await withCheckedContinuation { firstCommandContinuation = $0 }
-            }
-            let outcome: SnipLibraryOutcome
-            switch command {
-            case let .add(content, origin, source, listID, _, requestID, now):
-                let snip = Snip(
-                    requestID: requestID,
-                    createdAt: now,
-                    content: content,
-                    origin: origin,
-                    source: source,
-                    listID: listID
-                )
-                snips.append(snip)
-                addedContents.append(content)
-                outcome = .add(.added(snip.id))
-            case .update(let id, let content, _, _, let now):
-                guard let index = snips.firstIndex(where: { $0.id == id }) else {
-                    throw SnipLibraryError.snipNotFound
-                }
-                snips[index].content = content
-                snips[index].updatedAt = now
-                outcome = .none
-            case .setDone(let ids, let done):
-                for index in snips.indices where ids.contains(snips[index].id) {
-                    snips[index].isDone = done
-                }
-                outcome = .none
-            case .createList(let name, let systemImage, let color, _):
-                let list = SnipList(
-                    id: UUID(), name: name, systemImage: systemImage,
-                    color: color, position: lists.count
-                )
-                lists.append(list)
-                outcome = .listCreated(list)
-            case .updateList(let id, let name, let systemImage, _):
-                guard let index = lists.firstIndex(where: { $0.id == id }) else {
-                    throw SnipLibraryError.storeUnavailable
-                }
-                lists[index].name = name
-                lists[index].systemImage = systemImage
-                outcome = .none
-            case .moveChronologically(let ids, let listID):
-                for index in snips.indices where ids.contains(snips[index].id) {
-                    snips[index].listID = listID
-                }
-                outcome = .none
-            case .deleteList(let id):
-                lists.removeAll { $0.id == id }
-                for index in snips.indices where snips[index].listID == id {
-                    snips[index].listID = SnipList.inboxID
-                }
-                outcome = .none
-            case .pruneAttachments:
-                outcome = .none
-            default:
-                throw SnipLibraryError.storeUnavailable
-            }
-            return SnipLibraryUpdate(snapshot: makeSnapshot(sortedBy: sortMode), outcome: outcome)
-        }
-
-        func waitUntilFirstCommandStarts() async {
-            if firstCommandStarted { return }
-            await withCheckedContinuation { firstCommandStartWaiters.append($0) }
-        }
-
-        func resumeFirstCommand() {
-            firstCommandContinuation?.resume()
-            firstCommandContinuation = nil
-        }
-
-        func recoverySnapshot(in scope: SnipRecoveryScope) -> SnipRecoverySnapshot {
-            recovery
-        }
-
-        func resolveRecovery(
-            _ recoveryID: UUID,
-            in scope: SnipRecoveryScope,
-            choice: SnipRecoveryChoice
-        ) throws -> SnipLibrarySnapshot {
-            guard recovery.pendingSnips.contains(where: { $0.id == recoveryID })
-                || recovery.pendingLists.contains(where: { $0.id == recoveryID })
-            else { throw SnipLibraryError.recoveryNotFound }
-            recoveryChoices.append(choice)
-            recovery = .empty
-            return makeSnapshot(sortedBy: .chronological)
-        }
-
-        func replaceText(_ text: String, for id: UUID) {
-            guard let index = snips.firstIndex(where: { $0.id == id }) else { return }
-            let current = snips[index]
-            snips[index] = Snip(
-                id: current.id,
-                requestID: current.requestID,
-                createdAt: current.createdAt,
-                updatedAt: current.updatedAt,
-                content: text,
-                origin: current.origin,
-                source: current.source,
-                listID: current.listID,
-                isDone: current.isDone,
-                manualSortKey: current.manualSortKey,
-                attachments: current.attachments
-            )
-        }
-
-        func recordedRecoveryChoices() -> [SnipRecoveryChoice] {
-            recoveryChoices
-        }
-    }
-
-    @MainActor
-    private func defaults() -> UserDefaults {
-        let suite = "Snip SnapTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
-        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
-        return defaults
     }
 
     @MainActor
@@ -2941,6 +2815,87 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testComposerDraftScopesKeepInboxTextSeparateAcrossReopen() {
+        let defaults = defaults()
+        let first = ComposerDraftStore(
+            defaults: defaults, textDefaultsKey: "drafts", scope: "account-a"
+        )
+        first.setText("Account A", for: SnipList.inboxID)
+        first.switchScope(to: "account-b")
+        XCTAssertEqual(first.draft(for: SnipList.inboxID).text, "")
+        first.setText("Account B", for: SnipList.inboxID)
+        first.flushText()
+        first.switchScope(to: "account-a")
+        XCTAssertEqual(first.draft(for: SnipList.inboxID).text, "Account A")
+
+        let reopened = ComposerDraftStore(
+            defaults: defaults, textDefaultsKey: "drafts", scope: "account-b"
+        )
+        XCTAssertEqual(reopened.draft(for: SnipList.inboxID).text, "Account B")
+    }
+
+    @MainActor
+    func testComposerDraftScopesQuarantineUnattributedLegacyDraft() {
+        let defaults = defaults()
+        defaults.set(
+            [SnipList.inboxID.uuidString: "Existing draft"], forKey: "drafts"
+        )
+        let store = ComposerDraftStore(
+            defaults: defaults, textDefaultsKey: "drafts", scope: "account-a"
+        )
+        XCTAssertEqual(store.draft(for: SnipList.inboxID).text, "")
+        store.switchScope(to: ComposerDraftStore.unattributedLegacyScope)
+        XCTAssertEqual(store.draft(for: SnipList.inboxID).text, "Existing draft")
+    }
+
+    @MainActor
+    func testUnattributedLegacyDraftCanBeMovedToCurrentInboxExplicitly() async {
+        let defaults = defaults()
+        let formerListID = UUID()
+        defaults.set([formerListID.uuidString: "Old unsent idea"], forKey: "listDrafts")
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: []), defaults: defaults,
+            recoveryScope: SnipRecoveryScope("current-account")
+        )
+        await model.reload()
+
+        XCTAssertEqual(model.needsAttentionCount, 1)
+        XCTAssertEqual(model.unattributedLegacyDrafts.first?.text, "Old unsent idea")
+        XCTAssertEqual(model.composerDraft(for: SnipList.inboxID).text, "")
+
+        model.moveUnattributedLegacyDraftToInbox(formerListID)
+        XCTAssertEqual(model.composerDraft(for: SnipList.inboxID).text, "Old unsent idea")
+        XCTAssertEqual(model.needsAttentionCount, 0)
+        XCTAssertTrue(model.unattributedLegacyDrafts.isEmpty)
+    }
+
+    @MainActor
+    func testCheckedStartupReloadRecoversScopedDraftForDeletedList() async {
+        let defaults = defaults()
+        let missingListID = UUID()
+        let draftStore = ComposerDraftStore(
+            defaults: defaults, textDefaultsKey: AppModel.listDraftsDefaultsKey,
+            scope: "account-a"
+        )
+        draftStore.setText("Draft from deleted list", for: missingListID)
+        draftStore.flushText()
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: []), defaults: defaults,
+            recoveryScope: SnipRecoveryScope("account-a")
+        )
+        await model.reload()
+        XCTAssertEqual(model.composerDraft(for: missingListID).text, "")
+        XCTAssertEqual(model.composerDraft(for: SnipList.inboxID).text,
+                       "Draft from deleted list")
+        let reopenedDrafts = ComposerDraftStore(
+            defaults: defaults, textDefaultsKey: AppModel.listDraftsDefaultsKey,
+            scope: "account-a"
+        )
+        XCTAssertEqual(reopenedDrafts.draft(for: SnipList.inboxID).text,
+                       "Draft from deleted list")
+    }
+
+    @MainActor
     func testComposerDraftRetainsTemporaryFilesUntilAnActiveSaveFinishes() throws {
         let directory = try storeURL().deletingLastPathComponent()
         let temporary = directory.appendingPathComponent("capture.png")
@@ -3264,64 +3219,6 @@ private actor AccountLibraryRebindCounter {
 
     func record() { count += 1 }
     func value() -> Int { count }
-}
-
-private struct MacAttachmentPreparationRequest: Equatable, Sendable {
-    let id: UUID
-    let use: SyncedAttachmentUse
-}
-
-private enum MacAttachmentPreparationError: Error {
-    case unavailable
-}
-
-private actor MacOptionalCloudSyncHandlerProbe: OptionalCloudSyncHandling {
-    private var requests: [MacAttachmentPreparationRequest] = []
-    private let urls: [UUID: URL]
-    private var failuresRemaining: Int
-    private let clearURLs: [URL]
-    private var clears = 0
-    private var syncCalls = 0
-
-    init(
-        urls: [UUID: URL] = [:],
-        failuresRemaining: Int = 0,
-        clearURLs: [URL] = []
-    ) {
-        self.urls = urls
-        self.failuresRemaining = failuresRemaining
-        self.clearURLs = clearURLs
-    }
-
-    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
-    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
-    func syncWhenPossible() async { syncCalls += 1 }
-    func syncCount() -> Int { syncCalls }
-    func isCloudSyncActive() async throws -> Bool { true }
-    func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { [:] }
-
-    func prepareSyncedAttachment(
-        _ id: UUID,
-        for use: SyncedAttachmentUse
-    ) async throws -> URL {
-        requests.append(MacAttachmentPreparationRequest(id: id, use: use))
-        if failuresRemaining > 0 {
-            failuresRemaining -= 1
-            throw MacAttachmentPreparationError.unavailable
-        }
-        guard let url = urls[id] else { throw MacAttachmentPreparationError.unavailable }
-        return url
-    }
-
-    func clearDownloadedFiles() async throws {
-        clears += 1
-        for url in clearURLs where FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.removeItem(at: url)
-        }
-    }
-
-    func preparationRequests() -> [MacAttachmentPreparationRequest] { requests }
-    func clearCount() -> Int { clears }
 }
 
 private actor CancellableMacAttachmentHandler: OptionalCloudSyncHandling {

@@ -80,6 +80,10 @@ public actor SavedSnipsSession {
         try await library.archive()
     }
 
+    public func checkedSnapshot(sortedBy sortMode: SnipSortMode) async throws -> SnipLibrarySnapshot {
+        try await library.checkedSnapshot(sortedBy: sortMode)
+    }
+
     public func performLibraryCommand(
         _ command: SnipLibraryCommand,
         sortedBy sortMode: SnipSortMode

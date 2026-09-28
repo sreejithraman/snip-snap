@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Foundation
 import SnipSnapCore
+import SnipSnapPersistence
 import UniformTypeIdentifiers
 
 struct ArchiveAttachmentPreparationError: Error {
@@ -78,6 +79,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var sortMode: SnipSortMode
     @Published private(set) var appearance: AppAppearance
     @Published private(set) var recoverySnapshot: SnipRecoverySnapshot = .empty
+    @Published private(set) var legacyDraftCount = 0
+    @Published private(set) var queuedAddsRequiringAttention: [AgentImportRequest] = []
     @Published private(set) var pendingImportPreview: SnipImportPreview?
     private var pendingImportPreviewID: UUID?
     @Published var toast: AppToast?
@@ -113,12 +116,17 @@ final class AppModel: ObservableObject {
         return Set(snips.filter { ids.contains($0.id) }.map(\.listID)).count == 1
     }
 
-    private let session: SavedSnipsSession
+    let session: SavedSnipsSession
     private let attachmentPreparation: AttachmentPreparationCoordinator
     private let diagnostics: any AppDiagnosticRecording
     private var cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private let defaults: UserDefaults
-    private let composerDrafts: ComposerDraftStore
+    let composerDrafts: ComposerDraftStore
+    private let agentImports: AgentImportStore?
+    private var redirectedComposerTextByList: [UUID: String] = [:]
+    private var redirectedInboxRevisionByList: [UUID: UInt64] = [:]
+    private var inboxDraftRevision: UInt64 = 0
+    private var retiredComposerListIDs: Set<UUID> = []
     private let preparePasteboardExport: @Sendable (String, [URL]) async throws
         -> SnipPasteboardExport
     private var clipboardWriteGeneration = 0
@@ -171,6 +179,7 @@ final class AppModel: ObservableObject {
         clipboardHistory: ClipboardHistory? = nil,
         initialError: String? = nil,
         recoveryScope: SnipRecoveryScope? = nil,
+        agentImports: AgentImportStore? = nil,
         cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
         userActions: (any SnipLibraryUserActions)? = nil,
         userActionsRebinder: SnipLibraryUserActionsRebinder = .direct,
@@ -184,9 +193,11 @@ final class AppModel: ObservableObject {
         diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared
     ) {
         self.defaults = defaults
+        self.agentImports = agentImports
         composerDrafts = ComposerDraftStore(
             defaults: defaults,
-            textDefaultsKey: Self.listDraftsDefaultsKey
+            textDefaultsKey: Self.listDraftsDefaultsKey,
+            scope: recoveryScope?.rawValue ?? "local"
         )
         self.clipboardHistory = clipboardHistory ?? ClipboardHistory()
         activeListID = defaults.string(forKey: Self.activeListDefaultsKey)
@@ -209,6 +220,7 @@ final class AppModel: ObservableObject {
         self.cloudSyncHandler = cloudSyncHandler
         self.preparePasteboardExport = preparePasteboardExport
         self.diagnostics = diagnostics
+        legacyDraftCount = composerDrafts.unattributedLegacyDrafts().count
         presentError(
             initialError,
             operation: "app.startup",
@@ -325,11 +337,26 @@ final class AppModel: ObservableObject {
             clearPendingDeletionToast()
             selection = []
             editingID = nil
-            apply(await session.replaceLibrary(
+            let previousListIDs = Set(lists.map(\.id))
+            let state = await session.replaceLibrary(
                 library,
                 recoveryScope: recoveryScope,
                 sortedBy: sortMode
-            ))
+            )
+            let newDraftScope = recoveryScope?.rawValue ?? "local"
+            let scopeChanged = composerDrafts.scope != newDraftScope
+            if scopeChanged {
+                composerDrafts.switchScope(to: newDraftScope)
+                redirectedComposerTextByList.removeAll()
+                redirectedInboxRevisionByList.removeAll()
+                inboxDraftRevision &+= 1
+            }
+            apply(state)
+            let currentListIDs = Set(lists.map(\.id))
+            if scopeChanged {
+                retiredComposerListIDs = previousListIDs.subtracting(currentListIDs)
+            }
+            await reloadUnlocked()
         }
     }
 
@@ -357,10 +384,52 @@ final class AppModel: ObservableObject {
     }
 
     private func reloadUnlocked() async {
-        apply(await session.state(sortedBy: sortMode))
+        if let checked = try? await session.checkedSnapshot(sortedBy: sortMode) {
+            apply(checked)
+        }
+        recoverySnapshot = await session.refreshRecovery()
     }
 
-    var needsAttentionCount: Int { recoverySnapshot.needsAttentionCount }
+    var needsAttentionCount: Int {
+        recoverySnapshot.needsAttentionCount + legacyDraftCount + queuedAddsRequiringAttention.count
+    }
+
+    func refreshQueuedAddsRequiringAttention() async {
+        guard let agentImports else { return }
+        do {
+            queuedAddsRequiringAttention = try await agentImports.pendingRequestsRequiringAttention(
+                activeScopeToken: cliScopeToken
+            )
+        } catch {
+            presentError(error)
+        }
+    }
+
+    func addQueuedRequestToThisInbox(_ requestID: UUID) async {
+        guard let agentImports else { return }
+        let scopeToken = cliScopeToken
+        do {
+            try await agentImports.bindPendingRequestToInbox(requestID, scopeToken: scopeToken)
+            _ = await agentImports.importPending(
+                activeScopeToken: scopeToken, waitForCurrent: true
+            ) { [self] request in
+                try await importAgentRequest(request)
+            }
+            await refreshQueuedAddsRequiringAttention()
+        } catch {
+            presentError(error)
+            await refreshQueuedAddsRequiringAttention()
+        }
+    }
+    var unattributedLegacyDrafts: [(id: UUID, text: String)] {
+        composerDrafts.unattributedLegacyDrafts()
+    }
+
+    func moveUnattributedLegacyDraftToInbox(_ id: UUID) {
+        composerDrafts.moveUnattributedLegacyDraftToInbox(id)
+        legacyDraftCount = composerDrafts.unattributedLegacyDrafts().count
+        inboxDraftRevision &+= 1
+    }
     var pendingRecoveredSnips: [RecoveredSnip] { recoverySnapshot.pendingSnips }
     var pendingRecoveredLists: [RecoveredListEdit] { recoverySnapshot.pendingLists }
 
@@ -378,9 +447,7 @@ final class AppModel: ObservableObject {
     }
 
     func refreshRecovery() async {
-        await withCommandLock {
-            apply(await session.state(sortedBy: sortMode))
-        }
+        await withCommandLock { await reloadUnlocked() }
     }
 
     @discardableResult
@@ -405,13 +472,21 @@ final class AppModel: ObservableObject {
     }
 
     private func apply(_ state: SavedSnipsSessionState) {
-        apply(state.library)
+        apply(state.library, reconcileOrphanDrafts: false)
         recoverySnapshot = state.recovery
     }
 
-    private func apply(_ snapshot: SnipLibrarySnapshot) {
+    func apply(_ snapshot: SnipLibrarySnapshot, reconcileOrphanDrafts: Bool = true) {
         snips = snapshot.snips
         lists = snapshot.lists
+        let liveIDs = Set(lists.map(\.id))
+        retiredComposerListIDs.subtract(liveIDs)
+        if reconcileOrphanDrafts {
+            for id in composerDrafts.draftListIDs()
+                where !liveIDs.contains(id) && !retiredComposerListIDs.contains(id) {
+                moveComposerDraftToInbox(from: id)
+            }
+        }
         attachmentPreparation.replaceCachedURLs(with: snapshot.attachmentURLs)
         if !lists.contains(where: { $0.id == activeListID }) {
             activeListID = SnipList.inboxID
@@ -469,109 +544,51 @@ final class AppModel: ObservableObject {
         requestID: UUID = UUID()
     ) async -> Result<SnipAddOutcome, Error> {
         await withCommandLock {
-            let result = await performMutationUnlocked {
-                let update = try await session.performLibraryCommand(
-                    .add(
-                        content: content,
-                        origin: origin,
-                        source: source,
-                        listID: listID ?? activeList.id,
-                        attachmentURLs: attachmentURLs,
-                        requestID: requestID,
-                        now: Date()
-                    ),
-                    sortedBy: sortMode
-                )
-                return (update, update)
-            }
-            switch result {
-            case .success(let update):
-                guard case .add(let outcome) = update.outcome else {
-                    preconditionFailure("The library returned the wrong add outcome.")
-                }
-                switch outcome {
-                case .added(let id):
-                    latestAddedSnipID = id
-                    return .success(.added(id))
-                case .duplicate:
-                    return .success(.duplicate)
-                }
-            case .failure(let error):
-                return .failure(error)
-            }
+            await addResultUnlocked(
+                content: content, origin: origin, source: source,
+                attachmentURLs: attachmentURLs, listID: listID, requestID: requestID
+            )
         }
     }
 
-    func importAgentRequest(_ request: AgentImportRequest) async throws -> AgentImportReceipt {
-        let result: Result<AgentImportReceipt, Error> = await performMutation {
-            let state = await session.state(sortedBy: sortMode)
-            let destinationListID = state.library.lists.contains(where: {
-                $0.id == request.destinationListID
-            }) ? request.destinationListID : SnipList.inboxID
+    private func addResultUnlocked(
+        content: String,
+        origin: SnipOrigin,
+        source: SnipSource?,
+        attachmentURLs: [URL],
+        listID: UUID?,
+        requestID: UUID
+    ) async -> Result<SnipAddOutcome, Error> {
+        let result = await performMutationUnlocked {
             let update = try await session.performLibraryCommand(
                 .add(
-                    content: request.content,
-                    origin: .agent,
-                    source: request.agentContext.map {
-                        SnipSource(applicationName: "", agentContext: $0)
-                    },
-                    listID: destinationListID,
-                    attachmentURLs: [],
-                    requestID: request.requestID,
-                    now: request.createdAt
+                    content: content,
+                    origin: origin,
+                    source: source,
+                    listID: listID ?? activeList.id,
+                    attachmentURLs: attachmentURLs,
+                    requestID: requestID,
+                    now: Date()
                 ),
                 sortedBy: sortMode
             )
-            guard case .add(let outcome) = update.outcome else {
-                throw SnipLibraryError.invalidStore
-            }
-            guard let snip = update.snapshot.snips.first(where: {
-                $0.requestID == request.requestID
-            }) else {
-                guard case .duplicate = outcome,
-                      let list = update.snapshot.lists.first(where: {
-                          $0.id == destinationListID
-                      }) else { throw SnipLibraryError.invalidStore }
-                return (update, AgentImportReceipt(
-                    status: .failed,
-                    snipID: nil,
-                    listID: list.id,
-                    listName: list.name,
-                    request: request,
-                    error: "The original snip for this request is no longer available."
-                ))
-            }
-            if case .duplicate = outcome {
-                let expectedSource = request.agentContext.map {
-                    SnipSource(applicationName: "", agentContext: $0)
-                }
-                guard snip.content == request.content,
-                      snip.origin == .agent,
-                      snip.source == expectedSource,
-                      snip.listID == destinationListID else {
-                    throw AgentImportError.conflictingRequestID
-                }
-            }
-            guard let list = update.snapshot.lists.first(where: { $0.id == snip.listID }) else {
-                throw SnipLibraryError.invalidStore
-            }
-            let status: AgentImportReceipt.Status
-            switch outcome {
-            case .added:
-                status = .added
-            case .duplicate:
-                status = .unchanged
-            }
-            let receipt = AgentImportReceipt(
-                status: status,
-                snipID: snip.id,
-                listID: list.id,
-                listName: list.name,
-                request: request
-            )
-            return (update, receipt)
+            return (update, update)
         }
-        return try result.get()
+        switch result {
+        case .success(let update):
+            guard case .add(let outcome) = update.outcome else {
+                preconditionFailure("The library returned the wrong add outcome.")
+            }
+            switch outcome {
+            case .added(let id):
+                latestAddedSnipID = id
+                return .success(.added(id))
+            case .duplicate:
+                return .success(.duplicate)
+            }
+        case .failure(let error):
+            return .failure(error)
+        }
     }
 
     func update(
@@ -633,8 +650,36 @@ final class AppModel: ObservableObject {
         composerDrafts.draft(for: listID)
     }
 
+    var composerDraftScope: String { composerDrafts.scope }
+
+    var cliScopeToken: String {
+        SnipCLIScopeToken.token(for: composerDrafts.scope)
+    }
+
     func saveComposerText(_ text: String, for listID: UUID) {
-        composerDrafts.setText(text, for: listID)
+        guard !retiredComposerListIDs.contains(listID) else { return }
+        let destinationID = liveComposerListID(listID)
+        guard destinationID != listID else {
+            composerDrafts.setText(text, for: listID)
+            if listID == SnipList.inboxID { inboxDraftRevision &+= 1 }
+            return
+        }
+        let previous = redirectedComposerTextByList[listID] ?? ""
+        guard text != previous else { return }
+        let current = composerDrafts.draft(for: destinationID).text
+        if redirectedInboxRevisionByList[listID] == inboxDraftRevision,
+           !previous.isEmpty, current.hasSuffix(previous) {
+            var base = String(current.dropLast(previous.count))
+            if base.hasSuffix("\n\n") { base.removeLast(2) }
+            let separator = base.isEmpty || text.isEmpty ? "" : "\n\n"
+            composerDrafts.setText(base + separator + text, for: destinationID)
+        } else if !text.isEmpty {
+            let separator = current.isEmpty ? "" : "\n\n"
+            composerDrafts.setText(current + separator + text, for: destinationID)
+        }
+        redirectedComposerTextByList[listID] = text
+        inboxDraftRevision &+= 1
+        redirectedInboxRevisionByList[listID] = inboxDraftRevision
     }
 
     func flushComposerDrafts() {
@@ -642,11 +687,13 @@ final class AppModel: ObservableObject {
     }
 
     func addDraftAttachments(_ urls: [URL], to listID: UUID) {
-        composerDrafts.add(urls, to: listID)
+        guard !retiredComposerListIDs.contains(listID) else { return }
+        composerDrafts.add(urls, to: liveComposerListID(listID))
     }
 
     func addTemporaryDraftAttachment(_ url: URL, to listID: UUID) {
-        composerDrafts.addTemporary(url, to: listID)
+        guard !retiredComposerListIDs.contains(listID) else { return }
+        composerDrafts.addTemporary(url, to: liveComposerListID(listID))
     }
 
     func stageScreenCapture() -> URL {
@@ -654,28 +701,66 @@ final class AppModel: ObservableObject {
     }
 
     func finishScreenCapture(_ url: URL, in listID: UUID, succeeded: Bool) {
-        composerDrafts.finishScreenCapture(url, in: listID, succeeded: succeeded)
+        guard !retiredComposerListIDs.contains(listID) else { return }
+        composerDrafts.finishScreenCapture(
+            url, in: liveComposerListID(listID), succeeded: succeeded
+        )
     }
 
     func removeDraftAttachment(_ url: URL, from listID: UUID) {
-        composerDrafts.remove(url, from: listID)
+        guard !retiredComposerListIDs.contains(listID) else { return }
+        composerDrafts.remove(url, from: liveComposerListID(listID))
+    }
+
+    private func liveComposerListID(_ listID: UUID) -> UUID {
+        lists.contains(where: { $0.id == listID }) ? listID : SnipList.inboxID
     }
 
     func clearDraft(for listID: UUID) {
+        guard !retiredComposerListIDs.contains(listID) else { return }
         composerDrafts.clear(listID: listID)
+        if listID == SnipList.inboxID { inboxDraftRevision &+= 1 }
     }
 
-    func saveComposerDraft(content: String, listID: UUID) async -> Bool {
-        composerDrafts.setText(content, for: listID)
-        let snapshot = composerDrafts.beginSave(listID: listID)
-        let saved = await add(
-            content: snapshot.draft.text,
-            origin: .quickEntry,
-            attachmentURLs: snapshot.draft.attachments,
-            listID: listID
-        )
-        composerDrafts.finishSave(snapshot, saved: saved)
-        return saved
+    func moveComposerDraftToInbox(from listID: UUID) {
+        let text = composerDrafts.draft(for: listID).text
+        composerDrafts.moveDraft(from: listID, to: SnipList.inboxID)
+        composerDrafts.flushText()
+        inboxDraftRevision &+= 1
+        if !text.isEmpty {
+            redirectedComposerTextByList[listID] = text
+            redirectedInboxRevisionByList[listID] = inboxDraftRevision
+        }
+    }
+
+    func saveComposerDraft(
+        content: String, listID: UUID, expectedScope: String? = nil
+    ) async -> Bool {
+        let scope = expectedScope ?? composerDrafts.scope
+        return await withCommandLock {
+            guard composerDrafts.scope == scope,
+                  !retiredComposerListIDs.contains(listID),
+                  liveComposerListID(listID) == listID else { return false }
+            let snapshot = composerDrafts.beginSave(listID: listID, content: content)
+            let result = await addResultUnlocked(
+                content: snapshot.draft.text,
+                origin: .quickEntry,
+                source: nil,
+                attachmentURLs: snapshot.draft.attachments,
+                listID: listID,
+                requestID: UUID()
+            )
+            let saved: Bool
+            switch result {
+            case .success(.added): saved = true
+            case .success(.duplicate): saved = false
+            case .failure(let error):
+                presentError(error)
+                saved = false
+            }
+            composerDrafts.finishSave(snapshot, saved: saved)
+            return saved
+        }
     }
 
     func createList(
@@ -1458,7 +1543,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func performMutationUnlocked<Value: Sendable>(
+    func performMutationUnlocked<Value: Sendable>(
         _ mutation: () async throws -> (SnipLibraryUpdate, Value)
     ) async -> Result<Value, Error> {
         do {
@@ -1519,7 +1604,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func withCommandLock<Value: Sendable>(
+    func withCommandLock<Value: Sendable>(
         _ operation: @MainActor @Sendable () async -> Value
     ) async -> Value {
         await session.withExclusiveAccess { _ in await operation() }
@@ -1530,7 +1615,7 @@ final class AppModel: ObservableObject {
         self.toast = nil
     }
 
-    private func scheduleCloudSync() {
+    func scheduleCloudSync() {
         guard let cloudSyncHandler else { return }
         Task { await cloudSyncHandler.scheduleSyncAfterLocalChange() }
     }

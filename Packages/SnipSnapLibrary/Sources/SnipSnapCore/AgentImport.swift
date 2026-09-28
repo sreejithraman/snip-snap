@@ -24,6 +24,10 @@ public struct AgentImportRequest: Codable, Equatable, Sendable {
   public let destinationListID: UUID
   public let destinationSelector: String?
   public let agentContext: SnipAgentContext?
+  public let scopeToken: String?
+  /// Approval to execute a request created before Snip Snap knew its library scope.
+  /// This is routing metadata and is deliberately excluded from the client fingerprint.
+  public let approvedInboxScopeToken: String?
   public let requestID: UUID
   public let createdAt: Date
 
@@ -32,6 +36,8 @@ public struct AgentImportRequest: Codable, Equatable, Sendable {
     destinationListID: UUID,
     destinationSelector: String? = nil,
     agentContext: SnipAgentContext? = nil,
+    scopeToken: String? = nil,
+    approvedInboxScopeToken: String? = nil,
     requestID: UUID = UUID(),
     createdAt: Date = Date()
   ) {
@@ -39,8 +45,15 @@ public struct AgentImportRequest: Codable, Equatable, Sendable {
     self.destinationListID = destinationListID
     self.destinationSelector = destinationSelector
     self.agentContext = agentContext
+    self.scopeToken = scopeToken
+    self.approvedInboxScopeToken = approvedInboxScopeToken
     self.requestID = requestID
     self.createdAt = createdAt
+  }
+
+  public var executionScopeToken: String? { approvedInboxScopeToken ?? scopeToken }
+  public var executionListID: UUID {
+    approvedInboxScopeToken == nil ? destinationListID : SnipList.inboxID
   }
 
   public var fingerprint: String {
@@ -49,7 +62,8 @@ public struct AgentImportRequest: Codable, Equatable, Sendable {
       content: content,
       destinationListID: destinationListID,
       destinationSelector: destinationSelector,
-      agentContext: agentContext
+      agentContext: agentContext,
+      scopeToken: scopeToken
     )
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
@@ -67,6 +81,7 @@ public struct AgentImportRequest: Codable, Equatable, Sendable {
     let destinationListID: UUID
     let destinationSelector: String?
     let agentContext: SnipAgentContext?
+    let scopeToken: String?
   }
 }
 
@@ -84,6 +99,8 @@ public struct AgentImportReceipt: Codable, Equatable, Sendable {
   public let requestID: UUID
   public let requestedListID: UUID
   public let requestFingerprint: String
+  public let requestScopeToken: String?
+  public let approvedInboxScopeToken: String?
   public let error: String?
 
   public init(
@@ -101,6 +118,8 @@ public struct AgentImportReceipt: Codable, Equatable, Sendable {
     requestID = request.requestID
     requestedListID = request.destinationListID
     requestFingerprint = request.fingerprint
+    requestScopeToken = request.scopeToken
+    approvedInboxScopeToken = request.approvedInboxScopeToken
     self.error = error
   }
 
@@ -112,6 +131,8 @@ public struct AgentImportReceipt: Codable, Equatable, Sendable {
     case requestID
     case requestedListID
     case requestFingerprint
+    case requestScopeToken
+    case approvedInboxScopeToken
     case error
   }
 
@@ -124,6 +145,10 @@ public struct AgentImportReceipt: Codable, Equatable, Sendable {
     requestID = try container.decode(UUID.self, forKey: .requestID)
     requestedListID = try container.decodeIfPresent(UUID.self, forKey: .requestedListID) ?? listID
     requestFingerprint = try container.decode(String.self, forKey: .requestFingerprint)
+    requestScopeToken = try container.decodeIfPresent(String.self, forKey: .requestScopeToken)
+    approvedInboxScopeToken = try container.decodeIfPresent(
+      String.self, forKey: .approvedInboxScopeToken
+    )
     error = try container.decodeIfPresent(String.self, forKey: .error)
   }
 

@@ -26,6 +26,7 @@
 		10000000000000000000000E /* SnipCardRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000016 /* SnipCardRow.swift */; };
 		100000000000000000000011 /* SnipListModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000019 /* SnipListModels.swift */; };
 		100000000000000000000012 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001A /* AppModel.swift */; };
+		F20600000000000000000001 /* AppModel+CLI.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20600000000000000000002 /* AppModel+CLI.swift */; };
 		C10000000000000000000002 /* AttachmentPreparationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000002 /* AttachmentPreparationCoordinator.swift */; };
 		100000000000000000000013 /* PasteboardSnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001B /* PasteboardSnapshotStore.swift */; };
 		100000000000000000000014 /* DoubleShiftDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001C /* DoubleShiftDetector.swift */; };
@@ -44,6 +45,8 @@
 		10000000000000000000001F /* TestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000027 /* TestSupport.swift */; };
 		100000000000000000000020 /* SnipRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000028 /* SnipRepositoryTests.swift */; };
 		100000000000000000000021 /* AppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000029 /* AppModelTests.swift */; };
+		A6B000000000000000000001 /* AppModelCLITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6B000000000000000000002 /* AppModelCLITests.swift */; };
+		A6B000000000000000000003 /* AppModelTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6B000000000000000000004 /* AppModelTestSupport.swift */; };
 		100000000000000000000022 /* SnipListModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002A /* SnipListModelsTests.swift */; };
 		100000000000000000000024 /* ShortcutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002C /* ShortcutTests.swift */; };
 		100000000000000000000025 /* AppCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002D /* AppCoordinatorTests.swift */; };
@@ -221,6 +224,7 @@
 		200000000000000000000016 /* SnipCardRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipCardRow.swift; sourceTree = "<group>"; };
 		200000000000000000000019 /* SnipListModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListModels.swift; sourceTree = "<group>"; };
 		20000000000000000000001A /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		F20600000000000000000002 /* AppModel+CLI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppModel+CLI.swift"; sourceTree = "<group>"; };
 		C20000000000000000000002 /* AttachmentPreparationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentPreparationCoordinator.swift; sourceTree = "<group>"; };
 		20000000000000000000001B /* PasteboardSnapshotStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PasteboardSnapshotStore.swift; sourceTree = "<group>"; };
 		20000000000000000000001C /* DoubleShiftDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DoubleShiftDetector.swift; sourceTree = "<group>"; };
@@ -239,6 +243,8 @@
 		200000000000000000000027 /* TestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestSupport.swift; sourceTree = "<group>"; };
 		200000000000000000000028 /* SnipRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipRepositoryTests.swift; sourceTree = "<group>"; };
 		200000000000000000000029 /* AppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTests.swift; sourceTree = "<group>"; };
+		A6B000000000000000000002 /* AppModelCLITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelCLITests.swift; sourceTree = "<group>"; };
+		A6B000000000000000000004 /* AppModelTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTestSupport.swift; sourceTree = "<group>"; };
 		20000000000000000000002A /* SnipListModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipListModelsTests.swift; sourceTree = "<group>"; };
 		20000000000000000000002C /* ShortcutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutTests.swift; sourceTree = "<group>"; };
 		20000000000000000000002D /* AppCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoordinatorTests.swift; sourceTree = "<group>"; };
@@ -424,6 +430,7 @@
 				200000000000000000000003 /* AppWindowDefaults.swift */,
 				200000000000000000000019 /* SnipListModels.swift */,
 				20000000000000000000001A /* AppModel.swift */,
+				F20600000000000000000002 /* AppModel+CLI.swift */,
 				C20000000000000000000002 /* AttachmentPreparationCoordinator.swift */,
 				200000000000000000000008 /* SelectionCapture.swift */,
 				200000000000000000000021 /* SelectionCaptureAccess.swift */,
@@ -484,6 +491,8 @@
 				200000000000000000000027 /* TestSupport.swift */,
 				200000000000000000000028 /* SnipRepositoryTests.swift */,
 				200000000000000000000029 /* AppModelTests.swift */,
+				A6B000000000000000000002 /* AppModelCLITests.swift */,
+				A6B000000000000000000004 /* AppModelTestSupport.swift */,
 				20000000000000000000002A /* SnipListModelsTests.swift */,
 				20000000000000000000002C /* ShortcutTests.swift */,
 				AB2000000000000000000002 /* UpdateChannelSettingsTests.swift */,
@@ -880,6 +889,7 @@
 				100000000000000000000003 /* AppWindowDefaults.swift in Sources */,
 				100000000000000000000011 /* SnipListModels.swift in Sources */,
 				100000000000000000000012 /* AppModel.swift in Sources */,
+				F20600000000000000000001 /* AppModel+CLI.swift in Sources */,
 				C10000000000000000000002 /* AttachmentPreparationCoordinator.swift in Sources */,
 				100000000000000000000006 /* SelectionCapture.swift in Sources */,
 				100000000000000000000019 /* SelectionCaptureAccess.swift in Sources */,
@@ -943,6 +953,8 @@
 				10000000000000000000001F /* TestSupport.swift in Sources */,
 				100000000000000000000020 /* SnipRepositoryTests.swift in Sources */,
 				100000000000000000000021 /* AppModelTests.swift in Sources */,
+				A6B000000000000000000001 /* AppModelCLITests.swift in Sources */,
+				A6B000000000000000000003 /* AppModelTestSupport.swift in Sources */,
 				100000000000000000000022 /* SnipListModelsTests.swift in Sources */,
 				100000000000000000000024 /* ShortcutTests.swift in Sources */,
 				AB1000000000000000000002 /* UpdateChannelSettingsTests.swift in Sources */,

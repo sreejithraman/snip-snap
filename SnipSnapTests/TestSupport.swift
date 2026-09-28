@@ -4,6 +4,15 @@ import Foundation
 @testable import SnipSnap
 
 class StoreBackedTestCase: XCTestCase {
+    @MainActor
+    func defaults() -> UserDefaults {
+        let suite = "Snip SnapTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        return defaults
+    }
+
     func storeURL() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("Snip SnapTests-\(UUID().uuidString)", isDirectory: true)
