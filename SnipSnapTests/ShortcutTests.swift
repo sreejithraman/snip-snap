@@ -171,6 +171,110 @@ final class ShortcutTests: StoreBackedTestCase {
         )
     }
 
+    @MainActor
+    func testRecorderCapturesCommandDoubleRightShiftForClipboard() {
+        let button = ShortcutRecorderButton.RecorderButton()
+        button.allowsDoubleShift = true
+        var recorded: ShortcutTrigger?
+        button.onRecord = { recorded = $0 }
+        button.performClick(nil)
+
+        for (flags, time) in [
+            (NSEvent.ModifierFlags([.command, .shift]), 1.00),
+            ([.command], 1.08),
+            ([.command, .shift], 1.20),
+        ] {
+            button.flagsChanged(with: keyEvent(
+                type: .flagsChanged,
+                flags: flags,
+                timestamp: time,
+                keyCode: UInt16(kVK_RightShift)
+            ))
+        }
+
+        XCTAssertEqual(recorded, .commandDoubleShift(.right))
+    }
+
+    @MainActor
+    func testRecordingExistingShiftShortcutDoesNotRunItsGlobalAction() throws {
+        var actions: [GlobalHotKeyAction] = []
+        let manager = GlobalHotKeyManager { actions.append($0) }
+        try manager.register(configuration: .snipSnapDefaults)
+        defer { manager.unregister() }
+
+        let button = ShortcutRecorderButton.RecorderButton()
+        button.allowsDoubleShift = true
+        var recorded: ShortcutTrigger?
+        button.onRecord = { recorded = $0 }
+        button.performClick(nil)
+
+        for (flags, time) in [
+            (NSEvent.ModifierFlags([.command, .shift]), 1.00),
+            ([.command], 1.08),
+            ([.command, .shift], 1.20),
+        ] {
+            let event = keyEvent(
+                type: .flagsChanged,
+                flags: flags,
+                timestamp: time,
+                keyCode: UInt16(kVK_Shift)
+            )
+            manager.receiveForDoubleShift(event)
+            button.flagsChanged(with: event)
+        }
+
+        XCTAssertEqual(recorded, .commandDoubleShift(.left))
+        XCTAssertTrue(actions.isEmpty)
+
+        for (flags, time) in [
+            (NSEvent.ModifierFlags([.command, .shift]), 2.00),
+            ([.command], 2.08),
+            ([.command, .shift], 2.20),
+        ] {
+            manager.receiveForDoubleShift(keyEvent(
+                type: .flagsChanged,
+                flags: flags,
+                timestamp: time,
+                keyCode: UInt16(kVK_Shift)
+            ))
+        }
+        XCTAssertEqual(actions, [.toggleClipboard])
+    }
+
+    @MainActor
+    func testLeavingShortcutSettingsRestoresGlobalShortcuts() throws {
+        var actions: [GlobalHotKeyAction] = []
+        let manager = GlobalHotKeyManager { actions.append($0) }
+        try manager.register(configuration: .snipSnapDefaults)
+        defer { manager.unregister() }
+
+        let button = ShortcutRecorderButton.RecorderButton()
+        button.allowsDoubleShift = true
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 100),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = button
+        button.performClick(nil)
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+
+        for (flags, time) in [
+            (NSEvent.ModifierFlags([.command, .shift]), 1.00),
+            ([.command], 1.08),
+            ([.command, .shift], 1.20),
+        ] {
+            manager.receiveForDoubleShift(keyEvent(
+                type: .flagsChanged,
+                flags: flags,
+                timestamp: time,
+                keyCode: UInt16(kVK_Shift)
+            ))
+        }
+        XCTAssertEqual(actions, [.toggleClipboard])
+    }
+
     func testKeyReleaseBetweenShiftTapsCancelsDoubleShift() {
         let left = DoubleShiftGesture(side: .left, modifier: .none)
         var router = DoubleShiftRouter(gestures: [left])
