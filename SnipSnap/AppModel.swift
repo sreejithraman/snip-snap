@@ -127,6 +127,7 @@ final class AppModel: ObservableObject {
     private var retiredComposerListIDs: Set<UUID> = []
     private let preparePasteboardExport: @Sendable (String, [URL]) async throws
         -> SnipPasteboardExport
+    private let publishShareDestinations: (([SnipList]) -> Void)?
     private var clipboardWriteGeneration = 0
     private var pendingClipboardWriteTask: Task<Bool, Never>?
     let clipboardHistory: ClipboardHistory
@@ -187,7 +188,8 @@ final class AppModel: ObservableObject {
                 attachmentURLs: $1
             )
         },
-        diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared
+        diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared,
+        publishShareDestinations: (([SnipList]) -> Void)? = nil
     ) {
         self.defaults = defaults
         composerDrafts = ComposerDraftStore(
@@ -216,6 +218,7 @@ final class AppModel: ObservableObject {
         self.cloudSyncHandler = cloudSyncHandler
         self.preparePasteboardExport = preparePasteboardExport
         self.diagnostics = diagnostics
+        self.publishShareDestinations = publishShareDestinations
         legacyDraftCount = composerDrafts.unattributedLegacyDrafts().count
         presentError(
             initialError,
@@ -461,6 +464,7 @@ final class AppModel: ObservableObject {
             defaults.set(SnipList.inboxID.uuidString, forKey: Self.activeListDefaultsKey)
         }
         reconcileSelection()
+        publishShareDestinations?(lists)
     }
 
     func setSortMode(_ mode: SnipSortMode) {

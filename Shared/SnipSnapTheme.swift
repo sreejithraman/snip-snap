@@ -109,7 +109,7 @@ struct AppPrimaryActionButton<Label: View>: View {
 
 struct AppTintedGlassActionButton<Label: View>: View {
     let isEnabled: Bool
-    var tint: Color = SnipSnapTheme.actionGlassTint
+    var tint: Color = SnipSnapTheme.actionGlassTint.opacity(SnipSnapTheme.listGlassTintOpacity)
     var labelColor: Color = SnipSnapTheme.actionLabel
     let action: () -> Void
     @ViewBuilder let label: () -> Label
@@ -119,7 +119,7 @@ struct AppTintedGlassActionButton<Label: View>: View {
             label()
         }
         .buttonStyle(.glass(.regular.tint(
-            isEnabled ? tint.opacity(SnipSnapTheme.listGlassTintOpacity) : SnipSnapTheme.disabledActionGlassTint
+            isEnabled ? tint : SnipSnapTheme.disabledActionGlassTint
         )))
         .buttonBorderShape(.capsule)
         .foregroundStyle(

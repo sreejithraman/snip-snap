@@ -157,6 +157,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     private var mainPanel: SnipSnapPanel?
     private var isFlushingBeforeTermination = false
     private let cliRequests: SnipCLIRequestStore
+    private let shareListCatalogPublisher: ShareListCatalogPublisher?
 
     override init() {
         let isReleaseApp = Bundle.main.bundleIdentifier == "world.sree.snipsnap"
@@ -184,12 +185,18 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             attachmentCacheRootURL: attachmentCacheRootURL,
             initializeSyncModeStore: initializeSyncModeStore
         )
+        let shareListCatalogPublisher = SnipSnapAppGroupContainer.resolve().map {
+            ShareListCatalogPublisher(imports: ShareImportStore(sharedRootURL: $0.url))
+        }
         let model = AppModel(
             library: assembly.library,
             initialError: store.errorMessage,
             recoveryScope: assembly.recoveryScope,
             userActions: assembly.userActions,
-            userActionsRebinder: assembly.userActionsRebinder
+            userActionsRebinder: assembly.userActionsRebinder,
+            publishShareDestinations: shareListCatalogPublisher.map { publisher in
+                { lists in publisher.enqueue(lists) }
+            }
         )
         let shortcutSettings = ShortcutSettings()
         let updateChannelSettings = UpdateChannelSettings()
@@ -243,6 +250,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let fileDropController = PanelFileDropController()
         let dragSessionController = PanelDragSessionController()
         self.model = model
+        self.shareListCatalogPublisher = shareListCatalogPublisher
         self.shortcutSettings = shortcutSettings
         self.updateChannelSettings = updateChannelSettings
         syncedContentSettings = cloudServices.syncedContentSettings
@@ -424,10 +432,11 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         )
         coordinator.attachPanelWindow(panel)
         coordinator.start()
-        Task { [cloudLifecycleHooks, accountNoticeModel] in
+        Task { [cloudLifecycleHooks, accountNoticeModel, shareListCatalogPublisher] in
             do {
                 try await cliRequests.suspendActiveScope()
                 await model.reload()
+                shareListCatalogPublisher?.enqueue(model.lists, force: true)
                 try await cliRequests.pruneAbandoned()
                 await cloudLifecycleHooks.launch()
                 await self.restoreCLIAvailabilityIfNeeded()
@@ -487,11 +496,12 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         guard mainPanel != nil else { return }
-        Task { [cloudLifecycleHooks, accountNoticeModel] in
+        Task { [cloudLifecycleHooks, accountNoticeModel, shareListCatalogPublisher] in
             if cloudSyncSession != nil {
                 do { try await cliRequests.suspendActiveScope() }
                 catch { model.presentError(error) }
             }
+            shareListCatalogPublisher?.enqueue(model.lists, force: true)
             await cloudLifecycleHooks.foreground()
             await accountNoticeModel?.refresh()
             await self.restoreCLIAvailabilityIfNeeded()

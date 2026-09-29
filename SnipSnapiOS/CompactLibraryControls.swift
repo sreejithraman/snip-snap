@@ -374,10 +374,11 @@ struct CompactLibraryControls: View {
             // Keep Send outside the input's interactive glass subtree.
             .overlay(alignment: .bottomTrailing) {
                 GlassEffectContainer {
+                    let colors = list.accent.sendColors(in: colorScheme, chrome: .glass)
                     AppTintedGlassActionButton(
                         isEnabled: canSend(draft: draft),
-                        tint: list.accent.color,
-                        labelColor: list.accent.sendIconColor(in: colorScheme),
+                        tint: colors.tint,
+                        labelColor: colors.label,
                         action: { if !isPreview { Task { await send() } } }
                     ) {
                         Image(systemName: "arrow.up")

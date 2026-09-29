@@ -68,6 +68,32 @@ struct SnipListAppearance {
             : SnipSnapTheme.sendIconColor(tint: color)
     }
 
+    func sendColors(
+        in colorScheme: ColorScheme,
+        chrome: SnipListSendChrome
+    ) -> SnipListSendColors {
+        let label = sendIconColor(in: colorScheme)
+        switch chrome {
+        case .prominent:
+            return SnipListSendColors(tint: controlTint, label: label)
+        case .glass:
+            return SnipListSendColors(
+                tint: color.opacity(SnipSnapTheme.listGlassTintOpacity),
+                label: label
+            )
+        }
+    }
+
+}
+
+enum SnipListSendChrome {
+    case prominent
+    case glass
+}
+
+struct SnipListSendColors {
+    var tint: Color
+    var label: Color
 }
 
 extension SnipList {

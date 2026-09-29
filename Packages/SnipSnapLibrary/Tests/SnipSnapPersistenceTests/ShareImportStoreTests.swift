@@ -108,75 +108,63 @@ final class ShareImportStoreTests: XCTestCase {
     XCTAssertEqual(lists, [.inbox, reading])
   }
 
-  func testLegacyStorePublishesItsListsWhenSyncModeIsAbsent() async throws {
-    let root = try makeRoot()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let library = try SwiftDataSnipLibrary(storeURL: ShareImportStore.storeURL(in: root))
-
-    _ = try await library.perform(
-      .createList(name: "Work", systemImage: "list.bullet"),
-      sortedBy: .chronological
-    )
-
-    let lists = await ShareImportStore(sharedRootURL: root).availableLists()
-    XCTAssertEqual(lists.map(\.name), ["Inbox", "Work"])
-  }
-
-  func testLegacyStoreKeepsQuietWhileSyncModeOwnsTheLibrary() async throws {
+  @MainActor
+  func testPublishedActiveListsReplaceTheStoreDerivedCatalog() async throws {
     let root = try makeRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let reading = SnipList(id: UUID(), name: "Reading", systemImage: "list.bullet", position: 1)
+    let library = try SwiftDataSnipLibrary(storeURL: ShareImportStore.storeURL(in: root))
+    _ = try await library.perform(
+      .createList(name: "Store Only", systemImage: "list.bullet"),
+      sortedBy: .chronological
+    )
     let imports = ShareImportStore(sharedRootURL: root)
-    try await imports.publishAvailableLists([.inbox, reading])
+    XCTAssertFalse(FileManager.default.fileExists(atPath: importsCatalog(in: root).path))
+
+    let publisher = ShareListCatalogPublisher(imports: imports)
+    publisher.enqueue([.inbox, reading])
+    await publisher.flush()
+    let published = await imports.availableLists()
+    XCTAssertEqual(published, [.inbox, reading])
+
+    _ = try await library.perform(
+      .createList(name: "Later", systemImage: "list.bullet"),
+      sortedBy: .chronological
+    )
     _ = try SwiftDataSyncModePersistence(
       rootURL: root.appendingPathComponent("SyncMode", isDirectory: true)
     )
+    let afterStoreWrites = await imports.availableLists()
+    XCTAssertEqual(afterStoreWrites, [.inbox, reading])
+  }
 
-    let library = try SwiftDataSnipLibrary(storeURL: ShareImportStore.storeURL(in: root))
+  @MainActor
+  func testSyncModeSnapshotInFlightDuringAWriteDoesNotPublish() async throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let reading = SnipList(id: UUID(), name: "Reading", systemImage: "list.bullet", position: 1)
+    let gate = ShareCatalogReadGate()
+    let persistence = try SwiftDataSyncModePersistence(
+      rootURL: root.appendingPathComponent("SyncMode", isDirectory: true),
+      readHook: { try await gate.pauseSecondRead() }
+    )
+    let library = try await persistence.activeLibrary()
+    let imports = ShareImportStore(sharedRootURL: root)
+    let publisher = ShareListCatalogPublisher(imports: imports)
+    publisher.enqueue([.inbox, reading])
+    await publisher.flush()
+
+    let snapshot = Task { await library.snapshot(sortedBy: .chronological) }
+    await gate.waitUntilSecondReadPauses()
     _ = try await library.perform(
       .createList(name: "Work", systemImage: "list.bullet"),
       sortedBy: .chronological
     )
+    await gate.resume()
+    _ = await snapshot.value
 
     let lists = await imports.availableLists()
     XCTAssertEqual(lists, [.inbox, reading])
-  }
-
-  func testSyncModeActiveLibraryPublishesItsListsToTheShareCatalog() async throws {
-    let root = try makeRoot()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let persistence = try SwiftDataSyncModePersistence(
-      rootURL: root.appendingPathComponent("SyncMode", isDirectory: true)
-    )
-    let library = try await persistence.activeLibrary()
-
-    _ = try await library.perform(
-      .createList(name: "Work", systemImage: "list.bullet"),
-      sortedBy: .chronological
-    )
-
-    let lists = await ShareImportStore(sharedRootURL: root).availableLists()
-    XCTAssertEqual(lists.map(\.name), ["Inbox", "Work"])
-  }
-
-  func testSyncModeSnapshotRepublishesAStaleShareCatalog() async throws {
-    let root = try makeRoot()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let persistence = try SwiftDataSyncModePersistence(
-      rootURL: root.appendingPathComponent("SyncMode", isDirectory: true)
-    )
-    let library = try await persistence.activeLibrary()
-    _ = try await library.perform(
-      .createList(name: "Work", systemImage: "list.bullet"),
-      sortedBy: .chronological
-    )
-    let imports = ShareImportStore(sharedRootURL: root)
-    try await imports.publishAvailableLists([.inbox])
-
-    _ = await library.snapshot(sortedBy: .chronological)
-
-    let lists = await imports.availableLists()
-    XCTAssertEqual(lists.map(\.name), ["Inbox", "Work"])
   }
 
   func testShareDestinationStartsInInboxThenUsesAStillPresentRememberedList() {
@@ -510,6 +498,10 @@ final class ShareImportStoreTests: XCTestCase {
     XCTAssertEqual(resumedSnapshot.snips.count, 1)
   }
 
+  private func importsCatalog(in root: URL) -> URL {
+    root.appendingPathComponent("Share/destinations.json")
+  }
+
   private func makeRoot() throws -> URL {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("ShareImportStoreTests-\(UUID().uuidString)", isDirectory: true)
@@ -519,3 +511,29 @@ final class ShareImportStoreTests: XCTestCase {
 }
 
 private struct SimulatedCrash: Error {}
+
+private actor ShareCatalogReadGate {
+  private var reads = 0
+  private var paused = false
+  private var pauseWaiters: [CheckedContinuation<Void, Never>] = []
+  private var release: CheckedContinuation<Void, Never>?
+
+  func pauseSecondRead() async throws {
+    reads += 1
+    guard reads == 2 else { return }
+    paused = true
+    pauseWaiters.forEach { $0.resume() }
+    pauseWaiters.removeAll()
+    await withCheckedContinuation { release = $0 }
+  }
+
+  func waitUntilSecondReadPauses() async {
+    guard !paused else { return }
+    await withCheckedContinuation { pauseWaiters.append($0) }
+  }
+
+  func resume() {
+    release?.resume()
+    release = nil
+  }
+}

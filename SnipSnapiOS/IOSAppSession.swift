@@ -32,41 +32,6 @@ extension SnipSnapCloudSyncSession: IOSCloudSyncSessionHandling {
     }
 }
 
-@MainActor
-final class ShareDestinationListPublisher {
-    private let imports: ShareImportStore
-    private let beforePublish: (@Sendable () async -> Void)?
-    private var latest: Task<Void, Never>?
-    private var published: [SnipList]?
-
-    init(
-        imports: ShareImportStore,
-        beforePublish: (@Sendable () async -> Void)? = nil
-    ) {
-        self.imports = imports
-        self.beforePublish = beforePublish
-    }
-
-    func enqueue(_ lists: [SnipList], force: Bool = false) {
-        let previous = latest
-        latest = Task {
-            _ = await previous?.value
-            guard force || lists != published else { return }
-            await beforePublish?()
-            do {
-                try await imports.publishAvailableLists(lists)
-                published = lists
-            } catch {
-                // Unpublished lists stay eligible, so the next enqueue retries.
-            }
-        }
-    }
-
-    func flush() async {
-        await latest?.value
-    }
-}
-
 struct IOSLibraryStartup {
     let library: any SnipLibrary
     let sourceLibrary: any SnipLibrary
@@ -90,7 +55,7 @@ final class IOSAppSession {
     let accountNoticeModel: AppleAccountNoticeModel?
 
     private let shareImporter: IOSShareImportCoordinator?
-    private let shareDestinationPublisher: ShareDestinationListPublisher?
+    private let shareDestinationPublisher: ShareListCatalogPublisher?
     private let cloudLifecycleHooks: SnipSnapCloudLifecycleHooks
     private let cloudSyncSession: (any IOSCloudSyncSessionHandling)?
     private var automaticSyncTask: Task<Void, Never>?
@@ -117,7 +82,7 @@ final class IOSAppSession {
         clipboardContainerIdentifier: String? = nil
     ) {
         let shareDestinationPublisher = shareImports.map {
-            ShareDestinationListPublisher(imports: $0)
+            ShareListCatalogPublisher(imports: $0)
         }
         let model = IOSAppModel(
             library: library,

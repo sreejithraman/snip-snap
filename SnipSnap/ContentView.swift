@@ -786,11 +786,15 @@ struct ContentView: View {
         list: SnipList,
         isInteractive: Bool
     ) -> some View {
-        PanelGlassActionButton(
+        let colors = list.accent.sendColors(
+            in: model.appearance.colorScheme ?? colorScheme,
+            chrome: .glass
+        )
+        return PanelGlassActionButton(
             systemImage: "arrow.up",
             isEnabled: isInteractive && canSaveInlineEntry(for: listID),
-            tint: list.accent.color.opacity(SnipSnapTheme.listGlassTintOpacity),
-            labelColor: list.accent.sendIconColor(in: model.appearance.colorScheme ?? colorScheme),
+            tint: colors.tint,
+            labelColor: colors.label,
             action: { saveInlineEntry(for: listID) }
         )
         .accessibilityLabel("Add to \(list.displayName)")

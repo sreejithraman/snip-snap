@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 import SnipSnapCore
 
@@ -13,34 +12,6 @@ public actor ShareClipboardImportStore {
   public init(sharedRootURL: URL) {
     paths = ShareImportPaths(rootURL: sharedRootURL)
     pendingRoot = sharedRootURL.appendingPathComponent("Share/ClipboardImports", isDirectory: true)
-  }
-
-  /// Accepts new envelopes for legacy fixtures only; sharing no longer targets
-  /// Clipboard.
-  public func save(
-    _ request: ShareImportRequest,
-    richTextRepresentations: [ClipboardRepresentation] = []
-  ) async throws -> ShareImportSaveResult {
-    try DurableFile.createDirectory(pendingRoot)
-    let intake = paths.intakeDirectory(requestID: request.requestID)
-    let ready = pendingRoot.appendingPathComponent("\(request.requestID.uuidString).ready", isDirectory: true)
-    if FileManager.default.fileExists(atPath: ready.path) {
-      _ = try readRequest(in: ready)
-      return .pending(requestID: request.requestID)
-    }
-    for attachment in request.attachments {
-      _ = try paths.attachmentURL(attachment, in: intake)
-    }
-    try DurableFile.createDirectory(intake)
-    let envelope = Envelope(request: request, richTextRepresentations: richTextRepresentations)
-    try DurableFile.write(JSONEncoder().encode(envelope), to: intake.appendingPathComponent("clipboard.json"))
-    try DurableFile.syncDirectory(intake)
-    guard Darwin.rename(intake.path, ready.path) == 0 else {
-      throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-    }
-    try DurableFile.syncDirectory(pendingRoot)
-    try DurableFile.syncDirectory(paths.intakeRootURL)
-    return .pending(requestID: request.requestID)
   }
 
   /// The receiver must persist the entry and copy its files before returning.

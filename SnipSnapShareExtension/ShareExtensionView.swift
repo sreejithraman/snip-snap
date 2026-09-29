@@ -28,15 +28,21 @@ struct ShareExtensionView: View {
                             ProgressView()
                                 .accessibilityLabel("Saving…")
                         } else {
+                            let colors = destinationAccent.sendColors(
+                                in: colorScheme,
+                                chrome: .prominent
+                            )
                             AppPrimaryActionButton(
                                 presentation: .floatingGlass,
-                                tint: destinationAccent.controlTint,
-                                labelColor: destinationAccent.sendIconColor(in: colorScheme),
+                                tint: colors.tint,
+                                labelColor: colors.label,
                                 action: { Task { await model.save() } }
                             ) {
                                 Text("Save")
                                     .fontWeight(.semibold)
                             }
+                            // The glass style keeps the first tint unless the button's identity changes.
+                            .id(model.destinationListID)
                             .disabled(!model.canSave)
                             .accessibilityIdentifier("share-save")
                         }

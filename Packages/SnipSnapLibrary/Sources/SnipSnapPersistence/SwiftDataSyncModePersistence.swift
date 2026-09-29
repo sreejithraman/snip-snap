@@ -17,9 +17,11 @@ public enum SyncModeActivationManifestReader {
   }
 
   /// Whether sync mode has an activation manifest under its root. Presence, not
-  /// validity: when the manifest is broken, the app falls back to the legacy
-  /// store but the app's publisher still owns the shared catalogs, so a store
-  /// left behind by a mode change must stay quiet either way.
+  /// validity: a broken file still means this device activated sync mode.
+  /// Assembly tries to open that store and falls back to the legacy library
+  /// when the open fails. The app publisher then writes whichever library
+  /// assembly returned, so a broken manifest is not treated as local-only
+  /// before the open.
   package static func hasActivationManifest(atSyncModeRootURL rootURL: URL) -> Bool {
     let manifestURL = rootURL
       .appendingPathComponent("activation.json", isDirectory: false)
@@ -230,7 +232,6 @@ package actor SwiftDataSyncModePersistence {
   let defaultSyncProtocol: SyncModeSyncProtocol
   var manifest: Manifest
   var writeAdmissionInProgress = false
-  var shareDestinationRevision: UInt64 = 0
   struct ActiveMutationWaiter {
     let id: UUID
     let storeID: UUID
