@@ -75,13 +75,19 @@ extension SwiftDataSnipLibrary {
 
   package func saveCloudEngineState(
     namespaceKey: CloudSyncNamespaceKey,
-    envelopeData: Data
+    envelopeData: Data,
+    startsFullRecordInitialFetch: Bool = false
   ) throws {
     let namespaceKey = namespaceKey.rawValue
     guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
     let context = Self.makeContext(container: container)
+    if startsFullRecordInitialFetch,
+      try Self.cloudEngineStates(namespaceKey: namespaceKey, context: context).isEmpty
+    {
+      try Self.startFullFetchInventory(namespaceKey: namespaceKey, reset: false, context: context)
+    }
     try Self.replaceCloudEngineState(
       namespaceKey: namespaceKey,
       envelopeData: envelopeData,
@@ -91,11 +97,17 @@ extension SwiftDataSnipLibrary {
     try context.save()
   }
 
-  package func clearCloudEngineState(namespaceKey: CloudSyncNamespaceKey) throws {
+  package func clearCloudEngineState(
+    namespaceKey: CloudSyncNamespaceKey,
+    resetsFullRecordInitialFetch: Bool = false
+  ) throws {
     guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
     let context = Self.makeContext(container: container)
+    if resetsFullRecordInitialFetch {
+      try Self.startFullFetchInventory(namespaceKey: namespaceKey.rawValue, reset: true, context: context)
+    }
     for state in try Self.cloudEngineStates(
       namespaceKey: namespaceKey.rawValue,
       context: context

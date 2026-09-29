@@ -60,8 +60,9 @@ extension CloudFullSyncPersistence {
   }
 
   func resolveCorruptShadowsAfterFetch(_ batch: CloudSyncBatch) async throws {
-    guard isCleanInitialMetadataFetch(batch) else { return }
+    guard Self.isCleanInitialMetadataFetch(batch, dataZone: dataZone) else { return }
     let snapshot = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
+    guard snapshot.namespaceState.initialFetchInventory?.canProveAbsence == true else { return }
     try await library.resolveCorruptCloudShadows(namespaceKey: namespaceKey,
       expected: matchingRecoveryArchives(snapshot.quarantines))
   }
@@ -69,9 +70,7 @@ extension CloudFullSyncPersistence {
   func recoveryFetchBatch(_ batch: CloudSyncBatch, stored: CloudFullStorageSnapshot) -> CloudSyncBatch {
     guard case .fetched(let fetched) = batch else { return batch }
     let prepared = matchingRecoveryArchives(stored.quarantines)
-    let preparedKeys = Set(prepared.map(\.key))
-    let unpreparedIDs = Set(unresolvedCorruptShadows(stored.quarantines)
-      .filter { !preparedKeys.contains($0.key) }.map { Self.recordID($0.identity) })
+    let unpreparedIDs = unpreparedCorruptShadowRecordIDs(stored)
     // An unresolved archive without a bound base must not become a new local item.
     let applicable = fetched.items.filter { item in
       switch item {
@@ -80,8 +79,14 @@ extension CloudFullSyncPersistence {
       case .failed: return true
       }
     }
+    let inventory = CloudFullFetchInventory.after(
+      batch, current: stored.namespaceState.initialFetchInventory,
+      startsWithoutToken: false, dataZone: dataZone
+    )
     let observed = Set(fetched.items.compactMap(\.id))
-    let absent = isCleanInitialMetadataFetch(batch)
+      .union((inventory?.observed ?? []).map(Self.recordID))
+    let absent = inventory?.canProveAbsence == true
+      && Self.isCleanInitialMetadataFetch(batch, dataZone: dataZone)
       ? prepared.map { Self.recordID($0.identity) }
         .filter { !observed.contains($0) && !unpreparedIDs.contains($0) }
       : []
@@ -91,7 +96,16 @@ extension CloudFullSyncPersistence {
       engineState: fetched.engineState, isInitialFetch: fetched.isInitialFetch))
   }
 
-  private func isCleanInitialMetadataFetch(_ batch: CloudSyncBatch) -> Bool {
+  func unpreparedCorruptShadowRecordIDs(_ stored: CloudFullStorageSnapshot) -> Set<CloudRecordID> {
+    let preparedKeys = Set(matchingRecoveryArchives(stored.quarantines).map(\.key))
+    return Set(unresolvedCorruptShadows(stored.quarantines)
+      .filter { !preparedKeys.contains($0.key) }.map { Self.recordID($0.identity) })
+  }
+
+  static func isCleanInitialMetadataFetch(
+    _ batch: CloudSyncBatch,
+    dataZone: CloudZoneID
+  ) -> Bool {
     guard case .fetched(let fetched) = batch, fetched.isInitialFetch else { return false }
     guard CloudSyncIssueError.issue(in: batch) == nil,
       !CloudSyncIssueError.blocksOutbound(in: batch)

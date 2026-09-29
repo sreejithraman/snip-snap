@@ -285,6 +285,8 @@ extension SwiftDataSnipLibrary {
       try Self.insertQuarantineIfNeeded(value.corruptShadowRecoveryMarker,
         namespaceKey: namespaceKey.rawValue, context: context)
     }
+    // Recovery starts a fresh engine even when an old token remains on disk.
+    try Self.startFullFetchInventory(namespaceKey: namespaceKey.rawValue, reset: true, context: context)
     try afterMutationBeforeSave()
     try lock.check()
     try context.save()
@@ -446,7 +448,8 @@ extension SwiftDataSnipLibrary {
       revision: prior.namespaceState.revision + 1,
       phase: phase,
       zoneCreationPending: prior.namespaceState.phase == .remoteCheckedMissingZone
-        || prior.namespaceState.zoneCreationPending
+        || prior.namespaceState.zoneCreationPending,
+      initialFetchInventory: prior.namespaceState.initialFetchInventory
     )
     let data = try JSONEncoder().encode(
       CloudFullEnrollmentState(namespaceState: state, references: references)

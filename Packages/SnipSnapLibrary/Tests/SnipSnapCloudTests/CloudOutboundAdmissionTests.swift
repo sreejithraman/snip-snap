@@ -227,6 +227,7 @@ private actor AdmissionStore: CloudFullSyncStore {
   func loadEngineState() async throws -> CloudEngineStateEnvelope? { try await base.loadEngineState() }
   func saveEngineState(_ state: CloudEngineStateEnvelope) async throws { try await base.saveEngineState(state) }
   func clearEngineState() async throws { try await base.clearEngineState() }
+  func prepareInitialFetch() async throws { try await base.prepareInitialFetch() }
   func stagedBatches() async throws -> [CloudFullBatchCommit] { try await base.stagedBatches() }
   func stage(_ batch: CloudSyncBatch, outbound: CloudOutboundBatch?) async throws { try await base.stage(batch, outbound: outbound) }
   func applyStaged(_ id: UUID) async throws {

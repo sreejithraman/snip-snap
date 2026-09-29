@@ -310,6 +310,9 @@ extension CloudFullRecordPersistenceTests {
       XCTAssertFalse(local.snips.contains { $0.id == snipID })
     }
     let list = SnipList(id: listID, name: "Later", systemImage: "clock", position: 1, sortKey: key)
+    let staging = try SwiftDataSnipLibrary(storeURL: location.store)
+    let parked = try await staging.cloudFullStorageSnapshot(namespaceKey: namespace)
+    let acceptedSnip = try XCTUnwrap(parked.deferredEntities.first { $0.reference.domainID == snipID })
     let listBatch = CloudFullBatchCommit(
       namespaceKey: namespace.rawValue,
       batchID: UUID(),
@@ -324,10 +327,18 @@ extension CloudFullRecordPersistenceTests {
           localMutation: .upsertList(list),
           conflict: nil,
           quarantine: nil
-        )
+        ),
+        CloudFullBatchItem(
+          accepted: snipBatch.items[0].accepted,
+          expectedLocalRevision: acceptedSnip.localRevision,
+          expectedSystemFields: acceptedSnip.systemFields,
+          localPrecondition: .requireMissing,
+          localMutation: .upsertSnip(mutation),
+          conflict: nil,
+          quarantine: nil
+        ),
       ]
     )
-    let staging = try SwiftDataSnipLibrary(storeURL: location.store)
     try await staging.stageCloudFullBatch(listBatch)
     let failing = try SwiftDataSnipLibrary(
       storeURL: location.store,

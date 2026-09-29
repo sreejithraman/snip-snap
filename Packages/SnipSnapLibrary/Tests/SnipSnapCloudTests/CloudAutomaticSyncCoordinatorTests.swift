@@ -691,6 +691,7 @@ actor AutomaticSyncStoreProbe: CloudFullSyncStore {
     return engineState
   }
   func saveEngineState(_ state: CloudEngineStateEnvelope) { engineState = state }
+  func prepareInitialFetch() {}
   func clearEngineState() {
     engineState = nil
     clearCount += 1

@@ -71,6 +71,8 @@ struct CloudFullBatchPlanner {
 
   func plan(
     _ batch: CloudSyncBatch,
+    inventorySource: CloudSyncBatch,
+    blockedReplayIDs: Set<CloudRecordID>,
     outbound: CloudOutboundBatch?,
     rawBatchData: Data
   ) throws -> CloudFullBatchCommit {
@@ -93,9 +95,49 @@ struct CloudFullBatchPlanner {
     let pendingDeletes = Dictionary(uniqueKeysWithValues:
       stored.pendingDeletes.map { ($0.reference, $0) }
     )
+    let nextInventory = CloudFullFetchInventory.after(
+      inventorySource, current: stored.namespaceState.initialFetchInventory,
+      startsWithoutToken: expectedEngine == nil, dataZone: dataZone
+    )
+    let cleanInitialFetch = nextInventory?.canProveAbsence == true
+      && CloudFullSyncPersistence.isCleanInitialMetadataFetch(
+      batch, dataZone: dataZone
+    )
+    let batchObservedIDs = Set(normalized.results.compactMap(\.id))
+    let observedIDs = batchObservedIDs
+      .union((nextInventory?.observed ?? []).map(CloudFullSyncPersistence.recordID))
+    var results = normalized.results
+    if cleanInitialFetch {
+      // Re-plan an unresolved snip read in an earlier batch of this attempt,
+      // including one made ready by a cached list now proven absent remotely.
+      // Use its accepted server body as the base and merge current local edits;
+      // never blindly replay the cached local mutation after a restart.
+      for accepted in allAccepted where accepted.reference.kind == .snip
+        && nextInventory?.observed.contains(accepted.identity) == true
+        && !batchObservedIDs.contains(CloudFullSyncPersistence.recordID(accepted.identity))
+        && !blockedReplayIDs.contains(CloudFullSyncPersistence.recordID(accepted.identity))
+      {
+        let missingDependency = accepted.dependencyListID.map { listID in
+          listID != SnipList.inbox.id && nextInventory?.observed.contains(
+            CloudFullSyncPersistence.storageIdentity(.list(listID, in: dataZone))
+          ) == false
+        } == true
+        guard accepted.isDeferred || missingDependency else { continue }
+        let shadow = try CloudRecordShadow(data: accepted.shadowData)
+        results.append(.record(try CloudKitRecordMapper.snapshot(shadow.record())))
+      }
+      // A fresh complete inventory can omit deleted records rather than returning
+      // tombstones. Retire absent accepted snips through the normal deletion reducer.
+      results.append(contentsOf: allAccepted
+        .filter { $0.reference.kind == .snip }
+        .map { CloudFullSyncPersistence.recordID($0.identity) }
+        .filter { !observedIDs.contains($0) }
+        .filter { !blockedReplayIDs.contains($0) }
+        .map(NormalizedItem.deleted))
+    }
     var attachmentTransitions: [CloudAttachmentTransition] = []
     var resolvedFetchIDs: Set<CloudRecordID> = []
-    for normalizedItem in normalized.results {
+    for normalizedItem in results {
       let result = normalizedItem.fetchResult
       switch try attachmentPlanner.reduce(result) {
       case .unhandled:
@@ -119,6 +161,7 @@ struct CloudFullBatchPlanner {
           namespaceKey: namespaceKey,
           local: local,
           accepted: byReference,
+          conflicts: stored.conflicts,
           pendingDeleteReferences: Set(pendingDeletes.keys)
         ) {
           items.append(item)
@@ -157,8 +200,67 @@ struct CloudFullBatchPlanner {
         continue
       }
     }
+    // Reconcile parked intent with the current snip before dependency release.
+    // This also keeps an ambiguous old absence on the normal conflict path.
+    let arrivingListIDs = Set(items.compactMap {
+      $0.acceptedAction == .upsert && $0.accepted.reference.kind == .list
+        ? $0.accepted.reference.domainID : nil
+    })
+    let plannedReferences = Set(items.map { $0.accepted.reference })
+    let failedBatchIDs = Set(normalized.results.compactMap { item -> CloudRecordID? in
+      guard case .failed(let id, _) = item else { return nil }
+      return id
+    })
+    for accepted in allAccepted where accepted.isDeferred
+      && accepted.dependencyListID.map(arrivingListIDs.contains) == true
+      && !plannedReferences.contains(accepted.reference)
+      && (!batchObservedIDs.contains(CloudFullSyncPersistence.recordID(accepted.identity))
+        || failedBatchIDs.contains(CloudFullSyncPersistence.recordID(accepted.identity)))
+      && !blockedReplayIDs.contains(CloudFullSyncPersistence.recordID(accepted.identity))
+    {
+      let snapshot = try CloudKitRecordMapper.snapshot(CloudRecordShadow(data: accepted.shadowData).record())
+      if let item = try Self.recordItem(
+        snapshot, namespaceKey: namespaceKey, local: local, accepted: byReference,
+        conflicts: stored.conflicts,
+        pendingDeleteReferences: Set(pendingDeletes.keys)
+      ) { items.append(item) }
+      // This is a rebase of previously accepted intent, not a successful fetch.
+      // Do not add its ID to resolvedFetchIDs: the failed-read sending barrier
+      // remains until a real record read or deletion resolves it.
+    }
+    if cleanInitialFetch {
+      // Preserve local lists, but discard bases proven absent from iCloud. Active
+      // outbound planning will recreate those rows without an obsolete server base.
+      for accepted in allAccepted where accepted.reference.kind == .list
+        && !observedIDs.contains(CloudFullSyncPersistence.recordID(accepted.identity))
+        && !blockedReplayIDs.contains(CloudFullSyncPersistence.recordID(accepted.identity))
+      {
+        items.append(CloudFullBatchItem(
+          accepted: CloudFullSyncPersistence.acceptedInput(accepted),
+          acceptedAction: .remove,
+          expectedLocalRevision: accepted.localRevision,
+          expectedSystemFields: accepted.systemFields,
+          localMutation: .none,
+          conflict: nil,
+          quarantine: nil
+        ))
+        if pendingDeletes[accepted.reference]?.identity == accepted.identity {
+          settledDeleteIdentities.append(accepted.identity)
+        }
+      }
+    }
+    let localListIDs = Set(local.lists.map(\.id))
+    let deletedLocalListIDs = Set(items.compactMap {
+      $0.acceptedAction == .remove && $0.accepted.reference.kind == .list
+        && $0.localMutation != .none ? $0.accepted.reference.domainID : nil
+    })
+    let survivingLocalListIDs = localListIDs.subtracting(deletedLocalListIDs)
+    let localSnipLists = Dictionary(uniqueKeysWithValues: local.snips.map { ($0.id, $0.listID) })
     var enrollment = stored.enrolledEntities
     for item in items where item.acceptedAction == .remove {
+      if item.accepted.reference.kind == .list, item.localMutation == .none,
+        localListIDs.contains(item.accepted.reference.domainID)
+      { continue }
       enrollment.remove(item.accepted.reference)
     }
     let incomingLists = Set(items.compactMap {
@@ -166,6 +268,15 @@ struct CloudFullBatchPlanner {
         ? $0.accepted.reference.domainID : nil
     })
     enrollment.formUnion(incomingLists.map { CloudEntityReference(kind: .list, domainID: $0) })
+    // Older active namespaces can omit virtual Inbox from enrollment. A repair's
+    // accepted acknowledgement supplies the checked dependency needed to enroll it.
+    if items.contains(where: {
+      $0.acceptedAction == .upsert && $0.accepted.reference.kind == .snip
+        && $0.accepted.dependencyListID == SnipList.inbox.id
+        && byReference[$0.accepted.reference]?.wasMaterializedBeforeDeferral == true
+    }) {
+      enrollment.insert(CloudEntityReference(kind: .list, domainID: SnipList.inbox.id))
+    }
     var acceptedAfterBatch = Dictionary(uniqueKeysWithValues: allAccepted.map {
       ($0.reference, CloudFullSyncPersistence.acceptedInput($0))
     })
@@ -183,8 +294,27 @@ struct CloudFullBatchPlanner {
         enrollment.remove(accepted.reference)
         continue
       }
+      if let currentListID = localSnipLists[accepted.reference.domainID],
+        currentListID == SnipList.inbox.id || survivingLocalListIDs.contains(currentListID)
+      {
+        enrollment.insert(CloudEntityReference(kind: .list, domainID: currentListID))
+      }
       enrollment.insert(accepted.reference)
     }
+    let graphRepairs = CloudFullGraphReconciler.repairs(
+      completeInventory: cleanInitialFetch ? nextInventory?.observed : nil,
+      dataZone: dataZone,
+      accepted: acceptedAfterBatch,
+      priorRepairs: Dictionary(uniqueKeysWithValues: allAccepted.compactMap {
+        value in value.graphRepair.map { (value.reference, $0) }
+      }),
+      items: items,
+      quarantines: stored.quarantines,
+      local: local
+    )
+    enrollment.subtract(graphRepairs.map {
+      CloudEntityReference(kind: .snip, domainID: $0.snipID)
+    })
     // A quarantined row can leave enrollment without either a local item or a base.
     // Keep its archive, but defer enrollment until a checked base supplies its list.
     let localSnipIDs = Set(local.snips.map(\.id))
@@ -203,7 +333,8 @@ struct CloudFullBatchPlanner {
         current: stored.namespaceState,
         batch: batch,
         dataZone: dataZone,
-        attachmentOperationIDs: normalized.attachmentOperationIDs
+        attachmentOperationIDs: normalized.attachmentOperationIDs,
+        initialFetchInventory: nextInventory
       ),
       rawBatchData: rawBatchData,
       outboundBindings: normalized.outboundBindings,
@@ -213,6 +344,7 @@ struct CloudFullBatchPlanner {
         return try CloudFullSyncPersistence.fetchRecoveryChanges(recoveryEvents, resolved: resolvedFetchIDs)
       }(),
       recoveryReviews: recoveryReviews,
+      graphRepairs: graphRepairs,
       settledDeleteIdentities: settledDeleteIdentities,
       attachmentTransitions: attachmentTransitions,
       items: items
@@ -257,6 +389,7 @@ struct CloudFullBatchPlanner {
     namespaceKey: CloudSyncNamespaceKey,
     local: SnipLibrarySnapshot,
     accepted: [CloudEntityReference: CloudAcceptedEntity],
+    conflicts: [CloudStoredConflict],
     pendingDeleteReferences: Set<CloudEntityReference>
   ) throws -> CloudFullBatchItem? {
     if snapshot.recordType == "Snip" {
@@ -283,36 +416,62 @@ struct CloudFullBatchPlanner {
       var conflict: CloudConflictInput?
       if let current, let base {
         let baseRecord = try CloudFullSyncPersistence.snipRecord(base)
+        let ancestor = try CloudFullSyncPersistence.snipFields(baseRecord)
+        var currentFields = CloudFullSyncPersistence.snipFields(current, accepted: baseRecord)
+        if base.isDeferred,
+          let deferred = base.deferredLocalMutation,
+          case .exactSnip(let before) = deferred.precondition,
+          case .upsertSnip(let pending) = deferred.mutation
+        {
+          // The accepted shadow has already advanced, but this intent has not
+          // touched the local snip. Its captured local row is the merge ancestor.
+          // Reusing the server shadow as ancestor would mistake the old placement
+          // for a new local move and discard the pending remote move.
+          // Edits made after this intent was parked are newer, not concurrent
+          // remote edits. Keep them and apply only its still-unchanged fields.
+          let rebased = try CloudThreeWayMerge.snip(
+            base: CloudFullSyncPersistence.snipFields(before, accepted: baseRecord),
+            local: CloudFullSyncPersistence.snipFields(pending, accepted: baseRecord),
+            server: currentFields
+          )
+          currentFields = rebased.merged
+        }
         let result = try CloudThreeWayMerge.snip(
-          base: try CloudFullSyncPersistence.snipFields(baseRecord),
-          local: CloudFullSyncPersistence.snipFields(current, accepted: baseRecord),
-          server: serverFields
+          base: ancestor, local: currentFields, server: serverFields
         )
         merged = result.merged
-        conflict = try result.conflict.map {
+        conflict = try result.conflict.map { payload in
           let key = CloudConflictKey.make(
             namespaceKey: namespaceKey,
             recordID: snapshot.id,
             ancestorSystemFields: base.systemFields,
             serverSystemFields: snapshot.shadow.systemFields
           )
+          let priorPayload = conflicts.first { prior in
+            prior.key == key && prior.reference == input.reference && prior.format == .snipMergeV1
+              && (try? JSONDecoder().decode(CloudSnipConflictPayload.self, from: prior.payload)) == payload
+          }?.payload
           return CloudConflictInput(
             key: key,
             reference: input.reference,
             format: .snipMergeV1,
-            payload: try JSONEncoder().encode($0),
+            payload: try priorPayload ?? JSONEncoder().encode(payload),
             recovery: .snip(CloudFullSyncPersistence.recoveredSnip(
-              $0,
+              payload,
               key: key,
               attachments: current.attachments
             ))
           )
         }
-      } else if current == nil, let base {
+      } else if current == nil, let base,
+        !base.isDeferred || base.wasMaterializedBeforeDeferral || base.hasUnresolvedLegacyAbsence
+      {
         let baseFields = try CloudFullSyncPersistence.snipFields(
           CloudFullSyncPersistence.snipRecord(base)
         )
-        if CloudFullSyncPersistence.sameSnipFields(baseFields, serverFields) {
+        if !base.hasUnresolvedLegacyAbsence,
+          CloudFullSyncPersistence.sameSnipFields(baseFields, serverFields)
+        {
           return CloudFullBatchItem(
             accepted: input,
             expectedLocalRevision: base.localRevision,
@@ -323,6 +482,17 @@ struct CloudFullBatchPlanner {
             quarantine: nil
           )
         }
+        let key = CloudConflictKey.make(
+          namespaceKey: namespaceKey,
+          recordID: snapshot.id,
+          ancestorSystemFields: base.systemFields,
+          serverSystemFields: snapshot.shadow.systemFields
+        )
+        let payload = CloudSnipDeleteConflictPayload(server: serverFields)
+        let priorPayload = conflicts.first {
+          $0.key == key && $0.reference == input.reference && $0.format == .snipMergeV1
+            && (try? JSONDecoder().decode(CloudSnipDeleteConflictPayload.self, from: $0.payload)) == payload
+        }?.payload
         return CloudFullBatchItem(
           accepted: input,
           expectedLocalRevision: base.localRevision,
@@ -330,15 +500,10 @@ struct CloudFullBatchPlanner {
           localPrecondition: .requireMissing,
           localMutation: .none,
           conflict: CloudConflictInput(
-            key: CloudConflictKey.make(
-              namespaceKey: namespaceKey,
-              recordID: snapshot.id,
-              ancestorSystemFields: base.systemFields,
-              serverSystemFields: snapshot.shadow.systemFields
-            ),
+            key: key,
             reference: input.reference,
             format: .snipMergeV1,
-            payload: try JSONEncoder().encode(CloudSnipDeleteConflictPayload(server: serverFields))
+            payload: try priorPayload ?? JSONEncoder().encode(payload)
           ),
           quarantine: nil
         )

@@ -62,22 +62,27 @@ extension CloudFullSyncPersistence {
   }
 
   static func snipFields(
-    _ snip: Snip,
+    _ mutation: CloudLocalSnipMutation,
     accepted: CloudTypedSnipRecord?
   ) -> CloudSnipMergeFields {
     CloudSnipMergeFields(
-      id: snip.id,
-      requestID: accepted.map { value($0.requestID, default: snip.requestID) } ?? snip.requestID,
-      createdAt: accepted.map { value($0.createdAt, default: snip.createdAt) } ?? snip.createdAt,
-      originRaw: accepted.map { value($0.origin, default: snip.origin.rawValue) }
-        ?? snip.origin.rawValue,
-      text: snip.content,
-      source: snip.source,
-      isDone: snip.isDone,
-      pinnedAt: snip.pinnedAt,
-      placement: CloudSnipPlacement(listID: snip.listID, orderKey: snip.manualSortKey),
-      updatedAt: snip.updatedAt
+      id: mutation.snipID,
+      requestID: accepted.map { value($0.requestID, default: mutation.requestID) } ?? mutation.requestID,
+      createdAt: accepted.map { value($0.createdAt, default: mutation.createdAt) } ?? mutation.createdAt,
+      originRaw: accepted.map { value($0.origin, default: mutation.origin.rawValue) }
+        ?? mutation.origin.rawValue,
+      text: mutation.content, source: mutation.source,
+      isDone: mutation.isDone, pinnedAt: mutation.pinnedAt,
+      placement: CloudSnipPlacement(listID: mutation.listID, orderKey: mutation.orderKey),
+      updatedAt: mutation.updatedAt
     )
+  }
+
+  static func snipFields(
+    _ snip: Snip,
+    accepted: CloudTypedSnipRecord?
+  ) -> CloudSnipMergeFields {
+    snipFields(CloudLocalSnipMutation(snip), accepted: accepted)
   }
 
   static func listFields(_ record: CloudTypedListRecord) throws -> CloudListMergeFields {

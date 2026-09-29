@@ -34,7 +34,7 @@ final class CloudFullRecordPersistenceTests: XCTestCase {
     XCTAssertEqual(snapshot.quarantines.count, 2)
   }
 
-  func testDefersSnipUntilItsListArrivesAndReleasesOnceAcrossReopen() async throws {
+  func testDependencyReleaseRequiresExplicitPlanAndReplaysOnceAcrossReopen() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
     let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-a")
@@ -56,6 +56,11 @@ final class CloudFullRecordPersistenceTests: XCTestCase {
       let list = entity(.list, listID, identity("l-\(listID)"))
       try await store.testAcceptCloudEntity(namespaceKey: namespace, value: list)
       try await store.testAcceptCloudEntity(namespaceKey: namespace, value: list)
+      let stillParked = try await store.cloudFullStorageSnapshot(namespaceKey: namespace)
+      XCTAssertEqual(stillParked.deferredEntities.map(\.reference.domainID), [snipID])
+      let snip = entity(.snip, snipID, identity("s-\(snipID)"), dependencyListID: listID)
+      try await store.testAcceptCloudEntity(namespaceKey: namespace, value: snip)
+      try await store.testAcceptCloudEntity(namespaceKey: namespace, value: snip)
       let ready = try await store.cloudFullStorageSnapshot(namespaceKey: namespace)
       XCTAssertTrue(ready.deferredEntities.isEmpty)
       XCTAssertEqual(Set(ready.readyEntities.map(\.reference.domainID)), [listID, snipID])

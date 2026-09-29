@@ -979,7 +979,7 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertNil(publication.sourceURL)
     }
 
-    func testFullEnableRefetchesDeferredSnipAfterItsListArrives() async throws {
+    func testFullActiveSyncDefersSnipUntilItsListArrives() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let persistence = try SwiftDataSyncModePersistence(rootURL: root)
@@ -993,9 +993,60 @@ extension ICloudSyncModeCoordinatorTests {
             position: 1
         )
         let snip = Snip(content: "waits for list", origin: .quickEntry, listID: list.id)
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: zone,
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+        )
+        let enabled = try await coordinator.enableOrRetry()
+        XCTAssertEqual(enabled.state, .on)
         let writer = FakeCloudRecordTransport(server: server, namespace: namespace)
         _ = try await writer.send(CloudOutboundBatch(operations: [
             .save(CloudFullRecordCodec.snipDraft(snip, in: zone))
+        ]))
+
+        let first = try await coordinator.syncActive()
+        XCTAssertEqual(first.state, .on)
+        let activeBeforeList = try await persistence.snapshot()
+        let waiting = try await persistence.libraryForTransition(
+            storeID: activeBeforeList.activeStore.id
+        )
+        let waitingLocal = await waiting.snapshot(sortedBy: .manual)
+        XCTAssertFalse(waitingLocal.snips.contains { $0.id == snip.id })
+        let waitingStorage = try await waiting.cloudFullStorageSnapshot(
+            namespaceKey: namespace.namespaceKey
+        )
+        XCTAssertEqual(waitingStorage.deferredEntities.map(\.reference.domainID), [snip.id])
+
+        let listWriter = FakeCloudRecordTransport(server: server, namespace: namespace)
+        _ = try await listWriter.send(CloudOutboundBatch(operations: [
+            .save(CloudFullRecordCodec.listDraft(list, updatedAt: Date(), in: zone))
+        ]))
+        let second = try await coordinator.syncActive()
+        XCTAssertEqual(second.state, .on)
+        let active = try await persistence.activeLibrary()
+        let final = await active.snapshot(sortedBy: .manual)
+        XCTAssertTrue(final.lists.contains { $0.id == list.id })
+        XCTAssertEqual(final.snips.first(where: { $0.id == snip.id })?.listID, list.id)
+    }
+
+    func testFullEnableMovesConfirmedOrphanedSnipToInboxAndRepairsServer() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let namespace = makeNamespace()
+        let zone = textZone(namespace)
+        let server = FakeCloudServer()
+        let missingListID = UUID()
+        let orphan = Snip(
+            content: "keep orphaned snip",
+            origin: .quickEntry,
+            listID: missingListID
+        )
+        let writer = FakeCloudRecordTransport(server: server, namespace: namespace)
+        _ = try await writer.send(CloudOutboundBatch(operations: [
+            .save(CloudFullRecordCodec.snipDraft(orphan, in: zone))
         ]))
         let coordinator = ICloudSyncModeCoordinator(
             persistence: persistence,
@@ -1004,22 +1055,71 @@ extension ICloudSyncModeCoordinatorTests {
             makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
         )
 
-        let first = try await coordinator.enableOrRetry()
-        XCTAssertEqual(first.state, .settingUp)
-        let waiting = try await persistence.snapshot()
-        XCTAssertEqual(waiting.transition?.phase, .candidateReady)
-        XCTAssertNil(waiting.attentionReason)
+        let result = try await coordinator.enableOrRetry()
 
-        let listWriter = FakeCloudRecordTransport(server: server, namespace: namespace)
-        _ = try await listWriter.send(CloudOutboundBatch(operations: [
-            .save(CloudFullRecordCodec.listDraft(list, updatedAt: Date(), in: zone))
+        XCTAssertEqual(result.state, .on)
+        let completed = try await persistence.snapshot()
+        XCTAssertNil(completed.transition)
+        let active = try await persistence.libraryForTransition(storeID: completed.activeStore.id)
+        let local = await active.snapshot(sortedBy: .manual)
+        XCTAssertEqual(local.snips.first(where: { $0.id == orphan.id })?.listID, SnipList.inbox.id)
+        let storage = try await active.cloudFullStorageSnapshot(
+            namespaceKey: namespace.namespaceKey
+        )
+        XCTAssertTrue(storage.deferredEntities.isEmpty)
+        let storedValue = await server.fullSnapshot(for: .snip(orphan.id, in: zone))
+        let stored = try XCTUnwrap(storedValue)
+        let remote = try CloudFullSyncPersistence.snipFields(
+            CloudFullRecordCodec.snip(from: stored)
+        )
+        XCTAssertEqual(remote.placement.listID, SnipList.inbox.id)
+    }
+
+    func testFullEnableRetryRepairsDeferredOrphanAndFinishesSetup() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let namespace = makeNamespace()
+        let zone = textZone(namespace)
+        let server = FakeCloudServer()
+        let orphan = Snip(content: "retry orphan", origin: .quickEntry, listID: UUID())
+        let writer = FakeCloudRecordTransport(server: server, namespace: namespace)
+        _ = try await writer.send(CloudOutboundBatch(operations: [
+            .save(CloudFullRecordCodec.snipDraft(orphan, in: zone))
         ]))
-        let second = try await coordinator.enableOrRetry()
-        XCTAssertEqual(second.state, .on)
+        let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        await transport.failNextFetchedZone(zone, failure: .networkUnavailable)
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: zone,
+            makeTransport: { transport }
+        )
+
+        let interrupted = try await coordinator.enableOrRetry()
+        XCTAssertEqual(interrupted.state, .settingUp)
+        let interruptedStorage = try await persistence.snapshot()
+        let transition = try XCTUnwrap(interruptedStorage.transition)
+        let candidate = try await persistence.libraryForTransition(
+            storeID: transition.candidateStoreID
+        )
+        let waiting = try await candidate.cloudFullStorageSnapshot(
+            namespaceKey: namespace.namespaceKey
+        )
+        XCTAssertEqual(waiting.deferredEntities.map(\.reference.domainID), [orphan.id])
+
+        let completed = try await coordinator.enableOrRetry()
+
+        XCTAssertEqual(completed.state, .on)
         let active = try await persistence.activeLibrary()
-        let final = await active.snapshot(sortedBy: .manual)
-        XCTAssertTrue(final.lists.contains { $0.id == list.id })
-        XCTAssertEqual(final.snips.first(where: { $0.id == snip.id })?.listID, list.id)
+        let local = await active.snapshot(sortedBy: .manual)
+        XCTAssertEqual(local.snips.first(where: { $0.id == orphan.id })?.listID, SnipList.inbox.id)
+        let storedValue = await server.fullSnapshot(for: .snip(orphan.id, in: zone))
+        let stored = try XCTUnwrap(storedValue)
+        let remote = try CloudFullSyncPersistence.snipFields(
+            CloudFullRecordCodec.snip(from: stored)
+        )
+        XCTAssertEqual(remote.placement.listID, SnipList.inbox.id)
     }
 
     func testFullOptOutCarriesReadyAndDeferredBasesButNoLiveSyncState() async throws {

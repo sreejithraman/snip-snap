@@ -23,6 +23,10 @@ extension CloudFullSyncPersistence {
       stored: stored,
       attachmentStorage: attachmentStorage,
       recoveryEvents: try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
-    ).plan(recoveryFetchBatch(batch, stored: stored), outbound: outbound, rawBatchData: rawBatchData)
+    ).plan(
+      recoveryFetchBatch(batch, stored: stored), inventorySource: batch,
+      blockedReplayIDs: unpreparedCorruptShadowRecordIDs(stored),
+      outbound: outbound, rawBatchData: rawBatchData
+    )
   }
 }

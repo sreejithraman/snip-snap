@@ -13,6 +13,8 @@ package protocol CloudFullSyncStore: Sendable {
   func loadEngineState() async throws -> CloudEngineStateEnvelope?
   func saveEngineState(_ state: CloudEngineStateEnvelope) async throws
   func clearEngineState() async throws
+  /// Reset app-owned evidence before starting a new tokenless engine attempt.
+  func prepareInitialFetch() async throws
   func stagedBatches() async throws -> [CloudFullBatchCommit]
   func stage(_ batch: CloudSyncBatch, outbound: CloudOutboundBatch?) async throws
   func applyStaged(_ id: UUID) async throws
@@ -254,6 +256,7 @@ package actor CloudFullSyncCoordinator {
       return
     }
     requiresInitialFetch = state == nil || state?.requiresInitialFetch == true
+    if requiresInitialFetch { try await store.prepareInitialFetch() }
     let outbound = requiresInitialFetch ? nil : try await pendingChangesOrResetEngine()
     do {
       let admission = try await store.outboundAdmission()
@@ -515,7 +518,8 @@ extension CloudFullSyncPersistence {
     }
     try await library.saveCloudEngineState(
       namespaceKey: namespaceKey,
-      envelopeData: JSONEncoder().encode(state)
+      envelopeData: JSONEncoder().encode(state),
+      startsFullRecordInitialFetch: state.requiresInitialFetch
     )
   }
 
@@ -523,8 +527,12 @@ extension CloudFullSyncPersistence {
     try await mutate { try await self.clearEngineStateWithinMutation() }
   }
 
+  package func prepareInitialFetch() async throws {
+    try await clearEngineState()
+  }
+
   private func clearEngineStateWithinMutation() async throws {
-    try await library.clearCloudEngineState(namespaceKey: namespaceKey)
+    try await library.clearCloudEngineState(namespaceKey: namespaceKey, resetsFullRecordInitialFetch: true)
   }
 
   package func stagedBatches() async throws -> [CloudFullBatchCommit] {
@@ -547,8 +555,12 @@ extension CloudFullSyncPersistence {
       _ = try await library.commitCloudFullBatch(batch)
       try await clearRecoveredFailure(in: batch)
       try await afterCommitHook()
-    } catch CloudFullStorageError.staleLocalEntity {
-      guard let rawData = batch.rawBatchData else { throw CloudFullStorageError.staleLocalEntity }
+    } catch let error as CloudFullStorageError
+      where error == .staleLocalEntity || error == .invalidEnrollment
+    {
+      // ACKs do not mutate local content, but a later move can invalidate the
+      // planned enrollment. Recompute once; the fresh commit must still validate.
+      guard let rawData = batch.rawBatchData else { throw error }
       let raw = try JSONDecoder().decode(RawStagedBatch.self, from: rawData)
       guard raw.storageVersion == 1, raw.batch.id == id else {
         throw CloudFullStorageError.invalidBatchReplay
