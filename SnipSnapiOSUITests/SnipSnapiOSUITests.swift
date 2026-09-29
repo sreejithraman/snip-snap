@@ -723,6 +723,9 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     func testSharePageShowsEveryListThenSaves() {
         continueAfterFailure = false
+        let originalAppearance = XCUIDevice.shared.appearance
+        XCUIDevice.shared.appearance = .light
+        defer { XCUIDevice.shared.appearance = originalAppearance }
         let app = XCUIApplication()
         app.launch()
         shareAppName = app.label
@@ -732,7 +735,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         createList(work, color: "red", in: app)
         createList(reading, in: app)
 
-        let safari = shareURLFromSafari(token: "share-page-check-\(UUID().uuidString)")
+        let token = "share-page-check-\(UUID().uuidString)"
+        let safari = shareURLFromSafari(token: token)
         let sharedText = safari.textViews["share-text"]
         XCTAssertTrue(
             sharedText.waitForExistence(timeout: 10),
@@ -757,7 +761,20 @@ final class SnipSnapiOSUITests: XCTestCase {
                 "\(listName) is missing from the share picker: \(safari.debugDescription)"
             )
         }
-        XCTAssertFalse(options.matching(NSPredicate(format: "label == %@", "Clipboard")).firstMatch.exists)
+        let pickerList = safari.collectionViews.containing(
+            .button,
+            identifier: "tray.fill"
+        ).firstMatch
+        XCTAssertTrue(
+            pickerList.waitForExistence(timeout: 5),
+            "The list picker did not open: \(safari.debugDescription)"
+        )
+        XCTAssertFalse(
+            pickerList.descendants(matching: .any)
+                .matching(NSPredicate(format: "label == %@", "Clipboard"))
+                .firstMatch
+                .exists
+        )
 
         let pickerProof = XCTAttachment(screenshot: safari.screenshot())
         pickerProof.name = "Share page list picker shows every list"
@@ -771,16 +788,44 @@ final class SnipSnapiOSUITests: XCTestCase {
         colorProof.lifetime = .keepAlways
         add(colorProof)
 
-        let originalAppearance = XCUIDevice.shared.appearance
         XCUIDevice.shared.appearance = .dark
-        defer { XCUIDevice.shared.appearance = originalAppearance }
         Thread.sleep(forTimeInterval: 2)
         let darkProof = XCTAttachment(screenshot: safari.screenshot())
         darkProof.name = "Share page in dark mode"
         darkProof.lifetime = .keepAlways
         add(darkProof)
+        XCUIDevice.shared.appearance = .light
 
         assertShareExtensionReportedLocalSave(in: safari)
+
+        app.activate()
+        let workList = listControl(named: work, in: app)
+        XCTAssertTrue(workList.waitForExistence(timeout: 10))
+        workList.tap()
+        let saved = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS %@", token)
+        ).firstMatch
+        XCTAssertTrue(
+            saved.waitForExistence(timeout: 10),
+            "The shared snip did not land in \(work): \(app.debugDescription)"
+        )
+        revealCompactList(named: "Inbox", in: app)
+        let inbox = compactListTab(named: "Inbox", in: app)
+        XCTAssertGreaterThanOrEqual(
+            inbox.frame.minX,
+            0,
+            "Inbox stayed off screen at \(inbox.frame)"
+        )
+        inbox.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        expectation(
+            for: NSPredicate(format: "selected == true"),
+            evaluatedWith: inbox
+        )
+        waitForExpectations(timeout: 5)
+        XCTAssertFalse(
+            app.buttons.matching(NSPredicate(format: "label CONTAINS %@", token)).firstMatch.exists,
+            "The shared snip also appeared in Inbox."
+        )
     }
 
     private func shareActivityCell(in host: XCUIApplication) -> XCUIElement {
@@ -2683,6 +2728,27 @@ final class SnipSnapiOSUITests: XCTestCase {
                 name
             )
         ).firstMatch
+    }
+
+    /// Scroll-to-visible fails once a tab sits far outside the compact strip.
+    private func revealCompactList(named name: String, in app: XCUIApplication) {
+        let tab = compactListTab(named: name, in: app)
+        let selector = app.descendants(matching: .any)["list-selector"]
+        guard selector.exists else { return }
+        for _ in 0..<24 {
+            guard tab.exists, tab.frame.width > 1 else { return }
+            let frame = tab.frame
+            if frame.minX >= 4, frame.maxX <= app.frame.width - 4 { return }
+            let towardRight = frame.minX < 0
+            let start = selector.coordinate(
+                withNormalizedOffset: CGVector(dx: towardRight ? 0.08 : 0.92, dy: 0.5)
+            )
+            let dx = (towardRight ? 1 : -1) * selector.frame.width * 0.8
+            start.press(
+                forDuration: 0.02,
+                thenDragTo: start.withOffset(CGVector(dx: dx, dy: 0))
+            )
+        }
     }
 
     private func enterSelection(in app: XCUIApplication) {

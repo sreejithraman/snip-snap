@@ -48,11 +48,13 @@ public struct SnipLibraryAssembly: Sendable {
       atSyncModeRootURL: syncModeRootURL
     )
     recoveryScope = SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: namespace)
-    let manifestURL = syncModeRootURL.appendingPathComponent(
-      "activation.json", isDirectory: false
-    )
     let resolvedLibrary: any SnipLibrary
-    if (initializeSyncModeStore || FileManager.default.fileExists(atPath: manifestURL.path)),
+    if (
+      initializeSyncModeStore
+        || SyncModeActivationManifestReader.hasActivationManifest(
+          atSyncModeRootURL: syncModeRootURL
+        )
+    ),
       let persistence = try? SwiftDataSyncModePersistence(
         rootURL: syncModeRootURL,
         attachmentCacheRootURL: attachmentCacheRootURL

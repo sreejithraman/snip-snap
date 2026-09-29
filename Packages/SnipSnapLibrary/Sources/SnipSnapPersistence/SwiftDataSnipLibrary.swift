@@ -153,7 +153,6 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     )
     // A pending delete toast may be the only reference to an attachment.
     // SnipLibraryUserActions prunes after that brief recovery window ends.
-    try? Self.publishShareDestinations(loaded.state.lists, storeURL: storeURL)
   }
 
   private init(unavailableAt storeURL: URL, attachmentCacheRootURL: URL?) {
@@ -250,21 +249,6 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     guard FileManager.default.fileExists(atPath: recoveryQuarantineCompleteMarkerURL.path)
     else { return }
     try FileManager.default.removeItem(at: recoveryQuarantineCompleteMarkerURL)
-  }
-
-  private static func publishShareDestinations(_ lists: [SnipList], storeURL: URL) throws {
-    guard let rootURL = ShareImportPaths.sharedRoot(forStoreURL: storeURL) else { return }
-    // Sync mode publishes its active library's lists. A legacy store left behind
-    // by a mode change must not overwrite that catalog with its stale lists.
-    if SyncModeActivationManifestReader.hasActivationManifest(
-      atSyncModeRootURL: rootURL.appendingPathComponent("SyncMode", isDirectory: true)
-    ) {
-      return
-    }
-    try ShareDestinationCatalog.write(
-      lists,
-      to: ShareImportPaths(rootURL: rootURL).catalogURL
-    )
   }
 
   package static func importArchive(_ archive: JSONSnipArchive, storeURL: URL) throws {
@@ -416,10 +400,6 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       seenRequestIDs = state.seenRequestIDs
       lastKnownState = state
       rememberAttachments(in: state)
-      try? Self.publishShareDestinations(
-        state.lists,
-        storeURL: lockURL.deletingPathExtension()
-      )
       let snapshot = makeSnapshot(state: state, sortedBy: sortMode)
       return SnipLibraryUpdate(
         snapshot: snapshot,

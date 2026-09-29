@@ -67,9 +67,6 @@ extension SwiftDataSyncModePersistence {
       throw SyncModePersistenceError.transitionInProgress
     }
     defer { releaseWriteAdmission() }
-    // Leased writes may change lists without going through this actor's
-    // publisher, so in-flight snapshot publishes must stand down.
-    shareDestinationRevision &+= 1
     var next = manifest
     next.writeReservation = nil
     try commit(next)
@@ -96,27 +93,11 @@ extension SwiftDataSyncModePersistence {
     activeMutationWaiters.remove(at: index).continuation.resume(throwing: CancellationError())
   }
 
-  /// Publishes the active library's lists for the share picker. The revision
-  /// lets a snapshot that loaded before a newer write stand down, and an
-  /// up-to-date catalog skips the durable write.
-  private func publishShareDestinations(_ lists: [SnipList]) {
-    shareDestinationRevision &+= 1
-    guard let rootURL = ShareImportPaths.sharedRoot(forSyncModeRootURL: rootURL) else { return }
-    let catalogURL = ShareImportPaths(rootURL: rootURL).catalogURL
-    guard ShareDestinationCatalog.read(from: catalogURL) != lists else { return }
-    try? ShareDestinationCatalog.write(lists, to: catalogURL)
-  }
-
   fileprivate func managedSnapshot(sortedBy: SnipSortMode) async throws -> SnipLibrarySnapshot {
     await finishRecoveryQuarantines()
     try await readHook()
-    let revision = shareDestinationRevision
-    let snapshot = try await libraryForTransition(storeID: manifest.activeStoreID)
+    return try await libraryForTransition(storeID: manifest.activeStoreID)
       .checkedSnapshot(sortedBy: sortedBy)
-    if revision == shareDestinationRevision {
-      publishShareDestinations(snapshot.lists)
-    }
-    return snapshot
   }
 
   fileprivate func managedPerform(
@@ -154,7 +135,6 @@ extension SwiftDataSyncModePersistence {
       var completed = manifest
       completed.writeReservation = nil
       try commit(completed)
-      publishShareDestinations(update.snapshot.lists)
       return update
     } catch {
       guard error is SnipLibraryError || error is SyncModePersistenceError else {
@@ -214,7 +194,6 @@ extension SwiftDataSyncModePersistence {
       var completed = manifest
       completed.writeReservation = nil
       try commit(completed)
-      publishShareDestinations(result.snapshot.lists)
       return result
     } catch {
       guard error is SnipLibraryError || error is SyncModePersistenceError else {

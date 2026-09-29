@@ -200,7 +200,10 @@ public actor ShareImportStore {
     return ShareDestinationCatalog.read(from: paths.catalogURL)
   }
 
-  /// Keeps the share picker's list catalog in step with the library the app shows.
+  /// Writes Share/destinations.json. This is the only production write, in both
+  /// storage modes. The app publishes the lists it is showing: the sync-mode
+  /// library when that store opens, and the legacy store when assembly falls
+  /// back. The CLI reads lists from the running app, not from this file.
   public func publishAvailableLists(_ lists: [SnipList]) async throws {
     try ShareDestinationCatalog.write(lists, to: paths.catalogURL)
   }
@@ -389,20 +392,6 @@ package struct ShareImportPaths: Sendable {
     let expectedResolved = resolvedRoot.appendingPathComponent(candidate.lastPathComponent)
       .standardizedFileURL
     return resolved == expectedResolved && Self.contains(resolved, in: resolvedRoot)
-  }
-
-  static func sharedRoot(forStoreURL storeURL: URL) -> URL? {
-    guard storeURL.lastPathComponent == "snips.store" else { return nil }
-    let localDirectory = storeURL.deletingLastPathComponent()
-    guard localDirectory.lastPathComponent == "Local" else { return nil }
-    let libraryDirectory = localDirectory.deletingLastPathComponent()
-    guard libraryDirectory.lastPathComponent == "Library" else { return nil }
-    return libraryDirectory.deletingLastPathComponent()
-  }
-
-  static func sharedRoot(forSyncModeRootURL rootURL: URL) -> URL? {
-    guard rootURL.lastPathComponent == "SyncMode" else { return nil }
-    return rootURL.deletingLastPathComponent()
   }
 
   func attachmentURL(
