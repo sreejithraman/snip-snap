@@ -363,15 +363,16 @@ struct AttachmentThumbnail: View {
     var fillsTile = false
     @Environment(\.displayScale) private var displayScale
     @State private var image: Image?
+    @State private var loadedURL: URL?
 
     var body: some View {
         GeometryReader { geometry in
             ZStack {
                 Rectangle()
                     .fill(.quaternary)
-                if let image {
+                if let displayedImage {
                     let inset: CGFloat = fillsTile ? 0 : 8
-                    image
+                    displayedImage
                         .resizable()
                         .aspectRatio(contentMode: fillsTile ? .fill : .fit)
                         .frame(
@@ -389,89 +390,167 @@ struct AttachmentThumbnail: View {
             .clipped()
         }
         .task(id: url) {
-            image = nil
             await loadThumbnail()
         }
     }
 
+    private var displayedImage: Image? {
+        if loadedURL == url, let image { return image }
+        guard let cached = AttachmentThumbnailCache.shared.cachedImage(
+            for: url,
+            size: AttachmentThumbnailCache.tileSize,
+            scale: displayScale
+        ) else { return nil }
+        return Image(decorative: cached, scale: displayScale, orientation: .up)
+    }
+
     private func loadThumbnail() async {
+        let requestedURL = url
         guard
-            let thumbnail = await AttachmentThumbnailCache.shared.thumbnail(
-                for: url,
-                size: CGSize(width: 256, height: 256),
+            let thumbnail = await AttachmentThumbnailCache.shared.image(
+                for: requestedURL,
+                size: AttachmentThumbnailCache.tileSize,
                 scale: displayScale
             ),
             !Task.isCancelled
         else { return }
+        loadedURL = requestedURL
         image = Image(decorative: thumbnail, scale: displayScale, orientation: .up)
     }
 }
 
-private actor AttachmentThumbnailCache {
+@MainActor
+final class AttachmentThumbnailCache {
+    static let tileSize = CGSize(width: 256, height: 256)
     static let shared = AttachmentThumbnailCache()
 
-    private struct Key: Hashable {
-        let fileIdentity: String
-        let changeDate: Date?
-        let byteCount: Int?
-        let pixelWidth: Int
-        let pixelHeight: Int
-        let scale: Int
+    private final class StoredImage: NSObject {
+        let image: CGImage
+        init(_ image: CGImage) { self.image = image }
     }
 
-    private let limit = 96
-    private var images: [Key: CGImage] = [:]
-    private var recentKeys: [Key] = []
+    private struct InFlight {
+        let task: Task<CGImage?, Never>
+        var waiters: Set<UUID>
+    }
 
-    func thumbnail(for url: URL, size: CGSize, scale: CGFloat) async -> CGImage? {
-        let values = try? url.resourceValues(
-            forKeys: [
-                .fileResourceIdentifierKey,
-                .contentModificationDateKey,
-                .fileSizeKey,
-            ]
-        )
-        let key = Key(
-            fileIdentity: values?.fileResourceIdentifier.map(String.init(describing:))
-                ?? url.standardizedFileURL.path,
-            changeDate: values?.contentModificationDate,
-            byteCount: values?.fileSize,
-            pixelWidth: Int(size.width * scale),
-            pixelHeight: Int(size.height * scale),
-            scale: Int(scale * 100)
-        )
-        if let cached = images[key] {
-            markRecent(key)
-            return cached
+    private let images = NSCache<NSString, StoredImage>()
+    private let resolvedKeys = NSCache<NSString, NSString>()
+    private var inFlight: [String: InFlight] = [:]
+    private let decode: @Sendable (URL, CGSize, CGFloat) async -> CGImage?
+
+    init(decode: @escaping @Sendable (URL, CGSize, CGFloat) async -> CGImage? = decodeThumbnail) {
+        images.countLimit = 180
+        images.totalCostLimit = 96 * 1_024 * 1_024
+        resolvedKeys.countLimit = 360
+        self.decode = decode
+    }
+
+    func cachedImage(for url: URL, size: CGSize, scale: CGFloat) -> CGImage? {
+        let lookup = Self.lookupKey(url: url, size: size, scale: scale)
+        guard let key = resolvedKeys.object(forKey: lookup as NSString) else { return nil }
+        return images.object(forKey: key)?.image
+    }
+
+    func image(for url: URL, size: CGSize, scale: CGFloat) async -> CGImage? {
+        let lookup = Self.lookupKey(url: url, size: size, scale: scale)
+        let key = await Task.detached(priority: .utility) {
+            Self.versionedKey(url: url, size: size, scale: scale)
+        }.value
+        resolvedKeys.setObject(key as NSString, forKey: lookup as NSString)
+        if let image = images.object(forKey: key as NSString)?.image { return image }
+
+        let waiterID = UUID()
+        let task: Task<CGImage?, Never>
+        if var request = inFlight[key] {
+            request.waiters.insert(waiterID)
+            inFlight[key] = request
+            task = request.task
+        } else {
+            let decode = decode
+            task = Task.detached(priority: .userInitiated) {
+                await decode(url, size, scale)
+            }
+            inFlight[key] = InFlight(task: task, waiters: [waiterID])
         }
 
+        let image = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.releaseWaiter(waiterID, for: key)
+            }
+        }
+        releaseWaiter(waiterID, for: key)
+        guard !Task.isCancelled, let image else { return nil }
+        images.setObject(
+            StoredImage(image),
+            forKey: key as NSString,
+            cost: image.bytesPerRow * image.height
+        )
+        return image
+    }
+
+    private func releaseWaiter(_ waiterID: UUID, for key: String) {
+        guard var request = inFlight[key], request.waiters.remove(waiterID) != nil else { return }
+        if request.waiters.isEmpty {
+            request.task.cancel()
+            inFlight[key] = nil
+        } else {
+            inFlight[key] = request
+        }
+    }
+
+    private nonisolated static func lookupKey(url: URL, size: CGSize, scale: CGFloat) -> String {
+        "\(url.standardizedFileURL.path)|\(pixelLength(size, scale: scale))"
+    }
+
+    private nonisolated static func versionedKey(url: URL, size: CGSize, scale: CGFloat) -> String {
+        var url = url
+        url.removeAllCachedResourceValues()
+        let values = try? url.resourceValues(forKeys: [
+            .fileResourceIdentifierKey,
+            .contentModificationDateKey,
+            .fileSizeKey,
+        ])
+        let identity = values?.fileResourceIdentifier.map(String.init(describing:))
+            ?? url.standardizedFileURL.path
+        let modified = values?.contentModificationDate?.timeIntervalSinceReferenceDate ?? 0
+        let bytes = values?.fileSize ?? -1
+        return "\(lookupKey(url: url, size: size, scale: scale))|\(identity)|\(modified)|\(bytes)"
+    }
+
+    private nonisolated static func pixelLength(_ size: CGSize, scale: CGFloat) -> Int {
+        max(1, Int(ceil(max(size.width, size.height) * scale)))
+    }
+
+    private nonisolated static func decodeThumbnail(
+        url: URL,
+        size: CGSize,
+        scale: CGFloat
+    ) async -> CGImage? {
         if !Task.isCancelled,
-            let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-            let thumbnail = Self.makeImageThumbnail(source: source, size: size, scale: scale)
-        {
-            store(thumbnail, for: key)
+           let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+           let thumbnail = makeImageThumbnail(source: source, size: size, scale: scale) {
             return thumbnail
         }
-
+        guard !Task.isCancelled else { return nil }
         let request = QLThumbnailGenerator.Request(
             fileAt: url,
             size: size,
             scale: scale,
             representationTypes: [.thumbnail, .lowQualityThumbnail, .icon]
         )
-        let representation: QLThumbnailRepresentation
         do {
-            representation = try await withTaskCancellationHandler {
+            let representation = try await withTaskCancellationHandler {
                 try await QLThumbnailGenerator.shared.generateBestRepresentation(for: request)
             } onCancel: {
                 QLThumbnailGenerator.shared.cancel(request)
             }
+            return representation.cgImage
         } catch {
             return nil
         }
-        guard !Task.isCancelled else { return nil }
-        store(representation.cgImage, for: key)
-        return representation.cgImage
     }
 
     private nonisolated static func makeImageThumbnail(
@@ -479,25 +558,11 @@ private actor AttachmentThumbnailCache {
         size: CGSize,
         scale: CGFloat
     ) -> CGImage? {
-        let maxPixelSize = max(1, Int(ceil(max(size.width, size.height) * scale)))
         let options: CFDictionary = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            kCGImageSourceThumbnailMaxPixelSize: pixelLength(size, scale: scale),
         ] as CFDictionary
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options)
-    }
-
-    private func store(_ image: CGImage, for key: Key) {
-        images[key] = image
-        markRecent(key)
-        while recentKeys.count > limit {
-            images.removeValue(forKey: recentKeys.removeFirst())
-        }
-    }
-
-    private func markRecent(_ key: Key) {
-        recentKeys.removeAll { $0 == key }
-        recentKeys.append(key)
     }
 }

@@ -49,9 +49,14 @@ final class IOSAppModel {
     private(set) var lists: [SnipList]
     private(set) var attachmentURLs: [UUID: URL]
     private(set) var recoverySnapshot: SnipRecoverySnapshot = .empty
-    private var preparedAttachmentURLs: [UUID: URL] = [:]
+    private var preparedAttachments: [UUID: PreparedAttachmentRecord] = [:]
     private(set) var attachmentTransferStates: [UUID: SyncedAttachmentTransferState] = [:]
     @ObservationIgnored private var attachmentPreparations: [UUID: AttachmentPreparationGroup] = [:]
+    private struct PreparedAttachmentRecord {
+        var url: URL
+        var identity: PreparedAttachmentIdentity?
+    }
+
     private struct AttachmentPreparationGroup {
         var activeCount: Int
         let initialState: SyncedAttachmentTransferState
@@ -262,6 +267,8 @@ final class IOSAppModel {
                 sortedBy: sortMode
             ))
             await refreshAttachmentTransferStates()
+            // A prepare can store a file during either await. This switch must end without one.
+            preparedAttachments.removeAll()
         }
     }
 
@@ -619,12 +626,12 @@ final class IOSAppModel {
 
     func attachmentURL(for attachmentID: UUID) -> URL? {
         if cloudSyncHandler != nil, !hasKnownCloudSyncActivity {
-            return preparedAttachmentURLs[attachmentID]
+            return preparedAttachments[attachmentID]?.url
         }
         if isCloudSyncActive,
            !hasKnownCloudAttachmentStates || attachmentTransferStates[attachmentID] != nil
         {
-            return preparedAttachmentURLs[attachmentID]
+            return preparedAttachments[attachmentID]?.url
         }
         return attachmentURLs[attachmentID]
     }
@@ -649,13 +656,13 @@ final class IOSAppModel {
         onFailure: ((String) -> Void)? = nil,
         onCancellation: (() -> Void)? = nil
     ) async -> URL? {
-        if let preparedURL = preparedAttachmentURLs[attachmentID],
+        if let preparedURL = preparedAttachments[attachmentID]?.url,
            isAvailablePreparedAttachment(preparedURL)
         {
             attachmentTransferStates[attachmentID] = .available
             return preparedURL
         }
-        preparedAttachmentURLs[attachmentID] = nil
+        preparedAttachments[attachmentID] = nil
         guard let cloudSyncHandler else { return attachmentURLs[attachmentID] }
         if hasKnownCloudSyncActivity, !isCloudSyncActive {
             return attachmentURLs[attachmentID]
@@ -673,10 +680,19 @@ final class IOSAppModel {
         group.activeCount += 1
         attachmentPreparations[attachmentID] = group
         attachmentTransferStates[attachmentID] = .syncing
+        let identity = preparedAttachmentIdentity(for: attachmentID)
         do {
             let url = try await cloudSyncHandler.prepareSyncedAttachment(attachmentID, for: use)
+            let currentIdentity = preparedAttachmentIdentity(for: attachmentID)
+            if let identity, let currentIdentity, identity != currentIdentity {
+                finishAttachmentPreparation(attachmentID, outcome: .cancelled)
+                return nil
+            }
             attachmentURLs[attachmentID] = url
-            preparedAttachmentURLs[attachmentID] = url
+            preparedAttachments[attachmentID] = PreparedAttachmentRecord(
+                url: url,
+                identity: identity ?? currentIdentity
+            )
             finishAttachmentPreparation(attachmentID, outcome: .succeeded)
             return url
         } catch is CancellationError {
@@ -689,7 +705,7 @@ final class IOSAppModel {
                 onCancellation?()
                 return nil
             }
-            if let preparedURL = preparedAttachmentURLs[attachmentID],
+            if let preparedURL = preparedAttachments[attachmentID]?.url,
                isAvailablePreparedAttachment(preparedURL) {
                 finishAttachmentPreparation(attachmentID, outcome: .cancelled)
                 return preparedURL
@@ -744,8 +760,39 @@ final class IOSAppModel {
         attachmentPreparations[attachmentID] = group.activeCount > 0 ? group : nil
     }
 
+    private struct PreparedAttachmentIdentity: Equatable {
+        var fileName: String
+        var byteCount: Int64
+    }
+
+    private func preparedAttachmentIdentity(for attachmentID: UUID) -> PreparedAttachmentIdentity? {
+        guard let attachment = snips.lazy.flatMap(\.attachments).first(where: { $0.id == attachmentID })
+        else { return nil }
+        return PreparedAttachmentIdentity(
+            fileName: attachment.fileName,
+            byteCount: attachment.byteCount
+        )
+    }
+
+    private func retainPreparedAttachments(in snapshot: SnipLibrarySnapshot) {
+        let attachments = Dictionary(
+            snapshot.snips.flatMap(\.attachments).map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        preparedAttachments = preparedAttachments.filter { id, prepared in
+            guard let attachment = attachments[id],
+                  let identity = prepared.identity,
+                  attachment.fileName == identity.fileName,
+                  attachment.byteCount == identity.byteCount,
+                  isAvailablePreparedAttachment(prepared.url) else { return false }
+            return true
+        }
+    }
+
     private func isAvailablePreparedAttachment(_ url: URL) -> Bool {
         guard FileManager.default.isReadableFile(atPath: url.path) else { return false }
+        var url = url
+        url.removeAllCachedResourceValues()
         guard let values = try? url.resourceValues(forKeys: [
             .isRegularFileKey,
             .isSymbolicLinkKey,
@@ -760,6 +807,8 @@ final class IOSAppModel {
             try await cloudSyncHandler.clearDownloadedFiles()
             apply(await session.state(sortedBy: .chronological))
             await refreshAttachmentTransferStates()
+            // A prepare can store a file during either await. Clearing must end without one.
+            preparedAttachments.removeAll()
         } catch {
             diagnostics.record(.failure(
                 operation: "attachment.cache_clear",
@@ -1092,7 +1141,7 @@ final class IOSAppModel {
         snips = snapshot.snips
         lists = snapshot.lists
         attachmentURLs = snapshot.attachmentURLs
-        preparedAttachmentURLs.removeAll()
+        retainPreparedAttachments(in: snapshot)
         if let newListID, !lists.contains(where: { $0.id == newListID }) {
             finishListEditing(id: newListID)
         }
@@ -1127,13 +1176,16 @@ final class IOSAppModel {
             guard isCloudSyncActive else {
                 hasKnownCloudAttachmentStates = true
                 attachmentTransferStates = [:]
-                preparedAttachmentURLs.removeAll()
+                preparedAttachments.removeAll()
                 return
             }
             attachmentTransferStates = try await cloudSyncHandler.syncedAttachmentStates()
             hasKnownCloudAttachmentStates = true
-            preparedAttachmentURLs = preparedAttachmentURLs.filter {
-                attachmentTransferStates[$0.key] != nil
+            // Failed must show the failure badge, not the downloaded photo.
+            // Waiting and syncing keep it, or a refresh brings the spinner back.
+            preparedAttachments = preparedAttachments.filter { id, _ in
+                guard let state = attachmentTransferStates[id] else { return false }
+                return state != .failed
             }
         } catch {
             if isCloudSyncActive { hasKnownCloudAttachmentStates = false }

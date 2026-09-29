@@ -100,13 +100,16 @@ private struct FullScreenAttachmentImage: View {
                 Color.black
                     .opacity(1 - min(0.65, dismissalDistance / 600))
                     .ignoresSafeArea()
-                if let image {
-                    Image(decorative: image, scale: displayScale, orientation: .up)
+                if didFailToLoad {
+                    ContentUnavailableView("Couldn’t open image", systemImage: "photo.badge.exclamationmark")
+                        .foregroundStyle(.white)
+                } else if let displayedImage {
+                    Image(decorative: displayedImage, scale: displayScale, orientation: .up)
                         .resizable()
                         .scaledToFit()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .scaleEffect(effectiveZoom)
-                        .offset(imageOffset(image: image, viewport: geometry.size))
+                        .offset(imageOffset(image: displayedImage, viewport: geometry.size))
                         .onTapGesture(count: 2) {
                             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
                                 zoomScale = zoomScale > 1 ? 1 : 2
@@ -114,9 +117,6 @@ private struct FullScreenAttachmentImage: View {
                             }
                         }
                         .accessibilityLabel("Image preview")
-                } else if didFailToLoad {
-                    ContentUnavailableView("Couldn’t open image", systemImage: "photo.badge.exclamationmark")
-                        .foregroundStyle(.white)
                 } else {
                     ProgressView()
                         .tint(.white)
@@ -161,11 +161,16 @@ private struct FullScreenAttachmentImage: View {
                     }
             )
             .task(id: url) {
-                image = nil
                 didFailToLoad = false
                 zoomScale = 1
                 panOffset = .zero
                 pinchOccurredDuringDrag = false
+                image = FullScreenImageLoader.shared.cachedImage(for: url)
+                    ?? AttachmentThumbnailCache.shared.cachedImage(
+                        for: url,
+                        size: AttachmentThumbnailCache.tileSize,
+                        scale: displayScale
+                    )
                 let pixels = CGSize(
                     width: geometry.size.width * displayScale * 2,
                     height: geometry.size.height * displayScale * 2
@@ -189,6 +194,16 @@ private struct FullScreenAttachmentImage: View {
                     .accessibilityIdentifier("dismiss-attachment-image")
             }
         }
+    }
+
+    private var displayedImage: CGImage? {
+        if let image { return image }
+        if let cached = FullScreenImageLoader.shared.cachedImage(for: url) { return cached }
+        return AttachmentThumbnailCache.shared.cachedImage(
+            for: url,
+            size: AttachmentThumbnailCache.tileSize,
+            scale: displayScale
+        )
     }
 
     private var effectiveZoom: CGFloat {
@@ -242,6 +257,16 @@ private struct FullScreenAttachmentImage: View {
 
 private actor FullScreenImageLoader {
     static let shared = FullScreenImageLoader()
+    private nonisolated(unsafe) let cache: NSCache<NSString, FullScreenImageBox> = {
+        let cache = NSCache<NSString, FullScreenImageBox>()
+        cache.countLimit = 4
+        cache.totalCostLimit = 160 * 1_024 * 1_024
+        return cache
+    }()
+
+    nonisolated func cachedImage(for url: URL) -> CGImage? {
+        cache.object(forKey: url.standardizedFileURL.path as NSString)?.image
+    }
 
     func isStillImage(at url: URL) -> Bool {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
@@ -251,15 +276,68 @@ private actor FullScreenImageLoader {
         return CGImageSourceGetCount(source) == 1
     }
 
-    func image(for url: URL, size: CGSize) -> CGImage? {
+    func image(for url: URL, size: CGSize) async -> CGImage? {
+        let needed = max(1, Int(ceil(max(size.width, size.height))))
+        let path = url.standardizedFileURL.path as NSString
+        let version = await Task.detached(priority: .utility) {
+            Self.fileVersion(of: url)
+        }.value
+        if let cached = cache.object(forKey: path) {
+            if cached.version == version,
+               max(cached.image.width, cached.image.height) >= needed {
+                return cached.image
+            }
+            cache.removeObject(forKey: path)
+        }
+        let task = Task.detached(priority: .userInitiated) {
+            Self.makeThumbnail(url: url, maxPixelSize: needed)
+        }
+        let decoded = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        guard let decoded, !Task.isCancelled else { return nil }
+        cache.setObject(
+            FullScreenImageBox(decoded, version: version),
+            forKey: path,
+            cost: decoded.bytesPerRow * decoded.height
+        )
+        return decoded
+    }
+
+    private nonisolated static func fileVersion(of url: URL) -> String {
+        var url = url
+        url.removeAllCachedResourceValues()
+        let values = try? url.resourceValues(forKeys: [
+            .fileResourceIdentifierKey,
+            .contentModificationDateKey,
+            .fileSizeKey,
+        ])
+        let identity = values?.fileResourceIdentifier.map(String.init(describing:))
+            ?? url.standardizedFileURL.path
+        let modified = values?.contentModificationDate?.timeIntervalSinceReferenceDate ?? 0
+        let bytes = values?.fileSize ?? -1
+        return "\(identity)|\(modified)|\(bytes)"
+    }
+
+    private nonisolated static func makeThumbnail(url: URL, maxPixelSize: Int) -> CGImage? {
         guard !Task.isCancelled,
               let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-        let maxPixelSize = max(1, Int(ceil(max(size.width, size.height))))
         let options: CFDictionary = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
         ] as CFDictionary
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options)
+    }
+}
+
+private final class FullScreenImageBox: NSObject, @unchecked Sendable {
+    let image: CGImage
+    let version: String
+    init(_ image: CGImage, version: String) {
+        self.image = image
+        self.version = version
     }
 }

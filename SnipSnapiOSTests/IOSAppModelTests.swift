@@ -1698,6 +1698,261 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(model.attachmentURL(for: id), verified)
     }
 
+    func testRefreshingTheLibraryKeepsAVerifiedImageFile() async throws {
+        let id = UUID()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "SnipSnapVerifiedImageRefresh-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let url = root.appendingPathComponent("photo.png")
+        try Data([1, 2, 3]).write(to: url)
+        let attachment = try testAttachment(id: id, fileName: "photo.png")
+        let snip = Snip(content: "Photo", origin: .quickEntry, attachments: [attachment])
+        let handler = IOSCloudSyncHandlerProbe(states: [id: .available])
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: [snip], attachmentURLs: [id: url]),
+            cloudSyncHandler: handler
+        )
+        await model.load()
+
+        let preparing = Task { await model.prepareAttachment(id, for: .preview) }
+        await handler.waitUntilPrepareStarts()
+        await handler.finishPrepare(with: .success(url))
+        let preparedURL = await preparing.value
+        XCTAssertEqual(preparedURL, url)
+
+        await model.load()
+
+        XCTAssertEqual(model.usableAttachmentURL(for: id), url)
+        XCTAssertEqual(model.attachmentTransferState(for: id), .available)
+        let prepareCount = await handler.prepareCount()
+        XCTAssertEqual(prepareCount, 1)
+    }
+
+    func testRefreshingTheLibraryKeepsAVerifiedImageFileWhileItIsStillSyncing() async throws {
+        let id = UUID()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "SnipSnapVerifiedImageSyncing-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let url = root.appendingPathComponent("photo.png")
+        try Data([1, 2, 3]).write(to: url)
+        let attachment = try testAttachment(id: id, fileName: "photo.png")
+        let snip = Snip(content: "Photo", origin: .quickEntry, attachments: [attachment])
+        let handler = IOSCloudSyncHandlerProbe(states: [id: .available])
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: [snip], attachmentURLs: [id: url]),
+            cloudSyncHandler: handler
+        )
+        await model.load()
+        let preparing = Task { await model.prepareAttachment(id, for: .preview) }
+        await handler.waitUntilPrepareStarts()
+        await handler.finishPrepare(with: .success(url))
+        _ = await preparing.value
+
+        await handler.setState(.waiting, for: id)
+        await model.load()
+        XCTAssertEqual(model.usableAttachmentURL(for: id), url)
+        XCTAssertEqual(model.attachmentTransferState(for: id), .waiting)
+
+        await handler.setState(.syncing, for: id)
+        await model.load()
+        XCTAssertEqual(model.usableAttachmentURL(for: id), url)
+        XCTAssertEqual(model.attachmentTransferState(for: id), .syncing)
+    }
+
+    func testRefreshingTheLibraryDropsAVerifiedImageFileWhenSyncFails() async throws {
+        let id = UUID()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "SnipSnapVerifiedImageFailed-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let url = root.appendingPathComponent("photo.png")
+        try Data([1, 2, 3]).write(to: url)
+        let attachment = try testAttachment(id: id, fileName: "photo.png")
+        let snip = Snip(content: "Photo", origin: .quickEntry, attachments: [attachment])
+        let handler = IOSCloudSyncHandlerProbe(states: [id: .available])
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: [snip], attachmentURLs: [id: url]),
+            cloudSyncHandler: handler
+        )
+        await model.load()
+        let preparing = Task { await model.prepareAttachment(id, for: .preview) }
+        await handler.waitUntilPrepareStarts()
+        await handler.finishPrepare(with: .success(url))
+        _ = await preparing.value
+
+        await handler.setState(.failed, for: id)
+        await model.load()
+
+        XCTAssertEqual(model.attachmentTransferState(for: id), .failed)
+        XCTAssertNil(model.usableAttachmentURL(for: id))
+    }
+
+    func testClearingDownloadsDropsAFilePreparedWhileTheLibraryReloads() async throws {
+        let id = UUID()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "SnipSnapVerifiedImageClear-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let url = root.appendingPathComponent("photo.png")
+        try Data([1, 2, 3]).write(to: url)
+        let attachment = try testAttachment(id: id, fileName: "photo.png")
+        let snip = Snip(content: "Photo", origin: .quickEntry, attachments: [attachment])
+        let library = ModelTestLibrary(snips: [snip], attachmentURLs: [id: url])
+        let handler = IOSCloudSyncHandlerProbe(states: [id: .available])
+        let model = IOSAppModel(library: library, cloudSyncHandler: handler)
+        await model.load()
+
+        await library.suspendNextSnapshot()
+        let clearing = Task { await model.clearDownloadedFiles() }
+        await library.waitUntilSnapshotStarts()
+        let preparing = Task { await model.prepareAttachment(id, for: .preview) }
+        await handler.waitUntilPrepareStarts()
+        await handler.finishPrepare(with: .success(url))
+        _ = await preparing.value
+        await library.resumeSnapshot()
+        await clearing.value
+
+        XCTAssertNil(model.attachmentURL(for: id))
+        XCTAssertNil(model.usableAttachmentURL(for: id))
+    }
+
+    func testRefreshingTheLibraryDropsAVerifiedImageFileThatWasRemoved() async throws {
+        let id = UUID()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "SnipSnapVerifiedImageRemoved-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let url = root.appendingPathComponent("photo.png")
+        try Data([1, 2, 3]).write(to: url)
+        let attachment = try testAttachment(id: id, fileName: "photo.png")
+        let snip = Snip(content: "Photo", origin: .quickEntry, attachments: [attachment])
+        let handler = IOSCloudSyncHandlerProbe(states: [id: .available])
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: [snip], attachmentURLs: [id: url]),
+            cloudSyncHandler: handler
+        )
+        await model.load()
+
+        let preparing = Task { await model.prepareAttachment(id, for: .preview) }
+        await handler.waitUntilPrepareStarts()
+        await handler.finishPrepare(with: .success(url))
+        _ = await preparing.value
+        try FileManager.default.removeItem(at: url)
+
+        await model.load()
+
+        XCTAssertNil(model.usableAttachmentURL(for: id))
+    }
+
+    func testRefreshingTheLibraryDropsAVerifiedImageFileWhenTheAttachmentChanges() async throws {
+        let id = UUID()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "SnipSnapVerifiedImageReplaced-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let url = root.appendingPathComponent("photo.png")
+        try Data([1, 2, 3]).write(to: url)
+        let snip = Snip(
+            content: "Photo",
+            origin: .quickEntry,
+            attachments: [try testAttachment(id: id, fileName: "photo.png")]
+        )
+        let library = ModelTestLibrary(snips: [snip], attachmentURLs: [id: url])
+        let handler = IOSCloudSyncHandlerProbe(states: [id: .available])
+        let model = IOSAppModel(library: library, cloudSyncHandler: handler)
+        await model.load()
+        let preparing = Task { await model.prepareAttachment(id, for: .preview) }
+        await handler.waitUntilPrepareStarts()
+        await handler.finishPrepare(with: .success(url))
+        _ = await preparing.value
+
+        await library.replaceAttachments(
+            [try testAttachment(id: id, fileName: "photo.png", byteCount: 99)],
+            on: snip.id
+        )
+        await model.load()
+
+        XCTAssertNil(model.usableAttachmentURL(for: id))
+    }
+
+    func testPrepareDoesNotKeepAnImageFileWhenTheAttachmentChangesDuringDownload() async throws {
+        let id = UUID()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "SnipSnapVerifiedImageMidDownload-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let url = root.appendingPathComponent("photo.png")
+        try Data([1, 2, 3]).write(to: url)
+        let snip = Snip(
+            content: "Photo",
+            origin: .quickEntry,
+            attachments: [try testAttachment(id: id, fileName: "photo.png")]
+        )
+        let library = ModelTestLibrary(snips: [snip], attachmentURLs: [id: url])
+        let handler = IOSCloudSyncHandlerProbe(states: [id: .available])
+        let model = IOSAppModel(library: library, cloudSyncHandler: handler)
+        await model.load()
+
+        let preparing = Task { await model.prepareAttachment(id, for: .preview) }
+        await handler.waitUntilPrepareStarts()
+        await library.replaceAttachments(
+            [try testAttachment(id: id, fileName: "photo.png", byteCount: 99)],
+            on: snip.id
+        )
+        await model.load()
+        await handler.finishPrepare(with: .success(url))
+        let prepared = await preparing.value
+
+        XCTAssertNil(prepared)
+        XCTAssertNil(model.attachmentURL(for: id))
+        XCTAssertNil(model.usableAttachmentURL(for: id))
+    }
+
+    func testRefreshingTheLibraryDropsAVerifiedImageFileReplacedByASymbolicLink() async throws {
+        let id = UUID()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "SnipSnapVerifiedImageSymlink-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let url = root.appendingPathComponent("photo.png")
+        let other = root.appendingPathComponent("other.png")
+        try Data([1, 2, 3]).write(to: url)
+        try Data([4, 5, 6]).write(to: other)
+        let snip = Snip(
+            content: "Photo",
+            origin: .quickEntry,
+            attachments: [try testAttachment(id: id, fileName: "photo.png")]
+        )
+        let handler = IOSCloudSyncHandlerProbe(states: [id: .available])
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: [snip], attachmentURLs: [id: url]),
+            cloudSyncHandler: handler
+        )
+        await model.load()
+        let preparing = Task { await model.prepareAttachment(id, for: .preview) }
+        await handler.waitUntilPrepareStarts()
+        await handler.finishPrepare(with: .success(url))
+        _ = await preparing.value
+        await model.load()
+        _ = model.usableAttachmentURL(for: id)
+
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.createSymbolicLink(at: url, withDestinationURL: other)
+        await model.load()
+
+        XCTAssertNil(model.usableAttachmentURL(for: id))
+    }
+
     func testLocalAttachmentStaysUsableWhenCloudHandlerHasNoSyncedState() async {
         let id = UUID()
         let local = URL(fileURLWithPath: "/tmp/local-only.txt")
@@ -4353,14 +4608,18 @@ private final class RecordingPasteboard: IOSPasteboardWriting {
     }
 }
 
-private func testAttachment(id: UUID, fileName: String) throws -> SnipAttachment {
+private func testAttachment(
+    id: UUID,
+    fileName: String,
+    byteCount: Int64 = 1
+) throws -> SnipAttachment {
     let json = """
     {
       "id": "\(id.uuidString)",
       "fileName": "\(fileName)",
       "relativePath": "\(id.uuidString)/\(fileName)",
       "contentType": "public.text",
-      "byteCount": 1
+      "byteCount": \(byteCount)
     }
     """
     return try JSONDecoder().decode(SnipAttachment.self, from: Data(json.utf8))
@@ -4380,6 +4639,9 @@ private actor ModelTestLibrary: SnipLibrary {
     private let failsDeletion: Bool
     private let failsListDeletion: Bool
     private var suspendsFirstCommand: Bool
+    private var suspendsNextSnapshot = false
+    private var snapshotStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var snapshotContinuation: CheckedContinuation<Void, Never>?
     private var firstCommandStarted = false
     private var firstCommandStartWaiters: [CheckedContinuation<Void, Never>] = []
     private var firstCommandContinuation: CheckedContinuation<Void, Never>?
@@ -4419,6 +4681,11 @@ private actor ModelTestLibrary: SnipLibrary {
     func replaceText(_ text: String, for id: UUID) {
         guard let index = snips.firstIndex(where: { $0.id == id }) else { return }
         snips[index].content = text
+    }
+
+    func replaceAttachments(_ attachments: [SnipAttachment], on snipID: UUID) {
+        guard let index = snips.firstIndex(where: { $0.id == snipID }) else { return }
+        snips[index].attachments = attachments
     }
 
     func resolutionChoices() -> [SnipRecoveryChoice] {
@@ -4491,8 +4758,28 @@ private actor ModelTestLibrary: SnipLibrary {
         recoveryStarted
     }
 
-    func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
-        makeSnapshot(sortMode: sortMode)
+    func suspendNextSnapshot() {
+        suspendsNextSnapshot = true
+    }
+
+    func waitUntilSnapshotStarts() async {
+        if snapshotContinuation != nil { return }
+        await withCheckedContinuation { snapshotStartWaiters.append($0) }
+    }
+
+    func resumeSnapshot() {
+        snapshotContinuation?.resume()
+        snapshotContinuation = nil
+    }
+
+    func snapshot(sortedBy sortMode: SnipSortMode) async -> SnipLibrarySnapshot {
+        if suspendsNextSnapshot {
+            suspendsNextSnapshot = false
+            snapshotStartWaiters.forEach { $0.resume() }
+            snapshotStartWaiters.removeAll()
+            await withCheckedContinuation { snapshotContinuation = $0 }
+        }
+        return makeSnapshot(sortMode: sortMode)
     }
 
     func checkedSnapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
@@ -4998,5 +5285,195 @@ final class ListSelectorExpansionTests: XCTestCase {
         XCTAssertEqual(expansion.distance, 0)
         expansion.update(distance: 8)
         XCTAssertEqual(expansion.distance, 8)
+    }
+}
+
+@MainActor
+final class AttachmentThumbnailCacheTests: XCTestCase {
+    func testCachedThumbnailReturnsWhileAnotherImageIsDecoding() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "SnipSnapThumbnailWait-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let fast = root.appendingPathComponent("fast.png")
+        let slow = root.appendingPathComponent("slow.png")
+        try Data([1]).write(to: fast)
+        try Data([2]).write(to: slow)
+        let gate = ThumbnailDecodeGate()
+        let cache = AttachmentThumbnailCache { url, _, _ in
+            if url.lastPathComponent == "slow.png" {
+                await gate.block()
+            }
+            return thumbnailTestImage()
+        }
+        let size = CGSize(width: 32, height: 32)
+
+        let first = await cache.image(for: fast, size: size, scale: 2)
+        XCTAssertNotNil(first)
+        let slowLoad = Task { await cache.image(for: slow, size: size, scale: 2) }
+        await gate.waitUntilBlocked()
+
+        let started = ContinuousClock.now
+        let again = await cache.image(for: fast, size: size, scale: 2)
+        let elapsed = ContinuousClock.now - started
+
+        XCTAssertNotNil(again)
+        XCTAssertNotNil(cache.cachedImage(for: fast, size: size, scale: 2))
+        XCTAssertLessThan(elapsed, .milliseconds(500))
+        await gate.release()
+        _ = await slowLoad.value
+    }
+
+    func testThumbnailIsReusedUntilTheFileChanges() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "SnipSnapThumbnailReuse-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let photo = root.appendingPathComponent("photo.png")
+        try Data([1, 2, 3, 4]).write(to: photo)
+        let counter = ThumbnailDecodeCounter()
+        let cache = AttachmentThumbnailCache { _, _, _ in
+            counter.record()
+            return thumbnailTestImage(width: 4, height: 3)
+        }
+        let size = CGSize(width: 16, height: 16)
+
+        XCTAssertNil(cache.cachedImage(for: photo, size: size, scale: 2))
+        let loaded = await cache.image(for: photo, size: size, scale: 2)
+        XCTAssertEqual(loaded?.width, 4)
+        XCTAssertEqual(loaded?.height, 3)
+        XCTAssertEqual(counter.count, 1)
+        XCTAssertEqual(cache.cachedImage(for: photo, size: size, scale: 2)?.width, 4)
+
+        let again = await cache.image(for: photo, size: size, scale: 2)
+        XCTAssertEqual(again?.width, 4)
+        XCTAssertEqual(counter.count, 1)
+
+        try Data([9, 9, 9]).write(to: photo)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(10)],
+            ofItemAtPath: photo.path
+        )
+        let replaced = await cache.image(for: photo, size: size, scale: 2)
+        XCTAssertEqual(replaced?.width, 4)
+        XCTAssertEqual(counter.count, 2)
+    }
+
+    func testCancellingTheOnlyThumbnailRequestDropsTheDecode() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "SnipSnapThumbnailCancel-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let photo = root.appendingPathComponent("photo.png")
+        try Data([1]).write(to: photo)
+        let gate = ThumbnailDecodeGate()
+        let counter = ThumbnailDecodeCounter()
+        let cache = AttachmentThumbnailCache { _, _, _ in
+            await withTaskCancellationHandler {
+                await gate.block()
+            } onCancel: {
+                gate.release()
+            }
+            guard !Task.isCancelled else { return nil }
+            counter.record()
+            return thumbnailTestImage()
+        }
+        let size = CGSize(width: 16, height: 16)
+        let load = Task { await cache.image(for: photo, size: size, scale: 2) }
+        await gate.waitUntilBlocked()
+        load.cancel()
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            gate.release()
+        }
+
+        let result = await load.value
+        XCTAssertNil(result)
+        XCTAssertEqual(counter.count, 0)
+        XCTAssertNil(cache.cachedImage(for: photo, size: size, scale: 2))
+    }
+}
+
+private func thumbnailTestImage(width: Int = 4, height: Int = 3) -> CGImage {
+    let context = CGContext(
+        data: nil,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: 0,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )!
+    context.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+    context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    return context.makeImage()!
+}
+
+private final class ThumbnailDecodeCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func record() {
+        lock.lock()
+        value += 1
+        lock.unlock()
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}
+
+private final class ThumbnailDecodeGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isBlocked = false
+    private var isReleased = false
+    private var blockedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func block() async {
+        let entered: [CheckedContinuation<Void, Never>]? = lock.withLock {
+            if isReleased { return nil }
+            isBlocked = true
+            let entered = blockedWaiters
+            blockedWaiters.removeAll()
+            return entered
+        }
+        guard let entered else { return }
+        entered.forEach { $0.resume() }
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumeNow = lock.withLock { () -> Bool in
+                if isReleased { return true }
+                releaseWaiters.append(continuation)
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
+    }
+
+    func waitUntilBlocked() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumeNow = lock.withLock { () -> Bool in
+                if isBlocked { return true }
+                blockedWaiters.append(continuation)
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
+    }
+
+    func release() {
+        lock.lock()
+        isReleased = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        lock.unlock()
+        waiters.forEach { $0.resume() }
     }
 }
