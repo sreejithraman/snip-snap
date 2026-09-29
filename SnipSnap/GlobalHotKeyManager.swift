@@ -127,7 +127,11 @@ final class GlobalHotKeyManager: GlobalHotKeyManaging {
         }
     }
 
-    private func receiveForDoubleShift(_ event: NSEvent) {
+    func receiveForDoubleShift(_ event: NSEvent) {
+        guard !ShortcutRecordingState.isActive else {
+            doubleShiftRouter.cancel()
+            return
+        }
         if let gesture = doubleShiftRouter.receive(event),
            let action = doubleShiftActions[gesture] {
             handler(action)

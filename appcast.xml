@@ -4,6 +4,21 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.0</title>
+            <pubDate>Tue, 29 Sep 2026 17:09:40 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.0-beta.117</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.6.0-beta.117-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>117</sparkle:version>
+            <sparkle:shortVersionString>0.6.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.0-beta.117/Snip-Snap-0.6.0.zip" length="15081595" type="application/octet-stream" sparkle:edSignature="+3c9thBEcXoanMDcM9pJEoVYzyP70+/ATt+QuVyjHeANkmkdVNgQ2c9UH/l92dqbpYG9/CR5r7WY8bhFCctjAw=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.0 Beta 117 — Mac
+
+- Fix recording double Shift shortcuts
+</description>
+        </item>
+        <item>
+            <title>0.6.0</title>
             <pubDate>Tue, 29 Sep 2026 07:26:13 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.0-beta.116</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.6.0-beta.116-mac.txt</sparkle:fullReleaseNotesLink>

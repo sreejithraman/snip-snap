@@ -3,6 +3,21 @@ import Carbon.HIToolbox
 import SnipSnapCore
 import SwiftUI
 
+@MainActor
+enum ShortcutRecordingState {
+    private static var activeRecorders: Set<ObjectIdentifier> = []
+
+    static var isActive: Bool { !activeRecorders.isEmpty }
+
+    static func begin(_ recorder: AnyObject) {
+        activeRecorders.insert(ObjectIdentifier(recorder))
+    }
+
+    static func end(_ recorder: AnyObject) {
+        activeRecorders.remove(ObjectIdentifier(recorder))
+    }
+}
+
 struct ShortcutSettingsView: View {
     @EnvironmentObject private var shortcutSettings: ShortcutSettings
     let coordinator: AppCoordinator
@@ -18,6 +33,7 @@ struct ShortcutSettingsView: View {
                             title: action.title,
                             trigger: shortcutSettings.configuration.trigger(for: action),
                             defaultTrigger: action.defaultTrigger,
+                            allowsDoubleShift: true,
                             onRecord: { save($0, for: action) },
                             onUseDefault: {
                                 save(action.defaultTrigger, for: action)
@@ -97,6 +113,7 @@ private struct ShortcutSettingRow: View {
     let title: String
     let trigger: ShortcutTrigger
     let defaultTrigger: ShortcutTrigger
+    var allowsDoubleShift = false
     var allowsUnmodifiedSpecialKey = false
     let onRecord: (ShortcutTrigger) -> Void
     let onUseDefault: () -> Void
@@ -113,6 +130,7 @@ private struct ShortcutSettingRow: View {
                 }
                 ShortcutRecorderButton(
                     trigger: trigger,
+                    allowsDoubleShift: allowsDoubleShift,
                     allowsUnmodifiedSpecialKey: allowsUnmodifiedSpecialKey,
                     onRecord: onRecord
                 )
@@ -123,14 +141,16 @@ private struct ShortcutSettingRow: View {
     }
 }
 
-private struct ShortcutRecorderButton: NSViewRepresentable {
+struct ShortcutRecorderButton: NSViewRepresentable {
     let trigger: ShortcutTrigger
+    var allowsDoubleShift = false
     var allowsUnmodifiedSpecialKey = false
     let onRecord: (ShortcutTrigger) -> Void
 
     func makeNSView(context: Context) -> RecorderButton {
         let button = RecorderButton()
         button.onRecord = onRecord
+        button.allowsDoubleShift = allowsDoubleShift
         button.allowsUnmodifiedSpecialKey = allowsUnmodifiedSpecialKey
         button.setTrigger(trigger)
         return button
@@ -138,16 +158,20 @@ private struct ShortcutRecorderButton: NSViewRepresentable {
 
     func updateNSView(_ button: RecorderButton, context: Context) {
         button.onRecord = onRecord
+        button.allowsDoubleShift = allowsDoubleShift
         button.allowsUnmodifiedSpecialKey = allowsUnmodifiedSpecialKey
         button.setTrigger(trigger)
     }
 
     final class RecorderButton: NSButton {
         var onRecord: ((ShortcutTrigger) -> Void)?
+        var allowsDoubleShift = false
         var allowsUnmodifiedSpecialKey = false
         private var trigger: ShortcutTrigger = .doubleShift(.left)
         private var isRecording = false
-        private var keyMonitor: Any?
+        private var inputMonitor: Any?
+        private var focusObservers: [NSObjectProtocol] = []
+        private var doubleShiftRouter = DoubleShiftRouter(gestures: [])
 
         override var acceptsFirstResponder: Bool { true }
 
@@ -180,11 +204,41 @@ private struct ShortcutRecorderButton: NSViewRepresentable {
         }
 
         @objc private func beginRecording() {
+            guard !isRecording else { return }
             isRecording = true
             title = String(localized: "Press shortcut")
             window?.makeFirstResponder(self)
-            if keyMonitor == nil {
-                keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+            guard isRecording else { return }
+            ShortcutRecordingState.begin(self)
+            let notifications = NotificationCenter.default
+            if let window {
+                focusObservers.append(notifications.addObserver(
+                    forName: NSWindow.didResignKeyNotification,
+                    object: window,
+                    queue: nil
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.stopRecording() }
+                })
+            }
+            focusObservers.append(notifications.addObserver(
+                forName: NSApplication.didResignActiveNotification,
+                object: NSApp,
+                queue: nil
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.stopRecording() }
+            })
+            if allowsDoubleShift {
+                doubleShiftRouter = DoubleShiftRouter(gestures: [
+                    DoubleShiftGesture(side: .left, modifier: .none),
+                    DoubleShiftGesture(side: .right, modifier: .none),
+                    DoubleShiftGesture(side: .left, modifier: .command),
+                    DoubleShiftGesture(side: .right, modifier: .command),
+                ])
+            }
+            if inputMonitor == nil {
+                inputMonitor = NSEvent.addLocalMonitorForEvents(
+                    matching: [.flagsChanged, .keyDown, .keyUp]
+                ) {
                     [weak self] event in
                     guard let self, self.isRecording else { return event }
                     return self.handle(event) ? nil : event
@@ -195,6 +249,16 @@ private struct ShortcutRecorderButton: NSViewRepresentable {
         override func keyDown(with event: NSEvent) {
             if handle(event) { return }
             super.keyDown(with: event)
+        }
+
+        override func flagsChanged(with event: NSEvent) {
+            if handle(event) { return }
+            super.flagsChanged(with: event)
+        }
+
+        override func keyUp(with event: NSEvent) {
+            if handle(event) { return }
+            super.keyUp(with: event)
         }
 
         override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -209,7 +273,23 @@ private struct ShortcutRecorderButton: NSViewRepresentable {
         }
 
         private func handle(_ event: NSEvent) -> Bool {
-            guard isRecording, event.type == .keyDown else { return false }
+            guard isRecording else { return false }
+            if event.type == .flagsChanged, allowsDoubleShift {
+                if let gesture = doubleShiftRouter.receive(event) {
+                    let trigger: ShortcutTrigger = gesture.modifier == .command
+                        ? .commandDoubleShift(gesture.side)
+                        : .doubleShift(gesture.side)
+                    onRecord?(trigger)
+                    stopRecording()
+                }
+                return true
+            }
+            if event.type == .keyUp {
+                doubleShiftRouter.cancel()
+                return false
+            }
+            guard event.type == .keyDown else { return false }
+            doubleShiftRouter.cancel()
             if event.keyCode == UInt16(kVK_Escape) {
                 stopRecording()
                 return true
@@ -229,10 +309,16 @@ private struct ShortcutRecorderButton: NSViewRepresentable {
         private func stopRecording() {
             guard isRecording else { return }
             isRecording = false
-            if let keyMonitor {
-                NSEvent.removeMonitor(keyMonitor)
-                self.keyMonitor = nil
+            ShortcutRecordingState.end(self)
+            if let inputMonitor {
+                NSEvent.removeMonitor(inputMonitor)
+                self.inputMonitor = nil
             }
+            for observer in focusObservers {
+                NotificationCenter.default.removeObserver(observer)
+            }
+            focusObservers.removeAll()
+            doubleShiftRouter.cancel()
             title = trigger.displayName
         }
     }
