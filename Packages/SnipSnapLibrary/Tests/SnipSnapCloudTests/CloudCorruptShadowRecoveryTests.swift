@@ -6,6 +6,127 @@ import XCTest
 @testable import SnipSnapPersistence
 
 final class CloudCorruptShadowRecoveryTests: XCTestCase {
+  func testFetchedLegacyListKeepsCanonicalSnipPlacementThroughCleanCompletion() async throws {
+    for listInEarlierBatch in [false, true] {
+      let fixture = try await Fixture()
+      defer { fixture.remove() }
+      let list = SnipList(id: UUID(), name: "Legacy list", systemImage: "folder", position: 1)
+      let canonical = try CloudFullRecordCodec.listDraft(list,
+        updatedAt: .distantPast, in: fixture.zone)
+      let legacy = CloudRecordDraft(
+        id: CloudRecordID(zone: fixture.zone, name: list.id.uuidString.lowercased()),
+        recordType: canonical.recordType,
+        schemaVersion: canonical.schemaVersion,
+        routingFields: canonical.routingFields,
+        encryptedFields: canonical.encryptedFields,
+        removedEncryptedFields: canonical.removedEncryptedFields
+      )
+      let listSnapshot = try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(for: legacy))
+      let snip = Snip(content: "keep legacy list placement", origin: .quickEntry, listID: list.id)
+      let snipSnapshot = try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(
+        for: CloudFullRecordCodec.snipDraft(snip, in: fixture.zone)))
+      try await fixture.store.clearEngineState()
+      if listInEarlierBatch {
+        let first = CloudFetchedBatch(id: UUID(),
+          items: [.record(listSnapshot), .record(snipSnapshot)],
+          engineState: CloudEngineStateEnvelope(namespace: fixture.namespace,
+            serialization: Data("first".utf8), requiresInitialFetch: true), isInitialFetch: true)
+        try await fixture.store.stage(.fetched(first))
+        try await fixture.store.applyStaged(first.id)
+      }
+      let completed = CloudFetchedBatch(id: UUID(),
+        items: listInEarlierBatch ? [] : [.record(listSnapshot), .record(snipSnapshot)],
+        zoneEvents: [.fetched(fixture.zone)],
+        engineState: CloudEngineStateEnvelope(namespace: fixture.namespace,
+          serialization: Data("complete".utf8), requiresInitialFetch: false), isInitialFetch: true)
+      try await fixture.store.stage(.fetched(completed))
+      try await fixture.store.applyStaged(completed.id)
+
+      let local = try await fixture.library.checkedSnapshot(sortedBy: .manual)
+      XCTAssertFalse(local.snips.contains { $0.id == snip.id }, "list in earlier batch: \(listInEarlierBatch)")
+      let stored = try await fixture.stored()
+      XCTAssertEqual(stored.namespaceState.initialFetchInventory?.canProveAbsence, true,
+        "list in earlier batch: \(listInEarlierBatch)")
+      XCTAssertTrue(stored.deferredEntities.contains {
+        $0.reference == CloudEntityReference(kind: .snip, domainID: snip.id)
+      }, "list in earlier batch: \(listInEarlierBatch)")
+      XCTAssertTrue(stored.quarantines.contains {
+        $0.identity.recordName == legacy.id.name
+      }, "list in earlier batch: \(listInEarlierBatch)")
+      let pending = try await fixture.store.pendingChanges()
+      XCTAssertFalse(pending.operations.contains { $0.id == snipSnapshot.id },
+        "list in earlier batch: \(listInEarlierBatch)")
+    }
+  }
+
+  func testNewUnpreparedSnipArchiveDoesNotRetirePreparedBaseOnCleanAbsence() async throws {
+    let fixture = try await Fixture()
+    defer { fixture.remove() }
+    let original = try await fixture.quarantineAcceptedRecord()
+    _ = try await fixture.store.loadEngineState()
+    let prepared = try await fixture.stored()
+    XCTAssertTrue(prepared.readyEntities.contains { $0.reference == original.reference })
+    let before = try await fixture.library.checkedSnapshot(sortedBy: .manual)
+    let localSnip = try XCTUnwrap(before.snips.first { $0.id == original.reference.domainID })
+
+    let newerDraft = CloudRecordDraft.text(id: CloudFullSyncPersistence.recordID(original.identity),
+      snipID: original.reference.domainID, text: "newer unprepared archive")
+    let newerPayload = try CloudKitRecordMapper.snapshot(
+      CloudKitRecordMapper.record(for: newerDraft)).shadow.data
+    let newerKey = CloudStoredQuarantine.corruptShadowKey(
+      reference: original.reference, payload: newerPayload)
+    let context = try fixture.context()
+    context.insert(StoredCloudMappingQuarantine(namespaceKey: fixture.namespace.namespaceKey.rawValue,
+      value: CloudQuarantineInput(key: newerKey, reference: original.reference,
+        identity: original.identity, payload: newerPayload)))
+    try context.save()
+
+    try await fixture.applyCleanCompletion()
+    let after = try await fixture.library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(after.snips.first { $0.id == localSnip.id }, localSnip)
+    let stored = try await fixture.stored()
+    XCTAssertTrue(stored.readyEntities.contains { $0.reference == original.reference })
+    XCTAssertTrue(stored.quarantines.contains { $0.key == newerKey && $0.payload == newerPayload })
+  }
+
+  func testFetchedUnpreparedListDoesNotRepairItsSnipIntoInbox() async throws {
+    let fixture = try await Fixture()
+    defer { fixture.remove() }
+    let first = try await fixture.removeLocalAndArchive(.list)
+    let revisedList = SnipList(id: first.reference.domainID, name: "Another archived base",
+      systemImage: "folder", position: 1)
+    let revisedDraft = try CloudFullRecordCodec.listDraft(revisedList,
+      updatedAt: .distantPast, in: fixture.zone)
+    let secondPayload = try CloudKitRecordMapper.snapshot(
+      CloudKitRecordMapper.record(for: revisedDraft)).shadow.data
+    let secondKey = CloudStoredQuarantine.corruptShadowKey(
+      reference: first.reference, payload: secondPayload)
+    let context = try fixture.context()
+    context.insert(StoredCloudMappingQuarantine(namespaceKey: fixture.namespace.namespaceKey.rawValue,
+      value: CloudQuarantineInput(key: secondKey, reference: first.reference,
+        identity: first.identity, payload: secondPayload)))
+    try context.save()
+
+    let snip = Snip(content: "keep this list placement", origin: .quickEntry,
+      listID: first.reference.domainID)
+    _ = try await fixture.server.send(CloudOutboundBatch(operations: [
+      .save(try CloudFullRecordCodec.snipDraft(snip, in: fixture.zone)),
+    ]), failures: [:])
+    try await fixture.coordinator.prepareManualRetry()
+    try await fixture.coordinator.fetchRemote()
+
+    let local = try await fixture.library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertFalse(local.lists.contains { $0.id == first.reference.domainID })
+    XCTAssertFalse(local.snips.contains { $0.id == snip.id })
+    let stored = try await fixture.stored()
+    XCTAssertTrue(stored.deferredEntities.contains {
+      $0.reference == CloudEntityReference(kind: .snip, domainID: snip.id)
+    })
+    XCTAssertEqual(Set(stored.quarantines.map(\.key)), [first.key, secondKey])
+    let pending = try await fixture.store.pendingChanges()
+    XCTAssertFalse(pending.operations.contains { $0.id == .snip(snip.id, in: fixture.zone) })
+  }
+
   func testSeveralArchivedBasesWithoutAcceptedStateCannotResurrectMissingLocalItem() async throws {
     let fixture = try await Fixture()
     defer { fixture.remove() }

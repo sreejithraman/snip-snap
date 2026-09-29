@@ -577,7 +577,13 @@ extension CloudFullSyncPersistenceTests {
       let batch = CloudFetchedBatch(
         id: UUID(),
         items: records.map(CloudFetchItemResult.record),
-        engineState: nil
+        zoneEvents: [.fetched(zone)],
+        engineState: CloudEngineStateEnvelope(
+          namespace: namespace,
+          serialization: Data("complete".utf8),
+          requiresInitialFetch: false
+        ),
+        isInitialFetch: true
       )
       try await persistence.stage(.fetched(batch))
       try await persistence.applyStaged(batch.id)
@@ -621,6 +627,12 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertFalse(stored.enrolledEntities.contains(
       CloudEntityReference(kind: .snip, domainID: snip.id)
     ))
+    let waitingLocal = await library.snapshot(sortedBy: .manual)
+    XCTAssertFalse(waitingLocal.snips.contains { $0.id == snip.id })
+    let waitingPending = try await persistence.pendingChanges()
+    XCTAssertFalse(waitingPending.operations.contains {
+      $0.id == snipSnapshot.id
+    })
 
     let listBatch = CloudFetchedBatch(
       id: UUID(),

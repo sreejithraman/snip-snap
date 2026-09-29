@@ -7,6 +7,9 @@ import SwiftData
 extension SwiftDataSnipLibrary {
 static func entity(from record: StoredCloudEntityRecord) throws -> CloudAcceptedEntity {
     guard let reference = record.reference else { throw SnipLibraryError.invalidStore }
+    let deferredMutation = try record.deferredMutationData.map {
+      try JSONDecoder().decode(CloudDeferredLocalMutation.self, from: $0)
+    }
     return CloudAcceptedEntity(
       reference: reference,
       identity: record.identity,
@@ -17,6 +20,10 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
       systemFields: record.systemFields,
       dependencyListID: record.dependencyListID,
       isDeferred: record.isDeferred,
+      wasMaterializedBeforeDeferral: deferredMutation?.wasMaterializedBeforeDeferral ?? false,
+      hasUnresolvedLegacyAbsence: deferredMutation?.hasUnresolvedLegacyAbsence ?? false,
+      graphRepair: deferredMutation?.graphRepair,
+      deferredLocalMutation: record.isDeferred ? deferredMutation : nil,
       localRevision: record.localRevision
     )
   }

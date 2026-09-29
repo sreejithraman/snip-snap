@@ -221,6 +221,26 @@ extension SwiftDataSnipLibrary {
       $0.acceptedAction == .upsert && $0.accepted.reference.kind == .list
         ? $0.accepted.reference.domainID : nil
     })
+    knownLists.subtract(batch.graphRepairs.map(\.missingListID))
+    // Old staged plans relied on implicit storage replay. Request one raw-batch
+    // replan, but only after their engine, namespace and accepted CAS checks.
+    if !batch.hasPlannedDeferredReleases,
+      existing.contains(where: { record in
+        record.isDeferred && !batchDomains.contains(record.id)
+          && record.dependencyListID.map(knownLists.contains) == true
+      })
+    { throw CloudFullStorageError.staleLocalEntity }
+    let submittedSaveIdentities = Set(batch.outboundBindings
+      .filter { $0.action == .save }.map(\.identity))
+    var movedSnips: [UUID: CloudLocalSnipMutation] = [:]
+    for item in acceptedItems where item.acceptedAction == .remove {
+      guard case .removeListAndMoveSnips(_, let snips) = item.localMutation else { continue }
+      for snip in snips {
+        guard movedSnips.updateValue(snip, forKey: snip.snipID) == nil else {
+          throw CloudFullStorageError.invalidBatchReplay
+        }
+      }
+    }
     do {
       for change in batch.recoveryChanges {
         try lock.check()
@@ -283,18 +303,42 @@ extension SwiftDataSnipLibrary {
         if value.reference.kind == .snip, value.dependencyListID == nil {
           throw CloudFullStorageError.missingListDependency
         }
+        let current = byDomain[domainKey]
+        let currentDeferredMutation = try current?.deferredMutationData.map {
+          try JSONDecoder().decode(CloudDeferredLocalMutation.self, from: $0)
+        }
+        let unresolvedAbsence = currentDeferredMutation?.hasUnresolvedLegacyAbsence == true
+          && item.localMutation == .none && !submittedSaveIdentities.contains(value.identity)
         let deferred = value.reference.kind == .snip
-          && value.dependencyListID.map { !knownLists.contains($0) } == true
-        let deferredData = deferred
-          ? try JSONEncoder().encode(
-            CloudDeferredLocalMutation(
-              precondition: item.localPrecondition,
-              mutation: item.localMutation
-            )
+          && (value.dependencyListID.map { !knownLists.contains($0) } == true || unresolvedAbsence)
+        let plannedDeferredMutation = deferred
+          ? CloudDeferredLocalMutation(
+            precondition: item.localPrecondition,
+            mutation: item.localMutation,
+            wasMaterializedBeforeDeferral: submittedSaveIdentities.contains(value.identity) ? true : nil
           )
           : nil
-        if let current = byDomain[domainKey] {
-          if !current.matches(value, isDeferred: deferred) {
+        if let current {
+          let deferredMutation = plannedDeferredMutation.map {
+            let materialized = $0.wasMaterializedBeforeDeferral
+              || currentDeferredMutation?.wasMaterializedBeforeDeferral == true
+              || (!current.isDeferred && deferred
+                && currentDeferredMutation?.hasUnresolvedLegacyAbsence != true)
+            return CloudDeferredLocalMutation(
+              precondition: $0.precondition,
+              mutation: $0.mutation,
+              wasMaterializedBeforeDeferral: materialized,
+              hasUnresolvedLegacyAbsence: !materialized
+                && currentDeferredMutation?.hasUnresolvedLegacyAbsence == true,
+              graphRepair: currentDeferredMutation?.graphRepair.flatMap {
+                $0.missingListID == value.dependencyListID ? $0 : nil
+              }
+            )
+          }
+          let deferredData = try deferredMutation.map { try JSONEncoder().encode($0) }
+          if !current.matches(value, isDeferred: deferred)
+            || currentDeferredMutation != deferredMutation
+          {
             current.replace(
               with: value,
               isDeferred: deferred,
@@ -302,6 +346,7 @@ extension SwiftDataSnipLibrary {
             )
           }
         } else {
+          let deferredData = try plannedDeferredMutation.map { try JSONEncoder().encode($0) }
           let record = StoredCloudEntityRecord(
             namespaceKey: batch.namespaceKey,
             value: value,
@@ -322,35 +367,87 @@ extension SwiftDataSnipLibrary {
           try Self.applyLocalMutation(item.localMutation, context: context)
         }
       }
-      for record in byDomain.values where record.isDeferred {
-        try lock.check()
-        guard let dependency = record.dependencyListID,
-          knownLists.contains(dependency),
-          let mutationData = record.deferredMutationData
-        else { continue }
-        let deferred = try JSONDecoder().decode(CloudDeferredLocalMutation.self, from: mutationData)
-        guard deferred.storageVersion == 1 else {
-          throw CloudFullStorageError.invalidLocalMutation
+      if !movedSnips.isEmpty {
+        for record in byDomain.values where record.isDeferred {
+          guard let data = record.deferredMutationData else { continue }
+          let deferred = try JSONDecoder().decode(CloudDeferredLocalMutation.self, from: data)
+          guard deferred.storageVersion == 1 else { continue }
+          let precondition = Self.preconditionAfterListMoves(deferred.precondition, movedSnips: movedSnips)
+          guard precondition != deferred.precondition else { continue }
+          record.deferredMutationData = try JSONEncoder().encode(CloudDeferredLocalMutation(
+            precondition: precondition,
+            mutation: deferred.mutation,
+            wasMaterializedBeforeDeferral: deferred.wasMaterializedBeforeDeferral,
+            hasUnresolvedLegacyAbsence: deferred.hasUnresolvedLegacyAbsence,
+            graphRepair: deferred.graphRepair
+          ))
+          record.localRevision += 1
         }
+      }
+      let replacementListIDs = Set(try context.fetch(FetchDescriptor<StoredListRecord>()).map(\.id))
+        .union([SnipList.inbox.id])
+      var repairedSnipIDs: Set<UUID> = []
+      for repair in batch.graphRepairs {
+        try lock.check()
+        let snipID = repair.snipID
+        let missingListID = repair.missingListID
+        let replacementListID = repair.replacementListID
+        guard missingListID != SnipList.inbox.id,
+          replacementListID != missingListID,
+          replacementListIDs.contains(replacementListID),
+          repairedSnipIDs.insert(snipID).inserted,
+          !knownLists.contains(missingListID)
+        else { throw CloudFullStorageError.invalidBatchReplay }
+        let reference = CloudEntityReference(kind: .snip, domainID: snipID)
+        let domainKey = StoredCloudEntityRecord.domainKey(
+          namespaceKey: batch.namespaceKey,
+          reference: reference
+        )
+        guard let record = byDomain[domainKey],
+          record.isDeferred,
+          record.dependencyListID == missingListID,
+          let mutationData = record.deferredMutationData
+        else { throw CloudFullStorageError.invalidBatchReplay }
+        let deferred = try JSONDecoder().decode(
+          CloudDeferredLocalMutation.self,
+          from: mutationData
+        )
+        guard deferred.storageVersion == 1,
+          case .upsertSnip(let orphan) = deferred.mutation,
+          orphan.snipID == snipID,
+          orphan.listID == missingListID || orphan.listID == replacementListID
+        else { throw CloudFullStorageError.invalidLocalMutation }
+        let repaired = orphan.replacingListID(replacementListID)
+        let repairPrecondition = Self.preconditionAfterListMoves(
+          deferred.precondition, movedSnips: movedSnips
+        )
+        let accepted = CloudAcceptedEntityInput(
+          reference: reference,
+          identity: record.identity,
+          schemaVersion: record.schemaVersion,
+          acceptedData: record.acceptedData,
+          presenceData: record.presenceData,
+          shadowData: record.shadowData,
+          systemFields: record.systemFields,
+          dependencyListID: record.dependencyListID
+        )
         try Self.validateLocalMutation(
-          deferred.mutation,
-          precondition: deferred.precondition,
-          for: CloudAcceptedEntityInput(
-            reference: try Self.entity(from: record).reference,
-            identity: record.identity,
-            schemaVersion: record.schemaVersion,
-            acceptedData: record.acceptedData,
-            presenceData: record.presenceData,
-            shadowData: record.shadowData,
-            systemFields: record.systemFields,
-            dependencyListID: record.dependencyListID
-          ),
+          .upsertSnip(repaired),
+          precondition: repairPrecondition,
+          for: accepted,
           context: context
         )
-        try Self.applyLocalMutation(deferred.mutation, context: context)
+        try Self.applyLocalMutation(.upsertSnip(repaired), context: context)
         record.isDeferred = false
-        record.deferredMutationData = nil
+        record.deferredMutationData = try JSONEncoder().encode(CloudDeferredLocalMutation(
+          precondition: .exactSnip(repaired),
+          mutation: .upsertSnip(repaired),
+          wasMaterializedBeforeDeferral: true,
+          graphRepair: repair
+        ))
       }
+      // Dependency availability is not permission to replay cached intent.
+      // Only explicit planner items or checked graph repairs release a snip.
       try lock.check()
       try applyCloudAttachmentTransitions(
         namespaceKey: batch.namespaceKey,
@@ -434,6 +531,18 @@ extension SwiftDataSnipLibrary {
       CloudAttachmentCacheFiles.remove(file, includingParentDirectory: true)
     }
     return .applied
+  }
+
+  private static func preconditionAfterListMoves(
+    _ precondition: CloudLocalPrecondition,
+    movedSnips: [UUID: CloudLocalSnipMutation]
+  ) -> CloudLocalPrecondition {
+    guard case .exactSnip(let original) = precondition,
+      movedSnips[original.snipID] == original
+    else { return precondition }
+    // The list mutation was checked against this exact row before any writes.
+    // Both graph repair and deferred replay must validate its precise Inbox result.
+    return .exactSnip(original.replacingListID(SnipList.inbox.id))
   }
 
 }

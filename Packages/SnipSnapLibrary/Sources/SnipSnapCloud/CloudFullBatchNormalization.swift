@@ -194,7 +194,8 @@ extension CloudFullBatchPlanner {
     current: CloudFullNamespaceState,
     batch: CloudSyncBatch,
     dataZone: CloudZoneID,
-    attachmentOperationIDs: Set<CloudRecordID>
+    attachmentOperationIDs: Set<CloudRecordID>,
+    initialFetchInventory: CloudFullFetchInventory?
   ) -> CloudFullNamespaceState {
     var phase = current.phase
     var zoneCreationPending = current.zoneCreationPending
@@ -244,7 +245,8 @@ extension CloudFullBatchPlanner {
     return CloudFullNamespaceState(
       revision: current.revision + 1,
       phase: phase,
-      zoneCreationPending: zoneCreationPending
+      zoneCreationPending: zoneCreationPending,
+      initialFetchInventory: initialFetchInventory
     )
   }
 

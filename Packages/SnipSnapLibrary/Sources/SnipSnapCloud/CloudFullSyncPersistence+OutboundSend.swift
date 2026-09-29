@@ -69,7 +69,9 @@ extension CloudFullSyncPersistence {
       try await library.clearCloudFullRecoveryEvents(namespaceKey: namespaceKey, keys: keys)
     }
     try await library.clearManuallyRetryableCloudAttachmentFailures(namespaceKey: namespaceKey)
-    return !corruptShadows.isEmpty || recovery.contains(where: Self.hasFailedFetchRecords)
+    return !stored.deferredEntities.isEmpty
+      || !corruptShadows.isEmpty
+      || recovery.contains(where: Self.hasFailedFetchRecords)
   }
 
   private static func syncIssue(for failure: CloudAttachmentFailure) -> SyncedContentSyncIssue {
@@ -157,6 +159,17 @@ extension CloudFullSyncPersistence {
     }
     let recovery = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
     let failedFetchIDs = try Self.failedFetchRecordIDs(recovery)
+    let locallyDeletedAccepted: Set<CloudEntityReference> = Set(
+      (stored.readyEntities + stored.deferredEntities).compactMap {
+        entity -> CloudEntityReference? in
+        guard entity.reference.kind == .snip,
+          snips[entity.reference.domainID] == nil,
+          entity.wasMaterializedBeforeDeferral
+        else { return nil }
+        return entity.reference
+      }
+    )
+    eligible.formUnion(locallyDeletedAccepted)
     let deletedListPlacements = try recovery.filter { $0.kind == .deletedListPlacement }
       .reduce(into: [UUID: Set<UUID>]()) { result, recovery in
         let decoder = JSONDecoder()
@@ -164,8 +177,9 @@ extension CloudFullSyncPersistence {
         for snipID in try decoder.decode([UUID].self, from: recovery.resultData) {
           result[snipID, default: []].insert(deletedListID)
         }
-      }
+    }
     eligible.subtract(Set(stored.deferredEntities.compactMap { entity in
+      if locallyDeletedAccepted.contains(entity.reference) { return nil }
       guard entity.reference.kind == .snip,
         let deferredListID = entity.dependencyListID,
         deletedListPlacements[entity.reference.domainID]?.contains(deferredListID) == true,
