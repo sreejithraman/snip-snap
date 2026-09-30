@@ -1,0 +1,9 @@
+# Snip Snap 0.6.0 Beta 119
+
+## Mac
+
+- Allow uncached attachments when re-enabling iCloud
+
+## iOS
+
+- Allow uncached attachments when re-enabling iCloud
