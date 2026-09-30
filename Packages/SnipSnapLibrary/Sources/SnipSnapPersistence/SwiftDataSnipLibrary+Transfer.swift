@@ -258,6 +258,11 @@ extension SwiftDataSnipLibrary {
     for attachment in currentSnips.flatMap(\.attachments) {
       try lock.check()
       let url = try attachmentURL(relativePath: attachment.relativePath)
+      // Planning permits an absent downloaded file; the source may still carry
+      // its durable bytes. Compare that same cache-miss state before committing.
+      if attachment.relativePath.hasPrefix("CloudDownloads/"),
+        !FileManager.default.fileExists(atPath: url.path)
+      { continue }
       currentAttachmentData[attachment.id] = try Data(contentsOf: url)
     }
     let transferMetadata = try Self.transferMetadata(context: context)
