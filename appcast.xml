@@ -4,6 +4,21 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.0</title>
+            <pubDate>Wed, 30 Sep 2026 02:37:20 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.0-beta.120</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.6.0-beta.120-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>120</sparkle:version>
+            <sparkle:shortVersionString>0.6.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.0-beta.120/Snip-Snap-0.6.0.zip" length="15297324" type="application/octet-stream" sparkle:edSignature="jyQdjvWjp0SURzh8mo9357j1QlSqJtFC5EcbtyWTA9pDUwDmmUukysfNGgOcNHwndYJhKYAErODHC2B6hPueDw=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.0 Beta 120 — Mac
+
+- Fix re-enable retry after a rejected first sync send
+</description>
+        </item>
+        <item>
+            <title>0.6.0</title>
             <pubDate>Wed, 30 Sep 2026 00:51:08 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.0-beta.119</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.6.0-beta.119-mac.txt</sparkle:fullReleaseNotesLink>
