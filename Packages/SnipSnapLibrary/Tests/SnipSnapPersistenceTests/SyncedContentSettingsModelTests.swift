@@ -126,6 +126,32 @@ final class SyncedContentSettingsModelTests: XCTestCase {
   }
 
   @MainActor
+  func testClipboardSyncEligibilityFollowsMainSyncSetupAndDisableTransitions() async {
+    let model = SyncedContentSettingsModel(
+      mode: .localOnly,
+      enableAction: { .settingUp(.waitingForConnection) },
+      disableAction: { _ in }
+    )
+    XCTAssertFalse(model.canEnableClipboardSync)
+
+    await model.enableICloudSync()
+    XCTAssertFalse(model.canEnableClipboardSync)
+    model.recordEnableCompleted()
+    XCTAssertTrue(model.canEnableClipboardSync)
+
+    model.recordSyncStarted()
+    XCTAssertTrue(model.canEnableClipboardSync)
+    model.recordSyncCompleted()
+    model.setDisableCompletionAction {
+      XCTAssertEqual(model.mode, .iCloudSync)
+      XCTAssertFalse(model.canEnableClipboardSync)
+    }
+    await model.disableICloudSync(.useCurrentCache)
+    XCTAssertEqual(model.mode, .localOnly)
+    XCTAssertFalse(model.canEnableClipboardSync)
+  }
+
+  @MainActor
   func testOfflineEnableStaysLocalAndSettingUpUntilLifecycleCompletes() async {
     let calls = DeleteEventRecorder()
     let model = SyncedContentSettingsModel(

@@ -184,7 +184,7 @@ Sources: [Shared data](https://developer.apple.com/documentation/technologyoverv
   cannot read or send them. Keep offline-only bytes under the old namespace until a recovery flow
   copies them or the user chooses to remove them. Cleanup means removing active references and
   proven, unreferenced copies; it does not mean deleting the last local copy.
-- Provide Clear Downloaded Files and do not add offline pinning in the first release.
+- Manage re-downloadable attachment storage automatically. Keep download clearing out of the user interface and do not add offline pinning in the first release.
 
 Sources: [`CKAsset`](https://developer.apple.com/documentation/cloudkit/ckasset), [fetching selected record fields](https://developer.apple.com/documentation/cloudkit/ckfetchrecordsoperation/desiredkeys-34l1l), [private CloudKit storage](https://developer.apple.com/documentation/cloudkit/ckcontainer/privateclouddatabase), and [CloudKit limit errors](https://developer.apple.com/documentation/cloudkit/ckerror/limitexceeded).
 

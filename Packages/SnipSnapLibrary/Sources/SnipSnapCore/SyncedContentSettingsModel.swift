@@ -258,6 +258,14 @@ public final class SyncedContentSettingsModel {
     return false
   }
 
+  public var canEnableClipboardSync: Bool {
+    guard mode == .iCloudSync else { return false }
+    return switch state {
+    case .ready, .syncing, .failed: true
+    case .enabling, .disabling, .deleting, .removalPending, .deleted: false
+    }
+  }
+
   public var canDisable: Bool {
     guard mode == .iCloudSync, disableAction != nil else { return false }
     return switch state {

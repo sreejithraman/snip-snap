@@ -185,15 +185,23 @@ public enum SnipSnapCloudAppAssembly {
         "SNIP_SNAP_UI_TEST_ENCRYPTED_RESET"
       ] == "1"
     )
+    let automaticResults = AsyncStream.makeStream(of: SnipSnapCloudSyncResult.self)
     let session = SnipSnapCloudSyncSession(
       synchronize: { try await reset.synchronize() },
+      scheduleAutomaticSync: {
+        automaticResults.continuation.yield(try await reset.synchronize())
+      },
       enable: {
         try await reset.enableSync()
         return .enabled
       },
       disable: { choice in try await reset.disableICloudSync(choice) },
       delete: { try await reset.deleteSyncedContent() },
-      activeLibrary: { try await reset.activeLibrary() }
+      activeLibrary: { try await reset.activeLibrary() },
+      automaticSyncResults: automaticResults.stream,
+      automaticErrorHandler: { error in
+        automaticResults.continuation.yield(automaticSyncResult(for: error))
+      }
     )
     return SnipSnapCloudAppServices(
       syncedContentSettings: SyncedContentSettingsModel(

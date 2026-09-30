@@ -21,15 +21,10 @@ struct IOSClipboardView: View {
     @State private var confirmsClear = false
 
     private var entries: [ClipboardEntry] {
-        Self.orderedEntries(model.entries.filter {
-            !viewState.onlyPinned || $0.isPinned
-        }, newestFirst: viewState.newestFirst)
-    }
-
-    static func orderedEntries(_ entries: [ClipboardEntry], newestFirst: Bool) -> [ClipboardEntry] {
-        let ordered = ClipboardHistoryState.ordered(entries)
-        guard !newestFirst else { return ordered }
-        return ordered.filter(\.isPinned) + ordered.filter { !$0.isPinned }.reversed()
+        ClipboardViewOptions(
+            onlyPinned: viewState.onlyPinned,
+            newestFirst: viewState.newestFirst
+        ).apply(to: model.entries)
     }
 
     private var emptyTitle: String {

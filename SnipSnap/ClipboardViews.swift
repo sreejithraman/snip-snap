@@ -33,7 +33,7 @@ struct ClipboardListView: View {
 
     var body: some View {
         ClipboardEntriesList(
-            entries: history.entries,
+            entries: model.clipboardViewOptions.apply(to: history.entries),
             model: model,
             dragSessionController: dragSessionController,
             commandNumberPicker: commandNumberPicker,
@@ -52,6 +52,16 @@ struct ClipboardListView: View {
                     Button("Retry clipboard sync") { Task { await history.syncNow() } }
                 }
                 Button("Clear unpinned history") { showingClearConfirmation = true }.disabled(!history.entries.contains { !$0.isPinned })
+            }
+        }
+        .overlay {
+            if model.clipboardViewOptions.onlyPinned && !history.entries.contains(where: \.isPinned) {
+                ContentUnavailableView(
+                    "No pinned entries",
+                    systemImage: "pin",
+                    description: Text("Pin a clipboard entry to keep it here.")
+                )
+                .allowsHitTesting(false)
             }
         }
     }

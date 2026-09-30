@@ -38,7 +38,7 @@ The branch now follows the current Apple path in the areas that had gaps:
 
 - Use `cloudKitDatabase: .none` when the app owns the CloudKit layer. Managed SwiftData CloudKit sync would hide the merge, account, delete, and attachment rules this app needs. [SwiftData CloudKit sync](https://developer.apple.com/documentation/swiftdata/syncing-model-data-across-a-persons-devices), [`CloudKitDatabase.none`](https://developer.apple.com/documentation/swiftdata/modelconfiguration/cloudkitdatabase-swift.struct/none)
 - Use `CKSyncEngine` for an app-owned local store. Create it near launch, keep it alive, save every state update, and leave `automaticallySync` on unless the product needs a manual engine. [Sync to iCloud with CKSyncEngine](https://developer.apple.com/videos/play/wwdc2023/10188/), [Apple sample](https://github.com/apple/sample-cloudkit-sync-engine)
-- Add local pending changes when a local save succeeds. Keep explicit fetch and send calls for first merge, **Sync Now**, tests, and recovery.
+- Add local pending changes when a local save succeeds. Keep explicit fetch and send calls for first merge, **Try Again**, tests, and recovery.
 - Coalesce rapid local saves into automatic-engine scheduling. Do not start a
   full explicit fetch and send for each edit.
 - Handle `accountChange`, observe `CKAccountChanged`, and check the account before private database work. Old account data must never appear under a new account. [`CKSyncEngine.Event.AccountChange`](https://developer.apple.com/documentation/cloudkit/cksyncengine-5sie5/event/accountchange), [`CKAccountChanged`](https://developer.apple.com/documentation/cloudkit/ckaccountchangednotification)

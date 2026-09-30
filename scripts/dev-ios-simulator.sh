@@ -4,6 +4,7 @@ set -euo pipefail
 script_dir="${0:A:h}"
 repo_dir="${script_dir:h}"
 source "$script_dir/signing-policy.sh"
+source "$script_dir/share-fixture.sh"
 simulator_id=""
 build_log=""
 ui_test=""
@@ -46,7 +47,11 @@ if ! /bin/mkdir "$lock_dir" 2>/dev/null; then
     print -u2 "Snip Snap iOS Dev $slot is already building or starting. Check $lock_dir."
     exit 1
 fi
-trap '/bin/rmdir "$lock_dir" 2>/dev/null || true' EXIT
+cleanup() {
+    share_fixture_cleanup
+    /bin/rmdir "$lock_dir" 2>/dev/null || true
+}
+trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -92,9 +97,18 @@ print "Bundle: $bundle_identifier"
 print "App: $app_path"
 print "App group: group.$bundle_identifier"
 if [[ -n "$ui_test" ]]; then
+    ui_test_selection="SnipSnapiOSUITests"
+    if [[ "$ui_test" != all ]]; then
+        ui_test_selection+="/SnipSnapiOSUITests/$ui_test"
+    fi
+    case "$ui_test" in
+        all|testShareExtension*|testSharePageShowsEveryListThenSaves)
+            share_fixture_start "$derived_data" "$script_dir/local-share-fixture.py" "Snip Snap iOS Dev $slot" || exit $?
+            ;;
+    esac
     xcodebuild "${build_arguments[@]}" \
         -parallel-testing-enabled NO \
-        "-only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/$ui_test" \
+        "-only-testing:$ui_test_selection" \
         test > "${build_log:r}-ui-test.log" 2>&1 || {
             /usr/bin/tail -n 80 "${build_log:r}-ui-test.log"
             exit 1

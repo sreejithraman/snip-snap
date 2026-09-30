@@ -21,6 +21,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var lists: [SnipList] = [.inbox]
     @Published var activeListID: UUID
     @Published var isShowingClipboard = false
+    @Published var clipboardViewOptions = ClipboardViewOptions()
     @Published private(set) var isSearchExpanded = false
     @Published private var storedQuery = ""
     var query: String {
@@ -140,7 +141,7 @@ final class AppModel: ObservableObject {
         let matches = SnipFilter.apply(
             snips: snips,
             query: query,
-            completionFilter: completionFilter,
+            completionFilter: hasActiveQuery ? .all : completionFilter,
             listNames: Dictionary(uniqueKeysWithValues: lists.map { ($0.id, $0.name) }),
             sourceLabel: { $0.displaySourceLabel }
         )
@@ -359,26 +360,30 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func exportArchive() async throws -> SnipLibraryArchive {
-        let prepared: [UUID: URL]
-        do {
-            prepared = try await prepareAttachments(
-                snips.flatMap(\.attachments),
-                for: .export
-            )
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            throw ArchiveAttachmentPreparationError(underlying: error)
-        }
+    func createBackup(at url: URL) async throws {
         let archive = try await session.withExclusiveAccess { session in
             try await session.archive()
         }
-        return SnipLibraryArchive(
-            snips: archive.snips,
-            lists: archive.lists,
-            seenRequestIDs: archive.seenRequestIDs,
-            attachmentURLs: archive.attachmentURLs.merging(prepared) { _, ready in ready }
+        try await JSONSnipArchiveTransfer.write(
+            archive,
+            to: url,
+            preparingAttachment: { attachment in
+                do {
+                    let prepared = try await self.attachmentPreparation.prepare(
+                        [attachment],
+                        for: .export,
+                        fallbackURLs: archive.attachmentURLs
+                    )
+                    guard let readyURL = prepared[attachment.id] else {
+                        throw SnipLibraryError.attachmentCopyFailed
+                    }
+                    return readyURL
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    throw ArchiveAttachmentPreparationError(underlying: error)
+                }
+            }
         )
     }
 

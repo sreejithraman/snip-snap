@@ -63,7 +63,7 @@ struct SnipSnapApp: App {
                     : nil
             )
         }
-        .defaultSize(width: 480, height: 480)
+        .defaultSize(width: 560, height: 500)
         .windowResizability(.contentSize)
         .commands {
             SnipCommands(
@@ -82,13 +82,29 @@ private struct AppSettingsContent: View {
     let shortcutSettings: ShortcutSettings
     let syncedContentSettings: SyncedContentSettingsModel
     let coordinator: AppCoordinator
-    @State var accountNoticeModel: AppleAccountNoticeModel?
+    let accountNoticeModel: AppleAccountNoticeModel?
     let cloudSyncHandler: (any OptionalCloudSyncHandling)?
     let updateChannelSettings: UpdateChannelSettings
     let updaterController: SPUStandardUpdaterController?
 
     var body: some View {
         TabView {
+            Form {
+                Section("Appearance") {
+                    Picker("Appearance", selection: Binding(
+                        get: { model.appearance },
+                        set: { model.setAppearance($0) }
+                    )) {
+                        Text("System").tag(AppAppearance.system)
+                        Text("Light").tag(AppAppearance.light)
+                        Text("Dark").tag(AppAppearance.dark)
+                    }
+                    .accessibilityIdentifier("settings-appearance")
+                }
+            }
+            .formStyle(.grouped)
+            .tabItem { Label("General", systemImage: "gearshape") }
+
             ShortcutSettingsView(coordinator: coordinator)
                 .environmentObject(shortcutSettings)
                 .tabItem { Label("Shortcuts", systemImage: "keyboard") }
@@ -110,16 +126,13 @@ private struct AppSettingsContent: View {
                         } else {
                             await cloudSyncHandler?.retrySyncWhenPossible()
                         }
-                    },
-                    attachmentActions: cloudSyncHandler.map { handler in
-                        AttachmentSettingsActions(
-                            syncNow: { await handler.syncWhenPossible() },
-                            clearDownloads: { try await model.clearDownloadedFiles() }
-                        )
                     }
                 )
             }
-                .tabItem { Label("Sync", systemImage: "icloud") }
+                .tabItem { Label("iCloud", systemImage: "icloud") }
+
+            BackupSettingsView(model: model, coordinator: coordinator)
+                .tabItem { Label("Backups", systemImage: "externaldrive") }
 
             if let updaterController {
                 UpdateSettingsView(
@@ -129,7 +142,7 @@ private struct AppSettingsContent: View {
                 .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
             }
         }
-        .frame(width: 480, height: 480)
+        .frame(width: 560, height: 500)
         .preferredColorScheme(model.appearance.colorScheme)
     }
 }
@@ -722,7 +735,7 @@ extension FocusedValues {
 private struct SnipCommands: Commands {
     @FocusedValue(\.snipCommandModel) private var model
     @ObservedObject private var panelDialogs: PanelDialogPresentationState
-    let applicationModel: AppModel
+    @ObservedObject var applicationModel: AppModel
     let coordinator: AppCoordinator
 
     init(applicationModel: AppModel, coordinator: AppCoordinator) {
@@ -735,6 +748,16 @@ private struct SnipCommands: Commands {
         CommandGroup(after: .pasteboard) {
             Button("Search") { coordinator.focusPanelSearch() }
                 .keyboardShortcut("f", modifiers: .command)
+        }
+        CommandGroup(after: .newItem) {
+            Button("Create Backup…") {
+                BackupActions(model: applicationModel, coordinator: coordinator).createBackup()
+            }
+            .disabled(panelDialogs.isPresented)
+            Button("Import Backup…") {
+                BackupActions(model: applicationModel, coordinator: coordinator).importBackup()
+            }
+            .disabled(applicationModel.editingID != nil || panelDialogs.isPresented)
         }
         CommandMenu("Snips") {
             Button(SnipCommand.copy.title, systemImage: "doc.on.doc") { perform(.copy) }
@@ -754,15 +777,6 @@ private struct SnipCommands: Commands {
             Button(SnipCommand.delete.title, systemImage: "trash", role: .destructive) { perform(.delete) }
                 .keyboardShortcut(.delete, modifiers: [])
                 .disabled(!isAvailable(.delete))
-            Divider()
-            Button(String(localized: "Import backup…")) {
-                beginBackupImport()
-            }
-            .disabled(model == nil || model?.editingID != nil || panelDialogs.isPresented)
-            Button("Export backup…") {
-                exportJSONBackup(from: applicationModel)
-            }
-            .disabled(panelDialogs.isPresented)
         }
     }
 
@@ -777,9 +791,58 @@ private struct SnipCommands: Commands {
         guard let model else { return }
         SnipCommandDispatcher(model: model).perform(command)
     }
+}
 
-    private func beginBackupImport() {
-        guard let model else { return }
+private struct BackupSettingsView: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject private var panelDialogs: PanelDialogPresentationState
+    let coordinator: AppCoordinator
+
+    init(model: AppModel, coordinator: AppCoordinator) {
+        self.model = model
+        self.coordinator = coordinator
+        _panelDialogs = ObservedObject(wrappedValue: coordinator.panelDialogs)
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Create a backup") {
+                    Button("Create Backup…") {
+                        BackupActions(model: model, coordinator: coordinator).createBackup()
+                    }
+                    .disabled(panelDialogs.isPresented)
+                    .accessibilityIdentifier("create-backup")
+                }
+            } header: {
+                Text("Backups")
+            } footer: {
+                Text("Save all your snips, lists, and attachments to a backup folder.")
+            }
+
+            Section {
+                LabeledContent("Import a backup") {
+                    Button("Import Backup…") {
+                        BackupActions(model: model, coordinator: coordinator).importBackup()
+                    }
+                    .disabled(model.editingID != nil || panelDialogs.isPresented)
+                    .accessibilityIdentifier("import-backup")
+                }
+            } footer: {
+                Text("Merge a backup into your library. Your existing snips stay.")
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+@MainActor
+private struct BackupActions {
+    let model: AppModel
+    let coordinator: AppCoordinator
+
+    func importBackup() {
+        guard model.editingID == nil else { return }
         let panel = BackupImportOpenPanel.makePanel()
         coordinator.presentOpenPanel(panel) { urls in
             guard let url = urls?.first else { return }
@@ -787,10 +850,10 @@ private struct SnipCommands: Commands {
         }
     }
 
-    private func exportJSONBackup(from model: AppModel) {
+    func createBackup() {
         let panel = NSSavePanel()
-        panel.title = String(localized: "Export backup")
-        panel.prompt = String(localized: "Export backup")
+        panel.title = String(localized: "Create Backup")
+        panel.prompt = String(localized: "Create Backup")
         panel.nameFieldStringValue = String(localized: "Snip Snap Backup")
         panel.canCreateDirectories = true
         coordinator.presentSavePanel(panel) { url in
@@ -799,10 +862,7 @@ private struct SnipCommands: Commands {
                 let didAccess = url.startAccessingSecurityScopedResource()
                 defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
                 do {
-                    let archive = try await model.exportArchive()
-                    try await Task.detached {
-                        try JSONSnipArchiveTransfer.write(archive, to: url)
-                    }.value
+                    try await model.createBackup(at: url)
                 } catch is CancellationError {
                     return
                 } catch let error as ArchiveAttachmentPreparationError {

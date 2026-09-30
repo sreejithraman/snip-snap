@@ -12,6 +12,7 @@ struct IOSAppRootView: View {
     private let session: IOSAppSession
     @AppStorage("snip-sort-mode") private var savedSortMode = SnipSortMode.chronological.rawValue
     @State private var sheet: AppSheet?
+    @State private var settingsBackupLifetime = IOSSettingsBackupLifetime()
     @State private var copyShare = IOSCopyShareCoordinator()
     @State private var compactComposerStorage = CompactComposerStorage()
     @State private var collectionEditMode: EditMode = .inactive
@@ -19,8 +20,6 @@ struct IOSAppRootView: View {
     @State private var edgeCreationTask: Task<Void, Never>?
     @State private var edgeCreationTaskID: UUID?
     @State private var clipboardViewState = ClipboardViewState()
-    @State private var isImportingBackup = false
-    @State private var isExplainingBackupImport = false
     @FocusState private var isCompactComposerFocused: Bool
     private let uiTestAttachmentURLs: [URL]
     private let seedsCopyShareFixtures: Bool
@@ -44,11 +43,6 @@ struct IOSAppRootView: View {
 
     private var model: IOSAppModel { session.model }
 
-    private func beginBackupImport() {
-        model.haptics.invalidatePendingFeedback()
-        isExplainingBackupImport = true
-    }
-
     private var searchNavigation: some View {
         appNavigation
         .onChange(of: model.isSearchPresented) { _, presented in
@@ -71,7 +65,13 @@ struct IOSAppRootView: View {
         searchNavigation
         .tint(SnipSnapTheme.controlTint)
         .modifier(IOSHapticFeedbackModifier(feedback: model.haptics))
-        .onChange(of: sheet) { model.haptics.invalidatePendingFeedback() }
+        .onChange(of: sheet) { _, destination in
+            model.haptics.invalidatePendingFeedback()
+            if destination == .settings {
+                settingsBackupLifetime = IOSSettingsBackupLifetime()
+                settingsBackupLifetime.begin()
+            }
+        }
         .onChange(of: model.selectedPage) { model.haptics.invalidatePendingFeedback() }
         .background {
             IOSShareSheetPresenter(request: $copyShare.shareRequest)
@@ -143,7 +143,9 @@ struct IOSAppRootView: View {
                 AppleAccountNoticeBanner(model: accountNoticeModel)
             }
         }
-        .sheet(item: $sheet) { destination in
+        .sheet(item: $sheet, onDismiss: {
+            settingsBackupLifetime.end(library: model)
+        }) { destination in
             switch destination {
             case .editSnip(let id):
                 SnipEditorView(model: model, snipID: id)
@@ -152,6 +154,8 @@ struct IOSAppRootView: View {
                     model: session.syncedContentSettings,
                     clipboard: session.clipboard,
                     haptics: model.haptics,
+                    library: model,
+                    backupLifetime: settingsBackupLifetime,
                     retryAction: {
                         if session.syncedContentSettings.mode == .localOnly {
                             await session.syncedContentSettings.enableICloudSync()
@@ -204,44 +208,6 @@ struct IOSAppRootView: View {
             Button("OK") { copyShare.errorMessage = nil }
         } message: {
             Text(copyShare.errorMessage ?? String(localized: "Try again."))
-        }
-        .confirmationDialog(
-            "Choose a backup",
-            isPresented: $isExplainingBackupImport,
-            titleVisibility: .visible
-        ) {
-            Button("Choose backup") { isImportingBackup = true }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Choose a backup folder that includes attachments, or a JSON file without attachments.")
-        }
-        .fileImporter(
-            isPresented: $isImportingBackup,
-            allowedContentTypes: [.folder, .json],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                guard let url = urls.first else { return }
-                Task { await model.previewBackupImport(from: url) }
-            case .failure(let error):
-                if (error as NSError).code != NSUserCancelledError {
-                    model.presentError(error, operation: "backup.import_select")
-                }
-            }
-        }
-        .confirmationDialog(
-            "Import this backup?",
-            isPresented: Binding(
-                get: { model.pendingImportPreview != nil },
-                set: { if !$0 { model.cancelBackupImport() } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Import backup") { Task { await model.confirmBackupImport() } }
-            Button("Cancel", role: .cancel) { model.cancelBackupImport() }
-        } message: {
-            Text("Merge this backup with your library.\n\n\(model.pendingImportPreview?.localizedSummary ?? "")")
         }
         .onChange(of: model.sortMode) { _, mode in
             savedSortMode = mode.rawValue
@@ -434,7 +400,6 @@ struct IOSAppRootView: View {
                     model: model,
                     sheet: $sheet,
                     editMode: $collectionEditMode,
-                    importBackup: beginBackupImport,
                     deleteList: deleteList
                 )
             } detail: {
@@ -528,10 +493,8 @@ struct IOSAppRootView: View {
     private var compactLibraryActions: LibraryActionsMenu {
         LibraryActionsMenu(
             model: model,
-            importBackup: beginBackupImport,
             settings: { sheet = .settings },
             editMode: $collectionEditMode,
-            includesCloudActions: true,
             reviewRecoveredEdits: model.recoverySnapshot.needsAttentionCount > 0
                 ? { sheet = .recoveryCenter }
                 : nil,

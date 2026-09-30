@@ -126,6 +126,81 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertNil(reopenedStorage.attentionReason)
     }
 
+    func testManagedBackupReadFailureDoesNotPublishOlderCachedContent() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let failure = ReadFailureInjector()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            defaultSyncProtocol: .legacyTextV1,
+            readHook: failure.check
+        )
+        let library = try await persistence.activeLibrary()
+        try await add("last known", to: library)
+        let cached = await library.snapshot(sortedBy: .manual)
+        let cachedSnip = try XCTUnwrap(cached.snips.first)
+
+        let storeID = try await persistence.snapshot().activeStore.id
+        let externalWriter = try await persistence.libraryForTransition(storeID: storeID)
+        let list = try await createList(
+            "Newly committed", systemImage: "folder.fill", in: externalWriter
+        )
+        let attachmentBytes = Data("newly committed attachment".utf8)
+        let attachmentURL = root.appendingPathComponent("new.txt")
+        try attachmentBytes.write(to: attachmentURL)
+        let requestID = UUID()
+        let update = try await externalWriter.perform(
+            .add(
+                content: "newly committed",
+                origin: .share,
+                source: SnipSource(applicationName: "External writer"),
+                listID: list.id,
+                attachmentURLs: [attachmentURL],
+                requestID: requestID,
+                now: Date(timeIntervalSince1970: 1_700_000_000)
+            ),
+            sortedBy: .manual
+        )
+        let latestSnip = try XCTUnwrap(update.snapshot.snips.first { $0.requestID == requestID })
+        let attachment = try XCTUnwrap(latestSnip.attachments.first)
+        failure.shouldFail = true
+
+        let display = await library.snapshot(sortedBy: .manual)
+        XCTAssertEqual(display, cached)
+        let failedDestination = root.appendingPathComponent("FailedBackup", isDirectory: true)
+        do {
+            let archive = try await library.archive()
+            try JSONSnipArchiveTransfer.write(archive, to: failedDestination)
+            XCTFail("A backup must report a store read failure instead of exporting cached content.")
+        } catch ReadFailureInjector.Failure.injected {}
+        XCTAssertFalse(FileManager.default.fileExists(atPath: failedDestination.path))
+        let failedStorage = try await persistence.snapshot()
+        XCTAssertEqual(failedStorage.attentionReason, .storeReadFailed)
+
+        failure.shouldFail = false
+        let archive = try await library.archive()
+        XCTAssertEqual(Set(archive.snips.map(\.content)), ["last known", "newly committed"])
+        XCTAssertEqual(archive.snips.first { $0.id == latestSnip.id }, latestSnip)
+        XCTAssertEqual(archive.lists, [.inbox, list])
+        XCTAssertEqual(archive.seenRequestIDs, [cachedSnip.requestID, requestID])
+        let archivedAttachmentURL = try XCTUnwrap(archive.attachmentURLs[attachment.id])
+        XCTAssertEqual(try Data(contentsOf: archivedAttachmentURL), attachmentBytes)
+        let recoveredStorage = try await persistence.snapshot()
+        XCTAssertNil(recoveredStorage.attentionReason)
+
+        let recoveredDestination = root.appendingPathComponent("RecoveredBackup", isDirectory: true)
+        try JSONSnipArchiveTransfer.write(archive, to: recoveredDestination)
+        let restored = try JSONSnipArchiveTransfer.read(from: recoveredDestination)
+        XCTAssertEqual(Set(restored.snips.map(\.content)), ["last known", "newly committed"])
+        XCTAssertEqual(restored.snips.first { $0.id == latestSnip.id }, latestSnip)
+        XCTAssertEqual(restored.lists.map(\.id), [SnipList.inboxID, list.id])
+        XCTAssertEqual(restored.lists.map(\.name), ["Inbox", "Newly committed"])
+        XCTAssertEqual(restored.lists.map(\.systemImage), ["tray.fill", "folder.fill"])
+        XCTAssertEqual(restored.seenRequestIDs, [cachedSnip.requestID, requestID])
+        let restoredAttachmentURL = try XCTUnwrap(restored.attachmentURLs[attachment.id])
+        XCTAssertEqual(try Data(contentsOf: restoredAttachmentURL), attachmentBytes)
+    }
+
     func testSuccessfulManagedReadDoesNotClearAnotherAttentionReason() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

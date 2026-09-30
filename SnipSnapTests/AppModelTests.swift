@@ -21,6 +21,37 @@ private final class MacDiagnosticRecorderProbe: @unchecked Sendable {
     }
 }
 
+private actor EvictingBackupAttachmentHandler: OptionalCloudSyncHandling {
+    let cacheDirectory: URL
+    let attachmentBytes: [UUID: Data]
+    private var cachedURL: URL?
+
+    init(cacheDirectory: URL, attachmentBytes: [UUID: Data]) {
+        self.cacheDirectory = cacheDirectory
+        self.attachmentBytes = attachmentBytes
+    }
+
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
+    func syncWhenPossible() async {}
+    func isCloudSyncActive() async throws -> Bool { true }
+    func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { [:] }
+    func clearDownloadedFiles() async throws {}
+
+    func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {
+        if let cachedURL {
+            try FileManager.default.removeItem(at: cachedURL)
+        }
+        guard let bytes = attachmentBytes[id] else {
+            throw SnipLibraryError.attachmentCopyFailed
+        }
+        let url = cacheDirectory.appendingPathComponent(id.uuidString)
+        try bytes.write(to: url)
+        cachedURL = url
+        return url
+    }
+}
+
 final class AppModelTests: StoreBackedTestCase {
     @MainActor
     func testCLIAddUsesLiveLibraryAndRecordsAgentContext() async throws {
@@ -465,6 +496,27 @@ final class AppModelTests: StoreBackedTestCase {
         model.selectSnip(ids[1], modifiers: [])
         XCTAssertTrue(model.selection.isEmpty)
         XCTAssertNil(model.selectionState.anchor)
+    }
+
+    @MainActor
+    func testGlobalSearchIncludesDoneSnipsAndRestoresTheListFilterOnClose() async throws {
+        let pending = Snip(content: "Matching pending", origin: .quickEntry)
+        let done = Snip(content: "Matching done", origin: .quickEntry, isDone: true)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [pending, done]),
+            defaults: defaults()
+        )
+        await model.reload()
+        model.completionFilter = .notDone
+        XCTAssertEqual(model.filteredSnips.map(\.id), [pending.id])
+
+        model.enterSearch()
+        model.query = "Matching"
+        XCTAssertEqual(Set(model.filteredSnips.map(\.id)), [pending.id, done.id])
+
+        model.exitSearch()
+        XCTAssertEqual(model.completionFilter, .notDone)
+        XCTAssertEqual(model.filteredSnips.map(\.id), [pending.id])
     }
 
     @MainActor
@@ -1877,7 +1929,7 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(diagnostics.events.count, 3)
 
         do {
-            _ = try await model.exportArchive()
+            try await model.createBackup(at: store.deletingLastPathComponent().appendingPathComponent("Failed Backup"))
             XCTFail("Expected backup export to preserve the attachment preparation failure")
         } catch let error as ArchiveAttachmentPreparationError {
             XCTAssertEqual(
@@ -2596,10 +2648,10 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testExportArchiveUsesThePreparedRemoteAttachmentURL() async throws {
+    func testCreateBackupWritesPreparedRemoteAttachmentBytes() async throws {
         let store = try storeURL()
         let source = store.deletingLastPathComponent().appendingPathComponent("export.md")
-        try Data("Old".utf8).write(to: source)
+        try Data("Original bytes".utf8).write(to: source)
         let repository = try JSONSnipLibrary(fileURL: store)
         let added = try await repository.add(
             content: "Export attachment",
@@ -2618,13 +2670,89 @@ final class AppModelTests: StoreBackedTestCase {
         )
         await model.reload()
 
-        let archive = try await model.exportArchive()
-        let exportedURL = try XCTUnwrap(archive.attachmentURLs[attachment.id])
+        let backupURL = store.deletingLastPathComponent().appendingPathComponent("Prepared Backup")
+        try await model.createBackup(at: backupURL)
+        let backup = try JSONSnipArchiveTransfer.read(from: backupURL)
+        let exportedURL = try XCTUnwrap(backup.attachmentURLs[attachment.id])
 
-        XCTAssertEqual(exportedURL, readyURL)
+        XCTAssertNotEqual(exportedURL, readyURL)
         XCTAssertEqual(try String(contentsOf: exportedURL, encoding: .utf8), "Prepared bytes")
         let requests = await handler.preparationRequests()
         XCTAssertEqual(requests, [MacAttachmentPreparationRequest(id: attachment.id, use: .export)])
+    }
+
+    @MainActor
+    func testCreateBackupIncludesDurableAttachmentAddedAfterModelReload() async throws {
+        let store = try storeURL()
+        let root = store.deletingLastPathComponent()
+        let library = try JSONSnipLibrary(fileURL: store)
+        let model = AppModel(library: library, defaults: defaults())
+        await model.reload()
+        // Drain the initialization reload before simulating another client’s import.
+        await model.reload()
+        XCTAssertTrue(model.snips.isEmpty)
+
+        let source = root.appendingPathComponent("externally-added.txt")
+        let bytes = Data("Durable attachment imported after the UI snapshot".utf8)
+        try bytes.write(to: source)
+        let added = try await library.add(
+            content: "Imported elsewhere", origin: .quickEntry, attachmentURLs: [source]
+        )
+        let attachment = try XCTUnwrap(added?.attachments.first)
+
+        let backupURL = root.appendingPathComponent("Fresh Archive Backup")
+        try await model.createBackup(at: backupURL)
+
+        let backup = try JSONSnipArchiveTransfer.read(from: backupURL)
+        let savedAttachment = try XCTUnwrap(backup.attachmentURLs[attachment.id])
+        XCTAssertEqual(try Data(contentsOf: savedAttachment), bytes)
+        XCTAssertEqual(backup.snips.first?.content, "Imported elsewhere")
+        XCTAssertTrue(model.snips.isEmpty)
+    }
+
+    @MainActor
+    func testCreateBackupStagesEachAttachmentBeforeNextDownloadEvictsIt() async throws {
+        let store = try storeURL()
+        let root = store.deletingLastPathComponent()
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let firstBytes = Data("First attachment".utf8)
+        let secondBytes = Data("Second attachment".utf8)
+        let firstSource = root.appendingPathComponent("first.txt")
+        let secondSource = root.appendingPathComponent("second.txt")
+        try firstBytes.write(to: firstSource)
+        try secondBytes.write(to: secondSource)
+        let addedFirst = try await repository.add(
+            content: "First", origin: .quickEntry, attachmentURLs: [firstSource]
+        )
+        let addedSecond = try await repository.add(
+            content: "Second", origin: .quickEntry, attachmentURLs: [secondSource]
+        )
+        let first = try XCTUnwrap(addedFirst)
+        let second = try XCTUnwrap(addedSecond)
+        let firstAttachment = try XCTUnwrap(first.attachments.first)
+        let secondAttachment = try XCTUnwrap(second.attachments.first)
+        let cache = root.appendingPathComponent("One-file cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: false)
+        let handler = EvictingBackupAttachmentHandler(
+            cacheDirectory: cache,
+            attachmentBytes: [firstAttachment.id: firstBytes, secondAttachment.id: secondBytes]
+        )
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [first, second]),
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        await model.reload()
+
+        let backupURL = root.appendingPathComponent("Eviction-safe Backup")
+        try await model.createBackup(at: backupURL)
+
+        let backup = try JSONSnipArchiveTransfer.read(from: backupURL)
+        let savedFirst = try XCTUnwrap(backup.attachmentURLs[firstAttachment.id])
+        let savedSecond = try XCTUnwrap(backup.attachmentURLs[secondAttachment.id])
+        XCTAssertEqual(try Data(contentsOf: savedFirst), firstBytes)
+        XCTAssertEqual(try Data(contentsOf: savedSecond), secondBytes)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: cache.path).count, 1)
     }
 
     @MainActor

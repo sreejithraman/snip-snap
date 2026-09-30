@@ -227,60 +227,100 @@ public enum JSONSnipArchiveTransfer {
     }
   }
 
+  /// Preserves each prepared file before another download can evict it from the cache.
+  public static func write(
+    _ archive: SnipLibraryArchive,
+    to destinationDirectory: URL,
+    preparingAttachment: @escaping @Sendable (SnipAttachment) async throws -> URL
+  ) async throws {
+    let staging = try makeExportStaging(for: destinationDirectory)
+    defer { try? FileManager.default.removeItem(at: staging) }
+    let attachmentRoot = staging.appendingPathComponent("Attachments", isDirectory: true)
+    var copied: Set<UUID> = []
+    for attachment in archive.snips.flatMap(\.attachments) where copied.insert(attachment.id).inserted {
+      guard JSONSnipArchiveReader.isSafeRelativePath(attachment.relativePath) else {
+        throw SnipLibraryError.attachmentCopyFailed
+      }
+      try Task.checkCancellation()
+      let source = try await preparingAttachment(attachment)
+      try Task.checkCancellation()
+      let destination = attachmentRoot.appendingPathComponent(attachment.relativePath)
+      try FileManager.default.createDirectory(
+        at: destination.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+      )
+      _ = try AttachmentFileIO.copyRegularFile(
+        from: source, to: destination, expectedByteCount: attachment.byteCount
+      )
+    }
+    try Task.checkCancellation()
+    try await Task.detached {
+      try finishExport(archive, staging: staging, destinationDirectory: destinationDirectory)
+    }.value
+  }
+
   public static func write(
     _ archive: SnipLibraryArchive,
     to destinationDirectory: URL
   ) throws {
     let fileManager = FileManager.default
-    guard !fileManager.fileExists(atPath: destinationDirectory.path) else {
+    let staging = try makeExportStaging(for: destinationDirectory)
+    defer { try? fileManager.removeItem(at: staging) }
+    let attachmentRoot = staging.appendingPathComponent("Attachments", isDirectory: true)
+    var copied: Set<UUID> = []
+    for attachment in archive.snips.flatMap(\.attachments) where copied.insert(attachment.id).inserted {
+      guard JSONSnipArchiveReader.isSafeRelativePath(attachment.relativePath),
+        let sourceURL = archive.attachmentURLs[attachment.id]
+      else { throw SnipLibraryError.attachmentCopyFailed }
+      var isDirectory: ObjCBool = false
+      guard fileManager.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory),
+        !isDirectory.boolValue
+      else { throw SnipLibraryError.attachmentCopyFailed }
+      let destination = attachmentRoot.appendingPathComponent(attachment.relativePath)
+      try fileManager.createDirectory(
+        at: destination.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+      )
+      try fileManager.copyItem(at: sourceURL, to: destination)
+      let values = try destination.resourceValues(forKeys: [.fileSizeKey])
+      guard Int64(values.fileSize ?? -1) == attachment.byteCount else {
+        throw SnipLibraryError.invalidStore
+      }
+    }
+    try finishExport(archive, staging: staging, destinationDirectory: destinationDirectory)
+  }
+
+  private static func makeExportStaging(for destinationDirectory: URL) throws -> URL {
+    guard !FileManager.default.fileExists(atPath: destinationDirectory.path) else {
       throw CocoaError(.fileWriteFileExists)
     }
-    let parent = destinationDirectory.deletingLastPathComponent()
-    let staging = parent.appendingPathComponent(
+    let staging = destinationDirectory.deletingLastPathComponent().appendingPathComponent(
       ".\(destinationDirectory.lastPathComponent).exporting-\(UUID().uuidString)",
       isDirectory: true
     )
-    do {
-      try fileManager.createDirectory(at: staging, withIntermediateDirectories: false)
-      let attachmentRoot = staging.appendingPathComponent("Attachments", isDirectory: true)
-      var copied: Set<UUID> = []
-      for attachment in archive.snips.flatMap(\.attachments) where copied.insert(attachment.id).inserted {
-        guard JSONSnipArchiveReader.isSafeRelativePath(attachment.relativePath),
-          let sourceURL = archive.attachmentURLs[attachment.id]
-        else { throw SnipLibraryError.attachmentCopyFailed }
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory),
-          !isDirectory.boolValue
-        else { throw SnipLibraryError.attachmentCopyFailed }
-        let destination = attachmentRoot.appendingPathComponent(attachment.relativePath)
-        try fileManager.createDirectory(
-          at: destination.deletingLastPathComponent(),
-          withIntermediateDirectories: true
-        )
-        try fileManager.copyItem(at: sourceURL, to: destination)
-        let values = try destination.resourceValues(forKeys: [.fileSizeKey])
-        guard Int64(values.fileSize ?? -1) == attachment.byteCount else {
-          throw SnipLibraryError.invalidStore
-        }
-      }
-      let encoder = JSONEncoder()
-      encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-      encoder.dateEncodingStrategy = .iso8601
-      let data = try encoder.encode(
-        Document(
-          version: JSONSnipLibrary.currentVersion,
-          snips: archive.snips,
-          lists: archive.lists,
-          seenRequestIDs: archive.seenRequestIDs
-        )
+    try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
+    return staging
+  }
+
+  private static func finishExport(
+    _ archive: SnipLibraryArchive,
+    staging: URL,
+    destinationDirectory: URL
+  ) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    encoder.dateEncodingStrategy = .iso8601
+    let data = try encoder.encode(
+      Document(
+        version: JSONSnipLibrary.currentVersion,
+        snips: archive.snips,
+        lists: archive.lists,
+        seenRequestIDs: archive.seenRequestIDs
       )
-      try data.write(to: staging.appendingPathComponent("snips.json"), options: .atomic)
-      _ = try read(from: staging)
-      try fileManager.moveItem(at: staging, to: destinationDirectory)
-    } catch {
-      try? fileManager.removeItem(at: staging)
-      throw error
-    }
+    )
+    try data.write(to: staging.appendingPathComponent("snips.json"), options: .atomic)
+    _ = try read(from: staging)
+    try FileManager.default.moveItem(at: staging, to: destinationDirectory)
   }
 
   private static func documentURL(from selectedURL: URL) throws -> URL {

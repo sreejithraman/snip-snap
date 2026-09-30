@@ -3,7 +3,10 @@ set -euo pipefail
 
 script_dir="${0:A:h}"
 test_root="$(/usr/bin/mktemp -d /private/tmp/snip-snap-release-matrix-tests.XXXXXX)"
+fixture_lock="/private/tmp/snip-snap-share-fixture-58493.lock"
+test_fixture_lock_owned=0
 cleanup() {
+    [[ "$test_fixture_lock_owned" == 0 ]] || /bin/rmdir "$fixture_lock" 2>/dev/null || true
     [[ "$test_root" == /private/tmp/snip-snap-release-matrix-tests.* ]] && \
         /bin/rm -rf "$test_root"
 }
@@ -17,9 +20,37 @@ fail_test() {
 /bin/mkdir -p "$test_root/bin"
 print -r -- '#!/bin/zsh
 set -euo pipefail
+[[ -s "$SNIP_SNAP_RELEASE_FIXTURE_PID_FILE" ]] && /bin/kill -0 "$(cat "$SNIP_SNAP_RELEASE_FIXTURE_PID_FILE")" || exit 1
 print -r -- "$PWD :: $@" >> "$SNIP_SNAP_RELEASE_TEST_ARGS_FILE"' > \
     "$test_root/bin/xcodebuild"
 /bin/chmod +x "$test_root/bin/xcodebuild"
+cat > "$test_root/bin/python3" <<'STUB'
+#!/bin/zsh
+set -euo pipefail
+[[ -f "$2/index.html" && "$4" == 58493 ]] || exit 1
+print -r -- "$$" > "$SNIP_SNAP_RELEASE_FIXTURE_PID_FILE"
+print -r -- "$$" >> "$SNIP_SNAP_RELEASE_FIXTURE_LOG"
+trap '/bin/rm -f "$SNIP_SNAP_RELEASE_FIXTURE_PID_FILE"; exit 0' INT TERM
+print -r -- "$4" > "$3"
+while true; do /bin/sleep 0.05; done
+STUB
+/bin/chmod +x "$test_root/bin/python3"
+export SNIP_SNAP_PYTHON="$test_root/bin/python3"
+export SNIP_SNAP_RELEASE_FIXTURE_PID_FILE="$test_root/fixture.pid"
+export SNIP_SNAP_RELEASE_FIXTURE_LOG="$test_root/fixture.log"
+
+assert_fixture_cleaned_up() {
+    [[ ! -e "$fixture_lock" && ! -e "$SNIP_SNAP_RELEASE_FIXTURE_PID_FILE" ]] || \
+        fail_test "the runner left its fixture child or lock behind"
+    local fixture_pid
+    for fixture_pid in ${(f)"$(cat "$SNIP_SNAP_RELEASE_FIXTURE_LOG")"}; do
+        if /bin/kill -0 "$fixture_pid" 2>/dev/null; then
+            fail_test "the runner left its fixture child alive"
+        fi
+    done
+    local -a derived_directories=("$test_root"/*derived*(N/))
+    (( ${#derived_directories} == 0 )) || fail_test "the runner left owned test files behind"
+}
 
 args_file="$test_root/test-args"
 output="$(
@@ -122,9 +153,9 @@ done
 [[ "$output" == *"Share fixture stopped."* ]] || \
     fail_test "the release matrix did not stop the local fixture"
 
-fixture_lock="/private/tmp/snip-snap-share-fixture-58493.lock"
-[[ ! -e "$fixture_lock" ]] || fail_test "the successful run left the Share fixture lock behind"
+assert_fixture_cleaned_up
 /bin/mkdir "$fixture_lock"
+test_fixture_lock_owned=1
 if SNIP_SNAP_XCODEBUILD="$test_root/bin/xcodebuild" \
     SNIP_SNAP_RELEASE_TEST_ARGS_FILE="$test_root/collision-args" \
     SNIP_SNAP_DERIVED_DATA="$test_root/collision-derived" \
@@ -132,7 +163,10 @@ if SNIP_SNAP_XCODEBUILD="$test_root/bin/xcodebuild" \
 then
     fail_test "a second release matrix acquired the locked Share fixture port"
 fi
+[[ -d "$fixture_lock" ]] || fail_test "the collision removed another runner's lock"
+[[ ! -e "$test_root/collision-args" ]] || fail_test "testing began despite the fixture collision"
 /bin/rmdir "$fixture_lock"
+test_fixture_lock_owned=0
 
 print -r -- '#!/bin/zsh
 exit 23' > "$test_root/bin/failing-xcodebuild"
@@ -143,7 +177,22 @@ if SNIP_SNAP_XCODEBUILD="$test_root/bin/failing-xcodebuild" \
 then
     fail_test "the release matrix hid an xcodebuild failure"
 fi
-[[ ! -e "$fixture_lock" ]] || fail_test "the failed run left the Share fixture lock behind"
+assert_fixture_cleaned_up
+
+print -r -- '#!/bin/zsh
+/bin/kill -s "$SNIP_SNAP_RELEASE_TEST_SIGNAL" "$PPID"
+exit 0' > "$test_root/bin/interrupted-xcodebuild"
+/bin/chmod +x "$test_root/bin/interrupted-xcodebuild"
+for test_signal in INT TERM; do
+    if SNIP_SNAP_XCODEBUILD="$test_root/bin/interrupted-xcodebuild" \
+        SNIP_SNAP_RELEASE_TEST_SIGNAL="$test_signal" \
+        SNIP_SNAP_DERIVED_DATA="$test_root/interrupted-derived" \
+            "$script_dir/release-matrix-tests.sh" >/dev/null 2>&1
+    then
+        fail_test "the release matrix hid $test_signal interruption"
+    fi
+    assert_fixture_cleaned_up
+done
 
 /usr/bin/grep -F -- 'URL(string: "http://127.0.0.1:58493/' \
     "$script_dir/../SnipSnapiOSUITests/SnipSnapiOSUITests.swift" >/dev/null || \

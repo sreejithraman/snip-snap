@@ -24,6 +24,10 @@ struct PanelHeaderView: View {
                 needsAttentionButton
             }
 
+            if !model.isSearchExpanded {
+                PanelViewOptionsButton(model: model)
+            }
+
             PanelMoreButton(
                 model: model,
                 accessibilityPermissions: accessibilityPermissions,

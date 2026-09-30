@@ -429,11 +429,13 @@ final class SnipSnapiOSUITests: XCTestCase {
         let app = launchApp()
         openSettings(in: app)
 
-        let share = app.buttons["share-diagnostic-log"]
-        for _ in 0..<3 where !share.exists {
-            app.swipeUp()
-        }
+        let diagnostics = app.buttons["diagnostics"]
+        for _ in 0..<3 where !diagnostics.exists { app.swipeUp() }
+        XCTAssertTrue(diagnostics.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["share-diagnostic-log"].exists)
+        diagnostics.tap()
 
+        let share = app.buttons["share-diagnostic-log"]
         XCTAssertTrue(share.waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["clear-diagnostic-log"].exists)
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(
@@ -455,9 +457,15 @@ final class SnipSnapiOSUITests: XCTestCase {
             .firstMatch
         XCTAssertTrue(privacyPolicy.waitForExistence(timeout: 3))
 
-        XCTAssertTrue(app.staticTexts["Sync off"].waitForExistence(timeout: 3))
-        toggle(app.switches["icloud-sync-toggle"])
-        XCTAssertTrue(app.staticTexts["Sync on"].waitForExistence(timeout: 8))
+        let sync = app.switches["icloud-sync-toggle"]
+        XCTAssertTrue(sync.waitForExistence(timeout: 3))
+        XCTAssertEqual(sync.value as? String, "0")
+        XCTAssertFalse(app.staticTexts["Sync off"].exists)
+        toggle(sync)
+        expectation(for: NSPredicate(format: "value == '1'"), evaluatedWith: sync)
+        waitForExpectations(timeout: 8)
+        XCTAssertFalse(app.staticTexts["Sync on"].exists)
+        XCTAssertTrue(app.switches["clipboard-sync-toggle"].isEnabled)
         app.buttons["Done"].tap()
         let inbox = listControl(named: "Inbox", in: app)
         if inbox.waitForExistence(timeout: 2) {
@@ -494,10 +502,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         openSettings(in: app)
 
         XCTAssertTrue(app.staticTexts["Couldn’t sync"].waitForExistence(timeout: 3))
-        let retryGuidance = app.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS %@", "Retry sync")
-        ).firstMatch
-        XCTAssertTrue(retryGuidance.exists)
+        XCTAssertTrue(app.buttons["retry-icloud-sync"].exists)
         XCTAssertFalse(app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS %@", "CloudRecordError")
         ).firstMatch.exists)
@@ -506,9 +511,17 @@ final class SnipSnapiOSUITests: XCTestCase {
         ).firstMatch.exists)
     }
 
-    func testTurningSyncOffKeepsTheLibraryAndLeavesDeleteSeparate() {
+    func testTurningSyncOffKeepsTheLibraryWithoutCloudDeletionControls() {
         continueAfterFailure = false
-        let app = launchApp(withSyncedContent: true)
+        let app = launchApp(withSyncEnable: true)
+        openSettings(in: app)
+        let initialSync = app.switches["icloud-sync-toggle"]
+        XCTAssertTrue(initialSync.waitForExistence(timeout: 3))
+        toggle(initialSync)
+        expectation(for: NSPredicate(format: "value == '1'"), evaluatedWith: initialSync)
+        waitForExpectations(timeout: 8)
+        XCTAssertTrue(app.switches["clipboard-sync-toggle"].isEnabled)
+        app.buttons["Done"].tap()
         createSnip("Keep this", in: app)
         let saved = collectionRow(named: "Keep this", in: app)
         XCTAssertTrue(saved.waitForExistence(timeout: 3))
@@ -517,7 +530,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         let sync = app.switches["icloud-sync-toggle"]
         XCTAssertTrue(sync.waitForExistence(timeout: 3))
         XCTAssertEqual(sync.value as? String, "1")
-        XCTAssertTrue(app.buttons["delete-synced-content"].exists)
+        XCTAssertFalse(app.buttons["delete-synced-content"].exists)
         toggle(sync)
 
         let staleCopyAlert = app.alerts["Turn off sync?"]
@@ -525,8 +538,12 @@ final class SnipSnapiOSUITests: XCTestCase {
             staleCopyAlert.buttons["Turn off sync"].tap()
         }
 
-        XCTAssertTrue(app.staticTexts["Sync off"].waitForExistence(timeout: 8))
-        XCTAssertEqual(sync.value as? String, "0")
+        expectation(for: NSPredicate(format: "value == '0'"), evaluatedWith: sync)
+        waitForExpectations(timeout: 8)
+        XCTAssertFalse(app.staticTexts["Sync off"].exists)
+        let clipboardSync = app.switches["clipboard-sync-toggle"]
+        XCTAssertEqual(clipboardSync.value as? String, "0")
+        XCTAssertFalse(clipboardSync.isEnabled)
         XCTAssertFalse(app.buttons["delete-synced-content"].exists)
         let proof = XCTAttachment(screenshot: app.screenshot())
         proof.name = "iCloud sync off keeps a local copy"
@@ -556,29 +573,22 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(clipboardSync.value as? String, "0")
     }
 
-    func testDeleteSyncedContentExplainsAndConfirmsReset() {
+    func testSettingsKeepsNormalSyncQuietWithoutCloudDeletionControls() {
         continueAfterFailure = false
         let app = launchApp(withSyncedContent: true)
-        createSnip("Visible before cloud reset", in: app)
-        let priorSnip = app.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS %@", "Visible before cloud reset")
-        ).firstMatch
-        XCTAssertTrue(priorSnip.waitForExistence(timeout: 3))
         openSettings(in: app)
 
-        XCTAssertTrue(app.staticTexts["Sync on"].waitForExistence(timeout: 3))
-        app.buttons["delete-synced-content"].tap()
-        XCTAssertTrue(app.alerts["Delete synced content?"].waitForExistence(timeout: 3))
-        app.alerts.buttons["Delete synced content"].tap()
-
-        XCTAssertTrue(app.staticTexts["Synced content deleted"].waitForExistence(timeout: 3))
-        let recoveryCopyNote = app.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS %@", "recovery copy")
-        ).firstMatch
-        XCTAssertTrue(recoveryCopyNote.exists)
+        let sync = app.switches["icloud-sync-toggle"]
+        XCTAssertTrue(sync.waitForExistence(timeout: 3))
+        XCTAssertEqual(sync.value as? String, "1")
+        XCTAssertFalse(app.staticTexts["Sync on"].exists)
+        XCTAssertFalse(app.staticTexts["sync-status"].exists)
         XCTAssertFalse(app.buttons["delete-synced-content"].exists)
-        app.buttons["Done"].tap()
-        XCTAssertFalse(priorSnip.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["retry-icloud-sync"].exists)
+        XCTAssertFalse(app.buttons["sync-icloud-now"].exists)
+        XCTAssertFalse(app.buttons["clear-icloud-downloads"].exists)
+        XCTAssertTrue(app.buttons["create-backup"].exists)
+        XCTAssertTrue(app.buttons["import-backup"].exists)
     }
 
     func testEncryptedDataResetTurnsSyncOffWithoutOfferingARecoveryUpload() {
@@ -1870,7 +1880,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.textFields["list-name"].waitForNonExistence(timeout: 3))
     }
 
-    func testLibraryActionsExposeBackupImportWithoutHistoryCommands() {
+    func testLibraryActionsKeepBackupsAndSyncMaintenanceInSettings() {
         continueAfterFailure = false
         let app = launchApp()
         var actions = app.buttons["library-actions"]
@@ -1894,9 +1904,14 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         XCTAssertTrue(actions.waitForExistence(timeout: 3))
         actions.tap()
-        XCTAssertTrue(app.buttons["Import backup…"].exists)
+        XCTAssertFalse(app.buttons["Import backup…"].exists)
+        XCTAssertFalse(app.buttons["sync-icloud-now"].exists)
+        XCTAssertFalse(app.buttons["clear-icloud-downloads"].exists)
         XCTAssertFalse(app.buttons["Undo"].exists)
         XCTAssertFalse(app.buttons["Redo"].exists)
+        app.buttons["settings"].tap()
+        XCTAssertTrue(app.buttons["create-backup"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["import-backup"].exists)
     }
 
     func testCreatesListMovesSnipAndDeletesIt() {
