@@ -318,7 +318,9 @@ struct ListSelector: View {
     private func width(for item: ListSelectorItem, in viewport: CGFloat) -> CGFloat {
         let font = UIFont.rounded(size: fontSize, weight: .semibold)
         let textWidth = (item.title as NSString).size(withAttributes: [.font: font]).width
-        return min(max(64, ceil(textWidth) + fontSize * 1.5 + 48), max(64, viewport - 96))
+        // Reserve the faded edges for previews of neighboring tabs.
+        let maximumWidth = viewport * (1 - edgeFadeFraction * 2)
+        return min(max(64, ceil(textWidth) + fontSize * 1.5 + 48), max(64, maximumWidth))
     }
 
     private func labelOffset(_ center: CGFloat, cursor: CGFloat) -> CGFloat {
