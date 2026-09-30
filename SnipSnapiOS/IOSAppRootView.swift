@@ -400,6 +400,8 @@ struct IOSAppRootView: View {
                     model: model,
                     sheet: $sheet,
                     editMode: $collectionEditMode,
+                    syncedContentSettings: session.syncedContentSettings,
+                    syncNow: { await session.retrySyncWhenPossible() },
                     deleteList: deleteList
                 )
             } detail: {
@@ -407,12 +409,14 @@ struct IOSAppRootView: View {
                     ZStack {
                         if model.selectedPage == .clipboard {
                             IOSClipboardView(
-                            model: session.clipboard,
-                            libraryModel: model,
-                            copyShare: copyShare,
-                            sheet: $sheet,
-                            settings: { sheet = .settings }
-                        )
+                                model: session.clipboard,
+                                libraryModel: model,
+                                copyShare: copyShare,
+                                syncedContentSettings: session.syncedContentSettings,
+                                syncNow: { await session.retrySyncWhenPossible() },
+                                sheet: $sheet,
+                                settings: { sheet = .settings }
+                            )
                         } else {
                         SnipCollectionView(
                             model: model,
@@ -495,6 +499,8 @@ struct IOSAppRootView: View {
             model: model,
             settings: { sheet = .settings },
             editMode: $collectionEditMode,
+            syncedContentSettings: session.syncedContentSettings,
+            syncNow: { await session.retrySyncWhenPossible() },
             reviewRecoveredEdits: model.recoverySnapshot.needsAttentionCount > 0
                 ? { sheet = .recoveryCenter }
                 : nil,

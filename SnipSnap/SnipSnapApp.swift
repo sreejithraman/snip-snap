@@ -360,7 +360,9 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             await performSync(false)
         }
         let retryAction: AppleAccountCacheCoordinatorHandler.SyncAction = {
-            await performSync(true)
+            await cloudServices.syncedContentSettings.performExplicitSync {
+                await performSync(true)
+            }
         }
         let scheduleAction: AppleAccountCacheCoordinatorHandler.ScheduleAction = {
             await cloudServices.syncSession?.scheduleAutomaticSync()
@@ -428,7 +430,11 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 coordinator: coordinator,
                 fileDropController: fileDropController,
                 dragSessionController: dragSessionController,
-                accountNoticeModel: accountNoticeModel
+                accountNoticeModel: accountNoticeModel,
+                syncedContentSettings: syncedContentSettings,
+                syncNow: { [cloudSyncHandler] in
+                    await cloudSyncHandler?.retrySyncWhenPossible()
+                }
             )
                 .environmentObject(model)
                 .environmentObject(shortcutSettings)

@@ -210,14 +210,16 @@ final class IOSAppSession {
     }
 
     func retrySyncWhenPossible() async {
-        try? await Self.synchronizeCloudSessionOrThrow(
-            cloudSyncSession,
-            model: model,
-            settings: syncedContentSettings,
-            clipboard: clipboard,
-            retryingUserRecoverableFailures: true
-        )
-        await clipboard.synchronize()
+        await syncedContentSettings.performExplicitSync {
+            try? await Self.synchronizeCloudSessionOrThrow(
+                cloudSyncSession,
+                model: model,
+                settings: syncedContentSettings,
+                clipboard: clipboard,
+                retryingUserRecoverableFailures: true
+            )
+            await clipboard.synchronize()
+        }
     }
 
     func scheduleSyncAfterLocalChange() async {

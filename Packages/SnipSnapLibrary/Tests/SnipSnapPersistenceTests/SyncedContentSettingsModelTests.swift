@@ -126,6 +126,51 @@ final class SyncedContentSettingsModelTests: XCTestCase {
   }
 
   @MainActor
+  func testSyncNowRequiresAnIdleEnabledLibrary() async {
+    let local = SyncedContentSettingsModel(mode: .localOnly)
+    XCTAssertFalse(local.canSyncNow)
+
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      disableAction: { _ in }
+    )
+    XCTAssertTrue(model.canSyncNow)
+    model.recordSyncStarted()
+    XCTAssertFalse(model.canSyncNow)
+    model.recordSyncFailure(.waitingForConnection)
+    XCTAssertTrue(model.canSyncNow)
+    model.setDisableCompletionAction {
+      XCTAssertFalse(model.canSyncNow)
+    }
+    await model.disableICloudSync(.useCurrentCache)
+    XCTAssertFalse(model.canSyncNow)
+  }
+
+  @MainActor
+  func testExplicitRetryBlocksOtherSurfacesWithoutClearingFailure() async {
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      initialState: .failed(.waitingForConnection)
+    )
+    var continuation: CheckedContinuation<Void, Never>?
+    let retry = Task { @MainActor in
+      await model.performExplicitSync {
+        await withCheckedContinuation { continuation = $0 }
+      }
+    }
+    while continuation == nil { await Task.yield() }
+    XCTAssertFalse(model.canSyncNow)
+    XCTAssertEqual(model.state, .failed(.waitingForConnection))
+    var secondCallRan = false
+    await model.performExplicitSync { secondCallRan = true }
+    XCTAssertFalse(secondCallRan)
+    continuation?.resume()
+    await retry.value
+    XCTAssertTrue(model.canSyncNow)
+    XCTAssertEqual(model.state, .failed(.waitingForConnection))
+  }
+
+  @MainActor
   func testClipboardSyncEligibilityFollowsMainSyncSetupAndDisableTransitions() async {
     let model = SyncedContentSettingsModel(
       mode: .localOnly,

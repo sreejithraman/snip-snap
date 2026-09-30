@@ -1,3 +1,4 @@
+import SnipSnapCore
 import SwiftUI
 
 struct PanelHeaderView: View {
@@ -9,6 +10,8 @@ struct PanelHeaderView: View {
     let reviewRecovery: () -> Void
     let moveSelectionToNewList: () -> Void
     let selectAllVisible: () -> Void
+    let syncedContentSettings: SyncedContentSettingsModel?
+    let syncNow: (@MainActor () async -> Void)?
 
     private let searchControlInset: CGFloat = 8
 
@@ -33,7 +36,9 @@ struct PanelHeaderView: View {
                 accessibilityPermissions: accessibilityPermissions,
                 focusedTarget: $focusedTarget,
                 moveSelectionToNewList: moveSelectionToNewList,
-                selectAllVisible: selectAllVisible
+                selectAllVisible: selectAllVisible,
+                syncedContentSettings: syncedContentSettings,
+                syncNow: syncNow
             )
         }
         .background { PanelDragRegion() }

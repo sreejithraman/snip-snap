@@ -5,6 +5,8 @@ struct ListSidebarView: View {
     let model: IOSAppModel
     @Binding var sheet: AppSheet?
     @Binding var editMode: EditMode
+    let syncedContentSettings: SyncedContentSettingsModel
+    let syncNow: @MainActor () async -> Void
     let deleteList: (UUID) async -> Void
 
     private var selection: Binding<LibraryPage?> {
@@ -61,6 +63,8 @@ struct ListSidebarView: View {
                     model: model,
                     settings: { sheet = .settings },
                     editMode: $editMode,
+                    syncedContentSettings: syncedContentSettings,
+                    syncNow: syncNow,
                     reviewRecoveredEdits: model.recoverySnapshot.needsAttentionCount > 0
                         ? { sheet = .recoveryCenter }
                         : nil,
@@ -82,6 +86,8 @@ struct LibraryActionsMenu: View {
     let model: IOSAppModel
     let settings: () -> Void
     @Binding var editMode: EditMode
+    let syncedContentSettings: SyncedContentSettingsModel
+    let syncNow: @MainActor () async -> Void
     var reviewRecoveredEdits: (() -> Void)?
     var editSelectedList: (() -> Void)?
     let deleteList: (UUID) async -> Void
@@ -146,6 +152,8 @@ struct LibraryActionsMenu: View {
                 .accessibilityIdentifier("needs-attention")
             Divider()
         }
+        LibrarySyncAction(syncedContentSettings: syncedContentSettings, syncNow: syncNow)
+
         Button("Settings", systemImage: "gearshape", action: settings)
             .accessibilityIdentifier("settings")
     }
@@ -198,3 +206,24 @@ struct DevelopmentMenuBoundsKey: PreferenceKey {
     }
 }
 #endif
+
+struct LibrarySyncAction: View {
+    let syncedContentSettings: SyncedContentSettingsModel
+    let syncNow: @MainActor () async -> Void
+    @State private var isSyncingManually = false
+
+    var body: some View {
+        if syncedContentSettings.mode == .iCloudSync {
+            Button("Sync", systemImage: "arrow.triangle.2.circlepath") {
+                Task {
+                    guard syncedContentSettings.canSyncNow, !isSyncingManually else { return }
+                    isSyncingManually = true
+                    defer { isSyncingManually = false }
+                    await syncNow()
+                }
+            }
+            .disabled(!syncedContentSettings.canSyncNow || isSyncingManually)
+            .accessibilityIdentifier("sync-icloud")
+        }
+    }
+}

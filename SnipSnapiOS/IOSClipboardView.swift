@@ -15,6 +15,8 @@ struct IOSClipboardView: View {
     let model: IOSClipboardModel
     let libraryModel: IOSAppModel
     let copyShare: IOSCopyShareCoordinator
+    let syncedContentSettings: SyncedContentSettingsModel
+    let syncNow: @MainActor () async -> Void
     @Binding var sheet: AppSheet?
     var settings: () -> Void = {}
     @State var viewState = ClipboardViewState()
@@ -58,6 +60,7 @@ struct IOSClipboardView: View {
                 Button("Clear unpinned history", systemImage: "trash", role: .destructive) { confirmsClear = true }
                     .disabled(!model.entries.contains { !$0.isPinned })
                 Divider()
+                LibrarySyncAction(syncedContentSettings: syncedContentSettings, syncNow: syncNow)
                 Button("Settings", systemImage: "gearshape", action: settings)
                     .accessibilityIdentifier("settings")
             }

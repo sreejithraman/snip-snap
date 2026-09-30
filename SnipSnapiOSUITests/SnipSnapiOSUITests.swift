@@ -1880,6 +1880,50 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.textFields["list-name"].waitForNonExistence(timeout: 3))
     }
 
+    func testLibraryActionsOfferSyncOnlyWhileICloudIsEnabled() {
+        continueAfterFailure = false
+        let app = launchApp(withSyncEnable: true)
+        app.buttons["library-actions"].tap()
+        XCTAssertFalse(app.buttons["sync-icloud"].exists)
+        app.buttons["settings"].tap()
+        let sync = app.switches["icloud-sync-toggle"]
+        XCTAssertTrue(sync.waitForExistence(timeout: 3))
+        toggle(sync)
+        expectation(for: NSPredicate(format: "value == '1'"), evaluatedWith: sync)
+        waitForExpectations(timeout: 8)
+        app.buttons["Done"].tap()
+
+        app.buttons["library-actions"].tap()
+        let syncAction = app.buttons["sync-icloud"]
+        XCTAssertTrue(syncAction.waitForExistence(timeout: 3))
+        XCTAssertTrue(syncAction.isEnabled)
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Sync in library actions"
+        proof.lifetime = .keepAlways
+        add(proof)
+        syncAction.tap()
+        app.buttons["clipboard-tab"].tap()
+        XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+        app.buttons["library-actions"].tap()
+        XCTAssertTrue(syncAction.waitForExistence(timeout: 3))
+        XCTAssertEqual(syncAction.label, "Sync")
+        XCTAssertTrue(syncAction.isEnabled)
+        syncAction.tap()
+
+        openSettings(in: app)
+        XCTAssertEqual(sync.value as? String, "1")
+        toggle(sync)
+        let staleCopy = app.alerts["Turn off sync?"]
+        if staleCopy.waitForExistence(timeout: 2) {
+            staleCopy.buttons["Turn off sync"].tap()
+        }
+        expectation(for: NSPredicate(format: "value == '0'"), evaluatedWith: sync)
+        waitForExpectations(timeout: 8)
+        app.buttons["Done"].tap()
+        app.buttons["library-actions"].tap()
+        XCTAssertFalse(syncAction.exists)
+    }
+
     func testLibraryActionsKeepBackupsAndSyncMaintenanceInSettings() {
         continueAfterFailure = false
         let app = launchApp()
