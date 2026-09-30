@@ -5,6 +5,69 @@ import SnipSnapCore
 import XCTest
 
 extension ICloudSyncModeCoordinatorTests {
+    func testFullReenableCanRetryAfterItsFirstSendWasRejected() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        try await add("before opting out", to: try await persistence.activeLibrary())
+        let namespace = makeNamespace()
+        let zone = textZone(namespace)
+        let server = FakeCloudServer()
+        let initial = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: zone,
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+        )
+        _ = try await initial.enableOrRetry()
+        _ = try await initial.optOut(.useCurrentCacheAfterStaleDataWarning)
+        let local = try await persistence.activeLibrary()
+        let before = try await local.checkedSnapshot(sortedBy: .manual)
+        let snip = try XCTUnwrap(before.snips.first)
+        _ = try await local.perform(
+            .update(
+                id: snip.id,
+                content: "offline edit survives retry",
+                attachmentURLs: nil,
+                expectedUpdatedAt: snip.updatedAt,
+                now: Date(timeIntervalSince1970: 60)
+            ),
+            sortedBy: .manual
+        )
+        let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        await transport.failNextSentItem(.snip(snip.id, in: zone), failure: .rejected)
+        let reenable = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: zone,
+            makeTransport: { transport }
+        )
+        do {
+            _ = try await reenable.enableOrRetry()
+            XCTFail("The rejected re-enable send must be reported")
+        } catch let error as CloudSyncIssueError {
+            XCTAssertEqual(error.issue, .appDataIssue)
+        }
+        let interrupted = try await persistence.snapshot()
+        XCTAssertEqual(interrupted.transition?.phase, .candidateReady)
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+        let retry = ICloudSyncModeCoordinator(
+            persistence: reopened,
+            namespace: namespace,
+            textZone: zone,
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+        )
+
+        let result = try await retry.enableOrRetry()
+
+        XCTAssertEqual(result.state, .on)
+        let final = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(final.snips.map(\.id), [snip.id])
+        XCTAssertEqual(final.snips.first?.content, "offline edit survives retry")
+        let remoteText = await server.storedTextValues()
+        XCTAssertEqual(remoteText, ["offline edit survives retry"])
+    }
+
     func testFullRecordEnableRetryClearsTerminalSendFailure() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

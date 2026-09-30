@@ -162,9 +162,18 @@ extension SwiftDataSyncModePersistence {
 
   package func prepareRetryFetch(settlement: SyncModeSeedSettlementProof) async throws {
     guard let transition = manifest.transition, transition.phase == .candidateReady,
-      transition.captureAcceptedServerProvenance
+      transition.mergeIntent == nil
     else { return }
     let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
+    if transition.syncProtocol == .fullRecordV1, let namespace = transition.namespace {
+      // A new merge may have a different plan. Only pending merge intents need
+      // the prior receipt for crash recovery; candidateReady has none.
+      try await candidate.retireCompletedCloudFullReenable(
+        namespaceKey: namespace.namespaceKey,
+        transitionID: transition.id
+      )
+    }
+    guard transition.captureAcceptedServerProvenance else { return }
     try await promoteAcceptedFullRetryBases(transition: transition, candidate: candidate)
     let settledState = try await settledSeedState(
       transition: transition,
