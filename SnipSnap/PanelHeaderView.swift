@@ -17,12 +17,7 @@ struct PanelHeaderView: View {
             searchControl
 
             if !model.isSearchExpanded {
-                Text(model.isShowingClipboard ? String(localized: "Clipboard") : model.activeList.displayName)
-                    .font(.headline)
-                    .foregroundStyle(SnipSnapColors.textSecondary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity)
-                    .accessibilityAddTraits(.isHeader)
+                Spacer(minLength: 0)
             }
 
             if model.needsAttentionCount > 0 {
