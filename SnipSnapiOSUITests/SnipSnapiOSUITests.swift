@@ -1125,6 +1125,39 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
     }
 
+    func testLeadingPasteSavesToSelectedListWithoutChangingDraft() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        let paste = app.buttons["paste-to-clipboard"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 3))
+        XCTAssertTrue(paste.isHittable)
+        XCTAssertTrue(paste.isEnabled)
+
+        let composer = app.descendants(matching: .any)["composer-text"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        composer.tap()
+        composer.typeText("Quick paste fixture")
+        app.buttons["composer-send"].tap()
+        row(named: "Quick paste fixture", in: app).press(forDuration: 1)
+        app.buttons["copy-snip"].tap()
+        createList("Work", in: app)
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        composer.tap()
+        composer.typeText("Prefix: ")
+        XCTAssertTrue(paste.isHittable)
+        paste.tap()
+        XCTAssertTrue(row(named: "Quick paste fixture", in: app).exists)
+        XCTAssertEqual(composer.value as? String, "Prefix: ")
+        XCTAssertFalse(collectionRow(named: "Prefix: Quick paste fixture", in: app).exists)
+
+        listControl(named: "Inbox", in: app).tap()
+        XCTAssertFalse(collectionRow(named: "Prefix: Quick paste fixture", in: app).exists)
+        listControl(named: "Work", in: app).tap()
+        XCTAssertTrue(row(named: "Quick paste fixture", in: app).exists)
+        XCTAssertEqual(composer.value as? String, "Prefix: ")
+        XCTAssertTrue(paste.isHittable)
+    }
+
     func testLeadingClipboardPasteCapturesCopiedText() throws {
         continueAfterFailure = false
         let app = launchApp()
@@ -1215,7 +1248,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertLessThan(selector.frame.maxX, app.buttons["Search"].frame.minX)
         compactListTab(named: "Inbox", in: app).tap()
         XCTAssertTrue(compactListTab(named: "Inbox", in: app).isSelected)
-        XCTAssertFalse(paste.isEnabled)
+        XCTAssertTrue(paste.isEnabled)
         XCTAssertEqual(selector.frame.width, restingSelectorWidth, accuracy: 2)
         XCTAssertEqual(selector.frame.midX, restingSelector.midX, accuracy: 2)
         app.buttons["clipboard-tab"].tap()
@@ -1310,7 +1343,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(selector.frame.midX, restingFrame.midX, accuracy: 2)
         XCTAssertLessThan(selector.frame.maxX, app.buttons["Search"].frame.minX)
         XCTAssertTrue(compactListTab(named: "Inbox", in: app).isSelected)
-        XCTAssertFalse(app.buttons["paste-to-clipboard"].isEnabled)
+        XCTAssertTrue(app.buttons["paste-to-clipboard"].isEnabled)
         let switchedEvent = app.staticTexts["haptic-event"].label
         XCTAssertTrue(switchedEvent.hasPrefix("selection:"))
         XCTAssertNotEqual(switchedEvent, initialEvent)
