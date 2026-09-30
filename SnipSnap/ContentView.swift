@@ -39,6 +39,8 @@ struct ContentView: View {
     @ObservedObject private var panelDialogs: PanelDialogPresentationState
     @ObservedObject private var fileDropController: PanelFileDropController
     private let accountNoticeModel: AppleAccountNoticeModel?
+    private let syncedContentSettings: SyncedContentSettingsModel?
+    private let syncNow: (@MainActor () async -> Void)?
     private let dragSessionController: PanelDragSessionController
 
     @State private var entryDrafts: [UUID: ComposerDraft] = [:]
@@ -61,10 +63,14 @@ struct ContentView: View {
         coordinator: AppCoordinator,
         fileDropController: PanelFileDropController,
         dragSessionController: PanelDragSessionController,
-        accountNoticeModel: AppleAccountNoticeModel? = nil
+        accountNoticeModel: AppleAccountNoticeModel? = nil,
+        syncedContentSettings: SyncedContentSettingsModel? = nil,
+        syncNow: (@MainActor () async -> Void)? = nil
     ) {
         self.coordinator = coordinator
         self.accountNoticeModel = accountNoticeModel
+        self.syncedContentSettings = syncedContentSettings
+        self.syncNow = syncNow
         _accessibilityPermissions = ObservedObject(
             wrappedValue: coordinator.accessibilityPermissions
         )
@@ -128,7 +134,9 @@ struct ContentView: View {
                     newListMovingIDs = model.selection
                     showingNewList = true
                 },
-                selectAllVisible: selectAllVisible
+                selectAllVisible: selectAllVisible,
+                syncedContentSettings: syncedContentSettings,
+                syncNow: syncNow
             )
 
             if let accountNoticeModel, accountNoticeModel.notice != nil {

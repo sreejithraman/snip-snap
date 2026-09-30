@@ -24,7 +24,8 @@ final class AttachmentPreparationCoordinator {
 
     func prepare(
         _ attachments: [SnipAttachment],
-        for use: SyncedAttachmentUse
+        for use: SyncedAttachmentUse,
+        fallbackURLs: [UUID: URL] = [:]
     ) async throws -> [UUID: URL] {
         var prepared: [UUID: URL] = [:]
         for attachment in unique(attachments) {
@@ -34,6 +35,11 @@ final class AttachmentPreparationCoordinator {
                 continue
             }
             cachedURLs[attachment.id] = nil
+            if let fallback = fallbackURLs[attachment.id], isAvailable(fallback) {
+                cachedURLs[attachment.id] = fallback
+                prepared[attachment.id] = fallback
+                continue
+            }
             guard let cloudSyncHandler else {
                 throw SnipLibraryError.attachmentCopyFailed
             }

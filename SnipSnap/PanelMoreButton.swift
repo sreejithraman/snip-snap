@@ -7,6 +7,9 @@ struct PanelMoreButton: View {
     @FocusState.Binding var focusedTarget: PanelFocusTarget?
     let moveSelectionToNewList: () -> Void
     let selectAllVisible: () -> Void
+    let syncedContentSettings: SyncedContentSettingsModel?
+    let syncNow: (@MainActor () async -> Void)?
+    @State private var isSyncingManually = false
 
     @Environment(\.openSettings) private var openSettings
 
@@ -32,40 +35,19 @@ struct PanelMoreButton: View {
 
     @ViewBuilder
     private var actions: some View {
-        Picker("Show: \(completionFilterTitle)", selection: completionFilterBinding) {
-            Text("All").tag(SnipCompletionFilter.all)
-            Text(SnipCompletionLanguage.done).tag(SnipCompletionFilter.done)
-            Text(SnipCompletionLanguage.notDone).tag(SnipCompletionFilter.notDone)
-        }
-        .disabled(model.editingID != nil)
+        if !model.isShowingClipboard || model.isSearchExpanded {
+            Button("Select All") {
+                selectAllVisible()
+            }
+            .disabled(model.editingID != nil || !model.canSelectVisibleSnips)
 
-        Picker("Sort: \(sortModeTitle)", selection: sortModeBinding) {
-            Text("Newest first").tag(SnipSortMode.chronological)
-            Text("Manual").tag(SnipSortMode.manual)
-        }
+            Button("Move to New List…") {
+                focusedTarget = nil
+                moveSelectionToNewList()
+            }
+            .disabled(model.editingID != nil || !model.canSelectVisibleSnips || model.selection.isEmpty)
 
-        Divider()
-
-        Button("Select All") {
-            selectAllVisible()
-        }
-        .disabled(model.editingID != nil || !model.canSelectVisibleSnips)
-
-        Button("Move to New List…") {
-            focusedTarget = nil
-            moveSelectionToNewList()
-        }
-        .disabled(model.editingID != nil || !model.canSelectVisibleSnips || model.selection.isEmpty)
-
-        Divider()
-
-        Picker("Appearance", selection: appearanceBinding) {
-            Label("System", systemImage: "circle.lefthalf.filled")
-                .tag(AppAppearance.system)
-            Label("Light", systemImage: "sun.max")
-                .tag(AppAppearance.light)
-            Label("Dark", systemImage: "moon")
-                .tag(AppAppearance.dark)
+            Divider()
         }
 
         if let title = accessibilityPermissions.menuActionTitle {
@@ -74,9 +56,89 @@ struct PanelMoreButton: View {
             }
         }
 
+        if let syncedContentSettings, let syncNow,
+           syncedContentSettings.mode == .iCloudSync {
+            Button("Sync", systemImage: "arrow.triangle.2.circlepath") {
+                Task {
+                    guard syncedContentSettings.canSyncNow, !isSyncingManually else { return }
+                    isSyncingManually = true
+                    defer { isSyncingManually = false }
+                    await syncNow()
+                }
+            }
+            .disabled(!syncedContentSettings.canSyncNow || isSyncingManually)
+            .accessibilityIdentifier("sync-icloud")
+        }
+
         Button("Settings…") {
             openSettings()
         }
+    }
+
+    private var developmentBuild: DevelopmentBuildIdentity? {
+        DevelopmentBuildIdentity.current
+    }
+
+    private var moreLabel: String {
+        guard let developmentBuild else { return String(localized: "More") }
+        return String(localized: "More, development build \(developmentBuild.slot)")
+    }
+
+}
+
+struct PanelViewOptionsButton: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        Menu {
+            if model.isShowingClipboard {
+                Section("Show") {
+                    Picker("Show", selection: $model.clipboardViewOptions.onlyPinned) {
+                        Text("All").tag(false)
+                        Text("Pinned").tag(true)
+                    }
+                    .pickerStyle(.inline)
+                }
+                Section("Sort") {
+                    Picker("Sort", selection: $model.clipboardViewOptions.newestFirst) {
+                        Text("Newest first").tag(true)
+                        Text("Oldest first").tag(false)
+                    }
+                    .pickerStyle(.inline)
+                }
+            } else {
+                Section("Show") {
+                    Picker("Show", selection: completionFilterBinding) {
+                        Text("All").tag(SnipCompletionFilter.all)
+                        Text(SnipCompletionLanguage.done).tag(SnipCompletionFilter.done)
+                        Text(SnipCompletionLanguage.notDone).tag(SnipCompletionFilter.notDone)
+                    }
+                    .pickerStyle(.inline)
+                }
+                Section("Sort") {
+                    Picker("Sort", selection: sortModeBinding) {
+                        Text("Newest first").tag(SnipSortMode.chronological)
+                        Text("Manual").tag(SnipSortMode.manual)
+                    }
+                    .pickerStyle(.inline)
+                }
+            }
+        } label: {
+            Image(systemName: "line.3.horizontal.decrease")
+                .font(.system(size: 13, weight: .semibold))
+                .panelStandaloneActionControl()
+                .frame(
+                    width: PanelControlMetrics.floatingRowHeight,
+                    height: PanelControlMetrics.floatingRowHeight
+                )
+                .contentShape(Circle())
+        }
+        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .disabled(model.editingID != nil)
+        .help("View options")
+        .accessibilityLabel("View options")
+        .accessibilityIdentifier("workflow-options")
     }
 
     private var sortModeBinding: Binding<SnipSortMode> {
@@ -91,34 +153,5 @@ struct PanelMoreButton: View {
             get: { model.completionFilter },
             set: { model.completionFilter = $0 }
         )
-    }
-
-    private var developmentBuild: DevelopmentBuildIdentity? {
-        DevelopmentBuildIdentity.current
-    }
-
-    private var moreLabel: String {
-        guard let developmentBuild else { return String(localized: "More") }
-        return String(localized: "More, development build \(developmentBuild.slot)")
-    }
-
-    private var appearanceBinding: Binding<AppAppearance> {
-        Binding(
-            get: { model.appearance },
-            set: { model.setAppearance($0) }
-        )
-    }
-
-    private var completionFilterTitle: String {
-        model.completionFilter.title
-    }
-
-    private var sortModeTitle: String {
-        switch model.sortMode {
-        case .chronological:
-            String(localized: "Newest first")
-        case .manual:
-            String(localized: "Manual")
-        }
     }
 }

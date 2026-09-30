@@ -2,107 +2,84 @@ import SnipSnapCloud
 import SnipSnapCore
 import SwiftUI
 
-struct AttachmentSettingsActions {
-    let syncNow: @MainActor @Sendable () async -> Void
-    let clearDownloads: @MainActor @Sendable () async throws -> Void
-}
-
 struct SyncedContentSettingsView: View {
     @Bindable var model: SyncedContentSettingsModel
     @ObservedObject var clipboard: ClipboardHistory
     @State private var confirmsClipboardSync = false
-    @State private var clipboardDeleteError: String?
     var retryAction: (@MainActor @Sendable () async -> Void)?
-    var attachmentActions: AttachmentSettingsActions?
-    @State private var confirmsDelete = false
     @State private var confirmsUsingDeviceCopy = false
-    @State private var isClearingDownloads = false
-    @State private var isSyncing = false
-    @State private var clearDownloadsError: String?
+    @State private var isRetryingSync = false
+    @State private var isRetryingClipboardSync = false
 
     var body: some View {
         Form {
             Section("iCloud") {
-                Toggle("Sync with iCloud", isOn: syncEnabled)
-                    .disabled(!canChangeSync)
-                    .accessibilityIdentifier("icloud-sync-toggle")
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Sync with iCloud", isOn: syncEnabled)
+                        .disabled(!canChangeSync)
+                        .accessibilityIdentifier("icloud-sync-toggle")
+                    syncMessage
+                }
 
-                syncStatus
+                if model.canRetryFailedSync, let retryAction {
+                    Button("Try Again") {
+                        isRetryingSync = true
+                        Task {
+                            await retryAction()
+                            isRetryingSync = false
+                        }
+                    }
+                    .disabled(isRetryingSync)
+                    .accessibilityIdentifier("retry-icloud-sync")
+                }
+            }
 
+            Section("Clipboard") {
                 Toggle(isOn: Binding(
-                    get: { clipboard.clipboardSyncEnabled },
+                    get: { model.canEnableClipboardSync && clipboard.clipboardSyncEnabled },
                     set: { enabled in
-                        if enabled { confirmsClipboardSync = true }
+                        if enabled {
+                            guard model.canEnableClipboardSync else { return }
+                            confirmsClipboardSync = true
+                        }
                         else { clipboard.setSyncEnabled(false) }
                     }
                 )) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Sync clipboard history")
-                        Text("Turning this off doesn’t delete your history.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    Text("Sync clipboard history")
                 }
-                .disabled(model.mode != .iCloudSync)
+                .disabled(!model.canEnableClipboardSync)
                 .accessibilityIdentifier("clipboard-sync-toggle")
 
                 if let error = clipboard.syncError {
                     Label(error, systemImage: "exclamationmark.triangle")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    Button("Retry clipboard sync") { Task { await clipboard.syncNow() } }
-                }
-                if model.canRetryFailedSync, let retryAction {
-                    Button("Retry sync") { Task { await retryAction() } }
-                        .accessibilityIdentifier("retry-icloud-sync")
-                }
-            }
-
-            attachmentControls
-
-            if model.canDelete {
-                Section {
-                    Button("Delete synced content…", role: .destructive) {
-                        confirmsDelete = true
+                    Button("Try Again") {
+                        isRetryingClipboardSync = true
+                        Task {
+                            await clipboard.syncNow()
+                            isRetryingClipboardSync = false
+                        }
                     }
-                    .accessibilityIdentifier("delete-synced-content")
-                } header: {
-                    Text("iCloud Data")
-                } footer: {
-                    Text("Remove synced content from iCloud and your synced devices.")
+                    .disabled(isRetryingClipboardSync)
+                    .accessibilityIdentifier("retry-clipboard-sync")
                 }
             }
+
         }
         .formStyle(.grouped)
-        .alert("Delete synced content?", isPresented: $confirmsDelete) {
-            Button("Cancel", role: .cancel) {}
-            Button("Delete synced content", role: .destructive) {
-                Task {
-                    do {
-                        try await clipboard.deleteSyncedHistory()
-                        await model.deleteSyncedContent()
-                    } catch {
-                        AppDiagnostics.shared.record(.failure(
-                            operation: "clipboard.delete_synced",
-                            error: error,
-                            visibility: .user
-                        ))
-                        clipboardDeleteError = ClipboardSyncErrorMessage.deleteSyncedHistory(for: error)
-                    }
-                }
-            }
-        } message: {
-            Text("Deletes synced snips, attachments, and clipboard history, including pins, from iCloud and your synced devices. This Mac keeps a recovery copy.")
+        .onChange(of: model.canEnableClipboardSync) { _, canEnable in
+            if !canEnable { confirmsClipboardSync = false }
         }
         .alert("Sync clipboard history?", isPresented: $confirmsClipboardSync) {
             Button("Cancel", role: .cancel) {}
-            Button("Sync clipboard history") { clipboard.setSyncEnabled(true) }
+            Button("Sync clipboard history") {
+                guard model.canEnableClipboardSync else { return }
+                clipboard.setSyncEnabled(true)
+            }
         } message: {
             Text("Sync text, images, and pinned files across your devices. Files that have synced keep syncing after you unpin them.")
         }
-        .alert("Couldn’t delete synced content", isPresented: Binding(get: { clipboardDeleteError != nil }, set: { if !$0 { clipboardDeleteError = nil } })) {
-            Button("OK") { clipboardDeleteError = nil }
-        } message: { Text(clipboardDeleteError ?? "") }
         .alert("Turn off sync?", isPresented: $confirmsUsingDeviceCopy) {
             Button("Cancel", role: .cancel) {}
             Button("Turn off sync") {
@@ -116,88 +93,45 @@ struct SyncedContentSettingsView: View {
     init(
         model: SyncedContentSettingsModel,
         clipboard: ClipboardHistory,
-        retryAction: (@MainActor @Sendable () async -> Void)? = nil,
-        attachmentActions: AttachmentSettingsActions? = nil
+        retryAction: (@MainActor @Sendable () async -> Void)? = nil
     ) {
         self.model = model
         self.clipboard = clipboard
         self.retryAction = retryAction
-        self.attachmentActions = attachmentActions
-    }
-
-    private var syncStatus: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Group {
-                if isSyncBusy {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Image(systemName: statusImage)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(width: 16)
-            .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(model.statusTitle)
-                    .font(.subheadline.weight(.semibold))
-                    .accessibilityIdentifier("sync-status")
-                Text(model.detail)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(.vertical, 4)
     }
 
     @ViewBuilder
-    private var attachmentControls: some View {
-        if let attachmentActions {
-            Section {
-                LabeledContent("iCloud Attachments") {
-                    Button(isSyncing ? "Syncing…" : "Sync Now") {
-                        isSyncing = true
-                        Task {
-                            await attachmentActions.syncNow()
-                            isSyncing = false
-                        }
+    private var syncMessage: some View {
+        if showsSyncMessage {
+            HStack(alignment: .top, spacing: 6) {
+                if isSyncBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityHidden(true)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(model.statusTitle)
+                        .accessibilityIdentifier("sync-status")
+                    if showsSyncDetail {
+                        Text(model.detail)
                     }
-                    .disabled(isSyncing)
-                    .accessibilityIdentifier("sync-icloud-now")
                 }
-                LabeledContent("Downloaded files") {
-                    Button(isClearingDownloads ? "Clearing…" : "Clear Downloads") {
-                        isClearingDownloads = true
-                        clearDownloadsError = nil
-                        Task {
-                            do {
-                                try await attachmentActions.clearDownloads()
-                            } catch {
-                                AppDiagnostics.shared.record(.failure(
-                                    operation: "attachment.cache_clear",
-                                    error: error,
-                                    visibility: .user
-                                ))
-                                clearDownloadsError = String(localized: "Couldn’t clear downloaded files. Try again.")
-                            }
-                            isClearingDownloads = false
-                        }
-                    }
-                    .disabled(isClearingDownloads)
-                    .accessibilityIdentifier("clear-icloud-downloads")
-                }
-                if let clearDownloadsError {
-                    Label(clearDownloadsError, systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } header: {
-                Text("Storage")
-            } footer: {
-                Text("Downloaded files can be fetched again when you open them.")
+                .fixedSize(horizontal: false, vertical: true)
             }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private var showsSyncDetail: Bool {
+        if case .enabling(let issue) = model.state { return issue != nil }
+        return !isSyncBusy
+    }
+
+    private var showsSyncMessage: Bool {
+        switch model.state {
+        case .ready, .deleted: false
+        case .enabling, .syncing, .disabling, .deleting, .removalPending, .failed: true
         }
     }
 
@@ -228,17 +162,6 @@ struct SyncedContentSettingsView: View {
     private var canChangeSync: Bool {
         if model.canCancelEnable { return true }
         return model.mode == .iCloudSync ? model.canDisable : model.canEnable
-    }
-
-    private var statusImage: String {
-        switch model.state {
-        case .failed, .removalPending: return "exclamationmark.triangle"
-        default: break
-        }
-        switch model.mode {
-        case .localOnly: return "internaldrive"
-        case .iCloudSync: return "icloud"
-        }
     }
 
     private var isSyncBusy: Bool {

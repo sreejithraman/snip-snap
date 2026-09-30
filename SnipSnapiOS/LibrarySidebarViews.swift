@@ -5,7 +5,8 @@ struct ListSidebarView: View {
     let model: IOSAppModel
     @Binding var sheet: AppSheet?
     @Binding var editMode: EditMode
-    var importBackup: () -> Void = {}
+    let syncedContentSettings: SyncedContentSettingsModel
+    let syncNow: @MainActor () async -> Void
     let deleteList: (UUID) async -> Void
 
     private var selection: Binding<LibraryPage?> {
@@ -60,9 +61,10 @@ struct ListSidebarView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 LibraryActionsMenu(
                     model: model,
-                    importBackup: importBackup,
                     settings: { sheet = .settings },
                     editMode: $editMode,
+                    syncedContentSettings: syncedContentSettings,
+                    syncNow: syncNow,
                     reviewRecoveredEdits: model.recoverySnapshot.needsAttentionCount > 0
                         ? { sheet = .recoveryCenter }
                         : nil,
@@ -76,21 +78,16 @@ struct ListSidebarView: View {
                 }
                 .accessibilityIdentifier("new-list")
             }
-            if model.isCloudSyncActive {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    CloudLibraryActions(model: model)
-                }
-            }
         }
     }
 }
 
 struct LibraryActionsMenu: View {
     let model: IOSAppModel
-    let importBackup: () -> Void
     let settings: () -> Void
     @Binding var editMode: EditMode
-    var includesCloudActions = false
+    let syncedContentSettings: SyncedContentSettingsModel
+    let syncNow: @MainActor () async -> Void
     var reviewRecoveredEdits: (() -> Void)?
     var editSelectedList: (() -> Void)?
     let deleteList: (UUID) async -> Void
@@ -150,32 +147,15 @@ struct LibraryActionsMenu: View {
                 Divider()
             }
         }
-        Button("Import backup…", systemImage: "square.and.arrow.down", action: importBackup)
-        Button("Settings", systemImage: "gearshape", action: settings)
-            .accessibilityIdentifier("settings")
         if let reviewRecoveredEdits {
             Button("Needs attention", systemImage: "exclamationmark.bubble", action: reviewRecoveredEdits)
                 .accessibilityIdentifier("needs-attention")
-        }
-        if includesCloudActions, model.isCloudSyncActive {
             Divider()
-            CloudLibraryActions(model: model)
         }
-    }
-}
+        LibrarySyncAction(syncedContentSettings: syncedContentSettings, syncNow: syncNow)
 
-private struct CloudLibraryActions: View {
-    let model: IOSAppModel
-
-    var body: some View {
-        Button("Sync Now", systemImage: "arrow.triangle.2.circlepath") {
-            Task { await model.syncWhenPossible() }
-        }
-        .accessibilityIdentifier("sync-icloud-now")
-        Button("Clear Downloaded Files", systemImage: "icloud.and.arrow.down") {
-            Task { await model.clearDownloadedFiles() }
-        }
-        .accessibilityIdentifier("clear-icloud-downloads")
+        Button("Settings", systemImage: "gearshape", action: settings)
+            .accessibilityIdentifier("settings")
     }
 }
 
@@ -226,3 +206,24 @@ struct DevelopmentMenuBoundsKey: PreferenceKey {
     }
 }
 #endif
+
+struct LibrarySyncAction: View {
+    let syncedContentSettings: SyncedContentSettingsModel
+    let syncNow: @MainActor () async -> Void
+    @State private var isSyncingManually = false
+
+    var body: some View {
+        if syncedContentSettings.mode == .iCloudSync {
+            Button("Sync", systemImage: "arrow.triangle.2.circlepath") {
+                Task {
+                    guard syncedContentSettings.canSyncNow, !isSyncingManually else { return }
+                    isSyncingManually = true
+                    defer { isSyncingManually = false }
+                    await syncNow()
+                }
+            }
+            .disabled(!syncedContentSettings.canSyncNow || isSyncingManually)
+            .accessibilityIdentifier("sync-icloud")
+        }
+    }
+}

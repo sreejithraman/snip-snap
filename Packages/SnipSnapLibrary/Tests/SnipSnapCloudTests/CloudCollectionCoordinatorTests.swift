@@ -776,6 +776,57 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
   }
 
   @MainActor
+  func testSimulatedAutomaticSyncPublishesResultAndActivatesWritableCloudLibrary() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("SimulatedAutomaticSync-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let original = try SwiftDataSnipLibrary(
+      storeURL: root.appendingPathComponent("original.store", isDirectory: false)
+    )
+    let assembly = SnipLibraryAssembly(
+      library: original,
+      syncModeRootURL: root,
+      initializeSyncModeStore: true
+    )
+    let services = SnipSnapCloudAppAssembly.simulatedServices(
+      rootURL: root,
+      syncModeStore: try XCTUnwrap(assembly.syncModeStore)
+    )
+    let session = try XCTUnwrap(services.syncSession)
+    let receivedResult = expectation(description: "Scheduled fake sync publishes its result")
+    var result: SnipSnapCloudSyncResult?
+    let observer = Task {
+      var iterator = session.automaticSyncResults.makeAsyncIterator()
+      result = await iterator.next()
+      receivedResult.fulfill()
+    }
+    defer { observer.cancel() }
+
+    await session.scheduleAutomaticSync()
+    await fulfillment(of: [receivedResult], timeout: 5)
+    observer.cancel()
+    await observer.value
+
+    XCTAssertEqual(result, .contentUpdated)
+    let active = try await session.activeLibrary()
+    XCTAssertNotNil(active.recoveryScope)
+    _ = try await active.library.perform(
+      .add(
+        content: "written after scheduled sync",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [],
+        requestID: UUID(),
+        now: Date(timeIntervalSince1970: 5)
+      ),
+      sortedBy: .manual
+    )
+    let snapshot = await active.library.snapshot(sortedBy: .manual)
+    XCTAssertEqual(snapshot.snips.map(\.content), ["written after scheduled sync"])
+  }
+
+  @MainActor
   func testSettingsResetKeepsAppAssemblyOnTheFreshWritableStore() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudCollectionSharedAssembly-\(UUID().uuidString)")

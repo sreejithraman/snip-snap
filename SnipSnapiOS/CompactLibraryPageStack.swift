@@ -131,6 +131,8 @@ struct CompactLibraryPageStack: View {
                         model: clipboard,
                         libraryModel: model,
                         copyShare: copyShare,
+                        syncedContentSettings: libraryActions.syncedContentSettings,
+                        syncNow: libraryActions.syncNow,
                         sheet: $sheet,
                         settings: { sheet = .settings },
                         viewState: clipboardViewState

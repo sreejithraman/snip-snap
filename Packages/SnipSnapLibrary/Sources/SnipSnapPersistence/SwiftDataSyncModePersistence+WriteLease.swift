@@ -282,6 +282,16 @@ private actor ModeManagedSnipLibrary: SnipLibrary {
     return snapshot
   }
 
+  func archive() async throws -> SnipLibraryArchive {
+    let snapshot = try await checkedSnapshot(sortedBy: .manual)
+    return SnipLibraryArchive(
+      snips: snapshot.snips,
+      lists: snapshot.lists,
+      seenRequestIDs: Set(snapshot.snips.map(\.requestID)),
+      attachmentURLs: snapshot.attachmentURLs
+    )
+  }
+
   func perform(
     _ command: SnipLibraryCommand,
     sortedBy sortMode: SnipSortMode

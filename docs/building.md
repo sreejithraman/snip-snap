@@ -78,20 +78,17 @@ ID:
   --ipad-destination 'platform=iOS Simulator,name=Example iPad'
 ```
 
-Run the full iOS UI suite when changing an iOS workflow:
+Run the full iOS UI suite against the isolated Dev app when changing an iOS workflow.
+Select a booted Simulator and pass its ID:
 
 ```sh
-xcodebuild \
-  -project SnipSnap.xcodeproj \
-  -scheme SnipSnapiOS \
-  -configuration Debug \
-  -destination 'platform=iOS Simulator,name=Example iPhone' \
-  -derivedDataPath /tmp/snip-snap-ios-ui-tests \
-  CODE_SIGNING_ALLOWED=NO \
-  SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER= \
-  -only-testing:SnipSnapiOSUITests \
-  test
+./scripts/run.sh --ios-simulator --simulator-id <booted-simulator-id> --ui-test all
 ```
+
+Use a test method name instead of `all` to run one workflow. Both paths use this
+worktree's Dev bundle ID, app name, data store, and badge. The runner starts and
+cleans up the local Share fixture for the full suite and related focused tests;
+these checks use Python 3 to serve the loopback page.
 
 ## Run the local Dev app
 

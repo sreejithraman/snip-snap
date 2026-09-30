@@ -9,11 +9,7 @@ derived_data_prefix="${SNIP_SNAP_DERIVED_DATA:-/private/tmp/snip-snap-release-te
 iphone_destination="${SNIP_SNAP_IPHONE_TEST_DESTINATION:-platform=iOS Simulator,name=iPhone 17 Pro,OS=latest}"
 ipad_destination="${SNIP_SNAP_IPAD_TEST_DESTINATION:-platform=iOS Simulator,name=iPad Pro 13-inch (M5),OS=latest}"
 xcodebuild_tool="${SNIP_SNAP_XCODEBUILD:-xcodebuild}"
-python_tool="${SNIP_SNAP_PYTHON:-python3}"
-share_fixture_pid=""
-share_fixture_port="58493"
-share_fixture_lock="/private/tmp/snip-snap-share-fixture-${share_fixture_port}.lock"
-share_fixture_lock_owned="0"
+source "$script_dir/share-fixture.sh"
 
 usage() {
     print -u2 "Usage: $program [--iphone-destination DESTINATION] [--ipad-destination DESTINATION]"
@@ -46,51 +42,13 @@ derived_data_root="$(/usr/bin/mktemp -d "${derived_data_prefix}.XXXXXX")"
 owner_marker="$derived_data_root/.snip-snap-release-tests-owned"
 /usr/bin/touch "$owner_marker"
 cleanup() {
-    if [[ -n "$share_fixture_pid" ]]; then
-        /bin/kill "$share_fixture_pid" >/dev/null 2>&1 || true
-        wait "$share_fixture_pid" 2>/dev/null || true
-        share_fixture_pid=""
-        print "Share fixture stopped."
-    fi
-    if [[ "$share_fixture_lock_owned" == "1" ]]; then
-        /bin/rmdir "$share_fixture_lock" >/dev/null 2>&1 || true
-        share_fixture_lock_owned="0"
-    fi
+    share_fixture_cleanup
     [[ -f "$owner_marker" ]] && /bin/rm -rf "$derived_data_root"
 }
 
 trap cleanup EXIT
-start_share_fixture() {
-    local root="$derived_data_root/share-fixture"
-    local port_file="$derived_data_root/share-fixture-port"
-    local log_file="$derived_data_root/share-fixture.log"
-    /bin/mkdir "$share_fixture_lock" 2>/dev/null || {
-        print -u2 "Release matrix: another Share fixture owns loopback port $share_fixture_port."
-        return 1
-    }
-    share_fixture_lock_owned="1"
-    /bin/mkdir -p "$root"
-    print -r -- '<!doctype html><html><head><title>Snip Snap Share Fixture</title></head><body><h1>Snip Snap Share Fixture</h1></body></html>' > "$root/index.html"
-    "$python_tool" "$script_dir/local-share-fixture.py" "$root" "$port_file" "$share_fixture_port" \
-        >"$log_file" 2>&1 &
-    share_fixture_pid="$!"
-    for _ in {1..100}; do
-        [[ -s "$port_file" ]] && break
-        /bin/kill -0 "$share_fixture_pid" >/dev/null 2>&1 || break
-        /bin/sleep 0.05
-    done
-    [[ -s "$port_file" ]] || {
-        print -u2 "Release matrix: the local Share fixture did not start."
-        [[ ! -s "$log_file" ]] || /bin/cat "$log_file" >&2
-        return 1
-    }
-    local port="$(/bin/cat "$port_file")"
-    [[ "$port" == "$share_fixture_port" ]] || {
-        print -u2 "Release matrix: the local Share fixture returned an invalid port."
-        return 1
-    }
-    print "Share fixture started: http://127.0.0.1:$port/"
-}
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 run_transfer_test() {
     local destination="$1"
@@ -147,7 +105,7 @@ run_share_process() {
         test
 }
 
-start_share_fixture || exit $?
+share_fixture_start "$derived_data_root" "$script_dir/local-share-fixture.py" "Release matrix" || exit $?
 
 print "Release matrix tests: iPhone 25 MiB transfer"
 run_transfer_test "$iphone_destination" "$derived_data_root/iphone-transfer" || exit $?

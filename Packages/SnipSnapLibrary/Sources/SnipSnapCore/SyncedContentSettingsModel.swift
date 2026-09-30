@@ -194,6 +194,7 @@ public final class SyncedContentSettingsModel {
 
   public private(set) var mode: SyncedContentMode
   public private(set) var state: SyncedContentSettingsState
+  private var isPerformingExplicitSync = false
   private let enableAction: EnableAction?
   private let issueMapper: IssueMapper
   private let cancelEnableAction: CancelEnableAction?
@@ -256,6 +257,22 @@ public final class SyncedContentSettingsModel {
     guard mode == .localOnly, cancelEnableAction != nil else { return false }
     if case .enabling = state { return true }
     return false
+  }
+
+  public var canEnableClipboardSync: Bool {
+    guard mode == .iCloudSync else { return false }
+    return switch state {
+    case .ready, .syncing, .failed: true
+    case .enabling, .disabling, .deleting, .removalPending, .deleted: false
+    }
+  }
+
+  public var canSyncNow: Bool {
+    guard mode == .iCloudSync, !isPerformingExplicitSync else { return false }
+    return switch state {
+    case .ready, .failed: true
+    case .enabling, .syncing, .disabling, .deleting, .removalPending, .deleted: false
+    }
   }
 
   public var canDisable: Bool {
@@ -373,6 +390,14 @@ public final class SyncedContentSettingsModel {
   public func recordRemovalPending(_ pending: Bool) {
     guard mode == .iCloudSync else { return }
     state = pending ? .removalPending : .deleted
+  }
+
+  /// Shares admission across user retry controls without clearing an outstanding issue.
+  public func performExplicitSync(_ action: @MainActor () async -> Void) async {
+    guard !isPerformingExplicitSync else { return }
+    isPerformingExplicitSync = true
+    defer { isPerformingExplicitSync = false }
+    await action()
   }
 
   public func recordSyncStarted() {

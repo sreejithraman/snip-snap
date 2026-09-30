@@ -1,6 +1,17 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Backups" : {},
+    "Couldn’t Complete Backup" : {},
+    "Create Backup" : {},
+    "Create Backup…" : {},
+    "Create a backup" : {},
+    "Diagnostics" : {},
+    "Import Backup…" : {},
+    "Import a backup" : {},
+    "Merge a backup into your library. Your existing snips stay." : {},
+    "Preparing backup" : {},
+    "Save all your snips, lists, and attachments to a backup folder." : {},
     "Unsent drafts from before this update" : {},
     "Move to this Inbox" : {},
     "Review items needing attention" : {},

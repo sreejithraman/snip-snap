@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SnipSnapCore
+import SnipSnapPersistence
 
 enum LibraryPage: Hashable {
     case clipboard
@@ -73,6 +74,7 @@ final class IOSAppModel {
     private var hasKnownCloudAttachmentStates = false
     private(set) var pendingImportPreview: SnipImportPreview?
     private var pendingImportPreviewID: UUID?
+    private var backupImportOperationID: UUID?
     var toast: AppToast?
     private(set) var selectedPage: LibraryPage = .list(SnipList.inboxID)
     private var selectionRevision: UInt64 = 0
@@ -652,6 +654,7 @@ final class IOSAppModel {
     func prepareAttachment(
         _ attachmentID: UUID,
         for use: SyncedAttachmentUse,
+        fallbackLocalURL: URL? = nil,
         showsFailureAlert: Bool = true,
         onFailure: ((String) -> Void)? = nil,
         onCancellation: (() -> Void)? = nil
@@ -663,15 +666,19 @@ final class IOSAppModel {
             return preparedURL
         }
         preparedAttachments[attachmentID] = nil
-        guard let cloudSyncHandler else { return attachmentURLs[attachmentID] }
+        let localURL = [fallbackLocalURL, attachmentURLs[attachmentID]]
+            .compactMap { $0 }
+            .first(where: isAvailablePreparedAttachment)
+        guard let cloudSyncHandler else { return localURL }
         if hasKnownCloudSyncActivity, !isCloudSyncActive {
-            return attachmentURLs[attachmentID]
+            return localURL
         }
         if hasKnownCloudSyncActivity,
            hasKnownCloudAttachmentStates,
-           attachmentTransferStates[attachmentID] == nil
+           attachmentTransferStates[attachmentID] == nil,
+           let localURL
         {
-            return attachmentURLs[attachmentID]
+            return localURL
         }
         var group = attachmentPreparations[attachmentID] ?? AttachmentPreparationGroup(
             activeCount: 0,
@@ -1083,24 +1090,60 @@ final class IOSAppModel {
         self.toast = nil
     }
 
-    func previewBackupImport(from url: URL) async {
+    func createBackup(at destination: URL) async throws {
         haptics.invalidatePendingFeedback()
+        let archive = try await session.withExclusiveAccess { session in
+            try await session.archive()
+        }
+        try await JSONSnipArchiveTransfer.write(archive, to: destination) { @MainActor [self] attachment in
+            guard let url = await prepareAttachment(
+                attachment.id,
+                for: .export,
+                fallbackLocalURL: archive.attachmentURLs[attachment.id],
+                showsFailureAlert: false
+            ) else {
+                try Task.checkCancellation()
+                throw SnipLibraryError.attachmentCopyFailed
+            }
+            return url
+        }
+    }
+
+    func previewBackupImport(from url: URL) async throws {
+        haptics.invalidatePendingFeedback()
+        cancelBackupImport()
+        let operationID = UUID()
+        backupImportOperationID = operationID
         do {
             let preview = try await session.withExclusiveAccess { session in
+                try Task.checkCancellation()
                 let didAccess = url.startAccessingSecurityScopedResource()
                 defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
                 return try await session.previewImport(from: url)
             }
+            guard backupImportOperationID == operationID, !Task.isCancelled else {
+                await session.withExclusiveAccess { session in
+                    await session.cancelImport(id: preview.id)
+                }
+                throw CancellationError()
+            }
             pendingImportPreviewID = preview.id
             pendingImportPreview = preview.value
         } catch {
-            pendingImportPreviewID = nil
-            pendingImportPreview = nil
-            presentError(error)
+            if backupImportOperationID == operationID {
+                backupImportOperationID = nil
+                pendingImportPreviewID = nil
+                pendingImportPreview = nil
+            }
+            if !(error is CancellationError) {
+                diagnostics.record(.failure(operation: "backup.import_preview", error: error, visibility: .user))
+            }
+            throw error
         }
     }
 
     func cancelBackupImport() {
+        backupImportOperationID = nil
         let id = pendingImportPreviewID
         pendingImportPreviewID = nil
         pendingImportPreview = nil
@@ -1112,23 +1155,29 @@ final class IOSAppModel {
         }
     }
 
-    func confirmBackupImport() async {
+    func confirmBackupImport() async throws {
         haptics.invalidatePendingFeedback()
         guard pendingImportPreview != nil, let id = pendingImportPreviewID else { return }
+        pendingImportPreviewID = nil
+        pendingImportPreview = nil
+        backupImportOperationID = nil
         do {
             guard let (result, recovery) = try await session.withExclusiveAccess({ session in
-                try await session.applyPendingImport(id: id, sortedBy: .chronological)
+                try Task.checkCancellation()
+                return try await session.applyPendingImport(id: id, sortedBy: .chronological)
             }) else { return }
             clearPendingDeletionToast()
-            pendingImportPreviewID = nil
-            pendingImportPreview = nil
             apply(result.snapshot)
             recoverySnapshot = recovery
         } catch {
-            pendingImportPreviewID = nil
-            pendingImportPreview = nil
-            presentError(error)
-            await load()
+            await session.withExclusiveAccess { session in
+                await session.cancelImport(id: id)
+            }
+            if !(error is CancellationError) {
+                diagnostics.record(.failure(operation: "backup.import_apply", error: error, visibility: .user))
+                await load()
+            }
+            throw error
         }
     }
 
