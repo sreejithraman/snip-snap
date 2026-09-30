@@ -1,0 +1,4 @@
+Snip Snap 0.6.0 Beta 124 — Mac
+
+- Remove Mac floating header title
+- Organize Settings, simplify menus, and add Sync
