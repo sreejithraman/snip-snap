@@ -8,7 +8,6 @@ import UIKit
 
 private enum CompactControlMetrics {
     static let minimumInteractiveLength: CGFloat = 44
-    static let contentTransitionDuration: TimeInterval = 0.35
 }
 
 private struct CompactGlassCircleButton<Label: View>: View {
@@ -108,12 +107,9 @@ struct CompactLibraryControls: View {
                 composerPages
             }
 
-            if !showsListTabs {
+            if !showsListTabs && !model.isSearchPresented {
                 GlassEffectContainer {
-                    if isClipboardSelected {
-                        pasteButton
-                            .transition(.opacity)
-                    }
+                    pasteButton
                 }
             } else if !model.isSearchPresented {
                 navigationControls
@@ -180,12 +176,8 @@ struct CompactLibraryControls: View {
     }
 
     private var listToolbarWidth: CGFloat {
-        // Reserve the same space on both sides, including when Paste is absent.
+        // Reserve the same space on both sides for Paste and Search.
         max(120, min(256, toolbarWidth - 168))
-    }
-
-    private var contentTransition: Animation? {
-        reduceMotion ? nil : .easeInOut(duration: CompactControlMetrics.contentTransitionDuration)
     }
 
     private var navigationControls: some View {
@@ -211,11 +203,9 @@ struct CompactLibraryControls: View {
 
             HStack {
                 pasteButton
-                    .opacity(isClipboardSelected ? 1 : 0)
-                    .animation(isClipboardSelected ? contentTransition : nil, value: isClipboardSelected)
                     .offset(x: -travel)
-                    .allowsHitTesting(isClipboardSelected && !motion.isDragging)
-                    .accessibilityHidden(!isClipboardSelected || motion.isDragging)
+                    .allowsHitTesting(!motion.isDragging)
+                    .accessibilityHidden(motion.isDragging)
 
                 Spacer(minLength: 0)
 
@@ -238,17 +228,64 @@ struct CompactLibraryControls: View {
 
     private var pasteButton: some View {
         CompactGlassCircleButton(length: showsListTabs ? navigationControlLength : max(48, controlLength)) {
-            let providers = UIPasteboard.general.itemProviders
-            Task { await clipboard.capture(providers) }
+            if isClipboardSelected {
+                let providers = UIPasteboard.general.itemProviders
+                Task { await clipboard.capture(providers) }
+            } else {
+                pasteAndSave()
+            }
         } label: {
             Image(systemName: "doc.on.clipboard")
                 .font(showsListTabs ? .system(size: navigationControlLength * 20 / 48, weight: .medium) : .title3.weight(.medium))
         }
-        .disabled(clipboard.isPasting || !isClipboardSelected || motion.isDragging)
-        .accessibilityLabel("Paste")
+        .disabled(motion.isDragging || (isClipboardSelected
+            ? clipboard.isPasting
+            : !showsComposer || storage.isSaving || isStaging))
+        .accessibilityLabel(isClipboardSelected ? "Paste" : "Paste and Save")
         .accessibilityIdentifier("paste-to-clipboard")
         .glassEffectID("paste", in: composerGlass)
         .glassEffectTransition(.materialize)
+    }
+
+    private func pasteAndSave() {
+        guard showsComposer, !storage.isSaving, !isStaging else { return }
+        model.haptics.invalidatePendingFeedback()
+        let listID = model.selectedListID
+        let pasteboard = UIPasteboard.general
+        let text = pasteboard.string ?? ""
+        let image = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? pasteboard.image : nil
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || image != nil else {
+            model.presentError(
+                String(localized: "There’s nothing to paste. Copy text or an image, then try again."),
+                operation: "snip.paste_read",
+                diagnosticCode: "snip.emptyClipboard"
+            )
+            return
+        }
+        storage.isSaving = true
+        Task {
+            var stagedFiles: [StagedAttachment] = []
+            defer {
+                AttachmentDraftStager.clean(stagedFiles)
+                storage.isSaving = false
+            }
+            do {
+                if let image {
+                    stagedFiles = try await AttachmentMediaStager.stage(
+                        .camera(image), in: storage.stagingDirectory
+                    )
+                }
+                await model.createSnip(
+                    content: text,
+                    in: listID,
+                    attachmentURLs: stagedFiles.map(\.url),
+                    selectCreatedSnip: false
+                )
+            } catch {
+                model.presentError(error, operation: "snip.paste_save")
+            }
+        }
     }
 
     private var frame: ListPageFrame {
