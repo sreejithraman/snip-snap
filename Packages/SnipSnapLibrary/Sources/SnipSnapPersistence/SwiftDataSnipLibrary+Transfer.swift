@@ -388,6 +388,24 @@ extension SwiftDataSnipLibrary {
     }
   }
 
+  func retireCompletedCloudFullReenable(
+    namespaceKey: CloudSyncNamespaceKey,
+    transitionID: UUID
+  ) throws {
+    guard let container else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    guard try SwiftDataCloudFullOperationReceipts.retire(
+      .reenableTransition(transitionID),
+      namespaceKey: namespaceKey.rawValue,
+      context: context
+    ) else { return }
+    try afterMutationBeforeSave()
+    try lock.check()
+    try context.save()
+  }
+
   func recognizesAppliedCloudFullReenable(
     _ proof: CloudFullReenableCommitProof
   ) throws -> Bool {

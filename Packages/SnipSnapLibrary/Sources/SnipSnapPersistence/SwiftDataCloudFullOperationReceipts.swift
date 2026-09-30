@@ -66,6 +66,17 @@ enum SwiftDataCloudFullOperationReceipts {
     ))
   }
 
+  static func retire(
+    _ operation: CloudFullReceiptOperation,
+    namespaceKey: String,
+    context: ModelContext
+  ) throws -> Bool {
+    guard let receipt = try receipt(for: operation, namespaceKey: namespaceKey, context: context)
+    else { return false }
+    context.delete(receipt)
+    return true
+  }
+
   /// Beta 80 stored re-enable receipts under the committed-batch identity.
   /// A matching plan digest proves which operation created the ambiguous legacy row.
   static func migrateLegacyReenableReceipt(
