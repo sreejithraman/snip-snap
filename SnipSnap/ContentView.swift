@@ -127,7 +127,7 @@ struct ContentView: View {
         }
     }
 
-    private var panelShell: some View {
+    private var panelLayout: some View {
         VStack(spacing: SnipSnapSpacing.relatedContent) {
             PanelHeaderView(
                 model: model,
@@ -178,6 +178,10 @@ struct ContentView: View {
             minWidth: AppWindowDefaults.minimumContentSize.width,
             minHeight: AppWindowDefaults.minimumContentSize.height
         )
+    }
+
+    private var panelShell: some View {
+        panelLayout
         .onAppear {
             cacheComposerDraft(for: model.activeListID)
             if model.hasActiveQuery { model.enterSearch() }
@@ -227,24 +231,7 @@ struct ContentView: View {
                 focusedTarget = .search
             }
         }
-        .onReceive(coordinator.panelFocusRequests) { request in
-            switch request {
-            case .search:
-                expandSearch()
-            case .clipboard:
-                focusedTarget = nil
-                Task { @MainActor in
-                    await Task.yield()
-                    if model.isShowingClipboard,
-                       !model.isSearchExpanded,
-                       model.editingID == nil {
-                        focusedTarget = .clipboard
-                    }
-                }
-            case .inlineEntry:
-                collapseSearch(focus: .inlineEntry)
-            }
-        }
+        .onReceive(coordinator.panelFocusRequests, perform: handlePanelFocusRequest)
         .focusedValue(
             \.snipCommandModel,
             hasSnipCommandFocus ? model : nil
@@ -278,6 +265,25 @@ struct ContentView: View {
         }
         .onChange(of: model.presentedError, initial: true) { _, _ in
             coordinator.updatePresentedError()
+        }
+    }
+
+    private func handlePanelFocusRequest(_ request: PanelFocusRequest) {
+        switch request {
+        case .search:
+            expandSearch()
+        case .clipboard:
+            focusedTarget = nil
+            Task { @MainActor in
+                await Task.yield()
+                if model.isShowingClipboard,
+                   !model.isSearchExpanded,
+                   model.editingID == nil {
+                    focusedTarget = .clipboard
+                }
+            }
+        case .inlineEntry:
+            collapseSearch(focus: .inlineEntry)
         }
     }
 
