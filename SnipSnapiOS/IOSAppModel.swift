@@ -104,7 +104,26 @@ final class IOSAppModel {
     }
     private var queuedNewListAfterCancel: QueuedNewListRequest?
     var selectedSnipID: UUID?
-    var selectedSnipIDs: Set<UUID> = []
+    var selectedSnipIDs: Set<UUID> = [] {
+        didSet {
+            let added = selectedSnipIDs.subtracting(oldValue)
+            // Individual taps prepend the newest item. Bulk selection has a stable list order.
+            let newIDs = Snip.sorted(snips.filter { added.contains($0.id) }, by: sortMode).map(\.id)
+            selectedSnipOrder = newIDs + selectedSnipOrder.filter { selectedSnipIDs.contains($0) }
+        }
+    }
+    private var selectedSnipOrder: [UUID] = []
+    var isSelectingSnips = false
+    var isSelectionExpanded = false
+    struct NewListMoveRequest {
+        let ids: [UUID]
+        let sortMode: SnipSortMode
+        let selectionSessionID: UUID?
+    }
+    var newListMoveRequest: NewListMoveRequest?
+    var isPerformingGatheredAction = false
+    /// Identifies gathering work across asynchronous move requests.
+    @ObservationIgnored private(set) var gatheringSessionID = UUID()
     var isSearchPresented = false {
         didSet {
             if isSearchPresented != oldValue { selectionRevision &+= 1 }
@@ -185,7 +204,7 @@ final class IOSAppModel {
         if case .list(let listID) = page { lastSelectedListID = listID }
         setSelectedPage(page)
         selectedSnipID = nil
-        selectedSnipIDs = []
+        if page == .clipboard { endSelectingSnips() }
     }
 
     private func setSelectedPage(_ page: LibraryPage) {
@@ -202,6 +221,10 @@ final class IOSAppModel {
     func endSelectingSnips() {
         haptics.invalidatePendingFeedback()
         selectedSnipIDs = []
+        isSelectingSnips = false
+        isSelectionExpanded = false
+        newListMoveRequest = nil
+        gatheringSessionID = UUID()
     }
 
     func beginEditingSnip(_ id: UUID) {
@@ -248,11 +271,48 @@ final class IOSAppModel {
     func selectSnips(_ ids: Set<UUID>) {
         guard ids != selectedSnipIDs else { return }
         selectedSnipIDs = ids
+        if !ids.isEmpty { isSelectingSnips = true }
         haptics.emit(.selection, for: haptics.beginInteraction())
     }
 
-    var selectedVisibleSnips: [Snip] {
-        visibleSnips.filter { selectedSnipIDs.contains($0.id) }
+    var selectedSnips: [Snip] {
+        let byID = Dictionary(uniqueKeysWithValues: snips.map { ($0.id, $0) })
+        return selectedSnipOrder.compactMap { byID[$0] }
+    }
+
+    func moveDestinations(for snips: [Snip]) -> [SnipList] {
+        lists.filter { list in snips.contains { $0.listID != list.id } }
+    }
+
+    func requestNewListMove(snips: [Snip], fromSelection: Bool = false) {
+        guard !snips.isEmpty, !isPerformingGatheredAction else { return }
+        newListMoveRequest = NewListMoveRequest(
+            ids: snips.map(\.id), sortMode: fromSelection ? sortMode : .chronological,
+            selectionSessionID: fromSelection ? gatheringSessionID : nil
+        )
+    }
+
+    @discardableResult
+    func createListAndMove(_ request: NewListMoveRequest, name: String) async -> Bool {
+        guard !isPerformingGatheredAction else { return false }
+        isPerformingGatheredAction = true
+        defer { isPerformingGatheredAction = false }
+        return await withUserMutation { interaction in
+            guard request.selectionSessionID.map({ $0 == gatheringSessionID }) ?? true else { return false }
+            let ids = request.ids.filter { id in snips.contains { $0.id == id } }
+            guard !ids.isEmpty, let listID = await createListUnlocked(
+                name: name, systemImage: "list.bullet", color: nil, selectCreatedList: false
+            ) else { return false }
+            let moved = await moveSelectionUnlocked(
+                ids: ids, to: listID, sortedBy: request.sortMode, feedbackInteraction: interaction,
+                selectionSessionID: request.selectionSessionID
+            )
+            if moved, request.selectionSessionID == nil {
+                rememberSelectedList(listID)
+                selectedSnipID = ids.first
+            }
+            return moved
+        }
     }
 
     var visibleSnips: [Snip] {
@@ -361,18 +421,21 @@ final class IOSAppModel {
 
     @discardableResult
     func deleteSelection() async -> Bool {
-        await withUserMutation { interaction in
-            await deleteSnips(ids: selectedVisibleSnipIDs, feedbackInteraction: interaction)
+        let ids = existingSelectedSnipIDs
+        return await withUserMutation { interaction in
+            await deleteSnips(ids: ids, feedbackInteraction: interaction)
         }
     }
 
     @discardableResult
     func mergeSelection() async -> Bool {
-        await withUserMutation { interaction in
-            let ids = selectedVisibleSnipIDs
+        let ids = existingSelectedSnipIDs
+        let sessionID = gatheringSessionID
+        return await withUserMutation { interaction in
             guard ids.count >= 2 else { return false }
             return await performUserAction(.merge(ids: ids, now: Date()), feedbackInteraction: interaction) { outcome in
-                guard case .merged(let snip) = outcome else { return }
+                guard case .merged(let snip) = outcome,
+                      gatheringSessionID == sessionID else { return }
                 selectedSnipID = snip.id
                 selectedSnipIDs = [snip.id]
                 if completionFilter == .done { completionFilter = .all }
@@ -389,8 +452,14 @@ final class IOSAppModel {
 
     @discardableResult
     func moveSelection(to listID: UUID) async -> Bool {
-        await withUserMutation { interaction in
-            await moveSelectionUnlocked(to: listID, feedbackInteraction: interaction)
+        let ids = selectedSnips.map(\.id)
+        let moveSortMode = sortMode
+        let sessionID = gatheringSessionID
+        return await withUserMutation { interaction in
+            await moveSelectionUnlocked(
+                ids: ids, to: listID, sortedBy: moveSortMode, feedbackInteraction: interaction,
+                selectionSessionID: sessionID
+            )
         }
     }
 
@@ -401,8 +470,9 @@ final class IOSAppModel {
 
     @discardableResult
     func setSelectionDone(_ done: Bool) async -> Bool {
-        await withUserMutation { interaction in
-            await setSelectionDoneUnlocked(done, feedbackInteraction: interaction)
+        let ids = existingSelectedSnipIDs
+        return await withUserMutation { interaction in
+            await setDoneUnlocked(ids: ids, done: done, feedbackInteraction: interaction)
         }
     }
 
@@ -893,23 +963,27 @@ final class IOSAppModel {
     }
 
     private func moveSnipUnlocked(id: UUID, to listID: UUID, feedbackInteraction: UUID?) async -> Bool {
-        return await performUserAction(
-            .moveChronologically(ids: [id], to: listID), feedbackInteraction: feedbackInteraction
-        ) { _ in
+        let moved = await moveSelectionUnlocked(
+            ids: [id], to: listID, sortedBy: .chronological, feedbackInteraction: feedbackInteraction
+        )
+        if moved {
             rememberSelectedList(listID)
             selectedSnipID = id
         }
+        return moved
     }
 
-    private func moveSelectionUnlocked(to listID: UUID, feedbackInteraction: UUID?) async -> Bool {
-        let selected = selectedVisibleSnipIDs
-        let ids = visibleSnips.map(\.id).filter(selected.contains)
+    private func moveSelectionUnlocked(
+        ids: [UUID], to listID: UUID, sortedBy moveSortMode: SnipSortMode,
+        feedbackInteraction: UUID?, selectionSessionID: UUID? = nil
+    ) async -> Bool {
         guard !ids.isEmpty else { return false }
+        let moving = Set(ids)
         let command: SnipLibraryCommand
-        if sortMode == .manual {
-            let moving = Set(ids)
+        if moveSortMode == .manual {
+            let currentSnips = (await session.state(sortedBy: .manual)).library.snips
             let firstDestinationID = Snip.sorted(
-                snips.filter { $0.listID == listID && !moving.contains($0.id) },
+                currentSnips.filter { $0.listID == listID && !moving.contains($0.id) },
                 by: .manual
             ).first?.id
             command = .place(ids: ids, in: listID, before: firstDestinationID, basedOn: .manual)
@@ -917,8 +991,12 @@ final class IOSAppModel {
             command = .moveChronologically(ids: ids, to: listID)
         }
         return await performUserAction(command, feedbackInteraction: feedbackInteraction) { _ in
-            selectedSnipIDs = []
-            selectedSnipID = nil
+            // Shared movement must not consume a newer selection, or an ordinary item's selection.
+            guard let selectionSessionID, selectionSessionID == gatheringSessionID else { return }
+            selectedSnipIDs.subtract(moving)
+            if let selectedSnipID, moving.contains(selectedSnipID) {
+                self.selectedSnipID = nil
+            }
         }
     }
 
@@ -936,10 +1014,6 @@ final class IOSAppModel {
         ) { _ in
             sortMode = .manual
         }
-    }
-
-    private func setSelectionDoneUnlocked(_ done: Bool, feedbackInteraction: UUID?) async -> Bool {
-        await setDoneUnlocked(ids: selectedVisibleSnipIDs, done: done, feedbackInteraction: feedbackInteraction)
     }
 
     private func toggleDoneUnlocked(id: UUID, feedbackInteraction: UUID?) async -> Bool {
@@ -994,12 +1068,12 @@ final class IOSAppModel {
             finishListEditing(id: id)
             if !preservesSelection { rememberSelectedList(SnipList.inboxID) }
             selectedSnipID = nil
-            selectedSnipIDs = []
+            selectedSnipIDs.formIntersection(snips.map(\.id))
         }
     }
 
-    private var selectedVisibleSnipIDs: Set<UUID> {
-        selectedSnipIDs.intersection(visibleSnips.map(\.id))
+    private var existingSelectedSnipIDs: Set<UUID> {
+        selectedSnipIDs.intersection(snips.map(\.id))
     }
 
     private func restoreDeletion(token: UUID, feedbackInteraction: UUID?) async {

@@ -25,6 +25,11 @@ struct CompactLibraryPageStack: View {
     @Environment(\.layoutDirection) private var layoutDirection
     @State private var swipeBlockingPages: Set<LibraryPage> = []
     @State private var pagePanMayStart = false
+    @State private var interactionFrames = PageInteractionFrames()
+
+    private final class PageInteractionFrames {
+        var selectionDock = CGRect.zero
+    }
     let model: IOSAppModel
     let clipboard: IOSClipboardModel
     let clipboardViewState: ClipboardViewState
@@ -84,6 +89,9 @@ struct CompactLibraryPageStack: View {
             .background {
                 ListPagePanObserver(
                     canBegin: { direction in canPanPage(direction: direction) },
+                    canBeginAt: { point in
+                        !model.isSelectingSnips || !interactionFrames.selectionDock.contains(point)
+                    },
                     onPan: { direction, translation, predictedTranslation, phase in
                         handlePagePan(
                             direction: direction,
@@ -149,6 +157,7 @@ struct CompactLibraryPageStack: View {
                         editMode: $editMode,
                         cancelNewList: cancelNewList,
                         blocksPageSwipe: swipeBlockedBinding(for: page),
+                        selectionDockFrameChanged: { interactionFrames.selectionDock = $0 },
                         dismissComposerKeyboard: dismissComposerKeyboard,
                         libraryActions: libraryActions
                     )
@@ -272,7 +281,8 @@ struct CompactLibraryPageStack: View {
 
     private func canPanPage(direction: ListPagePanDirection) -> Bool {
         let isEditingVisiblePage = model.editingListID.map { $0 == model.selectedPage.listID } ?? false
-        guard !model.isSearchPresented, sheet == nil, !editMode.isEditing,
+        guard !model.isSearchPresented, sheet == nil,
+              (!editMode.isEditing || model.isSelectingSnips),
               !isComposerFocused,
               motion.transition?.settlement == nil,
               !motion.isCreatingFromEdge,

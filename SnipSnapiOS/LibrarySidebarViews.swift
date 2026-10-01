@@ -83,6 +83,7 @@ struct ListSidebarView: View {
 }
 
 struct LibraryActionsMenu: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let model: IOSAppModel
     let settings: () -> Void
     @Binding var editMode: EditMode
@@ -129,12 +130,15 @@ struct LibraryActionsMenu: View {
     private var menuActions: some View {
         if let listID = model.selectedPage.listID {
             Button(
-                editMode.isEditing ? "Done Selecting" : "Select Snips",
-                systemImage: editMode.isEditing ? "checkmark" : "checkmark.circle"
+                editMode.isEditing ? "Cancel" : "Select",
+                systemImage: "square.stack"
             ) {
                 guard model.snipEditorDraft == nil else { return }
-                model.endSelectingSnips()
-                editMode = editMode.isEditing ? .inactive : .active
+                withAnimation(reduceMotion ? nil : .snappy(duration: 0.24)) {
+                    let wasSelecting = editMode.isEditing
+                    model.endSelectingSnips()
+                    editMode = wasSelecting ? .inactive : .active
+                }
             }
             .disabled(
                 model.snipEditorDraft != nil

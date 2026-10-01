@@ -114,6 +114,16 @@ project file.
 Forks can also replace the public bundle, App Group, and CloudKit container
 names in that local file.
 
+For iOS Simulator checks, set `SIMULATOR_ID` to a booted simulator's UUID.
+Both checks below use this worktree's isolated Dev app:
+
+```sh
+./scripts/run.sh --ios-simulator --simulator-id "$SIMULATOR_ID" --ui-test testSelectionPersistsAcrossLists
+./scripts/run.sh --ios-simulator --simulator-id "$SIMULATOR_ID" --unit-test IOSAppModelTests
+```
+
+Choose either a UI test method or a unit test class per run.
+
 ## Cloud Dev and physical-device builds
 
 For a local-only preview on a paired iPhone or iPad with Developer Mode enabled:
