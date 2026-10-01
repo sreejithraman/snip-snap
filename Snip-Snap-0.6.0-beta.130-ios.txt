@@ -1,0 +1,4 @@
+Snip Snap 0.6.0 Beta 130 — iOS
+
+- Fix photo attachment paste in the iOS composer
+- Expand and collapse long snips on tap

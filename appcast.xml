@@ -4,6 +4,23 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.0</title>
+            <pubDate>Thu, 01 Oct 2026 13:14:28 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.0-beta.130</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.6.0-beta.130-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>130</sparkle:version>
+            <sparkle:shortVersionString>0.6.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.0-beta.130/Snip-Snap-0.6.0.zip" length="15465506" type="application/octet-stream" sparkle:edSignature="1D3lSPL5PF3TPP5jiwQJl890Yx926j3VeupOKUb2Lf8qPMbgouCuXtDqMnU7AUuhsXm8/HSSr9Ytpp9pFQmNCg=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.0 Beta 130 — Mac
+
+- Center Mac search pill and add panel close button
+- Left-align Mac diagnostic controls
+- Expand and collapse long snips on tap
+</description>
+        </item>
+        <item>
+            <title>0.6.0</title>
             <pubDate>Thu, 01 Oct 2026 04:55:57 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.0-beta.126</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.6.0-beta.126-mac.txt</sparkle:fullReleaseNotesLink>
