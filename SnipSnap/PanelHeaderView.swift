@@ -71,12 +71,7 @@ struct PanelHeaderView: View {
                 Button {
                     focusedTarget = .search
                 } label: {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(SnipSnapColors.textSecondary)
-                        .frame(
-                            width: PanelControlMetrics.floatingRowHeight - searchControlInset,
-                            height: PanelControlMetrics.floatingRowHeight
-                        )
+                    searchIcon
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -109,11 +104,14 @@ struct PanelHeaderView: View {
                 .accessibilityIdentifier("global-search-close")
             } else {
                 Button(action: expandSearch) {
-                    Label("Search", systemImage: "magnifyingglass")
-                        .foregroundStyle(SnipSnapColors.textSecondary)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: PanelControlMetrics.floatingRowHeight)
-                        .contentShape(Capsule())
+                    HStack(spacing: 0) {
+                        searchIcon
+                        Text("Search")
+                    }
+                    .foregroundStyle(SnipSnapColors.textSecondary)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: PanelControlMetrics.floatingRowHeight)
+                    .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .disabled(model.editingID != nil)
@@ -124,7 +122,20 @@ struct PanelHeaderView: View {
         }
         .frame(maxWidth: model.isSearchExpanded ? .infinity : compactSearchWidth)
         .frame(height: PanelControlMetrics.floatingRowHeight)
-        .panelGlassSurface(in: Capsule(), interactive: true)
+        .panelGlassSurface(
+            in: Capsule(),
+            interactive: true,
+            tint: SnipSnapColors.nestedGlassTint
+        )
+    }
+
+    private var searchIcon: some View {
+        Image(systemName: "magnifyingglass")
+            .foregroundStyle(SnipSnapColors.textSecondary)
+            .frame(
+                width: PanelControlMetrics.floatingRowHeight - searchControlInset,
+                height: PanelControlMetrics.floatingRowHeight
+            )
     }
 
     private var needsAttentionButton: some View {
