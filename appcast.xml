@@ -4,6 +4,21 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.0</title>
+            <pubDate>Thu, 01 Oct 2026 04:55:57 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.0-beta.126</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.6.0-beta.126-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>126</sparkle:version>
+            <sparkle:shortVersionString>0.6.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.0-beta.126/Snip-Snap-0.6.0.zip" length="15437636" type="application/octet-stream" sparkle:edSignature="+DNGiBq8cWsTXOFW05xQL7K9n5AM6gtNR/pOfub25xcemiN/914Q3JUhCGMTYBG2CcKFKGrLvkCG9U6D/ELWBw=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.0 Beta 126 — Mac
+
+- Fix stalled iCloud sync and add private sync diagnostics
+</description>
+        </item>
+        <item>
+            <title>0.6.0</title>
             <pubDate>Thu, 01 Oct 2026 01:39:10 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.0-beta.125</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.6.0-beta.125-mac.txt</sparkle:fullReleaseNotesLink>
