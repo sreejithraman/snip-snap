@@ -61,6 +61,39 @@ final class SnipSnapiOSUITests: XCTestCase {
         return app
     }
 
+    func testLongSnipExpandsAndCollapsesWithoutEditing() {
+        continueAfterFailure = false
+        let app = launchApp()
+        let text = "First line\nSecond line\nThird line\nFourth line\nLast line of the snip"
+        let composer = app.descendants(matching: .any)["composer-text"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        composer.tap()
+        composer.typeText(text)
+        app.buttons["composer-send"].tap()
+        let disclosure = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "snip-text-")
+        ).firstMatch
+        XCTAssertTrue(disclosure.waitForExistence(timeout: 3))
+        XCTAssertEqual(disclosure.value as? String, "Collapsed")
+        let collapsedHeight = disclosure.frame.height
+
+        disclosure.tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Expanded"), object: disclosure
+        )], timeout: 3), .completed)
+        XCTAssertGreaterThan(disclosure.frame.height, collapsedHeight)
+        XCTAssertFalse(app.descendants(matching: .any)["inline-snip-text"].exists)
+
+        disclosure.tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Collapsed"), object: disclosure
+        )], timeout: 3), .completed)
+        XCTAssertEqual(disclosure.frame.height, collapsedHeight, accuracy: 1)
+
+        disclosure.doubleTap()
+        XCTAssertTrue(app.descendants(matching: .any)["inline-snip-text"].waitForExistence(timeout: 3))
+    }
+
     func testContextActionsPublishHapticOutcomes() {
         continueAfterFailure = false
         let app = launchApp(withHapticsTrace: true)
@@ -1019,7 +1052,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             format: "identifier BEGINSWITH %@", "search-snip-"
         )).firstMatch
         XCTAssertTrue(result.waitForExistence(timeout: 3))
-        result.tap()
+        result.doubleTap()
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
         app.descendants(matching: .any)["global-search-results"].swipeDown()
         closeSearch(in: app)
@@ -1040,7 +1073,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             "search-snip-", "Copy mixed fixture"
         )).firstMatch
         XCTAssertTrue(result.waitForExistence(timeout: 3))
-        result.tap()
+        result.doubleTap()
         let editor = app.descendants(matching: .any)["inline-snip-text"]
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
         app.buttons["remove-attachment-sample.png"].tap()

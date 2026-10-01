@@ -156,6 +156,8 @@
 		A1000000000000000000000E /* AppleAccountNoticeModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* AppleAccountNoticeModel.swift */; };
 		A1000000000000000000000F /* AgentSnipContextLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* AgentSnipContextLabel.swift */; };
 		A10000000000000000000010 /* AgentSnipContextLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* AgentSnipContextLabel.swift */; };
+		AE1000000000000000000001 /* ExpandableSnipText.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE2000000000000000000001 /* ExpandableSnipText.swift */; };
+		AE1000000000000000000002 /* ExpandableSnipText.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE2000000000000000000001 /* ExpandableSnipText.swift */; };
 		E100000000000000000000F1 /* IOSClipboardModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E200000000000000000000F1 /* IOSClipboardModel.swift */; };
 		E100000000000000000000F2 /* IOSClipboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E200000000000000000000F2 /* IOSClipboardView.swift */; };
 /* End PBXBuildFile section */
@@ -274,6 +276,7 @@
 		A20000000000000000000005 /* AppIconDev.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIconDev.icon; sourceTree = "<group>"; };
 		A20000000000000000000006 /* AppleAccountNoticeModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAccountNoticeModel.swift; sourceTree = "<group>"; };
 		A20000000000000000000007 /* AgentSnipContextLabel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSnipContextLabel.swift; sourceTree = "<group>"; };
+		AE2000000000000000000001 /* ExpandableSnipText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExpandableSnipText.swift; sourceTree = "<group>"; };
 		200000000000000000000039 /* AttachmentPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentPreview.swift; sourceTree = "<group>"; };
 		20000000000000000000003A /* SnipDragExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipDragExport.swift; sourceTree = "<group>"; };
 		D12000000000000000000001 /* SnipPasteboardExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipPasteboardExport.swift; sourceTree = "<group>"; };
@@ -544,6 +547,7 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000007 /* AgentSnipContextLabel.swift */,
+				AE2000000000000000000001 /* ExpandableSnipText.swift */,
 				A20000000000000000000002 /* AppIcon.icon */,
 				A20000000000000000000005 /* AppIconDev.icon */,
 				A20000000000000000000006 /* AppleAccountNoticeModel.swift */,
@@ -945,6 +949,7 @@
 				A10000000000000000000005 /* SnipCompletionLanguage.swift in Sources */,
 				A1000000000000000000000D /* AppleAccountNoticeModel.swift in Sources */,
 				A1000000000000000000000F /* AgentSnipContextLabel.swift in Sources */,
+				AE1000000000000000000001 /* ExpandableSnipText.swift in Sources */,
 				A10000000000000000000001 /* SnipSnapTheme.swift in Sources */,
 				AC1000000000000000000001 /* SnipListAppearance.swift in Sources */,
 				10000000000000000000003B /* ComposerDraftStore+ScreenCapture.swift in Sources */,
@@ -1012,6 +1017,7 @@
 				A10000000000000000000006 /* SnipCompletionLanguage.swift in Sources */,
 				A1000000000000000000000E /* AppleAccountNoticeModel.swift in Sources */,
 				A10000000000000000000010 /* AgentSnipContextLabel.swift in Sources */,
+				AE1000000000000000000002 /* ExpandableSnipText.swift in Sources */,
 				A10000000000000000000002 /* SnipSnapTheme.swift in Sources */,
 				AC1000000000000000000002 /* SnipListAppearance.swift in Sources */,
 				E10000000000000000000007 /* PreviewSupport.swift in Sources */,
