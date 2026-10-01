@@ -1,188 +1,88 @@
 import Foundation
+import Observation
 import PhotosUI
 import QuickLook
 import SnipSnapCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct SnipEditorView: View {
-    @Environment(\.dismiss) private var dismiss
-
-    let model: IOSAppModel
-    let snipID: UUID
-    @State private var content = ""
-    @State private var attachments: [AttachmentDraft] = []
-    @State private var previewURL: URL?
-    @State private var isImporting = false
-    @State private var isPickingPhotos = false
-    @State private var selectedPhotos: [PhotosPickerItem] = []
-    @State private var isTakingPhoto = false
-    @State private var replacementID: UUID?
-    @State private var stagingTask: Task<Void, Never>?
-    @State private var isSaving = false
-    @State private var didLoad = false
-    @State private var stagingDirectory = FileManager.default.temporaryDirectory
+/// One session follows the snip between collection and search rows.
+@Observable @MainActor
+final class SnipEditorDraft {
+    let original: Snip
+    var content: String
+    var attachments: [AttachmentDraft]
+    var previewURL: URL?
+    var isImporting = false
+    var isPickingPhotos = false
+    var selectedPhotos: [PhotosPickerItem] = []
+    var isTakingPhoto = false
+    var replacementID: UUID?
+    private var stagingTask: Task<Void, Never>?
+    private(set) var isSaving = false
+    private(set) var isPreparingPreview = false
+    private var isDiscarded = false
+    private let stagingDirectory = FileManager.default.temporaryDirectory
         .appendingPathComponent("SnipSnapAttachmentDrafts", isDirectory: true)
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
 
-    private var isStaging: Bool { stagingTask != nil }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("Text") {
-                    TextEditor(text: $content)
-                        .frame(minHeight: 180)
-                        .accessibilityIdentifier("snip-text")
-                }
-
-                AttachmentEditorSection(
-                    attachments: attachments,
-                    model: model,
-                    isStaging: isStaging,
-                    isDisabled: isSaving || isStaging,
-                    preview: { previewAttachment($0) },
-                    replace: { attachment, source in
-                        replacementID = attachment.id
-                        presentAttachmentSource(source)
-                    },
-                    remove: { removeAttachment(id: $0.id) },
-                    add: { source in
-                        replacementID = nil
-                        presentAttachmentSource(source)
-                    }
-                )
-            }
-            .disabled(isSaving || isStaging)
-            .navigationTitle("Edit Snip")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(isStaging ? "Stop Import" : "Cancel") {
-                        if isStaging {
-                            stagingTask?.cancel()
-                        } else {
-                            cleanStagingDirectory()
-                            dismiss()
-                        }
-                    }
-                    .disabled(isSaving)
-                    .accessibilityIdentifier(isStaging ? "cancel-attachment-import" : "cancel-editor")
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(isSaving ? "Saving…" : "Save") {
-                        Task { await save() }
-                    }
-                    .disabled(
-                        !AttachmentDraftLifecycle.allowsSaving(
-                            isSaving: isSaving,
-                            isStaging: isStaging,
-                            isImporting: isImporting,
-                            isPickingMedia: isPickingPhotos || isTakingPhoto,
-                            isPreviewing: previewURL != nil
-                        )
-                            || (content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                && attachments.isEmpty)
-                    )
-                    .accessibilityIdentifier("save-snip")
-                }
-            }
-            .onAppear {
-                guard !didLoad else { return }
-                didLoad = true
-                guard let snip = model.snips.first(where: { $0.id == snipID }) else { return }
-                content = snip.content
-                attachments = snip.attachments.map { attachment in
-                    AttachmentDraft(
-                        id: attachment.id,
-                        fileName: attachment.fileName,
-                        byteCount: attachment.byteCount,
-                        url: nil,
-                        source: .existing(attachmentID: attachment.id),
-                        contentType: attachment.contentType
-                    )
-                }
-            }
-            .onDisappear {
-                if AttachmentDraftLifecycle.allowsSaving(
-                    isSaving: isSaving,
-                    isStaging: isStaging,
-                    isImporting: isImporting,
-                    isPickingMedia: isPickingPhotos || isTakingPhoto,
-                    isPreviewing: previewURL != nil
-                ) {
-                    cleanStagingDirectory()
-                }
-            }
-            .interactiveDismissDisabled(
-                !AttachmentDraftLifecycle.allowsDismissal(
-                    isSaving: isSaving,
-                    isStaging: isStaging
-                )
+    init(snip: Snip) {
+        original = snip
+        content = snip.content
+        attachments = snip.attachments.map { attachment in
+            AttachmentDraft(
+                id: attachment.id,
+                fileName: attachment.fileName,
+                byteCount: attachment.byteCount,
+                url: nil,
+                source: .existing(attachmentID: attachment.id),
+                contentType: attachment.contentType
             )
-            .fileImporter(
-                isPresented: $isImporting,
-                allowedContentTypes: [.data],
-                allowsMultipleSelection: replacementID == nil
-            ) { result in
-                stage(result)
-            }
-            .photosPicker(
-                isPresented: $isPickingPhotos,
-                selection: $selectedPhotos,
-                maxSelectionCount: replacementID == nil ? nil : 1,
-                matching: .images
-            )
-            .onChange(of: selectedPhotos) { _, items in
-                guard !items.isEmpty else { return }
-                selectedPhotos = []
-                stageMedia(.photos(items))
-            }
-            .fullScreenCover(isPresented: $isTakingPhoto) {
-                AttachmentCameraPicker { image in
-                    isTakingPhoto = false
-                    if let image { stageMedia(.camera(image)) } else { replacementID = nil }
-                }
-            }
-            .attachmentPreview($previewURL, in: attachments.compactMap { attachment in
-                if case .existing = attachment.source {
-                    return model.usableAttachmentURL(for: attachment.id)
-                }
-                return attachment.url
-            })
         }
     }
 
-    private func save() async {
-        guard AttachmentDraftLifecycle.allowsSaving(
+    var isStaging: Bool { stagingTask != nil }
+    var canDismiss: Bool {
+        !isDiscarded && AttachmentDraftLifecycle.allowsSaving(
             isSaving: isSaving,
             isStaging: isStaging,
             isImporting: isImporting,
             isPickingMedia: isPickingPhotos || isTakingPhoto,
-            isPreviewing: previewURL != nil
-        ) else { return }
-        isSaving = true
-        guard let snip = model.snips.first(where: { $0.id == snipID }) else {
-            isSaving = false
-            return
-        }
-        let succeeded = await model.editSnip(
-            snip,
-            content: content,
-            attachmentEdits: attachments.compactMap(\.libraryEdit)
+            isPreviewing: previewURL != nil || isPreparingPreview
         )
-        isSaving = false
-        if succeeded {
-            cleanStagingDirectory()
-            dismiss()
-        }
+    }
+    var canSave: Bool {
+        !isDiscarded && canDismiss
+            && (!content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty)
     }
 
-    private func previewAttachment(_ attachment: AttachmentDraft) {
+    func save(using model: IOSAppModel) async -> Bool {
+        guard canSave else { return false }
+        isSaving = true
+        let succeeded = await model.saveInlineSnipEdit(self)
+        isSaving = false
+        if succeeded || isDiscarded { cleanStagingDirectory() }
+        return succeeded
+    }
+
+    func stopImport() { stagingTask?.cancel() }
+
+    func discard() {
+        isDiscarded = true
+        stagingTask?.cancel()
+        // A save or cancelled importer may still be reading staged files.
+        if !isSaving && !isStaging { cleanStagingDirectory() }
+    }
+
+    func previewAttachment(_ attachment: AttachmentDraft, using model: IOSAppModel) {
+        guard !isPreparingPreview else { return }
+        isPreparingPreview = true
         Task {
+            defer { isPreparingPreview = false }
             guard let url = await attachment.previewURL(prepareExisting: {
                 await model.prepareAttachment($0, for: .preview)
             }),
+                  !isDiscarded,
                   let index = attachments.firstIndex(where: { $0.id == attachment.id })
             else { return }
             let current = attachments[index]
@@ -195,7 +95,7 @@ struct SnipEditorView: View {
         }
     }
 
-    private func presentAttachmentSource(_ source: AttachmentSource) {
+    func presentAttachmentSource(_ source: AttachmentSource) {
         switch source {
         case .files: isImporting = true
         case .photos: isPickingPhotos = true
@@ -203,7 +103,7 @@ struct SnipEditorView: View {
         }
     }
 
-    private func stage(_ result: Result<[URL], any Error>) {
+    func stage(_ result: Result<[URL], any Error>, using model: IOSAppModel) {
         guard case .success(let urls) = result else {
             if case .failure(let error) = result {
                 let nsError = error as NSError
@@ -214,10 +114,10 @@ struct SnipEditorView: View {
             replacementID = nil
             return
         }
-        stageMedia(.files(urls))
+        stageMedia(.files(urls), using: model)
     }
 
-    private func stageMedia(_ input: AttachmentMediaInput) {
+    func stageMedia(_ input: AttachmentMediaInput, using model: IOSAppModel) {
         guard stagingTask == nil else { return }
         let targetID = replacementID
         replacementID = nil
@@ -229,10 +129,17 @@ struct SnipEditorView: View {
         }
         stagingTask = Task {
             var staged: [StagedAttachment] = []
-            defer { stagingTask = nil }
+            defer {
+                stagingTask = nil
+                if isDiscarded { cleanStagingDirectory() }
+            }
             do {
                 staged = try await AttachmentMediaStager.stage(selectedInput, in: stagingDirectory)
                 try Task.checkCancellation()
+                guard !isDiscarded else {
+                    AttachmentDraftStager.clean(staged)
+                    return
+                }
                 applyStaged(staged, replacing: targetID)
             } catch is CancellationError {
                 AttachmentDraftStager.clean(staged)
@@ -269,7 +176,7 @@ struct SnipEditorView: View {
         )
     }
 
-    private func removeAttachment(id: UUID) {
+    func removeAttachment(id: UUID) {
         guard let attachment = attachments.first(where: { $0.id == id }) else { return }
         removeStagedFile(for: attachment)
         attachments.removeAll { $0.id == id }
@@ -282,6 +189,214 @@ struct SnipEditorView: View {
 
     private func cleanStagingDirectory() {
         AttachmentDraftStager.clean(stagingDirectory)
+    }
+}
+
+struct InlineSnipEditor: View {
+    @Bindable var draft: SnipEditorDraft
+    let model: IOSAppModel
+    @FocusState.Binding var isFocused: Bool
+    @Environment(\.self) private var environment
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+    @ScaledMetric(relativeTo: .body) private var actionDiameter: CGFloat = 28
+    @ScaledMetric(relativeTo: .body) private var actionSymbolSize: CGFloat = 14
+
+    var body: some View {
+        HStack(alignment: .top, spacing: SnipSnapSpacing.relatedContent) {
+            if draft.original.isPinned {
+                SnipCopyControl(
+                    appearance: listAppearance(for: draft.original, in: model.lists),
+                    action: {}
+                )
+                .disabled(true)
+                .opacity(0.5)
+                .accessibilityLabel("Copy Snip")
+            } else {
+                Image(systemName: draft.original.isDone ? "checkmark.circle.fill" : "circle")
+                    .resizable()
+                    .scaledToFit()
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 20, height: 20)
+                    .frame(width: 24, height: 24)
+                    .accessibilityHidden(true)
+            }
+
+            VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
+                if !draft.attachments.isEmpty {
+                    AttachmentEditorControls(
+                        attachments: draft.attachments,
+                        model: model,
+                        isDisabled: !draft.canDismiss,
+                        preview: { draft.previewAttachment($0, using: model) },
+                        replace: { attachment, source in
+                            draft.replacementID = attachment.id
+                            draft.presentAttachmentSource(source)
+                        },
+                        remove: { draft.removeAttachment(id: $0.id) }
+                    )
+                }
+
+                TextField("Snip text", text: $draft.content, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(2...8)
+                    .focused($isFocused)
+                    .disabled(!draft.canDismiss)
+                    .accessibilityIdentifier("inline-snip-text")
+
+                if draft.isStaging {
+                    HStack {
+                        ProgressView()
+                        Text("Adding files…").foregroundStyle(.secondary)
+                    }
+                    .accessibilityIdentifier("copying-attachments")
+                }
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 4) {
+                        addAttachmentButton
+                        Spacer(minLength: SnipSnapSpacing.relatedContent)
+                        cancelButton
+                        saveButton
+                    }
+                    VStack(alignment: .trailing, spacing: 4) {
+                        HStack {
+                            addAttachmentButton
+                            Spacer()
+                        }
+                        HStack(spacing: 4) {
+                            cancelButton
+                            saveButton
+                        }
+                    }
+                }
+            }
+        }
+        .padding(SnipSnapSpacing.cardContentInset)
+        .background {
+            let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+            if reduceTransparency {
+                shape.fill(Color(uiColor: .secondarySystemBackground))
+            } else {
+                shape.fill(.regularMaterial)
+            }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color(uiColor: .separator), lineWidth: contrast == .increased ? 1.5 : 0.5)
+                .allowsHitTesting(false)
+        }
+        .padding(.vertical, SnipSnapSpacing.relatedContent)
+        .onChange(of: draft.content) { model.haptics.invalidatePendingFeedback() }
+        .fileImporter(
+            isPresented: $draft.isImporting,
+            allowedContentTypes: [.data],
+            allowsMultipleSelection: draft.replacementID == nil,
+            onCompletion: { draft.stage($0, using: model) }
+        )
+        .photosPicker(
+            isPresented: $draft.isPickingPhotos,
+            selection: $draft.selectedPhotos,
+            maxSelectionCount: draft.replacementID == nil ? nil : 1,
+            matching: .images
+        )
+        .onChange(of: draft.selectedPhotos) { _, items in
+            guard !items.isEmpty else { return }
+            draft.selectedPhotos = []
+            draft.stageMedia(.photos(items), using: model)
+        }
+        .fullScreenCover(isPresented: $draft.isTakingPhoto) {
+            AttachmentCameraPicker { image in
+                draft.isTakingPhoto = false
+                if let image { draft.stageMedia(.camera(image), using: model) } else { draft.replacementID = nil }
+            }
+        }
+        .attachmentPreview($draft.previewURL, in: draft.attachments.compactMap { attachment in
+            if case .existing = attachment.source {
+                return model.usableAttachmentURL(for: attachment.id)
+            }
+            return attachment.url
+        })
+    }
+
+    private var addAttachmentButton: some View {
+        AttachmentSourceMenu(choose: { source in
+            draft.replacementID = nil
+            draft.presentAttachmentSource(source)
+        }) {
+            secondaryActionIcon("plus")
+        }
+        .buttonStyle(.plain)
+        .disabled(!draft.canDismiss)
+        .accessibilityLabel("Add attachments")
+        .accessibilityIdentifier("add-attachments")
+    }
+
+    private var cancelButton: some View {
+        Button {
+            if draft.isStaging {
+                draft.stopImport()
+            } else {
+                isFocused = false
+                model.cancelInlineSnipEdit()
+            }
+        } label: {
+            secondaryActionIcon("xmark")
+        }
+        .buttonStyle(.plain)
+        .disabled(!draft.canDismiss && !draft.isStaging)
+        .accessibilityLabel(draft.isStaging ? "Stop Import" : "Cancel Editing")
+        .accessibilityIdentifier(draft.isStaging ? "cancel-attachment-import" : "inline-snip-cancel")
+    }
+
+    private var saveButton: some View {
+        let appearance = listAppearance(for: draft.original, in: model.lists)
+        let labelColor = draft.canSave
+            ? appearance.filledControlLabel(in: environment)
+            : SnipSnapTheme.disabledActionGlassLabel
+
+        return Button {
+            Task { @MainActor in
+                if await draft.save(using: model) {
+                    isFocused = false
+                    model.finishInlineSnipEdit(draft)
+                }
+            }
+        } label: {
+            Group {
+                if draft.isSaving {
+                    ProgressView().tint(labelColor)
+                } else {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: actionSymbolSize, weight: .semibold))
+                }
+            }
+            .foregroundStyle(labelColor)
+            .frame(width: actionDiameter, height: actionDiameter)
+            .background(
+                draft.canSave ? appearance.controlTint : SnipSnapTheme.disabledActionGlassTint,
+                in: Circle()
+            )
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!draft.canSave)
+        .accessibilityLabel(draft.isSaving ? "Saving…" : "Save")
+        .accessibilityIdentifier("inline-snip-save")
+    }
+
+    private func secondaryActionIcon(_ systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: actionSymbolSize, weight: .medium))
+            .foregroundStyle(.secondary)
+            .frame(width: actionDiameter, height: actionDiameter)
+            .background(SnipSnapTheme.compactActionFill, in: Circle())
+            .overlay {
+                Circle().strokeBorder(Color(uiColor: .separator), lineWidth: 0.5)
+            }
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
     }
 }
 

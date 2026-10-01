@@ -895,6 +895,41 @@ final class SnipSnapiOSUITests: XCTestCase {
         assertCopyStatus("Copied Text", in: app)
     }
 
+    func testContextEditUsesInlineDraftAndPreservesAttachmentsOnCancel() {
+        continueAfterFailure = false
+        let storeName = "inline-edit-\(UUID().uuidString)"
+        var app = launchApp(storeName: storeName, withCopyShareFixtures: true)
+        let original = row(named: "Copy mixed fixture", in: app)
+        XCTAssertTrue(original.waitForExistence(timeout: 5))
+        original.press(forDuration: 1)
+        app.buttons["edit-snip"].tap()
+
+        let editor = app.descendants(matching: .any)["inline-snip-text"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.navigationBars["Edit Snip"].exists)
+        app.buttons["remove-attachment-sample.png"].tap()
+        editor.tap()
+        editor.typeText(" discarded")
+        app.buttons["inline-snip-cancel"].tap()
+
+        XCTAssertTrue(original.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["compact-attachment-preview-sample.png"].exists)
+        original.press(forDuration: 1)
+        app.buttons["edit-snip"].tap()
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        XCTAssertEqual(editor.value as? String, "Copy mixed fixture")
+        XCTAssertTrue(app.buttons["remove-attachment-sample.png"].exists)
+        editor.tap()
+        editor.typeText(" saved")
+        app.buttons["inline-snip-save"].tap()
+        XCTAssertTrue(row(named: "Copy mixed fixture saved", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["compact-attachment-preview-sample.png"].exists)
+        app.terminate()
+        app = launchApp(storeName: storeName, withCopyShareFixtures: true)
+        XCTAssertTrue(row(named: "Copy mixed fixture saved", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["compact-attachment-preview-sample.png"].exists)
+    }
+
     func testCreatesAndEditsTextSnip() {
         continueAfterFailure = false
         let app = launchApp()
@@ -944,9 +979,12 @@ final class SnipSnapiOSUITests: XCTestCase {
         row(named: "Inline draft", in: app).doubleTap()
         let editor = app.descendants(matching: .any)["inline-snip-text"]
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
-        editor.tap()
+        editor.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
         editor.typeText(" unsaved")
-        let draft = editor.value as? String
+        let draft = "Inline draft unsaved"
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", draft), object: editor
+        )], timeout: 5), .completed, "Actual text: \(String(describing: editor.value))")
         app.swipeDown()
 
         let search = openSearch(in: app)
@@ -955,8 +993,76 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
         XCTAssertEqual(editor.value as? String, draft)
+
+        let matchingSearch = openSearch(in: app)
+        matchingSearch.typeText("Inline draft")
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        XCTAssertEqual(editor.value as? String, draft)
+        editor.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        editor.typeText(" from search")
+        let sharedDraft = "Inline draft unsaved from search"
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", sharedDraft), object: editor
+        )], timeout: 5), .completed, "Actual text: \(String(describing: editor.value))")
+        app.descendants(matching: .any)["global-search-results"].swipeDown()
+        closeSearch(in: app)
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        XCTAssertEqual(editor.value as? String, sharedDraft)
         app.buttons["inline-snip-save"].tap()
-        XCTAssertTrue(collectionRow(named: "Inline draft unsaved", in: app).waitForExistence(timeout: 3))
+        let saved = row(named: "Inline draft unsaved from search", in: app)
+        enterSelection(in: app)
+        saved.tap()
+        XCTAssertTrue(app.buttons["selection-actions"].isEnabled)
+        let selectionSearch = openSearch(in: app)
+        selectionSearch.typeText("Inline draft")
+        let result = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "search-snip-"
+        )).firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 3))
+        result.tap()
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        app.descendants(matching: .any)["global-search-results"].swipeDown()
+        closeSearch(in: app)
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["selection-actions"].exists)
+        app.buttons["inline-snip-cancel"].tap()
+        XCTAssertTrue(saved.waitForExistence(timeout: 3))
+    }
+
+    func testSearchEditReopensInItsOriginalListWithoutDiscardingDraft() {
+        continueAfterFailure = false
+        let app = launchApp(withCopyShareFixtures: true)
+        createList("Work", in: app)
+        let search = openSearch(in: app)
+        search.typeText("Copy mixed fixture")
+        let result = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier BEGINSWITH %@ AND label BEGINSWITH %@",
+            "search-snip-", "Copy mixed fixture"
+        )).firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 3))
+        result.tap()
+        let editor = app.descendants(matching: .any)["inline-snip-text"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        app.buttons["remove-attachment-sample.png"].tap()
+        editor.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        editor.typeText(" unsaved")
+        let text = "Copy mixed fixture unsaved"
+        XCTAssertEqual(editor.value as? String, text)
+        app.descendants(matching: .any)["global-search-results"].swipeDown()
+        closeSearch(in: app)
+
+        listControl(named: "Inbox", in: app).tap()
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        XCTAssertEqual(editor.value as? String, text)
+        XCTAssertFalse(app.buttons["remove-attachment-sample.png"].exists)
+        app.buttons["inline-snip-save"].tap()
+        let saved = row(named: text, in: app)
+        saved.doubleTap()
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        XCTAssertEqual(editor.value as? String, text)
+        XCTAssertFalse(app.buttons["remove-attachment-sample.png"].exists)
+        app.buttons["inline-snip-cancel"].tap()
+        XCTAssertTrue(saved.waitForExistence(timeout: 3))
     }
 
     func testQuickComposerSendsWithoutOpeningTheEditor() throws {
@@ -1054,7 +1160,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         )).firstMatch
         XCTAssertTrue(searchResult.waitForExistence(timeout: 5))
         searchResult.tap()
-        XCTAssertTrue(app.textViews["snip-text"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["inline-snip-text"].waitForExistence(timeout: 5))
         app.buttons["add-attachments"].tap()
         app.buttons["Choose Photos"].firstMatch.tap()
         XCTAssertTrue(app.buttons["Photos"].waitForExistence(timeout: 5))
@@ -1078,8 +1184,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Photos"].waitForExistence(timeout: 5))
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.09, dy: 0.12)).tap()
         XCTAssertTrue(staged.waitForExistence(timeout: 5))
-        app.buttons["save-snip"].tap()
-        XCTAssertTrue(app.buttons["save-snip"].waitForNonExistence(timeout: 8))
+        app.buttons["inline-snip-save"].tap()
+        XCTAssertTrue(app.buttons["inline-snip-save"].waitForNonExistence(timeout: 8))
 
         app.terminate()
         app = launchApp(storeName: storeName, withAttachments: true)
@@ -2201,7 +2307,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             imageRow.waitForNonExistence(timeout: 3),
             "The editor did not remove the attachment before saving."
         )
-        let save = app.buttons["save-snip"]
+        let save = app.buttons["inline-snip-save"]
         save.tap()
         XCTAssertTrue(
             save.waitForNonExistence(timeout: 8),
@@ -2314,7 +2420,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         let editAttachments = app.buttons["edit-snip"]
         XCTAssertTrue(editAttachments.waitForExistence(timeout: 3))
         editAttachments.tap()
-        XCTAssertTrue(app.textViews["snip-text"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.descendants(matching: .any)["inline-snip-text"].waitForExistence(timeout: 3))
     }
 
     private func openCopyShareFixture(matching text: String, in app: XCUIApplication) {
@@ -2767,7 +2873,9 @@ final class SnipSnapiOSUITests: XCTestCase {
     private func closeSearch(in app: XCUIApplication) {
         let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "Cancel Search", "close"])).firstMatch
         XCTAssertTrue(cancel.waitForExistence(timeout: 3))
+        XCTAssertTrue(cancel.isHittable, "Search Close must be visible before tapping it.")
         cancel.tap()
+        XCTAssertTrue(cancel.waitForNonExistence(timeout: 3))
     }
 
     private func row(named text: String, in app: XCUIApplication) -> XCUIElement {
@@ -2888,7 +2996,16 @@ final class SnipSnapiOSUITests: XCTestCase {
         field.tap()
         field.typeText(name)
         if let color { app.buttons["list-color-\(color)"].tap() }
-        app.buttons["save-list"].tap()
+        let save = app.buttons["save-list"]
+        if save.isHittable {
+            save.tap()
+        } else {
+            let done = app.keyboards.buttons["Done"]
+            XCTAssertTrue(done.waitForExistence(timeout: 3))
+            done.tap()
+        }
+        XCTAssertTrue(field.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars[name].waitForExistence(timeout: 3))
     }
 
     private func returnToCollection(in app: XCUIApplication) {
