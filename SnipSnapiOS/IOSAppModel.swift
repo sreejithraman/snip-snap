@@ -95,6 +95,7 @@ final class IOSAppModel {
         return pages.contains(origin) ? origin : .list(SnipList.inboxID)
     }
     private var listDrafts: [UUID: InlineListDraft] = [:]
+    private(set) var snipEditorDraft: SnipEditorDraft?
     private(set) var isCreatingList = false
     private var isCancellingNewList = false
     private struct QueuedNewListRequest {
@@ -208,6 +209,42 @@ final class IOSAppModel {
         selectedSnipID = id
     }
 
+    @discardableResult
+    func beginInlineSnipEdit(_ snip: Snip) -> Bool {
+        guard snipEditorDraft?.canDismiss != false else { return false }
+        guard snipEditorDraft == nil || snipEditorDraft?.original.id == snip.id else { return false }
+        endSelectingSnips()
+        beginEditingSnip(snip.id)
+        if snipEditorDraft == nil {
+            snipEditorDraft = SnipEditorDraft(snip: snip)
+        }
+        return true
+    }
+
+    func finishInlineSnipEdit(_ draft: SnipEditorDraft) {
+        guard snipEditorDraft === draft else { return }
+        draft.discard()
+        snipEditorDraft = nil
+    }
+
+    func cancelInlineSnipEdit() {
+        guard let draft = snipEditorDraft, draft.canDismiss else { return }
+        haptics.invalidatePendingFeedback()
+        finishInlineSnipEdit(draft)
+    }
+
+    func saveInlineSnipEdit(_ draft: SnipEditorDraft) async -> Bool {
+        await withUserMutation { interaction in
+            guard snipEditorDraft === draft else { return false }
+            return await editSnipUnlocked(
+                draft.original,
+                content: draft.content,
+                attachmentEdits: draft.attachments.compactMap(\.libraryEdit),
+                feedbackInteraction: interaction
+            )
+        }
+    }
+
     func selectSnips(_ ids: Set<UUID>) {
         guard ids != selectedSnipIDs else { return }
         selectedSnipIDs = ids
@@ -234,7 +271,8 @@ final class IOSAppModel {
     }
 
     var canReorderVisibleSnips: Bool {
-        completionFilter == .all
+        snipEditorDraft == nil
+            && completionFilter == .all
             && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -262,6 +300,7 @@ final class IOSAppModel {
         haptics.invalidatePendingFeedback()
         await withSerializedMutation {
             clearPendingDeletionToast()
+            if let snipEditorDraft { finishInlineSnipEdit(snipEditorDraft) }
             selectedSnipID = nil
             apply(await session.replaceLibrary(
                 library,
@@ -1196,6 +1235,9 @@ final class IOSAppModel {
         }
         if let selectedSnipID, !snips.contains(where: { $0.id == selectedSnipID }) {
             self.selectedSnipID = nil
+        }
+        if let snipEditorDraft, !snips.contains(where: { $0.id == snipEditorDraft.original.id }) {
+            finishInlineSnipEdit(snipEditorDraft)
         }
         selectedSnipIDs.formIntersection(snips.map(\.id))
         // The share picker reads this catalog from outside the app process.

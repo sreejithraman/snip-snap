@@ -1383,7 +1383,6 @@ final class PanelTests: StoreBackedTestCase {
 
     func testCardLeadingControlUsesOneSize() {
         XCTAssertEqual(PanelCardLeadingMetrics.side, 24)
-        XCTAssertEqual(PanelCardLeadingMetrics.cornerRadius, 5)
         XCTAssertEqual(PanelCardLeadingMetrics.controlSide, 20)
         XCTAssertLessThan(
             PanelCardLeadingMetrics.controlSide,

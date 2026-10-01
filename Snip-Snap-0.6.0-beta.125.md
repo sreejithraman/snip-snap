@@ -1,0 +1,9 @@
+# Snip Snap 0.6.0 Beta 125
+
+## Mac
+
+- Align snip controls and inline editing across Mac and iOS
+
+## iOS
+
+- Align snip controls and inline editing across Mac and iOS

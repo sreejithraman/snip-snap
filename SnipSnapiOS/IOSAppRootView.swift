@@ -52,6 +52,9 @@ struct IOSAppRootView: View {
                 model.searchText = ""
             }
         }
+        .onChange(of: model.snipEditorDraft?.original.id) { _, id in
+            if id != nil { collectionEditMode = .inactive }
+        }
         .onChange(of: model.selectedPage) {
             model.isSearchPresented = false
             model.searchText = ""
@@ -147,8 +150,6 @@ struct IOSAppRootView: View {
             settingsBackupLifetime.end(library: model)
         }) { destination in
             switch destination {
-            case .editSnip(let id):
-                SnipEditorView(model: model, snipID: id)
             case .settings:
                 SyncedContentSettingsView(
                     model: session.syncedContentSettings,

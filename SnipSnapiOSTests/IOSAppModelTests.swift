@@ -1298,6 +1298,94 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertTrue(cloudRetentionCalls.allSatisfy { !$0.contains(attachmentID) })
     }
 
+    func testAnotherSnipCannotReplaceAnInlineDraftOrItsStagedFiles() async throws {
+        let first = Snip(content: "First", origin: .quickEntry)
+        let second = Snip(content: "Second", origin: .quickEntry)
+        let model = makeModel(library: ModelTestLibrary(snips: [first, second]))
+        await model.load()
+        XCTAssertTrue(model.beginInlineSnipEdit(first))
+        let draft = try XCTUnwrap(model.snipEditorDraft)
+        defer { draft.discard() }
+        draft.content = "Unsaved first"
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let bytes = Data("Keep this attachment".utf8)
+        try bytes.write(to: source)
+        defer { try? FileManager.default.removeItem(at: source) }
+        draft.stageMedia(.files([source]), using: model)
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while draft.isStaging && clock.now < deadline { await Task.yield() }
+        XCTAssertFalse(draft.isStaging)
+        let stagedURL = try XCTUnwrap(draft.attachments.first?.url)
+
+        XCTAssertFalse(model.beginInlineSnipEdit(second))
+        XCTAssertTrue(model.snipEditorDraft === draft)
+        XCTAssertEqual(model.selectedSnipID, first.id)
+        XCTAssertTrue(model.beginInlineSnipEdit(first))
+        XCTAssertTrue(model.snipEditorDraft === draft)
+        XCTAssertEqual(draft.content, "Unsaved first")
+        XCTAssertEqual(try Data(contentsOf: stagedURL), bytes)
+        let order = model.visibleSnips.map(\.id)
+        let reordered = await model.placeVisibleSnips(Array(order.reversed()))
+        XCTAssertFalse(reordered)
+        XCTAssertEqual(model.visibleSnips.map(\.id), order)
+        XCTAssertTrue(model.snipEditorDraft === draft)
+        XCTAssertEqual(try Data(contentsOf: stagedURL), bytes)
+
+        model.cancelInlineSnipEdit()
+        XCTAssertNil(model.snipEditorDraft)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stagedURL.path))
+    }
+
+    func testDiscardedInlineDraftDoesNotExecuteAQueuedSave() async throws {
+        let original = Snip(content: "Original", origin: .quickEntry)
+        let blocker = Snip(content: "Hold the lock", origin: .quickEntry)
+        let library = ModelTestLibrary(snips: [original, blocker], suspendsFirstCommand: true)
+        let model = makeModel(library: library)
+        await model.load()
+        XCTAssertTrue(model.beginInlineSnipEdit(original))
+        let draft = try XCTUnwrap(model.snipEditorDraft)
+        draft.content = "Discarded edit"
+
+        let blockingEdit = Task { await model.editSnip(blocker, content: "Lock held") }
+        await library.waitUntilFirstCommandStarts()
+        let save = Task { await draft.save(using: model) }
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while !draft.isSaving && clock.now < deadline { await Task.yield() }
+        XCTAssertTrue(draft.isSaving)
+        model.finishInlineSnipEdit(draft)
+        await library.resumeFirstCommand()
+
+        let blockerSaved = await blockingEdit.value
+        let draftSaved = await save.value
+        XCTAssertTrue(blockerSaved)
+        XCTAssertFalse(draftSaved)
+        XCTAssertNil(model.snipEditorDraft)
+        XCTAssertEqual(model.snips.first { $0.id == original.id }?.content, "Original")
+        let attachmentEdit = await library.lastAttachmentEdit
+        XCTAssertNil(attachmentEdit)
+    }
+
+    func testLibraryReplacementInvalidatesInlineDraftWithMatchingRecord() async throws {
+        let original = Snip(content: "Original", origin: .quickEntry)
+        let model = makeModel(library: ModelTestLibrary(snips: [original]))
+        await model.load()
+        XCTAssertTrue(model.beginInlineSnipEdit(original))
+        let draft = try XCTUnwrap(model.snipEditorDraft)
+        draft.content = "Old library edit"
+        let replacement = ModelTestLibrary(snips: [original])
+
+        await model.replaceLibrary(replacement, recoveryScope: nil)
+        let saved = await draft.save(using: model)
+
+        XCTAssertFalse(saved)
+        XCTAssertNil(model.snipEditorDraft)
+        XCTAssertEqual(model.snips.first { $0.id == original.id }?.content, "Original")
+        let attachmentEdit = await replacement.lastAttachmentEdit
+        XCTAssertNil(attachmentEdit)
+    }
+
     func testResetReplacementWaitsForAnEditAndDropsItsUndoEntry() async {
         let localLibrary = ModelTestLibrary(suspendsFirstCommand: true)
         let resetLibrary = ModelTestLibrary()

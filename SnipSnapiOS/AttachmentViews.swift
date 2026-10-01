@@ -67,54 +67,31 @@ struct AttachmentDraft: Equatable, Identifiable {
 
 }
 
-struct AttachmentEditorSection: View {
+struct AttachmentEditorControls: View {
     let attachments: [AttachmentDraft]
     let model: IOSAppModel
-    let isStaging: Bool
     let isDisabled: Bool
     let preview: (AttachmentDraft) -> Void
     let replace: (AttachmentDraft, AttachmentSource) -> Void
     let remove: (AttachmentDraft) -> Void
-    let add: (AttachmentSource) -> Void
 
     var body: some View {
-        Section("Attachments") {
-            if !attachments.isEmpty {
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 132), spacing: 12)],
-                    spacing: 16
-                ) {
-                    ForEach(attachments) { attachment in
-                        AttachmentEditorTile(
-                            attachment: attachment,
-                            model: model,
-                            isDisabled: isDisabled,
-                            preview: { preview(attachment) },
-                            replace: { replace(attachment, $0) },
-                            remove: { remove(attachment) }
-                        )
-                    }
+        ScrollView(.horizontal) {
+            HStack(alignment: .top, spacing: 12) {
+                ForEach(attachments) { attachment in
+                    AttachmentEditorTile(
+                        attachment: attachment,
+                        model: model,
+                        isDisabled: isDisabled,
+                        preview: { preview(attachment) },
+                        replace: { replace(attachment, $0) },
+                        remove: { remove(attachment) }
+                    )
+                    .frame(width: 112)
                 }
-                .padding(.vertical, 8)
-            }
-
-            AttachmentSourceMenu(choose: add) {
-                Label("Add attachments", systemImage: "paperclip")
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .disabled(isDisabled)
-            .accessibilityIdentifier("add-attachments")
-
-            if isStaging {
-                HStack(spacing: 8) {
-                    ProgressView()
-                    Text("Adding files…")
-                        .foregroundStyle(.secondary)
-                }
-                .accessibilityIdentifier("copying-attachments")
             }
         }
+        .scrollIndicators(.hidden)
     }
 }
 
@@ -351,7 +328,6 @@ struct AttachmentPreviewTile: View {
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
             .contentShape(Rectangle())
         }
-        .aspectRatio(1, contentMode: .fit)
         .buttonStyle(.plain)
         .accessibilityLabel("Preview \(item.fileName)")
         .accessibilityIdentifier("attachment-preview-\(item.fileName)")
@@ -360,7 +336,6 @@ struct AttachmentPreviewTile: View {
 
 struct AttachmentThumbnail: View {
     let url: URL
-    var fillsTile = false
     @Environment(\.displayScale) private var displayScale
     @State private var image: Image?
     @State private var loadedURL: URL?
@@ -371,13 +346,12 @@ struct AttachmentThumbnail: View {
                 Rectangle()
                     .fill(.quaternary)
                 if let displayedImage {
-                    let inset: CGFloat = fillsTile ? 0 : 8
                     displayedImage
                         .resizable()
-                        .aspectRatio(contentMode: fillsTile ? .fill : .fit)
+                        .scaledToFill()
                         .frame(
-                            width: max(0, geometry.size.width - inset * 2),
-                            height: max(0, geometry.size.height - inset * 2)
+                            width: geometry.size.width,
+                            height: geometry.size.height
                         )
                         .clipped()
                 } else {

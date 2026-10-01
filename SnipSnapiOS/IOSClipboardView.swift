@@ -71,7 +71,7 @@ struct IOSClipboardView: View {
     var body: some View {
         Group {
             if libraryModel.isSearchPresented {
-                LibrarySearchView(model: libraryModel, clipboard: model, copyShare: copyShare, sheet: $sheet)
+                LibrarySearchView(model: libraryModel, clipboard: model, copyShare: copyShare)
             } else {
                 clipboardContent
             }

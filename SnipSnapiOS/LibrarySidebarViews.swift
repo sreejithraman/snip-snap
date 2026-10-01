@@ -132,10 +132,14 @@ struct LibraryActionsMenu: View {
                 editMode.isEditing ? "Done Selecting" : "Select Snips",
                 systemImage: editMode.isEditing ? "checkmark" : "checkmark.circle"
             ) {
+                guard model.snipEditorDraft == nil else { return }
                 model.endSelectingSnips()
                 editMode = editMode.isEditing ? .inactive : .active
             }
-            .disabled(!editMode.isEditing && model.visibleSnips(in: listID).isEmpty)
+            .disabled(
+                model.snipEditorDraft != nil
+                    || (!editMode.isEditing && model.visibleSnips(in: listID).isEmpty)
+            )
             .accessibilityIdentifier("select-snips")
             Divider()
             if listID != SnipList.inboxID, let editSelectedList {

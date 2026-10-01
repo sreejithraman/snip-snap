@@ -62,6 +62,13 @@ struct SnipListAppearance {
         preset == nil ? SnipSnapTheme.controlTint : color
     }
 
+    func filledControlLabel(in environment: EnvironmentValues) -> Color {
+        let tint = controlTint.resolve(in: environment)
+        let luminance = 0.2126 * tint.linearRed + 0.7152 * tint.linearGreen + 0.0722 * tint.linearBlue
+        // This threshold chooses the higher-contrast black or white label.
+        return luminance > 0.179 ? .black : .white
+    }
+
     func sendIconColor(in colorScheme: ColorScheme) -> Color {
         preset == nil
             ? (colorScheme == .dark ? .black : .white)
