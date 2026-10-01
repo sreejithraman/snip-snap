@@ -41,6 +41,7 @@ final class InlineListDraft {
 @Observable
 final class IOSAppModel {
     private let session: SavedSnipsSession
+    private(set) var libraryRevision = UUID()
     let haptics: IOSHapticFeedback
     private let cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private let diagnostics: any AppDiagnosticRecording
@@ -307,6 +308,7 @@ final class IOSAppModel {
                 recoveryScope: recoveryScope,
                 sortedBy: sortMode
             ))
+            libraryRevision = UUID()
             await refreshAttachmentTransferStates()
             // A prepare can store a file during either await. This switch must end without one.
             preparedAttachments.removeAll()
@@ -325,10 +327,14 @@ final class IOSAppModel {
         content: String,
         in listID: UUID,
         attachmentURLs: [URL] = [],
-        selectCreatedSnip: Bool = true
+        selectCreatedSnip: Bool = true,
+        expectedLibraryRevision: UUID? = nil,
+        expectedSourceListID: UUID? = nil
     ) async -> Bool {
         await withUserMutation { interaction in
-            await createSnipUnlocked(
+            if let expectedLibraryRevision, expectedLibraryRevision != libraryRevision { return false }
+            if let expectedSourceListID, !lists.contains(where: { $0.id == expectedSourceListID }) { return false }
+            return await createSnipUnlocked(
                 content: content,
                 in: listID,
                 attachmentURLs: attachmentURLs,

@@ -109,16 +109,14 @@ struct SelectionActionsMenu: View {
             .accessibilityIdentifier("mark-selection-not-done")
         }
 
-        if model.lists.contains(where: { $0.id != model.selectedListID }) {
+        let movePurpose = ListDestinationPurpose.move(sourceListIDs: [model.selectedListID])
+        if !movePurpose.destinations(in: model.lists).isEmpty {
             Divider()
-            Menu("Move to List", systemImage: "folder") {
-                ForEach(model.lists.filter { $0.id != model.selectedListID }) { list in
-                    Button(list.displayName) {
-                        Task {
-                            if await model.moveSelection(to: list.id) { endSelection() }
-                        }
-                    }
-                    .accessibilityIdentifier("move-selection-to-\(list.name)")
+            ListDestinationMenu(
+                lists: model.lists, purpose: movePurpose, identifierPrefix: "move-selection-to-"
+            ) { destinationID in
+                Task {
+                    if await model.moveSelection(to: destinationID) { endSelection() }
                 }
             }
             .accessibilityIdentifier("move-selection")

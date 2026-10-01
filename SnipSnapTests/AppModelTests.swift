@@ -2939,6 +2939,99 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testComposerRejectsQueuedSendAfterSameScopeLibraryReplacement() async throws {
+        let root = try storeURL().deletingLastPathComponent()
+        let original = try JSONSnipLibrary(fileURL: root.appendingPathComponent("original.json"))
+        let workUpdate = try await original.perform(
+            .createList(name: "Work", systemImage: "folder", color: nil), sortedBy: .chronological
+        )
+        let work = try XCTUnwrap(workUpdate.snapshot.lists.first { $0.name == "Work" })
+        let added = try await original.add(content: "Pending delete", origin: .quickEntry)
+        let snip = try XCTUnwrap(added)
+        let replacement = try JSONSnipLibrary(fileURL: root.appendingPathComponent("replacement.json"))
+        _ = try await replacement.perform(.restoreList(work), sortedBy: .chronological)
+        let gatedActions = GatedDiscardUserActions(base: userActions(for: original))
+        let model = AppModel(library: original, defaults: defaults(), userActions: gatedActions)
+        await model.reload()
+        model.selection = [snip.id]
+        await model.deleteSelectionNow()
+        model.saveComposerText("Queued Inbox draft", for: SnipList.inboxID)
+        let revision = model.libraryRevision
+        let replace = Task { @MainActor in await model.replaceLibrary(replacement, recoveryScope: nil) }
+        await gatedActions.waitUntilDiscardStarts()
+        var didStartSend = false
+        let send = Task { @MainActor in
+            didStartSend = true
+            return await model.saveComposerDraft(
+                content: "Queued Inbox draft", listID: SnipList.inboxID,
+                destinationListID: work.id, expectedLibraryRevision: revision
+            )
+        }
+        let started = await waitUntil { didStartSend }
+        XCTAssertTrue(started)
+        await gatedActions.resumeDiscard()
+        await replace.value
+        let saved = await send.value
+        XCTAssertFalse(saved)
+        XCTAssertTrue(model.snips.isEmpty)
+        XCTAssertEqual(model.composerDraftScope, "local")
+        XCTAssertEqual(model.composerDraft(for: SnipList.inboxID).text, "Queued Inbox draft")
+    }
+
+    @MainActor
+    func testComposerRejectsOpeningRevisionAfterSameScopeReplacementWithRetainedLists() async {
+        let work = SnipList(id: UUID(), name: "Work", systemImage: "folder", position: 1)
+        let lists: [SnipList] = [.inbox, work]
+        let model = AppModel(library: InMemorySnipLibrary(snips: [], lists: lists), defaults: defaults())
+        await model.reload()
+        model.saveComposerText("Old Inbox draft", for: SnipList.inboxID)
+        let revision = model.libraryRevision
+        await model.replaceLibrary(InMemorySnipLibrary(snips: [], lists: lists), recoveryScope: nil)
+
+        let staleSaved = await model.saveComposerDraft(
+            content: "Old Inbox draft", listID: SnipList.inboxID, destinationListID: work.id,
+            expectedLibraryRevision: revision
+        )
+        XCTAssertFalse(staleSaved)
+        XCTAssertTrue(model.snips.isEmpty)
+        XCTAssertEqual(model.composerDraft(for: SnipList.inboxID).text, "Old Inbox draft")
+        let currentSaved = await model.saveComposerDraft(
+            content: "Old Inbox draft", listID: SnipList.inboxID, destinationListID: work.id,
+            expectedLibraryRevision: model.libraryRevision
+        )
+        XCTAssertTrue(currentSaved)
+        XCTAssertEqual(model.snips.first?.listID, work.id)
+    }
+
+    @MainActor
+    func testComposerCanSendToAnotherListWithoutReplacingItsDraftOrChangingLists() async throws {
+        let url = try storeURL()
+        let model = AppModel(library: try JSONSnipLibrary(fileURL: url), defaults: defaults())
+        await model.reload()
+        let created = await model.createList(name: "Work", systemImage: "list.bullet")
+        XCTAssertTrue(created)
+        let work = try XCTUnwrap(model.lists.first { $0.name == "Work" })
+        model.saveComposerText("Work draft to keep", for: work.id)
+        model.selectList(.inbox)
+        model.saveComposerText("Route this draft", for: SnipList.inboxID)
+        let attachment = url.deletingLastPathComponent().appendingPathComponent("draft.txt")
+        try Data("Attached text".utf8).write(to: attachment)
+        model.addDraftAttachments([attachment], to: SnipList.inboxID)
+
+        let saved = await model.saveComposerDraft(
+            content: "Route this draft", listID: SnipList.inboxID, destinationListID: work.id
+        )
+
+        XCTAssertTrue(saved)
+        let snip = try XCTUnwrap(model.snips.first { $0.content == "Route this draft" })
+        XCTAssertEqual(snip.listID, work.id)
+        XCTAssertEqual(snip.attachments.map(\.fileName), ["draft.txt"])
+        XCTAssertEqual(model.activeListID, SnipList.inboxID)
+        XCTAssertEqual(model.composerDraft(for: SnipList.inboxID), ComposerDraft())
+        XCTAssertEqual(model.composerDraft(for: work.id).text, "Work draft to keep")
+    }
+
+    @MainActor
     func testComposerDraftRetainsTemporaryFilesUntilAnActiveSaveFinishes() throws {
         let directory = try storeURL().deletingLastPathComponent()
         let temporary = directory.appendingPathComponent("capture.png")

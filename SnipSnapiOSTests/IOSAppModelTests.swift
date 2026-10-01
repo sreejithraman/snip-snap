@@ -1228,6 +1228,91 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(newSnapshot.snips.map(\.content), ["New"])
     }
 
+    func testRoutedComposerSendRejectsSourceDeletedWhileWaitingForMutation() async {
+        let work = SnipList(id: UUID(), name: "Work", systemImage: "folder", position: 1)
+        let library = ModelTestLibrary(lists: [.inbox, work], suspendsFirstCommand: true)
+        let model = makeModel(library: library)
+        await model.load()
+        let revision = model.libraryRevision
+        let delete = Task { await model.deleteList(id: work.id) }
+        await library.waitUntilFirstCommandStarts()
+        var didStartSend = false
+        let send = Task {
+            didStartSend = true
+            return await model.createSnip(
+                content: "Deleted source draft", in: SnipList.inboxID,
+                selectCreatedSnip: false, expectedLibraryRevision: revision,
+                expectedSourceListID: work.id
+            )
+        }
+        while !didStartSend { await Task.yield() }
+        await library.resumeFirstCommand()
+        let deleted = await delete.value
+        XCTAssertTrue(deleted)
+        let saved = await send.value
+        XCTAssertFalse(saved)
+        XCTAssertEqual(model.libraryRevision, revision)
+        XCTAssertTrue(model.snips.isEmpty)
+    }
+
+    func testRoutedComposerSendRejectsLibraryReplacementAndPreservesSourceDraft() async throws {
+        let oldLibrary = ModelTestLibrary()
+        let model = makeModel(library: oldLibrary)
+        await model.load()
+        let created = await model.createList(name: "Work")
+        XCTAssertTrue(created)
+        let workID = try XCTUnwrap(model.lists.first { $0.name == "Work" }?.id)
+        let suiteName = "RoutedComposerRevisionTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let drafts = ComposerDraftStore(defaults: defaults, textDefaultsKey: "drafts")
+        drafts.setText("Old Work draft", for: workID)
+        let source = drafts.beginSave(listID: workID)
+        let revision = model.libraryRevision
+        let replacement = ModelTestLibrary()
+        await replacement.suspendNextSnapshot()
+        let replace = Task { await model.replaceLibrary(replacement, recoveryScope: nil) }
+        await replacement.waitUntilSnapshotStarts()
+        var didStartSend = false
+        let send = Task {
+            didStartSend = true
+            return await model.createSnip(
+                content: source.draft.text, in: SnipList.inboxID,
+                selectCreatedSnip: false, expectedLibraryRevision: revision
+            )
+        }
+        while !didStartSend { await Task.yield() }
+        await replacement.resumeSnapshot()
+        await replace.value
+        let saved = await send.value
+        drafts.finishSave(source, saved: saved)
+        XCTAssertFalse(saved)
+        XCTAssertTrue(model.snips.isEmpty)
+        XCTAssertEqual(drafts.draft(for: workID).text, "Old Work draft")
+    }
+
+    func testRoutedSendRejectsOldPickerRevisionWhenReplacementKeepsListIDs() async {
+        let work = SnipList(id: UUID(), name: "Work", systemImage: "folder", position: 1)
+        let lists: [SnipList] = [.inbox, work]
+        let model = makeModel(library: ModelTestLibrary(lists: lists))
+        await model.load()
+        let openingRevision = model.libraryRevision
+        await model.replaceLibrary(ModelTestLibrary(lists: lists), recoveryScope: nil)
+
+        let staleSaved = await model.createSnip(
+            content: "Old picker draft", in: work.id,
+            selectCreatedSnip: false, expectedLibraryRevision: openingRevision
+        )
+        XCTAssertFalse(staleSaved)
+        XCTAssertTrue(model.snips.isEmpty)
+        let currentSaved = await model.createSnip(
+            content: "Current picker draft", in: work.id,
+            selectCreatedSnip: false, expectedLibraryRevision: model.libraryRevision
+        )
+        XCTAssertTrue(currentSaved)
+        XCTAssertEqual(model.snips.map(\.content), ["Current picker draft"])
+    }
+
     func testReplacingLibraryReloadsVisibleContentAndRecoveryScope() async {
         let old = Snip(content: "Old collection", origin: .quickEntry)
         let recoveredValue = Snip(content: "Recovered copy", origin: .quickEntry)
@@ -5033,6 +5118,7 @@ private actor ModelTestLibrary: SnipLibrary {
 
     init(
         snips: [Snip] = [],
+        lists: [SnipList] = [.inbox],
         recovery: SnipRecoverySnapshot = .empty,
         attachmentURLs: [UUID: URL] = [:],
         commandDelay: Duration? = nil,
@@ -5041,6 +5127,7 @@ private actor ModelTestLibrary: SnipLibrary {
         failsListDeletion: Bool = false
     ) {
         self.snips = snips
+        self.lists = lists
         self.recovery = recovery
         self.attachmentURLs = attachmentURLs
         self.commandDelay = commandDelay

@@ -19,6 +19,7 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var snips: [Snip] = []
     @Published private(set) var lists: [SnipList] = [.inbox]
+    @Published private(set) var libraryRevision = UUID()
     @Published var activeListID: UUID
     @Published var isShowingClipboard = false
     @Published var clipboardViewOptions = ClipboardViewOptions()
@@ -352,6 +353,7 @@ final class AppModel: ObservableObject {
                 inboxDraftRevision &+= 1
             }
             apply(state)
+            libraryRevision = UUID()
             let currentListIDs = Set(lists.map(\.id))
             if scopeChanged {
                 retiredComposerListIDs = previousListIDs.subtracting(currentListIDs)
@@ -711,20 +713,24 @@ final class AppModel: ObservableObject {
     }
 
     func saveComposerDraft(
-        content: String, listID: UUID, expectedScope: String? = nil
+        content: String, listID: UUID, destinationListID: UUID? = nil,
+        expectedScope: String? = nil, expectedLibraryRevision: UUID? = nil
     ) async -> Bool {
+        let revision = expectedLibraryRevision ?? libraryRevision
         let scope = expectedScope ?? composerDrafts.scope
+        let destinationID = destinationListID ?? listID
         return await withCommandLock {
-            guard composerDrafts.scope == scope,
+            guard libraryRevision == revision, composerDrafts.scope == scope,
                   !retiredComposerListIDs.contains(listID),
-                  liveComposerListID(listID) == listID else { return false }
+                  liveComposerListID(listID) == listID,
+                  lists.contains(where: { $0.id == destinationID }) else { return false }
             let snapshot = composerDrafts.beginSave(listID: listID, content: content)
             let result = await addResultUnlocked(
                 content: snapshot.draft.text,
                 origin: .quickEntry,
                 source: nil,
                 attachmentURLs: snapshot.draft.attachments,
-                listID: listID,
+                listID: destinationID,
                 requestID: UUID()
             )
             let saved: Bool

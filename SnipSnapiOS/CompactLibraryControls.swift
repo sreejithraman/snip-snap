@@ -26,6 +26,11 @@ private struct CompactGlassCircleButton<Label: View>: View {
     }
 }
 
+private struct SendDestinationRequest {
+    let sourceID: UUID
+    let libraryRevision: UUID
+}
+
 struct CompactLibraryControls: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -43,6 +48,7 @@ struct CompactLibraryControls: View {
     @Namespace private var composerGlass
     @Binding var sheet: AppSheet?
 
+    @State private var sendDestination: SendDestinationRequest?
     @State private var draft = ComposerDraft()
     @State private var draftListID: UUID?
     @State private var toolbarWidth: CGFloat = 320
@@ -61,6 +67,11 @@ struct CompactLibraryControls: View {
 
     private var controlLength: CGFloat {
         max(CompactControlMetrics.minimumInteractiveLength, scaledControlLength)
+    }
+
+    private var sendSize: CGSize {
+        let height = controlLength - 12
+        return CGSize(width: height + sendIconLength, height: height)
     }
 
     init(
@@ -153,16 +164,25 @@ struct CompactLibraryControls: View {
             }
         }
         .onChange(of: model.selectedListID) { _, listID in
+            sendDestination = nil
             composerFieldID = UUID()
             draftListID = listID
             draft = storage.savingListID == listID
                 ? ComposerDraft()
                 : storage.draftStore.draft(for: listID)
         }
+        .onChange(of: model.libraryRevision) { _, _ in sendDestination = nil }
         .onChange(of: showsComposer) { _, visible in
-            if !visible { isComposerFocused = false }
+            if !visible { isComposerFocused = false; sendDestination = nil }
+        }
+        .onChange(of: previewURL) { _, url in
+            if url != nil { sendDestination = nil }
+        }
+        .onChange(of: sheet) { _, sheet in
+            if sheet != nil { sendDestination = nil }
         }
         .onDisappear {
+            sendDestination = nil
             stagingTask?.cancel()
             storage.draftStore.flushText()
         }
@@ -385,7 +405,7 @@ struct CompactLibraryControls: View {
                             .modifier(ComposerAccessibility(isPreview: isPreview, identifier: "composer-text"))
 
                         Color.clear
-                            .frame(width: controlLength, height: controlLength)
+                            .frame(width: sendSize.width, height: controlLength)
                             .allowsHitTesting(false)
                     }
                     .padding(.leading, SnipSnapSpacing.relatedContent / 2)
@@ -394,7 +414,7 @@ struct CompactLibraryControls: View {
                 }
                 .frame(minHeight: controlLength)
                 .glassEffect(
-                    .regular.interactive(),
+                    .regular,
                     in: RoundedRectangle(cornerRadius: 20, style: .continuous)
                 )
                 .overlay {
@@ -408,25 +428,38 @@ struct CompactLibraryControls: View {
                 }
                 .modifier(ComposerGlassID(isPreview: isPreview, id: "input", namespace: composerGlass))
             }
-            // Keep Send outside the input's interactive glass subtree.
+            // Keep Send's glass separate, with its visible capsule inset in the input.
             .overlay(alignment: .bottomTrailing) {
                 GlassEffectContainer {
                     let colors = list.accent.sendColors(in: colorScheme, chrome: .glass)
-                    AppTintedGlassActionButton(
-                        isEnabled: canSend(draft: draft),
-                        tint: colors.tint,
-                        labelColor: colors.label,
-                        action: { if !isPreview { Task { await send() } } }
-                    ) {
-                        Image(systemName: "arrow.up")
-                            .font(.system(size: sendIconLength, weight: .semibold))
-                            .frame(width: sendIconLength, height: sendIconLength)
-                    }
-                    .frame(width: controlLength, height: controlLength, alignment: .trailing)
-                    .contentShape(Rectangle())
-                    .controlSize(.regular)
-                    .accessibilityLabel("Send Snip")
-                    .modifier(ComposerAccessibility(isPreview: isPreview, identifier: "composer-send"))
+                    AppMorphingSendControl(
+                        sourceID: list.id, isEnabled: !isPreview && canSend(draft: draft),
+                        usesRootSurface: !frame.isMoving,
+                        projectsClosedButton: false,
+                        tint: colors.tint, labelColor: colors.label,
+                        size: sendSize, minimumHitHeight: controlLength, iconLength: sendIconLength,
+                        destinations: model.lists,
+                        isPresented: Binding(
+                            get: { !isPreview && sendDestination?.sourceID == list.id },
+                            set: { sendDestination = $0 ? SendDestinationRequest(
+                                sourceID: list.id, libraryRevision: model.libraryRevision
+                            ) : nil }
+                        ),
+                        send: {
+                            guard !isPreview else { return }
+                            let revision = model.libraryRevision
+                            Task { await send(from: list.id, to: list.id, expectedLibraryRevision: revision) }
+                        },
+                        choose: { destinationID in
+                            guard let request = sendDestination, request.sourceID == list.id else { return }
+                            sendDestination = nil
+                            Task { await send(
+                                from: request.sourceID, to: destinationID,
+                                expectedLibraryRevision: request.libraryRevision
+                            ) }
+                        }
+                    )
+                    .accessibilityHidden(isPreview)
                     .padding(.trailing, SnipSnapSpacing.relatedContent)
                 }
             }
@@ -494,18 +527,24 @@ struct CompactLibraryControls: View {
                 || !draft.attachments.isEmpty)
     }
 
-    private func send() async {
-        guard canSend(draft: draft(for: model.selectedListID)) else { return }
-        let snapshot = storage.draftStore.beginSave(listID: model.selectedListID)
+    private func send(
+        from sourceID: UUID, to destinationID: UUID, expectedLibraryRevision: UUID
+    ) async {
+        guard expectedLibraryRevision == model.libraryRevision,
+              !frame.isMoving, sourceID == model.selectedListID,
+              model.lists.contains(where: { $0.id == destinationID }),
+              canSend(draft: draft(for: sourceID)) else { return }
+        let snapshot = storage.draftStore.beginSave(listID: sourceID)
         storage.savingListID = snapshot.listID
         storage.isSaving = true
         composerFieldID = UUID()
         draft = ComposerDraft()
         let saved = await model.createSnip(
             content: snapshot.draft.text,
-            in: snapshot.listID,
+            in: destinationID,
             attachmentURLs: snapshot.draft.attachments,
-            selectCreatedSnip: false
+            selectCreatedSnip: false,
+            expectedLibraryRevision: expectedLibraryRevision, expectedSourceListID: sourceID
         )
         storage.draftStore.finishSave(snapshot, saved: saved)
         if saved {
