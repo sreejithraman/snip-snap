@@ -57,6 +57,7 @@ package actor CloudFullSyncCoordinator {
   private let transport: any CloudRecordTransport
   private let fetchScope: CloudFetchScope
   private let reportResult: @Sendable (SnipSnapCloudSyncResult) async throws -> Void
+  private let diagnostics: any AppDiagnosticRecording
   private var started = false
   private let operationGate = AsyncOperationGate()
   private var requiresInitialFetch = true
@@ -65,11 +66,13 @@ package actor CloudFullSyncCoordinator {
     store: any CloudFullSyncStore,
     transport: any CloudRecordTransport,
     fetchScope: CloudFetchScope = .all,
+    diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared,
     reportResult: @escaping @Sendable (SnipSnapCloudSyncResult) async throws -> Void = { _ in }
   ) {
     self.store = store
     self.transport = transport
     self.fetchScope = fetchScope
+    self.diagnostics = diagnostics
     self.reportResult = reportResult
   }
 
@@ -284,9 +287,19 @@ package actor CloudFullSyncCoordinator {
     let staged = try await store.stagedBatches()
     if !staged.isEmpty { try await beforeApply() }
     for batch in staged {
-      try await store.applyStaged(batch.batchID)
-      if await transport.pendingEvent()?.id == batch.batchID {
-        try await transport.confirmApplied(batch.batchID, outboundAdmission: store.outboundAdmission())
+      let observed = diagnosticBatch(in: batch)
+      do {
+        try await store.applyStaged(batch.batchID)
+        if await transport.pendingEvent()?.id == batch.batchID {
+          try await transport.confirmApplied(batch.batchID, outboundAdmission: store.outboundAdmission())
+        }
+      } catch {
+        diagnostics.record(.failure(operation: diagnosticOperation(for: observed),
+          error: error, visibility: .background))
+        throw error
+      }
+      if let observed {
+        recordCommittedBatch(observed)
       }
     }
     if !staged.isEmpty, let state = try await store.loadEngineState() {
@@ -342,9 +355,16 @@ package actor CloudFullSyncCoordinator {
     outbound: CloudOutboundBatch?,
     state: inout RunState
   ) async throws {
-    try await store.stage(batch, outbound: outbound)
-    try await store.applyStaged(batch.id)
-    try await transport.confirmApplied(batch.id, outboundAdmission: store.outboundAdmission())
+    let operation = diagnosticOperation(for: batch)
+    do {
+      try await store.stage(batch, outbound: outbound)
+      try await store.applyStaged(batch.id)
+      try await transport.confirmApplied(batch.id, outboundAdmission: store.outboundAdmission())
+    } catch {
+      diagnostics.record(.failure(operation: operation, error: error, visibility: .background))
+      throw error
+    }
+    recordCommittedBatch(batch)
     if CloudSyncIssueError.requiresEngineReset(batch) {
       try await store.clearEngineState()
       await transport.reset()
@@ -365,6 +385,36 @@ package actor CloudFullSyncCoordinator {
       if sent.hasResults { state.sendIssue = issue }
     }
     state.blocksOutbound = state.blocksOutbound || CloudSyncIssueError.blocksOutbound(in: batch)
+  }
+
+  /// Classification only: the store continues to own all replay validation and effects.
+  private func diagnosticBatch(in commit: CloudFullBatchCommit) -> CloudSyncBatch? {
+    guard let data = commit.rawBatchData,
+      let raw = try? JSONDecoder().decode(CloudFullSyncPersistence.RawStagedBatch.self, from: data),
+      raw.storageVersion == 1, raw.batch.id == commit.batchID
+    else { return nil }
+    return raw.batch
+  }
+
+  private func diagnosticOperation(for batch: CloudSyncBatch?) -> StaticString {
+    guard let batch else { return "sync.run" }
+    return if case .fetched = batch { "sync.fetch" } else { "sync.send" }
+  }
+
+  private func recordCommittedBatch(_ batch: CloudSyncBatch) {
+    if CloudSyncIssueError.requiresEngineReset(batch) {
+      diagnostics.record(.started(operation: "sync.reset", reason: .recoveryBlocked))
+      return
+    }
+    let operation = diagnosticOperation(for: batch)
+    let issue = CloudSyncIssueError.issue(in: batch)
+    if let issue {
+      diagnostics.record(.failure(operation: operation, errorCode: issue.diagnosticCode, visibility: .background))
+    } else if case .fetched = batch {
+      diagnostics.record(.succeeded(operation: operation))
+    } else if case .sent(let sent) = batch, sent.hasResults {
+      diagnostics.record(.succeeded(operation: operation))
+    }
   }
 
   private func outcome(
@@ -409,6 +459,13 @@ package actor CloudFullSyncCoordinator {
       }
     }
     let settled = if case .settled = currentStatus { !requiresInitialFetch } else { false }
+    if settled, issue == nil {
+      diagnostics.record(.succeeded(operation: "sync.settlement", reason: .settled))
+    } else {
+      diagnostics.record(.started(operation: "sync.settlement",
+        reason: result == .iCloudDataReset || issue != nil ? .recoveryBlocked
+          : requiresInitialFetch ? .initialFetch : .pendingWork))
+    }
     return CloudFullSyncOutcome(issue: issue,
       blocksOutbound: state.blocksOutbound || requiresInitialFetch || result == .iCloudDataReset,
       result: result,
@@ -459,6 +516,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   let namespaceKey: CloudSyncNamespaceKey
   let now: @Sendable () -> Date
   let afterCommitHook: ApplyHook
+  let diagnostics: any AppDiagnosticRecording
   private var observedDestructiveReset: CloudZoneDeletionReason?
   private let mutationLease: SyncModeActiveMutationLease?
 
@@ -470,6 +528,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     mutationLease: SyncModeActiveMutationLease? = nil,
     attachmentPolicy: CloudAttachmentCompatibilityPolicy = .openSourceDefault,
     now: @escaping @Sendable () -> Date = Date.init,
+    diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared,
     afterCommitHook: @escaping ApplyHook = {}
   ) {
     precondition(namespace.zones.contains(dataZone))
@@ -481,6 +540,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     self.mutationLease = mutationLease
     self.attachmentPolicy = attachmentPolicy
     self.now = now
+    self.diagnostics = diagnostics
     self.afterCommitHook = afterCommitHook
     namespaceKey = namespace.namespaceKey
   }

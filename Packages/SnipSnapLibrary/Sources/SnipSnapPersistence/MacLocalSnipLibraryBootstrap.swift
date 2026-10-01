@@ -15,6 +15,21 @@ public struct LocalSnipStorePaths: Equatable, Sendable {
   public let rootDirectory: URL
   public let swiftDataStoreURL: URL
 
+  /// A signed Dev bundle retains its isolated location when launched without the runner.
+  public static func storePathOverride(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    infoDictionary: [String: Any]? = Bundle.main.infoDictionary
+  ) -> String? {
+    if let embedded = infoDictionary?["SnipSnapDevelopmentStorePath"] as? String,
+      embedded.hasPrefix("/") {
+      return embedded
+    }
+    if let override = environment["SNIP_SNAP_STORE_PATH"], !override.isEmpty {
+      return override
+    }
+    return nil
+  }
+
   public init(rootDirectory: URL) {
     self.rootDirectory = rootDirectory
     swiftDataStoreURL = rootDirectory

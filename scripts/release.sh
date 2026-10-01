@@ -220,6 +220,7 @@ else
         PROVISIONING_PROFILE_SPECIFIER="$provisioning_profile_specifier" \
         CODE_SIGN_ENTITLEMENTS="$mac_release_entitlements" \
         SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER="$cloudkit_container_identifier" \
+        SNIP_SNAP_CLOUDKIT_ENVIRONMENT=Production \
         archive
 
     signing_policy_write_export_options \

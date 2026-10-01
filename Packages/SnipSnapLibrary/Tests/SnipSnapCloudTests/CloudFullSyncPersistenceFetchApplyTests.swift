@@ -7,6 +7,72 @@ import XCTest
 @testable import SnipSnapPersistence
 
 extension CloudFullSyncPersistenceTests {
+  func testManualRetryRefetchesNamespaceThatNeverBecameActive() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudNamespaceRetry-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let namespace = makeNamespace()
+    let zone = try XCTUnwrap(namespace.zones.first)
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let persistence = CloudFullSyncPersistence(library: library, namespace: namespace, dataZone: zone)
+    let empty = CloudFetchedBatch(id: UUID(), items: [], engineState: CloudEngineStateEnvelope(
+      namespace: namespace, serialization: Data("incremental".utf8), requiresInitialFetch: false
+    ))
+    try await persistence.stage(.fetched(empty))
+    try await persistence.applyStaged(empty.id)
+
+    let needsFreshFetch = try await persistence.prepareManualRetry()
+    XCTAssertTrue(needsFreshFetch)
+  }
+
+  func testCheckedEmptyNamespaceDoesNotReportSyncSettled() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudUnsettledNamespace-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let namespace = makeNamespace()
+    let zone = try XCTUnwrap(namespace.zones.first)
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let persistence = CloudFullSyncPersistence(library: library, namespace: namespace, dataZone: zone)
+    let empty = CloudFetchedBatch(id: UUID(), items: [], engineState: nil)
+    try await persistence.stage(.fetched(empty))
+    try await persistence.applyStaged(empty.id)
+
+    let settled = try await persistence.isSyncSettled()
+    XCTAssertFalse(settled)
+  }
+
+  func testUnrelatedZoneDeletionDoesNotStopSendingNewSnips() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudUnrelatedZoneDeletion-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let namespace = makeNamespace()
+    let zone = try XCTUnwrap(namespace.zones.first)
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let persistence = CloudFullSyncPersistence(library: library, namespace: namespace, dataZone: zone)
+    let inbox = try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(
+      for: CloudFullRecordCodec.listDraft(.inbox, updatedAt: .distantPast, in: zone)
+    ))
+    let seed = CloudFetchedBatch(id: UUID(), items: [.record(inbox)], engineState: nil)
+    try await persistence.stage(.fetched(seed))
+    try await persistence.applyStaged(seed.id)
+    let added = try await library.perform(.add(
+      content: "Must still sync", origin: .quickEntry, source: nil,
+      listID: SnipList.inbox.id, attachmentURLs: [], requestID: UUID(), now: Date()
+    ), sortedBy: .manual)
+    guard case .add(.added(let id)) = added.outcome else { return XCTFail("Expected a snip") }
+
+    let deletion = CloudFetchedBatch(id: UUID(), items: [], databaseEvents: [
+      .zoneDeleted(CloudZoneID(name: "unrelated", ownerName: zone.ownerName), reason: .deleted)
+    ], engineState: nil)
+    try await persistence.stage(.fetched(deletion))
+    try await persistence.applyStaged(deletion.id)
+
+    let pending = try await persistence.pendingChanges()
+    XCTAssertTrue(pending.operations.contains { $0.id == .snip(id, in: zone) })
+    let issue = try await persistence.unresolvedSyncIssue()
+    XCTAssertNil(issue)
+  }
+
   func testEncryptedDataResetEventStopsPendingWorkAndSignalsCollectionCoordinator() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudEncryptedResetEvent-\(UUID().uuidString)")
@@ -468,6 +534,19 @@ extension CloudFullSyncPersistenceTests {
     let knownPending = try await known.pendingChanges()
     XCTAssertTrue(knownEvidence.needsAttention)
     XCTAssertTrue(knownPending.zonesToSave.isEmpty)
+
+    // Repeated deletion notifications and an empty fetch cannot prove recovery
+    // of a collection whose own zone disappeared.
+    let repeatedMissing = CloudFetchedBatch(id: UUID(), items: [],
+      zoneEvents: [.failed(zone, .zoneMissing)], engineState: nil)
+    try await known.stage(.fetched(repeatedMissing))
+    try await known.applyStaged(repeatedMissing.id)
+    let empty = CloudFetchedBatch(id: UUID(), items: [], engineState: nil)
+    try await known.stage(.fetched(empty))
+    try await known.applyStaged(empty.id)
+    let repeatedEvidence = try await known.enrollmentEvidence()
+    XCTAssertTrue(repeatedEvidence.needsAttention)
+    XCTAssertTrue(repeatedEvidence.blocksSending)
   }
 
   func testCommittedRawBatchCanReplayAfterCrashBeforeReturn() async throws {

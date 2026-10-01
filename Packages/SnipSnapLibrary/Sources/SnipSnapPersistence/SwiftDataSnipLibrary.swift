@@ -192,10 +192,12 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
 
   package static func defaultStoreURL(
     fileManager: FileManager,
-    environment: [String: String]
+    environment: [String: String],
+    infoDictionary: [String: Any]? = Bundle.main.infoDictionary
   ) -> URL {
-    if let jsonOverride = environment["SNIP_SNAP_STORE_PATH"],
-      !jsonOverride.isEmpty
+    if let jsonOverride = LocalSnipStorePaths.storePathOverride(
+      environment: environment, infoDictionary: infoDictionary
+    )
     {
       return URL(fileURLWithPath: jsonOverride)
         .deletingLastPathComponent()

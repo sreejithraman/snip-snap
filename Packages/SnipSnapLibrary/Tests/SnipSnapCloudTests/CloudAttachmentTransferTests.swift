@@ -233,6 +233,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
   func testInterruptedUploadRetriesWithoutDuplicateAcceptance() async throws {
     let fixture = try await makePendingAttachmentFixture(names: ["interrupted"])
     defer { try? FileManager.default.removeItem(at: fixture.root) }
+    try await fixture.store.approveEnrollment(references: [])
     let initial = try await snapshot(fixture.library, fixture.namespace)
     let publication = try XCTUnwrap(initial.publications.first)
     let payloadID = CloudAttachmentRecordCodec.recordID(publication.metadata.payloadIdentity)

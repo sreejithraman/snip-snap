@@ -4,6 +4,9 @@ set -euo pipefail
 script_dir="${0:A:h}"
 
 case "${1:-}" in
+    cloud-mac|cloud-ios-device)
+        exec "$script_dir/run-cloud-dev.sh" "$@"
+        ;;
     --ios-simulator)
         shift
         exec "$script_dir/dev-ios-simulator.sh" "$@"

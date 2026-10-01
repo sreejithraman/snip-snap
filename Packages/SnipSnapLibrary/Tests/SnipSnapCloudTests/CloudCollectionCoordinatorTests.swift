@@ -1618,7 +1618,8 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let events = await records.events()
 
     XCTAssertEqual(automaticControlEvents, [])
-    XCTAssertEqual(retried, .syncCompleted)
+    // The probe returns no records, so this empty adopted namespace is not active yet.
+    XCTAssertEqual(retried, .contentUpdated)
     XCTAssertEqual(events, ["started", "fetched"])
   }
 

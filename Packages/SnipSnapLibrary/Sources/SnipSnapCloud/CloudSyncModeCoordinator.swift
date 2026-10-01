@@ -8,7 +8,6 @@ private enum ICloudModeMergePreparation: Sendable {
 }
 
 private protocol ICloudSyncAdapter: Sendable {
-    func sync() async throws
     func fetchRemote(
         beforeApply: @escaping @Sendable () async throws -> Void
     ) async throws
@@ -57,10 +56,6 @@ private actor LegacyTextSyncAdapter: ICloudSyncAdapter {
     init(raw: SwiftDataCloudTextPersistence, transport: any CloudRecordTransport) {
         self.raw = raw
         syncDriver = CloudTextSyncCoordinator(store: raw, transport: transport)
-    }
-
-    func sync() async throws {
-        try await syncDriver.sync()
     }
 
     func fetchRemote(
@@ -145,13 +140,6 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
             transport: transport,
             fetchScope: .zones([raw.dataZone])
         )
-    }
-
-    func sync() async throws {
-        pendingIssue = nil
-        let outcome = try await syncDriver.sync()
-        try reportCompletedSyncIssue(outcome)
-        if let issue = await takeSyncIssue() { throw CloudSyncIssueError(issue) }
     }
 
     func fetchRemote(
@@ -541,6 +529,13 @@ package actor ICloudSyncModeCoordinator {
                         plan: plan
                     )
                 case .legacy(let accepted):
+                    // This merge copies all retained attachments, including remote metadata
+                    // whose bytes have not been downloaded on this device yet.
+                    try await requireMatchingAccount()
+                    _ = try await preserveIsolatedAttachmentsForLocalCopy(
+                        storeID: transition.candidateStoreID
+                    )
+                    try await requireMatchingAccount()
                     _ = try await persistence.mergeFinalSnapshot(
                         source,
                         using: token,
@@ -726,18 +721,10 @@ package actor ICloudSyncModeCoordinator {
     }
 
     private func preserveAttachmentsForLocalCopy(storeID: UUID) async throws {
-        guard let payloadZone else { return }
+        guard payloadZone != nil else { return }
         let lease = try await persistence.activeCloudMutationLease(storeID: storeID)
         try await lease.run {
-            let library = try await self.persistence.libraryForTransition(storeID: storeID)
-            let coordinator = CloudAttachmentTransferCoordinator(
-                library: library,
-                namespace: self.namespace,
-                payloadZone: payloadZone,
-                transport: self.makeTransport(),
-                maximumCacheBytes: CloudAttachmentTransferCoordinator.standardMaximumCacheBytes
-            )
-            _ = try await coordinator.preserveAllAttachmentsForLocalCopy()
+            _ = try await self.preserveIsolatedAttachmentsForLocalCopy(storeID: storeID)
         }
     }
 

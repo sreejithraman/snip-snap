@@ -28,6 +28,8 @@ extension CloudFullSyncPersistence {
   package func isSyncSettled() async throws -> Bool {
     let pending = try await pendingChanges()
     guard pending.operations.isEmpty, pending.zonesToSave.isEmpty else { return false }
+    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
+    guard stored.namespaceState.phase == .active else { return false }
     return try await unresolvedSyncIssue() == nil
   }
 
@@ -69,7 +71,10 @@ extension CloudFullSyncPersistence {
       try await library.clearCloudFullRecoveryEvents(namespaceKey: namespaceKey, keys: keys)
     }
     try await library.clearManuallyRetryableCloudAttachmentFailures(namespaceKey: namespaceKey)
-    return !stored.deferredEntities.isEmpty
+    // An incremental empty fetch cannot establish an active namespace. Retry the
+    // full inventory before allowing newly created local content to enroll.
+    return stored.namespaceState.phase == .remoteChecked
+      || !stored.deferredEntities.isEmpty
       || !corruptShadows.isEmpty
       || recovery.contains(where: Self.hasFailedFetchRecords)
   }
@@ -97,6 +102,8 @@ extension CloudFullSyncPersistence {
     // do not add a second Share-only queue or cursor.
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     guard stored.namespaceState.phase != .blocked else {
+      diagnostics.record(.syncSnapshot(scope: .records, environment: CloudSyncDiagnostics.environment,
+        phase: .blocked, reason: .namespaceBlocked))
       return CloudOutboundBatch(operations: [], zonesToSave: [])
     }
     if let payloadZone {
@@ -290,11 +297,24 @@ extension CloudFullSyncPersistence {
     if let payloadZone, hasEligiblePayloadSave {
       zonesToSave.insert(payloadZone)
     }
-    return CloudOutboundBatch(
+    let batch = CloudOutboundBatch(
       operations: operations.filter { !failedFetchIDs.contains($0.id) }
         .sorted { Self.operationOrder($0) < Self.operationOrder($1) },
       zonesToSave: zonesToSave
     )
+    let phase: AppDiagnosticSyncPhase = switch stored.namespaceState.phase {
+    case .notEnrolled: .uninitialized
+    case .remoteChecked: .remoteChecked
+    case .remoteCheckedMissingZone: .remoteCheckedMissingZone
+    case .seeding: .seeding
+    case .active: .active
+    case .blocked: .blocked
+    }
+    diagnostics.record(.syncSnapshot(scope: .records, environment: CloudSyncDiagnostics.environment,
+      phase: phase, reason: failedFetchIDs.isEmpty ? nil : .recordBlocked,
+      pendingUploads: batch.operations.count, pendingDownloads: stored.deferredEntities.count,
+      blockedRecords: failedFetchIDs.count))
+    return batch
   }
 
   private struct AttachmentOperationPlan {

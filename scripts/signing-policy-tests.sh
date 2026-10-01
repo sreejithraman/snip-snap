@@ -406,6 +406,15 @@ assert_succeeds signing_policy_write_export_options \
     's/^[[:space:]]*DEVELOPMENT_TEAM = (.*)$/\1/p' \
     "$repo_dir/Config/Shared.xcconfig")" ]] || \
     fail_test "the shared team default is not blank"
+[[ "$(/usr/bin/sed -nE \
+    's/^[[:space:]]*SNIP_SNAP_CLOUDKIT_ENVIRONMENT = (.*)$/\1/p' \
+    "$repo_dir/Config/Shared.xcconfig")" == unknown ]] || \
+    fail_test "unconfigured builds must declare an unknown CloudKit environment"
+for app_info in SnipSnap/Info.plist SnipSnapiOS/Info.plist; do
+    [[ "$(/usr/bin/plutil -extract SnipSnapCloudKitEnvironment raw -o - \
+        "$repo_dir/$app_info")" == '$(SNIP_SNAP_CLOUDKIT_ENVIRONMENT)' ]] || \
+        fail_test "$app_info does not expose the declared CloudKit environment"
+done
 /usr/bin/grep -F 'CODE_SIGN_ENTITLEMENTS =' \
     "$repo_dir/Config/Debug.xcconfig" >/dev/null || \
     fail_test "Debug does not clear entitlements"
@@ -426,7 +435,8 @@ for required in \
     'SNIP_SNAP_MAC_PROVISIONING_PROFILE_SPECIFIER' \
     'PROVISIONING_PROFILE_SPECIFIER="$provisioning_profile_specifier"' \
     'CODE_SIGN_ENTITLEMENTS="$mac_release_entitlements"' \
-    'SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER="$cloudkit_container_identifier"'; do
+    'SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER="$cloudkit_container_identifier"' \
+    'SNIP_SNAP_CLOUDKIT_ENVIRONMENT=Production'; do
     /usr/bin/grep -F -- "$required" "$script_dir/release.sh" >/dev/null || \
         fail_test "the Mac release command is missing $required"
 done

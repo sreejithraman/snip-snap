@@ -374,6 +374,138 @@ signing_policy_preflight() {
     print "Signed lane: $lane (ready)."
 }
 
+signing_policy_verify_cloud_dev_profile() {
+    local profile_path="$1" signed_entitlements="$2" platform="$3" bundle_id="$4" app_group="$5" container="$6" evidence_prefix="$7" expected_team="${8:-}"
+    local security_tool="${SNIP_SNAP_SECURITY:-/usr/bin/security}"
+    local identifier_key=application-identifier push_key=aps-environment
+    [[ "$platform" != macos ]] || {
+        identifier_key=com.apple.application-identifier
+        push_key=com.apple.developer.aps-environment
+    }
+    local profile="$evidence_prefix-profile.plist" grants="$evidence_prefix-profile-entitlements.plist"
+    local team signed_identifier profile_identifier expiration prefix count index item
+    local identifier_matches=false
+    local -a missing
+    "$security_tool" cms -D -i "$profile_path" > "$profile" 2>/dev/null || {
+        signing_policy_fail "Cloud Dev app needs an embedded Development provisioning profile"; return 1
+    }
+    /usr/bin/plutil -extract Entitlements xml1 -o "$grants" "$profile" >/dev/null 2>&1 || {
+        signing_policy_fail "Cloud Dev provisioning profile has no valid entitlements"; return 1
+    }
+    team="$(/usr/bin/plutil -extract 'com\.apple\.developer\.team-identifier' raw -o - "$signed_entitlements" 2>/dev/null)" || missing+=("signed team identifier")
+    [[ -n "$expected_team" && "$team" == "$expected_team" ]] || missing+=("configured signing team")
+    signing_policy_plist_array_contains "$profile" TeamIdentifier "$team" || missing+=("profile team identifier")
+    signing_policy_plist_value_equals "$grants" com.apple.developer.team-identifier "$team" || missing+=("profile entitlement team identifier")
+    signed_identifier="$(/usr/bin/plutil -extract "${identifier_key//./\\.}" raw -o - "$signed_entitlements" 2>/dev/null)" || missing+=("signed application identifier")
+    profile_identifier="$(/usr/bin/plutil -extract "${identifier_key//./\\.}" raw -o - "$grants" 2>/dev/null)" || missing+=("profile application identifier")
+    count="$(/usr/bin/plutil -extract ApplicationIdentifierPrefix raw -o - "$profile" 2>/dev/null)" || count=""
+    if [[ "$count" == <-> ]]; then
+        for (( index = 0; index < count; index++ )); do
+            prefix="$(/usr/bin/plutil -extract "ApplicationIdentifierPrefix.$index" raw -o - "$profile" 2>/dev/null)" || continue
+            [[ "$profile_identifier" != "$prefix.$bundle_id" ]] || identifier_matches=true
+        done
+    fi
+    $identifier_matches || missing+=("profile application prefix and bundle identifier")
+    [[ -n "$signed_identifier" && "$signed_identifier" == "$profile_identifier" ]] || missing+=("signed/profile application identity agreement")
+    # macOS authorizes team-prefixed groups through the signing team, without registration.
+    # Registered group.* identifiers and every iOS group require profile grants.
+    if [[ "$platform" == macos && -n "$expected_team" && "$app_group" == "$expected_team."* ]]; then
+        : # The checked signing team authorizes this Mac-only identifier.
+    elif [[ "$app_group" == group.* ]]; then
+        signing_policy_plist_array_contains "$grants" com.apple.security.application-groups "$app_group" || missing+=("profile App Group grant")
+    else
+        missing+=("supported App Group identifier for this platform and signing team")
+    fi
+    expiration="$(/usr/bin/plutil -extract ExpirationDate raw -o - "$profile" 2>/dev/null)" || missing+=("profile expiration date")
+    if [[ -n "$expiration" ]] && ! /usr/bin/ruby -rtime -e 'exit(Time.parse(ARGV[0]) > Time.now ? 0 : 1)' "$expiration" 2>/dev/null; then
+        missing+=("unexpired provisioning profile")
+    fi
+    if [[ -n "$container" ]]; then
+        signing_policy_plist_array_contains "$grants" com.apple.developer.icloud-container-identifiers "$container" || missing+=("profile CloudKit container grant")
+        signing_policy_profile_allows_cloudkit "$grants" || missing+=("profile CloudKit service grant")
+        signing_policy_plist_value_equals "$grants" com.apple.developer.icloud-container-environment Development || \
+            signing_policy_plist_array_contains "$grants" com.apple.developer.icloud-container-environment Development || \
+            missing+=("profile Development environment grant")
+        signing_policy_plist_value_equals "$grants" "$push_key" development || missing+=("profile development push grant")
+    fi
+    if (( ${#missing} )); then
+        for item in "${missing[@]}"; do print -u2 -- "Cloud Dev provisioning profile: missing $item."; done
+        return 1
+    fi
+}
+
+signing_policy_verify_cloud_dev_signature() {
+    local app_path="$1" expected_team="$2" evidence_path="$3"
+    local codesign_tool="${SNIP_SNAP_CODESIGN:-/usr/bin/codesign}"
+    "$codesign_tool" --verify --deep --strict -R '=anchor apple generic' "$app_path" >/dev/null 2>&1 || {
+        signing_policy_fail "Cloud Dev app needs a valid Apple-issued signature"; return 1
+    }
+    "$codesign_tool" -d --verbose=4 "$app_path" > "$evidence_path" 2>&1 || {
+        signing_policy_fail "could not inspect the Cloud Dev signing identity"; return 1
+    }
+    /usr/bin/awk -v expected_team="$expected_team" '
+        /^Authority=Apple Development:/ { development = 1 }
+        /^TeamIdentifier=/ { team = substr($0, 16) }
+        END { exit !(development && expected_team != "" && team == expected_team) }
+    ' "$evidence_path" || {
+        signing_policy_fail "Cloud Dev app needs an Apple Development signature from the configured signing team"; return 1
+    }
+}
+
+signing_policy_verify_cloud_dev_app() {
+    local app_path="$1" platform="$2" bundle_id="$3" app_group="$4" container="$5" evidence_dir="$6" store_path="${7:-}" expected_team="${8:-}"
+    local codesign_tool="${SNIP_SNAP_CODESIGN:-/usr/bin/codesign}"
+    local info_dir="$app_path" profile_name=embedded.mobileprovision push_key=aps-environment
+    if [[ "$platform" == macos ]]; then
+        info_dir="$app_path/Contents"
+        profile_name=embedded.provisionprofile
+        push_key=com.apple.developer.aps-environment
+    fi
+    local signed_entitlements="$evidence_dir/signed-entitlements.plist"
+    local item
+    local -a missing
+    signing_policy_verify_cloud_dev_signature "$app_path" "$expected_team" "$evidence_dir/main-signature.txt" || return 1
+    "$codesign_tool" -d --entitlements :- "$app_path" > "$signed_entitlements" 2>/dev/null || {
+        signing_policy_fail "could not inspect signed Cloud Dev entitlements"; return 1
+    }
+    signing_policy_plist_value_equals "$info_dir/Info.plist" CFBundleIdentifier "$bundle_id" || missing+=("app bundle identifier")
+    signing_policy_plist_value_equals "$info_dir/Info.plist" SnipSnapCloudKitContainerIdentifier "$container" || missing+=("configured CloudKit container")
+    signing_policy_plist_value_equals "$signed_entitlements" com.apple.developer.icloud-container-environment Development || missing+=("signed Development environment")
+    signing_policy_plist_value_equals "$signed_entitlements" "$push_key" development || missing+=("signed development push environment")
+    signing_policy_plist_array_contains "$signed_entitlements" com.apple.developer.icloud-container-identifiers "$container" || missing+=("signed CloudKit container")
+    signing_policy_plist_array_contains "$signed_entitlements" com.apple.developer.icloud-services CloudKit || missing+=("signed CloudKit service")
+    signing_policy_plist_array_contains "$signed_entitlements" com.apple.security.application-groups "$app_group" || missing+=("signed App Group")
+    if [[ "$platform" == macos ]]; then
+        [[ -n "$store_path" && "$store_path" == /* ]] && \
+            signing_policy_plist_value_equals "$info_dir/Info.plist" SnipSnapDevelopmentStorePath "$store_path" || missing+=("embedded isolated Mac store path")
+    else
+        signing_policy_plist_value_equals "$info_dir/Info.plist" SnipSnapAppGroupIdentifier "$app_group" || missing+=("configured App Group")
+    fi
+    if (( ${#missing} )); then
+        for item in "${missing[@]}"; do print -u2 -- "Signed Cloud Dev app: missing $item."; done
+        return 1
+    fi
+    signing_policy_verify_cloud_dev_profile "$info_dir/$profile_name" "$signed_entitlements" "$platform" "$bundle_id" "$app_group" "$container" "$evidence_dir/main" "$expected_team" || return 1
+    if [[ "$platform" == ios ]]; then
+        local share="$app_path/PlugIns/SnipSnapShareExtension.appex"
+        local share_entitlements="$evidence_dir/share-entitlements.plist"
+        signing_policy_verify_cloud_dev_signature "$share" "$expected_team" "$evidence_dir/share-signature.txt" || return 1
+        "$codesign_tool" -d --entitlements :- "$share" > "$share_entitlements" 2>/dev/null || {
+            signing_policy_fail "could not inspect Cloud Dev Share extension entitlements"; return 1
+        }
+        signing_policy_plist_value_equals "$share/Info.plist" CFBundleIdentifier "$bundle_id.share" || missing+=("Share extension bundle identifier")
+        signing_policy_plist_value_equals "$share/Info.plist" SnipSnapAppGroupIdentifier "$app_group" || missing+=("Share extension configured App Group")
+        signing_policy_plist_array_contains "$share_entitlements" com.apple.security.application-groups "$app_group" || missing+=("Share extension signed App Group")
+        ! signing_policy_plist_has_key "$share_entitlements" com.apple.developer.icloud-container-identifiers || missing+=("Share extension App Group-only access")
+        ! signing_policy_plist_has_key "$share_entitlements" com.apple.developer.icloud-services || missing+=("Share extension App Group-only access")
+        if (( ${#missing} )); then
+            for item in "${missing[@]}"; do print -u2 -- "Signed Cloud Dev app: missing $item."; done
+            return 1
+        fi
+        signing_policy_verify_cloud_dev_profile "$share/embedded.mobileprovision" "$share_entitlements" ios "$bundle_id.share" "$app_group" "" "$evidence_dir/share" "$expected_team" || return 1
+    fi
+}
+
 signing_policy_verify_production_cloudkit_app() {
     local app_path="$1"
     local cloudkit_container_identifier="$2"

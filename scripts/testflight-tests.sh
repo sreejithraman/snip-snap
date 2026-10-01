@@ -29,6 +29,7 @@ for required in \
     'testflight_policy_verify_source_record' \
     'testflight_policy_verify_archive' \
     'SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS' \
+    'SNIP_SNAP_CLOUDKIT_ENVIRONMENT=Production' \
     'SHOWROOM_APPLE_KEY_PATH'; do
     /usr/bin/grep -F -- "$required" "$script_dir/testflight.sh" >/dev/null || \
         fail_test "missing upload rule $required"

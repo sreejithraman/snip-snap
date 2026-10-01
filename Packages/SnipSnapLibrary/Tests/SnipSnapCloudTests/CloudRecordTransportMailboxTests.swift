@@ -4,6 +4,69 @@ import XCTest
 @testable import SnipSnapCloud
 
 final class CloudRecordTransportMailboxTests: XCTestCase {
+  func testPendingUploadCountDropsWithdrawnWorkButKeepsSuppliedWorkUntilCommit() {
+    let zone = CloudZoneID(name: "metadata", ownerName: "owner")
+    let id = CloudRecordID(zone: zone, name: "pending")
+    let outbound = CloudOutboundBatch(operations: [.delete(id, base: nil)])
+    var queue = CloudRecordOutboundQueue()
+    _ = queue.schedule(outbound)
+    queue.beginCycle()
+    _ = queue.schedule(CloudOutboundBatch(operations: []))
+    XCTAssertEqual(queue.pendingOperationCount, 0)
+
+    var supplied = CloudRecordOutboundQueue()
+    _ = supplied.schedule(outbound)
+    supplied.beginCycle()
+    supplied.recordSupplied([id])
+    _ = supplied.schedule(CloudOutboundBatch(operations: []))
+    XCTAssertEqual(supplied.pendingOperationCount, 1)
+    let sentID = UUID()
+    _ = supplied.finishCycle(sentID)
+    XCTAssertEqual(supplied.pendingOperationCount, 1)
+    supplied.confirm(CloudSentBatch(id: sentID, items: [.deleted(id)], engineState: nil))
+    XCTAssertEqual(supplied.pendingOperationCount, 0)
+  }
+
+  func testEmptyIncrementalFetchDoesNotBlockPendingRecordProvider() {
+    let mailbox = CloudRecordTransportMailbox()
+    let fetched = CloudFetchedBatch(id: UUID(), items: [], engineState: nil,
+      isInitialFetch: false)
+    mailbox.append(.batch(CloudPendingBatch(batch: .fetched(fetched), outbound: nil)))
+
+    XCTAssertFalse(mailbox.blocksRecordProvider)
+    XCTAssertEqual(mailbox.first?.id, fetched.id)
+    _ = try? mailbox.confirm(fetched.id)
+    XCTAssertNil(mailbox.first)
+  }
+
+  func testProviderStillWaitsForRecordChangesFailuresAndResets() throws {
+    let zone = CloudZoneID(name: "metadata", ownerName: "owner")
+    let id = CloudRecordID(zone: zone, name: "pending")
+    let record = try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(
+      for: .text(id: id, snipID: UUID(), text: "remote change")
+    ))
+    let batches: [CloudSyncBatch] = [
+      .fetched(CloudFetchedBatch(id: UUID(), items: [], engineState: nil, isInitialFetch: true)),
+      .fetched(CloudFetchedBatch(id: UUID(), items: [.record(record)], engineState: nil)),
+      .fetched(CloudFetchedBatch(id: UUID(), items: [.deleted(id)], engineState: nil)),
+      .fetched(CloudFetchedBatch(id: UUID(), items: [.failed(id, .retryable)], engineState: nil)),
+      .fetched(CloudFetchedBatch(id: UUID(), items: [],
+        databaseEvents: [.zoneDeleted(zone, reason: .purged)], engineState: nil)),
+      .fetched(CloudFetchedBatch(id: UUID(), items: [],
+        databaseEvents: [.zoneDeleted(zone, reason: .encryptedDataReset)], engineState: nil)),
+      .fetched(CloudFetchedBatch(id: UUID(), items: [],
+        zoneEvents: [.failed(zone, .zoneMissing)], engineState: nil)),
+      .sent(CloudSentBatch(id: UUID(), items: [], engineState: nil)),
+    ]
+    for batch in batches {
+      let mailbox = CloudRecordTransportMailbox()
+      mailbox.append(.batch(CloudPendingBatch(batch: .fetched(CloudFetchedBatch(
+        id: UUID(), items: [], engineState: nil)), outbound: nil)))
+      mailbox.append(.batch(CloudPendingBatch(batch: batch, outbound: nil)))
+      XCTAssertTrue(mailbox.blocksRecordProvider, "Must wait for \(batch)")
+    }
+  }
+
   func testEventDuringFailedDeliveryGetsOneFollowupWithoutSpinning() async throws {
     let mailbox = CloudRecordTransportMailbox()
     let pause = MailboxControlPause()
@@ -92,10 +155,10 @@ final class CloudRecordTransportMailboxTests: XCTestCase {
     let mailbox = CloudRecordTransportMailbox()
     let namespace = CloudSyncNamespace(cloudScope: "private", accountLineage: "account", generation: UUID(), zones: [])
     mailbox.append(.checkpoint(UUID(), CloudEngineStateEnvelope(namespace: namespace, serialization: Data())))
-    XCTAssertFalse(mailbox.hasUncommittedRecords)
-    let fetched = CloudFetchedBatch(id: UUID(), items: [], engineState: nil)
+    XCTAssertFalse(mailbox.blocksRecordProvider)
+    let fetched = CloudFetchedBatch(id: UUID(), items: [], engineState: nil, isInitialFetch: true)
     mailbox.append(.batch(CloudPendingBatch(batch: .fetched(fetched), outbound: nil)))
-    XCTAssertTrue(mailbox.hasUncommittedRecords)
+    XCTAssertTrue(mailbox.blocksRecordProvider)
   }
 
   func testUnattemptedCycleKeepsRestoredWorkUntilTheFetchMailboxCommits() async throws {
@@ -118,7 +181,7 @@ final class CloudRecordTransportMailboxTests: XCTestCase {
 
     // The engine can finish a cycle while its record provider waits for a fetch commit.
     queue.beginCycle()
-    XCTAssertTrue(mailbox.hasUncommittedRecords)
+    XCTAssertTrue(mailbox.blocksRecordProvider)
     let sentID = UUID()
     let supplied = queue.finishCycle(sentID)
     XCTAssertTrue(supplied.operations.isEmpty)

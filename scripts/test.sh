@@ -45,6 +45,7 @@ if [[ "$run_common_tests" == YES ]]; then
     "$script_dir/release-matrix-tests-tests.sh"
     "$script_dir/cloud-dev-transport-contract-tests.sh"
     "$script_dir/cloud-dev-tests.sh"
+    "$script_dir/cloud-dev-run-tests.sh"
     "$script_dir/ios-target-policy-tests.sh"
     "$script_dir/localization-policy-tests.sh"
     "$script_dir/ios-simulator-policy-tests.sh"
@@ -55,7 +56,9 @@ fi
 if [[ "$run_mac_app_tests" == YES ]]; then
     mac_derived_data="$derived_data/mac"
     mac_store_path="$derived_data/mac-test-store/snips.json"
-    if SNIP_SNAP_STORE_PATH="$mac_store_path" xcodebuild \
+    if SNIP_SNAP_STORE_PATH="$mac_store_path" \
+        TEST_RUNNER_SNIP_SNAP_DIAGNOSTICS_DIRECTORY="${mac_store_path:h}/SnipSnapDiagnostics" \
+        TEST_RUNNER_SNIP_SNAP_STORE_PATH="$mac_store_path" xcodebuild \
         -project "$repo_dir/SnipSnap.xcodeproj" \
         -scheme SnipSnap \
         -configuration Debug \

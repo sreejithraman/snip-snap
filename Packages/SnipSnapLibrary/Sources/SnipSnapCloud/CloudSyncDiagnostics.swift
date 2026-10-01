@@ -4,6 +4,14 @@ import SnipSnapCore
 import SnipSnapPersistence
 
 enum CloudSyncDiagnostics {
+  // This is declared build metadata, not a probe of the signed entitlement or account.
+  static var environment: AppDiagnosticSyncEnvironment {
+    switch Bundle.main.object(forInfoDictionaryKey: "SnipSnapCloudKitEnvironment") as? String {
+    case "Development": .development
+    case "Production": .production
+    default: .unknown
+    }
+  }
   enum AttachmentStage {
     case cloudKitRequest
     case cloudKitRecord

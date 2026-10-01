@@ -78,6 +78,7 @@ final class IOSAppSession {
         shareImportOperation: (@Sendable () async -> ShareImportSummary)? = nil,
         accountNoticeModel: AppleAccountNoticeModel? = nil,
         cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
+        haptics: IOSHapticFeedback = IOSHapticFeedback(),
         clipboardRootURL: URL? = nil,
         clipboardContainerIdentifier: String? = nil
     ) {
@@ -92,6 +93,7 @@ final class IOSAppSession {
             initialSnapshot: initialSnapshot,
             startupError: startupError,
             cloudSyncHandler: cloudSyncHandler,
+            haptics: haptics,
             publishShareDestinations: shareDestinationPublisher.map { publisher in
                 { lists in
                     publisher.enqueue(lists)
@@ -210,6 +212,7 @@ final class IOSAppSession {
     }
 
     func retrySyncWhenPossible() async {
+        model.haptics.invalidatePendingFeedback()
         await syncedContentSettings.performExplicitSync {
             try? await Self.synchronizeCloudSessionOrThrow(
                 cloudSyncSession,
