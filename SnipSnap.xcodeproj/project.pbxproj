@@ -118,6 +118,7 @@
 		E1000000000000000000000D /* SnipSnapCore in Frameworks */ = {isa = PBXBuildFile; productRef = EF0000000000000000000003 /* SnipSnapCore */; };
 		E10000000000000000000020 /* AttachmentViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000020 /* AttachmentViews.swift */; };
 		E10000000000000000000022 /* AttachmentMediaImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000022 /* AttachmentMediaImport.swift */; };
+		E1000000000000000000002C /* ComposerTextInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2000000000000000000002C /* ComposerTextInput.swift */; };
 		E10000000000000000000023 /* AttachmentImageViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000023 /* AttachmentImageViewer.swift */; };
 		E10000000000000000000021 /* SyncedContentSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000021 /* SyncedContentSettingsView.swift */; };
 		F10000000000000000000001 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000001 /* ShareViewController.swift */; };
@@ -328,6 +329,7 @@
 		E20000000000000000000010 /* iOSShared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = iOSShared.xcconfig; sourceTree = "<group>"; };
 		E20000000000000000000020 /* AttachmentViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentViews.swift; sourceTree = "<group>"; };
 		E20000000000000000000022 /* AttachmentMediaImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentMediaImport.swift; sourceTree = "<group>"; };
+		E2000000000000000000002C /* ComposerTextInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerTextInput.swift; sourceTree = "<group>"; };
 		E20000000000000000000023 /* AttachmentImageViewer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentImageViewer.swift; sourceTree = "<group>"; };
 		E20000000000000000000021 /* SyncedContentSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncedContentSettingsView.swift; sourceTree = "<group>"; };
 		F20000000000000000000001 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
@@ -575,6 +577,7 @@
 				E20000000000000000000036 /* SnipListIconPicker.swift */,
 				E20000000000000000000020 /* AttachmentViews.swift */,
 				E20000000000000000000022 /* AttachmentMediaImport.swift */,
+				E2000000000000000000002C /* ComposerTextInput.swift */,
 				E20000000000000000000023 /* AttachmentImageViewer.swift */,
 				E20000000000000000000021 /* SyncedContentSettingsView.swift */,
 				E20000000000000000000030 /* IOSCopyShare.swift */,
@@ -994,6 +997,7 @@
 				E10000000000000000000037 /* SnipListIconPicker.swift in Sources */,
 				E10000000000000000000020 /* AttachmentViews.swift in Sources */,
 				E10000000000000000000022 /* AttachmentMediaImport.swift in Sources */,
+				E1000000000000000000002C /* ComposerTextInput.swift in Sources */,
 				E10000000000000000000023 /* AttachmentImageViewer.swift in Sources */,
 				E10000000000000000000021 /* SyncedContentSettingsView.swift in Sources */,
 				E10000000000000000000030 /* IOSCopyShare.swift in Sources */,

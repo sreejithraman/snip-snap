@@ -249,7 +249,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         let app = launchApp(withLongList: true)
         try requireCompactSelector(in: app)
         let oldest = collectionRow(named: "Fixture oldest", in: app)
-        let composer = app.textFields["composer-text"]
+        let composer = app.descendants(matching: .any)["composer-text"]
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         let newest = collectionRow(named: "Fixture 23", in: app)
         XCTAssertTrue(newest.isHittable)
@@ -1241,6 +1241,30 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
     }
 
+    func testComposerPastesCopiedPhotoSnipAsAttachment() {
+        continueAfterFailure = false
+        let app = launchApp(withCopyShareFixtures: true)
+        let source = row(named: "Copy mixed fixture", in: app)
+        XCTAssertTrue(source.waitForExistence(timeout: 5))
+        source.press(forDuration: 1)
+        app.buttons["copy-snip"].tap()
+        let composer = app.descendants(matching: .any)["composer-text"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        composer.tap()
+        composer.press(forDuration: 1)
+        let paste = app.cells["Paste"].firstMatch
+        XCTAssertTrue(paste.waitForExistence(timeout: 3))
+        paste.tap()
+
+        let attachment = app.buttons["composer-attachment-sample.png"]
+        XCTAssertTrue(attachment.waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, "Copy mixed fixture")
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Copied photo snip pasted into composer"
+        proof.lifetime = .keepAlways
+        add(proof)
+    }
+
     func testLeadingPasteSavesToSelectedListWithoutChangingDraft() throws {
         continueAfterFailure = false
         let app = launchApp()
@@ -2117,7 +2141,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(toast.waitForExistence(timeout: 3))
         XCTAssertLessThan(toast.frame.width, app.frame.width - 48)
         XCTAssertLessThanOrEqual(toast.frame.height, 60)
-        let composer = app.textFields["composer-text"]
+        let composer = app.descendants(matching: .any)["composer-text"]
         XCTAssertLessThanOrEqual(
             toast.frame.maxY,
             composer.frame.minY
@@ -2840,7 +2864,7 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     private func createSnip(_ text: String, in app: XCUIApplication) {
-        let composer = app.textFields["composer-text"].firstMatch
+        let composer = app.descendants(matching: .any)["composer-text"].firstMatch
         if composer.waitForExistence(timeout: 1) {
             composer.tap()
             composer.typeText(text)
