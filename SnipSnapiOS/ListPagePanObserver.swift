@@ -14,9 +14,10 @@ enum ListPagePanDirection: Equatable {
 
 struct ListPagePanObserver: UIViewRepresentable {
     let canBegin: (ListPagePanDirection) -> Bool
+    var canBeginAt: (CGPoint) -> Bool = { _ in true }
     let onPan: (ListPagePanDirection, CGSize, CGSize?, UIGestureRecognizer.State) -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(canBegin: canBegin, onPan: onPan) }
+    func makeCoordinator() -> Coordinator { Coordinator(canBegin: canBegin, canBeginAt: canBeginAt, onPan: onPan) }
 
     func makeUIView(context: Context) -> AttachmentView {
         let view = AttachmentView()
@@ -29,6 +30,7 @@ struct ListPagePanObserver: UIViewRepresentable {
 
     func updateUIView(_ view: AttachmentView, context: Context) {
         context.coordinator.canBegin = canBegin
+        context.coordinator.canBeginAt = canBeginAt
         context.coordinator.onPan = onPan
     }
 
@@ -47,6 +49,7 @@ struct ListPagePanObserver: UIViewRepresentable {
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var canBegin: (ListPagePanDirection) -> Bool
+        var canBeginAt: (CGPoint) -> Bool
         var onPan: (ListPagePanDirection, CGSize, CGSize?, UIGestureRecognizer.State) -> Void
         weak var attachmentView: UIView?
         private weak var attachedWindow: UIWindow?
@@ -56,9 +59,11 @@ struct ListPagePanObserver: UIViewRepresentable {
 
         init(
             canBegin: @escaping (ListPagePanDirection) -> Bool,
+            canBeginAt: @escaping (CGPoint) -> Bool = { _ in true },
             onPan: @escaping (ListPagePanDirection, CGSize, CGSize?, UIGestureRecognizer.State) -> Void
         ) {
             self.canBegin = canBegin
+            self.canBeginAt = canBeginAt
             self.onPan = onPan
         }
 
@@ -139,7 +144,7 @@ struct ListPagePanObserver: UIViewRepresentable {
             let location = recognizer.location(in: window)
             let start = CGPoint(x: location.x - translation.x, y: location.y - translation.y)
             let contentFrame = attachmentView.convert(attachmentView.bounds, to: window)
-            guard contentFrame.contains(start) else { return nil }
+            guard contentFrame.contains(start), canBeginAt(start) else { return nil }
             let initialMovement = velocity == .zero ? translation : velocity
             let direction: ListPagePanDirection = initialMovement.x > 0 ? .right : .left
             if canBegin(direction) { return direction }

@@ -97,6 +97,8 @@
 		E10000000000000000000041 /* IOSUITestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000041 /* IOSUITestSupport.swift */; };
 		E10000000000000000000002 /* IOSAppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000002 /* IOSAppModel.swift */; };
 		E10000000000000000000032 /* WorkflowControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000012 /* WorkflowControls.swift */; };
+		B2B000000000000000000001 /* GatheredSnipsDock.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2B000000000000000000101 /* GatheredSnipsDock.swift */; };
+		B2B000000000000000000002 /* SnipRowViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2B000000000000000000102 /* SnipRowViews.swift */; };
 		E10000000000000000000003 /* AppPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000003 /* AppPresentation.swift */; };
 		E10000000000000000000004 /* IOSAppRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000004 /* IOSAppRootView.swift */; };
 		B0E000000000000000000001 /* ListPagePanObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0E000000000000000000002 /* ListPagePanObserver.swift */; };
@@ -308,6 +310,8 @@
 		E20000000000000000000041 /* IOSUITestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSUITestSupport.swift; sourceTree = "<group>"; };
 		E20000000000000000000002 /* IOSAppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAppModel.swift; sourceTree = "<group>"; };
 		E20000000000000000000012 /* WorkflowControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkflowControls.swift; sourceTree = "<group>"; };
+		B2B000000000000000000101 /* GatheredSnipsDock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatheredSnipsDock.swift; sourceTree = "<group>"; };
+		B2B000000000000000000102 /* SnipRowViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipRowViews.swift; sourceTree = "<group>"; };
 		E20000000000000000000003 /* AppPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPresentation.swift; sourceTree = "<group>"; };
 		E20000000000000000000004 /* IOSAppRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAppRootView.swift; sourceTree = "<group>"; };
 		B0E000000000000000000002 /* ListPagePanObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListPagePanObserver.swift; sourceTree = "<group>"; };
@@ -568,6 +572,8 @@
 				E20000000000000000000041 /* IOSUITestSupport.swift */,
 				E20000000000000000000002 /* IOSAppModel.swift */,
 				E20000000000000000000012 /* WorkflowControls.swift */,
+				B2B000000000000000000101 /* GatheredSnipsDock.swift */,
+				B2B000000000000000000102 /* SnipRowViews.swift */,
 				E20000000000000000000003 /* AppPresentation.swift */,
 				E20000000000000000000004 /* IOSAppRootView.swift */,
 				B0E000000000000000000002 /* ListPagePanObserver.swift */,
@@ -988,6 +994,8 @@
 				E10000000000000000000041 /* IOSUITestSupport.swift in Sources */,
 				E10000000000000000000002 /* IOSAppModel.swift in Sources */,
 				E10000000000000000000032 /* WorkflowControls.swift in Sources */,
+				B2B000000000000000000001 /* GatheredSnipsDock.swift in Sources */,
+				B2B000000000000000000002 /* SnipRowViews.swift in Sources */,
 				E10000000000000000000003 /* AppPresentation.swift in Sources */,
 				E10000000000000000000004 /* IOSAppRootView.swift in Sources */,
 				B0E000000000000000000001 /* ListPagePanObserver.swift in Sources */,

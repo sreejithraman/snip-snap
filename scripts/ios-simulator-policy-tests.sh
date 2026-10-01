@@ -91,6 +91,11 @@ if grep -E '(^| )CODE_SIGN_ENTITLEMENTS=' "$FAKE_BUILD_LOG" >/dev/null; then
  print -u2 'Global app entitlements would affect package targets'; exit 1
 fi
 grep -F 'SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS=' "$FAKE_BUILD_LOG" >/dev/null
+"$script_dir/run.sh" --ios-simulator --simulator-id TEST-SIM --unit-test IOSAppModelTests > "$test_dir/output"
+grep -F -- '-only-testing:SnipSnapiOSTests/IOSAppModelTests' "$FAKE_BUILD_LOG" >/dev/null
+if "$script_dir/run.sh" --ios-simulator --simulator-id TEST-SIM --unit-test IOSAppModelTests --ui-test testExample > "$test_dir/output" 2>&1; then
+ print -u2 'Accepted simultaneous UI and unit test selectors'; exit 1
+fi
 cp "$FAKE_SIM_LOG" "$test_dir/before"
 if "$script_dir/run.sh" --ios-simulator --simulator-id NOT-BOOTED > "$test_dir/output" 2>&1; then
  print -u2 'Accepted a simulator that was not booted'; exit 1
