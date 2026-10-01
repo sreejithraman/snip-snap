@@ -1,6 +1,6 @@
 # Search mode
 
-Search starts as a circular button beside the current list or Clipboard title. Activating it expands the button into a field. The tabs and inline composer leave the panel while search is open, so results from every saved list and Clipboard history have room and no tab appears to own them.
+Search starts as a short, centered pill with a magnifying glass and “Search” label. Activating it expands the pill into a field. Equal-width groups on either side keep search centered; Close Panel sits on the left, with view options and More on the right. Close Panel hides the panel and keeps the app running. The tabs and inline composer leave the panel while search is open, so results from every saved list and Clipboard history have room and no tab appears to own them.
 
 The field uses the short hint “Search.” Its accessibility label names the full scope. An empty field invites a query; a nonempty field shows grouped results. The inset circle X and Escape clear the query, close search, and restore the selected tab. The search shortcut opens and focuses the field. The Clipboard shortcut opens Clipboard with search closed.
 
