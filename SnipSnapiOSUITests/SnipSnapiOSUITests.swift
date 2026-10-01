@@ -1179,7 +1179,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         send.tap()
         XCTAssertTrue(row(named: "Work draft to keep", in: app).waitForExistence(timeout: 5))
         compactListTab(named: "Inbox", in: app).tap()
-        XCTAssertEqual(composer.value as? String, "Add to Inbox…")
+        XCTAssertEqual(composer.value as? String, "")
+        XCTAssertEqual(composer.label, "Add to Inbox…")
         XCTAssertFalse(send.isEnabled)
 
         composer.tap()
@@ -1190,7 +1191,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         currentDestination.tap()
         XCTAssertTrue(app.navigationBars["Inbox"].exists)
         XCTAssertTrue(row(named: "Sent to Inbox from its own menu", in: app).waitForExistence(timeout: 5))
-        XCTAssertEqual(composer.value as? String, "Add to Inbox…")
+        XCTAssertEqual(composer.value as? String, "")
+        XCTAssertEqual(composer.label, "Add to Inbox…")
         XCTAssertFalse(send.isEnabled)
     }
 
@@ -1220,7 +1222,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         add(proof)
         destination.tap()
         XCTAssertTrue(row(named: "Long name destination", in: app).waitForExistence(timeout: 5))
-        XCTAssertEqual(composer.value as? String, "Add to \(name)…")
+        XCTAssertEqual(composer.value as? String, "")
+        XCTAssertEqual(composer.label, "Add to \(name)…")
     }
 
     func testQuickComposerSendsWithoutOpeningTheEditor() throws {
