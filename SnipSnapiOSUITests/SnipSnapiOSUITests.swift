@@ -1102,6 +1102,134 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(saved.waitForExistence(timeout: 3))
     }
 
+    func testQuickComposerLongPressSendsToAnotherListAndPreservesItsDraft() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        createList("Work", in: app)
+        let composer = app.descendants(matching: .any)["composer-text"]
+        composer.tap()
+        composer.typeText("Work draft to keep")
+        compactListTab(named: "Inbox", in: app).tap()
+        composer.tap()
+        composer.typeText("Sent to Work from Inbox")
+
+        let send = app.buttons["composer-send"]
+        let initialSendFrame = send.frame
+        send.press(forDuration: 1)
+        let picker = app.descendants(matching: .any)["composer-send-picker"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 3))
+        XCTAssertLessThan(picker.frame.width, 240, "Short list names should use a compact menu.")
+        let cancelButtons = app.buttons.matching(identifier: "composer-send-dismiss")
+        let cancel = cancelButtons.firstMatch
+        XCTAssertTrue(cancel.waitForExistence(timeout: 3))
+        XCTAssertEqual(cancelButtons.count, 1)
+        XCTAssertEqual(cancel.label, "Cancel Send to List")
+        XCTAssertFalse(send.exists)
+        XCTAssertEqual(cancel.frame.minX, initialSendFrame.minX, accuracy: 1)
+        XCTAssertEqual(cancel.frame.minY, initialSendFrame.minY, accuracy: 1)
+        XCTAssertEqual(cancel.frame.width, initialSendFrame.width, accuracy: 1)
+        XCTAssertEqual(cancel.frame.height, initialSendFrame.height, accuracy: 1)
+        XCTAssertLessThanOrEqual(picker.frame.maxY, cancel.frame.minY - 4)
+        let destination = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier BEGINSWITH %@ AND label == %@", "composer-send-to-", "Work"
+        )).firstMatch
+        let currentDestination = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier BEGINSWITH %@ AND label == %@", "composer-send-to-", "Inbox"
+        )).firstMatch
+        XCTAssertTrue(currentDestination.waitForExistence(timeout: 3))
+        XCTAssertTrue(destination.waitForExistence(timeout: 3))
+        XCTAssertFalse(collectionRow(named: "Sent to Work from Inbox", in: app).exists)
+        cancel.tap()
+        XCTAssertTrue(picker.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(cancel.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(destination.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(currentDestination.waitForNonExistence(timeout: 3))
+        XCTAssertEqual(composer.value as? String, "Sent to Work from Inbox")
+        XCTAssertTrue(send.waitForExistence(timeout: 3))
+        XCTAssertEqual(send.frame.minX, initialSendFrame.minX, accuracy: 1)
+        XCTAssertEqual(send.frame.minY, initialSendFrame.minY, accuracy: 1)
+        XCTAssertEqual(send.frame.width, initialSendFrame.width, accuracy: 1)
+        XCTAssertEqual(send.frame.height, initialSendFrame.height, accuracy: 1)
+        let collapsedProof = XCTAttachment(screenshot: app.screenshot())
+        collapsedProof.name = "Send button before morph"
+        collapsedProof.lifetime = .keepAlways
+        add(collapsedProof)
+        send.press(forDuration: 1)
+        XCTAssertTrue(destination.waitForExistence(timeout: 3))
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Long press Send list destinations"
+        proof.lifetime = .keepAlways
+        add(proof)
+        destination.tap()
+
+        XCTAssertTrue(app.navigationBars["Inbox"].exists)
+        let cleared = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "enabled == false"), object: send
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 5), .completed)
+        XCTAssertFalse(collectionRow(named: "Sent to Work from Inbox", in: app).exists)
+        compactListTab(named: "Work", in: app).tap()
+        XCTAssertTrue(row(named: "Sent to Work from Inbox", in: app).waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, "Work draft to keep")
+
+        app.terminate()
+        app.launch()
+        if !compactListTab(named: "Work", in: app).isSelected {
+            compactListTab(named: "Work", in: app).tap()
+        }
+        XCTAssertTrue(row(named: "Sent to Work from Inbox", in: app).waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, "Work draft to keep")
+        send.tap()
+        XCTAssertTrue(row(named: "Work draft to keep", in: app).waitForExistence(timeout: 5))
+        compactListTab(named: "Inbox", in: app).tap()
+        XCTAssertEqual(composer.value as? String, "")
+        XCTAssertEqual(composer.label, "Add to Inbox…")
+        XCTAssertFalse(send.isEnabled)
+
+        composer.tap()
+        composer.typeText("Sent to Inbox from its own menu")
+        send.press(forDuration: 1)
+        XCTAssertTrue(currentDestination.waitForExistence(timeout: 3))
+        XCTAssertTrue(destination.exists)
+        currentDestination.tap()
+        XCTAssertTrue(app.navigationBars["Inbox"].exists)
+        XCTAssertTrue(row(named: "Sent to Inbox from its own menu", in: app).waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, "")
+        XCTAssertEqual(composer.label, "Add to Inbox…")
+        XCTAssertFalse(send.isEnabled)
+    }
+
+    func testQuickComposerDestinationsWrapLongListNames() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        let name = "Research and planning for upcoming projects and shared team decisions"
+        createList(name, in: app)
+        let composer = app.descendants(matching: .any)["composer-text"]
+        composer.tap()
+        composer.typeText("Long name destination")
+        app.buttons["composer-send"].press(forDuration: 1)
+        let picker = app.descendants(matching: .any)["composer-send-picker"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 3))
+        XCTAssertLessThanOrEqual(picker.frame.width, 264)
+        XCTAssertGreaterThanOrEqual(picker.frame.minX, 0)
+        let destination = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@ AND label == %@", "composer-send-to-", name
+        )).firstMatch
+        XCTAssertTrue(destination.waitForExistence(timeout: 3))
+        XCTAssertGreaterThan(destination.frame.height, 44, "Long names should wrap into a taller row.")
+        XCTAssertLessThanOrEqual(destination.frame.maxY, picker.frame.maxY)
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Long list name wraps in capped destination picker"
+        proof.lifetime = .keepAlways
+        add(proof)
+        destination.tap()
+        XCTAssertTrue(row(named: "Long name destination", in: app).waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, "")
+        XCTAssertEqual(composer.label, "Add to \(name)…")
+    }
+
     func testQuickComposerSendsWithoutOpeningTheEditor() throws {
         continueAfterFailure = false
         let app = launchApp()

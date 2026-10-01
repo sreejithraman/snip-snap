@@ -1,4 +1,5 @@
 import AppKit
+import SnipSnapCore
 import SwiftUI
 
 enum AppAppearance: String, CaseIterable, Identifiable {
@@ -463,6 +464,26 @@ struct PanelGlassActionButton: View {
         }
         .buttonStyle(PanelGlassActionButtonStyle(tint: tint, labelColor: labelColor))
         .disabled(!isEnabled)
+    }
+}
+
+struct PanelComposerSendControl: View {
+    let sourceID: UUID
+    let isEnabled: Bool
+    let tint: Color
+    let labelColor: Color
+    let destinations: [SnipList]
+    @Binding var isChoosingDestination: Bool
+    let send: () -> Void
+    let choose: (UUID) -> Void
+
+    var body: some View {
+        AppMorphingSendControl(
+            sourceID: sourceID, isEnabled: isEnabled, tint: tint, labelColor: labelColor,
+            size: CGSize(width: PanelControlMetrics.actionWidth, height: PanelControlMetrics.actionHeight),
+            iconLength: PanelControlMetrics.actionIconLength, destinations: destinations,
+            isPresented: $isChoosingDestination, send: send, choose: choose
+        )
     }
 }
 

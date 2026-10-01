@@ -76,6 +76,7 @@ struct IOSAppRootView: View {
 
     var body: some View {
         searchNavigation
+        .sendDestinationPickerHost()
         .tint(SnipSnapTheme.controlTint)
         .modifier(IOSHapticFeedbackModifier(feedback: model.haptics))
         .onChange(of: sheet) { _, destination in

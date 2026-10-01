@@ -54,6 +54,11 @@ struct ContentView: View {
     @State private var inlineEntryHeights: [UUID: CGFloat] = [:]
     @State private var inlineEntryFieldHeights: [UUID: CGFloat] = [:]
     @State private var isSavingInlineEntry = false
+    private struct SendDestinationRequest {
+        let sourceID: UUID
+        let libraryRevision: UUID
+    }
+    @State private var sendDestination: SendDestinationRequest?
     @State private var previewURLs: [URL] = []
     @State private var selectedPreviewURL: URL?
     @StateObject private var commandNumberPicker = CommandNumberPicker()
@@ -109,6 +114,7 @@ struct ContentView: View {
                 PanelDragRegion()
             }
         }
+        .sendDestinationPickerHost()
         .tint(SnipSnapColors.controlTint)
         .preferredColorScheme(model.appearance.colorScheme)
         .quickLookPreview($selectedPreviewURL, in: previewURLs)
@@ -121,7 +127,7 @@ struct ContentView: View {
         }
     }
 
-    private var panelShell: some View {
+    private var panelLayout: some View {
         VStack(spacing: SnipSnapSpacing.relatedContent) {
             PanelHeaderView(
                 model: model,
@@ -172,6 +178,10 @@ struct ContentView: View {
             minWidth: AppWindowDefaults.minimumContentSize.width,
             minHeight: AppWindowDefaults.minimumContentSize.height
         )
+    }
+
+    private var panelShell: some View {
+        panelLayout
         .onAppear {
             cacheComposerDraft(for: model.activeListID)
             if model.hasActiveQuery { model.enterSearch() }
@@ -188,12 +198,24 @@ struct ContentView: View {
             commandNumberPicker.setEnabled(isEnabled)
         }
         .onChange(of: model.activeListID) { _, listID in
+            sendDestination = nil
             cacheComposerDraft(for: listID)
         }
+        .onChange(of: model.composerDraftScope) { _, _ in
+            sendDestination = nil
+        }
+        .onChange(of: model.libraryRevision) { _, _ in
+            sendDestination = nil
+        }
+        .onChange(of: panelDialogs.isPresented) { _, isPresented in
+            if isPresented { sendDestination = nil }
+        }
         .onChange(of: model.isShowingClipboard) { _, _ in
+            sendDestination = nil
             updatePanelComposerExpansion(for: inlineEntryHeight(for: model.activeListID))
         }
         .onChange(of: model.isSearchExpanded) { _, _ in
+            sendDestination = nil
             updatePanelComposerExpansion(for: inlineEntryHeight(for: model.activeListID))
         }
         .onChange(of: model.query) { _, _ in
@@ -209,24 +231,7 @@ struct ContentView: View {
                 focusedTarget = .search
             }
         }
-        .onReceive(coordinator.panelFocusRequests) { request in
-            switch request {
-            case .search:
-                expandSearch()
-            case .clipboard:
-                focusedTarget = nil
-                Task { @MainActor in
-                    await Task.yield()
-                    if model.isShowingClipboard,
-                       !model.isSearchExpanded,
-                       model.editingID == nil {
-                        focusedTarget = .clipboard
-                    }
-                }
-            case .inlineEntry:
-                collapseSearch(focus: .inlineEntry)
-            }
-        }
+        .onReceive(coordinator.panelFocusRequests, perform: handlePanelFocusRequest)
         .focusedValue(
             \.snipCommandModel,
             hasSnipCommandFocus ? model : nil
@@ -260,6 +265,25 @@ struct ContentView: View {
         }
         .onChange(of: model.presentedError, initial: true) { _, _ in
             coordinator.updatePresentedError()
+        }
+    }
+
+    private func handlePanelFocusRequest(_ request: PanelFocusRequest) {
+        switch request {
+        case .search:
+            expandSearch()
+        case .clipboard:
+            focusedTarget = nil
+            Task { @MainActor in
+                await Task.yield()
+                if model.isShowingClipboard,
+                   !model.isSearchExpanded,
+                   model.editingID == nil {
+                    focusedTarget = .clipboard
+                }
+            }
+        case .inlineEntry:
+            collapseSearch(focus: .inlineEntry)
         }
     }
 
@@ -439,6 +463,9 @@ struct ContentView: View {
                 PanelResizeSurface()
                     .accessibilityHidden(true)
             }
+            .onChange(of: controlActiveState) { _, state in
+                if state != .key { sendDestination = nil }
+            }
     }
 
     private var hasSnipCommandFocus: Bool {
@@ -468,7 +495,8 @@ struct ContentView: View {
     }
 
     private var hasCommandNumberFocus: Bool {
-        !panelDialogs.isPresented && controlActiveState == .key && model.editingID == nil
+        !panelDialogs.isPresented && sendDestination?.sourceID == nil
+            && controlActiveState == .key && model.editingID == nil
     }
 
     private func pickCommandNumber(_ target: CommandNumberTarget) {
@@ -741,6 +769,7 @@ struct ContentView: View {
             lineRange: PanelComposerMetrics.textLineRange,
             lineSpacing: PanelComposerMetrics.textLineSpacing,
             isFocused: isInteractive && focusedTarget == .inlineEntry,
+            isAcceptingKeyboardInput: isInteractive && sendDestination?.sourceID == nil,
             onFocusChange: { isFocused in
                 guard isInteractive, selectedPage == .list(listID) else { return }
                 if isFocused {
@@ -751,6 +780,7 @@ struct ContentView: View {
             },
             onPasteImages: { pasteImagesIntoComposer($0, for: listID) },
             onPasteLargeText: { pasteLargeTextIntoComposer($0, for: listID) },
+            onChooseDestination: { openSendDestinations(for: listID) },
             onSubmit: { saveInlineEntry(for: listID) }
         )
             .onGeometryChange(for: CGFloat.self) { proxy in
@@ -799,16 +829,44 @@ struct ContentView: View {
             in: model.appearance.colorScheme ?? colorScheme,
             chrome: .glass
         )
-        return PanelGlassActionButton(
-            systemImage: "arrow.up",
+        return PanelComposerSendControl(
+            sourceID: listID,
             isEnabled: isInteractive && canSaveInlineEntry(for: listID),
             tint: colors.tint,
             labelColor: colors.label,
-            action: { saveInlineEntry(for: listID) }
+            destinations: model.lists,
+            isChoosingDestination: Binding(
+                get: { isInteractive && sendDestination?.sourceID == listID },
+                set: { isPresented in
+                    if isPresented {
+                        openSendDestinations(for: listID)
+                    } else if sendDestination?.sourceID == listID {
+                        sendDestination = nil
+                        Task { @MainActor in
+                            await Task.yield()
+                            if model.activeListID == listID, sendDestination?.sourceID == nil {
+                                focusedTarget = .inlineEntry
+                            }
+                        }
+                    }
+                }
+            ),
+            send: { saveInlineEntry(for: listID) },
+            choose: { destinationID in
+                guard let request = sendDestination, request.sourceID == listID else { return }
+                sendDestination = nil
+                saveInlineEntry(
+                    for: listID, to: destinationID,
+                    expectedLibraryRevision: request.libraryRevision
+                )
+            }
         )
-        .accessibilityLabel("Add to \(list.displayName)")
-        .accessibilityIdentifier("composer-send")
-        .help("Add to \(list.displayName)")
+    }
+
+    private func openSendDestinations(for listID: UUID) {
+        guard selectedPage == .list(listID), !panelDialogs.isPresented,
+              !model.lists.isEmpty, canSaveInlineEntry(for: listID) else { return }
+        sendDestination = SendDestinationRequest(sourceID: listID, libraryRevision: model.libraryRevision)
     }
 
     private func isInlineEntryExpanded(for listID: UUID) -> Bool {
@@ -853,6 +911,7 @@ struct ContentView: View {
     private func canSaveInlineEntry(for listID: UUID) -> Bool {
         let draft = composerDraft(for: listID)
         return !isSavingInlineEntry
+            && selectedPreviewURL == nil
             && (!draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || !draft.attachments.isEmpty)
     }
@@ -875,6 +934,7 @@ struct ContentView: View {
     }
 
     private func openAttachmentPreview(_ urls: [URL], selectedURL: URL) {
+        sendDestination = nil
         previewURLs = urls
         selectedPreviewURL = selectedURL
     }
@@ -951,15 +1011,19 @@ struct ContentView: View {
         coordinator.updatePanelComposerExpansion(expansion)
     }
 
-    private func saveInlineEntry(for listID: UUID) {
+    private func saveInlineEntry(
+        for listID: UUID, to destinationID: UUID? = nil, expectedLibraryRevision: UUID? = nil
+    ) {
+        let revision = expectedLibraryRevision ?? model.libraryRevision
         let text = composerDraft(for: listID).text
         let scope = model.composerDraftScope
-        guard canSaveInlineEntry(for: listID) else { return }
+        guard selectedPage == .list(listID), canSaveInlineEntry(for: listID) else { return }
         isSavingInlineEntry = true
         Task {
             defer { isSavingInlineEntry = false }
             let saved = await model.saveComposerDraft(
-                content: text, listID: listID, expectedScope: scope
+                content: text, listID: listID, destinationListID: destinationID,
+                expectedScope: scope, expectedLibraryRevision: revision
             )
             guard saved else {
                 if !model.lists.contains(where: { $0.id == listID }) {
@@ -1034,6 +1098,11 @@ struct ContentView: View {
     }
 
     private func handleCancel() {
+        if sendDestination?.sourceID != nil {
+            sendDestination = nil
+            focusedTarget = .inlineEntry
+            return
+        }
         guard !panelDialogs.isPresented else { return }
         guard model.editingID == nil else { return }
         if model.isSearchExpanded {

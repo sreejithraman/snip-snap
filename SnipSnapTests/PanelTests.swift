@@ -1433,6 +1433,14 @@ final class PanelTests: StoreBackedTestCase {
         XCTAssertEqual(PanelTextInputReturnAction.action(for: [.shift]), .insertNewline)
     }
 
+    func testCommandReturnChoosesADestinationOnlyForTheComposer() {
+        XCTAssertEqual(
+            PanelTextInputReturnAction.action(for: [.command], offersDestinations: true),
+            .chooseDestination
+        )
+        XCTAssertEqual(PanelTextInputReturnAction.action(for: [.command]), .submit)
+    }
+
     func testCompactComposerDoesNotTreatItsAlignedFieldAsExpanded() {
         XCTAssertFalse(
             PanelComposerLayout.isExpanded(

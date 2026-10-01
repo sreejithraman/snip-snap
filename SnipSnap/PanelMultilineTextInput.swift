@@ -89,9 +89,14 @@ enum PanelPastedImageStaging {
 enum PanelTextInputReturnAction: Equatable {
     case submit
     case insertNewline
+    case chooseDestination
 
-    static func action(for modifiers: EventModifiers) -> Self {
-        modifiers.contains(.shift) ? .insertNewline : .submit
+    static func action(for modifiers: EventModifiers, offersDestinations: Bool = false) -> Self {
+        if offersDestinations,
+           modifiers.intersection([.command, .shift, .option, .control]) == .command {
+            return .chooseDestination
+        }
+        return modifiers.contains(.shift) ? .insertNewline : .submit
     }
 }
 
@@ -180,15 +185,18 @@ struct PanelMultilineTextInput: View {
     private let lineRange: ClosedRange<Int>
     private let lineSpacing: CGFloat
     private let isFocused: Bool
+    private let isAcceptingKeyboardInput: Bool
     private let onFocusChange: (Bool) -> Void
     private let readPastedImages: () -> [PanelPastedImage]
     private let readPastedText: () -> String?
     private let pastedContentContainsText: () -> Bool
     private let onPasteImages: ([PanelPastedImage]) -> Void
     private let onPasteLargeText: (String) -> Void
+    private let onChooseDestination: (() -> Void)?
     private let onSubmit: () -> Void
 
     @FocusState private var editorFocused: Bool
+    @State private var restoresFocusAfterMenu = false
     @State private var keyEventMonitor: Any?
     @State private var windowReference = PanelTextInputWindowReference()
 
@@ -198,6 +206,7 @@ struct PanelMultilineTextInput: View {
         lineRange: ClosedRange<Int>,
         lineSpacing: CGFloat = 0,
         isFocused: Bool,
+        isAcceptingKeyboardInput: Bool = true,
         onFocusChange: @escaping (Bool) -> Void,
         readPastedImages: @escaping () -> [PanelPastedImage] = {
             PanelImagePasteboard.images()
@@ -210,6 +219,7 @@ struct PanelMultilineTextInput: View {
         },
         onPasteImages: @escaping ([PanelPastedImage]) -> Void = { _ in },
         onPasteLargeText: @escaping (String) -> Void = { _ in },
+        onChooseDestination: (() -> Void)? = nil,
         onSubmit: @escaping () -> Void
     ) {
         self.prompt = prompt
@@ -217,12 +227,14 @@ struct PanelMultilineTextInput: View {
         self.lineRange = lineRange
         self.lineSpacing = lineSpacing
         self.isFocused = isFocused
+        self.isAcceptingKeyboardInput = isAcceptingKeyboardInput
         self.onFocusChange = onFocusChange
         self.readPastedImages = readPastedImages
         self.readPastedText = readPastedText
         self.pastedContentContainsText = pastedContentContainsText
         self.onPasteImages = onPasteImages
         self.onPasteLargeText = onPasteLargeText
+        self.onChooseDestination = onChooseDestination
         self.onSubmit = onSubmit
     }
 
@@ -242,12 +254,21 @@ struct PanelMultilineTextInput: View {
         .foregroundStyle(SnipSnapColors.textPrimary)
         .lineSpacing(lineSpacing)
         .focused($editorFocused)
+        .disabled(!isAcceptingKeyboardInput)
         .onKeyPress(.return, phases: .down) { press in
-            guard PanelTextInputReturnAction.action(for: press.modifiers) == .submit else {
+            guard isAcceptingKeyboardInput else { return .ignored }
+            switch PanelTextInputReturnAction.action(
+                for: press.modifiers, offersDestinations: onChooseDestination != nil
+            ) {
+            case .submit:
+                onSubmit()
+                return .handled
+            case .chooseDestination:
+                onChooseDestination?()
+                return .handled
+            case .insertNewline:
                 return .ignored
             }
-            onSubmit()
-            return .handled
         }
         .background {
             PanelTextInputWindowReader(
@@ -261,13 +282,23 @@ struct PanelMultilineTextInput: View {
                 .allowsHitTesting(false)
         }
         .onChange(of: isFocused, initial: true) { _, focused in
-            editorFocused = focused
+            editorFocused = focused && isAcceptingKeyboardInput
         }
         .onAppear {
-            updateKeyEventMonitor(isEnabled: isFocused)
+            updateKeyEventMonitor(isEnabled: isFocused && isAcceptingKeyboardInput)
+        }
+        .onChange(of: isAcceptingKeyboardInput) { _, accepting in
+            if accepting {
+                editorFocused = restoresFocusAfterMenu || isFocused
+                restoresFocusAfterMenu = false
+            } else {
+                restoresFocusAfterMenu = editorFocused
+                editorFocused = false
+            }
+            updateKeyEventMonitor(isEnabled: editorFocused && accepting)
         }
         .onChange(of: editorFocused) { _, focused in
-            updateKeyEventMonitor(isEnabled: focused)
+            updateKeyEventMonitor(isEnabled: focused && isAcceptingKeyboardInput)
             onFocusChange(focused)
         }
         .onDisappear {

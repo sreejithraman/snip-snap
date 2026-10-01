@@ -11,7 +11,7 @@ struct MoveDestinationOptions: View {
     var body: some View {
         ForEach(destinations) { list in
             Button { move(list.id) } label: {
-                Label(list.displayName, systemImage: list.systemImage)
+                ListDestinationLabel(list: list)
             }
             .accessibilityIdentifier("\(identifierPrefix)\(list.name)")
         }

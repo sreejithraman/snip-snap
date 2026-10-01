@@ -945,15 +945,14 @@ struct SnipListView: View {
             }
         }
         menu.addItem(.separator())
-        menu.addPanelSubmenu(String(localized: "Move to List"), systemImage: "folder") { submenu in
-            let destinations = model.lists.filter { list in
-                !selectedSnips.allSatisfy { $0.listID == list.id }
-            }
+        let movePurpose = ListDestinationPurpose.move(sourceListIDs: Set(selectedSnips.map(\.listID)))
+        menu.addPanelSubmenu(movePurpose.title, systemImage: "folder") { submenu in
+            let destinations = movePurpose.destinations(in: model.lists)
             for list in destinations {
                 submenu.addPanelAction(
                     list.displayName,
                     isEnabled: model.editingID == nil,
-                    systemImage: "folder"
+                    systemImage: list.systemImage
                 ) {
                     let orderedIDs = model.snips.filter { ids.contains($0.id) }.map(\.id)
                     Task { _ = await model.moveToList(ids: orderedIDs, listID: list.id) }
