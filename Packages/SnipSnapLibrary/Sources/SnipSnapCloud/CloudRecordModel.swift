@@ -560,6 +560,7 @@ package struct CloudAssetDestination: Equatable, Sendable {
             throw CloudRecordError.invalidAssetDestination
         }
         self.directoryURL = directoryURL.standardizedFileURL
+            .appendingPathComponent("", isDirectory: true)
     }
 }
 

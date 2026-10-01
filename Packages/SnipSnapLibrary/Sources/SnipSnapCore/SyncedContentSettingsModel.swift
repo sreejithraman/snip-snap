@@ -132,7 +132,7 @@ public enum SyncedContentSyncIssue: Codable, Equatable, Sendable {
     }
   }
 
-  fileprivate var diagnosticCode: String {
+  public var diagnosticCode: String {
     switch self {
     case .waitingForConnection: "sync.waitingForConnection"
     case .iCloudUnavailable: "sync.iCloudUnavailable"

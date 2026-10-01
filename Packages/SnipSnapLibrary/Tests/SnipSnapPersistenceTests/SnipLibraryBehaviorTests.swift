@@ -1289,6 +1289,38 @@ final class SnipLibraryBehaviorTests: XCTestCase {
     )
   }
 
+  func testCloudDevStorePathSurvivesRelaunchWithoutEnvironment() {
+    let url = SwiftDataSnipLibrary.defaultStoreURL(
+      fileManager: .default,
+      environment: [:],
+      infoDictionary: ["SnipSnapDevelopmentStorePath": "/tmp/cloud-dev-slot-6/items.json"]
+    )
+    XCTAssertEqual(url.path, "/tmp/cloud-dev-slot-6/Local/snips.store")
+    XCTAssertEqual(LocalSnipStorePaths(storeURL: url).rootDirectory.path, "/tmp/cloud-dev-slot-6")
+  }
+
+  func testCloudDevStorePathTakesPriorityOverLaunchEnvironment() {
+    XCTAssertEqual(
+      LocalSnipStorePaths.storePathOverride(
+        environment: ["SNIP_SNAP_STORE_PATH": "/tmp/other-library/items.json"],
+        infoDictionary: ["SnipSnapDevelopmentStorePath": "/tmp/cloud-dev/items.json"]
+      ),
+      "/tmp/cloud-dev/items.json"
+    )
+  }
+
+  func testInvalidEmbeddedDevStorePathFallsBackToEnvironment() {
+    for embedded in ["$(SNIP_SNAP_DEV_STORE_PATH)", "relative/items.json", ""] {
+      XCTAssertEqual(
+        LocalSnipStorePaths.storePathOverride(
+          environment: ["SNIP_SNAP_STORE_PATH": "/tmp/local-dev/items.json"],
+          infoDictionary: ["SnipSnapDevelopmentStorePath": embedded]
+        ),
+        "/tmp/local-dev/items.json"
+      )
+    }
+  }
+
   func testSwiftDataRejectsAStoreWithRecordsButNoLists() throws {
     let directory = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }

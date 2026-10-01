@@ -333,6 +333,7 @@ struct CloudFullBatchPlanner {
         current: stored.namespaceState,
         batch: batch,
         dataZone: dataZone,
+        ownedZones: Set([dataZone] + (payloadZone.map { [$0] } ?? [])),
         attachmentOperationIDs: normalized.attachmentOperationIDs,
         initialFetchInventory: nextInventory
       ),

@@ -826,12 +826,6 @@ final class IOSAppModel {
         }
     }
 
-    func syncWhenPossible() async {
-        haptics.invalidatePendingFeedback()
-        await cloudSyncHandler?.syncWhenPossible()
-        await load()
-    }
-
     private func editSnipUnlocked(
         _ snip: Snip,
         content: String,

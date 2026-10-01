@@ -210,19 +210,16 @@ struct DevelopmentMenuBoundsKey: PreferenceKey {
 struct LibrarySyncAction: View {
     let syncedContentSettings: SyncedContentSettingsModel
     let syncNow: @MainActor () async -> Void
-    @State private var isSyncingManually = false
 
     var body: some View {
         if syncedContentSettings.mode == .iCloudSync {
             Button("Sync", systemImage: "arrow.triangle.2.circlepath") {
                 Task {
-                    guard syncedContentSettings.canSyncNow, !isSyncingManually else { return }
-                    isSyncingManually = true
-                    defer { isSyncingManually = false }
+                    guard syncedContentSettings.canSyncNow else { return }
                     await syncNow()
                 }
             }
-            .disabled(!syncedContentSettings.canSyncNow || isSyncingManually)
+            .disabled(!syncedContentSettings.canSyncNow)
             .accessibilityIdentifier("sync-icloud")
         }
     }

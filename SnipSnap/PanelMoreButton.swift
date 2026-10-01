@@ -9,7 +9,6 @@ struct PanelMoreButton: View {
     let selectAllVisible: () -> Void
     let syncedContentSettings: SyncedContentSettingsModel?
     let syncNow: (@MainActor () async -> Void)?
-    @State private var isSyncingManually = false
 
     @Environment(\.openSettings) private var openSettings
 
@@ -60,13 +59,11 @@ struct PanelMoreButton: View {
            syncedContentSettings.mode == .iCloudSync {
             Button("Sync", systemImage: "arrow.triangle.2.circlepath") {
                 Task {
-                    guard syncedContentSettings.canSyncNow, !isSyncingManually else { return }
-                    isSyncingManually = true
-                    defer { isSyncingManually = false }
+                    guard syncedContentSettings.canSyncNow else { return }
                     await syncNow()
                 }
             }
-            .disabled(!syncedContentSettings.canSyncNow || isSyncingManually)
+            .disabled(!syncedContentSettings.canSyncNow)
             .accessibilityIdentifier("sync-icloud")
         }
 

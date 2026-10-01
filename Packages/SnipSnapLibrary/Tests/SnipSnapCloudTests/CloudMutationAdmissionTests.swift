@@ -89,6 +89,13 @@ final class CloudMutationAdmissionTests: XCTestCase {
       if point == .afterRevisionReserved { await pause.suspend() }
     })
     defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let inbox = try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(
+      for: CloudFullRecordCodec.listDraft(.inbox, updatedAt: .distantPast,
+        in: fixture.descriptor.metadataZone)
+    ))
+    let seed = CloudFetchedBatch(id: UUID(), items: [.record(inbox)], engineState: nil)
+    try await fixture.store.stage(.fetched(seed))
+    try await fixture.store.applyStaged(seed.id)
     let completion = try await prepareAutomaticConsumer(fixture)
     let managed = try await fixture.persistence.activeLibrary()
     let preview = try await managed.previewImport(SnipLibraryTransferSnapshot(revision: 0,

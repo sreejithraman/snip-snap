@@ -403,11 +403,13 @@ package enum AttachmentFileIO {
     defer { free(resolvedPointer) }
     let parentPath = String(cString: resolvedPointer)
     guard parentPath.hasPrefix("/") else { throw SnipLibraryError.invalidStore }
+    // Search-only ancestors preserve no-follow traversal without requiring directory
+    // read access outside the sandbox's granted root.
     let parentComponents = parentPath.split(separator: "/").map(String.init)
-    var parent = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+    var parent = open("/", O_SEARCH | O_NOFOLLOW)
     guard parent >= 0 else { throw SnipLibraryError.invalidStore }
     for component in parentComponents {
-      let next = openat(parent, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+      let next = openat(parent, component, O_SEARCH | O_NOFOLLOW)
       close(parent)
       guard next >= 0 else { throw SnipLibraryError.invalidStore }
       parent = next

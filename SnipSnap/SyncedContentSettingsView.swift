@@ -1,6 +1,8 @@
+import AppKit
 import SnipSnapCloud
 import SnipSnapCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SyncedContentSettingsView: View {
     @Bindable var model: SyncedContentSettingsModel
@@ -10,6 +12,8 @@ struct SyncedContentSettingsView: View {
     @State private var confirmsUsingDeviceCopy = false
     @State private var isRetryingSync = false
     @State private var isRetryingClipboardSync = false
+    @State private var isExportingDiagnostics = false
+    @State private var diagnosticsMessage: String?
 
     var body: some View {
         Form {
@@ -66,6 +70,21 @@ struct SyncedContentSettingsView: View {
                 }
             }
 
+            Section {
+                LabeledContent("Diagnostics") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Button("Share diagnostic log", systemImage: "square.and.arrow.up", action: shareDiagnostics)
+                            .accessibilityIdentifier("share-diagnostic-log")
+                        Button("Clear diagnostic log", systemImage: "trash", action: clearDiagnostics)
+                            .accessibilityIdentifier("clear-diagnostic-log")
+                    }
+                    .disabled(isExportingDiagnostics)
+                }
+            } header: {
+                Text("Support")
+            } footer: {
+                Text("Includes recent operation codes and counts, not your content or file names. Save a copy to share it with support.")
+            }
         }
         .formStyle(.grouped)
         .onChange(of: model.canEnableClipboardSync) { _, canEnable in
@@ -88,6 +107,14 @@ struct SyncedContentSettingsView: View {
         } message: {
             Text("Couldn’t get the latest iCloud changes. Turning off sync uses this Mac’s copy, which may be out of date. Your iCloud data stays.")
         }
+        .alert("Diagnostics", isPresented: Binding(
+            get: { diagnosticsMessage != nil },
+            set: { if !$0 { diagnosticsMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { diagnosticsMessage = nil }
+        } message: {
+            Text(diagnosticsMessage ?? "")
+        }
     }
 
     init(
@@ -98,6 +125,56 @@ struct SyncedContentSettingsView: View {
         self.model = model
         self.clipboard = clipboard
         self.retryAction = retryAction
+    }
+
+    private func shareDiagnostics() {
+        guard !isExportingDiagnostics else { return }
+        isExportingDiagnostics = true
+        let panel = NSSavePanel()
+        panel.title = String(localized: "Share diagnostic log")
+        panel.prompt = String(localized: "Save")
+        panel.nameFieldStringValue = "Snip-Snap-Diagnostics.txt"
+        panel.allowedContentTypes = [.plainText]
+        panel.canCreateDirectories = true
+
+        let completion: (NSApplication.ModalResponse) -> Void = { response in
+            defer { isExportingDiagnostics = false }
+            guard response == .OK, let destination = panel.url else { return }
+            let didAccess = destination.startAccessingSecurityScopedResource()
+            defer { if didAccess { destination.stopAccessingSecurityScopedResource() } }
+            do {
+                let source = try CloudSyncDiagnosticsExport.makeShareableFile()
+                try Data(contentsOf: source).write(to: destination, options: .atomic)
+                diagnosticsMessage = String(localized: "Diagnostic log saved. You can attach it to your support message.")
+            } catch {
+                AppDiagnostics.shared.record(.failure(
+                    operation: "diagnostics.export",
+                    error: error,
+                    visibility: .user
+                ))
+                diagnosticsMessage = String(localized: "Couldn’t save the diagnostic log. Try again.")
+            }
+        }
+        if let window = NSApp.keyWindow {
+            panel.beginSheetModal(for: window, completionHandler: completion)
+        } else {
+            panel.begin(completionHandler: completion)
+        }
+    }
+
+    private func clearDiagnostics() {
+        guard !isExportingDiagnostics else { return }
+        do {
+            try CloudSyncDiagnosticsExport.clear()
+            diagnosticsMessage = String(localized: "Diagnostic log cleared.")
+        } catch {
+            AppDiagnostics.shared.record(.failure(
+                operation: "diagnostics.clear",
+                error: error,
+                visibility: .user
+            ))
+            diagnosticsMessage = String(localized: "Couldn’t clear the diagnostic log. Try again.")
+        }
     }
 
     @ViewBuilder

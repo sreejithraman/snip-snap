@@ -48,14 +48,14 @@ result = {
   operation: operation,
   verification: {
     status: "blocked",
-    detail: "Use the Cloud Dev build from Xcode for the final iPhone check.",
+    detail: "Run scripts/run.sh cloud-ios-device with the paired iPhone UDID, then verify the workflow on the phone.",
     checks: { "signed device install" => "blocked" }
   },
-  location: { command: ["scripts/cloud-dev.sh", "build"] },
+  location: { command: ["scripts/run.sh", "cloud-ios-device", "<paired-device-udid>"] },
   evidence_paths: [],
   log_paths: [],
   availability_limitations: [
-    "Automatic iPhone install is not configured. Simulator review remains available through Showroom."
+    "Physical verification is manual. The guarded run command needs a paired, connected, unlocked iPhone with Developer Mode and local Development signing settings. Simulator review remains available through Showroom."
   ]
 }
 File.write(path, JSON.pretty_generate(result))

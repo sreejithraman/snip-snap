@@ -223,21 +223,14 @@ The CloudKit entitlement grants access; it does not force sync on. The signed
 Dev app still works from its local store when the user leaves iCloud Sync off.
 Normal numbered Dev builds remain local-only and carry no CloudKit entitlement.
 
-For a Mac Cloud Dev build, run the preflight and build with the same scheme,
-configuration, and destination:
+For a Mac Cloud Dev compile check, use the shared build command. Replace
+`<registered-slot>` with this worktree's slot shown by `scripts/dev-slot.sh list`
+and register its numbered Dev identity and App Group as described in
+[Run Cloud Dev on Mac and iPhone](#run-cloud-dev-on-mac-and-iphone).
+Leave the resulting build-output bundle unopened:
 
 ```sh
-./scripts/signed-lane-preflight.sh cloud \
-  --scheme SnipSnap \
-  --configuration Debug \
-  --destination 'generic/platform=macOS'
-xcodebuild \
-  -project SnipSnap.xcodeproj \
-  -scheme SnipSnap \
-  -configuration Debug \
-  -destination 'generic/platform=macOS' \
-  -derivedDataPath /tmp/snip-snap-cloud-dev-mac \
-  build
+./scripts/cloud-dev.sh build --platform macos --slot '<registered-slot>'
 ```
 
 For a signed Cloud Dev iPhone or iPad build, use the guarded command. A generic
@@ -259,8 +252,73 @@ destination at run time:
 ./scripts/cloud-dev.sh build --destination 'id=<your local device ID>'
 ```
 
-Confirm the signed build in Xcode before installing it. The preflight lists
-missing setting names but does not print their values.
+Build-only bundles stay unopened. Use the guarded run commands below to install
+and open Cloud Dev apps. The preflight lists missing setting names but does not
+print their values.
+
+For Mac only, `SNIP_SNAP_DEV_APP_GROUP_IDENTIFIER` may use
+`<configured signing team>.<group name>.cloud.dev<slot>` instead of a registered
+`group.` identifier. The guard checks that this prefix matches the configured,
+signed, and provisioned team. [Apple authorizes these Mac groups without registration](https://developer.apple.com/documentation/xcode/accessing-app-group-containers).
+iPhone builds still need a registered `group.` identifier and profile grant.
+The two platforms share their Development CloudKit container and collection;
+their App Group identifiers may differ. Keep per-platform values in local command
+environments when testing this option.
+
+### Run Cloud Dev on Mac and iPhone
+
+```sh
+./scripts/run.sh cloud-mac
+./scripts/run.sh cloud-ios-device <paired-device-udid>
+```
+
+Both commands claim this worktree's numbered Dev slot. Unlike the build-only
+Cloud Dev identity above, the run path defaults to these registered identities:
+
+```text
+Mac app:         <bundle root>.cloud.dev<slot>
+iOS app:         <iOS bundle root>.cloud.dev<slot>
+Share extension: <iOS Cloud Dev app ID>.share
+App Group:       <configured App Group>.cloud.dev<slot>
+CloudKit:        <configured container>, Development environment
+```
+
+The app displays **Snip Snap Cloud Dev <slot>** and its existing numbered Dev
+badge. Cloud Dev apps have separate bundle IDs and local stores from both
+ordinary local-only Dev apps and release apps. Their iCloud data is shared with
+other apps using the same Development container and iCloud account.
+
+Register these App IDs and the App Group with your development team and grant
+the main apps the CloudKit container. The iOS Share extension gets only the App
+Group. Keep the entitlement input templates' build-setting placeholders so the
+run command can select its isolated group. For custom registered names, set
+`SNIP_SNAP_DEV_MAC_PRODUCT_BUNDLE_IDENTIFIER`,
+`SNIP_SNAP_DEV_IOS_PRODUCT_BUNDLE_IDENTIFIER`, and
+`SNIP_SNAP_DEV_APP_GROUP_IDENTIFIER` in ignored local settings or environment
+variables. Each run identity must end in `.cloud.dev<slot>`. `scripts/dev-slot.sh list` shows slot
+ownership. Never assign a slot already owned by another worktree.
+
+The run command performs the Development signing preflight, builds, and checks
+the actual signature, app identity, CloudKit environment, push entitlement,
+App Group, embedded profile grants, and iOS Share extension access on the staged
+copy. It moves that verified copy into the Dev slot's installed-app directory
+before opening it. A failed launch or phone install preserves the previous app
+in the backup directory reported by the command. The Mac's isolated store path is embedded in its
+signed bundle and used for saved snips, clipboard history, and sync state on
+ordinary relaunches as well. Builds and launches use a per-platform slot lock.
+The Mac run confirms that the installed executable is running before reporting
+success.
+If an interrupted run leaves a lock, confirm that its recorded process and any
+surviving build subprocesses using that cache have stopped before removing it.
+
+The iPhone must be paired, connected, unlocked, and have Developer Mode enabled.
+Enable Settings → Synced Content → iCloud Sync in each Cloud Dev app. Check with
+disposable snips and a test list: create a snip on each device, move one from
+Inbox into the list on iPhone, and verify the changes on Mac. Observe automatic
+delivery separately from a subsequent Sync Now recovery attempt. Relaunch and
+check again to verify persistence. Record the build, OS versions, outcomes, and
+any failures in ignored local evidence. These Development apps do not sync with
+TestFlight or installed Production releases.
 
 ### Run the live CloudKit check
 
@@ -283,10 +341,11 @@ original failure too.
 
 This tests real CloudKit requests from a Mac test host. It does not replace a
 Mac-to-iPhone app check for push delivery, background resume, or production
-throttling. The current Cloud Dev command only builds. `scripts/run.sh ios-device`
-installs and launches a local-only app with CloudKit disabled. Agents must report
-this device-proof gap until a guarded Cloud Dev install/run path exists under
-`scripts/run.sh`. A Development run also cannot prove Production throttling.
+throttling. Use the guarded `scripts/run.sh cloud-mac` and `cloud-ios-device`
+commands above for the physical app check. `scripts/run.sh ios-device` remains
+local-only with CloudKit disabled. Report missing signing, account, device, or
+interaction access as a device-proof gap. A Development run also cannot prove
+Production throttling.
 Contributor CI does not run the live command. If local signing or container
 access is missing, leave the live check unchecked; a skip is not a pass.
 

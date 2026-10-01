@@ -17,7 +17,7 @@ fail_test() {
 print -r -- '#!/bin/zsh
 print -r -- "$@" >> "$SNIP_SNAP_CONTRACT_PREFLIGHT_ARGS"' > "$test_root/bin/preflight"
 print -r -- '#!/bin/zsh
-print -r -- "store=$SNIP_SNAP_STORE_PATH :: $@" >> "$SNIP_SNAP_CONTRACT_XCODEBUILD_ARGS"
+print -r -- "store=$SNIP_SNAP_STORE_PATH :: forwarded-store=${TEST_RUNNER_SNIP_SNAP_STORE_PATH:-} :: diagnostics=${TEST_RUNNER_SNIP_SNAP_DIAGNOSTICS_DIRECTORY:-} :: $@" >> "$SNIP_SNAP_CONTRACT_XCODEBUILD_ARGS"
 previous=""
 for argument in "$@"; do
     if [[ "$previous" == "-resultBundlePath" ]]; then
@@ -93,6 +93,14 @@ first_run_directory="$run_directories[1]"
 /usr/bin/grep -F -- "store=$first_run_directory/local-store/snips.json" \
     "$test_root/xcodebuild-args" >/dev/null || \
     fail_test "the lane did not isolate the contract test store"
+
+/usr/bin/grep -F -- "forwarded-store=$first_run_directory/local-store/snips.json" \
+    "$test_root/xcodebuild-args" >/dev/null || \
+    fail_test "the lane did not explicitly forward the isolated store to its test host"
+
+/usr/bin/grep -F -- "diagnostics=$first_run_directory/local-store/SnipSnapDiagnostics" \
+    "$test_root/xcodebuild-args" >/dev/null || \
+    fail_test "the lane did not explicitly isolate hosted diagnostic storage"
 
 "$contract" >/dev/null
 run_directories=("$test_root/artifacts"/run.*(N))

@@ -51,7 +51,9 @@ local_store_path="$run_dir/local-store/snips.json"
 /bin/mkdir -p "${local_store_path:h}"
 
 set +e
-SNIP_SNAP_STORE_PATH="$local_store_path" "$xcodebuild_tool" \
+SNIP_SNAP_STORE_PATH="$local_store_path" \
+TEST_RUNNER_SNIP_SNAP_DIAGNOSTICS_DIRECTORY="${local_store_path:h}/SnipSnapDiagnostics" \
+TEST_RUNNER_SNIP_SNAP_STORE_PATH="$local_store_path" "$xcodebuild_tool" \
     -project "$repo_dir/SnipSnap.xcodeproj" \
     -scheme SnipSnap \
     -configuration Debug \
@@ -60,6 +62,7 @@ SNIP_SNAP_STORE_PATH="$local_store_path" "$xcodebuild_tool" \
     -resultBundlePath "$result_bundle" \
     CODE_SIGNING_ALLOWED=YES \
     SNIP_SNAP_CLOUD_DEV_TRANSPORT_CONTRACT_ENABLED=YES \
+    SNIP_SNAP_CLOUDKIT_ENVIRONMENT=Development \
     -only-testing:SnipSnapTests/CloudDevTransportContractTests \
     test 2>&1 | /usr/bin/tee "$xcodebuild_log"
 statuses=("${pipestatus[@]}")

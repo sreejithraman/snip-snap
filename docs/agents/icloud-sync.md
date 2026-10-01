@@ -19,9 +19,10 @@ and keep the account-free tests usable.
 
 A live pass proves the contract's text, attachment-byte, and deletion checks
 between two clients in one Mac test host. Physical Mac-to-iPhone push delivery,
-background resume, and Production throttling need separate evidence. The linked
-run guide records the current gap in the required device run path; report that
-gap rather than treating a local-only Dev run as cloud proof.
+background resume, and Production throttling need separate evidence. Use the
+linked run guide's guarded Cloud Dev Mac and iPhone commands for device checks;
+report missing prerequisites rather than treating a local-only Dev run as cloud
+proof.
 Report the command, exit status, passed/skipped counts, and saved result path.
 A skip or a prior run against changed code is not proof of the current change.
 
@@ -43,6 +44,10 @@ A skip or a prior run against changed code is not proof of the current change.
   stop at the target batch, and reject a different batch. A fresh engine can
   report initial sign-in; the contract validates the current account before
   acknowledging an account event.
+  A scheduled send can follow an empty incremental fetch before the app commits
+  that fetch. Its empty batch must not withhold already planned records; keep
+  its checkpoint ordered. Initial fetches, record changes, errors, zone events,
+  and uncommitted sends still block the provider until they commit.
 - **Shared fake logic:** both adapters use the record mapper. Matching fake and
   real responses can hide the same mapping bug. Compare received fields with the
   original draft and downloaded bytes with the original file.

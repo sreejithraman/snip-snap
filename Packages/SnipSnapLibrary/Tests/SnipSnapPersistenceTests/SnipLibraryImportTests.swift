@@ -6,6 +6,26 @@ import XCTest
 @testable import SnipSnapPersistence
 
 final class SnipLibraryImportTests: XCTestCase {
+  func testBackupImportCanReadGrantedRootWithoutAncestorDirectoryReadAccess() throws {
+    let bytes = Data("readable inside the granted directory".utf8)
+    let fixture = try makeBackupFixture(relativePath: "Nested/file.txt", attachmentBytes: bytes)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    // Access by a known path is allowed, while opening the ancestor for reading is denied.
+    try FileManager.default.setAttributes([.posixPermissions: 0o111], ofItemAtPath: fixture.root.path)
+    defer {
+      try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fixture.root.path)
+    }
+
+    let staged = try JSONSnipArchiveTransfer.stageForImport(
+      from: fixture.backupURL, transitionID: UUID()
+    )
+    defer { try? staged.lease.release() }
+
+    let attachmentID = try XCTUnwrap(staged.archive.snips.first?.attachments.first?.id)
+    let stagedURL = try XCTUnwrap(staged.archive.attachmentURLs[attachmentID])
+    XCTAssertEqual(try Data(contentsOf: stagedURL), bytes)
+  }
+
   func testBackupPreviewKeepsOneRootDescriptorAcrossAWholeDirectorySwap() throws {
     let original = Data("inside".utf8)
     let outside = Data("secret".utf8)

@@ -59,7 +59,7 @@ data = JSON.parse(File.read(ARGV.fetch(0)))
 abort unless data.fetch("surface") == "device"
 abort unless data.fetch("operation") == "verify"
 abort unless data.fetch("verification").fetch("status") == "blocked"
-abort unless data.fetch("location").fetch("command") == ["scripts/cloud-dev.sh", "build"]
+abort unless data.fetch("location").fetch("command") == ["scripts/run.sh", "cloud-ios-device", "<paired-device-udid>"]
 ' "$test_dir/ios-device-result.json"
 
 "$script_dir/run.sh" \

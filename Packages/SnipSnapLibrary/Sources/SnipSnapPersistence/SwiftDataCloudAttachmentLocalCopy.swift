@@ -217,6 +217,7 @@ extension SwiftDataSnipLibrary {
     let safeName = URL(fileURLWithPath: fileName).lastPathComponent
     guard !safeName.isEmpty else { throw SnipLibraryError.attachmentCopyFailed }
     let relativePath = "\(attachmentID.uuidString)/\(safeName)"
+    try DurableFile.createDirectory(attachmentRootURL)
     let destination = try Self.validatedChild(
       relativePath: relativePath,
       root: attachmentRootURL

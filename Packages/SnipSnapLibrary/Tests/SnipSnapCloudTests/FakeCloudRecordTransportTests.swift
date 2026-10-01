@@ -134,6 +134,33 @@ final class FakeCloudRecordTransportTests: XCTestCase {
         XCTAssertEqual(receipt.sha256, Data(SHA256.hash(data: bytes)))
     }
 
+    func testCloudAssetCopyAcceptsADirectoryURLWithoutATrailingSlash() throws {
+        // Use the app's cache location: normalizing /var temporary paths can
+        // incidentally restore the directory slash and hide this failure.
+        let cache = try XCTUnwrap(
+            FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+        )
+        let root = cache
+            .appendingPathComponent("CloudAssetDirectoryTests-\(UUID().uuidString)", isDirectory: true)
+        let destinationURL = root.appendingPathComponent("destination", isDirectory: false)
+        try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("asset.bin")
+        let bytes = Data("downloaded attachment".utf8)
+        try bytes.write(to: source)
+        XCTAssertFalse(destinationURL.hasDirectoryPath)
+
+        let receipt = try CloudAssetFileCopy.copy(
+            recordID: CloudRecordID(zone: CloudZoneID(name: "payload", ownerName: "owner"), name: "asset"),
+            field: "blob",
+            source: source,
+            destination: CloudAssetDestination(validating: destinationURL)
+        )
+
+        XCTAssertEqual(try Data(contentsOf: receipt.fileURL), bytes)
+        XCTAssertEqual(receipt.fileURL.deletingLastPathComponent().path, destinationURL.path)
+    }
+
     func testCloudAssetCopyRejectsNonRegularSourcesAndLeavesNoOutput() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("CloudAssetTypeTests-\(UUID().uuidString)", isDirectory: true)

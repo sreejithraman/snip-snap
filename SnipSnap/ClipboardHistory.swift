@@ -324,8 +324,7 @@ final class ClipboardHistory: ObservableObject {
     }
 
     private static func defaultStoreURL() -> URL {
-        if let overridePath = ProcessInfo.processInfo.environment["SNIP_SNAP_STORE_PATH"],
-           !overridePath.isEmpty {
+        if let overridePath = LocalSnipStorePaths.storePathOverride() {
             return URL(fileURLWithPath: overridePath, isDirectory: false)
                 .deletingLastPathComponent()
                 .appendingPathComponent("clipboard.json", isDirectory: false)

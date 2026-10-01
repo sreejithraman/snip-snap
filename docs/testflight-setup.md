@@ -274,15 +274,38 @@ builds](https://developer.apple.com/help/app-store-connect/manage-builds/upload-
 
 ### App diagnostics
 
-TestFlight builds keep a bounded, privacy-safe operational diagnostic log. After
-reproducing an error, open **Settings → Support → Share diagnostic log**. The
-export identifies the running app version and build, even if its latest event
-came from an older build. It includes recent timestamps, operation names,
-outcomes, stable error codes, and limited numeric fields. Attachment stages and
-older attachment log entries are included until the size limit evicts old events.
-The log does not include snip
-content, filenames, file paths, CloudKit record IDs, or hashes. Use **Clear
-diagnostic log** after saving a report when a fresh capture is useful.
+Diagnostic recording is enabled in Dev, TestFlight, and normal Release builds,
+including App Store builds. It does not require a debug build or an attached
+debugger. Event history and each exported report are bounded to 64 KiB. A small
+separate cache retains the latest observed sync state and last successful
+fetch/send timestamps after older events rotate out. The operating system can
+remove cached logs. Normal Mac apps keep diagnostics separate by bundle ID;
+test runners explicitly place diagnostics beside their isolated store. Nothing
+is transmitted automatically.
+
+After reproducing an error on iPhone or iPad, open **Settings → Support →
+Diagnostics → Share diagnostic log**. On Mac, open **Settings → iCloud → Support →
+Diagnostics → Share diagnostic log**, save the text file, and attach it to your
+support message. Export happens only when you choose this action. The export
+identifies the running app version and build, even if its latest event came from
+an older build. It includes timestamps, fixed operation and outcome codes,
+stable error codes, counts and other bounded numeric fields, and version fields.
+Attachment stages and older attachment log entries are included until the size
+limit evicts old events. It contains no snip content, filenames, file paths,
+account identifiers, CloudKit record IDs, or hashes.
+
+The sync summary reports observed queued record writes, received records awaiting
+application, namespace phase, and waiting or blocked reasons. Transport and record
+snapshots are separate observations; do not add their counts together. These
+counts do not measure unseen server changes or attachment-cache downloads.
+Successful fetch/send timestamps advance after local commit and acknowledgement.
+Environment is declared build metadata: guarded Cloud Dev runs declare
+Development, distribution scripts declare Production, and unconfigured builds
+report unknown. Exporting reads local evidence without fetching from iCloud.
+
+Use **Clear diagnostic log** in the same Diagnostics controls when a fresh
+capture is useful. Clearing is user initiated and removes the cached log; copies
+you have already saved or shared remain wherever you sent them.
 
 ## Repeat for each beta build
 

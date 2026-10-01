@@ -76,6 +76,8 @@ SNIP_SNAP_CLOUD_DEV_DERIVED_DATA="$test_root/DerivedData" \
     "$args_file" >/dev/null || fail_test "the App Group was not isolated"
 /usr/bin/grep -F -- 'SNIP_SNAP_BUILD_LANE=cloud-dev' "$args_file" >/dev/null || \
     fail_test "the build lane was not marked"
+/usr/bin/grep -F -- 'SNIP_SNAP_CLOUDKIT_ENVIRONMENT=Development' "$args_file" >/dev/null || \
+    fail_test "the declared CloudKit environment did not reach the signed build"
 /usr/bin/grep -F -- 'DEVELOPMENT_TEAM=FAKE123456' "$args_file" >/dev/null || \
     fail_test "the development team did not reach the signed build"
 /usr/bin/grep -F -- \

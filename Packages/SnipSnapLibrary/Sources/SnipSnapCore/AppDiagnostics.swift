@@ -22,7 +22,8 @@ private enum AppDiagnosticCodePolicy {
     "cloudkit.control_save", "cloudkit.record_fetch", "cloudkit.record_send", "cloudkit.request",
     "diagnostics.clear", "diagnostics.export", "import.file", "share.import", "shortcut.save",
     "sync.cancel_setup", "sync.delete", "sync.disable", "sync.enable", "sync.run",
-    "sync.setup", "sync.stop",
+    "sync.setup", "sync.stop", "sync.snapshot", "sync.provider", "sync.fetch", "sync.send",
+    "sync.settlement", "sync.schedule", "sync.reset",
   ]
 
   static let errorCodes: Set<String> = [
@@ -88,6 +89,38 @@ public enum AppDiagnosticOutcome: String, Sendable {
   case missing
 }
 
+public enum AppDiagnosticSyncScope: String, Sendable {
+  case transport
+  case records
+}
+
+public enum AppDiagnosticSyncEnvironment: String, Sendable {
+  case development
+  case production
+  case unknown
+}
+
+public enum AppDiagnosticSyncPhase: String, Sendable {
+  case uninitialized
+  case remoteChecked = "remote_checked"
+  case remoteCheckedMissingZone = "remote_checked_missing_zone"
+  case seeding
+  case active
+  case blocked
+}
+
+public enum AppDiagnosticSyncReason: String, Sendable {
+  case initialFetch = "initial_fetch"
+  case uncommittedEvents = "uncommitted_events"
+  case namespaceBlocked = "namespace_blocked"
+  case recoveryBlocked = "recovery_blocked"
+  case recordBlocked = "record_blocked"
+  case pendingWork = "pending_work"
+  case settled
+  case stopped
+  case ownerReplaced = "owner_replaced"
+}
+
 /// One structured operational event. Fields are deliberately limited to values that cannot
 /// contain user content, filenames, filesystem paths, record identifiers, or hashes.
 public struct AppDiagnosticEvent: Equatable, Sendable {
@@ -98,6 +131,14 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
   public let byteCount: Int64?
   public let retryAfterSeconds: Double?
   public let nextAttemptSeconds: Double?
+  public let syncScope: AppDiagnosticSyncScope?
+  public let syncEnvironment: AppDiagnosticSyncEnvironment?
+  public let syncPhase: AppDiagnosticSyncPhase?
+  public let syncReason: AppDiagnosticSyncReason?
+  public let pendingUploads: Int?
+  public let pendingDownloads: Int?
+  public let pendingEvents: Int?
+  public let blockedRecords: Int?
 
   private init(
     operation: StaticString,
@@ -106,7 +147,15 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
     errorCode: String? = nil,
     byteCount: Int64? = nil,
     retryAfterSeconds: Double? = nil,
-    nextAttemptSeconds: Double? = nil
+    nextAttemptSeconds: Double? = nil,
+    syncScope: AppDiagnosticSyncScope? = nil,
+    syncEnvironment: AppDiagnosticSyncEnvironment? = nil,
+    syncPhase: AppDiagnosticSyncPhase? = nil,
+    syncReason: AppDiagnosticSyncReason? = nil,
+    pendingUploads: Int? = nil,
+    pendingDownloads: Int? = nil,
+    pendingEvents: Int? = nil,
+    blockedRecords: Int? = nil
   ) {
     self.operation = AppDiagnosticCodePolicy.operation(String(describing: operation))
     self.outcome = outcome
@@ -115,25 +164,63 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
     self.byteCount = byteCount
     self.retryAfterSeconds = retryAfterSeconds
     self.nextAttemptSeconds = nextAttemptSeconds
+    self.syncScope = syncScope
+    self.syncEnvironment = syncEnvironment
+    self.syncPhase = syncPhase
+    self.syncReason = syncReason
+    self.pendingUploads = pendingUploads.flatMap { $0 >= 0 ? $0 : nil }
+    self.pendingDownloads = pendingDownloads.flatMap { $0 >= 0 ? $0 : nil }
+    self.pendingEvents = pendingEvents.flatMap { $0 >= 0 ? $0 : nil }
+    self.blockedRecords = blockedRecords.flatMap { $0 >= 0 ? $0 : nil }
   }
 
   public static func started(
     operation: StaticString,
-    visibility: AppDiagnosticVisibility = .background
+    visibility: AppDiagnosticVisibility = .background,
+    reason: AppDiagnosticSyncReason? = nil
   ) -> Self {
-    Self(operation: operation, outcome: .started, visibility: visibility)
+    Self(operation: operation, outcome: .started, visibility: visibility, syncReason: reason)
   }
 
   public static func succeeded(
     operation: StaticString,
     visibility: AppDiagnosticVisibility = .background,
-    byteCount: Int64? = nil
+    byteCount: Int64? = nil,
+    reason: AppDiagnosticSyncReason? = nil
   ) -> Self {
     Self(
       operation: operation,
       outcome: .succeeded,
       visibility: visibility,
-      byteCount: byteCount
+      byteCount: byteCount,
+      syncReason: reason
+    )
+  }
+
+  /// Captures one owner's observed work. Missing or negative counts remain unknown;
+  /// transport and record observations describe separate scopes and must not be added.
+  public static func syncSnapshot(
+    scope: AppDiagnosticSyncScope,
+    environment: AppDiagnosticSyncEnvironment? = nil,
+    phase: AppDiagnosticSyncPhase? = nil,
+    reason: AppDiagnosticSyncReason? = nil,
+    pendingUploads: Int? = nil,
+    pendingDownloads: Int? = nil,
+    pendingEvents: Int? = nil,
+    blockedRecords: Int? = nil
+  ) -> Self {
+    Self(
+      operation: "sync.snapshot",
+      outcome: .succeeded,
+      visibility: .background,
+      syncScope: scope,
+      syncEnvironment: environment,
+      syncPhase: phase,
+      syncReason: reason,
+      pendingUploads: pendingUploads,
+      pendingDownloads: pendingDownloads,
+      pendingEvents: pendingEvents,
+      blockedRecords: blockedRecords
     )
   }
 
@@ -185,6 +272,14 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
     if let byteCount { fields.append("bytes=\(byteCount)") }
     if let retryAfterSeconds { fields.append("retry_after=\(retryAfterSeconds)") }
     if let nextAttemptSeconds { fields.append("next_attempt=\(nextAttemptSeconds)") }
+    if let syncScope { fields.append("scope=\(syncScope.rawValue)") }
+    if let syncEnvironment { fields.append("environment=\(syncEnvironment.rawValue)") }
+    if let syncPhase { fields.append("phase=\(syncPhase.rawValue)") }
+    if let syncReason { fields.append("reason=\(syncReason.rawValue)") }
+    if let pendingUploads { fields.append("pending_uploads=\(pendingUploads)") }
+    if let pendingDownloads { fields.append("pending_downloads=\(pendingDownloads)") }
+    if let pendingEvents { fields.append("pending_events=\(pendingEvents)") }
+    if let blockedRecords { fields.append("blocked_records=\(blockedRecords)") }
     return fields.joined(separator: " ")
   }
 
@@ -276,8 +371,11 @@ private final class AppDiagnosticLiveSink: @unchecked Sendable {
 
   private let logger = Logger(subsystem: "SnipSnap", category: "Operations")
   private let store = AppDiagnosticEventStore(
-    directoryURL: FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-      .appendingPathComponent("SnipSnapDiagnostics", isDirectory: true),
+    directoryURL: AppDiagnosticEventStore.storageDirectoryURL(
+      cachesURL: FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0],
+      bundleIdentifier: Bundle.main.bundleIdentifier,
+      environment: ProcessInfo.processInfo.environment
+    ),
     maxBytes: 64 * 1_024,
     appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
       ?? "unknown",
@@ -307,9 +405,59 @@ private final class AppDiagnosticLiveSink: @unchecked Sendable {
 }
 
 final class AppDiagnosticEventStore: @unchecked Sendable {
+  private static let unbundledCacheNamespace = "unbundled-\(UUID().uuidString)"
+
+  static func storageDirectoryURL(
+    cachesURL: URL,
+    bundleIdentifier: String?,
+    environment: [String: String]
+  ) -> URL {
+    storageDirectoryURL(
+      cachesURL: cachesURL,
+      bundleIdentifier: bundleIdentifier,
+      isolatedDirectoryPath: environment["SNIP_SNAP_DIAGNOSTICS_DIRECTORY"]
+    )
+  }
+
+  /// A diagnostics-only override isolates hosts while normal launches keep the bundle cache.
+  static func storageDirectoryURL(
+    cachesURL: URL,
+    bundleIdentifier: String?,
+    isolatedDirectoryPath: String?
+  ) -> URL {
+    if let isolatedDirectoryPath, isolatedDirectoryPath.hasPrefix("/") {
+      return URL(fileURLWithPath: isolatedDirectoryPath, isDirectory: true)
+    }
+    let namespace: String
+    if let bundleIdentifier, !bundleIdentifier.isEmpty,
+      !bundleIdentifier.contains("/"), bundleIdentifier != ".", bundleIdentifier != ".."
+    {
+      namespace = bundleIdentifier
+    } else {
+      namespace = unbundledCacheNamespace
+    }
+    return cachesURL.appendingPathComponent(namespace, isDirectory: true)
+      .appendingPathComponent("SnipSnapDiagnostics", isDirectory: true)
+  }
+
+  private enum SyncHealthKey: CaseIterable {
+    case transport
+    case records
+    case fetch
+    case send
+
+    var marker: String {
+      switch self {
+      case .transport, .records: "diagnostic_sync_latest"
+      case .fetch, .send: "diagnostic_sync_last_success"
+      }
+    }
+  }
+
   private let directoryURL: URL
   private let eventsURL: URL
   private let legacyEventsURL: URL
+  private let syncHealthURL: URL
   private let shareURL: URL
   private let maxBytes: Int
   private let header: String
@@ -319,11 +467,12 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
     self.directoryURL = directoryURL
     eventsURL = directoryURL.appendingPathComponent("diagnostic-events.txt")
     legacyEventsURL = directoryURL.appendingPathComponent("attachment-events.txt")
+    syncHealthURL = directoryURL.appendingPathComponent("diagnostic-sync-health.txt")
     shareURL = directoryURL.appendingPathComponent("Snip-Snap-Diagnostics.txt")
-    self.maxBytes = maxBytes
+    self.maxBytes = max(0, maxBytes)
     header = """
       Snip Snap diagnostics
-      format=2 app_version=\(appVersion) app_build=\(appBuild)
+      format=3 app_version=\(appVersion) app_build=\(appBuild)
       privacy=structured-operational-events-only
 
       """
@@ -336,8 +485,17 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
           at: directoryURL,
           withIntermediateDirectories: true
         )
-        let line = "\(date.ISO8601Format(.iso8601(timeZone: .gmt))) \(event.line)"
-        let contents = bounded(header + combinedEventLines(appending: line))
+        guard let line = sanitizedStoredEventLine(
+          "\(date.ISO8601Format(.iso8601(timeZone: .gmt).timeZone(separator: .colon))) \(event.line)"
+        ) else { return }
+        var lines = combinedEventLines()
+        var health = retainedSyncHealth(from: lines)
+        if let key = syncHealthKey(for: line) { health[key] = line }
+        // Save health before history can rotate. A crash between these atomic writes must
+        // not erase the newest observation or the last successful transfer.
+        try persistSyncHealth(health)
+        lines.append(line)
+        let contents = bounded(lines, prefix: header)
         try contents.write(to: eventsURL, atomically: true, encoding: .utf8)
         consumeLegacyEvents()
       } catch {
@@ -352,9 +510,23 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
         at: directoryURL,
         withIntermediateDirectories: true
       )
-      let contents = bounded(header + combinedEventLines())
-      try contents.write(to: eventsURL, atomically: true, encoding: .utf8)
+      let lines = combinedEventLines()
+      let health = retainedSyncHealth(from: lines)
+      try persistSyncHealth(health)
+      try bounded(lines, prefix: header).write(to: eventsURL, atomically: true, encoding: .utf8)
       consumeLegacyEvents()
+      var prefix = header
+      for key in SyncHealthKey.allCases {
+        guard let line = health[key] else { continue }
+        let observation = line.replacingOccurrences(
+          of: " diagnostic_event ",
+          with: " \(key.marker) "
+        ) + "\n"
+        if prefix.utf8.count + observation.utf8.count <= maxBytes {
+          prefix += observation
+        }
+      }
+      let contents = bounded(lines, prefix: prefix)
       try contents.write(to: shareURL, atomically: true, encoding: .utf8)
       return shareURL
     }
@@ -362,14 +534,14 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
 
   func clear() throws {
     try lock.withLock {
-      for url in [eventsURL, legacyEventsURL, shareURL]
+      for url in [syncHealthURL, eventsURL, legacyEventsURL, shareURL]
       where FileManager.default.fileExists(atPath: url.path) {
         try FileManager.default.removeItem(at: url)
       }
     }
   }
 
-  private func combinedEventLines(appending line: String? = nil) -> String {
+  private func combinedEventLines() -> [String] {
     let current = storedEventLines(at: eventsURL)
     var currentCounts = current.reduce(into: [String: Int]()) { counts, event in
       counts[event, default: 0] += 1
@@ -381,10 +553,45 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
       currentCounts[event] = count - 1
       return false
     }
-    var lines = legacyOnly + current
-    if let line { lines.append(line) }
-    guard !lines.isEmpty else { return "" }
-    return lines.joined(separator: "\n") + "\n"
+    return legacyOnly + current
+  }
+
+  private func retainedSyncHealth(from history: [String]) -> [SyncHealthKey: String] {
+    var health: [SyncHealthKey: String] = [:]
+    for line in history {
+      if let key = syncHealthKey(for: line) { health[key] = line }
+    }
+    // The sidecar wins over history because it is written first. History also provides
+    // safe migration when an older build wrote a sync event without retained health.
+    if let size = try? syncHealthURL.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+      size <= 4_096
+    {
+      for line in storedEventLines(at: syncHealthURL) {
+        if let key = syncHealthKey(for: line) { health[key] = line }
+      }
+    }
+    return health
+  }
+
+  private func syncHealthKey(for line: String) -> SyncHealthKey? {
+    let fields = line.split(separator: " ").map(String.init)
+    guard fields.count >= 5, fields[1] == "diagnostic_event",
+      fields.contains("outcome=succeeded")
+    else { return nil }
+    if fields.contains("operation=sync.snapshot") {
+      if fields.contains("scope=transport") { return .transport }
+      if fields.contains("scope=records") { return .records }
+    }
+    if fields.contains("operation=sync.fetch") { return .fetch }
+    if fields.contains("operation=sync.send") { return .send }
+    return nil
+  }
+
+  private func persistSyncHealth(_ health: [SyncHealthKey: String]) throws {
+    let lines = SyncHealthKey.allCases.compactMap { health[$0] }
+    guard !lines.isEmpty else { return }
+    try (lines.joined(separator: "\n") + "\n")
+      .write(to: syncHealthURL, atomically: true, encoding: .utf8)
   }
 
   private func consumeLegacyEvents() {
@@ -403,6 +610,7 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
   }
 
   private func sanitizedStoredEventLine(_ line: String) -> String? {
+    guard line.utf8.count <= 512 else { return nil }
     let fields = line.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
     guard fields.count >= 4,
       fields[0].count >= 19, fields[0].count <= 35,
@@ -414,7 +622,10 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
     switch fields[1] {
     case "diagnostic_event":
       requiredKeys = ["operation", "outcome", "visibility"]
-      optionalKeys = ["error", "bytes", "retry_after", "next_attempt"]
+      optionalKeys = [
+        "error", "bytes", "retry_after", "next_attempt", "scope", "environment", "phase",
+        "reason", "pending_uploads", "pending_downloads", "pending_events", "blocked_records",
+      ]
     case "attachment_download":
       requiredKeys = ["stage", "outcome"]
       optionalKeys = ["error", "bytes"]
@@ -445,6 +656,17 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
     for key in ["retry_after", "next_attempt"] {
       if let value = values[key], Double(value)?.isFinite != true { return nil }
     }
+    for key in ["pending_uploads", "pending_downloads", "pending_events", "blocked_records"] {
+      if let raw = values[key] {
+        guard let count = Int(raw), count >= 0, String(count) == raw else { return nil }
+      }
+    }
+    if let scope = values["scope"], AppDiagnosticSyncScope(rawValue: scope) == nil { return nil }
+    if let environment = values["environment"],
+      AppDiagnosticSyncEnvironment(rawValue: environment) == nil
+    { return nil }
+    if let phase = values["phase"], AppDiagnosticSyncPhase(rawValue: phase) == nil { return nil }
+    if let reason = values["reason"], AppDiagnosticSyncReason(rawValue: reason) == nil { return nil }
     guard let outcome = values["outcome"] else { return nil }
     if fields[1] == "attachment_download" {
       guard let stage = values["stage"],
@@ -458,6 +680,15 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
         ["user", "background"].contains(visibility)
       else { return nil }
       values["operation"] = AppDiagnosticCodePolicy.operation(values["operation"] ?? "")
+      if values["operation"] == "sync.snapshot" {
+        guard values["scope"] != nil, outcome == "succeeded", visibility == "background"
+        else { return nil }
+      } else if [
+        "scope", "environment", "phase", "pending_uploads", "pending_downloads", "pending_events",
+        "blocked_records",
+      ].contains(where: { values[$0] != nil }) {
+        return nil
+      }
     }
     if let error = values["error"] {
       values["error"] = AppDiagnosticCodePolicy.errorCode(error)
@@ -468,14 +699,19 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
     return ([fields[0], fields[1]] + orderedFields).joined(separator: " ")
   }
 
-  private func bounded(_ contents: String) -> String {
-    guard contents.utf8.count > maxBytes else { return contents }
-    var lines = eventLines(from: contents)
-    while !lines.isEmpty {
-      let candidate = header + lines.joined(separator: "\n") + "\n"
-      if candidate.utf8.count <= maxBytes { return candidate }
-      lines.removeFirst()
+  private func bounded(_ lines: [String], prefix: String) -> String {
+    guard prefix.utf8.count <= maxBytes else {
+      return String(decoding: prefix.utf8.prefix(maxBytes), as: UTF8.self)
     }
-    return header
+    var bytes = prefix.utf8.count
+    var retained: [String] = []
+    for line in lines.reversed() {
+      let count = line.utf8.count + 1
+      guard bytes + count <= maxBytes else { break }
+      bytes += count
+      retained.append(line)
+    }
+    guard !retained.isEmpty else { return prefix }
+    return prefix + retained.reversed().joined(separator: "\n") + "\n"
   }
 }

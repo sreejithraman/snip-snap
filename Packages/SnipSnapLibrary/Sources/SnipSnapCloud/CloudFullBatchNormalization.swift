@@ -194,6 +194,7 @@ extension CloudFullBatchPlanner {
     current: CloudFullNamespaceState,
     batch: CloudSyncBatch,
     dataZone: CloudZoneID,
+    ownedZones: Set<CloudZoneID>,
     attachmentOperationIDs: Set<CloudRecordID>,
     initialFetchInventory: CloudFullFetchInventory?
   ) -> CloudFullNamespaceState {
@@ -204,8 +205,8 @@ extension CloudFullBatchPlanner {
       if fetched.databaseEvents.contains(where: isDestructiveReset) {
         phase = .blocked
         zoneCreationPending = false
-      } else if hasMissingZone(fetched) {
-        if current.phase == .active {
+      } else if hasMissingZone(fetched, ownedZones: ownedZones) {
+        if current.phase == .active || current.phase == .blocked {
           phase = .blocked
         } else {
           phase = .remoteCheckedMissingZone
@@ -221,7 +222,7 @@ extension CloudFullBatchPlanner {
       if sent.databaseEvents.contains(where: isDestructiveReset) {
         phase = .blocked
         zoneCreationPending = false
-      } else if hasMissingZone(sent, attachmentOperationIDs: attachmentOperationIDs) {
+      } else if hasMissingZone(sent, ownedZones: ownedZones, attachmentOperationIDs: attachmentOperationIDs) {
         if current.phase == .seeding {
           zoneCreationPending = true
         } else {
@@ -257,29 +258,31 @@ extension CloudFullBatchPlanner {
     }
   }
 
-  static func hasMissingZone(_ batch: CloudFetchedBatch) -> Bool {
+  static func hasMissingZone(_ batch: CloudFetchedBatch, ownedZones: Set<CloudZoneID>) -> Bool {
     batch.databaseEvents.contains { event in
       switch event {
-      case .zoneDeleted(_, reason: .deleted), .failed(_, .zoneMissing): true
+      case .zoneDeleted(let zone, reason: .deleted): ownedZones.contains(zone)
+      case .failed(let zone, .zoneMissing): zone.map(ownedZones.contains) ?? true
       default: false
       }
     } || batch.zoneEvents.contains { event in
-      if case .failed(_, .zoneMissing) = event { true } else { false }
+      if case .failed(let zone, .zoneMissing) = event { ownedZones.contains(zone) } else { false }
     }
   }
 
   static func hasMissingZone(
     _ batch: CloudSentBatch,
+    ownedZones: Set<CloudZoneID>,
     attachmentOperationIDs: Set<CloudRecordID>
   ) -> Bool {
     batch.items.contains { item in
       if case .failed(let id, .zoneMissing) = item {
-        !attachmentOperationIDs.contains(id)
+        ownedZones.contains(id.zone) && !attachmentOperationIDs.contains(id)
       } else { false }
     } || batch.databaseEvents.contains { event in
-      if case .failed(_, .zoneMissing) = event { true } else { false }
+      if case .failed(let zone, .zoneMissing) = event { zone.map(ownedZones.contains) ?? true } else { false }
     } || batch.zoneEvents.contains { event in
-      if case .failed(_, .zoneMissing) = event { true } else { false }
+      if case .failed(let zone, .zoneMissing) = event { ownedZones.contains(zone) } else { false }
     }
   }
 }

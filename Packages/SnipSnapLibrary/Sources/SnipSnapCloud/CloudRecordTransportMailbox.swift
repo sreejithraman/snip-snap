@@ -35,8 +35,27 @@ package final class CloudRecordTransportMailbox: @unchecked Sendable {
   private var notificationPending = false
 
   package var first: CloudRecordTransportEvent? { lock.withLock { events.first } }
-  package var hasUncommittedRecords: Bool {
-    lock.withLock { events.contains { if case .batch = $0 { true } else { false } } }
+  package var diagnosticCounts: (events: Int, downloads: Int) {
+    lock.withLock {
+      (events.count, events.reduce(0) { count, event in
+        guard case .batch(let pending) = event, case .fetched(let batch) = pending.batch else { return count }
+        return count + batch.items.count
+      })
+    }
+  }
+  package var blocksRecordProvider: Bool {
+    lock.withLock { events.contains { event in
+      guard case .batch(let pending) = event else { return false }
+      switch pending.batch {
+      case .fetched(let batch):
+        // An empty incremental fetch cannot change a planned record body. Keep
+        // its checkpoint ordered, without starving the same cycle's send.
+        return batch.isInitialFetch || !batch.items.isEmpty
+          || !batch.databaseEvents.isEmpty || !batch.zoneEvents.isEmpty
+      case .sent:
+        return true
+      }
+    } }
   }
 
   package func configure(workAvailable: @escaping @Sendable () async -> Void) {
@@ -141,6 +160,14 @@ package struct CloudRecordOutboundQueue: Sendable {
 
   package var current: CloudOutboundBatch {
     CloudOutboundBatch(operations: order.compactMap { queued[$0] }, zonesToSave: zones)
+  }
+  package var pendingOperationCount: Int {
+    let cyclingIDs = cycle.map {
+      $0.operations(pendingIDs: Set($0.outbound.operations.map(\.id))).map(\.id)
+    } ?? []
+    return Set(queued.keys)
+      .union(cyclingIDs)
+      .union(unconfirmed.values.flatMap { $0.operations.map(\.id) }).count
   }
 
   /// Replaces all unsent work, including omissions and an empty snapshot.

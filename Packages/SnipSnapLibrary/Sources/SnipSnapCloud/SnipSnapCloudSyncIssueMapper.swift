@@ -93,8 +93,9 @@ public enum SnipSnapCloudSyncIssueMapper {
 
 }
 
-package struct CloudSyncIssueError: Error, Equatable, Sendable {
+package struct CloudSyncIssueError: Error, Equatable, Sendable, AppDiagnosticErrorCodeProviding {
   package let issue: SyncedContentSyncIssue
+  package var appDiagnosticCode: String { issue.diagnosticCode }
 
   package init(_ issue: SyncedContentSyncIssue) {
     self.issue = issue

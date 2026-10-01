@@ -172,6 +172,7 @@ archive_and_check() {
         "MARKETING_VERSION=$version" \
         "SNIP_SNAP_APP_GROUP_IDENTIFIER=$app_group_identifier" \
         "SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER=$cloudkit_container_identifier" \
+        SNIP_SNAP_CLOUDKIT_ENVIRONMENT=Production \
         "SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS=$testflight_entitlements" \
         "SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER=$product_bundle_root" \
         archive > "$build_log" 2>&1; then

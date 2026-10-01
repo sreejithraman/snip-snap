@@ -1,5 +1,6 @@
 import CloudKit
 import Foundation
+import SnipSnapCore
 
 package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncConfiguring,
     CloudAutomaticSyncScheduling, CKSyncEngineDelegate {
@@ -29,15 +30,19 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
     private var sendCycleInProgress = false
     private var requiresInitialFetch = true
     private var fetchCycleWasInitial = false
+    private let diagnostics: any AppDiagnosticRecording
+    private var lastDiagnosticSnapshot: AppDiagnosticEvent?
 
     package init(
         database: CKDatabase,
         namespace: CloudSyncNamespace,
-        automaticallyFetchedZones: Set<CloudZoneID>? = nil
+        automaticallyFetchedZones: Set<CloudZoneID>? = nil,
+        diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared
     ) {
         self.database = database
         self.namespace = namespace
         self.automaticallyFetchedZones = automaticallyFetchedZones ?? namespace.zones
+        self.diagnostics = diagnostics
     }
 
     package func start(state: CloudEngineStateEnvelope?) throws {
@@ -73,6 +78,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         if let initialOutbound {
             try schedule(initialOutbound)
         }
+        recordDiagnosticSnapshot()
     }
 
     package func configureAutomaticSync(
@@ -106,6 +112,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         requiresInitialFetch = true
         fetchCycleWasInitial = false
         resumeCycleWaiters()
+        recordDiagnosticSnapshot(reason: .stopped)
     }
 
     package nonisolated static func validate(
@@ -205,6 +212,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
             outboundQueue.confirm(sent)
         }
         observePendingAdmission()
+        recordDiagnosticSnapshot()
     }
 
     package nonisolated static func retryingRecordIDs(
@@ -410,6 +418,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
                 sendResults[id] = sendResult(for: id, error: error)
             }
         case .willFetchChanges:
+            diagnostics.record(.started(operation: "sync.fetch"))
             if cycleCompletion == nil { cycleCompletion = CloudRecordCycleCompletion() }
             fetchCycleInProgress = true
             fetchCycleWasInitial = requiresInitialFetch
@@ -418,6 +427,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
             finishFetchCycle()
             resumeCycleWaiters()
         case .willSendChanges:
+            diagnostics.record(.started(operation: "sync.send"))
             if cycleCompletion == nil { cycleCompletion = CloudRecordCycleCompletion() }
             sendCycleInProgress = true
             outboundQueue.beginCycle()
@@ -431,20 +441,26 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
             break
         }
         observePendingAdmission()
+        recordDiagnosticSnapshot()
     }
 
     package func nextRecordZoneChangeBatch(
         _ context: CKSyncEngine.SendChangesContext,
         syncEngine: CKSyncEngine
     ) async -> CKSyncEngine.RecordZoneChangeBatch? {
-        guard syncEngine === engine, !requiresInitialFetch, !mailbox.hasUncommittedRecords,
-              !outboundQueue.admission.blocksAll else { return nil }
+        guard syncEngine === engine else { return nil }
+        guard !requiresInitialFetch, !mailbox.blocksRecordProvider,
+              !outboundQueue.admission.blocksAll else {
+            recordDiagnosticSnapshot()
+            return nil
+        }
         do {
             try await recordSendGate?()
         } catch {
+            diagnostics.record(.failure(operation: "sync.provider", error: error, visibility: .background))
             return nil
         }
-        guard syncEngine === engine, !requiresInitialFetch, !mailbox.hasUncommittedRecords,
+        guard syncEngine === engine, !requiresInitialFetch, !mailbox.blocksRecordProvider,
               !outboundQueue.admission.blocksAll else { return nil }
         let pendingIDs = Set(syncEngine.state.pendingRecordZoneChanges.filter {
             context.options.scope.contains($0)
@@ -478,7 +494,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
             }
         )
         guard let batch, syncEngine === engine, outboundQueue.cycle?.id == sendCycle.id,
-              !outboundQueue.admission.blocksAll, !mailbox.hasUncommittedRecords else { return nil }
+              !outboundQueue.admission.blocksAll, !mailbox.blocksRecordProvider else { return nil }
         let suppliedIDs = Set((batch.recordsToSave.map(\.recordID) + batch.recordIDsToDelete)
             .map(CloudKitRecordMapper.id(for:)))
         guard Set(outboundQueue.cycle?.operations(pendingIDs: suppliedIDs).map(\.id) ?? []) == suppliedIDs
@@ -543,6 +559,24 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         }
     }
 
+    private func recordDiagnosticSnapshot(reason explicitReason: AppDiagnosticSyncReason? = nil) {
+        let counts = mailbox.diagnosticCounts
+        let admission = outboundQueue.admission
+        let reason = explicitReason ?? (requiresInitialFetch ? .initialFetch
+            : mailbox.blocksRecordProvider ? .uncommittedEvents
+            : admission.blocksAll ? .recoveryBlocked
+            : !admission.blockedRecordIDs.isEmpty ? .recordBlocked
+            : outboundQueue.pendingOperationCount > 0 ? .pendingWork : nil)
+        let snapshot = AppDiagnosticEvent.syncSnapshot(scope: .transport,
+            environment: CloudSyncDiagnostics.environment, reason: reason,
+            pendingUploads: outboundQueue.pendingOperationCount,
+            pendingDownloads: counts.downloads + fetchedItems.count,
+            pendingEvents: counts.events, blockedRecords: admission.blockedRecordIDs.count)
+        guard snapshot != lastDiagnosticSnapshot else { return }
+        lastDiagnosticSnapshot = snapshot
+        diagnostics.record(snapshot)
+    }
+
     private func finishFetchCycle() {
         observePendingAdmission()
         updateInitialFetchReadiness()
@@ -558,6 +592,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         fetchedBatchID = UUID()
         mailbox.append(.batch(CloudPendingBatch(batch: .fetched(batch), outbound: nil)))
         if isPerformingSyncOperation { explicitFetchedBatch = batch }
+        recordDiagnosticSnapshot()
     }
 
     private func finishSendCycle() {
@@ -577,6 +612,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         sentZoneEvents = []
         mailbox.append(.batch(CloudPendingBatch(batch: .sent(batch), outbound: sent)))
         if isPerformingSyncOperation { explicitSentBatch = batch }
+        recordDiagnosticSnapshot()
     }
 
     private func waitForCurrentCycle() async throws {
@@ -610,6 +646,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
 
     private func schedule(_ batch: CloudOutboundBatch) throws {
         guard let engine else { throw CloudTransportError.notStarted }
+        defer { recordDiagnosticSnapshot() }
         let admitted = outboundQueue.schedule(batch)
         let desired = outboundQueue.current
         let records = Dictionary(desired.operations.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })

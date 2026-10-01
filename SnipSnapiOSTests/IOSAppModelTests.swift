@@ -2121,14 +2121,37 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(preparedIDs, [id])
     }
 
-    func testManualSyncUsesTheProductionHandlerSeam() async {
-        let handler = IOSCloudSyncHandlerProbe(states: [:])
-        let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
+    func testManualRetryWaitsForCheckedWorkAndRejectsOverlap() async {
+        let library = ModelTestLibrary()
+        let cloudSession = IOSCloudSyncSessionProbe(
+            result: .syncCompleted,
+            activeLibrary: library,
+            pausesCloudWork: true
+        )
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+        let session = IOSAppSession(
+            library: library,
+            syncedContentSettings: settings,
+            cloudSyncSession: cloudSession
+        )
+        settings.recordSyncFailure(.retryingSoon)
+        let first = Task { await session.retrySyncWhenPossible() }
+        await cloudSession.waitUntilCloudWorkStarts()
 
-        await model.syncWhenPossible()
+        XCTAssertFalse(settings.canSyncNow)
+        XCTAssertEqual(settings.state, .failed(.retryingSoon))
+        await session.retrySyncWhenPossible()
+        let retryCount = await cloudSession.retryCount()
+        let syncCount = await cloudSession.syncCount()
+        let scheduleCount = await cloudSession.scheduleCount()
+        XCTAssertEqual(retryCount, 1)
+        XCTAssertEqual(syncCount, 0)
+        XCTAssertEqual(scheduleCount, 0)
 
-        let syncCount = await handler.syncCount()
-        XCTAssertEqual(syncCount, 1)
+        await cloudSession.resumeCloudWork()
+        await first.value
+        XCTAssertTrue(settings.canSyncNow)
+        XCTAssertEqual(settings.state, .ready)
     }
 
     func testSavingASnipSchedulesCloudSync() async {
@@ -4308,11 +4331,15 @@ final class IOSHapticFeedbackTests: XCTestCase {
             var snip = Snip(content: "Copy me", origin: .quickEntry)
             snip.attachments = [attachment]
             let handler = IOSCloudSyncHandlerProbe(states: [attachment.id: .waiting])
-            let model = IOSAppModel(
-                library: ModelTestLibrary(snips: [snip]),
+            let library = ModelTestLibrary(snips: [snip])
+            let session = IOSAppSession(
+                library: library,
+                syncedContentSettings: SyncedContentSettingsModel(mode: .iCloudSync),
+                cloudSyncSession: IOSCloudSyncSessionProbe(result: .noChange, activeLibrary: library),
                 cloudSyncHandler: handler,
                 haptics: feedback
             )
+            let model = session.model
             await model.load()
             model.selectedSnipIDs = [snip.id]
             let pasteboard = RecordingPasteboard()
@@ -4329,7 +4356,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
             case 2:
                 model.selectList(model.selectedListID)
             default:
-                await model.syncWhenPossible()
+                await session.retrySyncWhenPossible()
             }
             await handler.finishPrepare(with: .success(file))
             await copy.value
@@ -4707,6 +4734,7 @@ private actor IOSCloudSyncSessionProbe: IOSCloudSyncSessionHandling {
     private let library: any SnipLibrary
     private let syncError: Failure?
     private var synchronizeCallCount = 0
+    private var retryCallCount = 0
     private var scheduleCallCount = 0
     private let pausesCloudWork: Bool
     private var cloudWorkStarted = false
@@ -4735,6 +4763,13 @@ private actor IOSCloudSyncSessionProbe: IOSCloudSyncSessionHandling {
         return result
     }
 
+    func retrySynchronization() async throws -> SnipSnapCloudSyncResult {
+        retryCallCount += 1
+        await pauseCloudWorkIfNeeded()
+        if let syncError { throw syncError }
+        return result
+    }
+
     func scheduleAutomaticSync() async {
         scheduleCallCount += 1
         await pauseCloudWorkIfNeeded()
@@ -4747,6 +4782,7 @@ private actor IOSCloudSyncSessionProbe: IOSCloudSyncSessionHandling {
     }
 
     func syncCount() -> Int { synchronizeCallCount }
+    func retryCount() -> Int { retryCallCount }
     func scheduleCount() -> Int { scheduleCallCount }
 
     func waitUntilCloudWorkStarts() async {

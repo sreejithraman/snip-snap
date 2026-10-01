@@ -155,8 +155,7 @@ public actor JSONSnipLibrary: SnipLibrary {
     }
 
     public static func defaultStoreURL(fileManager: FileManager = .default) -> URL {
-        if let overridePath = ProcessInfo.processInfo.environment["SNIP_SNAP_STORE_PATH"],
-           !overridePath.isEmpty {
+        if let overridePath = LocalSnipStorePaths.storePathOverride() {
             return URL(fileURLWithPath: overridePath, isDirectory: false)
         }
         let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
