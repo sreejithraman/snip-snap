@@ -1,0 +1,3 @@
+Snip Snap 0.6.0 Beta 134 — iOS
+
+- Add a glass selection stack across iOS lists
