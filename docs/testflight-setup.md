@@ -285,7 +285,7 @@ is transmitted automatically.
 
 After reproducing an error on iPhone or iPad, open **Settings → Support →
 Diagnostics → Share diagnostic log**. On Mac, open **Settings → iCloud → Support →
-Diagnostics → Share diagnostic log**, save the text file, and attach it to your
+Share diagnostic log**, save the text file, and attach it to your
 support message. Export happens only when you choose this action. The export
 identifies the running app version and build, even if its latest event came from
 an older build. It includes timestamps, fixed operation and outcome codes,
