@@ -45,26 +45,6 @@ struct ListDestinationLabel: View {
     }
 }
 
-/// Native menus retain their platform's selection, keyboard and dismissal behavior.
-struct ListDestinationMenu: View {
-    let lists: [SnipList]
-    let purpose: ListDestinationPurpose
-    let identifierPrefix: String
-    let choose: (UUID) -> Void
-
-    var body: some View {
-        let destinations = purpose.destinations(in: lists)
-        if !destinations.isEmpty {
-            Menu(purpose.title, systemImage: "folder") {
-                ForEach(destinations) { list in
-                    Button { choose(list.id) } label: { ListDestinationLabel(list: list) }
-                        .accessibilityIdentifier("\(identifierPrefix)\(list.name)")
-                }
-            }
-        }
-    }
-}
-
 private struct SendPickerAnchor {
     let id: UUID
     let bounds: Anchor<CGRect>

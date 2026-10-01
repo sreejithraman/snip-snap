@@ -8,6 +8,7 @@ source "$script_dir/share-fixture.sh"
 simulator_id=""
 build_log=""
 ui_test=""
+unit_test=""
 while (( $# )); do
     case "$1" in
         --simulator-id|--build-log)
@@ -15,18 +16,23 @@ while (( $# )); do
             if [[ "$1" == --simulator-id ]]; then simulator_id="$2"; else build_log="$2"; fi
             shift 2
             ;;
-        --ui-test)
+        --ui-test|--unit-test)
             (( $# >= 2 )) || { print -u2 "Missing value for $1"; exit 2; }
             [[ -n "$2" ]] || { print -u2 "Missing value for $1"; exit 2; }
-            ui_test="$2"
+            if [[ "$1" == --ui-test ]]; then ui_test="$2"; else unit_test="$2"; fi
             shift 2
             ;;
         *)
-            print -u2 "Usage: scripts/run.sh --ios-simulator [--simulator-id UUID] [--build-log PATH] [--ui-test TEST_NAME]"
+            print -u2 "Usage: scripts/run.sh --ios-simulator [--simulator-id UUID] [--build-log PATH] [--ui-test TEST_NAME | --unit-test TEST_CLASS]"
             exit 2
             ;;
     esac
 done
+
+if [[ -n "$ui_test" && -n "$unit_test" ]]; then
+    print -u2 "Choose either --ui-test or --unit-test."
+    exit 2
+fi
 
 # Require a booted iOS device; never boot or alter a user's other simulators.
 simulator_id="$(xcrun simctl list devices available --json | /usr/bin/ruby -rjson -e '
@@ -96,22 +102,28 @@ print "Simulator: $simulator_id"
 print "Bundle: $bundle_identifier"
 print "App: $app_path"
 print "App group: group.$bundle_identifier"
-if [[ -n "$ui_test" ]]; then
-    ui_test_selection="SnipSnapiOSUITests"
-    if [[ "$ui_test" != all ]]; then
-        ui_test_selection+="/SnipSnapiOSUITests/$ui_test"
+if [[ -n "$ui_test" || -n "$unit_test" ]]; then
+    if [[ -n "$ui_test" ]]; then
+        test_scope="SnipSnapiOSUITests"
+        if [[ "$ui_test" != all ]]; then
+            test_scope+="/SnipSnapiOSUITests/$ui_test"
+        fi
+        test_kind="ui"
+        case "$ui_test" in
+            all|testShareExtension*|testSharePageShowsEveryListThenSaves)
+                share_fixture_start "$derived_data" "$script_dir/local-share-fixture.py" "Snip Snap iOS Dev $slot" || exit $?
+                ;;
+        esac
+    else
+        test_scope="SnipSnapiOSTests/$unit_test"
+        test_kind="unit"
     fi
-    case "$ui_test" in
-        all|testShareExtension*|testSharePageShowsEveryListThenSaves)
-            share_fixture_start "$derived_data" "$script_dir/local-share-fixture.py" "Snip Snap iOS Dev $slot" || exit $?
-            ;;
-    esac
     xcodebuild "${build_arguments[@]}" \
         -parallel-testing-enabled NO \
-        "-only-testing:$ui_test_selection" \
-        test > "${build_log:r}-ui-test.log" 2>&1 || {
-            /usr/bin/tail -n 80 "${build_log:r}-ui-test.log"
+        "-only-testing:$test_scope" \
+        test > "${build_log:r}-$test_kind-test.log" 2>&1 || {
+            /usr/bin/tail -n 80 "${build_log:r}-$test_kind-test.log"
             exit 1
         }
-    print "UI test passed: $ui_test"
+    print "Test passed: $test_scope"
 fi

@@ -60,75 +60,57 @@ struct WorkflowOptionsMenu: View {
 struct SelectionActionsMenu: View {
     let model: IOSAppModel
     let copyShare: IOSCopyShareCoordinator
-    let endSelection: () -> Void
+    let performAction: (@escaping @MainActor () async -> Bool) -> Void
 
     var body: some View {
-        Menu("Selected", systemImage: "ellipsis") {
+        Menu {
             actions
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 17, weight: .semibold))
+                .frame(minWidth: 30, minHeight: 30)
         }
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.circle)
+        .tint(SnipSnapTheme.actionAccent)
+        .frame(minWidth: 44, minHeight: 44)
+        .accessibilityLabel("Selection actions")
         .accessibilityIdentifier("selection-actions")
     }
 
     @ViewBuilder
     private var actions: some View {
         CopyShareActions(
-            snips: model.selectedVisibleSnips,
+            snips: model.selectedSnips,
             model: model,
             coordinator: copyShare,
-            identifierSuffix: "selection"
+            identifierSuffix: "selection",
+            includesCopy: false
         )
 
         Divider()
-        if model.selectedVisibleSnips.count >= 2 {
+        if model.selectedSnips.count >= 2 {
             Button("Merge Snips", systemImage: "arrow.triangle.merge") {
-                Task {
-                    if await model.mergeSelection() { endSelection() }
-                }
+                performAction { await model.mergeSelection() }
             }
             .accessibilityIdentifier("merge-selection")
         }
-        if model.selectedVisibleSnips.contains(where: { !$0.isDone }) {
+        if model.selectedSnips.contains(where: { !$0.isDone }) {
             Button(SnipCompletionLanguage.menuActionTitle(isDone: false), systemImage: "checkmark") {
-                Task {
-                    if await copyShare.markDone(snips: model.selectedVisibleSnips, model: model) {
-                        endSelection()
-                    }
-                }
+                let snips = model.selectedSnips
+                performAction { await copyShare.markDone(snips: snips, model: model) }
             }
-            .disabled(!model.selectedVisibleSnips.contains { !$0.isPinned })
+            .disabled(!model.selectedSnips.contains { !$0.isPinned })
             .accessibilityIdentifier("mark-selection-done")
         }
 
-        if model.selectedVisibleSnips.contains(where: \.isDone) {
+        if model.selectedSnips.contains(where: \.isDone) {
             Button(SnipCompletionLanguage.menuActionTitle(isDone: true), systemImage: "arrow.uturn.backward") {
-                Task {
-                    if await model.setSelectionDone(false) { endSelection() }
-                }
+                performAction { await model.setSelectionDone(false) }
             }
-            .disabled(!model.selectedVisibleSnips.contains { !$0.isPinned })
+            .disabled(!model.selectedSnips.contains { !$0.isPinned })
             .accessibilityIdentifier("mark-selection-not-done")
         }
-
-        let movePurpose = ListDestinationPurpose.move(sourceListIDs: [model.selectedListID])
-        if !movePurpose.destinations(in: model.lists).isEmpty {
-            Divider()
-            ListDestinationMenu(
-                lists: model.lists, purpose: movePurpose, identifierPrefix: "move-selection-to-"
-            ) { destinationID in
-                Task {
-                    if await model.moveSelection(to: destinationID) { endSelection() }
-                }
-            }
-            .accessibilityIdentifier("move-selection")
-        }
-
-        Divider()
-        Button("Delete", systemImage: "trash", role: .destructive) {
-            Task {
-                if await model.deleteSelection() { endSelection() }
-            }
-        }
-        .accessibilityIdentifier("delete-selection")
     }
 }
 

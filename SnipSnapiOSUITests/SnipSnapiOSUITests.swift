@@ -6,7 +6,9 @@ final class SnipSnapiOSUITests: XCTestCase {
     private var shareAppName = ""
 
     override func tearDown() {
-        XCUIDevice.shared.orientation = .portrait
+        if XCUIDevice.shared.orientation != .portrait {
+            XCUIDevice.shared.orientation = .portrait
+        }
         super.tearDown()
     }
 
@@ -22,6 +24,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         withCopyShareFixtures: Bool = false,
         withHapticsTrace: Bool = false,
         withLongList: Bool = false,
+        withGatheringFixtures: Bool = false,
         withClipboardEntry: Bool = false,
         syncIssue: String? = nil,
         contentSizeCategory: UIContentSizeCategory? = nil
@@ -30,6 +33,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         app.launchEnvironment["SNIP_SNAP_UI_TESTING"] = "1"
         if withHapticsTrace { app.launchEnvironment["SNIP_SNAP_UI_TEST_HAPTICS"] = "1" }
         if withLongList { app.launchEnvironment["SNIP_SNAP_UI_TEST_LONG_LIST"] = "1" }
+        if withGatheringFixtures { app.launchEnvironment["SNIP_SNAP_UI_TEST_GATHERING"] = "1" }
         if withClipboardEntry { app.launchEnvironment["SNIP_SNAP_UI_TEST_CLIPBOARD_ENTRY"] = "1" }
         app.launchEnvironment["SNIP_SNAP_UI_TEST_STORE"] = storeName
         if withAttachments { app.launchEnvironment["SNIP_SNAP_UI_TEST_ATTACHMENTS"] = "1" }
@@ -2429,8 +2433,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         enterSelection(in: app)
         row(named: "Tap the completion circle", in: app).tap()
         XCTAssertTrue(app.buttons["selection-actions"].isEnabled)
-        XCTAssertEqual(row(named: "Tap the completion circle", in: app).value as? String, "Not Done")
+        XCTAssertTrue(collectionRow(named: "Tap the completion circle", in: app).waitForNonExistence(timeout: 3))
+        XCTAssertEqual(app.buttons["gathered-stack"].value as? String, "1 item")
         app.buttons["finish-selecting"].tap()
+        XCTAssertTrue(collectionRow(named: "Tap the completion circle", in: app).waitForExistence(timeout: 3))
+        XCTAssertEqual(row(named: "Tap the completion circle", in: app).value as? String, "Not Done")
     }
 
     func testAttachmentListImagePreviewAndSwipeDismiss() {
@@ -2864,7 +2871,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(merged.firstMatch.label.contains("Second merge note"))
     }
 
-    func testSelectionFilterClearsHiddenItems() {
+    func testSelectionSurvivesFilteringItsSourceRows() {
         continueAfterFailure = false
         let app = launchApp()
         createSnip("Filter this selection", in: app)
@@ -2873,13 +2880,14 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["selection-actions"].isEnabled)
 
         app.buttons["workflow-options"].tap()
-        app.buttons["filter-done"].tap()
-        XCTAssertFalse(app.buttons["selection-actions"].isEnabled)
+        app.buttons["Done"].tap()
+        XCTAssertTrue(app.buttons["selection-actions"].isEnabled)
+        XCTAssertEqual(app.buttons["gathered-stack"].value as? String, "1 item")
         XCTAssertTrue(app.buttons["finish-selecting"].exists)
         app.buttons["workflow-options"].tap()
-        app.buttons["filter-all"].tap()
-        XCTAssertTrue(row(named: "Filter this selection", in: app).exists)
-        XCTAssertFalse(app.buttons["selection-actions"].isEnabled)
+        app.buttons["All"].tap()
+        XCTAssertFalse(collectionRow(named: "Filter this selection", in: app).exists)
+        XCTAssertTrue(app.buttons["selection-actions"].isEnabled)
         app.buttons["finish-selecting"].tap()
         XCTAssertTrue(app.buttons["library-actions"].waitForExistence(timeout: 3))
     }
@@ -2900,10 +2908,12 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["finish-selecting"].waitForExistence(timeout: 3))
         XCTAssertFalse(app.buttons["library-actions"].exists)
         XCTAssertTrue(app.buttons["workflow-options"].exists)
-        XCTAssertEqual(app.buttons["finish-selecting"].label, "Finish Selecting")
+        XCTAssertEqual(app.buttons["finish-selecting"].label, "Cancel")
         XCTAssertTrue(app.buttons["selection-actions"].isEnabled)
+        XCTAssertLessThan(app.buttons["finish-selecting"].frame.midX, app.frame.midX)
+        XCTAssertGreaterThan(app.buttons["selection-actions"].frame.minY, app.buttons["gathered-stack"].frame.maxY)
         let selectionProof = XCTAttachment(screenshot: app.screenshot())
-        selectionProof.name = "Selection with separate close"
+        selectionProof.name = "Gathering with leading cancel and container actions"
         selectionProof.lifetime = .keepAlways
         add(selectionProof)
 
@@ -2919,6 +2929,543 @@ final class SnipSnapiOSUITests: XCTestCase {
         app.buttons["finish-selecting"].tap()
         XCTAssertTrue(app.buttons["library-actions"].waitForExistence(timeout: 3))
         XCTAssertFalse(app.buttons["selection-actions"].exists)
+    }
+
+    func testLongPressAddsAnotherItemToExpandedSelection() {
+        continueAfterFailure = false
+        let app = launchApp(withGatheringFixtures: true)
+        enterSelection(in: app)
+        row(named: "Sketch a simpler selection flow", in: app).tap()
+        let stack = app.buttons["gathered-stack"]
+        XCTAssertTrue(stack.waitForExistence(timeout: 5))
+        stack.tap()
+        XCTAssertTrue(app.scrollViews["gathered-contents"].waitForExistence(timeout: 3))
+
+        row(named: "Try the stack interaction on iPhone", in: app).press(forDuration: 1)
+        let select = app.buttons["select-snip"]
+        XCTAssertTrue(select.waitForExistence(timeout: 3), "Select must remain available while selecting other items.")
+        select.tap()
+        let newest = app.buttons.matching(NSPredicate(format: "label == %@", "Deselect: Try the stack interaction on iPhone")).firstMatch
+        let previous = app.buttons.matching(NSPredicate(format: "label == %@", "Deselect: Sketch a simpler selection flow")).firstMatch
+        XCTAssertTrue(newest.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.scrollViews["gathered-contents"].value as? String, "2 items")
+        XCTAssertLessThan(newest.frame.minY, previous.frame.minY)
+        app.buttons["finish-selecting"].tap()
+        XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).exists)
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).exists)
+    }
+
+    func testGatheredHeaderCopiesAndDeletesWithoutOpeningMore() {
+        continueAfterFailure = false
+        let storeName = "gather-header-\(UUID().uuidString)"
+        var app = launchApp(storeName: storeName, withGatheringFixtures: true)
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 10))
+        enterSelection(in: app)
+        row(named: "Sketch a simpler selection flow", in: app).tap()
+        row(named: "Try the stack interaction on iPhone", in: app).tap()
+
+        let copyReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "hittable == true"), object: app.buttons["copy-selection"]
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [copyReady], timeout: 5), .completed)
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Four icon actions in the gathered container"
+        proof.lifetime = .keepAlways
+        add(proof)
+        app.buttons["copy-selection"].tap()
+        assertCopyStatus("Copied 2 snips", in: app)
+        XCTAssertTrue(app.buttons["delete-selection"].isHittable)
+        app.buttons["delete-selection"].tap()
+        XCTAssertTrue(app.buttons["gathered-stack"].waitForNonExistence(timeout: 5))
+        XCTAssertFalse(collectionRow(named: "Sketch a simpler selection flow", in: app).exists)
+        XCTAssertFalse(collectionRow(named: "Try the stack interaction on iPhone", in: app).exists)
+
+        app.terminate()
+        app = launchApp(storeName: storeName)
+        XCTAssertTrue(app.buttons["library-actions"].waitForExistence(timeout: 5))
+        XCTAssertFalse(collectionRow(named: "Sketch a simpler selection flow", in: app).exists)
+        XCTAssertFalse(collectionRow(named: "Try the stack interaction on iPhone", in: app).exists)
+    }
+
+    func testGatheredContainerExpandsInlineAndCollapses() {
+        continueAfterFailure = false
+        let app = launchApp(withGatheringFixtures: true)
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 10))
+        enterSelection(in: app)
+        row(named: "Sketch a simpler selection flow", in: app).tap()
+        row(named: "Try the stack interaction on iPhone", in: app).tap()
+        let stack = app.buttons["gathered-stack"]
+        let expand = app.buttons["expand-gathered"]
+        XCTAssertTrue(expand.waitForExistence(timeout: 3))
+        XCTAssertEqual(expand.value as? String, "2 items")
+        XCTAssertGreaterThanOrEqual(expand.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(expand.frame.height, 44)
+        let closedControlFrame = expand.frame
+        XCTAssertEqual(expand.frame.midY, app.buttons["finish-selecting"].frame.midY, accuracy: 1)
+        XCTAssertGreaterThan(expand.frame.minX, stack.frame.midX)
+        expand.tap()
+
+        XCTAssertFalse(app.navigationBars["Selected items"].exists, "Inspect the stack within its original container.")
+        for identifier in ["move-gathered", "copy-selection", "delete-selection", "selection-actions"] {
+            XCTAssertTrue(app.buttons[identifier].isHittable, "Keep the existing header actions available while expanded.")
+        }
+        let collapse = app.buttons["collapse-gathered"]
+        XCTAssertTrue(collapse.waitForExistence(timeout: 3))
+        XCTAssertEqual(collapse.frame.minX, closedControlFrame.minX, accuracy: 1)
+        XCTAssertEqual(collapse.frame.size.width, closedControlFrame.size.width, accuracy: 1)
+        XCTAssertEqual(collapse.frame.size.height, closedControlFrame.size.height, accuracy: 1)
+        let contents = app.scrollViews["gathered-contents"]
+        let cancel = app.buttons["finish-selecting"]
+        XCTAssertGreaterThanOrEqual(contents.frame.minY, cancel.frame.maxY)
+        XCTAssertGreaterThanOrEqual(contents.frame.minY, collapse.frame.maxY)
+        XCTAssertGreaterThanOrEqual(app.buttons["move-gathered"].frame.minY, contents.frame.maxY)
+        XCTAssertFalse(app.navigationBars.buttons["finish-selecting"].exists)
+        XCTAssertEqual(cancel.label, "Cancel")
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Gathered container expanded in place"
+        proof.lifetime = .keepAlways
+        add(proof)
+        collapse.tap()
+        XCTAssertEqual(stack.value as? String, "2 items")
+        XCTAssertEqual(expand.value as? String, "2 items")
+        stack.tap()
+        app.buttons["move-gathered"].tap()
+        app.buttons["move-gathered-to-Work"].tap()
+        XCTAssertTrue(collapse.waitForNonExistence(timeout: 5))
+        listControl(named: "Work", in: app).tap()
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 3))
+        XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).exists)
+    }
+
+    func testSelectedCardKeepsAttachmentContentAndPreview() {
+        continueAfterFailure = false
+        let app = launchApp(withAttachments: true)
+        let preview = app.buttons["compact-attachment-preview-sample.png"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 10))
+        let sourceProof = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        sourceProof.name = "Shared content in source list"
+        sourceProof.lifetime = .keepAlways
+        add(sourceProof)
+        enterSelection(in: app)
+        row(named: "Attachment fixture", in: app).tap()
+        let stack = app.buttons["gathered-stack"]
+        XCTAssertTrue(stack.waitForExistence(timeout: 3))
+        let closedProof = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        closedProof.name = "Shared content in collapsed card"
+        closedProof.lifetime = .keepAlways
+        add(closedProof)
+        stack.tap()
+        let contents = app.scrollViews["gathered-contents"]
+        XCTAssertTrue(contents.isHittable)
+        XCTAssertTrue(contents.buttons["compact-attachment-preview-sample.png"].waitForExistence(timeout: 3))
+        XCTAssertTrue(contents.buttons["compact-attachment-preview-notes.txt"].exists)
+        let expandedProof = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        expandedProof.name = "Shared content in expanded card"
+        expandedProof.lifetime = .keepAlways
+        add(expandedProof)
+        contents.buttons["compact-attachment-preview-sample.png"].tap()
+        let image = app.images["Image preview"]
+        XCTAssertTrue(image.waitForExistence(timeout: 3))
+        app.buttons["dismiss-attachment-image"].tap()
+        XCTAssertTrue(image.waitForNonExistence(timeout: 3))
+        app.buttons.matching(NSPredicate(format: "label == %@", "Deselect: Attachment fixture")).firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["gathering-instructions"].waitForExistence(timeout: 3))
+        app.buttons["finish-selecting"].tap()
+        XCTAssertTrue(app.buttons["library-actions"].waitForExistence(timeout: 3))
+        XCTAssertTrue(preview.waitForExistence(timeout: 3))
+        preview.tap()
+        XCTAssertTrue(image.waitForExistence(timeout: 3))
+        app.buttons["dismiss-attachment-image"].tap()
+    }
+
+    func testGatheredCardsKeepLayoutAndReturnTopItemWhileCollapsed() {
+        continueAfterFailure = false
+        let app = launchApp(withGatheringFixtures: true)
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 10))
+        enterSelection(in: app)
+        let preview = app.scrollViews["gathered-preview"]
+        XCTAssertTrue(preview.exists)
+        XCTAssertTrue(app.staticTexts["gathering-instructions"].exists)
+        let emptyFrame = preview.frame
+        let emptyHeaderY = app.buttons["finish-selecting"].frame.midY
+        // The completion control is decorative while the row gathers, so it cannot mark Done.
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "completion-")).firstMatch.exists)
+        row(named: "Sketch a simpler selection flow", in: app).tap()
+        XCTAssertEqual(preview.frame.height, emptyFrame.height, accuracy: 1)
+        XCTAssertEqual(preview.frame.minY, emptyFrame.minY, accuracy: 1)
+        XCTAssertEqual(app.buttons["finish-selecting"].frame.midY, emptyHeaderY, accuracy: 1)
+        row(named: "Try the stack interaction on iPhone", in: app).tap()
+        let stack = app.buttons["gathered-stack"]
+        let putBack = app.buttons.matching(NSPredicate(format: "label == %@", "Deselect: Try the stack interaction on iPhone")).firstMatch
+        XCTAssertTrue(putBack.isHittable)
+        let contentIdentifier = putBack.identifier.replacingOccurrences(of: "put-back-", with: "selected-card-content-")
+        let cardContent = app.otherElements[contentIdentifier]
+        XCTAssertTrue(cardContent.exists)
+        let closedTextFrame = cardContent.frame
+        let closedReturnFrame = putBack.frame
+        XCTAssertGreaterThanOrEqual(stack.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(stack.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(stack.frame.minX, closedReturnFrame.maxX)
+        let closedProof = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        closedProof.name = "Stable gathered card collapsed"
+        closedProof.lifetime = .keepAlways
+        add(closedProof)
+        stack.tap()
+        let expandedText = app.scrollViews["gathered-contents"].staticTexts["Try the stack interaction on iPhone"]
+        XCTAssertTrue(expandedText.exists)
+        let expandedContent = app.scrollViews["gathered-contents"].otherElements[contentIdentifier]
+        XCTAssertTrue(expandedContent.exists)
+        XCTAssertEqual(expandedContent.frame.width, closedTextFrame.width, accuracy: 1)
+        XCTAssertEqual(putBack.frame.width, closedReturnFrame.width, accuracy: 1)
+        XCTAssertEqual(putBack.frame.minX, closedReturnFrame.minX, accuracy: 1)
+        XCTAssertEqual(expandedContent.frame.height, closedTextFrame.height, accuracy: 1)
+        XCTAssertEqual(putBack.frame.minY - expandedContent.frame.minY, closedReturnFrame.minY - closedTextFrame.minY, accuracy: 1)
+        XCTAssertLessThan(putBack.frame.maxX, expandedText.frame.minX)
+        let expandedProof = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        expandedProof.name = "Stable gathered cards expanded"
+        expandedProof.lifetime = .keepAlways
+        add(expandedProof)
+        app.buttons["collapse-gathered"].tap()
+        XCTAssertEqual(cardContent.frame.height, closedTextFrame.height, accuracy: 1)
+        XCTAssertTrue(putBack.isHittable)
+        putBack.tap()
+        XCTAssertEqual(stack.value as? String, "1 item")
+        XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).exists)
+        let remainingReturn = app.buttons.matching(NSPredicate(format: "label == %@", "Deselect: Sketch a simpler selection flow")).firstMatch
+        XCTAssertTrue(remainingReturn.isHittable)
+        remainingReturn.tap()
+        XCTAssertTrue(app.staticTexts["gathering-instructions"].waitForExistence(timeout: 3))
+        row(named: "Try the stack interaction on iPhone", in: app).tap()
+        for _ in 0..<3 {
+            stack.tap()
+            app.buttons["collapse-gathered"].tap()
+        }
+        app.buttons["finish-selecting"].tap()
+        XCTAssertTrue(app.buttons["library-actions"].waitForExistence(timeout: 3))
+    }
+
+    func testCollapsedSelectionFitsPromotedShorterCard() {
+        continueAfterFailure = false
+        let app = launchApp(withGatheringFixtures: true)
+        let longText = Array(repeating: "A longer selected item keeps its full multiline text.", count: 12).joined(separator: " ")
+        createSnip(longText, in: app)
+        enterSelection(in: app)
+        row(named: "Sketch a simpler selection flow", in: app).tap()
+        let stack = app.buttons["gathered-stack"]
+        XCTAssertTrue(stack.waitForExistence(timeout: 5))
+        let shortHeight = app.scrollViews["gathered-preview"].frame.height
+        row(named: "Try the stack interaction on iPhone", in: app).tap()
+        XCTAssertTrue(stack.waitForExistence(timeout: 5))
+        stack.tap()
+        row(named: longText, in: app).tap()
+        let returnLong = app.buttons.matching(NSPredicate(format: "label == %@", "Deselect: \(longText)")).firstMatch
+        XCTAssertTrue(returnLong.waitForExistence(timeout: 5))
+        returnLong.tap()
+        app.buttons["collapse-gathered"].tap()
+        XCTAssertTrue(stack.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.scrollViews["gathered-preview"].frame.height, shortHeight, accuracy: 2,
+                       "Promoting a mounted shorter card must resize the collapsed viewport.")
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Collapsed selection fits promoted shorter card"
+        proof.lifetime = .keepAlways
+        add(proof)
+        app.buttons["finish-selecting"].tap()
+        XCTAssertTrue(collectionRow(named: longText, in: app).exists)
+    }
+
+    func testAddingToScrolledExpandedSelectionRevealsLatestItem() {
+        continueAfterFailure = false
+        let app = launchApp(withLongList: true)
+        enterSelection(in: app)
+        for index in stride(from: 23, through: 18, by: -1) {
+            row(named: "Fixture \(index)", in: app).tap()
+        }
+        let stack = app.buttons["gathered-stack"]
+        XCTAssertTrue(stack.waitForExistence(timeout: 5))
+        stack.tap()
+        let contents = app.scrollViews["gathered-contents"]
+        let earlier = app.buttons.matching(NSPredicate(format: "label == %@", "Deselect: Fixture 23")).firstMatch
+        for _ in 0..<6 where !earlier.isHittable { contents.swipeUp() }
+        XCTAssertTrue(earlier.isHittable)
+        row(named: "Fixture 17", in: app).tap()
+        let latest = app.buttons.matching(NSPredicate(format: "label == %@", "Deselect: Fixture 17")).firstMatch
+        XCTAssertTrue(latest.waitForExistence(timeout: 5))
+        XCTAssertTrue(latest.isHittable, "A new selection must land in the visible expanded viewport after scrolling.")
+        XCTAssertEqual(contents.value as? String, "7 items")
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "New item lands after scrolling selected cards"
+        proof.lifetime = .keepAlways
+        add(proof)
+        app.buttons["finish-selecting"].tap()
+        XCTAssertTrue(collectionRow(named: "Fixture 17", in: app).exists)
+        XCTAssertTrue(collectionRow(named: "Fixture 23", in: app).exists)
+    }
+
+    func testExpandedGatheredContainerScrollsAndReturnsAll() {
+        verifyExpandedSelectionScrollsAndReturnsAll(withAttachments: false)
+    }
+
+    func testExpandedSelectedAttachmentCardsScrollAndReturnAll() {
+        verifyExpandedSelectionScrollsAndReturnsAll(withAttachments: true)
+    }
+
+    private func verifyExpandedSelectionScrollsAndReturnsAll(withAttachments: Bool) {
+        continueAfterFailure = false
+        let app = launchApp(withAttachments: withAttachments, withLongList: true)
+        XCTAssertTrue(collectionRow(named: "Fixture 23", in: app).waitForExistence(timeout: 10))
+        enterSelection(in: app)
+        for index in stride(from: 23, through: 0, by: -1) {
+            row(named: index == 0 ? "Fixture oldest" : "Fixture \(index)", in: app).tap()
+        }
+        let stack = app.buttons["gathered-stack"]
+        XCTAssertEqual(stack.value as? String, "24 items")
+        stack.tap()
+        let contents = app.scrollViews["gathered-contents"]
+        XCTAssertTrue(contents.isHittable)
+        let oldest = app.buttons.matching(NSPredicate(format: "label == %@", "Deselect: Fixture 23")).firstMatch
+        for _ in 0..<32 where !oldest.isHittable { contents.swipeUp() }
+        XCTAssertTrue(oldest.isHittable, "Expanded selected cards remain scrollable.")
+        if withAttachments {
+            let cardIdentifier = oldest.identifier.replacingOccurrences(of: "put-back-", with: "selected-card-content-")
+            let preview = contents.descendants(matching: .any)[cardIdentifier]
+                .buttons["compact-attachment-preview-sample.png"]
+            // Reaching the leading control can leave its thumbnail below the viewport.
+            for _ in 0..<6 where !preview.isHittable { contents.swipeUp() }
+            XCTAssertTrue(preview.isHittable)
+            preview.tap()
+            XCTAssertTrue(app.images["Image preview"].waitForExistence(timeout: 3))
+            app.buttons["dismiss-attachment-image"].tap()
+            XCTAssertTrue(app.images["Image preview"].waitForNonExistence(timeout: 3))
+        }
+        let expandedProof = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        expandedProof.name = "Last of 24 selected cards"
+        expandedProof.lifetime = .keepAlways
+        add(expandedProof)
+        oldest.tap()
+        app.buttons["collapse-gathered"].tap()
+        XCTAssertEqual(stack.value as? String, "23 items")
+        stack.tap()
+        app.buttons["finish-selecting"].tap()
+        XCTAssertTrue(app.buttons["library-actions"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["collapse-gathered"].exists)
+        XCTAssertTrue(collectionRow(named: "Fixture 23", in: app).exists)
+        let returnedOldest = collectionRow(named: "Fixture oldest", in: app)
+        for _ in 0..<32 where !returnedOldest.isHittable { app.swipeUp() }
+        XCTAssertTrue(returnedOldest.isHittable, "Deselect and Cancel return even the offscreen items to the source list.")
+        let returnedProof = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        returnedProof.name = "Last item restored to long source list"
+        returnedProof.lifetime = .keepAlways
+        add(returnedProof)
+    }
+
+    func testFilteredGatheredCopyThenMoveFinishesGathering() {
+        continueAfterFailure = false
+        let app = launchApp(withGatheringFixtures: true)
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 10))
+        app.buttons["workflow-options"].tap()
+        app.buttons["Not Done"].tap()
+        enterSelection(in: app)
+        row(named: "Sketch a simpler selection flow", in: app).tap()
+        app.buttons["copy-selection"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["app-toast"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons["gathered-stack"].value as? String, "1 item")
+        row(named: "Try the stack interaction on iPhone", in: app).tap()
+        XCTAssertEqual(app.buttons["gathered-stack"].value as? String, "2 items")
+        app.buttons["move-gathered"].tap()
+        app.buttons["move-gathered-to-Work"].tap()
+        XCTAssertTrue(app.buttons["library-actions"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["finish-selecting"].exists)
+        listControl(named: "Work", in: app).tap()
+        XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).waitForExistence(timeout: 3))
+        app.buttons["workflow-options"].tap()
+        app.buttons["All"].tap()
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 3))
+    }
+
+    func testGatheredStackReturnsSnipsAndCancels() {
+        continueAfterFailure = false
+        let app = launchApp(withGatheringFixtures: true)
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 10))
+        enterSelection(in: app)
+
+        row(named: "Sketch a simpler selection flow", in: app).tap()
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForNonExistence(timeout: 3))
+        row(named: "Try the stack interaction on iPhone", in: app).tap()
+        XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).waitForNonExistence(timeout: 3))
+        let stack = app.buttons["gathered-stack"]
+        XCTAssertEqual(stack.value as? String, "2 items")
+        XCTAssertTrue(app.descendants(matching: .any)["all-snips-gathered"].exists)
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "All gathered into the stack"
+        proof.lifetime = .keepAlways
+        add(proof)
+        stack.tap()
+        let putBack = app.buttons.matching(NSPredicate(format: "label == %@", "Deselect: Sketch a simpler selection flow")).firstMatch
+        XCTAssertTrue(putBack.waitForExistence(timeout: 3))
+        putBack.tap()
+        app.buttons["collapse-gathered"].tap()
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 3))
+        XCTAssertFalse(collectionRow(named: "Try the stack interaction on iPhone", in: app).exists)
+        XCTAssertEqual(stack.value as? String, "1 item")
+        app.buttons["finish-selecting"].tap()
+        XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).waitForExistence(timeout: 3))
+        XCTAssertFalse(stack.exists)
+    }
+
+    func testSelectedStackStaysPutAndMovesFromMenu() {
+        continueAfterFailure = false
+        let app = launchApp(withGatheringFixtures: true)
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 10))
+        enterSelection(in: app)
+        row(named: "Sketch a simpler selection flow", in: app).tap()
+        row(named: "Try the stack interaction on iPhone", in: app).tap()
+        let stack = app.buttons["gathered-stack"]
+        XCTAssertTrue(stack.waitForExistence(timeout: 3))
+        let originalFrame = stack.frame
+        let target = app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: stack.frame.midX, dy: app.buttons["finish-selecting"].frame.minY - 144))
+        stack.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.2, thenDragTo: target)
+        XCTAssertTrue(stack.waitForExistence(timeout: 3), "Swiping the stack must not move selected items.")
+        XCTAssertEqual(stack.value as? String, "2 items")
+        XCTAssertEqual(stack.frame.minY, originalFrame.minY, accuracy: 1)
+        XCTAssertTrue(app.navigationBars["Inbox"].exists)
+        let proof = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        proof.name = "Selected stack stays put after swipe"
+        proof.lifetime = .keepAlways
+        add(proof)
+        stack.tap()
+        XCTAssertTrue(app.buttons["collapse-gathered"].isHittable)
+        app.buttons["collapse-gathered"].tap()
+        app.buttons["move-gathered"].tap()
+        XCTAssertTrue(app.buttons["add-list-for-move"].exists)
+        let menuProof = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        menuProof.name = "Move menu remains available"
+        menuProof.lifetime = .keepAlways
+        add(menuProof)
+        app.buttons["move-gathered-to-Work"].tap()
+        XCTAssertTrue(stack.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(collectionRow(named: "Sketch a simpler selection flow", in: app).exists)
+        listControl(named: "Work", in: app).tap()
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 3))
+        XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).exists)
+    }
+
+    func testGatheredStackMenuMovesAndPersists() {
+        continueAfterFailure = false
+        let storeName = "gather-move-\(UUID().uuidString)"
+        var app = launchApp(storeName: storeName, withGatheringFixtures: true)
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 10))
+        enterSelection(in: app)
+        row(named: "Sketch a simpler selection flow", in: app).tap()
+        row(named: "Try the stack interaction on iPhone", in: app).tap()
+        app.buttons["move-gathered"].tap()
+        app.buttons["move-gathered-to-Work"].tap()
+        XCTAssertTrue(app.buttons["gathered-stack"].waitForNonExistence(timeout: 5))
+        listControl(named: "Work", in: app).tap()
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 3))
+        XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).exists)
+        app.terminate()
+        app = launchApp(storeName: storeName)
+        listControl(named: "Work", in: app).tap()
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 3))
+        XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).exists)
+    }
+
+    func testGatheredStackFitsAccessibilityText() {
+        continueAfterFailure = false
+        let app = launchApp(withGatheringFixtures: true, contentSizeCategory: .accessibilityExtraExtraExtraLarge)
+        XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).waitForExistence(timeout: 10))
+        enterSelection(in: app)
+        row(named: "Try the stack interaction on iPhone", in: app).tap()
+        XCTAssertTrue(app.buttons["gathered-stack"].isHittable)
+        for identifier in ["move-gathered", "copy-selection", "delete-selection", "selection-actions"] {
+            XCTAssertTrue(app.buttons[identifier].isHittable)
+            // Native geometry can represent 44 points as 43.99999999999994.
+            XCTAssertGreaterThanOrEqual(app.buttons[identifier].frame.width, 44 - 0.01)
+            XCTAssertGreaterThanOrEqual(app.buttons[identifier].frame.height, 44 - 0.01)
+        }
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Gathered stack at largest accessibility text"
+        proof.lifetime = .keepAlways
+        add(proof)
+        app.buttons["gathered-stack"].tap()
+        for identifier in ["move-gathered", "copy-selection", "delete-selection", "selection-actions", "collapse-gathered"] {
+            XCTAssertTrue(app.buttons[identifier].isHittable)
+            XCTAssertGreaterThanOrEqual(app.buttons[identifier].frame.minY, app.frame.minY)
+            XCTAssertLessThanOrEqual(app.buttons[identifier].frame.maxY, app.frame.maxY)
+        }
+        let contents = app.scrollViews["gathered-contents"]
+        let text = contents.staticTexts["Try the stack interaction on iPhone"]
+        XCTAssertTrue(text.exists)
+        XCTAssertLessThanOrEqual(text.frame.minY + 44, contents.frame.maxY, "Keep at least a readable first line in the viewport.")
+        let putBack = app.buttons.matching(NSPredicate(format: "label == %@", "Deselect: Try the stack interaction on iPhone")).firstMatch
+        XCTAssertTrue(putBack.isHittable)
+        let expandedProof = XCTAttachment(screenshot: app.screenshot())
+        expandedProof.name = "Expanded glass at largest accessibility text"
+        expandedProof.lifetime = .keepAlways
+        add(expandedProof)
+        app.buttons["collapse-gathered"].tap()
+        app.buttons["finish-selecting"].tap()
+        XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).waitForExistence(timeout: 3))
+    }
+
+    func testGatheredStackRegathersAfterReturningLastSnipAndRotating() {
+        continueAfterFailure = false
+        let app = launchApp(withGatheringFixtures: true)
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 10))
+        enterSelection(in: app)
+        row(named: "Sketch a simpler selection flow", in: app).tap()
+        let stack = app.buttons["gathered-stack"]
+        stack.tap()
+        app.buttons.matching(NSPredicate(format: "label == %@", "Deselect: Sketch a simpler selection flow")).firstMatch.tap()
+        XCTAssertTrue(app.otherElements["gathering-instructions"].exists || app.staticTexts["gathering-instructions"].exists)
+        XCTAssertTrue(app.buttons["finish-selecting"].exists)
+        XCTAssertTrue(stack.waitForNonExistence(timeout: 3))
+        XCUIDevice.shared.orientation = .landscapeLeft
+        row(named: "Try the stack interaction on iPhone", in: app).tap()
+        XCTAssertTrue(stack.waitForExistence(timeout: 3))
+        XCTAssertEqual(stack.value as? String, "1 item")
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Regathered after returning the last snip and rotating"
+        proof.lifetime = .keepAlways
+        add(proof)
+        app.buttons["finish-selecting"].tap()
+        XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).waitForExistence(timeout: 3))
+    }
+
+    func testGatheredStackFitsLandscape() {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = launchApp(withGatheringFixtures: true)
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 10))
+        enterSelection(in: app)
+        // The short source viewport shows the newest row; scroll the older one
+        // into view before selecting it, instead of tapping beneath the dock.
+        row(named: "Try the stack interaction on iPhone", in: app).swipeUp()
+        XCTAssertTrue(row(named: "Sketch a simpler selection flow", in: app).isHittable)
+        row(named: "Sketch a simpler selection flow", in: app).tap()
+        let stack = app.buttons["gathered-stack"]
+        XCTAssertTrue(stack.isHittable)
+        XCTAssertTrue(app.buttons["move-gathered"].isHittable)
+        stack.tap()
+        XCTAssertTrue(app.buttons["collapse-gathered"].isHittable)
+        XCTAssertTrue(app.buttons["move-gathered"].isHittable)
+        let expandedProof = XCTAttachment(screenshot: app.screenshot())
+        expandedProof.name = "Expanded glass in landscape"
+        expandedProof.lifetime = .keepAlways
+        add(expandedProof)
+        app.buttons["collapse-gathered"].tap()
+        XCTAssertEqual(stack.value as? String, "1 item")
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Gathered stack in landscape"
+        proof.lifetime = .keepAlways
+        add(proof)
+        app.buttons["move-gathered"].tap()
+        app.buttons["move-gathered-to-Work"].tap()
+        XCTAssertTrue(stack.waitForNonExistence(timeout: 5))
+        listControl(named: "Work", in: app).tap()
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 3))
     }
 
     func testDragReordersAndPersistsWithoutSelection() {
@@ -2982,9 +3529,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         enterSelection(in: app)
         row(named: "One", in: app).tap()
         row(named: "Two", in: app).tap()
-        app.buttons["selection-actions"].tap()
-        app.buttons["move-selection"].tap()
-        app.buttons["move-selection-to-Work"].tap()
+        app.buttons["move-gathered"].tap()
+        app.buttons["move-gathered-to-Work"].tap()
 
         returnToLists(in: app)
         listControl(named: "Work", in: app).tap()
@@ -3005,23 +3551,125 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [reordered], timeout: 5), .completed)
     }
 
-    func testChangingListsEndsSelection() {
+    func testSelectionPersistsAcrossLists() {
+        continueAfterFailure = false
+        let app = launchApp(withGatheringFixtures: true)
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 10))
+        enterSelection(in: app)
+        row(named: "Sketch a simpler selection flow", in: app).tap()
+        listControl(named: "Work", in: app).tap()
+        XCTAssertTrue(app.buttons["gathered-stack"].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.buttons["gathered-stack"].value as? String, "1 item")
+        listControl(named: "Inbox", in: app).tap()
+        XCTAssertFalse(collectionRow(named: "Sketch a simpler selection flow", in: app).exists)
+        app.buttons["finish-selecting"].tap()
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 3))
+    }
+
+    func testPageSwipePreservesExpandedMultiListSelection() {
+        continueAfterFailure = false
+        let app = launchApp(withGatheringFixtures: true)
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 10))
+        listControl(named: "Work", in: app).tap()
+        createSnip("Work selection", in: app)
+        returnToCollection(in: app)
+        listControl(named: "Inbox", in: app).tap()
+        enterSelection(in: app)
+        row(named: "Sketch a simpler selection flow", in: app).tap()
+        app.buttons["gathered-stack"].tap()
+
+        let toWork = app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.3))
+        toWork.press(forDuration: 0.05, thenDragTo: toWork.withOffset(CGVector(dx: -180, dy: 0)))
+        XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["collapse-gathered"].isHittable)
+        XCTAssertTrue(app.buttons["Deselect: Sketch a simpler selection flow"].isHittable)
+        row(named: "Work selection", in: app).tap()
+        app.buttons["collapse-gathered"].tap()
+        XCTAssertEqual(app.buttons["gathered-stack"].value as? String, "2 items")
+        XCTAssertTrue(app.buttons["Deselect: Work selection"].isHittable)
+        app.buttons["gathered-stack"].tap()
+
+        let toInbox = app.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.3))
+        toInbox.press(forDuration: 0.05, thenDragTo: toInbox.withOffset(CGVector(dx: 180, dy: 0)))
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["collapse-gathered"].isHittable)
+        XCTAssertTrue(app.buttons["Deselect: Work selection"].isHittable)
+        XCTAssertFalse(collectionRow(named: "Sketch a simpler selection flow", in: app).exists)
+        app.buttons["finish-selecting"].tap()
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 3))
+        listControl(named: "Work", in: app).tap()
+        XCTAssertTrue(collectionRow(named: "Work selection", in: app).waitForExistence(timeout: 3))
+    }
+
+    func testMultiListSelectionCreatesDestinationFromMoveMenu() {
+        continueAfterFailure = false
+        let app = launchApp(withGatheringFixtures: true)
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 10))
+        listControl(named: "Work", in: app).tap()
+        createSnip("From Work", in: app)
+        returnToCollection(in: app)
+        listControl(named: "Inbox", in: app).tap()
+        enterSelection(in: app)
+        row(named: "Sketch a simpler selection flow", in: app).tap()
+        row(named: "Try the stack interaction on iPhone", in: app).tap()
+        XCTAssertTrue(app.buttons["Deselect: Try the stack interaction on iPhone"].isHittable)
+        listControl(named: "Work", in: app).tap()
+        XCTAssertEqual(app.buttons["gathered-stack"].value as? String, "2 items")
+        row(named: "From Work", in: app).tap()
+        XCTAssertEqual(app.buttons["gathered-stack"].value as? String, "3 items")
+        XCTAssertTrue(app.buttons["Deselect: From Work"].isHittable)
+        let stackProof = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        stackProof.name = "Multi-list selection newest on top"
+        stackProof.lifetime = .keepAlways
+        add(stackProof)
+        app.buttons["gathered-stack"].tap()
+        let expandedProof = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        expandedProof.name = "Multi-list selection expanded"
+        expandedProof.lifetime = .keepAlways
+        add(expandedProof)
+        app.buttons["collapse-gathered"].tap()
+        app.buttons["move-gathered"].tap()
+        XCTAssertTrue(app.buttons["move-gathered-to-Work"].exists)
+        XCTAssertTrue(app.buttons["add-list-for-move"].exists)
+        let menuProof = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        menuProof.name = "Move destinations and Add List"
+        menuProof.lifetime = .keepAlways
+        add(menuProof)
+        app.buttons["add-list-for-move"].tap()
+        XCTAssertTrue(app.alerts["Add List"].waitForExistence(timeout: 3))
+        app.alerts["Add List"].buttons["Cancel"].tap()
+        XCTAssertEqual(app.buttons["gathered-stack"].value as? String, "3 items")
+        app.buttons["move-gathered"].tap()
+        app.buttons["add-list-for-move"].tap()
+        let name = app.alerts["Add List"].textFields.firstMatch
+        XCTAssertTrue(name.waitForExistence(timeout: 3))
+        name.typeText("Selected notes")
+        app.alerts["Add List"].buttons["Create and Move"].tap()
+        XCTAssertTrue(app.buttons["gathered-stack"].waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["library-actions"].waitForExistence(timeout: 3))
+        revealCompactList(named: "Selected notes", in: app)
+        listControl(named: "Selected notes", in: app).tap()
+        for text in ["From Work", "Sketch a simpler selection flow", "Try the stack interaction on iPhone"] {
+            XCTAssertTrue(collectionRow(named: text, in: app).waitForExistence(timeout: 3))
+        }
+    }
+
+    func testSingleItemMoveCanAddFirstCustomList() {
         continueAfterFailure = false
         let app = launchApp()
-        createList("Work", in: app)
-        returnToLists(in: app)
-        listControl(named: "Inbox", in: app).tap()
-        createSnip("Selected note", in: app)
+        createSnip("Move into a new list", in: app)
         returnToCollection(in: app)
-
-        enterSelection(in: app)
-        row(named: "Selected note", in: app).tap()
-        XCTAssertTrue(app.buttons["selection-actions"].waitForExistence(timeout: 3))
-
-        let workList = listControl(named: "Work", in: app)
-        if !workList.exists { returnToLists(in: app) }
-        listControl(named: "Work", in: app).tap()
-        XCTAssertTrue(app.buttons["selection-actions"].waitForNonExistence(timeout: 3))
+        row(named: "Move into a new list", in: app).press(forDuration: 1)
+        app.buttons["move-snip"].tap()
+        app.buttons["Add List…"].tap()
+        let name = app.alerts["Add List"].textFields.firstMatch
+        XCTAssertTrue(name.waitForExistence(timeout: 3))
+        name.typeText("First list")
+        app.alerts["Add List"].buttons["Create and Move"].tap()
+        XCTAssertTrue(listControl(named: "First list", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(collectionRow(named: "Move into a new list", in: app).waitForExistence(timeout: 3))
+        listControl(named: "Inbox", in: app).tap()
+        XCTAssertTrue(collectionRow(named: "Move into a new list", in: app).waitForNonExistence(timeout: 3))
     }
 
     private func createSnip(_ text: String, in app: XCUIApplication) {

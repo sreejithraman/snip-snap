@@ -13,9 +13,9 @@ struct IOSAppRootView: View {
     @AppStorage("snip-sort-mode") private var savedSortMode = SnipSortMode.chronological.rawValue
     @State private var sheet: AppSheet?
     @State private var settingsBackupLifetime = IOSSettingsBackupLifetime()
+    @State private var newMoveListName = ""
     @State private var copyShare = IOSCopyShareCoordinator()
     @State private var compactComposerStorage = CompactComposerStorage()
-    @State private var collectionEditMode: EditMode = .inactive
     @State private var listPageMotion = ListPageMotion()
     @State private var edgeCreationTask: Task<Void, Never>?
     @State private var edgeCreationTaskID: UUID?
@@ -43,6 +43,18 @@ struct IOSAppRootView: View {
 
     private var model: IOSAppModel { session.model }
 
+    private var collectionEditMode: EditMode {
+        get { model.isSelectingSnips ? .active : .inactive }
+        nonmutating set {
+            if newValue.isEditing { model.isSelectingSnips = true }
+            else if model.isSelectingSnips { model.endSelectingSnips() }
+        }
+    }
+
+    private var collectionEditModeBinding: Binding<EditMode> {
+        Binding(get: { collectionEditMode }, set: { collectionEditMode = $0 })
+    }
+
     private var searchNavigation: some View {
         appNavigation
         .onChange(of: model.isSearchPresented) { _, presented in
@@ -58,9 +70,7 @@ struct IOSAppRootView: View {
         .onChange(of: model.selectedPage) {
             model.isSearchPresented = false
             model.searchText = ""
-            guard collectionEditMode.isEditing else { return }
-            model.endSelectingSnips()
-            collectionEditMode = .inactive
+            if model.selectedPage == .clipboard { collectionEditMode = .inactive }
         }
     }
 
@@ -175,6 +185,35 @@ struct IOSAppRootView: View {
             }
         }
         .alert(
+            "Add List",
+            isPresented: Binding(
+                get: { model.newListMoveRequest != nil },
+                set: { if !$0 { model.newListMoveRequest = nil } }
+            ),
+            presenting: model.newListMoveRequest
+        ) { request in
+            TextField("List name", text: $newMoveListName)
+                .accessibilityIdentifier("move-new-list-name")
+            Button("Create and Move") {
+                let name = newMoveListName.trimmingCharacters(in: .whitespacesAndNewlines)
+                Task { @MainActor in
+                    if await model.createListAndMove(request, name: name),
+                       request.selectionSessionID == model.gatheringSessionID,
+                       model.selectedSnipIDs.isEmpty {
+                        model.endSelectingSnips()
+                        collectionEditMode = .inactive
+                    }
+                }
+            }
+            .disabled(newMoveListName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("Selected items will move into the new list.")
+        }
+        .onChange(of: model.newListMoveRequest != nil) { _, presented in
+            if presented { newMoveListName = "" }
+        }
+        .alert(
             model.errorTitle,
             isPresented: Binding(
                 get: { model.errorMessage != nil },
@@ -218,6 +257,7 @@ struct IOSAppRootView: View {
             model.sortMode = SnipSortMode(rawValue: savedSortMode) ?? .chronological
             await session.launch()
 #if DEBUG
+            await seedGatheringFixtureIfRequested()
             await seedLongListFixtureIfRequested()
             await seedClipboardFixtureIfRequested()
 #endif
@@ -280,7 +320,7 @@ struct IOSAppRootView: View {
                             clipboardViewState: clipboardViewState,
                             copyShare: copyShare,
                             sheet: $sheet,
-                            editMode: $collectionEditMode,
+                            editMode: collectionEditModeBinding,
                             motion: $listPageMotion,
                             frame: frame,
                             isComposerFocused: isCompactComposerFocused,
@@ -401,7 +441,7 @@ struct IOSAppRootView: View {
                 ListSidebarView(
                     model: model,
                     sheet: $sheet,
-                    editMode: $collectionEditMode,
+                    editMode: collectionEditModeBinding,
                     syncedContentSettings: session.syncedContentSettings,
                     syncNow: { await session.retrySyncWhenPossible() },
                     deleteList: deleteList
@@ -426,7 +466,7 @@ struct IOSAppRootView: View {
                             copyShare: copyShare,
                             sheet: $sheet,
                             layout: .inlineList,
-                            editMode: $collectionEditMode,
+                            editMode: collectionEditModeBinding,
                             cancelNewList: cancelNewList,
                             dismissComposerKeyboard: {
                                 isCompactComposerFocused = false
@@ -500,7 +540,7 @@ struct IOSAppRootView: View {
         LibraryActionsMenu(
             model: model,
             settings: { sheet = .settings },
-            editMode: $collectionEditMode,
+            editMode: collectionEditModeBinding,
             syncedContentSettings: session.syncedContentSettings,
             syncNow: { await session.retrySyncWhenPossible() },
             reviewRecoveredEdits: model.recoverySnapshot.needsAttentionCount > 0
@@ -630,12 +670,28 @@ struct IOSAppRootView: View {
     }
 
 #if DEBUG
+    private func seedGatheringFixtureIfRequested() async {
+        guard ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_GATHERING"] == "1",
+              model.snips.isEmpty else { return }
+        for content in ["Sketch a simpler selection flow", "Try the stack interaction on iPhone"] {
+            _ = await model.createSnip(content: content, in: SnipList.inboxID)
+        }
+        for name in ["Work", "Ideas", "Reading", "Project reference library", "Weekend plans", "Archive"] {
+            _ = await model.createList(name: name)
+        }
+        model.selectList(SnipList.inboxID)
+    }
+
     private func seedLongListFixtureIfRequested() async {
         guard ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_LONG_LIST"] == "1",
               model.snips.isEmpty else { return }
         for index in 0..<24 {
             let content = index == 0 ? "Fixture oldest" : "Fixture \(index)"
-            _ = await model.createSnip(content: content, in: SnipList.inboxID)
+            _ = await model.createSnip(
+                content: content,
+                in: SnipList.inboxID,
+                attachmentURLs: uiTestAttachmentURLs
+            )
         }
     }
 
