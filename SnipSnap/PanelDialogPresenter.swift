@@ -80,7 +80,7 @@ struct PanelConfirmationDialog: View {
     }
 }
 
-private struct PanelDialogGlassSurface: View {
+private struct PanelDialogSurface: View {
     let content: AnyView
 
     var body: some View {
@@ -90,14 +90,7 @@ private struct PanelDialogGlassSurface: View {
         )
         content
             .frame(width: PanelDialogMetrics.width)
-            .background {
-                shape
-                    .fill(.clear)
-                    .panelGlassSurface(
-                        in: shape,
-                        tint: SnipSnapColors.nestedGlassTint
-                    )
-            }
+            .background(Color(nsColor: .windowBackgroundColor), in: shape)
             .clipShape(shape)
     }
 }
@@ -118,7 +111,6 @@ final class PanelDialogPresenter {
     private weak var parentWindow: NSWindow?
     private var windowController: NSWindowController?
     private var onDismiss: ((PanelDialogDismissalReason) -> Void)?
-    private var parentAlphaValue: CGFloat = 1
     private var parentFrameObservers: [NSObjectProtocol] = []
 
     var isKeyWindow: Bool {
@@ -135,7 +127,7 @@ final class PanelDialogPresenter {
         guard windowController == nil else { return }
 
         let hostingController = NSHostingController(
-            rootView: PanelDialogGlassSurface(content: content)
+            rootView: PanelDialogSurface(content: content)
         )
         let window = PanelDialogWindow(
             contentRect: .zero,
@@ -144,6 +136,7 @@ final class PanelDialogPresenter {
             defer: false
         )
         window.title = title
+        window.appearance = parent.appearance
         window.animationBehavior = .utilityWindow
         window.backgroundColor = .clear
         window.isOpaque = false
@@ -161,8 +154,6 @@ final class PanelDialogPresenter {
         self.onDismiss = onDismiss
         windowController = NSWindowController(window: window)
 
-        parentAlphaValue = parent.alphaValue
-        parent.alphaValue = 0.45
         position(window, over: parent)
         parent.addChildWindow(window, ordered: .above)
         (parent as? SnipSnapPanel)?.setPresentedModalWindow(window)
@@ -223,7 +214,6 @@ final class PanelDialogPresenter {
         parentFrameObservers.removeAll()
         if let parentWindow {
             parentWindow.removeChildWindow(window)
-            parentWindow.alphaValue = parentAlphaValue
             (parentWindow as? SnipSnapPanel)?.setPresentedModalWindow(nil)
         }
         window.close()
@@ -232,7 +222,6 @@ final class PanelDialogPresenter {
         }
         windowController = nil
         parentWindow = nil
-        parentAlphaValue = 1
         id = nil
         onDismiss = nil
         callback?(reason)

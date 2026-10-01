@@ -61,6 +61,39 @@ final class SnipSnapiOSUITests: XCTestCase {
         return app
     }
 
+    func testLongSnipExpandsAndCollapsesWithoutEditing() {
+        continueAfterFailure = false
+        let app = launchApp()
+        let text = "First line\nSecond line\nThird line\nFourth line\nLast line of the snip"
+        let composer = app.descendants(matching: .any)["composer-text"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        composer.tap()
+        composer.typeText(text)
+        app.buttons["composer-send"].tap()
+        let disclosure = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "snip-text-")
+        ).firstMatch
+        XCTAssertTrue(disclosure.waitForExistence(timeout: 3))
+        XCTAssertEqual(disclosure.value as? String, "Collapsed")
+        let collapsedHeight = disclosure.frame.height
+
+        disclosure.tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Expanded"), object: disclosure
+        )], timeout: 3), .completed)
+        XCTAssertGreaterThan(disclosure.frame.height, collapsedHeight)
+        XCTAssertFalse(app.descendants(matching: .any)["inline-snip-text"].exists)
+
+        disclosure.tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Collapsed"), object: disclosure
+        )], timeout: 3), .completed)
+        XCTAssertEqual(disclosure.frame.height, collapsedHeight, accuracy: 1)
+
+        disclosure.doubleTap()
+        XCTAssertTrue(app.descendants(matching: .any)["inline-snip-text"].waitForExistence(timeout: 3))
+    }
+
     func testContextActionsPublishHapticOutcomes() {
         continueAfterFailure = false
         let app = launchApp(withHapticsTrace: true)
@@ -249,7 +282,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         let app = launchApp(withLongList: true)
         try requireCompactSelector(in: app)
         let oldest = collectionRow(named: "Fixture oldest", in: app)
-        let composer = app.textFields["composer-text"]
+        let composer = app.descendants(matching: .any)["composer-text"]
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         let newest = collectionRow(named: "Fixture 23", in: app)
         XCTAssertTrue(newest.isHittable)
@@ -1019,7 +1052,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             format: "identifier BEGINSWITH %@", "search-snip-"
         )).firstMatch
         XCTAssertTrue(result.waitForExistence(timeout: 3))
-        result.tap()
+        result.doubleTap()
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
         app.descendants(matching: .any)["global-search-results"].swipeDown()
         closeSearch(in: app)
@@ -1040,7 +1073,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             "search-snip-", "Copy mixed fixture"
         )).firstMatch
         XCTAssertTrue(result.waitForExistence(timeout: 3))
-        result.tap()
+        result.doubleTap()
         let editor = app.descendants(matching: .any)["inline-snip-text"]
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
         app.buttons["remove-attachment-sample.png"].tap()
@@ -1364,6 +1397,30 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
         app.swipeDown()
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
+    }
+
+    func testComposerPastesCopiedPhotoSnipAsAttachment() {
+        continueAfterFailure = false
+        let app = launchApp(withCopyShareFixtures: true)
+        let source = row(named: "Copy mixed fixture", in: app)
+        XCTAssertTrue(source.waitForExistence(timeout: 5))
+        source.press(forDuration: 1)
+        app.buttons["copy-snip"].tap()
+        let composer = app.descendants(matching: .any)["composer-text"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        composer.tap()
+        composer.press(forDuration: 1)
+        let paste = app.cells["Paste"].firstMatch
+        XCTAssertTrue(paste.waitForExistence(timeout: 3))
+        paste.tap()
+
+        let attachment = app.buttons["composer-attachment-sample.png"]
+        XCTAssertTrue(attachment.waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, "Copy mixed fixture")
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Copied photo snip pasted into composer"
+        proof.lifetime = .keepAlways
+        add(proof)
     }
 
     func testLeadingPasteSavesToSelectedListWithoutChangingDraft() throws {
@@ -2242,7 +2299,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(toast.waitForExistence(timeout: 3))
         XCTAssertLessThan(toast.frame.width, app.frame.width - 48)
         XCTAssertLessThanOrEqual(toast.frame.height, 60)
-        let composer = app.textFields["composer-text"]
+        let composer = app.descendants(matching: .any)["composer-text"]
         XCTAssertLessThanOrEqual(
             toast.frame.maxY,
             composer.frame.minY
@@ -2965,7 +3022,7 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     private func createSnip(_ text: String, in app: XCUIApplication) {
-        let composer = app.textFields["composer-text"].firstMatch
+        let composer = app.descendants(matching: .any)["composer-text"].firstMatch
         if composer.waitForExistence(timeout: 1) {
             composer.tap()
             composer.typeText(text)

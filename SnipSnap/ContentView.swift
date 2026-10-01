@@ -133,6 +133,7 @@ struct ContentView: View {
                 model: model,
                 accessibilityPermissions: accessibilityPermissions,
                 focusedTarget: $focusedTarget,
+                closePanel: { coordinator.hidePanel() },
                 expandSearch: { expandSearch() },
                 collapseSearch: { collapseSearch() },
                 reviewRecovery: { showingRecoveryReview = true },

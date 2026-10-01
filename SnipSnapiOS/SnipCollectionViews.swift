@@ -79,7 +79,8 @@ struct SnipCollectionView: View {
                                     snip: snip,
                                     model: model,
                                     isRecovered: model.isRecoveredSnip(snip.id),
-                                    showsStatusIcon: false
+                                    showsStatusIcon: false,
+                                    allowsTextExpansion: false
                                 )
                                 .contentShape(Rectangle())
                                 .accessibilityAddTraits(.isButton)
@@ -427,6 +428,7 @@ private struct SnipRow: View {
     let model: IOSAppModel
     let isRecovered: Bool
     var showsStatusIcon = true
+    var allowsTextExpansion = true
     var isReordering = false
     @State private var isChangingCompletion = false
     var onPreviewAttachment: ((SnipAttachment) -> Void)? = nil
@@ -468,11 +470,15 @@ private struct SnipRow: View {
             }
             VStack(alignment: .leading, spacing: 8) {
                 if hasVisibleText {
-                    Text(SnipTextPreview.displayText(snip.content, lineLimit: 3))
+                    ExpandableSnipText(
+                        text: snip.content,
+                        lineLimit: 3,
+                        isDone: snip.isDone,
+                        allowsExpansion: allowsTextExpansion && !isReordering,
+                        accessibilityIdentifier: "snip-text-\(snip.id)"
+                    )
                         .font(.body)
                         .foregroundStyle(snip.isDone ? .secondary : .primary)
-                        .strikethrough(snip.isDone)
-                        .lineLimit(3)
                 } else {
                     attachmentPreviews
                 }
@@ -786,9 +792,11 @@ struct LibrarySearchView: View {
                         }
                     )
                     .contentShape(Rectangle())
-                    .onTapGesture { beginEditing(snip) }
+                    .highPriorityGesture(
+                        TapGesture(count: 2).onEnded { beginEditing(snip) }
+                    )
                     .accessibilityAddTraits(.isButton)
-                    .accessibilityHint("Edit inline")
+                    .accessibilityHint("Double tap to edit. Touch and hold for actions.")
                     .accessibilityAction { beginEditing(snip) }
                     .accessibilityIdentifier("search-snip-\(snip.id)")
                 }

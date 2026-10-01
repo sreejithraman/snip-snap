@@ -60,7 +60,8 @@ struct CompactLibraryControls: View {
     @State private var isTakingPhoto = false
     @State private var composerFieldID = UUID()
     @State private var stagingTask: Task<Void, Never>?
-    @FocusState.Binding private var isComposerFocused: Bool
+    @State private var isStagingPaste = false
+    @Binding private var isComposerFocused: Bool
     @ScaledMetric(relativeTo: .body) private var scaledControlLength =
         CompactControlMetrics.minimumInteractiveLength
     @ScaledMetric(relativeTo: .body) private var sendIconLength: CGFloat = 16
@@ -78,7 +79,7 @@ struct CompactLibraryControls: View {
         model: IOSAppModel,
         clipboard: IOSClipboardModel,
         storage: CompactComposerStorage,
-        isComposerFocused: FocusState<Bool>.Binding,
+        isComposerFocused: Binding<Bool>,
         showsListTabs: Bool = true,
         isSelecting: Bool = false,
         sheet: Binding<AppSheet?>,
@@ -391,15 +392,17 @@ struct CompactLibraryControls: View {
                     }
 
                     HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
-                        TextField(
-                            "Add to \(list.displayName)…",
+                        ComposerTextInput(
+                            prompt: "Add to \(list.displayName)…",
                             text: isPreview ? .constant(draft.text) : composerText(for: list.id),
-                            axis: .vertical
+                            isFocused: isPreview ? .constant(false) : $isComposerFocused,
+                            isEnabled: !isPreview && !storage.isSaving,
+                            isPasteEnabled: !isStaging,
+                            isTextInputEnabled: !isStagingPaste,
+                            onPasteAttachments: { providers, selection in
+                                if !isPreview { stagePastedAttachments(providers, at: selection, to: list.id) }
+                            }
                         )
-                            .textFieldStyle(.plain)
-                            .lineLimit(1...5)
-                            .modifier(ComposerFieldFocus(isPreview: isPreview, isFocused: $isComposerFocused))
-                            .disabled(storage.isSaving)
                             .padding(SnipSnapSpacing.relatedContent)
                             .frame(minHeight: controlLength, alignment: .center)
                             .modifier(ComposerAccessibility(isPreview: isPreview, identifier: "composer-text"))
@@ -560,6 +563,36 @@ struct CompactLibraryControls: View {
         }
     }
 
+    private func stagePastedAttachments(_ providers: [NSItemProvider], at selection: NSRange, to listID: UUID) {
+        guard !isStaging, !storage.isSaving else { return }
+        let body = storage.draftStore.draft(for: listID).text
+        let scope = storage.draftStore.scope
+        isStagingPaste = true
+        stagingTask = Task {
+            var files: [StagedAttachment] = []
+            defer {
+                stagingTask = nil
+                isStagingPaste = false
+            }
+            do {
+                let pasted = try await ComposerPasteboard.stage(providers, in: storage.stagingDirectory)
+                files = pasted.files
+                try Task.checkCancellation()
+                guard storage.draftStore.scope == scope,
+                      model.lists.contains(where: { $0.id == listID }) else {
+                    AttachmentDraftStager.clean(files)
+                    return
+                }
+                storage.draftStore.setText(pasted.inserting(into: body, at: selection), for: listID)
+                addStagedFiles(files, to: listID)
+            } catch is CancellationError {
+                AttachmentDraftStager.clean(files)
+            } catch {
+                model.presentError(error, operation: "composer.paste_stage")
+            }
+        }
+    }
+
     private func stagePastedText(_ text: String) {
         guard stagingTask == nil else { return }
         let listID = model.selectedListID
@@ -643,20 +676,6 @@ struct CompactLibraryControls: View {
         draft = storage.draftStore.draft(for: model.selectedListID)
     }
 
-}
-
-private struct ComposerFieldFocus: ViewModifier {
-    let isPreview: Bool
-    @FocusState.Binding var isFocused: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if isPreview {
-            content
-        } else {
-            content.focused($isFocused)
-        }
-    }
 }
 
 private struct ComposerAccessibility: ViewModifier {

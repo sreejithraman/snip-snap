@@ -69,7 +69,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         XCTAssertFalse(dialog.isOpaque)
         XCTAssertTrue(panel.childWindows?.contains(dialog) == true)
         XCTAssertNil(panel.attachedSheet)
-        XCTAssertEqual(panel.alphaValue, 0.45, accuracy: 0.001)
+        XCTAssertEqual(panel.alphaValue, 1, accuracy: 0.001)
         panel.setFrameOrigin(NSPoint(x: 180, y: 180))
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(dialog.frame.midX, panel.frame.midX, accuracy: 0.5)

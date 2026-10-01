@@ -20,7 +20,7 @@ struct IOSAppRootView: View {
     @State private var edgeCreationTask: Task<Void, Never>?
     @State private var edgeCreationTaskID: UUID?
     @State private var clipboardViewState = ClipboardViewState()
-    @FocusState private var isCompactComposerFocused: Bool
+    @State private var isCompactComposerFocused = false
     private let uiTestAttachmentURLs: [URL]
     private let seedsCopyShareFixtures: Bool
     private let shareProcessToken: String?

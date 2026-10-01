@@ -71,19 +71,19 @@ struct SyncedContentSettingsView: View {
             }
 
             Section {
-                LabeledContent("Diagnostics") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Button("Share diagnostic log", systemImage: "square.and.arrow.up", action: shareDiagnostics)
-                            .accessibilityIdentifier("share-diagnostic-log")
-                        Button("Clear diagnostic log", systemImage: "trash", action: clearDiagnostics)
-                            .accessibilityIdentifier("clear-diagnostic-log")
-                    }
-                    .disabled(isExportingDiagnostics)
+                VStack(alignment: .leading, spacing: 8) {
+                    Button("Share diagnostic log", systemImage: "square.and.arrow.up", action: shareDiagnostics)
+                        .accessibilityIdentifier("share-diagnostic-log")
+                    Button("Clear diagnostic log", systemImage: "trash", action: clearDiagnostics)
+                        .accessibilityIdentifier("clear-diagnostic-log")
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .buttonStyle(.bordered)
+                .disabled(isExportingDiagnostics)
             } header: {
                 Text("Support")
             } footer: {
-                Text("Includes recent operation codes and counts, not your content or file names. Save a copy to share it with support.")
+                Text("Includes only recent sync stages and error codes—not your content or file names.")
             }
         }
         .formStyle(.grouped)

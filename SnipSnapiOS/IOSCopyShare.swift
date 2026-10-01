@@ -137,6 +137,7 @@ final class IOSSystemPasteboard: NSObject, IOSPasteboardWriting {
                     staged.lease?.remove()
                     return false
                 }
+                provider.suggestedName = url.lastPathComponent
                 providers.append(provider)
             }
         }

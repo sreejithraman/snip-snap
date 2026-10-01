@@ -5,6 +5,7 @@ struct PanelHeaderView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var accessibilityPermissions: AccessibilityPermissionController
     @FocusState.Binding var focusedTarget: PanelFocusTarget?
+    let closePanel: () -> Void
     let expandSearch: () -> Void
     let collapseSearch: () -> Void
     let reviewRecovery: () -> Void
@@ -14,66 +15,71 @@ struct PanelHeaderView: View {
     let syncNow: (@MainActor () async -> Void)?
 
     private let searchControlInset: CGFloat = 8
+    private let compactSearchWidth: CGFloat = 128
+
+    private var sideControlsWidth: CGFloat {
+        let count = (model.isSearchExpanded ? 1 : 2)
+            + (model.needsAttentionCount > 0 ? 1 : 0)
+        return CGFloat(count) * PanelControlMetrics.floatingRowHeight
+            + CGFloat(count - 1) * SnipSnapSpacing.relatedContent
+    }
 
     var body: some View {
         HStack(spacing: SnipSnapSpacing.relatedContent) {
+            Button(action: closePanel) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(SnipSnapColors.textSecondary)
+                    .panelStandaloneActionControl()
+            }
+            .buttonStyle(.plain)
+            .help("Close panel")
+            .accessibilityLabel("Close panel")
+            .accessibilityIdentifier("panel-close")
+            .frame(width: sideControlsWidth, alignment: .leading)
+
             searchControl
+                .frame(maxWidth: .infinity)
 
-            if !model.isSearchExpanded {
-                Spacer(minLength: 0)
+            HStack(spacing: SnipSnapSpacing.relatedContent) {
+                if model.needsAttentionCount > 0 {
+                    needsAttentionButton
+                }
+
+                if !model.isSearchExpanded {
+                    PanelViewOptionsButton(model: model)
+                }
+
+                PanelMoreButton(
+                    model: model,
+                    accessibilityPermissions: accessibilityPermissions,
+                    focusedTarget: $focusedTarget,
+                    moveSelectionToNewList: moveSelectionToNewList,
+                    selectAllVisible: selectAllVisible,
+                    syncedContentSettings: syncedContentSettings,
+                    syncNow: syncNow
+                )
             }
-
-            if model.needsAttentionCount > 0 {
-                needsAttentionButton
-            }
-
-            if !model.isSearchExpanded {
-                PanelViewOptionsButton(model: model)
-            }
-
-            PanelMoreButton(
-                model: model,
-                accessibilityPermissions: accessibilityPermissions,
-                focusedTarget: $focusedTarget,
-                moveSelectionToNewList: moveSelectionToNewList,
-                selectAllVisible: selectAllVisible,
-                syncedContentSettings: syncedContentSettings,
-                syncNow: syncNow
-            )
+            .frame(width: sideControlsWidth, alignment: .trailing)
         }
         .background { PanelDragRegion() }
     }
 
     private var searchControl: some View {
         HStack(spacing: 0) {
-            Button {
-                if model.isSearchExpanded {
-                    focusedTarget = .search
-                } else {
-                    expandSearch()
-                }
-            } label: {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(SnipSnapColors.textPrimary)
-                    .frame(
-                        width: model.isSearchExpanded
-                            ? PanelControlMetrics.floatingRowHeight - searchControlInset
-                            : PanelControlMetrics.floatingRowHeight,
-                        height: PanelControlMetrics.floatingRowHeight
-                    )
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(model.editingID != nil)
-            .padding(.leading, model.isSearchExpanded ? searchControlInset : 0)
-            .accessibilityLabel(
-                model.isSearchExpanded
-                    ? String(localized: "Focus search")
-                    : String(localized: "Search all lists and Clipboard")
-            )
-            .accessibilityIdentifier("global-search-expand")
-
             if model.isSearchExpanded {
+                Button {
+                    focusedTarget = .search
+                } label: {
+                    searchIcon
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(model.editingID != nil)
+                .padding(.leading, searchControlInset)
+                .accessibilityLabel("Focus search")
+                .accessibilityIdentifier("global-search-expand")
+
                 TextField("Search", text: $model.query)
                     .panelInputStyle()
                     .focused($focusedTarget, equals: .search)
@@ -96,36 +102,50 @@ struct PanelHeaderView: View {
                 .padding(.trailing, searchControlInset)
                 .accessibilityLabel("Close search")
                 .accessibilityIdentifier("global-search-close")
+            } else {
+                Button(action: expandSearch) {
+                    HStack(spacing: 0) {
+                        searchIcon
+                        Text("Search")
+                    }
+                    .foregroundStyle(SnipSnapColors.textSecondary)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: PanelControlMetrics.floatingRowHeight)
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(model.editingID != nil)
+                .help("Search all lists and Clipboard")
+                .accessibilityLabel("Search all lists and Clipboard")
+                .accessibilityIdentifier("global-search-expand")
             }
         }
-        .frame(width: model.isSearchExpanded ? nil : PanelControlMetrics.floatingRowHeight)
-        .frame(maxWidth: model.isSearchExpanded ? .infinity : nil)
+        .frame(maxWidth: model.isSearchExpanded ? .infinity : compactSearchWidth)
         .frame(height: PanelControlMetrics.floatingRowHeight)
-        .panelGlassSurface(in: Capsule(), interactive: true)
+        .panelGlassSurface(
+            in: Capsule(),
+            interactive: true,
+            tint: SnipSnapColors.nestedGlassTint
+        )
     }
 
-    @ViewBuilder
+    private var searchIcon: some View {
+        Image(systemName: "magnifyingglass")
+            .foregroundStyle(SnipSnapColors.textSecondary)
+            .frame(
+                width: PanelControlMetrics.floatingRowHeight - searchControlInset,
+                height: PanelControlMetrics.floatingRowHeight
+            )
+    }
+
     private var needsAttentionButton: some View {
-        if model.isSearchExpanded {
-            Button(action: reviewRecovery) {
-                Image(systemName: "exclamationmark.circle.fill")
-                    .frame(
-                        width: PanelControlMetrics.floatingRowHeight,
-                        height: PanelControlMetrics.floatingRowHeight
-                    )
-                    .panelStandaloneActionControl()
-            }
-            .buttonStyle(.plain)
-            .disabled(model.editingID != nil)
-            .accessibilityLabel("Needs attention (\(model.needsAttentionCount))")
-            .help("Review items needing attention")
-        } else {
-            Button(action: reviewRecovery) {
-                Label("Needs attention (\(model.needsAttentionCount))", systemImage: "exclamationmark.circle.fill")
-            }
-            .buttonStyle(.bordered)
-            .disabled(model.editingID != nil)
-            .help("Review items needing attention")
+        Button(action: reviewRecovery) {
+            Image(systemName: "exclamationmark.circle.fill")
+                .panelStandaloneActionControl()
         }
+        .buttonStyle(.plain)
+        .disabled(model.editingID != nil)
+        .accessibilityLabel("Needs attention (\(model.needsAttentionCount))")
+        .help("Needs attention (\(model.needsAttentionCount))")
     }
 }

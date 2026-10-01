@@ -696,6 +696,19 @@ struct SnipListView: View {
             onPreviewLocalAttachments: onPreviewAttachments,
             onRemovePreviewURL: onRemovePreviewURL,
             onSelect: { select(snip.id) },
+            onSelectForExpansion: { isPointerClick in
+                if isPointerClick {
+                    // Single-click recognition waits for a possible double click.
+                    // Keep the modifiers captured at mouse-down during that delay.
+                    let modifiers = selectionModifiers(for: snip.id)
+                    model.selectSnip(snip.id, modifiers: modifiers)
+                    focusedTarget = .list
+                    return modifiers.isEmpty
+                }
+                // Keyboard and accessibility activation have no mouse-selection modifiers.
+                selectExclusively(snip.id)
+                return true
+            },
             onOpen: { edit(snip.id) },
             onToggleDone: { model.toggleDone(id: snip.id) },
             onCopy: {

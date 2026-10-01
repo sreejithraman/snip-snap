@@ -18,6 +18,7 @@ struct SnipCardRow: View {
     let onPreviewLocalAttachments: ([URL], URL) -> Void
     let onRemovePreviewURL: (URL) -> Void
     let onSelect: () -> Void
+    let onSelectForExpansion: (_ isPointerClick: Bool) -> Bool
     let onOpen: () -> Void
     let onToggleDone: () -> Void
     let onCopy: () async -> Bool
@@ -172,10 +173,18 @@ struct SnipCardRow: View {
                 if snip.origin == .agent {
                     AgentSnipContextLabel(contextLabel: snip.agentContextLabel)
                 }
-                SnipCardText(
+                ExpandableSnipText(
                     text: snip.content,
-                    isDone: snip.isDone && !snip.isPinned
+                    lineLimit: 5,
+                    isDone: snip.isDone && !snip.isPinned,
+                    strikethroughColor: SnipSnapColors.doneStrikethrough,
+                    lineSpacing: 2,
+                    accessibilityIdentifier: "snip-text-\(snip.id)",
+                    onActivate: onSelectForExpansion,
+                    onDoubleClick: onOpen
                 )
+                .foregroundStyle(SnipSnapColors.textPrimary)
+                .opacity(snip.isDone && !snip.isPinned ? SnipSnapColors.doneTextOpacity : 1)
             }
         }
     }
