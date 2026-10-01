@@ -8,13 +8,7 @@ enum SnipCollectionLayout: Equatable {
     case inlineList
 }
 
-private struct CompactInlineEditSession {
-    let original: Snip
-    var text: String
-    var isSaving = false
-}
-
-private func listAppearance(for snip: Snip, in lists: [SnipList]) -> SnipListAppearance {
+func listAppearance(for snip: Snip, in lists: [SnipList]) -> SnipListAppearance {
     (lists.first { $0.id == snip.listID } ?? .inbox).accent
 }
 
@@ -32,7 +26,7 @@ struct SnipCollectionView: View {
     var dismissComposerKeyboard: () -> Void = {}
     var libraryActions: LibraryActionsMenu?
     @State private var isReordering = false
-    @State private var inlineEditSession: CompactInlineEditSession?
+    private var inlineEditDraft: SnipEditorDraft? { model.snipEditorDraft }
     @State private var previewURLs: [URL] = []
     @State private var selectedPreviewURL: URL?
     @FocusState private var isInlineEditorFocused: Bool
@@ -51,7 +45,7 @@ struct SnipCollectionView: View {
     var body: some View {
         Group {
             if model.isSearchPresented {
-                LibrarySearchView(model: model, clipboard: clipboard, copyShare: copyShare, sheet: $sheet)
+                LibrarySearchView(model: model, clipboard: clipboard, copyShare: copyShare)
             } else if displayedSnips.isEmpty {
                 if layout == .compactStack {
                     compactEmptyState
@@ -97,17 +91,11 @@ struct SnipCollectionView: View {
                                 }
                                 .accessibilityIdentifier("snip-\(snip.id)")
                             } else {
-                                if inlineEditSession?.original.id == snip.id {
-                                    CompactInlineSnipEditor(
-                                        snip: snip,
+                                if let draft = inlineEditDraft, draft.original.id == snip.id {
+                                    InlineSnipEditor(
+                                        draft: draft,
                                         model: model,
-                                        text: inlineEditText,
-                                        isSaving: inlineEditSession?.isSaving == true,
-                                        isFocused: $isInlineEditorFocused,
-                                        previewAttachment: previewAttachment,
-                                        cancel: cancelInlineEdit,
-                                        save: saveInlineEdit,
-                                        copy: { Task { await copyShare.copy(snips: [snip], model: model) } }
+                                        isFocused: $isInlineEditorFocused
                                     )
                                 } else {
                                     SnipRow(
@@ -158,8 +146,10 @@ struct SnipCollectionView: View {
                         }
                         .tag(snip.id)
                         .listRowSeparator(.hidden)
-                        .contextMenu { itemContextActions(for: snip) }
-                        .moveDisabled(snip.isPinned || !model.canReorderVisibleSnips || inlineEditSession != nil)
+                        .contextMenu {
+                            if inlineEditDraft == nil { itemContextActions(for: snip) }
+                        }
+                        .moveDisabled(snip.isPinned || !model.canReorderVisibleSnips || inlineEditDraft != nil)
                     }
                     .onMove(perform: move)
                 }
@@ -211,14 +201,17 @@ struct SnipCollectionView: View {
         .onChange(of: isActivePage) { _, isActive in
             if !isActive { isInlineEditorFocused = false }
         }
-        .onChange(of: isReordering || inlineEditSession != nil, initial: true) { _, blocked in
+        .onChange(of: isReordering || inlineEditDraft != nil, initial: true) { _, blocked in
             blocksPageSwipe.wrappedValue = blocked
+        }
+        .onAppear {
+            blocksPageSwipe.wrappedValue = isReordering || inlineEditDraft != nil
         }
         .onDisappear { blocksPageSwipe.wrappedValue = false }
         .onChange(of: model.selectedListID) {
             guard isActivePage else { return }
             isReordering = false
-            cancelInlineEdit()
+            isInlineEditorFocused = false
         }
         .onChange(of: model.completionFilter) {
             model.haptics.invalidatePendingFeedback()
@@ -231,8 +224,11 @@ struct SnipCollectionView: View {
             model.haptics.invalidatePendingFeedback()
             if !mode.isEditing { model.endSelectingSnips() }
             if mode.isEditing {
+                guard inlineEditDraft == nil else {
+                    editMode = .inactive
+                    return
+                }
                 isReordering = false
-                cancelInlineEdit()
                 model.selectedSnipID = nil
             }
         }
@@ -268,11 +264,12 @@ struct SnipCollectionView: View {
                     .accessibilityIdentifier("finish-selecting")
             } else {
                 WorkflowOptionsMenu(model: model) {
+                    guard inlineEditDraft == nil else { return }
                     model.haptics.invalidatePendingFeedback()
-                    cancelInlineEdit()
                     dismissComposerKeyboard()
                     isReordering = true
                 }
+                .disabled(inlineEditDraft?.canDismiss == false)
             }
             if let libraryActions, !isReordering, !isSelecting {
                 libraryActions
@@ -302,57 +299,15 @@ struct SnipCollectionView: View {
             .accessibilityIdentifier("empty-snips")
     }
 
-    private var inlineEditText: Binding<String> {
-        Binding(
-            get: { inlineEditSession?.text ?? "" },
-            set: { value in
-                guard var session = inlineEditSession else { return }
-                model.haptics.invalidatePendingFeedback()
-                session.text = value
-                inlineEditSession = session
-            }
-        )
-    }
-
     private func beginEditing(_ snip: Snip) {
-        model.beginEditingSnip(snip.id)
-        inlineEditSession = CompactInlineEditSession(
-            original: snip,
-            text: snip.content
-        )
+        guard model.beginInlineSnipEdit(snip) else { return }
+        dismissComposerKeyboard()
+        isReordering = false
+        if isSelecting { endSelection() }
         Task { @MainActor in
             await Task.yield()
+            guard inlineEditDraft?.original.id == snip.id else { return }
             isInlineEditorFocused = true
-        }
-    }
-
-    private func cancelInlineEdit() {
-        guard inlineEditSession?.isSaving != true else { return }
-        if inlineEditSession != nil { model.haptics.invalidatePendingFeedback() }
-        isInlineEditorFocused = false
-        inlineEditSession = nil
-    }
-
-    private func saveInlineEdit() {
-        guard var session = inlineEditSession,
-              !session.isSaving,
-              !session.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || !session.original.attachments.isEmpty else { return }
-        session.isSaving = true
-        inlineEditSession = session
-        Task { @MainActor in
-            let saved = await model.editSnip(
-                session.original,
-                content: session.text
-            )
-            guard inlineEditSession?.original.id == session.original.id else { return }
-            if saved {
-                isInlineEditorFocused = false
-                inlineEditSession = nil
-            } else {
-                session.isSaving = false
-                inlineEditSession = session
-            }
         }
     }
 
@@ -377,8 +332,7 @@ struct SnipCollectionView: View {
         )
         Divider()
         Button("Edit", systemImage: "pencil") {
-            model.beginEditingSnip(snip.id)
-            sheet = .editSnip(id: snip.id)
+            beginEditing(snip)
         }
         .accessibilityIdentifier("edit-snip")
         Button(snip.isPinned ? "Unpin" : "Pin", systemImage: snip.isPinned ? "pin.slash" : "pin") {
@@ -397,7 +351,7 @@ struct SnipCollectionView: View {
         }
         if !isSelecting {
             Button("Select", systemImage: "checkmark.circle") {
-                cancelInlineEdit()
+                guard inlineEditDraft == nil else { return }
                 dismissComposerKeyboard()
                 isReordering = false
                 model.selectSnips([snip.id])
@@ -442,91 +396,6 @@ struct SnipCollectionView: View {
             get: { model.selectedSnipIDs },
             set: { model.selectSnips($0) }
         )
-    }
-}
-
-private struct CompactInlineSnipEditor: View {
-    let snip: Snip
-    let model: IOSAppModel
-    @Binding var text: String
-    let isSaving: Bool
-    @FocusState.Binding var isFocused: Bool
-    let previewAttachment: (SnipAttachment) -> Void
-    let cancel: () -> Void
-    let save: () -> Void
-    let copy: () -> Void
-
-    private var appearance: SnipListAppearance {
-        listAppearance(for: snip, in: model.lists)
-    }
-
-    private var canSave: Bool {
-        !isSaving
-            && (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || !snip.attachments.isEmpty)
-    }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            if snip.isPinned {
-                SnipCopyControl(appearance: appearance, action: copy)
-                .accessibilityLabel("Copy Snip")
-            } else {
-                SnipCompletionIcon(isDone: snip.isDone, appearance: appearance)
-                    .accessibilityHidden(true)
-            }
-
-            VStack(alignment: .leading, spacing: 12) {
-                TextField("Snip text", text: $text, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...8)
-                    .focused($isFocused)
-                    .disabled(isSaving)
-                    .accessibilityIdentifier("inline-snip-text")
-
-                if !snip.attachments.isEmpty {
-                    HStack(spacing: 8) {
-                        ForEach(Array(snip.attachments.prefix(3))) { attachment in
-                            CompactAttachmentPreviewButton(
-                                attachment: attachment,
-                                model: model,
-                                action: { previewAttachment(attachment) }
-                            )
-                        }
-                        if snip.attachments.count > 3 {
-                            Text("+\(snip.attachments.count - 3)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    Spacer(minLength: 8)
-
-                    Button(action: cancel) {
-                        Image(systemName: "xmark")
-                            .font(.body.weight(.semibold))
-                            .frame(width: 44, height: 36)
-                    }
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.capsule)
-                    .disabled(isSaving)
-                    .accessibilityLabel("Cancel Editing")
-                    .accessibilityIdentifier("inline-snip-cancel")
-
-                    AppPrimaryActionButton(presentation: .floatingGlass, action: save) {
-                        Image(systemName: "checkmark")
-                            .font(.body.weight(.bold))
-                            .frame(width: 46, height: 36)
-                    }
-                    .disabled(!canSave)
-                    .accessibilityLabel("Save Snip")
-                    .accessibilityIdentifier("inline-snip-save")
-                }
-            }
-        }
-        .padding(.vertical, 8)
     }
 }
 
@@ -598,11 +467,15 @@ private struct SnipRow: View {
                 }
             }
             VStack(alignment: .leading, spacing: 8) {
-                Text(SnipTextPreview.displayText(snip.content, lineLimit: 3))
-                    .font(.body)
-                    .foregroundStyle(snip.isDone ? .secondary : .primary)
-                    .strikethrough(snip.isDone)
-                    .lineLimit(3)
+                if hasVisibleText {
+                    Text(SnipTextPreview.displayText(snip.content, lineLimit: 3))
+                        .font(.body)
+                        .foregroundStyle(snip.isDone ? .secondary : .primary)
+                        .strikethrough(snip.isDone)
+                        .lineLimit(3)
+                } else {
+                    attachmentPreviews
+                }
                 SnipRowMetadata(
                     date: snip.updatedAt,
                     isPinned: snip.isPinned,
@@ -614,26 +487,8 @@ private struct SnipRow: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.orange)
                 }
-                if !snip.attachments.isEmpty {
-                    HStack(spacing: 8) {
-                        ForEach(Array(snip.attachments.prefix(3))) { attachment in
-                            if let onPreviewAttachment {
-                                CompactAttachmentPreviewButton(
-                                    attachment: attachment,
-                                    model: model,
-                                    action: { onPreviewAttachment(attachment) }
-                                )
-                            } else {
-                                AttachmentStatusThumbnail(attachment: attachment, model: model)
-                                    .frame(width: 64, height: 64)
-                            }
-                        }
-                        if snip.attachments.count > 3 {
-                            Text("+\(snip.attachments.count - 3)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                if hasVisibleText {
+                    attachmentPreviews
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -645,6 +500,35 @@ private struct SnipRow: View {
         .accessibilityValue(
             snip.isPinned ? String(localized: "Pinned") : SnipCompletionLanguage.stateTitle(isDone: snip.isDone)
         )
+    }
+
+    private var hasVisibleText: Bool {
+        !snip.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    @ViewBuilder
+    private var attachmentPreviews: some View {
+        if !snip.attachments.isEmpty {
+            HStack(spacing: 8) {
+                ForEach(Array(snip.attachments.prefix(3))) { attachment in
+                    if let onPreviewAttachment {
+                        CompactAttachmentPreviewButton(
+                            attachment: attachment,
+                            model: model,
+                            action: { onPreviewAttachment(attachment) }
+                        )
+                    } else {
+                        AttachmentStatusThumbnail(attachment: attachment, model: model)
+                            .frame(width: 64, height: 64)
+                    }
+                }
+                if snip.attachments.count > 3 {
+                    Text("+\(snip.attachments.count - 3)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 
     private var accessibilityLabel: String {
@@ -685,13 +569,7 @@ private struct AttachmentStatusThumbnail: View {
     var body: some View {
         Group {
             if let url = model.usableAttachmentURL(for: attachment.id) {
-                AttachmentThumbnail(
-                    url: url,
-                    fillsTile: AttachmentImageType.isImage(
-                        fileName: attachment.fileName,
-                        contentType: attachment.contentType
-                    )
-                )
+                AttachmentThumbnail(url: url)
             } else {
                 ZStack {
                     Rectangle().fill(.quaternary)
@@ -731,7 +609,7 @@ private struct AttachmentStatusThumbnail: View {
     }
 }
 
-private struct SnipCompletionIcon: View {
+struct SnipCompletionIcon: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .body) private var diameter: CGFloat = 28
     let isDone: Bool
@@ -803,8 +681,9 @@ struct LibrarySearchView: View {
     let model: IOSAppModel
     let clipboard: IOSClipboardModel
     let copyShare: IOSCopyShareCoordinator
-    @Binding var sheet: AppSheet?
     @State private var previewURL: URL?
+    private var inlineEditDraft: SnipEditorDraft? { model.snipEditorDraft }
+    @FocusState private var isInlineEditorFocused: Bool
 
     var body: some View {
         let query = model.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -858,7 +737,7 @@ struct LibrarySearchView: View {
                 }
                 .listStyle(.plain)
                 .textCase(nil)
-                .scrollDismissesKeyboard(.interactively)
+                .scrollDismissesKeyboard(.immediately)
                 .accessibilityIdentifier("global-search-results")
             }
         }
@@ -866,6 +745,7 @@ struct LibrarySearchView: View {
         .background(.background)
         .attachmentPreview($previewURL)
         .task { await clipboard.load() }
+        .onDisappear { isInlineEditorFocused = false }
         .overlay(alignment: .bottom) {
             if clipboard.copied {
                 Label("Copied", systemImage: "checkmark")
@@ -882,35 +762,57 @@ struct LibrarySearchView: View {
     }
 
     private func snipResult(_ snip: Snip) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            SnipCopyControl(appearance: listAppearance(for: snip, in: model.lists)) {
-                Task { await copyShare.copy(snips: [snip], model: model) }
-            }
-            .accessibilityLabel("Copy Snip")
-            .accessibilityIdentifier("copy-search-snip-\(snip.id)")
-            SnipRow(
-                snip: snip,
-                model: model,
-                isRecovered: model.isRecoveredSnip(snip.id),
-                showsStatusIcon: false,
-                onPreviewAttachment: { attachment in
-                    Task { previewURL = await model.prepareAttachment(attachment.id, for: .preview) }
+        Group {
+            if let draft = inlineEditDraft, draft.original.id == snip.id {
+                InlineSnipEditor(
+                    draft: draft,
+                    model: model,
+                    isFocused: $isInlineEditorFocused
+                )
+            } else {
+                HStack(alignment: .top, spacing: 12) {
+                    SnipCopyControl(appearance: listAppearance(for: snip, in: model.lists)) {
+                        Task { await copyShare.copy(snips: [snip], model: model) }
+                    }
+                    .accessibilityLabel("Copy Snip")
+                    .accessibilityIdentifier("copy-search-snip-\(snip.id)")
+                    SnipRow(
+                        snip: snip,
+                        model: model,
+                        isRecovered: model.isRecoveredSnip(snip.id),
+                        showsStatusIcon: false,
+                        onPreviewAttachment: { attachment in
+                            Task { previewURL = await model.prepareAttachment(attachment.id, for: .preview) }
+                        }
+                    )
+                    .contentShape(Rectangle())
+                    .onTapGesture { beginEditing(snip) }
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityHint("Edit inline")
+                    .accessibilityAction { beginEditing(snip) }
+                    .accessibilityIdentifier("search-snip-\(snip.id)")
                 }
-            )
-            .contentShape(Rectangle())
-            .onTapGesture { sheet = .editSnip(id: snip.id) }
-            .accessibilityAddTraits(.isButton)
-            .accessibilityHint("Open snip")
-            .accessibilityAction { sheet = .editSnip(id: snip.id) }
-            .accessibilityIdentifier("search-snip-\(snip.id)")
+            }
         }
         .listRowSeparator(.hidden)
         .contextMenu {
-            Button("Edit", systemImage: "pencil") { sheet = .editSnip(id: snip.id) }
-            Button("Copy", systemImage: "doc.on.doc") {
-                Task { await copyShare.copy(snips: [snip], model: model) }
+            if inlineEditDraft == nil {
+                Button("Edit", systemImage: "pencil") { beginEditing(snip) }
+                    .accessibilityIdentifier("edit-snip")
+                Button("Copy", systemImage: "doc.on.doc") {
+                    Task { await copyShare.copy(snips: [snip], model: model) }
+                }
+                MoveSnipMenu(model: model, snip: snip)
             }
-            MoveSnipMenu(model: model, snip: snip)
+        }
+    }
+
+    private func beginEditing(_ snip: Snip) {
+        guard model.beginInlineSnipEdit(snip) else { return }
+        Task { @MainActor in
+            await Task.yield()
+            guard inlineEditDraft?.original.id == snip.id else { return }
+            isInlineEditorFocused = true
         }
     }
 

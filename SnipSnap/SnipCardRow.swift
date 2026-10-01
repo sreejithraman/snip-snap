@@ -3,7 +3,9 @@ import SnipSnapCore
 
 struct SnipCardRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.self) private var environment
     let snip: Snip
+    let appearance: SnipListAppearance
     let isRecovered: Bool
     let isSelected: Bool
     let isEditing: Bool
@@ -36,7 +38,7 @@ struct SnipCardRow: View {
         PanelContentCard(
             state: PanelContentCardState(
                 isSelected: isSelected,
-                isSubdued: snip.isDone && !snip.isPinned
+                isSubdued: snip.isDone && !snip.isPinned && !isEditing
             )
         ) {
             if snip.isPinned {
@@ -65,16 +67,24 @@ struct SnipCardRow: View {
                     action: onPickCommandNumber
                 )
             } else {
-                Toggle(
-                    SnipCompletionLanguage.done,
-                    isOn: Binding(
-                        get: { snip.isDone },
-                        set: { _ in onToggleDone() }
-                    )
-                )
-                .toggleStyle(.checkbox)
-                .labelsHidden()
-                .tint(SnipSnapColors.controlTint)
+                Button(action: onToggleDone) {
+                    Image(systemName: snip.isDone ? "checkmark.circle.fill" : "circle")
+                        .resizable()
+                        .scaledToFit()
+                        .foregroundStyle(SnipSnapColors.controlTint)
+                        .frame(
+                            width: PanelCardLeadingMetrics.controlSide,
+                            height: PanelCardLeadingMetrics.controlSide
+                        )
+                        .frame(
+                            width: PanelCardLeadingMetrics.side,
+                            height: PanelCardLeadingMetrics.side
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(SnipCompletionLanguage.menuActionTitle(isDone: snip.isDone))
+                .accessibilityValue(SnipCompletionLanguage.stateTitle(isDone: snip.isDone))
                 .help(SnipCompletionLanguage.actionTitle(isDone: snip.isDone))
                 .focusable(false)
                 .disabled(isEditing)
@@ -347,6 +357,8 @@ struct SnipCardRow: View {
             PanelGlassActionButton(
                 systemImage: "checkmark",
                 isEnabled: canSaveEdit,
+                tint: appearance.controlTint,
+                labelColor: appearance.filledControlLabel(in: environment),
                 action: saveEdit
             )
             .keyboardShortcut("s", modifiers: .command)

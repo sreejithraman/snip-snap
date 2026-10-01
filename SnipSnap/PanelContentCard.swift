@@ -6,7 +6,6 @@ private enum PanelContentCardMetrics {
 
 enum PanelCardLeadingMetrics {
     static let side: CGFloat = 24
-    static let cornerRadius: CGFloat = 5
     static let controlSide: CGFloat = 20
 }
 
@@ -25,18 +24,15 @@ struct PanelLeadingChip<Content: View>: View {
             content.foregroundStyle(SnipSnapColors.textPrimary)
         }
         .frame(
-            width: PanelCardLeadingMetrics.controlSide,
-            height: PanelCardLeadingMetrics.controlSide
+            width: PanelCardLeadingMetrics.side,
+            height: PanelCardLeadingMetrics.side
         )
         .contentShape(shape)
         .clipShape(shape)
     }
 
-    private var shape: RoundedRectangle {
-        RoundedRectangle(
-            cornerRadius: PanelCardLeadingMetrics.cornerRadius,
-            style: .continuous
-        )
+    private var shape: Circle {
+        Circle()
     }
 }
 
@@ -67,7 +63,7 @@ struct PanelCommandNumberButton: View {
         Button(action: action) {
             PanelLeadingChip {
                 Text(String(number))
-                    .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
+                    .font(.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
             }
         }
         .buttonStyle(.plain)

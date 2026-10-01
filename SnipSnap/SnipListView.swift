@@ -683,6 +683,7 @@ struct SnipListView: View {
     private func snipCard(_ snip: Snip) -> some View {
         SnipCardRow(
             snip: snip,
+            appearance: (model.lists.first { $0.id == snip.listID } ?? .inbox).accent,
             isRecovered: model.isRecoveredSnip(snip.id),
             isSelected: (contextMenuSelection ?? model.selection).contains(snip.id),
             isEditing: model.editingID == snip.id,
