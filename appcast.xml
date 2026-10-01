@@ -4,6 +4,22 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.0</title>
+            <pubDate>Thu, 01 Oct 2026 19:26:12 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.0-beta.133</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.6.0-beta.133-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>133</sparkle:version>
+            <sparkle:shortVersionString>0.6.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.0-beta.133/Snip-Snap-0.6.0.zip" length="15468143" type="application/octet-stream" sparkle:edSignature="zMTPSr/f6EkpioGy/1TKyHBElQlfSU4fe9pp0005+T1qs1oR6mx4CgFB/KhD1yKxcsfOhgxfl7Sr6wZqdrWNDw=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.0 Beta 133 — Mac
+
+- Match search tint and spacing across states
+- Give panel dialogs a solid background and shadow
+</description>
+        </item>
+        <item>
+            <title>0.6.0</title>
             <pubDate>Thu, 01 Oct 2026 18:22:01 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.0-beta.131</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.6.0-beta.131-mac.txt</sparkle:fullReleaseNotesLink>
