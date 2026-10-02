@@ -33,7 +33,7 @@ struct SnipCardRow: View {
     @State private var editText = ""
     @State private var temporaryAttachmentURLs: Set<URL> = []
     @State private var editSessionID = UUID()
-    @FocusState private var editorFocused: Bool
+    @State private var editorFocused = false
 
     var body: some View {
         PanelContentCard(

@@ -727,28 +727,21 @@ private struct UpdateCommands: Commands {
     }
 }
 
-private struct SnipCommandModelKey: FocusedValueKey {
-    typealias Value = AppModel
-}
-
-extension FocusedValues {
-    var snipCommandModel: AppModel? {
-        get { self[SnipCommandModelKey.self] }
-        set { self[SnipCommandModelKey.self] = newValue }
-    }
-}
-
 private struct SnipCommands: Commands {
-    @FocusedValue(\.snipCommandModel) private var model
+    @ObservedObject private var commandFocus: PanelSnipCommandFocusState
     @ObservedObject private var panelDialogs: PanelDialogPresentationState
     @ObservedObject var applicationModel: AppModel
     let coordinator: AppCoordinator
 
     init(applicationModel: AppModel, coordinator: AppCoordinator) {
+        _commandFocus = ObservedObject(wrappedValue: coordinator.snipCommandFocus)
         _panelDialogs = ObservedObject(wrappedValue: coordinator.panelDialogs)
         self.applicationModel = applicationModel
         self.coordinator = coordinator
     }
+
+    // The AppKit panel is hosted outside the Settings scene's focused-value tree.
+    private var model: AppModel? { commandFocus.isActive ? applicationModel : nil }
 
     var body: some Commands {
         CommandGroup(after: .pasteboard) {
@@ -767,7 +760,7 @@ private struct SnipCommands: Commands {
         }
         CommandMenu("Snips") {
             Button(SnipCommand.copy.title, systemImage: "doc.on.doc") { perform(.copy) }
-                .keyboardShortcut("c", modifiers: .command)
+                .keyboardShortcut(model == nil ? nil : KeyboardShortcut("c", modifiers: .command))
                 .disabled(!isAvailable(.copy))
             Divider()
             Button(SnipCommand.edit.title) { perform(.edit) }
