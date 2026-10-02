@@ -393,6 +393,42 @@ struct AttachmentThumbnail: View {
     }
 }
 
+/// The identifier versions immutable clipboard bytes; decoding never runs in body.
+struct ClipboardImageThumbnail: View {
+    let data: Data
+    let id: String
+    @Environment(\.displayScale) private var displayScale
+    @State private var image: CGImage?
+    @State private var loadedRequestID: String?
+
+    private var requestID: String { "\(id)|\(displayScale)" }
+
+    var body: some View {
+        Group {
+            if loadedRequestID == requestID, let image {
+                Image(decorative: image, scale: displayScale, orientation: .up)
+                    .resizable().scaledToFill()
+            } else if let cached = AttachmentThumbnailCache.shared.cachedClipboardImage(
+                id: id, size: CGSize(width: 64, height: 64), scale: displayScale
+            ) {
+                Image(decorative: cached, scale: displayScale, orientation: .up)
+                    .resizable().scaledToFill()
+            } else {
+                Image(systemName: "photo").foregroundStyle(.secondary)
+            }
+        }
+        .task(id: requestID) {
+            let requestedID = requestID
+            let thumbnail = await AttachmentThumbnailCache.shared.clipboardImage(
+                data: data, id: id, size: CGSize(width: 64, height: 64), scale: displayScale
+            )
+            guard !Task.isCancelled else { return }
+            image = thumbnail
+            loadedRequestID = requestedID
+        }
+    }
+}
+
 @MainActor
 final class AttachmentThumbnailCache {
     static let tileSize = CGSize(width: 256, height: 256)
@@ -432,6 +468,33 @@ final class AttachmentThumbnailCache {
             Self.versionedKey(url: url, size: size, scale: scale)
         }.value
         resolvedKeys.setObject(key as NSString, forKey: lookup as NSString)
+        return await image(forKey: key) { [decode] in
+            await decode(url, size, scale)
+        }
+    }
+
+    /// `id` must change when the clipboard representation bytes change.
+    func cachedClipboardImage(id: String, size: CGSize, scale: CGFloat) -> CGImage? {
+        images.object(forKey: Self.clipboardKey(id: id, size: size, scale: scale) as NSString)?.image
+    }
+
+    func clipboardImage(data: Data, id: String, size: CGSize, scale: CGFloat) async -> CGImage? {
+        await image(forKey: Self.clipboardKey(id: id, size: size, scale: scale)) {
+            guard !Task.isCancelled,
+                  let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+            return Self.makeImageThumbnail(source: source, size: size, scale: scale)
+        }
+    }
+
+    private nonisolated static func clipboardKey(id: String, size: CGSize, scale: CGFloat) -> String {
+        "clipboard|\(id)|\(pixelLength(size, scale: scale))"
+    }
+
+    private func image(
+        forKey key: String,
+        decode: @escaping @Sendable () async -> CGImage?
+    ) async -> CGImage? {
+        guard !Task.isCancelled else { return nil }
         if let image = images.object(forKey: key as NSString)?.image { return image }
 
         let waiterID = UUID()
@@ -441,9 +504,8 @@ final class AttachmentThumbnailCache {
             inFlight[key] = request
             task = request.task
         } else {
-            let decode = decode
             task = Task.detached(priority: .userInitiated) {
-                await decode(url, size, scale)
+                await decode()
             }
             inFlight[key] = InFlight(task: task, waiters: [waiterID])
         }
@@ -535,6 +597,7 @@ final class AttachmentThumbnailCache {
         let options: CFDictionary = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
             kCGImageSourceThumbnailMaxPixelSize: pixelLength(size, scale: scale),
         ] as CFDictionary
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options)

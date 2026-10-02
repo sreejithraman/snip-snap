@@ -1280,6 +1280,72 @@ final class PanelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testClipboardRestoredFilePreviewKeepsMountedTextExpanded() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let filesRoot = root.appendingPathComponent("ClipboardFiles", isDirectory: true)
+        try FileManager.default.createDirectory(at: filesRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = filesRoot.appendingPathComponent("restored.png")
+        let entry = ClipboardEntry(
+            items: [.init(representations: [.init(type: "public.file-url", data: Data(file.absoluteString.utf8))])],
+            plainText: (1...10).map { "Line \($0): keep this expanded during file restoration." }.joined(separator: "\n"),
+            ownedFiles: [.init(name: "restored.png", relativePath: "restored.png")]
+        )
+        let history = ClipboardHistory(
+            pasteboard: NSPasteboard(name: .init("preview-\(UUID().uuidString)")),
+            storeURL: root.appendingPathComponent("clipboard.json")
+        )
+        let resolved = history.resolvedEntry(entry)
+        XCTAssertEqual(resolved.fileURLs, [file], "Owned URLs resolve even while their bytes are absent")
+        let probe = ClipboardPreviewRefreshProbe(entry: resolved)
+        let host = NSHostingView(rootView: ClipboardPreviewRefreshTestView(probe: probe))
+        host.frame = CGRect(x: 0, y: 0, width: 560, height: 500)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        processLifetimePanelSearchWindows.append(window)
+        try await Task.sleep(for: .milliseconds(300))
+        host.layoutSubtreeIfNeeded()
+        let collapsedHeight = probe.rowFrame.height
+        let textY = probe.rowFrame.minY + 24
+        let textPoint = host.convert(
+            CGPoint(x: probe.rowFrame.minX + 80, y: host.isFlipped ? textY : host.bounds.height - textY),
+            to: nil
+        )
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(
+                with: type, location: textPoint, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 1
+            ))
+            window.sendEvent(event)
+            await Task.yield()
+        }
+        try await Task.sleep(for: .milliseconds(750))
+        let expandedHeight = probe.rowFrame.height
+        XCTAssertGreaterThan(expandedHeight, collapsedHeight + 50, "Clicking the text expands all ten lines")
+        XCTAssertFalse(try clipboardPreviewHasRedPixels(host))
+
+        let image = NSImage(size: CGSize(width: 512, height: 512))
+        image.lockFocus()
+        NSColor.red.setFill()
+        NSRect(origin: .zero, size: image.size).fill()
+        image.unlockFocus()
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation)))
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: file)
+        probe.revision += 1
+        for _ in 0..<60 {
+            if try clipboardPreviewHasRedPixels(host) { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertTrue(try clipboardPreviewHasRedPixels(host), "The visible file tile should recover at the same URL")
+        XCTAssertEqual(probe.rowFrame.height, expandedHeight, accuracy: 1, "Preview refresh must keep all ten lines visible")
+        XCTAssertEqual(probe.entry, history.resolvedEntry(entry))
+        XCTAssertEqual(probe.entry, resolved)
+    }
+
+    @MainActor
     func testColdDragPreviewLookupDoesNotDecodeTheFile() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("Snip SnapDragPreviewTests-\(UUID().uuidString)", isDirectory: true)
@@ -2679,4 +2745,41 @@ final class PanelTests: StoreBackedTestCase {
         let current = (view as? NSScrollView).map { [$0] } ?? []
         return current + view.subviews.flatMap(scrollViews)
     }
+}
+
+@MainActor private final class ClipboardPreviewRefreshProbe: ObservableObject {
+    let entry: ClipboardEntry
+    @Published var revision = 0
+    @Published var rowFrame = CGRect.zero
+    init(entry: ClipboardEntry) { self.entry = entry }
+}
+private struct ClipboardPreviewRefreshTestView: View {
+    @ObservedObject var probe: ClipboardPreviewRefreshProbe
+    private let controller = PanelDragSessionController()
+    var body: some View {
+        ClipboardEntryRow(
+            entry: probe.entry, dragSessionController: controller,
+            commandNumber: nil, onPickCommandNumber: {}, copiedPulse: nil,
+            onPreviewAttachments: { _, _ in }, filePreviewRevision: probe.revision,
+            place: { _ in true }, save: {}
+        )
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { probe.rowFrame = $0 }
+        .padding(20)
+    }
+}
+@MainActor private func clipboardPreviewHasRedPixels(_ host: NSView) throws -> Bool {
+    host.layoutSubtreeIfNeeded()
+    host.displayIfNeeded()
+    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+    host.cacheDisplay(in: host.bounds, to: bitmap)
+    var count = 0
+    for y in stride(from: 0, to: bitmap.pixelsHigh, by: 4) {
+        for x in stride(from: 0, to: bitmap.pixelsWide, by: 4) {
+            if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB),
+               color.redComponent > 0.8, color.greenComponent < 0.2, color.blueComponent < 0.2 {
+                count += 1
+            }
+        }
+    }
+    return count > 50
 }

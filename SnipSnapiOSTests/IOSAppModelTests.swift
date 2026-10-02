@@ -1,4 +1,5 @@
 import Observation
+import ImageIO
 import SnipSnapCore
 import SnipSnapCloud
 import SnipSnapPersistence
@@ -6624,6 +6625,56 @@ final class ListSelectorExpansionTests: XCTestCase {
 
 @MainActor
 final class ClipboardRowPreviewTests: XCTestCase {
+    func testInlineImageRowReusesThumbnailsAfterRefreshAndCopiesOriginalBytes() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let originals = try [(1024, 512), (512, 1024), (1024, 1024)].map {
+            try XCTUnwrap(UIImage(cgImage: thumbnailTestImage(width: $0.0, height: $0.1)).pngData())
+        }
+        let entry = ClipboardEntry(items: originals.map {
+            .init(representations: [.init(type: UTType.png.identifier, data: $0)])
+        }, plainText: "Three original clipboard images")
+        let store = ClipboardHistoryStore(url: root.appendingPathComponent("clipboard.json"))
+        _ = try await store.insert(entry)
+        let preferencesName = UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: preferencesName))
+        defer { preferences.removePersistentDomain(forName: preferencesName) }
+        let model = IOSClipboardModel(rootURL: root, settings: SyncedContentSettingsModel(mode: .localOnly), preferences: preferences)
+        await model.load()
+        let host = UIHostingController(rootView: ClipboardItemRow(entry: entry, model: model, onCopy: {}))
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        host.view.layoutIfNeeded()
+        let size = CGSize(width: 64, height: 64)
+        let scale = host.traitCollection.displayScale
+        let keys = (0..<3).map { "\(entry.id)|\(entry.fingerprint)|image-\($0)" }
+        func cached() -> [CGImage] {
+            keys.compactMap { AttachmentThumbnailCache.shared.cachedClipboardImage(id: $0, size: size, scale: scale) }
+        }
+        for _ in 0..<100 {
+            if cached().count == 3 { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let before = cached()
+        XCTAssertEqual(before.count, 3)
+        let revision = model.filePreviewRevision
+        await model.load()
+        host.view.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertGreaterThan(model.filePreviewRevision, revision)
+        XCTAssertEqual(cached().count, 3)
+        XCTAssertTrue(zip(before, cached()).allSatisfy { $0 === $1 })
+        XCTAssertTrue(cached().allSatisfy { max($0.width, $0.height) <= Int(64 * scale) })
+        let previousPasteboard = UIPasteboard.general.items
+        defer { UIPasteboard.general.items = previousPasteboard }
+        model.copy(entry)
+        XCTAssertEqual(UIPasteboard.general.data(forPasteboardType: UTType.png.identifier, inItemSet: IndexSet(integersIn: 0..<3)), originals)
+        XCTAssertEqual(model.entries.first?.items, entry.items)
+    }
+
     func testMountedRowReloadsRestoredFileAtTheSameURL() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -6682,6 +6733,90 @@ final class ClipboardRowPreviewTests: XCTestCase {
 
 @MainActor
 final class AttachmentThumbnailCacheTests: XCTestCase {
+    func testClipboardThumbnailDownsamplesAndReusesAcrossPreviewRefresh() async throws {
+        let cache = AttachmentThumbnailCache()
+        let source = thumbnailTestImage(width: 1024, height: 512)
+        let data = try XCTUnwrap(UIImage(cgImage: source).pngData())
+        let size = CGSize(width: 64, height: 64)
+        XCTAssertNil(cache.cachedClipboardImage(id: "entry-image", size: size, scale: 3))
+        let loaded = await cache.clipboardImage(data: data, id: "entry-image", size: size, scale: 3)
+        let first = try XCTUnwrap(loaded)
+        XCTAssertEqual(first.width, 192)
+        XCTAssertEqual(first.height, 96)
+        let refreshed = await cache.clipboardImage(data: data, id: "entry-image", size: size, scale: 3)
+        XCTAssertTrue(first === refreshed)
+        XCTAssertTrue(first === cache.cachedClipboardImage(id: "entry-image", size: size, scale: 3))
+        let higherScale = await cache.clipboardImage(data: data, id: "entry-image", size: size, scale: 4)
+        XCTAssertEqual(higherScale?.width, 256)
+        XCTAssertEqual(data, UIImage(cgImage: source).pngData())
+    }
+
+    func testClipboardThumbnailVersionsKeepDifferentPayloadsAndVariantsSeparate() async throws {
+        let cache = AttachmentThumbnailCache()
+        let entryID = UUID()
+        let firstData = try XCTUnwrap(UIImage(cgImage: thumbnailTestImage(width: 500, height: 250)).pngData())
+        let secondData = try XCTUnwrap(UIImage(cgImage: thumbnailTestImage(width: 250, height: 500)).pngData())
+        let entry = ClipboardEntry(id: entryID, items: [.init(representations: [.init(type: "public.png", data: firstData)])])
+        var changed = entry
+        changed.items = [.init(representations: [.init(type: "public.png", data: secondData)])]
+        let size = CGSize(width: 64, height: 64)
+        let first = await cache.clipboardImage(data: firstData, id: "\(entry.id)|\(entry.fingerprint)|image-0", size: size, scale: 2)
+        let replacement = await cache.clipboardImage(data: secondData, id: "\(changed.id)|\(changed.fingerprint)|image-0", size: size, scale: 2)
+        XCTAssertEqual(first?.width, 128)
+        XCTAssertEqual(first?.height, 64)
+        XCTAssertEqual(replacement?.width, 64)
+        XCTAssertEqual(replacement?.height, 128)
+        let alternate = await cache.clipboardImage(data: secondData, id: "\(entry.id)|\(entry.fingerprint)|image-1", size: size, scale: 2)
+        XCTAssertEqual(alternate?.height, 128)
+    }
+
+    func testClipboardThumbnailHonorsImageOrientationAndRejectsInvalidBytes() async throws {
+        let cache = AttachmentThumbnailCache()
+        let bytes = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(bytes, UTType.jpeg.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, thumbnailTestImage(width: 800, height: 400), [kCGImagePropertyOrientation: 6] as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let size = CGSize(width: 64, height: 64)
+        let oriented = await cache.clipboardImage(data: bytes as Data, id: "oriented", size: size, scale: 3)
+        XCTAssertEqual(oriented?.width, 96)
+        XCTAssertEqual(oriented?.height, 192)
+        let invalid = await cache.clipboardImage(data: Data([1, 2, 3]), id: "invalid", size: size, scale: 3)
+        XCTAssertNil(invalid)
+        XCTAssertNil(cache.cachedClipboardImage(id: "invalid", size: size, scale: 3))
+    }
+
+    func testLargeClipboardImageDecodeBenchmark() async throws {
+        let context = CGContext(data: nil, width: 4096, height: 4096, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        for y in stride(from: 0, to: 4096, by: 32) {
+            context.setFillColor(red: CGFloat(y % 256) / 255, green: 0.25, blue: 0.75, alpha: 1)
+            context.fill(CGRect(x: 0, y: y, width: 4096, height: 32))
+        }
+        let data = UIImage(cgImage: context.makeImage()!).jpegData(compressionQuality: 0.9)!
+        var full: [Double] = []
+        var thumb: [Double] = []
+        var warm: [Double] = []
+        let size = CGSize(width: 64, height: 64)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        for _ in 0..<15 {
+            let start = CACurrentMediaTime()
+            for _ in 0..<3 {
+                autoreleasepool {
+                    let image = UIImage(data: data)!
+                    _ = renderer.image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
+                }
+            }
+            full.append((CACurrentMediaTime() - start) * 1000)
+            let cache = AttachmentThumbnailCache()
+            let asyncStart = CACurrentMediaTime()
+            for n in 0..<3 { _ = await cache.clipboardImage(data: data, id: "benchmark-\(n)", size: size, scale: 3) }
+            thumb.append((CACurrentMediaTime() - asyncStart) * 1000)
+            let warmStart = CACurrentMediaTime()
+            for n in 0..<3 { _ = await cache.clipboardImage(data: data, id: "benchmark-\(n)", size: size, scale: 3) }
+            warm.append((CACurrentMediaTime() - warmStart) * 1000)
+        }
+        print("THUMBNAIL-BENCH full-three-ms=\(full) cold-three-ms=\(thumb) warm-three-ms=\(warm) jpeg-bytes=\(data.count)")
+    }
+
     func testCachedThumbnailReturnsWhileAnotherImageIsDecoding() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "SnipSnapThumbnailWait-\(UUID().uuidString)", isDirectory: true

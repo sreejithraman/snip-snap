@@ -225,11 +225,10 @@ private struct ClipboardItemPreviews: View {
     var body: some View {
         CompactItemPreviews(items: previews) { preview in
             if let data = preview.imageData {
-                if let image = UIImage(data: data) {
-                    Image(uiImage: image).resizable().scaledToFill()
-                } else {
-                    Image(systemName: "photo").foregroundStyle(.secondary)
-                }
+                ClipboardImageThumbnail(
+                    data: data,
+                    id: "\(entry.id)|\(entry.fingerprint)|\(preview.id)"
+                )
             } else if let url = preview.fileURL {
                 AttachmentThumbnail(url: url)
             }

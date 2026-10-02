@@ -647,6 +647,7 @@ struct ContentView: View {
             captureScreenAreaForEdit: captureScreenAreaForEdit,
             bottomContentInset: model.isSearchExpanded ? 0 : inlineEntryHeight(for: listID),
             clipboardEntries: model.clipboardSearchMatches,
+            clipboardFilePreviewRevision: clipboardHistory.filePreviewRevision,
             onPreviewAttachments: openAttachmentPreview,
             onRemovePreviewURL: removePreviewURL
         )
