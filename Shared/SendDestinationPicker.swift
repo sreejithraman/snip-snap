@@ -37,7 +37,7 @@ struct ListDestinationLabel: View {
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
         } icon: {
-            Image(systemName: list.systemImage)
+            Image(systemName: list.displaySystemImage)
                 .foregroundStyle(list.accent.color)
                 .frame(width: 24)
         }

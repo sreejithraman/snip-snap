@@ -585,7 +585,7 @@ nonisolated private struct GatheringTransferCard: View, Animatable {
         HStack(alignment: .top, spacing: 12 - 4 * phase) {
             ZStack {
                 if snip.isPinned && !sourceIsSelecting {
-                    SnipCircularControlLabel(systemImage: "doc.on.doc", appearance: appearance)
+                    SnipCircularControlLabel(systemImage: "pin.fill", appearance: appearance)
                         .opacity(1 - controlPhase)
                 } else {
                     SnipCompletionIcon(isDone: snip.isDone, appearance: appearance)
@@ -596,8 +596,10 @@ nonisolated private struct GatheringTransferCard: View, Animatable {
             }
             SnipContentView(
                 snip: snip, model: model, isRecovered: model.isRecoveredSnip(snip.id),
-                lineLimit: phase < 0.75 ? 3 : nil
+                lineLimit: phase < 0.75 ? 3 : nil,
+                showsPin: sourceIsSelecting || controlPhase > 0
             )
+            .padding(.top, 8 * (1 - phase))
             .frame(minHeight: 44, alignment: .topLeading)
         }
         .padding(.horizontal, 12 * phase)

@@ -10,6 +10,15 @@ import XCTest
 
 @MainActor
 final class IOSAppModelTests: XCTestCase {
+    func testUnsupportedListIconKeepsItsSavedChoiceAndVisibleIdentity() {
+        let savedSymbol = "snipsnap.future-symbol"
+        let list = SnipList(id: UUID(), name: "Future", systemImage: savedSymbol, position: 1)
+
+        XCTAssertEqual(list.displaySystemImage, "list.bullet")
+        XCTAssertEqual(list.systemImage, savedSymbol)
+        XCTAssertEqual(SnipList.inbox.displaySystemImage, SnipList.inbox.systemImage)
+    }
+
     func testPageSelectionKeepsTheLastListWhileClipboardIsActive() async throws {
         let model = makeModel(library: ModelTestLibrary())
         await model.load()

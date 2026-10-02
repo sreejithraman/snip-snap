@@ -27,7 +27,7 @@ private enum ListSelectorItem: Identifiable {
     var systemImage: String {
         switch self {
         case .clipboard: "clipboard"
-        case .list(let list): list.systemImage
+        case .list(let list): list.displaySystemImage
         }
     }
     var color: Color {

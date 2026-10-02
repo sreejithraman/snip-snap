@@ -42,7 +42,7 @@ struct ListSidebarView: View {
                     Label {
                         Text(list.displayName)
                     } icon: {
-                        Image(systemName: list.systemImage).foregroundStyle(list.accent.color)
+                        Image(systemName: list.displaySystemImage).foregroundStyle(list.accent.color)
                     }
                 }
                 .tint(list.accent.color)

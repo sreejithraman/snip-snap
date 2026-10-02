@@ -38,25 +38,27 @@ struct PanelLeadingChip<Content: View>: View {
 
 struct PanelCopyButton: View {
     let isCopied: Bool
+    var isPinned = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             PanelLeadingChip {
-                Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+                Image(systemName: isCopied ? "checkmark" : (isPinned ? "pin.fill" : "doc.on.doc"))
                     .font(.system(size: 10, weight: .medium))
                     .symbolRenderingMode(.monochrome)
             }
         }
         .buttonStyle(.plain)
         .focusable(false)
-        .help(isCopied ? "Copied" : "Copy")
-        .accessibilityLabel(isCopied ? "Copied" : "Copy")
+        .help(isCopied ? "Copied" : (isPinned ? "Copy Pinned Snip" : "Copy"))
+        .accessibilityLabel(isCopied ? "Copied" : (isPinned ? "Copy Pinned Snip" : "Copy"))
     }
 }
 
 struct PanelCommandNumberButton: View {
     let number: Int
+    var isPinned = false
     let action: () -> Void
 
     var body: some View {
@@ -65,9 +67,21 @@ struct PanelCommandNumberButton: View {
                 Text(String(number))
                     .font(.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
             }
+            .overlay(alignment: .bottomTrailing) {
+                if isPinned {
+                    Image(systemName: "pin.fill")
+                        .font(.system(size: 7, weight: .semibold))
+                        .padding(2)
+                        .background(.background, in: Circle())
+                        .offset(x: 3, y: 3)
+                        .accessibilityHidden(true)
+                }
+            }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(String(localized: "Copy \(number)"))
+        .accessibilityLabel(isPinned
+            ? String(localized: "Copy Pinned Snip \(number)")
+            : String(localized: "Copy \(number)"))
     }
 }
 
@@ -75,6 +89,7 @@ struct PanelCommandNumberButton: View {
 /// A running copy confirmation keeps the chip visible and stands the number down.
 struct PanelCopySlot: View {
     let isCopied: Bool
+    var isPinned = false
     let commandNumber: Int?
     let copy: () -> Void
     let onPickCommandNumber: () -> Void
@@ -83,10 +98,11 @@ struct PanelCopySlot: View {
         if let commandNumber, !isCopied {
             PanelCommandNumberButton(
                 number: commandNumber,
+                isPinned: isPinned,
                 action: onPickCommandNumber
             )
         } else {
-            PanelCopyButton(isCopied: isCopied, action: copy)
+            PanelCopyButton(isCopied: isCopied, isPinned: isPinned, action: copy)
         }
     }
 }
