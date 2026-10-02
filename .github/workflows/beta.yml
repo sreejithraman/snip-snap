@@ -49,8 +49,14 @@ jobs:
       - name: Resolve version and build
         id: release
         if: steps.source.outputs.current == 'true'
+        shell: zsh {0}
         run: |
-          version="$(plutil -extract version raw -o - release.json)"
+          set -euo pipefail
+          source scripts/release-policy.sh
+          release_policy_load_manifest release.json
+          release_policy_require_project_versions Config/Shared.xcconfig
+          release_policy_require_new_version "$PWD"
+          version="$RELEASE_VERSION"
           build="$(./scripts/release-build-number.sh "$GITHUB_RUN_NUMBER")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "build=$build" >> "$GITHUB_OUTPUT"
