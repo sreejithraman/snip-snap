@@ -415,10 +415,9 @@ final class IOSCopyShareCoordinator {
     }
 
     @discardableResult
-    func copyTextFromNotice(model: IOSAppModel) async -> Bool {
+    func copyTextFromNotice(_ notice: IOSUnavailableFilesNotice, model: IOSAppModel) async -> Bool {
         let generation = beginCopyRequest()
         let interaction = model.haptics.beginInteraction()
-        guard let notice = unavailableFilesNotice else { return false }
         unavailableFilesNotice = nil
         return await writeAndMarkDone(
             notice.payload.textItems,

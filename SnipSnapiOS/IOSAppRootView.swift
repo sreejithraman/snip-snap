@@ -74,7 +74,7 @@ struct IOSAppRootView: View {
         }
     }
 
-    var body: some View {
+    private var appPresentation: some View {
         searchNavigation
         .sendDestinationPickerHost()
         .tint(SnipSnapTheme.controlTint)
@@ -224,20 +224,24 @@ struct IOSAppRootView: View {
         } message: {
             Text(model.errorMessage ?? String(localized: "Try again."))
         }
+    }
+
+    var body: some View {
+        appPresentation
         .alert(
             "Some Files Are Unavailable",
             isPresented: Binding(
                 get: { copyShare.unavailableFilesNotice != nil },
                 set: { if !$0 { copyShare.cancelUnavailableFilesNotice() } }
-            )
-        ) {
+            ),
+            presenting: copyShare.unavailableFilesNotice
+        ) { notice in
             Button("Copy Text Only") {
-                Task { await copyShare.copyTextFromNotice(model: model) }
+                Task { await copyShare.copyTextFromNotice(notice, model: model) }
             }
             Button("Cancel", role: .cancel) { copyShare.cancelUnavailableFilesNotice() }
-        } message: {
-            Text(copyShare.unavailableFilesNotice?.message
-                ?? String(localized: "Snip Snap couldn’t read one or more files."))
+        } message: { notice in
+            Text(notice.message)
         }
         .alert(
             "Couldn’t Copy",

@@ -3292,9 +3292,32 @@ final class IOSAppModelTests: XCTestCase {
         await coordinator.copy(snips: [missing], model: model)
         XCTAssertEqual(pasteboard.writes.count, writeCount)
         XCTAssertEqual(coordinator.unavailableFilesNotice?.payload.unavailableFileNames, ["missing.txt"])
-        await coordinator.copyTextFromNotice(model: model)
+        await coordinator.copyTextFromNotice(try XCTUnwrap(coordinator.unavailableFilesNotice), model: model)
         XCTAssertEqual(pasteboard.writes.last, [.text("Safe text")])
         XCTAssertNil(coordinator.unavailableFilesNotice)
+    }
+
+    func testCopyTextOnlyRetainsSelectedNoticeAfterAlertDismissal() async throws {
+        let attachment = try testAttachment(id: UUID(), fileName: "missing.txt")
+        let snip = Snip(content: "Safe text", origin: .quickEntry, attachments: [attachment])
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [snip]))
+        await model.load()
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+        let initialCopy = await coordinator.copy(snips: [snip], model: model)
+        XCTAssertFalse(initialCopy)
+        let selectedNotice = try XCTUnwrap(coordinator.unavailableFilesNotice)
+
+        // SwiftUI clears the presentation binding before the button's Task runs.
+        coordinator.cancelUnavailableFilesNotice()
+        XCTAssertTrue(pasteboard.writes.isEmpty)
+        XCTAssertFalse(try XCTUnwrap(model.snips.first).isDone)
+        let copied = await coordinator.copyTextFromNotice(selectedNotice, model: model)
+
+        XCTAssertTrue(copied)
+        XCTAssertEqual(pasteboard.writes, [[.text("Safe text")]])
+        XCTAssertTrue(try XCTUnwrap(model.snips.first).isDone)
+        XCTAssertEqual(model.toast?.message, "Copied Text")
     }
 
     func testCopyChecksSnipAndCheckingCopiesSnip() async throws {
@@ -3497,7 +3520,7 @@ final class IOSAppModelTests: XCTestCase {
 
         let edited = await model.editSnip(original, content: "Edited text")
         XCTAssertTrue(edited)
-        let copiedText = await coordinator.copyTextFromNotice(model: model)
+        let copiedText = await coordinator.copyTextFromNotice(try XCTUnwrap(coordinator.unavailableFilesNotice), model: model)
 
         XCTAssertTrue(copiedText)
         XCTAssertEqual(pasteboard.writes, [[.text("Original text")]])
@@ -5218,7 +5241,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         coordinator.cancelUnavailableFilesNotice()
         XCTAssertEqual(feedback.event, warning)
         await coordinator.copy(snips: [snip], model: model)
-        await coordinator.copyTextFromNotice(model: model)
+        await coordinator.copyTextFromNotice(try XCTUnwrap(coordinator.unavailableFilesNotice), model: model)
         XCTAssertEqual(feedback.event?.kind, .copied)
     }
 

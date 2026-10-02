@@ -893,6 +893,16 @@ final class SnipSnapiOSUITests: XCTestCase {
         for _ in 0..<6 where !(named.exists && named.isHittable) {
             scrollShareApps(in: host, towardLeft: false)
         }
+        if !(named.exists && named.isHittable) {
+            let hierarchy = XCTAttachment(string: "Expected activity: \(shareAppName) or Save to \(shareAppName)\n" + host.debugDescription)
+            hierarchy.name = "Share activity hierarchy"
+            hierarchy.lifetime = .keepAlways
+            add(hierarchy)
+            let screenshot = XCTAttachment(screenshot: host.screenshot())
+            screenshot.name = "Share activity discovery failure"
+            screenshot.lifetime = .keepAlways
+            add(screenshot)
+        }
         return named
     }
 
@@ -930,6 +940,17 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Cancel"].exists)
         app.buttons["Copy Text Only"].tap()
         assertCopyStatus("Copied Text", in: app)
+        let copied = collectionRow(named: "Copy unavailable fixture", in: app)
+        let done = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Done"), object: copied
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [done], timeout: 3), .completed)
+
+        let composer = app.descendants(matching: .any)["composer-text"].firstMatch
+        composer.tap()
+        composer.press(forDuration: 1)
+        app.menuItems["Paste"].tap()
+        XCTAssertEqual(composer.value as? String, "Copy unavailable fixture")
     }
 
     func testContextEditUsesInlineDraftAndPreservesAttachmentsOnCancel() {
@@ -2156,6 +2177,47 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["composer-text"].isHittable)
     }
 
+    func testListIconBrowserWaitsForSearchToCloseAfterRotation() {
+        continueAfterFailure = false
+        let app = launchApp(withCopyShareFixtures: true)
+        createList("Reading", in: app)
+        openListEditor(named: "Reading", in: app)
+        let field = app.textFields["list-name"]
+        field.tap()
+        field.typeText(" Notes")
+        let editedName = field.value as? String
+        app.buttons["list-color-blue"].tap()
+        app.buttons["choose-list-icon"].tap()
+        XCTAssertTrue(app.textFields["list-icon-search"].waitForExistence(timeout: 3))
+
+        let search = openSearch(in: app)
+        search.typeText("Copy text\n")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let usableSearch = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "hittable == true"), object: search
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [usableSearch], timeout: 3), .completed,
+                       "Rotation must leave global search usable.")
+        XCTAssertFalse(app.navigationBars["Choose List Icon"].exists)
+        closeSearch(in: app)
+
+        let browser = app.navigationBars["Choose List Icon"]
+        if !browser.waitForExistence(timeout: 1) {
+            app.buttons["choose-list-icon"].tap()
+        }
+        XCTAssertTrue(browser.waitForExistence(timeout: 3))
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        XCTAssertEqual(field.value as? String, editedName)
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertTrue(app.buttons["list-color-blue"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["list-color-blue"].isSelected)
+        XCTAssertTrue(app.buttons["choose-list-icon"].label.contains("List Bullet"))
+        XCTAssertTrue(app.buttons["save-list"].isHittable)
+        app.buttons["save-list"].tap()
+        XCTAssertTrue(app.navigationBars["Reading Notes"].waitForExistence(timeout: 3))
+    }
+
     func testListEditorIconSearchKeepsControlsReachable() {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .landscapeLeft
@@ -2167,12 +2229,26 @@ final class SnipSnapiOSUITests: XCTestCase {
         let search = app.textFields["list-icon-search"]
         XCTAssertTrue(search.waitForExistence(timeout: 3))
         search.tap()
-        search.typeText("stethoscope.circle\n")
-        let star = app.buttons["list-icon-stethoscope.circle"].firstMatch
+        search.typeText("star\n")
+        XCTAssertTrue(app.keyboards.element.waitForNonExistence(timeout: 3))
+        XCTAssertEqual(search.value as? String, "star")
+        let results = app.scrollViews["list-icon-results"]
+        let star = results.buttons["list-icon-star.fill"].firstMatch
+        for _ in 0..<6 where !star.isHittable {
+            results.swipeUp()
+        }
         XCTAssertTrue(star.waitForExistence(timeout: 3))
+        XCTAssertTrue(star.isHittable, "Filtered icons must be reachable in landscape.")
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Landscape filtered Star icon"
+        proof.lifetime = .keepAlways
+        add(proof)
         star.tap()
+        XCTAssertTrue(app.buttons["save-list"].isHittable)
         app.buttons["save-list"].tap()
         XCTAssertTrue(app.textFields["list-name"].waitForNonExistence(timeout: 3))
+        openListEditor(named: "Reading", in: app)
+        XCTAssertTrue(app.buttons["choose-list-icon"].label.contains("Star"))
     }
 
     func testLibraryActionsOfferSyncOnlyWhileICloudIsEnabled() {
@@ -2637,7 +2713,14 @@ final class SnipSnapiOSUITests: XCTestCase {
             .matching(identifier: "app-toast")
             .matching(NSPredicate(format: "label == %@", label))
             .firstMatch
-        XCTAssertTrue(status.waitForExistence(timeout: 3))
+        let found = status.waitForExistence(timeout: 3)
+        if !found {
+            let screenshot = XCTAttachment(screenshot: app.screenshot())
+            screenshot.name = "Copy status lookup failure"
+            screenshot.lifetime = .keepAlways
+            add(screenshot)
+        }
+        XCTAssertTrue(found, "Expected the \(label) toast after copying.")
     }
 
     private func activityView(in app: XCUIApplication) -> XCUIElement {
@@ -2667,7 +2750,10 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         let safari = shareURLFromSafari(token: token)
         let shareText = safari.textViews["share-text"]
-        XCTAssertTrue(shareText.waitForExistence(timeout: 8))
+        XCTAssertTrue(
+            shareText.waitForExistence(timeout: 8),
+            "Safari found the \(shareAppName) activity, but its extension editor did not appear."
+        )
         let loadedText = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "value CONTAINS %@", token),
             object: shareText
@@ -2742,7 +2828,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         )
         share.tap()
         let activity = shareActivityCell(in: safari)
-        XCTAssertTrue(activity.waitForExistence(timeout: 8))
+        XCTAssertTrue(
+            activity.waitForExistence(timeout: 8),
+            "Safari did not expose \(shareAppName) or Save to \(shareAppName)."
+        )
+        XCTAssertTrue(activity.isHittable, "The \(shareAppName) Share activity must be reachable.")
         activity.tap()
         return safari
     }
@@ -2806,46 +2896,49 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     func testSearchDoneFilter() {
         continueAfterFailure = false
-        let app = launchApp()
-        createSnip("Alpha plan", in: app)
-        returnToCollection(in: app)
-        createSnip("Beta note", in: app)
-        returnToCollection(in: app)
+        let app = launchApp(withCopyShareFixtures: true)
+        XCTAssertTrue(collectionRow(named: "Copy text fixture", in: app).waitForExistence(timeout: 5))
 
         XCTAssertTrue(app.buttons["workflow-options"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["library-actions"].exists)
         _ = openSearch(in: app)
         closeSearch(in: app)
         let search = openSearch(in: app)
-        search.typeText("Alpha")
-        let alphaResult = row(named: "Alpha plan", in: app)
-        XCTAssertTrue(alphaResult.isHittable, "A matching search result should be usable.")
-        XCTAssertFalse(collectionRow(named: "Beta note", in: app).exists)
+        search.typeText("Copy text")
+        XCTAssertEqual(search.value as? String, "Copy text")
+        let results = app.descendants(matching: .any)["global-search-results"]
+        XCTAssertTrue(results.waitForExistence(timeout: 3))
+        let matchingResult = results.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Copy text fixture")
+        ).firstMatch
+        XCTAssertTrue(matchingResult.waitForExistence(timeout: 3))
+        XCTAssertTrue(matchingResult.isHittable, "A matching search result should be usable.")
+        XCTAssertFalse(results.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Copy mixed fixture")
+        ).firstMatch.exists)
         if app.keyboards.buttons["Search"].exists {
             app.keyboards.buttons["Search"].tap()
         } else {
             search.typeText("\n")
         }
         XCTAssertTrue(app.keyboards.element.waitForNonExistence(timeout: 3))
+        closeSearch(in: app)
         let workflowOptions = app.buttons["workflow-options"]
-        if !workflowOptions.waitForExistence(timeout: 1) {
-            closeSearch(in: app)
-        }
         XCTAssertTrue(workflowOptions.waitForExistence(timeout: 3))
 
-        let alpha = app.buttons.matching(
-            NSPredicate(format: "label BEGINSWITH %@", "Alpha plan")
-        ).firstMatch
-        alpha.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.2)).tap()
+        let copied = row(named: "Copy text fixture", in: app)
+        copied.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "completion-")
+        ).firstMatch.tap()
         let becameDone = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "value == %@", "Done"),
-            object: alpha
+            object: copied
         )
         XCTAssertEqual(XCTWaiter.wait(for: [becameDone], timeout: 3), .completed)
         workflowOptions.tap()
         app.buttons["filter-done"].tap()
-        XCTAssertTrue(collectionRow(named: "Alpha plan", in: app).waitForExistence(timeout: 3))
-        XCTAssertFalse(collectionRow(named: "Beta note", in: app).exists)
+        XCTAssertTrue(collectionRow(named: "Copy text fixture", in: app).waitForExistence(timeout: 3))
+        XCTAssertFalse(collectionRow(named: "Copy mixed fixture", in: app).exists)
 
     }
 
