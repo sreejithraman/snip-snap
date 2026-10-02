@@ -4,6 +4,21 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.1</title>
+            <pubDate>Fri, 02 Oct 2026 18:52:53 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.143</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.6.1-beta.143-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>143</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.143/Snip-Snap-0.6.1.zip" length="15782628" type="application/octet-stream" sparkle:edSignature="eOclJMZAif9KrvZ/PK4nmxPdB2+7Q864Z7hyolr0c1Vz39wCmQWuXUMGNFJYOnzwhMSUeplE+mIdaopTavlDBw=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 143 — Mac
+
+- Unify floating glass menus and add list management
+</description>
+        </item>
+        <item>
+            <title>0.6.1</title>
             <pubDate>Fri, 02 Oct 2026 15:45:24 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.142</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.6.1-beta.142-mac.txt</sparkle:fullReleaseNotesLink>
