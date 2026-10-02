@@ -93,6 +93,15 @@ private final class PanelTextValue {
 }
 
 final class PanelTests: StoreBackedTestCase {
+    func testUnsupportedListIconKeepsItsSavedChoiceAndVisibleIdentity() {
+        let savedSymbol = "snipsnap.future-symbol"
+        let list = SnipList(id: UUID(), name: "Future", systemImage: savedSymbol, position: 1)
+
+        XCTAssertEqual(list.displaySystemImage, "list.bullet")
+        XCTAssertEqual(list.systemImage, savedSymbol)
+        XCTAssertEqual(SnipList.inbox.displaySystemImage, SnipList.inbox.systemImage)
+    }
+
     func testTrackpadSwipeSwitchesOncePerHorizontalGesture() {
         var swipe = PanelTrackpadSwipeState()
 
@@ -632,23 +641,26 @@ final class PanelTests: StoreBackedTestCase {
         let idle = SnipListIconOptions.displayedCategories(query: "  ", recentIcons: recents)
         XCTAssertEqual(idle.first?.title, "Recent")
         XCTAssertEqual(idle.first?.icons, recents)
-        XCTAssertEqual(
-            idle.dropFirst().map(\.title),
-            SnipListIconOptions.categories.map(\.title)
-        )
+        XCTAssertEqual(idle.flatMap(\.icons).count, 30)
+        XCTAssertEqual(Set(idle.flatMap(\.icons)).count, idle.flatMap(\.icons).count)
+
+        let fullCatalogResult = SnipListIconOptions.displayedCategories(query: "stethoscope.circle")
+        XCTAssertTrue(fullCatalogResult.flatMap(\.icons).contains("stethoscope.circle"))
+        XCTAssertGreaterThan(SnipListIconOptions.availableIcons.count, 6000)
+        XCTAssertEqual(Set(SnipListIconOptions.availableIcons).count, SnipListIconOptions.availableIcons.count)
 
         let byKeyword = SnipListIconOptions.displayedCategories(
             query: "dinosaur",
             recentIcons: recents
         )
-        XCTAssertEqual(byKeyword.map(\.title), ["Animals & Nature"])
+        XCTAssertEqual(byKeyword.map(\.title), ["Search Results"])
         XCTAssertTrue(byKeyword.first?.icons.contains("lizard.fill") == true)
 
         let byCategory = SnipListIconOptions.displayedCategories(
             query: "Smileys",
             recentIcons: recents
         )
-        XCTAssertEqual(byCategory.map(\.title), ["Smileys & Emotion"])
+        XCTAssertEqual(byCategory.map(\.title), ["Search Results"])
         XCTAssertTrue(
             SnipListIconOptions.displayedCategories(
                 query: "zzzz-nope",

@@ -18,7 +18,7 @@ struct SnipListIconPicker: View {
             Label {
                 Text("Icon")
             } icon: {
-                Image(systemName: selection).foregroundStyle(accent)
+                Image(systemName: ListIconSymbol.supportedName(selection)).foregroundStyle(accent)
             }
         }
         .accessibilityIdentifier("choose-list-icon")
@@ -34,13 +34,17 @@ struct SnipListIconBrowser: View {
     @State private var query = ""
 
     var body: some View {
-        ScrollView {
-            ListIconGrid(selection: $selection, query: query) { dismiss() }
+        VStack(spacing: 0) {
+            ListIconSearchField(query: $query)
                 .padding(SnipSnapSpacing.paneContentInset)
+            ScrollView {
+                ListIconGrid(selection: $selection, query: query) { dismiss() }
+                    .padding(SnipSnapSpacing.paneContentInset)
+            }
+            .scrollDismissesKeyboard(.interactively)
         }
         .navigationTitle("Choose List Icon")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $query, prompt: "Search icons")
     }
 }
 
@@ -50,12 +54,12 @@ struct InlineListIconPicker: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            TextField("Search icons", text: $query)
-                .textFieldStyle(.roundedBorder)
+            ListIconSearchField(query: $query)
             ScrollView {
                 ListIconGrid(selection: $selection, query: query)
             }
             .frame(height: 192)
+            .scrollDismissesKeyboard(.interactively)
         }
     }
 }

@@ -45,6 +45,7 @@ struct SnipCardRow: View {
             if snip.isPinned {
                 PanelCopySlot(
                     isCopied: isCopied,
+                    isPinned: true,
                     commandNumber: commandNumber,
                     copy: {
                         Task {
@@ -97,31 +98,8 @@ struct SnipCardRow: View {
                         reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom))
                     )
             } else {
-                HStack(alignment: .top, spacing: SnipSnapSpacing.relatedContent) {
-                    draggableBody
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if snip.isPinned || isRecovered {
-                        VStack(alignment: .trailing, spacing: 4) {
-                            if snip.isPinned {
-                                Image(systemName: "pin.fill")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                    .padding(6)
-                                    .background(.thinMaterial, in: Circle())
-                                    .accessibilityLabel("Pinned Snip")
-                            }
-                            if isRecovered {
-                                Text("Recovered")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 3)
-                                    .background(.thinMaterial, in: Capsule())
-                                    .accessibilityLabel("Recovered Snip")
-                            }
-                        }
-                    }
-                }
+                draggableBody
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 .transition(.opacity)
             }
         }
@@ -156,7 +134,22 @@ struct SnipCardRow: View {
     }
 
     private var draggableBody: some View {
-        PanelContentCardMain {
+        VStack(alignment: .leading, spacing: 8) {
+            if !snip.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                ExpandableSnipText(
+                    text: snip.content,
+                    lineLimit: 5,
+                    isDone: snip.isDone && !snip.isPinned,
+                    strikethroughColor: SnipSnapColors.doneStrikethrough,
+                    lineSpacing: 2,
+                    accessibilityIdentifier: "snip-text-\(snip.id)",
+                    onActivate: onSelectForExpansion,
+                    onDoubleClick: onOpen
+                )
+                .font(.body)
+                .foregroundStyle(SnipSnapColors.textPrimary)
+                .opacity(snip.isDone && !snip.isPinned ? SnipSnapColors.doneTextOpacity : 1)
+            }
             if !snip.attachments.isEmpty {
                 AttachmentPreviewStrip(
                     items: attachmentPreviewItems,
@@ -168,24 +161,14 @@ struct SnipCardRow: View {
                     }
                 )
             }
-        } content: {
-            VStack(alignment: .leading, spacing: 4) {
-                if snip.origin == .agent {
-                    AgentSnipContextLabel(contextLabel: snip.agentContextLabel)
-                }
-                ExpandableSnipText(
-                    text: snip.content,
-                    lineLimit: 5,
-                    isDone: snip.isDone && !snip.isPinned,
-                    strikethroughColor: SnipSnapColors.doneStrikethrough,
-                    lineSpacing: 2,
-                    accessibilityIdentifier: "snip-text-\(snip.id)",
-                    onActivate: onSelectForExpansion,
-                    onDoubleClick: onOpen
-                )
-                .foregroundStyle(SnipSnapColors.textPrimary)
-                .opacity(snip.isDone && !snip.isPinned ? SnipSnapColors.doneTextOpacity : 1)
-            }
+            SnipRowMetadata(
+                date: snip.updatedAt,
+                isPinned: snip.isPinned,
+                isAgent: snip.origin == .agent,
+                agentContextLabel: snip.agentContextLabel,
+                isRecovered: isRecovered,
+                showsPin: false
+            )
         }
     }
 

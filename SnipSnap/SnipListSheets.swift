@@ -64,8 +64,7 @@ private struct SnipListIconBrowser: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TextField("Search icons", text: $query)
-                .textFieldStyle(.roundedBorder)
+            ListIconSearchField(query: $query)
                 .focused($searchIsFocused)
                 .submitScope()
                 .padding(12)
@@ -98,7 +97,7 @@ private struct SnipListIconBrowser: View {
                 }
             }
         }
-        .frame(width: 360, height: 420)
+        .frame(width: 360, height: 340)
         .onAppear {
             query = ""
             recentIcons = SnipListIconOptions.recentIcons()
@@ -216,7 +215,7 @@ struct SnipListEditSheet: View {
 
             HStack(spacing: SnipSnapSpacing.paneContentInset) {
                 Button { showsIcons = true } label: {
-                    Image(systemName: systemImage)
+                    Image(systemName: ListIconSymbol.supportedName(systemImage))
                         .font(.system(size: 24, weight: .medium))
                         .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: systemImage)

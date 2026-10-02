@@ -2164,11 +2164,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         openListEditor(named: "Reading", in: app)
         app.buttons["choose-list-icon"].tap()
 
-        let search = app.textFields["Search icons"]
+        let search = app.textFields["list-icon-search"]
         XCTAssertTrue(search.waitForExistence(timeout: 3))
         search.tap()
-        search.typeText("star")
-        let star = app.buttons["list-icon-star.fill"].firstMatch
+        search.typeText("stethoscope.circle\n")
+        let star = app.buttons["list-icon-stethoscope.circle"].firstMatch
         XCTAssertTrue(star.waitForExistence(timeout: 3))
         star.tap()
         app.buttons["save-list"].tap()

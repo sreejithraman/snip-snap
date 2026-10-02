@@ -11,6 +11,7 @@ struct SnipRow: View {
     let model: IOSAppModel
     let isRecovered: Bool
     var showsStatusIcon = true
+    var showsPinInMetadata = true
     var allowsTextExpansion = true
     var isGathering = false
     var isReordering = false
@@ -32,8 +33,8 @@ struct SnipRow: View {
                     .accessibilityHidden(true)
             } else if showsStatusIcon {
                 if snip.isPinned, let onCopy {
-                    SnipCopyControl(appearance: appearance, action: onCopy)
-                    .accessibilityLabel("Copy Snip")
+                    SnipCopyControl(appearance: appearance, isPinned: true, action: onCopy)
+                    .accessibilityLabel("Copy Pinned Snip")
                     .accessibilityIdentifier("copy-pinned-snip-\(snip.id)")
                 } else {
                     Button {
@@ -62,8 +63,10 @@ struct SnipRow: View {
                 model: model,
                 isRecovered: isRecovered,
                 allowsTextExpansion: allowsTextExpansion && !isReordering && !isGathering,
-                onPreviewAttachment: onPreviewAttachment
+                onPreviewAttachment: onPreviewAttachment,
+                showsPin: showsPinInMetadata && (isGathering || !showsStatusIcon || onCopy == nil)
             )
+            .padding(.top, showsStatusIcon || isGathering ? 8 : 0)
         }
         .padding(.vertical, 4)
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { sourceFrameChanged?($0) }
@@ -85,6 +88,7 @@ struct SnipContentView: View {
     var loadsAttachmentPreviews = true
     var allowsTextExpansion = false
     var onPreviewAttachment: ((SnipAttachment) -> Void)? = nil
+    var showsPin = true
 
     static func accessibilityLabel(for snip: Snip) -> String {
         let text = snip.content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -125,23 +129,16 @@ struct SnipContentView: View {
                         .multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-            } else {
-                attachmentPreviews
             }
+            attachmentPreviews
             SnipRowMetadata(
                 date: snip.updatedAt,
                 isPinned: snip.isPinned,
                 isAgent: snip.origin == .agent,
-                agentContextLabel: snip.agentContextLabel
+                agentContextLabel: snip.agentContextLabel,
+                isRecovered: isRecovered,
+                showsPin: showsPin
             )
-            if isRecovered {
-                Label("Recovered", systemImage: "arrow.uturn.backward.circle.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
-            }
-            if hasVisibleText {
-                attachmentPreviews
-            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -259,15 +256,17 @@ struct SnipCompletionIcon: View {
 
 struct SnipCopyControl: View {
     let appearance: SnipListAppearance
+    var isPinned = false
     let action: () -> Void
 
-    init(appearance: SnipListAppearance = SnipListAppearance(preset: nil), action: @escaping () -> Void) {
+    init(appearance: SnipListAppearance = SnipListAppearance(preset: nil), isPinned: Bool = false, action: @escaping () -> Void) {
         self.appearance = appearance
+        self.isPinned = isPinned
         self.action = action
     }
 
     var body: some View {
-        SnipCircularControl(systemImage: "doc.on.doc", appearance: appearance, action: action)
+        SnipCircularControl(systemImage: isPinned ? "pin.fill" : "doc.on.doc", appearance: appearance, action: action)
     }
 }
 
@@ -303,29 +302,5 @@ struct SnipCircularControlLabel: View {
         .frame(width: controlDiameter, height: controlDiameter)
         .frame(width: max(44, controlDiameter), height: max(44, controlDiameter))
         .contentShape(Rectangle())
-    }
-}
-
-struct SnipRowMetadata: View {
-    let date: Date
-    let isPinned: Bool
-    var isAgent = false
-    var agentContextLabel: String? = nil
-
-    var body: some View {
-        HStack(spacing: 6) {
-            if isPinned {
-                Image(systemName: "pin.fill")
-                    .imageScale(.small)
-                    .accessibilityHidden(true)
-            }
-            Text(date, format: .relative(presentation: .named))
-            if isAgent {
-                AgentSnipContextLabel(contextLabel: agentContextLabel)
-                    .accessibilityHidden(true)
-            }
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
     }
 }

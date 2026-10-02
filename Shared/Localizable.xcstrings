@@ -1,6 +1,12 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Suggested" : {},
+    "Search Results" : {},
+    "Search %lld icons" : {},
+    "Clear icon search" : {},
+    "Copy Pinned Snip" : {},
+    "Copy Pinned Snip %lld" : {},
     "Backups" : {},
     "Couldn’t Complete Backup" : {},
     "Create Backup" : {},

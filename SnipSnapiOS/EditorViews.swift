@@ -207,11 +207,12 @@ struct InlineSnipEditor: View {
             if draft.original.isPinned {
                 SnipCopyControl(
                     appearance: listAppearance(for: draft.original, in: model.lists),
+                    isPinned: true,
                     action: {}
                 )
                 .disabled(true)
                 .opacity(0.5)
-                .accessibilityLabel("Copy Snip")
+                .accessibilityLabel("Copy Pinned Snip")
             } else {
                 Image(systemName: draft.original.isDone ? "checkmark.circle.fill" : "circle")
                     .resizable()
@@ -451,6 +452,7 @@ struct InlineListEditor: View {
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
             }
             .scrollBounceBehavior(.basedOnSize)
+            .scrollDismissesKeyboard(.interactively)
             .frame(maxHeight: contentHeight, alignment: .top)
 
             editorFooter
@@ -489,7 +491,7 @@ struct InlineListEditor: View {
                         showsIcons.toggle()
                     }
                 } label: {
-                    Image(systemName: draft.systemImage)
+                    Image(systemName: ListIconSymbol.supportedName(draft.systemImage))
                         .font(.title3.weight(.semibold))
                         .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                         .foregroundStyle(SnipListAppearance(preset: draft.color).color)
@@ -513,13 +515,13 @@ struct InlineListEditor: View {
                     .accessibilityIdentifier("list-name")
 
             }
-            SnipListColorPicker(selection: $draft.color, usesWideGrid: true, showsTitle: false)
-                .onChange(of: draft.color) { isNameFocused = false }
             if showsIcons {
                 InlineListIconPicker(selection: $draft.systemImage)
                     .padding(.top, SnipSnapSpacing.relatedContent)
                     .transition(.opacity)
             }
+            SnipListColorPicker(selection: $draft.color, usesWideGrid: true, showsTitle: false)
+                .onChange(of: draft.color) { isNameFocused = false }
         }
         .padding(SnipSnapSpacing.paneContentInset)
     }

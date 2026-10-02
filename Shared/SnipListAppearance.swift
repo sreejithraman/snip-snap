@@ -105,6 +105,20 @@ struct SnipListSendColors {
 
 extension SnipList {
     var accent: SnipListAppearance { SnipListAppearance(preset: color) }
+
+    /// Keep a visible identity on older devices without changing the saved choice.
+    var displaySystemImage: String { ListIconSymbol.supportedName(systemImage) }
+}
+
+enum ListIconSymbol {
+    static func supportedName(_ name: String) -> String {
+#if os(macOS)
+        let isAvailable = NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil
+#else
+        let isAvailable = UIImage(systemName: name) != nil
+#endif
+        return isAvailable ? name : "list.bullet"
+    }
 }
 
 struct SnipListColorPicker: View {

@@ -38,13 +38,14 @@ struct ShareExtensionView: View {
                                 labelColor: colors.label,
                                 action: { Task { await model.save() } }
                             ) {
-                                Text("Save")
-                                    .fontWeight(.semibold)
+                                Image(systemName: "arrow.up")
+                                    .font(.body.weight(.semibold))
                             }
                             // The glass style keeps the first tint unless the button's identity changes.
                             .id(model.destinationListID)
                             .disabled(!model.canSave)
                             .accessibilityIdentifier("share-save")
+                            .accessibilityLabel("Save to Snip Snap")
                         }
                     }
                 }
@@ -90,7 +91,7 @@ struct ShareExtensionView: View {
                 Section("Save to") {
                     Picker("List", selection: Bindable(model).destinationListID) {
                         ForEach(model.lists) { list in
-                            Label(list.displayName, systemImage: list.systemImage)
+                            Label(list.displayName, systemImage: list.displaySystemImage)
                                 .tag(list.id)
                         }
                     }

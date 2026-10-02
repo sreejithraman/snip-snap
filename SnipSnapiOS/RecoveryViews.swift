@@ -45,7 +45,7 @@ struct RecoveryCenterView: View {
                             NavigationLink {
                                 RecoveredListReviewView(model: model, recoveryID: recovery.id)
                             } label: {
-                                Label(recovery.recovered.name, systemImage: recovery.recovered.systemImage)
+                                Label(recovery.recovered.name, systemImage: recovery.recovered.displaySystemImage)
                             }
                         }
                     }
@@ -291,7 +291,7 @@ struct RecoveredListReviewView: View {
     @ViewBuilder
     private func listValues(_ list: SnipList, fields: Set<RecoveredListField>) -> some View {
         if fields.contains(.name) { LabeledContent("Name", value: list.name) }
-        if fields.contains(.icon) { Label(list.systemImage, systemImage: list.systemImage) }
+        if fields.contains(.icon) { Label(list.systemImage, systemImage: list.displaySystemImage) }
         if fields.contains(.color) {
             Label(list.accent.title, systemImage: "circle.fill").foregroundStyle(list.accent.color)
         }

@@ -1,4 +1,9 @@
-import Foundation
+import SwiftUI
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 struct SnipListIconCategory: Identifiable {
     let title: String
@@ -10,6 +15,35 @@ struct SnipListIconCategory: Identifiable {
 enum SnipListIconOptions {
     // Keep the original key so upgrades retain recent icon choices.
     static let recentsDefaultsKey = "recentSectionIcons"
+
+    static let suggestedIcons = [
+        "tray.fill", "circle.grid.2x2.fill", "star.fill", "heart.fill", "bookmark.fill",
+        "lightbulb.fill", "checkmark.circle.fill", "list.bullet", "calendar", "flag.fill",
+        "briefcase.fill", "folder.fill", "doc.text.fill", "book.fill", "graduationcap.fill",
+        "terminal.fill", "hammer.fill", "gearshape.fill", "paintpalette.fill", "photo.fill",
+        "bubble.left.fill", "person.2.fill", "house.fill", "leaf.fill", "pawprint.fill",
+        "fork.knife", "cart.fill", "creditcard.fill", "airplane", "map.fill"
+    ]
+
+    // Cache availability once so search never renders symbols missing on this OS.
+    static let availableIcons: [String] = SFSymbolNames.all.filter { name in
+        autoreleasepool {
+#if os(macOS)
+            NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil
+#else
+            UIImage(systemName: name) != nil
+#endif
+        }
+    }
+    private static let availableIconSet = Set(availableIcons)
+
+    static func prepareCatalog() async {
+        // Checking thousands of OS-rendered symbols is work for a background thread.
+        _ = await Task.detached(priority: .utility) { availableIcons }.value
+    }
+    static var searchPlaceholder: String {
+        String(localized: "Search \(availableIcons.count) icons")
+    }
 
     static let categories = [
         SnipListIconCategory(title: String(localized: "Smileys & Emotion"), icons: [
@@ -311,19 +345,27 @@ enum SnipListIconOptions {
     ) -> [SnipListIconCategory] {
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanQuery.isEmpty else {
-            guard !recentIcons.isEmpty else { return categories }
-            return [SnipListIconCategory(title: String(localized: "Recent"), icons: recentIcons)]
-                + categories
+            var seen = Set<String>()
+            let recents = Array(recentIcons.filter {
+                availableIconSet.contains($0) && seen.insert($0).inserted
+            }.prefix(8))
+            let suggested = suggestedIcons.filter { availableIconSet.contains($0) && !recents.contains($0) }
+            let suggestions = SnipListIconCategory(title: String(localized: "Suggested"), icons: suggested)
+            return recents.isEmpty ? [suggestions] : [
+                SnipListIconCategory(title: String(localized: "Recent"), icons: recents), suggestions
+            ]
         }
 
-        return categories.compactMap { category in
-            if category.title.localizedCaseInsensitiveContains(cleanQuery) {
-                return category
-            }
-
-            let icons = category.icons.filter { matches($0, query: cleanQuery) }
-            return icons.isEmpty ? nil : SnipListIconCategory(title: category.title, icons: icons)
+        let categoryMatches = Set(categories.filter {
+            $0.title.localizedCaseInsensitiveContains(cleanQuery)
+        }.flatMap(\.icons))
+        let symbolQuery = cleanQuery.replacingOccurrences(of: " ", with: ".")
+        let icons = availableIcons.filter {
+            categoryMatches.contains($0) || matches($0, query: cleanQuery)
+                || $0.localizedCaseInsensitiveContains(cleanQuery)
+                || $0.localizedCaseInsensitiveContains(symbolQuery)
         }
+        return icons.isEmpty ? [] : [SnipListIconCategory(title: String(localized: "Search Results"), icons: icons)]
     }
 
     static func recentIcons() -> [String] {
@@ -333,5 +375,49 @@ enum SnipListIconOptions {
     static func recordRecentIcon(_ icon: String) {
         let icons = [icon] + recentIcons().filter { $0 != icon }
         UserDefaults.standard.set(Array(icons.prefix(8)), forKey: recentsDefaultsKey)
+    }
+}
+
+/// A shared search surface; the placeholder reports the catalog actually available here.
+struct ListIconSearchField: View {
+    @Binding var query: String
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            TextField(SnipListIconOptions.searchPlaceholder, text: $query)
+                .textFieldStyle(.plain)
+                .focused($isFocused)
+                .accessibilityLabel("Search icons")
+                .accessibilityIdentifier("list-icon-search")
+#if os(iOS)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .submitLabel(.search)
+                .onSubmit { isFocused = false }
+#endif
+            if !query.isEmpty {
+                Button { query = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+#if os(iOS)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+#endif
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear icon search")
+            }
+        }
+        .padding(.horizontal, 14)
+#if os(macOS)
+        .padding(.vertical, 10)
+#else
+        .frame(minHeight: 44)
+#endif
+        .background(.quaternary, in: Capsule())
     }
 }

@@ -952,7 +952,7 @@ struct SnipListView: View {
                 submenu.addPanelAction(
                     list.displayName,
                     isEnabled: model.editingID == nil,
-                    systemImage: list.systemImage
+                    systemImage: list.displaySystemImage
                 ) {
                     let orderedIDs = model.snips.filter { ids.contains($0.id) }.map(\.id)
                     Task { _ = await model.moveToList(ids: orderedIDs, listID: list.id) }

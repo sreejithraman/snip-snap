@@ -164,7 +164,9 @@
 		AE1000000000000000000002 /* ExpandableSnipText.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE2000000000000000000001 /* ExpandableSnipText.swift */; };
 		E100000000000000000000F1 /* IOSClipboardModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E200000000000000000000F1 /* IOSClipboardModel.swift */; };
 		E100000000000000000000F2 /* IOSClipboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E200000000000000000000F2 /* IOSClipboardView.swift */; };
-/* End PBXBuildFile section */
+		AF1000000000000000000001 /* SFSymbolNames.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF2000000000000000000001 /* SFSymbolNames.swift */; };
+		AF1000000000000000000002 /* SFSymbolNames.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF2000000000000000000001 /* SFSymbolNames.swift */; };
+		/* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
 		300000000000000000000001 /* PBXContainerItemProxy */ = {
@@ -358,7 +360,8 @@
 		F2000000000000000000000A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		E200000000000000000000F1 /* IOSClipboardModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSClipboardModel.swift; sourceTree = "<group>"; };
 		E200000000000000000000F2 /* IOSClipboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSClipboardView.swift; sourceTree = "<group>"; };
-/* End PBXFileReference section */
+		AF2000000000000000000001 /* SFSymbolNames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SFSymbolNames.swift; sourceTree = "<group>"; };
+		/* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		600000000000000000000001 /* Frameworks */ = {
@@ -554,6 +557,7 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000007 /* AgentSnipContextLabel.swift */,
+				AF2000000000000000000001 /* SFSymbolNames.swift */,
 				AE2000000000000000000001 /* ExpandableSnipText.swift */,
 				A20000000000000000000002 /* AppIcon.icon */,
 				A20000000000000000000005 /* AppIconDev.icon */,
@@ -959,6 +963,7 @@
 				A10000000000000000000005 /* SnipCompletionLanguage.swift in Sources */,
 				A1000000000000000000000D /* AppleAccountNoticeModel.swift in Sources */,
 				A1000000000000000000000F /* AgentSnipContextLabel.swift in Sources */,
+				AF1000000000000000000001 /* SFSymbolNames.swift in Sources */,
 				AE1000000000000000000001 /* ExpandableSnipText.swift in Sources */,
 				A10000000000000000000001 /* SnipSnapTheme.swift in Sources */,
 				AD5100000000000000000001 /* SendDestinationPicker.swift in Sources */,
@@ -1030,6 +1035,7 @@
 				A10000000000000000000006 /* SnipCompletionLanguage.swift in Sources */,
 				A1000000000000000000000E /* AppleAccountNoticeModel.swift in Sources */,
 				A10000000000000000000010 /* AgentSnipContextLabel.swift in Sources */,
+				AF1000000000000000000002 /* SFSymbolNames.swift in Sources */,
 				AE1000000000000000000002 /* ExpandableSnipText.swift in Sources */,
 				A10000000000000000000002 /* SnipSnapTheme.swift in Sources */,
 				AD5100000000000000000002 /* SendDestinationPicker.swift in Sources */,

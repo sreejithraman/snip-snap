@@ -182,6 +182,7 @@ struct ContentView: View {
 
     private var panelShell: some View {
         panelLayout
+        .task { await SnipListIconOptions.prepareCatalog() }
         .onAppear {
             cacheComposerDraft(for: model.activeListID)
             if model.hasActiveQuery { model.enterSearch() }

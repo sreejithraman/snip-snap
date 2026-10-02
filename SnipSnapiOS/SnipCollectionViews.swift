@@ -634,7 +634,7 @@ struct LibrarySearchView: View {
                                 snipResult(snip)
                             }
                         } header: {
-                            Label(group.list.displayName, systemImage: group.list.systemImage)
+                            Label(group.list.displayName, systemImage: group.list.displaySystemImage)
                                 .foregroundStyle(group.list.accent.color)
                                 .accessibilityIdentifier("search-section-\(group.list.id)")
                         }
@@ -687,16 +687,17 @@ struct LibrarySearchView: View {
                 )
             } else {
                 HStack(alignment: .top, spacing: 12) {
-                    SnipCopyControl(appearance: listAppearance(for: snip, in: model.lists)) {
+                    SnipCopyControl(appearance: listAppearance(for: snip, in: model.lists), isPinned: snip.isPinned) {
                         Task { await copyShare.copy(snips: [snip], model: model) }
                     }
-                    .accessibilityLabel("Copy Snip")
+                    .accessibilityLabel(snip.isPinned ? "Copy Pinned Snip" : "Copy Snip")
                     .accessibilityIdentifier("copy-search-snip-\(snip.id)")
                     SnipRow(
                         snip: snip,
                         model: model,
                         isRecovered: model.isRecoveredSnip(snip.id),
                         showsStatusIcon: false,
+                        showsPinInMetadata: false,
                         onPreviewAttachment: { attachment in
                             Task { previewURL = await model.prepareAttachment(attachment.id, for: .preview) }
                         }
