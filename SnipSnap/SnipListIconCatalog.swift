@@ -379,25 +379,50 @@ enum SnipListIconOptions {
 }
 
 /// A shared search surface; the placeholder reports the catalog actually available here.
+enum ListAppearanceField: Hashable {
+    case name
+    case iconSearch
+}
+
 struct ListIconSearchField: View {
     @Binding var query: String
+    var focus: FocusState<ListAppearanceField?>.Binding? = nil
+    var usesGlassBackground = false
     @FocusState private var isFocused: Bool
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
+        if usesGlassBackground {
+            if reduceTransparency || contrast == .increased {
+                searchContent.background {
+                    Capsule().fill(.background)
+                        .overlay { Capsule().strokeBorder(SnipSnapTheme.emphasizedGlassEdge) }
+                }
+            } else {
+                searchContent.glassEffect(.regular.interactive(), in: .capsule)
+            }
+        } else {
+            searchContent.background(.quaternary, in: Capsule())
+        }
+    }
+
+    private var searchContent: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
-            TextField(SnipListIconOptions.searchPlaceholder, text: $query)
-                .textFieldStyle(.plain)
-                .focused($isFocused)
+            searchInput
                 .accessibilityLabel("Search icons")
                 .accessibilityIdentifier("list-icon-search")
 #if os(iOS)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .submitLabel(.search)
-                .onSubmit { isFocused = false }
+                .onSubmit {
+                    if let focus { focus.wrappedValue = nil }
+                    else { isFocused = false }
+                }
 #endif
             if !query.isEmpty {
                 Button { query = "" } label: {
@@ -418,6 +443,16 @@ struct ListIconSearchField: View {
 #else
         .frame(minHeight: 44)
 #endif
-        .background(.quaternary, in: Capsule())
+    }
+
+    @ViewBuilder
+    private var searchInput: some View {
+        let field = TextField(SnipListIconOptions.searchPlaceholder, text: $query)
+            .textFieldStyle(.plain)
+        if let focus {
+            field.focused(focus, equals: .iconSearch)
+        } else {
+            field.focused($isFocused)
+        }
     }
 }

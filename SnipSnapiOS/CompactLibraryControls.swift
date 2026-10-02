@@ -106,33 +106,43 @@ struct CompactLibraryControls: View {
     private var isStaging: Bool { stagingTask != nil }
     private var isClipboardSelected: Bool { model.selectedPage == .clipboard }
 
-    private var showsComposer: Bool { !model.isSearchPresented && !isClipboardSelected && !isSelecting }
+    private var showsComposerPages: Bool {
+        !model.isSearchPresented && !isSelecting && !showsListEditor
+    }
+
+    private var showsComposer: Bool { showsComposerPages && !isClipboardSelected }
 
     private var showsListEditor: Bool {
         !isClipboardSelected && !model.isSearchPresented
             && model.editingListID == model.selectedListID
     }
 
+    // Navigation belongs to the resting library, rather than the keyboard's input controls.
+    private var showsNavigation: Bool {
+        !model.isSearchPresented && !showsListEditor && !isComposerFocused
+    }
+
     var body: some View {
         VStack(spacing: SnipSnapSpacing.relatedContent) {
-            GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
-                composerPages
+            if showsComposerPages {
+                GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
+                    composerPages
+                }
             }
 
-            if !showsListTabs && !model.isSearchPresented {
+            if !showsListTabs && showsNavigation {
                 GlassEffectContainer {
                     pasteButton
                 }
-            } else if !model.isSearchPresented {
+            } else if showsNavigation {
                 navigationControls
-                    .modifier(ListEditorRecession(isActive: showsListEditor))
             }
         }
 
         .frame(maxWidth: .infinity)
         .padding(.horizontal, SnipSnapSpacing.cardContentInset)
-        .padding(.top, SnipSnapSpacing.relatedContent)
-        .padding(.bottom, 6)
+        .padding(.top, showsListEditor ? 0 : SnipSnapSpacing.relatedContent)
+        .padding(.bottom, showsListEditor ? 0 : 6)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
         .fileImporter(
             isPresented: $isImporting,
@@ -320,12 +330,12 @@ struct CompactLibraryControls: View {
     }
 
     private var visibleComposerPages: [LibraryPage] {
-        guard !model.isSearchPresented, !isSelecting else { return [] }
+        guard showsComposerPages else { return [] }
         return frame.retainedPages.filter { if case .list = $0 { true } else { false } }
     }
 
     private var composerHeight: CGFloat {
-        guard !model.isSearchPresented, !isSelecting else { return 0 }
+        guard showsComposerPages else { return 0 }
         // Interpolate the occupied height as Clipboard (which has no composer)
         // enters, keeping the last frame identical to the resting layout.
         return frame.retainedPages.reduce(0) { result, page in

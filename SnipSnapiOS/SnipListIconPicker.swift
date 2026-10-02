@@ -51,22 +51,33 @@ struct SnipListIconBrowser: View {
 
 struct InlineListIconPicker: View {
     @Binding var selection: String
-    @State private var query = ""
+    @Binding var query: String
+    var searchFocus: FocusState<ListAppearanceField?>.Binding
 
     var body: some View {
-        VStack(spacing: 8) {
-            ListIconSearchField(query: $query)
-            ScrollView {
-                ListIconGrid(selection: $selection, query: query)
-            }
-            .frame(height: 192)
-            .scrollDismissesKeyboard(.interactively)
+        ScrollView { iconGrid }
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("list-icon-results")
-        }
+            .safeAreaBar(edge: .top, spacing: 0) { searchField }
+            .scrollBounceBehavior(.basedOnSize)
+            .scrollDismissesKeyboard(.interactively)
+            .scrollEdgeEffectStyle(.soft, for: .all)
+    }
+
+    private var searchField: some View {
+        ListIconSearchField(query: $query, focus: searchFocus, usesGlassBackground: true)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, SnipSnapSpacing.paneContentInset)
+            .padding(.bottom, SnipSnapSpacing.relatedContent)
+    }
+
+    private var iconGrid: some View {
+        ListIconGrid(selection: $selection, query: query)
+            .padding(.horizontal, SnipSnapSpacing.paneContentInset)
     }
 }
 
-private struct ListIconGrid: View {
+struct ListIconGrid: View {
     @Binding var selection: String
     let query: String
     var didSelect: () -> Void = {}
@@ -111,15 +122,9 @@ private struct ListIconGrid: View {
                 .foregroundStyle(.primary)
                 .frame(width: 44, height: 44)
                 .background {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(isSelected ? SnipSnapTheme.compactSelectionFill : .clear)
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(
-                            isSelected ? SnipSnapTheme.emphasizedGlassEdge : .clear,
-                            lineWidth: isSelected ? 2 : 0
-                        )
+                    if isSelected {
+                        SnipListSelectionLens()
+                    }
                 }
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .contentShape(Rectangle())
