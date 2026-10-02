@@ -74,7 +74,7 @@ struct IOSAppRootView: View {
         }
     }
 
-    var body: some View {
+    private var appPresentation: some View {
         searchNavigation
         .sendDestinationPickerHost()
         .tint(SnipSnapTheme.controlTint)
@@ -224,6 +224,10 @@ struct IOSAppRootView: View {
         } message: {
             Text(model.errorMessage ?? String(localized: "Try again."))
         }
+    }
+
+    var body: some View {
+        appPresentation
         .alert(
             "Some Files Are Unavailable",
             isPresented: Binding(
