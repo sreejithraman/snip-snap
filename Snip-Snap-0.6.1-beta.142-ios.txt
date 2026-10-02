@@ -1,0 +1,7 @@
+Snip Snap 0.6.1 Beta 142 — iOS
+
+- Fix backup import with evicted retained iCloud attachments
+- Add opt-in Production CloudKit release preflight
+- Fix iOS copy fallback and landscape icon reachability
+- Prevent beta delivery with a published version and add release skill
+- Align clipboard and snip rows on Mac and iOS
