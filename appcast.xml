@@ -4,6 +4,21 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.1</title>
+            <pubDate>Fri, 02 Oct 2026 21:46:01 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.145</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.6.1-beta.145-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>145</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.145/Snip-Snap-0.6.1.zip" length="15795440" type="application/octet-stream" sparkle:edSignature="Xkty3cPRy30ECTHCesLe2mVy33eM714ajLikk+hHzXCNuQriatZEectK44Z2WCq6fyVgNpoRxje9ePQoD+SLCQ=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 145 — Mac
+
+- Recover clipboard thumbnails and cache iOS inline images
+</description>
+        </item>
+        <item>
+            <title>0.6.1</title>
             <pubDate>Fri, 02 Oct 2026 20:27:36 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.144</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.6.1-beta.144-mac.txt</sparkle:fullReleaseNotesLink>
