@@ -7,6 +7,60 @@ import XCTest
 
 final class SnipLibraryBehaviorTests: XCTestCase {
 
+  func testMovingAListPersistsItsOrderAndPreservesItsSnips() async throws {
+    try await forEachAdapter { adapter, directory, library in
+      for name in ["Work", "Travel", "Reading"] {
+        _ = try await library.perform(
+          .createList(name: name, systemImage: "list.bullet"), sortedBy: .manual)
+      }
+      let initial = try await library.checkedSnapshot(sortedBy: .manual)
+      let work = try XCTUnwrap(initial.lists.first { $0.name == "Work" })
+      let reading = try XCTUnwrap(initial.lists.first { $0.name == "Reading" })
+      _ = try await library.perform(
+        .add(content: "Keep this note", origin: .quickEntry, source: nil, listID: reading.id,
+             attachmentURLs: [], requestID: UUID(), now: Date()), sortedBy: .manual)
+      let moved = try await library.perform(.moveList(id: reading.id, before: work.id), sortedBy: .manual)
+      for unchanged in initial.lists where unchanged.id != reading.id {
+        XCTAssertEqual(moved.snapshot.lists.first { $0.id == unchanged.id }, unchanged)
+      }
+      let reopened = try adapter.open(in: directory)
+      let snapshot = try await reopened.checkedSnapshot(sortedBy: .manual)
+      XCTAssertEqual(snapshot.lists.map(\.name), ["Inbox", "Reading", "Work", "Travel"])
+      XCTAssertEqual(snapshot.snips.first?.listID, reading.id)
+      _ = try await reopened.perform(.moveList(id: reading.id, before: nil), sortedBy: .manual)
+      let reopenedAgain = try adapter.open(in: directory)
+      let movedToEnd = try await reopenedAgain.checkedSnapshot(sortedBy: .manual)
+      XCTAssertEqual(movedToEnd.lists.map(\.name), ["Inbox", "Work", "Travel", "Reading"])
+    }
+  }
+
+  func testMovingListsRejectsMissingDestinationsAndKeepsInboxFixed() async throws {
+    try await forEachAdapter { _, _, library in
+      _ = try await library.perform(.createList(name: "Work", systemImage: "list.bullet"), sortedBy: .manual)
+      let initial = try await library.checkedSnapshot(sortedBy: .manual)
+      let work = try XCTUnwrap(initial.lists.first { $0.name == "Work" })
+      let commands: [SnipLibraryCommand] = [
+        .moveList(id: SnipList.inboxID, before: nil),
+        .moveList(id: work.id, before: SnipList.inboxID),
+        .moveList(id: work.id, before: UUID()),
+        .moveList(id: UUID(), before: work.id),
+      ]
+      for command in commands {
+        do {
+          _ = try await library.perform(command, sortedBy: .manual)
+          XCTFail("Invalid moves must fail without changing the library")
+        } catch {
+          XCTAssertEqual(error as? SnipLibraryError, .invalidList)
+        }
+        let unchanged = try await library.checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(unchanged, initial)
+      }
+      _ = try await library.perform(.moveList(id: work.id, before: work.id), sortedBy: .manual)
+      let unchanged = try await library.checkedSnapshot(sortedBy: .manual)
+      XCTAssertEqual(unchanged, initial)
+    }
+  }
+
   func testListColorsSurviveEditsAndReopenInBothAdapters() async throws {
     try await forEachAdapter { adapter, directory, library in
       let created = try await library.perform(

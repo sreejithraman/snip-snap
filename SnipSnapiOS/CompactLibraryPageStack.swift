@@ -22,6 +22,7 @@ enum ListEdgeCueLayout {
 
 struct CompactLibraryPageStack: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.glassMenuPresentation) private var glassMenuPresentation
     @Environment(\.layoutDirection) private var layoutDirection
     @State private var swipeBlockingPages: Set<LibraryPage> = []
     @State private var pagePanMayStart = false
@@ -281,7 +282,7 @@ struct CompactLibraryPageStack: View {
 
     private func canPanPage(direction: ListPagePanDirection) -> Bool {
         let isEditingVisiblePage = model.editingListID.map { $0 == model.selectedPage.listID } ?? false
-        guard !model.isSearchPresented, sheet == nil,
+        guard !(glassMenuPresentation?.isPresented ?? false), !model.isManagingLists, !model.isSearchPresented, sheet == nil,
               (!editMode.isEditing || model.isSelectingSnips),
               !isComposerFocused,
               motion.transition?.settlement == nil,

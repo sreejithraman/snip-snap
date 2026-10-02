@@ -209,6 +209,7 @@ public indirect enum SnipLibraryCommand: Sendable {
     case restoreList(SnipList)
     case updateList(id: UUID, name: String, systemImage: String, color: SnipListColorChange = .keep)
     case deleteList(id: UUID)
+    case moveList(id: UUID, before: UUID?)
     case update(
         id: UUID,
         content: String,

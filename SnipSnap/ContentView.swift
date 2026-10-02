@@ -114,7 +114,7 @@ struct ContentView: View {
                 PanelDragRegion()
             }
         }
-        .sendDestinationPickerHost()
+        .glassMenuHost(isBlocked: panelDialogs.isPresented || selectedPreviewURL != nil)
         .tint(SnipSnapColors.controlTint)
         .preferredColorScheme(model.appearance.colorScheme)
         .quickLookPreview($selectedPreviewURL, in: previewURLs)

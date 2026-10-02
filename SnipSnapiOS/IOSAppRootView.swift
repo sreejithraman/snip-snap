@@ -76,7 +76,6 @@ struct IOSAppRootView: View {
 
     private var appPresentation: some View {
         searchNavigation
-        .sendDestinationPickerHost()
         .tint(SnipSnapTheme.controlTint)
         .modifier(IOSHapticFeedbackModifier(feedback: model.haptics))
         .onChange(of: sheet) { _, destination in
@@ -157,6 +156,7 @@ struct IOSAppRootView: View {
                 AppleAccountNoticeBanner(model: accountNoticeModel)
             }
         }
+        .glassMenuHost(isBlocked: sheet != nil || model.isSearchPresented || copyShare.shareRequest != nil)
         .sheet(item: $sheet, onDismiss: {
             settingsBackupLifetime.end(library: model)
         }) { destination in

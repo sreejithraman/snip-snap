@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        AF5100000000000000000001 /* ListManagementPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5200000000000000000001 /* ListManagementPanel.swift */; };
+        AF6100000000000000000001 /* GlassMenus.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF6200000000000000000001 /* GlassMenus.swift */; };
+        AF6100000000000000000002 /* GlassMenus.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF6200000000000000000001 /* GlassMenus.swift */; };
 		AB9100000000000000000001 /* ItemRowContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB9200000000000000000001 /* ItemRowContent.swift */; };
 		AB9100000000000000000002 /* ItemRowContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB9200000000000000000001 /* ItemRowContent.swift */; };
         AD5100000000000000000001 /* SendDestinationPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD5200000000000000000001 /* SendDestinationPicker.swift */; };
@@ -216,6 +219,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+        AF5200000000000000000001 /* ListManagementPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListManagementPanel.swift; sourceTree = "<group>"; };
+        AF6200000000000000000001 /* GlassMenus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassMenus.swift; sourceTree = "<group>"; };
 		AB9200000000000000000001 /* ItemRowContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ItemRowContent.swift; sourceTree = "<group>"; };
         AD5200000000000000000001 /* SendDestinationPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendDestinationPicker.swift; sourceTree = "<group>"; };
 		A92000000000000000000002 /* ListLens.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = ListLens.metal; sourceTree = "<group>"; };
@@ -571,6 +576,7 @@
 				A20000000000000000000003 /* SnipCompletionLanguage.swift */,
 				A20000000000000000000001 /* SnipSnapTheme.swift */,
 				AD5200000000000000000001 /* SendDestinationPicker.swift */,
+                AF6200000000000000000001 /* GlassMenus.swift */,
 				AC2000000000000000000001 /* SnipListAppearance.swift */,
 			);
 			path = Shared;
@@ -608,6 +614,7 @@
 				E20000000000000000000042 /* IOSHapticFeedback.swift */,
 				E20000000000000000000033 /* CompactLibraryControls.swift */,
 				A92000000000000000000001 /* ListSelector.swift */,
+                AF5200000000000000000001 /* ListManagementPanel.swift */,
 				A92000000000000000000003 /* ListPageMotion.swift */,
 				A92000000000000000000002 /* ListLens.metal */,
 				E20000000000000000000007 /* PreviewSupport.swift */,
@@ -972,6 +979,7 @@
 				AB9100000000000000000001 /* ItemRowContent.swift in Sources */,
 				A10000000000000000000001 /* SnipSnapTheme.swift in Sources */,
 				AD5100000000000000000001 /* SendDestinationPicker.swift in Sources */,
+                AF6100000000000000000001 /* GlassMenus.swift in Sources */,
 				AC1000000000000000000001 /* SnipListAppearance.swift in Sources */,
 				10000000000000000000003B /* ComposerDraftStore+ScreenCapture.swift in Sources */,
 			);
@@ -1034,6 +1042,7 @@
 				E10000000000000000000042 /* IOSHapticFeedback.swift in Sources */,
 				E10000000000000000000033 /* CompactLibraryControls.swift in Sources */,
 				A91000000000000000000001 /* ListSelector.swift in Sources */,
+                AF5100000000000000000001 /* ListManagementPanel.swift in Sources */,
 				A91000000000000000000003 /* ListPageMotion.swift in Sources */,
 				A91000000000000000000002 /* ListLens.metal in Sources */,
 				E10000000000000000000034 /* ComposerDraftStore.swift in Sources */,
@@ -1045,6 +1054,7 @@
 				AB9100000000000000000002 /* ItemRowContent.swift in Sources */,
 				A10000000000000000000002 /* SnipSnapTheme.swift in Sources */,
 				AD5100000000000000000002 /* SendDestinationPicker.swift in Sources */,
+                AF6100000000000000000002 /* GlassMenus.swift in Sources */,
 				AC1000000000000000000002 /* SnipListAppearance.swift in Sources */,
 				E10000000000000000000007 /* PreviewSupport.swift in Sources */,
 			);

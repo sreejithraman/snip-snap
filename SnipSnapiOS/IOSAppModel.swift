@@ -42,6 +42,7 @@ final class InlineListDraft {
 final class IOSAppModel {
     private let session: SavedSnipsSession
     private(set) var libraryRevision = UUID()
+    var isManagingLists = false
     let haptics: IOSHapticFeedback
     private let cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private let diagnostics: any AppDiagnosticRecording
@@ -576,7 +577,7 @@ final class IOSAppModel {
             ) else { return }
             if shouldRollBack {
                 let removed = await deleteListUnlocked(
-                    id: createdID, feedbackInteraction: nil, preservesSelection: true
+                    id: createdID, feedbackInteraction: nil
                 )
                 if !removed {
                     newListOrigin = origin
@@ -603,7 +604,7 @@ final class IOSAppModel {
         selectPage(originPage)
         let originSelectionRevision = selectionRevision
         let cancelled = await withUserMutation { interaction in
-            await deleteListUnlocked(id: id, feedbackInteraction: interaction, preservesSelection: true)
+            await deleteListUnlocked(id: id, feedbackInteraction: interaction)
         }
         if !cancelled, selectionRevision == originSelectionRevision,
            pages.contains(previousPage) {
@@ -663,6 +664,13 @@ final class IOSAppModel {
     @discardableResult
     func deleteList(id: UUID) async -> Bool {
         await withUserMutation { interaction in await deleteListUnlocked(id: id, feedbackInteraction: interaction) }
+    }
+
+    @discardableResult
+    func moveList(id: UUID, before destinationID: UUID?) async -> Bool {
+        await withUserMutation { _ in
+            await performUserAction(.moveList(id: id, before: destinationID))
+        }
     }
 
     func presentToast(_ presentedToast: AppToast) {
@@ -1066,16 +1074,13 @@ final class IOSAppModel {
     }
 
     private func deleteListUnlocked(
-        id: UUID, feedbackInteraction: UUID?, preservesSelection: Bool = false
+        id: UUID, feedbackInteraction: UUID?
     ) async -> Bool {
         guard lists.contains(where: { $0.id == id }) else { return false }
         return await performUserAction(
             .deleteList(id: id), feedbackInteraction: feedbackInteraction
         ) { _ in
             finishListEditing(id: id)
-            if !preservesSelection { rememberSelectedList(SnipList.inboxID) }
-            selectedSnipID = nil
-            selectedSnipIDs.formIntersection(snips.map(\.id))
         }
     }
 

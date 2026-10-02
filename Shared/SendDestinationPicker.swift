@@ -45,24 +45,6 @@ struct ListDestinationLabel: View {
     }
 }
 
-private struct SendPickerAnchor {
-    let id: UUID
-    let bounds: Anchor<CGRect>
-    let size: CGSize
-    let button: AnyView?
-    let isPresented: Bool
-    let destinations: [SnipList]
-    let choose: (UUID) -> Void
-    let cancel: () -> Void
-}
-
-private struct SendPickerAnchorKey: PreferenceKey {
-    static var defaultValue: [SendPickerAnchor] { [] }
-    static func reduce(value: inout [SendPickerAnchor], nextValue: () -> [SendPickerAnchor]) {
-        value += nextValue()
-    }
-}
-
 /// One send surface on both platforms, with platform-specific activation paths.
 struct AppMorphingSendControl: View {
     let sourceID: UUID
@@ -104,13 +86,16 @@ struct AppMorphingSendControl: View {
             }
         }
         .frame(width: controlSize.width, height: controlSize.height)
-        .anchorPreference(key: SendPickerAnchorKey.self, value: .bounds) { bounds in
-            guard isEnabled && isInteractionEnabled && usesRootSurface else { return [] }
-            return [SendPickerAnchor(
-                id: sourceID, bounds: bounds, size: controlSize,
-                button: projectsButton ? AnyView(button) : nil, isPresented: isPresented,
-                destinations: ListDestinationPurpose.send.destinations(in: destinations), choose: choose, cancel: { isPresented = false }
-            )]
+        .glassMenu(
+            sourceID: sourceID, isPresented: $isPresented,
+            label: ListDestinationPurpose.send.title, identifier: "composer-send-picker",
+            isAvailable: isEnabled && isInteractionEnabled && usesRootSurface,
+            projectedControl: projectsButton ? AnyView(button) : nil,
+            sizeProbe: AnyView(SendPickerMeasure(destinations: destinations)),
+            sourceFocus: { sendIsAccessibilityFocused = $0 }
+        ) { isInteractive in
+            SendPickerPanel(destinations: destinations, isPresented: isPresented,
+                            choose: choose, cancel: { isPresented = false }, isInteractive: isInteractive)
         }
         .onChange(of: isEnabled) { _, enabled in if !enabled { isPresented = false } }
         .onChange(of: isInteractionEnabled) { _, enabled in if !enabled { isPresented = false } }
@@ -118,7 +103,7 @@ struct AppMorphingSendControl: View {
         .onChange(of: destinations.map(\.id)) { _, ids in if ids.isEmpty { isPresented = false } }
         .onChange(of: scenePhase) { _, phase in if phase != .active { isPresented = false } }
         .onChange(of: isPresented) { _, presented in
-            if !presented { sendIsAccessibilityFocused = true }
+            if presented { sendIsAccessibilityFocused = false }
         }
     }
 
@@ -171,130 +156,22 @@ struct AppMorphingSendControl: View {
     }
 }
 
-private struct SendPickerHost: ViewModifier {
-    func body(content: Content) -> some View {
-        content.overlayPreferenceValue(SendPickerAnchorKey.self) { anchors in
-            GeometryReader { geometry in
-                ZStack {
-                    if let presented = anchors.first(where: \.isPresented) {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .onTapGesture(perform: presented.cancel)
-                            .accessibilityHidden(true)
-                    }
-                    ForEach(anchors.filter { $0.isPresented || $0.button != nil }, id: \.id) { anchor in
-                        SendPickerSurface(
-                            anchor: anchor, sourceBounds: geometry[anchor.bounds],
-                            availableSize: geometry.size
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Keep the button stationary beneath a menu whose final layout never moves.
-/// A bottom-aligned mask reveals the menu vertically, without scaling its labels.
-private struct SendPickerSurface: View {
-    let anchor: SendPickerAnchor
-    let sourceBounds: CGRect
-    let availableSize: CGSize
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.layoutDirection) private var layoutDirection
-    @State private var isExpanded = false
-    @State private var isInteractive = false
-    @State private var transitionID = UUID()
-    @ScaledMetric(relativeTo: .body) private var scaledRowHeight: CGFloat = 44
-    private var rowHeight: CGFloat { max(44, scaledRowHeight) }
-    private let menuGap: CGFloat = 8
-    private let menuEffectInset: CGFloat = 8
-    private var alignment: Alignment { .bottomTrailing }
-    private var maximumMenuWidth: CGFloat {
-        let space = layoutDirection == .rightToLeft
-            ? availableSize.width - sourceBounds.minX : sourceBounds.maxX
-        return min(264, max(anchor.size.width, space - 12))
-    }
-    private var maximumMenuHeight: CGFloat {
-        min(max(44, sourceBounds.minY - menuGap - 12), 360)
-    }
+/// Measure the same rows without creating a second scroll view or keyboard monitor.
+private struct SendPickerMeasure: View {
+    let destinations: [SnipList]
 
     var body: some View {
-        ZStack(alignment: alignment) {
-            if anchor.isPresented {
-                ListDestinationPickerLayout(maximumWidth: maximumMenuWidth, maximumHeight: maximumMenuHeight) {
-                    // Measure real SwiftUI text before presentation, so width never
-                    // arrives a frame late or shifts sideways during the reveal.
-                    VStack(spacing: 0) {
-                        SendPickerHeading()
-                        VStack(spacing: 2) {
-                            ForEach(anchor.destinations) { list in
-                                SendPickerRow(list: list, rowHeight: rowHeight)
-                            }
-                        }
-                        .padding(.horizontal, 6)
-                        .padding(.bottom, 8)
-                    }
-                    .hidden()
-                    .accessibilityHidden(true)
-                    SendPickerPanel(anchor: anchor, rowHeight: rowHeight, isInteractive: isInteractive)
+        VStack(spacing: 0) {
+            SendPickerHeading()
+            VStack(spacing: 2) {
+                ForEach(destinations) { list in
+                    Button {} label: { ListDestinationLabel(list: list) }
                 }
-                    .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 20))
-                    // Glass extends beyond its layout bounds. Keep that rim
-                    // inside the reveal canvas without moving the menu.
-                    .padding(menuEffectInset)
-                    .mask(alignment: .bottom) {
-                        GeometryReader { geometry in
-                            Rectangle()
-                                .frame(height: isExpanded ? geometry.size.height : 0)
-                                .frame(maxHeight: .infinity, alignment: .bottom)
-                        }
-                    }
-                    .opacity(isExpanded ? 1 : 0)
-                    .padding(-menuEffectInset)
-                    .allowsHitTesting(isInteractive && anchor.isPresented)
-                    .accessibilityHidden(!isInteractive || !anchor.isPresented)
-                    .padding(.bottom, anchor.size.height + menuGap)
             }
-            anchor.button
+            .buttonStyle(GlassMenuActionStyle())
+            .padding(.horizontal, 6)
+            .padding(.bottom, 8)
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityAddTraits(anchor.isPresented ? .isModal : [])
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
-        .padding(.bottom, availableSize.height - sourceBounds.maxY)
-        .padding(.trailing, layoutDirection == .rightToLeft ? sourceBounds.minX : availableSize.width - sourceBounds.maxX)
-        .onChange(of: anchor.isPresented, initial: true) { _, presented in
-            isInteractive = false
-            let id = UUID()
-            transitionID = id
-            withAnimation(
-                reduceMotion ? nil : .easeInOut(duration: 0.24),
-                completionCriteria: .removed
-            ) {
-                isExpanded = presented
-            } completion: {
-                guard transitionID == id else { return }
-                isInteractive = presented
-            }
-        }
-    }
-}
-
-/// First subview is an invisible intrinsic-size probe; only the panel is placed.
-/// Constraining the same probe also accounts for wrapped rows and Dynamic Type.
-private struct ListDestinationPickerLayout: Layout {
-    let maximumWidth: CGFloat
-    let maximumHeight: CGFloat
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        guard let probe = subviews.first else { return .zero }
-        let width = min(maximumWidth, max(180, probe.sizeThatFits(.unspecified).width))
-        let height = min(maximumHeight, probe.sizeThatFits(ProposedViewSize(width: width, height: nil)).height)
-        return CGSize(width: width, height: height)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        subviews.last?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
     }
 }
 
@@ -311,25 +188,11 @@ private struct SendPickerHeading: View {
     }
 }
 
-private struct SendPickerRow: View {
-    let list: SnipList
-    let rowHeight: CGFloat
-
-    var body: some View {
-        HStack {
-            ListDestinationLabel(list: list)
-            Spacer(minLength: 0)
-        }
-        .font(.body)
-        .padding(.horizontal, SnipSnapSpacing.cardContentInset)
-        .frame(maxWidth: .infinity, minHeight: rowHeight, alignment: .leading)
-        .contentShape(Rectangle())
-    }
-}
-
 private struct SendPickerPanel: View {
-    let anchor: SendPickerAnchor
-    let rowHeight: CGFloat
+    let destinations: [SnipList]
+    let isPresented: Bool
+    let choose: (UUID) -> Void
+    let cancel: () -> Void
     let isInteractive: Bool
     @State private var selection: UUID?
     @AccessibilityFocusState private var titleIsAccessibilityFocused: Bool
@@ -346,13 +209,11 @@ private struct SendPickerPanel: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(spacing: 2) {
-                        ForEach(anchor.destinations) { list in
-                            Button { anchor.choose(list.id) } label: {
-                                SendPickerRow(list: list, rowHeight: rowHeight)
-                                .background(selection == list.id ? SnipSnapTheme.selectionFill : .clear,
-                                            in: RoundedRectangle(cornerRadius: 12))
+                        ForEach(destinations) { list in
+                            Button { choose(list.id) } label: {
+                                ListDestinationLabel(list: list)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(GlassMenuActionStyle(isHighlighted: selection == list.id))
                             .foregroundStyle(.primary)
                             .accessibilityLabel(list.displayName)
                             .accessibilityIdentifier("composer-send-to-\(list.id.uuidString)")
@@ -367,24 +228,23 @@ private struct SendPickerPanel: View {
                 .onChange(of: selection) { _, id in
                     if let id { proxy.scrollTo(id) }
                 }
-                .onChange(of: anchor.isPresented) { _, presented in
-                    if presented, let id = anchor.destinations.first?.id { proxy.scrollTo(id) }
+                .onChange(of: isPresented) { _, presented in
+                    if presented, let id = destinations.first?.id { proxy.scrollTo(id) }
                 }
             }
             .padding(.horizontal, 6)
             .padding(.bottom, 8)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("composer-send-picker")
-        .accessibilityAction(named: Text("Cancel"), anchor.cancel)
-        .accessibilityAction(.escape, anchor.cancel)
+        .accessibilityAction(named: Text("Cancel"), cancel)
+        .accessibilityAction(.escape, cancel)
         .onChange(of: isInteractive, initial: true) { _, ready in
-            if ready { titleIsAccessibilityFocused = true }
+            titleIsAccessibilityFocused = ready
         }
 #if os(macOS)
-        .onChange(of: anchor.isPresented, initial: true) { _, presented in
+        .onChange(of: isPresented, initial: true) { _, presented in
             if presented {
-                selection = anchor.destinations.first?.id
+                selection = destinations.first?.id
                 typedPrefix = ""
                 lastTypedAt = .distantPast
             }
@@ -393,7 +253,7 @@ private struct SendPickerPanel: View {
             // Monitor ownership follows the intent, independently of the
             // menu's reveal animation.
             Group {
-                if anchor.isPresented {
+                if isPresented {
                     SendPickerKeyboardInput(handle: handleKey)
                         .frame(width: 0, height: 0)
                         .allowsHitTesting(false)
@@ -409,10 +269,10 @@ private struct SendPickerPanel: View {
         let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
         switch event.keyCode {
         case 53:
-            anchor.cancel()
+            cancel()
         case 36, 76:
-            if modifiers.contains(.command) { anchor.cancel() }
-            else if isInteractive, let selection { anchor.choose(selection) }
+            if modifiers.contains(.command) { cancel() }
+            else if isInteractive, let selection { choose(selection) }
         case 125:
             moveSelection(1)
         case 126:
@@ -431,7 +291,7 @@ private struct SendPickerPanel: View {
             if Date().timeIntervalSince(lastTypedAt) > 1 { typedPrefix = "" }
             typedPrefix += characters
             lastTypedAt = Date()
-            if let match = anchor.destinations.first(where: {
+            if let match = destinations.first(where: {
                 $0.displayName.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
                     .hasPrefix(typedPrefix.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current))
             }) { selection = match.id }
@@ -440,7 +300,7 @@ private struct SendPickerPanel: View {
     }
 
     private func moveSelection(_ offset: Int) {
-        let lists = anchor.destinations
+        let lists = destinations
         guard !lists.isEmpty else { return }
         let index = lists.firstIndex { $0.id == selection } ?? 0
         selection = lists[(index + offset + lists.count) % lists.count].id
@@ -485,7 +345,3 @@ private final class SendPickerKeyboardView: NSView {
     }
 }
 #endif
-
-extension View {
-    func sendDestinationPickerHost() -> some View { modifier(SendPickerHost()) }
-}

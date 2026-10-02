@@ -58,14 +58,13 @@ struct WorkflowOptionsMenu: View {
 }
 
 struct SelectionActionsMenu: View {
+    @State private var isPresented = false
     let model: IOSAppModel
     let copyShare: IOSCopyShareCoordinator
     let performAction: (@escaping @MainActor () async -> Bool) -> Void
 
     var body: some View {
-        Menu {
-            actions
-        } label: {
+        Button { isPresented.toggle() } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 17, weight: .semibold))
                 .frame(minWidth: 30, minHeight: 30)
@@ -76,6 +75,14 @@ struct SelectionActionsMenu: View {
         .frame(minWidth: 44, minHeight: 44)
         .accessibilityLabel("Selection actions")
         .accessibilityIdentifier("selection-actions")
+        .glassMenu(isPresented: $isPresented, label: "Selection actions", identifier: "selection-actions-panel") { _ in
+            VStack(spacing: 2) { actions }
+                .padding(6)
+                .buttonStyle(GlassMenuActionStyle())
+        }
+        .onChange(of: model.selectedSnipIDs) { _, ids in
+            if ids.isEmpty { isPresented = false }
+        }
     }
 
     @ViewBuilder
@@ -85,18 +92,21 @@ struct SelectionActionsMenu: View {
             model: model,
             coordinator: copyShare,
             identifierSuffix: "selection",
-            includesCopy: false
+            includesCopy: false,
+            beforeAction: { isPresented = false }
         )
 
         Divider()
         if model.selectedSnips.count >= 2 {
             Button("Merge Snips", systemImage: "arrow.triangle.merge") {
+                isPresented = false
                 performAction { await model.mergeSelection() }
             }
             .accessibilityIdentifier("merge-selection")
         }
         if model.selectedSnips.contains(where: { !$0.isDone }) {
             Button(SnipCompletionLanguage.menuActionTitle(isDone: false), systemImage: "checkmark") {
+                isPresented = false
                 let snips = model.selectedSnips
                 performAction { await copyShare.markDone(snips: snips, model: model) }
             }
@@ -106,6 +116,7 @@ struct SelectionActionsMenu: View {
 
         if model.selectedSnips.contains(where: \.isDone) {
             Button(SnipCompletionLanguage.menuActionTitle(isDone: true), systemImage: "arrow.uturn.backward") {
+                isPresented = false
                 performAction { await model.setSelectionDone(false) }
             }
             .disabled(!model.selectedSnips.contains { !$0.isPinned })
