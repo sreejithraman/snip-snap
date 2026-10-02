@@ -122,6 +122,37 @@ package struct SnipLibraryState {
       resolveListNames()
       return .none
 
+    case .moveList(let id, let destinationID):
+      guard id != SnipList.inboxID,
+        let movingIndex = lists.firstIndex(where: { $0.id == id }),
+        destinationID != SnipList.inboxID,
+        destinationID == nil || lists.contains(where: { $0.id == destinationID })
+      else { throw SnipLibraryError.invalidList }
+      if destinationID == id { return .none }
+      let currentLists = allLists()
+      let originalOrder = currentLists.map(\.id)
+      var ordered = currentLists.filter { $0.id != id }
+      let insertion = destinationID.flatMap { destination in
+        ordered.firstIndex { $0.id == destination }
+      } ?? ordered.count
+      ordered.insert(lists[movingIndex], at: insertion)
+      guard ordered.map(\.id) != originalOrder else { return .none }
+      let lower = insertion > 0 ? ordered[insertion - 1].sortKey : nil
+      let upper = insertion + 1 < ordered.count ? ordered[insertion + 1].sortKey : nil
+      let canInsert = lower == nil || upper == nil || lower! < upper!
+      if canInsert, let key = SnipOrderKey.between(lower, upper) {
+        lists[movingIndex].sortKey = key
+      } else {
+        let keys = try SnipOrderKey.rebalanced(count: ordered.count)
+        for (offset, list) in ordered.enumerated() {
+          if let index = lists.firstIndex(where: { $0.id == list.id }) {
+            lists[index].sortKey = keys[offset]
+          }
+        }
+      }
+      lists = allLists()
+      return .none
+
     case .deleteList(let id):
       guard id != SnipList.inboxID, lists.contains(where: { $0.id == id }) else {
         throw SnipLibraryError.invalidList

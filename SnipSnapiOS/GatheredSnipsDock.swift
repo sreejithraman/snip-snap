@@ -20,6 +20,7 @@ struct GatheredSnipsDock: View {
         get { model.isSelectionExpanded }
         nonmutating set { model.isSelectionExpanded = newValue }
     }
+    @State private var isMoveMenuPresented = false
     @State private var headerFrame = CGRect.zero
     @State private var cardHeights: [UUID: CGFloat] = [:]
     @State private var actionRowHeight: CGFloat = 44
@@ -302,14 +303,7 @@ struct GatheredSnipsDock: View {
     }
 
     private var moveMenu: some View {
-        Menu {
-            MoveDestinationOptions(
-                destinations: destinations,
-                identifierPrefix: "move-gathered-to-",
-                move: move,
-                addList: { model.requestNewListMove(snips: snips, fromSelection: true) }
-            )
-        } label: {
+        Button { isMoveMenuPresented.toggle() } label: {
             Label("Move to…", systemImage: "folder")
                 .labelStyle(.iconOnly)
                 .font(.system(size: 17, weight: .semibold))
@@ -323,6 +317,24 @@ struct GatheredSnipsDock: View {
         .contentShape(Rectangle())
         .accessibilityIdentifier("move-gathered")
         .accessibilityHint("Choose a destination list or add a new list for selected items.")
+        .glassMenu(isPresented: $isMoveMenuPresented, label: "Move to list", identifier: "selection-move-panel") { _ in
+            VStack(spacing: 2) {
+                MoveDestinationOptions(
+                    destinations: destinations,
+                    identifierPrefix: "move-gathered-to-",
+                    move: { id in isMoveMenuPresented = false; move(id) },
+                    addList: {
+                        isMoveMenuPresented = false
+                        model.requestNewListMove(snips: snips, fromSelection: true)
+                    }
+                )
+            }
+            .padding(6)
+            .buttonStyle(GlassMenuActionStyle())
+        }
+        .onChange(of: model.selectedSnipIDs) { _, ids in
+            if ids.isEmpty { isMoveMenuPresented = false }
+        }
     }
 
     private var contents: some View {

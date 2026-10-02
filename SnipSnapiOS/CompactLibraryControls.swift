@@ -179,6 +179,9 @@ struct CompactLibraryControls: View {
         .onChange(of: previewURL) { _, url in
             if url != nil { sendDestination = nil }
         }
+        .onChange(of: model.isManagingLists) { _, presented in
+            if presented { isComposerFocused = false; sendDestination = nil }
+        }
         .onChange(of: sheet) { _, sheet in
             if sheet != nil { sendDestination = nil }
         }

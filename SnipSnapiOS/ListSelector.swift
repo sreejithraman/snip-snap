@@ -48,8 +48,7 @@ struct ListSelector: View {
     @GestureState private var gestureIsActive = false
     @State private var presentingCreation = false
     @State private var creationRequest = UUID()
-    @State private var deletionTarget: SnipList?
-    @State private var confirmsDeletion = false
+    @AccessibilityFocusState private var focusedTabID: String?
 
     let model: IOSAppModel
     let controlLength: CGFloat
@@ -60,6 +59,19 @@ struct ListSelector: View {
     var labelViewport: CGFloat? = nil
     @Binding var motion: ListPageMotion
     let pageFrame: ListPageFrame
+
+    private func openListManagement() {
+        guard !model.isManagingLists, !motion.isDragging, !presentingCreation, sheet == nil else { return }
+        motion.interrupt()
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        model.haptics.emit(.selection, for: model.haptics.beginInteraction())
+        withAnimation(animation) { model.isManagingLists = true }
+    }
+
+    private func activate(_ item: ListSelectorItem) {
+        guard !model.isManagingLists else { return }
+        if item.page == model.selectedPage { openListManagement() } else { select(item) }
+    }
 
     private var animation: Animation? {
         reduceMotion ? nil : .spring(duration: 0.3, bounce: 0.12)
@@ -96,6 +108,8 @@ struct ListSelector: View {
                 viewport: proxy.size.width
             )
             .simultaneousGesture(selectorDragGesture(geometry: geometry))
+            .opacity(model.isManagingLists ? 0 : 1)
+            .allowsHitTesting(!model.isManagingLists)
             .onChange(of: presentation.hoveringAdd ? items.count : presentation.nearest) { _, destination in
                 guard motion.isSelectorDragging, !presentingCreation, sheet == nil else { return }
                 model.haptics.emit(destination == items.count ? .snap : .selection, for: model.haptics.beginInteraction())
@@ -114,40 +128,46 @@ struct ListSelector: View {
         .frame(height: height + 8)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("list-selector")
+        .listManagementMenu(
+            model: model, deleteList: deleteList,
+            createList: { Task { await createList(model.selectedPage, model.pages) } },
+            sourceFocus: { focused in
+                focusedTabID = focused && sheet == nil && !model.isSearchPresented && model.editingListID == nil
+                    ? items.first(where: { $0.page == model.selectedPage })?.id : nil
+            }
+        )
+        .accessibilityAction(named: Text("Manage Lists"), openListManagement)
         .accessibilityAction(named: Text("New List")) {
             Task { await createList(model.selectedPage, model.pages) }
         }
         .onChange(of: sheet) { _, destination in
             motion.interrupt()
+            model.isManagingLists = false
             if destination == nil { resetCreation() }
         }
         .onChange(of: model.selectedListID) { _, _ in
             if presentingCreation { resetCreation() }
         }
         .onChange(of: model.selectedPage) { _, _ in
+            model.isManagingLists = false
             if presentingCreation { resetCreation() }
         }
         .onChange(of: model.isSearchPresented) { _, isPresented in
+            if isPresented { model.isManagingLists = false }
             if isPresented && presentingCreation { resetCreation() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
+                model.isManagingLists = false
                 motion.interrupt()
                 if sheet == nil { resetCreation() }
             }
         }
         .onDisappear {
             motion.interrupt()
+            model.isManagingLists = false
             resetCreation()
         }
-        .listDeletionConfirmation(
-            list: deletionTarget ?? model.selectedList,
-            isPresented: $confirmsDeletion,
-            delete: {
-                guard let target = deletionTarget else { return }
-                Task { await deleteList(target.id) }
-            }
-        )
     }
 
     private struct MotionPresentation {
@@ -255,7 +275,7 @@ struct ListSelector: View {
                 state = true
             }
             .onChanged { value in
-                guard !presentingCreation, sheet == nil else { return }
+                guard !model.isManagingLists, !presentingCreation, sheet == nil else { return }
                 motion.updateDrag(
                     translation: value.translation,
                     selectedPage: model.selectedPage,
@@ -267,7 +287,7 @@ struct ListSelector: View {
                 )
             }
             .onEnded { value in
-                guard !presentingCreation, sheet == nil else {
+                guard !model.isManagingLists, !presentingCreation, sheet == nil else {
                     motion.interrupt()
                     return
                 }
@@ -376,32 +396,22 @@ struct ListSelector: View {
         ZStack {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 let selected = item.page == model.selectedPage
-                Group {
-                    if selected {
-                        ListActionsMenu {
-                            var actions = [UIAction(title: String(localized: "New List"), image: UIImage(systemName: "plus"), identifier: UIAction.Identifier("new-list")) { _ in
-                                Task { await createList(model.selectedPage, model.pages) }
-                            }]
-                            if case .list(let list) = item, list.id != SnipList.inboxID {
-                                actions.append(UIAction(title: String(localized: "Edit List…"), image: UIImage(systemName: "pencil")) { _ in model.editListInline(id: list.id) })
-                                actions.append(UIAction(title: String(localized: "Delete List"), image: UIImage(systemName: "trash"), attributes: .destructive) { _ in
-                                    model.haptics.invalidatePendingFeedback()
-                                    deletionTarget = list
-                                    confirmsDeletion = true
-                                })
+                Button { activate(item) } label: { Color.clear.contentShape(Rectangle()) }
+                .highPriorityGesture(
+                    LongPressGesture(minimumDuration: 0.45, maximumDistance: 8)
+                        .exclusively(before: TapGesture())
+                        .onEnded { result in
+                            switch result {
+                            case .first: openListManagement()
+                            case .second: activate(item)
                             }
-                            return UIMenu(children: actions)
                         }
-                    } else {
-                        Button {
-                            select(item)
-                        } label: { Color.clear.contentShape(Rectangle()) }
-                    }
-                }
+                )
                 .buttonStyle(.plain)
                 .frame(width: geometry.widths[index], height: height + 8)
+                .accessibilityFocused($focusedTabID, equals: item.id)
                 .accessibilityLabel(item.title)
-                .accessibilityHint(selected ? Text("List actions") : Text("Switch list"))
+                .accessibilityHint(selected ? Text("Manage lists") : Text("Switch list; press and hold to manage lists"))
                 .accessibilityAddTraits(selected ? .isSelected : [])
                 .accessibilityIdentifier(item.id)
                 .accessibilityAction(named: Text("New List")) {
@@ -432,7 +442,7 @@ struct ListSelector: View {
     }
 
     private func beginCreation() {
-        guard !presentingCreation, sheet == nil, !model.isSearchPresented else { return }
+        guard !model.isManagingLists, !presentingCreation, sheet == nil, !model.isSearchPresented else { return }
         let sourcePage = model.selectedPage
         let sourcePages = model.pages
         if model.newListID != nil {
@@ -467,48 +477,6 @@ struct ListSelector: View {
     private func resetCreation() {
         creationRequest = UUID()
         withAnimation(animation) { presentingCreation = false }
-    }
-}
-
-// Open only after a completed tap, so a slow swipe cannot open the menu.
-private struct ListActionsMenu: UIViewRepresentable {
-    let menu: () -> UIMenu
-
-    func makeUIView(context: Context) -> UIButton {
-        let button = UIButton(type: .custom)
-        button.addInteraction(context.coordinator.interaction)
-        button.addTarget(context.coordinator, action: #selector(Coordinator.showMenu), for: .touchUpInside)
-        return button
-    }
-
-    func updateUIView(_ button: UIButton, context: Context) {
-        button.isEnabled = context.environment.isEnabled
-        context.coordinator.menu = menu
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator(menu: menu) }
-
-    @MainActor
-    final class Coordinator: NSObject, @MainActor UIEditMenuInteractionDelegate {
-        var menu: () -> UIMenu
-        lazy var interaction = UIEditMenuInteraction(delegate: self)
-
-        init(menu: @escaping () -> UIMenu) { self.menu = menu }
-
-        @objc func showMenu(_ button: UIButton) {
-            interaction.presentEditMenu(with: UIEditMenuConfiguration(
-                identifier: nil,
-                sourcePoint: CGPoint(x: button.bounds.midX, y: 0)
-            ))
-        }
-
-        func editMenuInteraction(
-            _ interaction: UIEditMenuInteraction,
-            menuFor configuration: UIEditMenuConfiguration,
-            suggestedActions: [UIMenuElement]
-        ) -> UIMenu? {
-            menu()
-        }
     }
 }
 

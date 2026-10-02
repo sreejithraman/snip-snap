@@ -196,7 +196,7 @@ extension View {
     }
 
     func listDeletionConfirmation(list: SnipList, isPresented: Binding<Bool>, delete: @escaping () -> Void) -> some View {
-        confirmationDialog("Delete \(list.displayName)?", isPresented: isPresented, titleVisibility: .visible) {
+        alert("Delete \(list.displayName)?", isPresented: isPresented) {
             Button("Delete List", role: .destructive, action: delete)
             Button("Cancel", role: .cancel) {}
         } message: {

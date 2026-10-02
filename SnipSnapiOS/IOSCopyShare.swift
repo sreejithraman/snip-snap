@@ -562,6 +562,7 @@ struct CopyShareActions: View {
     let coordinator: IOSCopyShareCoordinator
     let identifierSuffix: String
     var includesCopy = true
+    var beforeAction: () -> Void = {}
 
     private var hasAttachments: Bool {
         snips.contains { !$0.attachments.isEmpty }
@@ -570,6 +571,7 @@ struct CopyShareActions: View {
     var body: some View {
         if includesCopy {
             Button("Copy", systemImage: "doc.on.doc") {
+                beforeAction()
                 Task { await coordinator.copy(snips: snips, model: model) }
             }
             .accessibilityIdentifier("copy-\(identifierSuffix)")
@@ -577,17 +579,20 @@ struct CopyShareActions: View {
 
         if hasAttachments {
             Button("Copy Text", systemImage: "text.page") {
+                beforeAction()
                 Task { await coordinator.copyText(snips: snips, model: model) }
             }
             .accessibilityIdentifier("copy-text-\(identifierSuffix)")
 
             Button("Copy Attachments", systemImage: "paperclip") {
+                beforeAction()
                 Task { await coordinator.copyAttachments(snips: snips, model: model) }
             }
             .accessibilityIdentifier("copy-attachments-\(identifierSuffix)")
         }
 
         Button("Share", systemImage: "square.and.arrow.up") {
+            beforeAction()
             Task { await coordinator.share(snips: snips, model: model) }
         }
         .accessibilityIdentifier("share-\(identifierSuffix)")

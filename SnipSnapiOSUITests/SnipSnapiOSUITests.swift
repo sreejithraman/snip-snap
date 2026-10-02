@@ -693,6 +693,14 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["remove-account-cache"].exists)
         XCTAssertFalse(app.alerts.firstMatch.exists)
 
+        compactListTab(named: "Inbox", in: app).press(forDuration: 0.7)
+        let manager = app.descendants(matching: .any)["list-management-panel"]
+        XCTAssertTrue(manager.waitForExistence(timeout: 3))
+        let keepFrame = app.buttons["keep-account-cache"].frame
+        app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: keepFrame.midX, dy: keepFrame.midY)).tap()
+        XCTAssertTrue(manager.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(notice.exists, "The backdrop must shield the account choice as it dismisses.")
         app.buttons["keep-account-cache"].tap()
         XCTAssertFalse(notice.waitForExistence(timeout: 1))
     }
@@ -1130,7 +1138,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(cancel.frame.minY, initialSendFrame.minY, accuracy: 1)
         XCTAssertEqual(cancel.frame.width, initialSendFrame.width, accuracy: 1)
         XCTAssertEqual(cancel.frame.height, initialSendFrame.height, accuracy: 1)
-        XCTAssertLessThanOrEqual(picker.frame.maxY, cancel.frame.minY - 4)
         let destination = app.descendants(matching: .any).matching(NSPredicate(
             format: "identifier BEGINSWITH %@ AND label == %@", "composer-send-to-", "Work"
         )).firstMatch
@@ -1139,6 +1146,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         )).firstMatch
         XCTAssertTrue(currentDestination.waitForExistence(timeout: 3))
         XCTAssertTrue(destination.waitForExistence(timeout: 3))
+        // The modal container includes Cancel; measure the last visible menu row.
+        XCTAssertLessThanOrEqual(destination.frame.maxY, cancel.frame.minY - 4)
         XCTAssertFalse(collectionRow(named: "Sent to Work from Inbox", in: app).exists)
         cancel.tap()
         XCTAssertTrue(picker.waitForNonExistence(timeout: 3))
@@ -1147,6 +1156,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(currentDestination.waitForNonExistence(timeout: 3))
         XCTAssertEqual(composer.value as? String, "Sent to Work from Inbox")
         XCTAssertTrue(send.waitForExistence(timeout: 3))
+        let restoredHierarchy = XCTAttachment(string: app.debugDescription)
+        restoredHierarchy.name = "Send hierarchy after Cancel"
+        restoredHierarchy.lifetime = .keepAlways
+        add(restoredHierarchy)
         XCTAssertEqual(send.frame.minX, initialSendFrame.minX, accuracy: 1)
         XCTAssertEqual(send.frame.minY, initialSendFrame.minY, accuracy: 1)
         XCTAssertEqual(send.frame.width, initialSendFrame.width, accuracy: 1)
@@ -1605,7 +1618,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         screenshot.lifetime = .keepAlways
         add(screenshot)
         clipboard.tap()
-        app.menuItems["New List"].tap()
+        app.buttons["list-management-new"].tap()
         let field = app.textFields["list-name"]
         XCTAssertTrue(field.waitForExistence(timeout: 4))
         field.tap()
@@ -1853,17 +1866,94 @@ final class SnipSnapiOSUITests: XCTestCase {
         continueAfterFailure = false
         let app = launchApp()
         try requireCompactSelector(in: app)
-        createList("Work", in: app)
+        createList("Work", color: "blue", in: app)
         createSnip("Keep this note", in: app)
+        createList("Travel", color: "violet", in: app)
+        createSnip("Keep the travel note", in: app)
         let work = compactListTab(named: "Work", in: app)
         work.tap()
-        XCTAssertTrue(app.menuItems["Delete List"].waitForExistence(timeout: 3))
-        app.menuItems["Delete List"].tap()
+        XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
+        work.press(forDuration: 0.7)
+        XCTAssertTrue(app.buttons["Delete Travel"].waitForExistence(timeout: 3))
+        let managerProof = XCTAttachment(screenshot: app.screenshot())
+        managerProof.name = "Colored list titles and leading reorder handles"
+        managerProof.lifetime = .keepAlways
+        add(managerProof)
+        app.buttons["Delete Travel"].tap()
+        let travelDialog = app.alerts["Delete Travel?"]
+        XCTAssertTrue(travelDialog.waitForExistence(timeout: 3))
+        travelDialog.buttons["Cancel"].tap()
+        XCTAssertTrue(compactListTab(named: "Travel", in: app).exists)
+        app.buttons["Delete Travel"].tap()
+        XCTAssertTrue(travelDialog.waitForExistence(timeout: 3))
+        let dialogProof = XCTAttachment(screenshot: app.screenshot())
+        dialogProof.name = "Centered list deletion dialog"
+        dialogProof.lifetime = .keepAlways
+        add(dialogProof)
+        travelDialog.buttons["Delete List"].tap()
+        XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3), "Deleting another list must preserve the current page.")
+        XCTAssertTrue(work.isSelected)
+        XCTAssertFalse(compactListTab(named: "Travel", in: app).exists)
+        work.press(forDuration: 0.7)
+        XCTAssertTrue(app.buttons["Delete Work"].waitForExistence(timeout: 3))
+        app.buttons["Delete Work"].tap()
+        XCTAssertTrue(app.alerts["Delete Work?"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["The snips in this list will move to Inbox."].waitForExistence(timeout: 3))
         app.buttons["Delete List"].tap()
         XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
         XCTAssertTrue(row(named: "Keep this note", in: app).exists)
+        XCTAssertTrue(row(named: "Keep the travel note", in: app).exists)
         XCTAssertFalse(work.exists)
+    }
+
+    func testSelectorLongPressReordersListsAndDismissesEditorKeyboard() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        for name in ["Work", "Travel", "Reading"] { createList(name, in: app) }
+        let readingTab = compactListTab(named: "Reading", in: app)
+        let workTab = compactListTab(named: "Work", in: app)
+        let readingID = String(readingTab.identifier.dropFirst("list-tab-".count))
+        let workID = String(workTab.identifier.dropFirst("list-tab-".count))
+        readingTab.press(forDuration: 0.7)
+        let close = app.buttons["list-management-close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 3))
+        let reading = app.buttons["list-management-select-" + readingID]
+        let work = app.buttons["list-management-select-" + workID]
+        let source = app.cells.containing(.button, identifier: reading.identifier).firstMatch
+        let destination = app.cells.containing(.button, identifier: work.identifier).firstMatch
+        XCTAssertTrue(source.exists)
+        XCTAssertTrue(destination.exists)
+        source.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5))
+            .press(forDuration: 0.4, thenDragTo:
+                destination.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.1)))
+        let reordered = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in reading.frame.minY < work.frame.minY }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [reordered], timeout: 4), .completed)
+        XCTAssertTrue(close.exists)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Glass manager after dragging Reading before Work"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+
+        close.tap()
+        XCTAssertTrue(close.waitForNonExistence(timeout: 3))
+        readingTab.press(forDuration: 0.7)
+        XCTAssertTrue(close.waitForExistence(timeout: 3))
+        app.buttons["list-management-edit-" + readingID].tap()
+        let name = app.textFields["list-name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 3))
+        name.tap()
+        name.typeText(" draft")
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        readingTab.press(forDuration: 0.7)
+        XCTAssertTrue(close.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        close.tap()
+        XCTAssertTrue(close.waitForNonExistence(timeout: 3))
+        XCTAssertEqual(name.value as? String, "Reading draft")
+        app.buttons["save-list"].tap()
+        XCTAssertTrue(app.navigationBars["Reading draft"].waitForExistence(timeout: 3))
     }
 
     func testSelectorManyListsAndSelectedMenu() throws {
@@ -1878,11 +1968,15 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(last.isSelected)
         let selector = app.descendants(matching: .any)["list-selector"]
         XCTAssertEqual(last.frame.midX, selector.frame.midX, accuracy: 2)
-        last.tap()
-        XCTAssertTrue(app.menuItems["New List"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.menuItems["Edit List…"].exists)
-        XCTAssertTrue(app.menuItems["Delete List"].exists)
-        app.menuItems["New List"].tap()
+        last.press(forDuration: 0.7)
+        XCTAssertTrue(app.buttons["list-management-new"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Edit A long list name for later"].exists)
+        XCTAssertTrue(app.buttons["Delete A long list name for later"].exists)
+        let panelScreenshot = XCTAttachment(screenshot: app.screenshot())
+        panelScreenshot.name = "Floating glass list manager"
+        panelScreenshot.lifetime = .keepAlways
+        add(panelScreenshot)
+        app.buttons["list-management-new"].tap()
         XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 3))
         app.buttons["save-list"].tap()
         last.tap()
@@ -1912,7 +2006,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         let clipboard = app.descendants(matching: .any)["clipboard-tab"]
         XCTAssertTrue(clipboard.waitForExistence(timeout: 3))
         clipboard.tap()
-        let newList = app.menuItems["New List"]
+        let newList = app.buttons["list-management-new"]
         XCTAssertTrue(newList.waitForExistence(timeout: 3))
         newList.tap()
         XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 3))
@@ -1923,7 +2017,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         swipeToPreviousPage("Travel")
         let travel = compactListTab(named: "Travel", in: app)
         travel.tap()
-        let pendingListAction = app.menuItems["New List"]
+        let pendingListAction = app.buttons["list-management-new"]
         XCTAssertTrue(pendingListAction.waitForExistence(timeout: 3))
         pendingListAction.tap()
         XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 3))
@@ -1938,10 +2032,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         try requireCompactSelector(in: app)
         createList("Work", in: app)
         createList("Travel", in: app)
-        compactListTab(named: "Work", in: app).tap()
-        XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
         openListEditor(named: "Work", in: app)
+        XCTAssertTrue(compactListTab(named: "Work", in: app).isSelected)
         XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.textFields["list-name"].value as? String, "Work")
         compactListTab(named: "Travel", in: app).tap()
         XCTAssertTrue(app.navigationBars["Travel"].waitForExistence(timeout: 3))
 
@@ -2849,6 +2943,86 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     }
 
+    func testGlassSelectionMenuShowsPinnedCompletionAsDisabled() {
+        continueAfterFailure = false
+        let app = launchApp(withGatheringFixtures: true)
+        let names = ["Sketch a simpler selection flow", "Try the stack interaction on iPhone"]
+        for name in names {
+            let snip = row(named: name, in: app)
+            XCTAssertTrue(snip.waitForExistence(timeout: 5))
+            snip.press(forDuration: 1)
+            app.buttons["Pin"].tap()
+        }
+        enterSelection(in: app)
+        for name in names { row(named: name, in: app).tap() }
+        app.buttons["selection-actions"].tap()
+        let markDone = app.buttons["mark-selection-done"]
+        XCTAssertTrue(markDone.waitForExistence(timeout: 3))
+        XCTAssertFalse(markDone.isEnabled)
+        XCTAssertTrue(app.buttons["merge-selection"].isEnabled)
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Shared glass disabled selection action"
+        proof.lifetime = .keepAlways
+        add(proof)
+    }
+
+    func testGlassSelectionMenuDismissesWithoutLosingGatheredSnips() {
+        continueAfterFailure = false
+        let app = launchApp(withGatheringFixtures: true)
+        XCTAssertTrue(compactListTab(named: "Archive", in: app).waitForExistence(timeout: 5))
+        compactListTab(named: "Inbox", in: app).press(forDuration: 0.7)
+        let manager = app.descendants(matching: .any)["list-management-panel"]
+        XCTAssertTrue(manager.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.staticTexts["Lists"].exists)
+        XCTAssertFalse(app.staticTexts["Drag to reorder"].exists)
+        XCTAssertTrue(app.buttons["Edit Work"].isHittable)
+        let listProof = XCTAttachment(screenshot: app.screenshot())
+        listProof.name = "Shared glass list manager"
+        listProof.lifetime = .keepAlways
+        add(listProof)
+        app.buttons["list-management-close"].tap()
+        XCTAssertTrue(manager.waitForNonExistence(timeout: 3))
+        enterSelection(in: app)
+        row(named: "Sketch a simpler selection flow", in: app).tap()
+        row(named: "Try the stack interaction on iPhone", in: app).tap()
+        app.buttons["selection-actions"].tap()
+        let menu = app.descendants(matching: .any)["selection-actions-panel"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["merge-selection"].isHittable)
+        XCTAssertGreaterThanOrEqual(menu.frame.minX, 0)
+        XCTAssertLessThanOrEqual(menu.frame.maxX, app.frame.maxX)
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Shared glass selection actions"
+        proof.lifetime = .keepAlways
+        add(proof)
+
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)).tap()
+        XCTAssertTrue(app.buttons["merge-selection"].waitForNonExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["gathered-stack"].exists)
+        XCTAssertTrue(app.buttons["selection-actions"].isEnabled)
+        app.buttons["move-gathered"].tap()
+        let moveMenu = app.descendants(matching: .any)["selection-move-panel"]
+        XCTAssertTrue(moveMenu.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["move-gathered-to-Work"].isHittable)
+        XCTAssertTrue(app.alerts["selection-move-panel"].exists, "The chooser should expose modal accessibility semantics.")
+        let backgroundTrigger = app.buttons["selection-actions"].frame
+        let moveProof = XCTAttachment(screenshot: app.screenshot())
+        moveProof.name = "Shared glass move destinations"
+        moveProof.lifetime = .keepAlways
+        add(moveProof)
+        app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: backgroundTrigger.midX, dy: backgroundTrigger.midY)).tap()
+        XCTAssertTrue(moveMenu.waitForNonExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["merge-selection"].exists, "A background tap should dismiss without also opening the action menu.")
+        XCTAssertTrue(app.buttons["gathered-stack"].exists)
+        app.buttons["selection-actions"].tap()
+        XCTAssertTrue(app.buttons["mark-selection-done"].waitForExistence(timeout: 3))
+        app.buttons["mark-selection-done"].tap()
+        XCTAssertTrue(app.buttons["library-actions"].waitForExistence(timeout: 5))
+        XCTAssertEqual(row(named: "Sketch a simpler selection flow", in: app).value as? String, "Done")
+        XCTAssertEqual(row(named: "Try the stack interaction on iPhone", in: app).value as? String, "Done")
+    }
+
     func testMergesSelectedSnips() {
         continueAfterFailure = false
         let app = launchApp()
@@ -3730,10 +3904,21 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     private func openListEditor(named name: String, in app: XCUIApplication) {
+        let usesSidebar = app.buttons["list-\(name)"].exists
+        let listID = usesSidebar ? nil : compactListTab(named: name, in: app).identifier
+            .dropFirst("list-tab-".count)
         openListActions(named: name, in: app)
-        let edit = app.descendants(matching: .any).matching(
-            NSPredicate(format: "label BEGINSWITH %@", "Edit List")
-        ).firstMatch
+        let edit: XCUIElement
+        if usesSidebar {
+            edit = app.descendants(matching: .any).matching(
+                NSPredicate(format: "label BEGINSWITH %@", "Edit List")
+            ).firstMatch
+        } else if let listID {
+            edit = app.buttons["list-management-edit-\(listID)"]
+        } else {
+            XCTFail("List identifier must be captured before opening its actions.")
+            return
+        }
         XCTAssertTrue(edit.waitForExistence(timeout: 3))
         edit.tap()
     }
@@ -3743,7 +3928,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         if sidebarList.exists {
             sidebarList.press(forDuration: 1)
         } else {
-            compactListTab(named: name, in: app).tap()
+            compactListTab(named: name, in: app).press(forDuration: 0.7)
         }
     }
 
@@ -3856,8 +4041,8 @@ final class SnipSnapiOSUITests: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'list-tab-' AND selected == true")
         ).firstMatch
         selected.tap()
-        XCTAssertTrue(app.menuItems["New List"].waitForExistence(timeout: 3))
-        app.menuItems["New List"].tap()
+        XCTAssertTrue(app.buttons["list-management-new"].waitForExistence(timeout: 3))
+        app.buttons["list-management-new"].tap()
     }
 
     private func returnToLists(in app: XCUIApplication) {
