@@ -196,11 +196,8 @@ struct InlineSnipEditor: View {
     @Bindable var draft: SnipEditorDraft
     let model: IOSAppModel
     @FocusState.Binding var isFocused: Bool
-    @Environment(\.self) private var environment
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
-    @ScaledMetric(relativeTo: .body) private var actionDiameter: CGFloat = 28
-    @ScaledMetric(relativeTo: .body) private var actionSymbolSize: CGFloat = 14
 
     var body: some View {
         HStack(alignment: .top, spacing: SnipSnapSpacing.relatedContent) {
@@ -351,11 +348,6 @@ struct InlineSnipEditor: View {
     }
 
     private var saveButton: some View {
-        let appearance = listAppearance(for: draft.original, in: model.lists)
-        let labelColor = draft.canSave
-            ? appearance.filledControlLabel(in: environment)
-            : SnipSnapTheme.disabledActionGlassLabel
-
         return Button {
             Task { @MainActor in
                 if await draft.save(using: model) {
@@ -364,22 +356,11 @@ struct InlineSnipEditor: View {
                 }
             }
         } label: {
-            Group {
-                if draft.isSaving {
-                    ProgressView().tint(labelColor)
-                } else {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: actionSymbolSize, weight: .semibold))
-                }
-            }
-            .foregroundStyle(labelColor)
-            .frame(width: actionDiameter, height: actionDiameter)
-            .background(
-                draft.canSave ? appearance.controlTint : SnipSnapTheme.disabledActionGlassTint,
-                in: Circle()
+            EditorConfirmActionIcon(
+                appearance: listAppearance(for: draft.original, in: model.lists),
+                isEnabled: draft.canSave,
+                isSaving: draft.isSaving
             )
-            .frame(minWidth: 44, minHeight: 44)
-            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!draft.canSave)
@@ -388,16 +369,7 @@ struct InlineSnipEditor: View {
     }
 
     private func secondaryActionIcon(_ systemName: String) -> some View {
-        Image(systemName: systemName)
-            .font(.system(size: actionSymbolSize, weight: .medium))
-            .foregroundStyle(.secondary)
-            .frame(width: actionDiameter, height: actionDiameter)
-            .background(SnipSnapTheme.compactActionFill, in: Circle())
-            .overlay {
-                Circle().strokeBorder(Color(uiColor: .separator), lineWidth: 0.5)
-            }
-            .frame(minWidth: 44, minHeight: 44)
-            .contentShape(Rectangle())
+        EditorSecondaryActionIcon(systemName: systemName)
     }
 }
 
@@ -425,20 +397,69 @@ struct ListEditorRecession: ViewModifier {
     }
 }
 
-/// Edits the selected list in a glass panel above its snips.
+/// Compact controls for inline snip editing.
+private struct EditorSecondaryActionIcon: View {
+    let systemName: String
+    @ScaledMetric(relativeTo: .body) private var diameter: CGFloat = 28
+    @ScaledMetric(relativeTo: .body) private var symbolSize: CGFloat = 14
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: symbolSize, weight: .medium))
+            .foregroundStyle(.secondary)
+            .frame(width: diameter, height: diameter)
+            .background(SnipSnapTheme.compactActionFill, in: Circle())
+            .overlay { Circle().strokeBorder(Color(uiColor: .separator), lineWidth: 0.5) }
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+    }
+}
+
+private struct EditorConfirmActionIcon: View {
+    let appearance: SnipListAppearance
+    var isEnabled = true
+    var isSaving = false
+    @Environment(\.self) private var environment
+    @ScaledMetric(relativeTo: .body) private var diameter: CGFloat = 28
+    @ScaledMetric(relativeTo: .body) private var symbolSize: CGFloat = 14
+
+    var body: some View {
+        let labelColor = isEnabled
+            ? appearance.filledControlLabel(in: environment) : SnipSnapTheme.disabledActionGlassLabel
+        Group {
+            if isSaving {
+                ProgressView().tint(labelColor)
+            } else {
+                Image(systemName: "checkmark")
+                    .font(.system(size: symbolSize, weight: .semibold))
+            }
+        }
+        .foregroundStyle(labelColor)
+        .frame(width: diameter, height: diameter)
+        .background(isEnabled ? appearance.controlTint : SnipSnapTheme.disabledActionGlassTint, in: Circle())
+        .frame(minWidth: 44, minHeight: 44)
+        .contentShape(Rectangle())
+    }
+}
+
 struct InlineListEditor: View {
+    private enum AppearanceTab { case icon, color }
+
     let model: IOSAppModel
     let list: SnipList
     let cancelNewList: (UUID) async -> Bool
     @Bindable private var draft: InlineListDraft
-    @State private var showsIcons = false
-    @State private var showsIconBrowser = false
-    @State private var contentHeight: CGFloat?
-    @FocusState private var isNameFocused: Bool
+    @State private var appearanceTab: AppearanceTab = .color
+    @State private var iconQuery = ""
+    @FocusState private var focusedField: ListAppearanceField?
+    @ScaledMetric(relativeTo: .body) private var actionSymbolSize: CGFloat = 16
+    @ScaledMetric(relativeTo: .body) private var actionLabelSize: CGFloat = 20
+    @Environment(\.self) private var environment
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
-    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     init(model: IOSAppModel, list: SnipList, cancelNewList: @escaping (UUID) async -> Bool) {
         self.model = model
@@ -447,24 +468,42 @@ struct InlineListEditor: View {
         draft = model.listDraft(for: list)
     }
 
-    private var canPresentCompactIconBrowser: Bool {
-        verticalSizeClass == .compact
-            && model.selectedPage == .list(list.id)
-            && !model.isSearchPresented
-    }
-
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                editorContent
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+            if verticalSizeClass == .compact || dynamicTypeSize.isAccessibilitySize {
+                ScrollView {
+                    LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                        editorHeader
+                        switch appearanceTab {
+                        case .icon:
+                            Section {
+                                ListIconGrid(selection: $draft.systemImage, query: iconQuery)
+                                    .padding(.horizontal, SnipSnapSpacing.paneContentInset)
+                            } header: {
+                                ListIconSearchField(query: $iconQuery, focus: $focusedField, usesGlassBackground: true)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .padding(.horizontal, SnipSnapSpacing.paneContentInset)
+                                    .padding(.bottom, SnipSnapSpacing.relatedContent)
+                            }
+                        case .color:
+                            SnipListColorPicker(selection: $draft.color, showsTitle: false)
+                                .padding(SnipSnapSpacing.paneContentInset)
+                        }
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("list-icon-results")
+                .scrollDismissesKeyboard(.interactively)
+                .scrollBounceBehavior(.basedOnSize)
+            } else {
+                editorHeader
+                    .fixedSize(horizontal: false, vertical: true)
+                appearancePicker
             }
-            .scrollBounceBehavior(.basedOnSize)
-            .scrollDismissesKeyboard(.interactively)
-            .frame(maxHeight: contentHeight, alignment: .top)
-
-            editorFooter
         }
+        .safeAreaBar(edge: .bottom, spacing: 0) { editorFooter }
+        .scrollEdgeEffectStyle(.soft, for: .all)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .disabled(draft.isSaving)
         .background {
             let shape = RoundedRectangle(cornerRadius: 28, style: .continuous)
@@ -481,54 +520,52 @@ struct InlineListEditor: View {
         .padding(.horizontal, SnipSnapSpacing.relatedContent)
         .padding(.top, SnipSnapSpacing.relatedContent)
         .padding(.bottom, SnipSnapSpacing.relatedContent)
-        .sheet(isPresented: $showsIconBrowser) {
-            NavigationStack {
-                SnipListIconBrowser(selection: $draft.systemImage)
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Cancel", role: .cancel) { showsIconBrowser = false }
-                        }
-                    }
-            }
-        }
-        .onChange(of: canPresentCompactIconBrowser) { _, canPresent in
-            if canPresent, showsIcons {
-                showsIcons = false
-                showsIconBrowser = true
-            }
-        }
-        .task { isNameFocused = model.newListID == list.id && !model.isSearchPresented }
+        .task { focusedField = model.newListID == list.id && !model.isSearchPresented ? .name : nil }
         .onChange(of: model.isSearchPresented) { _, presented in
-            if presented { isNameFocused = false }
+            if presented {
+                focusedField = nil
+            }
         }
     }
 
-    private var editorContent: some View {
+    private var appearancePicker: some View {
+        Group {
+            switch appearanceTab {
+            case .icon:
+                InlineListIconPicker(selection: $draft.systemImage, query: $iconQuery, searchFocus: $focusedField)
+            case .color:
+                ScrollView {
+                    SnipListColorPicker(selection: $draft.color, showsTitle: false)
+                        .padding(.vertical, SnipSnapSpacing.relatedContent)
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .padding(.horizontal, SnipSnapSpacing.paneContentInset)
+            }
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    private var appearanceSelection: Binding<AppearanceTab> {
+        Binding(get: { appearanceTab }, set: { tab in
+            let keepsKeyboard = focusedField != nil
+            appearanceTab = tab
+            if keepsKeyboard {
+                focusedField = tab == .color ? .name : .iconSearch
+            }
+        })
+    }
+
+    private var editorHeader: some View {
         VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
             HStack(spacing: 12) {
-                Button {
-                    isNameFocused = false
-                    if canPresentCompactIconBrowser {
-                        showsIconBrowser = true
-                        return
-                    }
-                    withAnimation(reduceMotion ? nil : ListEditorPresentation.animation(
-                        reduceMotion: false,
-                        isPresented: !showsIcons
-                    )) {
-                        showsIcons.toggle()
-                    }
-                } label: {
-                    Image(systemName: ListIconSymbol.supportedName(draft.systemImage))
-                        .font(.title3.weight(.semibold))
-                        .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
-                        .foregroundStyle(SnipListAppearance(preset: draft.color).color)
-                        .frame(width: 44, height: 44)
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .accessibilityLabel("Choose list icon, current: \(SnipListIconOptions.title(for: draft.systemImage))")
-                .accessibilityIdentifier("choose-list-icon")
+                Image(systemName: ListIconSymbol.supportedName(draft.systemImage))
+                    .font(.title3.weight(.semibold))
+                    .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                    .foregroundStyle(SnipListAppearance(preset: draft.color).color)
+                    .frame(width: 44, height: 44)
+                    .accessibilityLabel("List icon: \(SnipListIconOptions.title(for: draft.systemImage))")
+                    .accessibilityIdentifier("list-icon-preview")
 
                 TextField(list.displayName, text: $draft.name)
                     .font(.system(.title, design: .rounded, weight: .bold))
@@ -536,71 +573,71 @@ struct InlineListEditor: View {
                     .textFieldStyle(.plain)
                     .lineLimit(1)
                     .textInputAutocapitalization(.words)
-                    .focused($isNameFocused)
+                    .focused($focusedField, equals: .name)
                     .submitLabel(.done)
                     .onSubmit { Task { await save() } }
                     .accessibilityLabel("List name")
                     .accessibilityIdentifier("list-name")
 
             }
-            if showsIcons {
-                InlineListIconPicker(selection: $draft.systemImage)
-                    .padding(.top, SnipSnapSpacing.relatedContent)
-                    .transition(.opacity)
+            Picker("List appearance", selection: appearanceSelection) {
+                Text("Icon").tag(AppearanceTab.icon)
+                Text("Color").tag(AppearanceTab.color)
             }
-            SnipListColorPicker(selection: $draft.color, usesWideGrid: true, showsTitle: false)
-                .onChange(of: draft.color) { isNameFocused = false }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("list-appearance-picker")
         }
         .padding(SnipSnapSpacing.paneContentInset)
     }
 
     private var editorFooter: some View {
-        Group {
-            if model.newListID == list.id {
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: SnipSnapSpacing.paneContentInset) {
-                        cancelButton
-                        primaryButton(fullWidth: false)
-                    }
-                    .fixedSize(horizontal: true, vertical: false)
+        HStack(spacing: SnipSnapSpacing.relatedContent) {
+            Button(role: .cancel) {
+                if model.newListID == list.id {
+                    Task { await cancelNewList() }
+                } else {
+                    focusedField = nil
+                    model.finishListEditing(id: list.id)
+                }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: actionSymbolSize, weight: .medium))
+                    .frame(width: actionLabelSize, height: actionLabelSize)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .controlSize(.regular)
+            .frame(minWidth: 44, minHeight: 44)
+            .accessibilityLabel(model.newListID == list.id ? "Cancel new list" : "Cancel list editing")
+            .accessibilityIdentifier(model.newListID == list.id ? "cancel-new-list" : "cancel-list-editing")
 
-                    VStack(spacing: SnipSnapSpacing.relatedContent) {
-                        primaryButton(fullWidth: true)
-                        cancelButton
+            Button {
+                Task { await save() }
+            } label: {
+                Group {
+                    if draft.isSaving {
+                        ProgressView()
+                            .tint(SnipListAppearance(preset: draft.color).filledControlLabel(in: environment))
+                    } else {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: actionSymbolSize, weight: .semibold))
                     }
                 }
-            } else {
-                primaryButton(fullWidth: false)
+                .frame(width: actionLabelSize, height: actionLabelSize)
             }
+            .buttonStyle(.glassProminent)
+            .buttonBorderShape(.circle)
+            .controlSize(.regular)
+            .tint(SnipListAppearance(preset: draft.color).controlTint)
+            .foregroundStyle(SnipListAppearance(preset: draft.color).filledControlLabel(in: environment))
+            .frame(minWidth: 44, minHeight: 44)
+            .accessibilityLabel(draft.isSaving ? "Saving…" : model.newListID == list.id ? "Create list" : "Save list")
+            .accessibilityIdentifier("save-list")
         }
+        .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.horizontal, SnipSnapSpacing.paneContentInset)
-        .padding(.top, SnipSnapSpacing.relatedContent)
-        .padding(.bottom, SnipSnapSpacing.paneContentInset)
-    }
-
-    private var cancelButton: some View {
-        Button(role: .cancel) {
-            Task { await cancelNewList() }
-        } label: {
-            Text("Cancel")
-                .frame(minWidth: 44, minHeight: 44)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-        .accessibilityIdentifier("cancel-new-list")
-    }
-
-    private func primaryButton(fullWidth: Bool) -> some View {
-        AppPrimaryActionButton {
-            Task { await save() }
-        } label: {
-            Text(model.newListID == list.id ? "Create" : "Save")
-                .font(.subheadline.weight(.semibold))
-                .frame(minWidth: 56, maxWidth: fullWidth ? .infinity : nil, minHeight: 30)
-        }
-        .accessibilityIdentifier("save-list")
+        .padding(.vertical, SnipSnapSpacing.relatedContent)
     }
 
     private func save() async {
@@ -615,7 +652,7 @@ struct InlineListEditor: View {
         )
         draft.isSaving = false
         if succeeded {
-            isNameFocused = false
+            focusedField = nil
             model.finishListEditing(id: list.id)
         }
     }

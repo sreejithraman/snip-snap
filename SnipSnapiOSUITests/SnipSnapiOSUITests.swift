@@ -230,7 +230,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         edge.press(forDuration: 0.05, thenDragTo: edge.withOffset(CGVector(dx: -250, dy: 0)),
                    withVelocity: .slow, thenHoldForDuration: 0.6)
         XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 4))
-        XCTAssertTrue(compactListTab(named: "New List", in: app).isSelected)
+        XCTAssertFalse(app.descendants(matching: .any)["list-selector"].exists)
         let cancel = app.buttons["cancel-new-list"]
         XCTAssertTrue(cancel.waitForExistence(timeout: 3))
         cancel.tap()
@@ -251,7 +251,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         back.press(forDuration: 0.05, thenDragTo: back.withOffset(CGVector(dx: 80, dy: 0)),
                    withVelocity: .slow, thenHoldForDuration: 0.3)
         XCTAssertTrue(app.textFields["list-name"].exists)
-        XCTAssertTrue(compactListTab(named: "New List", in: app).isSelected)
+        XCTAssertFalse(app.descendants(matching: .any)["list-selector"].exists)
 
         back.press(forDuration: 0.05, thenDragTo: back.withOffset(CGVector(dx: 220, dy: 0)),
                    withVelocity: .slow, thenHoldForDuration: 0.4)
@@ -1139,6 +1139,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         let composer = app.descendants(matching: .any)["composer-text"]
         composer.tap()
         composer.typeText("Work draft to keep")
+        XCTAssertTrue(compactListTab(named: "Inbox", in: app).waitForNonExistence(timeout: 3))
+        dismissComposerKeyboard(in: app)
+        XCTAssertTrue(compactListTab(named: "Inbox", in: app).waitForExistence(timeout: 3))
         compactListTab(named: "Inbox", in: app).tap()
         composer.tap()
         composer.typeText("Sent to Work from Inbox")
@@ -1203,6 +1206,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         )
         XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 5), .completed)
         XCTAssertFalse(collectionRow(named: "Sent to Work from Inbox", in: app).exists)
+        dismissComposerKeyboard(in: app)
+        XCTAssertTrue(compactListTab(named: "Work", in: app).waitForExistence(timeout: 3))
         compactListTab(named: "Work", in: app).tap()
         XCTAssertTrue(row(named: "Sent to Work from Inbox", in: app).waitForExistence(timeout: 5))
         XCTAssertEqual(composer.value as? String, "Work draft to keep")
@@ -1271,7 +1276,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         let addAttachments = app.buttons["composer-add-attachments"]
         let send = app.buttons["composer-send"]
         let compactInbox = compactListTab(named: "Inbox", in: app)
-        let newList = compactInbox.exists ? compactInbox : app.buttons["new-list"]
+        let usesCompactSelector = compactInbox.exists
+        let newList = usesCompactSelector ? compactInbox : app.buttons["new-list"]
 
         XCTAssertTrue(
             composer.waitForExistence(timeout: 5),
@@ -1289,7 +1295,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         composer.tap()
         composer.typeText("Sent")
         XCTAssertTrue(app.keyboards.firstMatch.exists)
-        XCTAssertTrue(newList.exists)
+        if usesCompactSelector {
+            XCTAssertFalse(newList.exists)
+        } else {
+            XCTAssertTrue(newList.exists)
+        }
         XCTAssertTrue(send.isEnabled)
         XCTAssertEqual(addAttachments.frame.midY, composer.frame.midY, accuracy: 1)
         XCTAssertEqual(send.frame.midY, composer.frame.midY, accuracy: 1)
@@ -1483,6 +1493,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         composer.tap()
         composer.typeText("Prefix: ")
+        XCTAssertTrue(paste.waitForNonExistence(timeout: 3))
+        dismissComposerKeyboard(in: app)
+        XCTAssertTrue(paste.waitForExistence(timeout: 3))
         XCTAssertTrue(paste.isHittable)
         paste.tap()
         XCTAssertTrue(row(named: "Quick paste fixture", in: app).exists)
@@ -1846,8 +1859,8 @@ final class SnipSnapiOSUITests: XCTestCase {
             thenHoldForDuration: 1
         )
         XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 4))
-        XCTAssertTrue(compactListTab(named: "New List", in: app).isSelected)
-        XCTAssertTrue(app.descendants(matching: .any)["composer-text"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["list-selector"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["composer-text"].exists)
         XCTAssertTrue(app.buttons["cancel-new-list"].exists)
         let field = app.textFields["list-name"]
         field.tap()
@@ -1880,7 +1893,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             thenHoldForDuration: 0.8
         )
         XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 4))
-        XCTAssertTrue(compactListTab(named: "New List", in: app).isSelected)
+        XCTAssertFalse(app.descendants(matching: .any)["list-selector"].exists)
     }
 
     func testSelectorDeleteListKeepsItsSnips() throws {
@@ -1927,7 +1940,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertFalse(work.exists)
     }
 
-    func testSelectorLongPressReordersListsAndDismissesEditorKeyboard() throws {
+    func testSelectorLongPressReordersListsAndHidesWhileEditing() throws {
         continueAfterFailure = false
         let app = launchApp()
         try requireCompactSelector(in: app)
@@ -1967,14 +1980,18 @@ final class SnipSnapiOSUITests: XCTestCase {
         name.tap()
         name.typeText(" draft")
         XCTAssertTrue(app.keyboards.firstMatch.exists)
-        readingTab.press(forDuration: 0.7)
-        XCTAssertTrue(close.waitForExistence(timeout: 3))
-        XCTAssertFalse(app.keyboards.firstMatch.exists)
-        close.tap()
-        XCTAssertTrue(close.waitForNonExistence(timeout: 3))
+        XCTAssertFalse(app.descendants(matching: .any)["list-selector"].exists)
         XCTAssertEqual(name.value as? String, "Reading draft")
         app.buttons["save-list"].tap()
         XCTAssertTrue(app.navigationBars["Reading draft"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
+        let renamedTab = compactListTab(named: "Reading draft", in: app)
+        XCTAssertTrue(renamedTab.waitForExistence(timeout: 3))
+        renamedTab.press(forDuration: 0.7)
+        XCTAssertTrue(close.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Edit Reading draft"].exists)
+        close.tap()
+        XCTAssertTrue(close.waitForNonExistence(timeout: 3))
     }
 
     func testSelectorManyListsAndSelectedMenu() throws {
@@ -2031,33 +2048,26 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(newList.waitForExistence(timeout: 3))
         newList.tap()
         XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 3))
-        XCTAssertTrue(compactListTab(named: "New List", in: app).isSelected)
-        let reading = compactListTab(named: "Reading", in: app)
-        reading.tap()
-        XCTAssertTrue(app.navigationBars["Reading"].waitForExistence(timeout: 3))
-        swipeToPreviousPage("Travel")
-        let travel = compactListTab(named: "Travel", in: app)
-        travel.tap()
-        let pendingListAction = app.buttons["list-management-new"]
-        XCTAssertTrue(pendingListAction.waitForExistence(timeout: 3))
-        pendingListAction.tap()
-        XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.descendants(matching: .any)["list-selector"].exists)
         app.buttons["cancel-new-list"].tap()
         XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
         XCTAssertFalse(compactListTab(named: "New List", in: app).exists)
     }
 
-    func testTrailingPagePullCreatesListWithAnotherPagesEditorOpen() throws {
+    func testTrailingPagePullCreatesListAfterEditingAnotherPage() throws {
         continueAfterFailure = false
         let app = launchApp()
         try requireCompactSelector(in: app)
         createList("Work", in: app)
         createList("Travel", in: app)
         openListEditor(named: "Work", in: app)
-        XCTAssertTrue(compactListTab(named: "Work", in: app).isSelected)
+        XCTAssertFalse(app.descendants(matching: .any)["list-selector"].exists)
         XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 3))
         XCTAssertEqual(app.textFields["list-name"].value as? String, "Work")
-        compactListTab(named: "Travel", in: app).tap()
+        app.buttons["save-list"].tap()
+        XCTAssertTrue(app.textFields["list-name"].waitForNonExistence(timeout: 3))
+        let nextPage = app.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.7))
+        nextPage.press(forDuration: 0.05, thenDragTo: nextPage.withOffset(CGVector(dx: -180, dy: 0)))
         XCTAssertTrue(app.navigationBars["Travel"].waitForExistence(timeout: 3))
 
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.55))
@@ -2069,7 +2079,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         )
 
         XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 4))
-        XCTAssertTrue(compactListTab(named: "New List", in: app).isSelected)
+        XCTAssertFalse(app.descendants(matching: .any)["list-selector"].exists)
     }
 
     func testCompactListTabsCreateAndSwitchLists() throws {
@@ -2108,7 +2118,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         let field = app.textFields["list-name"]
         XCTAssertTrue(field.waitForExistence(timeout: 3))
         XCTAssertFalse(app.alerts.firstMatch.exists)
-        XCTAssertTrue(compactListTab(named: "New List (2)", in: app).isSelected)
+        XCTAssertFalse(app.descendants(matching: .any)["list-selector"].exists)
         let createButtonHeight = app.buttons["save-list"].frame.height
         XCTAssertGreaterThanOrEqual(createButtonHeight, 44)
         XCTAssertLessThanOrEqual(createButtonHeight, 50)
@@ -2149,11 +2159,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         let field = app.textFields["list-name"]
         XCTAssertTrue(field.waitForExistence(timeout: 3))
         field.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["composer-text"].exists)
-        XCTAssertTrue(compactListTab(named: "New List", in: app).isSelected)
+        XCTAssertFalse(app.descendants(matching: .any)["composer-text"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["list-selector"].exists)
         XCTAssertTrue(app.buttons["cancel-new-list"].exists)
         field.typeText("Starred")
-        let chooseIcon = app.descendants(matching: .any)["choose-list-icon"]
+        let chooseIcon = app.segmentedControls["list-appearance-picker"].buttons["Icon"]
         XCTAssertTrue(chooseIcon.waitForExistence(timeout: 3))
         chooseIcon.tap()
         let star = app.buttons["list-icon-star.fill"].firstMatch
@@ -2167,6 +2177,125 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(starred.waitForExistence(timeout: 5))
         XCTAssertTrue(starred.isSelected)
         XCTAssertTrue(app.navigationBars["Starred"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["composer-text"].waitForExistence(timeout: 3))
+    }
+
+    func testLibraryControlsYieldToListEditingAndComposerKeyboard() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        createList("Work", in: app)
+        let composer = app.descendants(matching: .any)["composer-text"]
+        let selector = app.descendants(matching: .any)["list-selector"]
+        composer.tap()
+        composer.typeText("Keep this draft")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+        XCTAssertTrue(selector.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(composer.isHittable)
+        XCTAssertTrue(app.buttons["composer-send"].isHittable)
+        let itemEntry = XCTAttachment(screenshot: app.screenshot())
+        itemEntry.name = "Item entry without bottom navigation"
+        itemEntry.lifetime = .keepAlways
+        add(itemEntry)
+
+        app.swipeDown()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(selector.waitForExistence(timeout: 3))
+        openListEditor(named: "Work", in: app)
+        XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 3))
+        XCTAssertFalse(composer.exists)
+        XCTAssertFalse(selector.exists)
+        XCTAssertLessThanOrEqual(
+            app.frame.maxY - app.buttons["save-list"].frame.maxY, 90,
+            "An editor opened without a keyboard should fill the remaining screen."
+        )
+        let fullEditor = XCTAttachment(screenshot: app.screenshot())
+        fullEditor.name = "List editor fills remaining space"
+        fullEditor.lifetime = .keepAlways
+        add(fullEditor)
+        app.textFields["list-name"].tap()
+        app.textFields["list-name"].typeText(" Unsaved")
+        app.buttons["cancel-list-editing"].tap()
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        XCTAssertEqual(composer.value as? String, "Keep this draft")
+        XCTAssertTrue(selector.waitForExistence(timeout: 3))
+        openListEditor(named: "Work", in: app)
+        XCTAssertEqual(app.textFields["list-name"].value as? String, "Work")
+        app.buttons["save-list"].tap()
+
+        openNewList(in: app)
+        XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 3))
+        XCTAssertFalse(composer.exists)
+        XCTAssertFalse(selector.exists)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+        let tabs = app.segmentedControls["list-appearance-picker"]
+        tabs.buttons["Icon"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        tabs.buttons["Color"].tap()
+        app.textFields["list-name"].typeText("Focus stays")
+        XCTAssertEqual(app.textFields["list-name"].value as? String, "Focus stays")
+        tabs.buttons["Icon"].tap()
+        let search = app.textFields["list-icon-search"]
+        search.typeText("star.fill")
+        let star = app.buttons["list-icon-star.fill"].firstMatch
+        XCTAssertTrue(star.waitForExistence(timeout: 3))
+        XCTAssertTrue(star.isHittable)
+        XCTAssertLessThanOrEqual(star.frame.maxY, app.buttons["save-list"].frame.minY)
+        XCTAssertLessThanOrEqual(app.buttons["save-list"].frame.maxY, app.keyboards.firstMatch.frame.minY)
+        let iconSearch = XCTAttachment(screenshot: app.screenshot())
+        iconSearch.name = "New list icon search above keyboard"
+        iconSearch.lifetime = .keepAlways
+        add(iconSearch)
+        let createFrameWithKeyboard = app.buttons["save-list"].frame
+        let searchFrameWithKeyboard = search.frame
+        search.typeText("\n")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
+        XCTAssertGreaterThan(app.buttons["save-list"].frame.minY, createFrameWithKeyboard.minY + 100)
+        XCTAssertLessThanOrEqual(app.frame.maxY - app.buttons["save-list"].frame.maxY, 90)
+        let expandedEditor = XCTAttachment(screenshot: app.screenshot())
+        expandedEditor.name = "New list expands after keyboard dismissal"
+        expandedEditor.lifetime = .keepAlways
+        add(expandedEditor)
+        XCTAssertEqual(search.frame.minY, searchFrameWithKeyboard.minY, accuracy: 2)
+        tabs.buttons["Color"].tap()
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        tabs.buttons["Icon"].tap()
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        app.buttons["cancel-new-list"].tap()
+        XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        XCTAssertEqual(composer.value as? String, "Keep this draft")
+        XCTAssertTrue(selector.waitForExistence(timeout: 3))
+    }
+
+    func testListEditorKeepsKeyboardFocusAcrossAccessibilityTabs() throws {
+        continueAfterFailure = false
+        let app = launchApp(contentSizeCategory: .accessibilityExtraExtraExtraLarge)
+        try requireCompactSelector(in: app)
+        openNewList(in: app)
+        let tabs = app.segmentedControls["list-appearance-picker"]
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+        tabs.buttons["Icon"].tap()
+        let search = app.textFields["list-icon-search"]
+        search.typeText("circle")
+        tabs.buttons["Color"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        app.textFields["list-name"].typeText("Focus stays")
+        XCTAssertEqual(app.textFields["list-name"].value as? String, "Focus stays")
+        tabs.buttons["Icon"].tap()
+        search.typeText(".fill")
+        XCTAssertEqual(search.value as? String, "circle.fill")
+        XCTAssertTrue(app.buttons["save-list"].isHittable)
+        XCTAssertLessThanOrEqual(app.buttons["save-list"].frame.maxY, app.keyboards.firstMatch.frame.minY)
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Accessibility tab focus transfer"
+        proof.lifetime = .keepAlways
+        add(proof)
+        search.typeText("\n")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
+        XCTAssertLessThanOrEqual(app.frame.maxY - app.buttons["save-list"].frame.maxY, 110)
+        app.buttons["cancel-new-list"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["composer-text"].waitForExistence(timeout: 3))
     }
 
     func testExistingListKeepsEditsAfterChoosingAnIcon() throws {
@@ -2183,23 +2312,32 @@ final class SnipSnapiOSUITests: XCTestCase {
         field.typeText(" Updated")
         let editedName = try XCTUnwrap(field.value as? String)
         app.buttons["list-color-blue"].tap()
-        let chooseIcon = app.descendants(matching: .any)["choose-list-icon"].firstMatch
+        let tabs = app.segmentedControls["list-appearance-picker"]
+        let chooseIcon = tabs.buttons["Icon"]
         chooseIcon.tap()
+        let search = app.textFields["list-icon-search"]
+        search.tap()
+        search.typeText("star.fill\n")
         let star = app.buttons["list-icon-star.fill"].firstMatch
         XCTAssertTrue(star.waitForExistence(timeout: 5))
         star.tap()
 
         XCTAssertTrue(field.waitForExistence(timeout: 3))
-        XCTAssertTrue(chooseIcon.label.contains("Star Fill"))
+        XCTAssertTrue(app.images["list-icon-preview"].label.contains("Star Fill"))
         XCTAssertEqual(field.value as? String, editedName)
+        tabs.buttons["Color"].tap()
         XCTAssertTrue(app.buttons["list-color-blue"].isSelected)
+        chooseIcon.tap()
+        XCTAssertEqual(search.value as? String, "star.fill")
+        XCTAssertTrue(star.isSelected)
+        tabs.buttons["Color"].tap()
         app.buttons["save-list"].tap()
 
         let saved = listControl(named: editedName, in: app)
         XCTAssertTrue(saved.waitForExistence(timeout: 5))
         openListEditor(named: editedName, in: app)
         XCTAssertTrue(chooseIcon.waitForExistence(timeout: 3))
-        XCTAssertTrue(chooseIcon.label.contains("Star Fill"))
+        XCTAssertTrue(app.images["list-icon-preview"].label.contains("Star Fill"))
         XCTAssertEqual(field.value as? String, editedName)
         XCTAssertTrue(app.buttons["list-color-blue"].isSelected)
     }
@@ -2238,7 +2376,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         add(proof)
     }
 
-    func testListEditorKeepsDraftAcrossSearch() {
+    func testListEditorKeepsDraftAcrossAppearanceTabs() {
         continueAfterFailure = false
         let app = launchApp()
         createList("Reading", in: app)
@@ -2257,11 +2395,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         preview.lifetime = .keepAlways
         add(preview)
 
-        let search = openSearch(in: app)
-        search.typeText("saved passage")
-        XCTAssertTrue(collectionRow(named: "A saved passage", in: app).waitForExistence(timeout: 3))
-        XCTAssertFalse(field.exists)
-        closeSearch(in: app)
+        XCTAssertFalse(app.descendants(matching: .any)["composer-text"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["list-selector"].exists)
+        let tabs = app.segmentedControls["list-appearance-picker"]
+        tabs.buttons["Icon"].tap()
+        tabs.buttons["Color"].tap()
 
         XCTAssertTrue(field.waitForExistence(timeout: 3))
         XCTAssertEqual(field.value as? String, editedName)
@@ -2271,9 +2409,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["composer-text"].isHittable)
     }
 
-    func testListIconBrowserWaitsForSearchToCloseAfterRotation() {
+    func testListEditorKeepsDraftAcrossRotation() {
         continueAfterFailure = false
-        let app = launchApp(withCopyShareFixtures: true)
+        let app = launchApp()
         createList("Reading", in: app)
         openListEditor(named: "Reading", in: app)
         let field = app.textFields["list-name"]
@@ -2281,33 +2419,22 @@ final class SnipSnapiOSUITests: XCTestCase {
         field.typeText(" Notes")
         let editedName = field.value as? String
         app.buttons["list-color-blue"].tap()
-        app.buttons["choose-list-icon"].tap()
-        XCTAssertTrue(app.textFields["list-icon-search"].waitForExistence(timeout: 3))
+        let tabs = app.segmentedControls["list-appearance-picker"]
+        tabs.buttons["Icon"].tap()
+        let search = app.textFields["list-icon-search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        search.typeText("star\n")
 
-        let search = openSearch(in: app)
-        search.typeText("Copy text\n")
         XCUIDevice.shared.orientation = .landscapeLeft
-        let usableSearch = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "hittable == true"), object: search
-        )
-        XCTAssertEqual(XCTWaiter.wait(for: [usableSearch], timeout: 3), .completed,
-                       "Rotation must leave global search usable.")
-        XCTAssertFalse(app.navigationBars["Choose List Icon"].exists)
-        closeSearch(in: app)
-
-        let browser = app.navigationBars["Choose List Icon"]
-        if !browser.waitForExistence(timeout: 1) {
-            app.buttons["choose-list-icon"].tap()
-        }
-        XCTAssertTrue(browser.waitForExistence(timeout: 3))
-        app.buttons["Cancel"].tap()
-        XCTAssertTrue(field.waitForExistence(timeout: 3))
-        XCTAssertEqual(field.value as? String, editedName)
-        XCUIDevice.shared.orientation = .portrait
-        XCTAssertTrue(app.buttons["list-color-blue"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["list-color-blue"].isSelected)
-        XCTAssertTrue(app.buttons["choose-list-icon"].label.contains("List Bullet"))
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        XCTAssertEqual(search.value as? String, "star")
+        XCTAssertFalse(app.descendants(matching: .any)["list-selector"].exists)
         XCTAssertTrue(app.buttons["save-list"].isHittable)
+        XCUIDevice.shared.orientation = .portrait
+        tabs.buttons["Color"].tap()
+        XCTAssertEqual(field.value as? String, editedName)
+        XCTAssertTrue(app.buttons["list-color-blue"].isSelected)
+        XCTAssertTrue(app.images["list-icon-preview"].label.contains("List Bullet"))
         app.buttons["save-list"].tap()
         XCTAssertTrue(app.navigationBars["Reading Notes"].waitForExistence(timeout: 3))
     }
@@ -2318,12 +2445,16 @@ final class SnipSnapiOSUITests: XCTestCase {
         let app = launchApp()
         createList("Reading", in: app)
         openListEditor(named: "Reading", in: app)
-        app.buttons["choose-list-icon"].tap()
+        app.segmentedControls["list-appearance-picker"].buttons["Icon"].tap()
 
         let search = app.textFields["list-icon-search"]
         XCTAssertTrue(search.waitForExistence(timeout: 3))
         search.tap()
-        search.typeText("star\n")
+        search.typeText("star")
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        XCTAssertTrue(app.buttons["save-list"].isHittable)
+        XCTAssertLessThanOrEqual(app.buttons["save-list"].frame.maxY, app.keyboards.firstMatch.frame.minY)
+        search.typeText("\n")
         XCTAssertTrue(app.keyboards.element.waitForNonExistence(timeout: 3))
         XCTAssertEqual(search.value as? String, "star")
         let results = app.scrollViews["list-icon-results"]
@@ -2342,7 +2473,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         app.buttons["save-list"].tap()
         XCTAssertTrue(app.textFields["list-name"].waitForNonExistence(timeout: 3))
         openListEditor(named: "Reading", in: app)
-        XCTAssertTrue(app.buttons["choose-list-icon"].label.contains("Star"))
+        XCTAssertTrue(app.images["list-icon-preview"].label.contains("Star"))
     }
 
     func testLibraryActionsOfferSyncOnlyWhileICloudIsEnabled() {
@@ -3956,6 +4087,13 @@ final class SnipSnapiOSUITests: XCTestCase {
             app.buttons["save-snip"].tap()
         }
         XCTAssertTrue(collectionRow(named: text, in: app).waitForExistence(timeout: 3))
+        dismissComposerKeyboard(in: app)
+    }
+
+    private func dismissComposerKeyboard(in app: XCUIApplication) {
+        guard app.keyboards.firstMatch.exists else { return }
+        app.swipeDown()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
     }
 
     private func openSearch(in app: XCUIApplication) -> XCUIElement {
@@ -4139,6 +4277,7 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     private func returnToLists(in app: XCUIApplication) {
+        dismissComposerKeyboard(in: app)
         returnToCollection(in: app)
         if app.descendants(matching: .any)["list-selector"].exists { return }
         if !app.buttons["new-list"].exists {

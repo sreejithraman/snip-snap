@@ -164,7 +164,7 @@ struct ListSelector: View {
             }
         }
         .onDisappear {
-            motion.interrupt()
+            // The library owns page motion; hiding navigation for input must preserve it.
             model.isManagingLists = false
             resetCreation()
         }

@@ -123,14 +123,10 @@ enum ListIconSymbol {
 
 struct SnipListColorPicker: View {
     @Binding var selection: SnipListColorPreset?
-    var usesWideGrid = false
     var showsTitle = true
     private static let options = [nil] + SnipListColorPreset.allCases.map(Optional.some)
 
     private var columns: [GridItem] {
-        if usesWideGrid {
-            return Array(repeating: GridItem(.flexible(minimum: 64), spacing: 12), count: 3)
-        }
         return Array(repeating: GridItem(.flexible(minimum: 44), spacing: SnipSnapSpacing.cardContentInset), count: 4)
     }
 
@@ -142,7 +138,7 @@ struct SnipListColorPicker: View {
             GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
                 LazyVGrid(
                     columns: columns,
-                    spacing: usesWideGrid ? SnipSnapSpacing.relatedContent : SnipSnapSpacing.paneContentInset
+                    spacing: SnipSnapSpacing.paneContentInset
                 ) {
                     ForEach(Self.options, id: \.self) { preset in
                         let selected = selection == preset
@@ -152,7 +148,7 @@ struct SnipListColorPicker: View {
                             SnipListColorSwatch(
                                 color: SnipListAppearance(preset: preset).color,
                                 isSelected: selected,
-                                diameter: usesWideGrid ? 64 : 32
+                                diameter: 32
                             )
                             .contentShape(Rectangle())
                         }
@@ -196,21 +192,30 @@ struct SnipListColorSwatch: View {
             .padding(6)
             .overlay {
                 if isSelected {
-                    Group {
-                        if reduceTransparency || contrast == .increased {
-                            Circle().strokeBorder(Color.primary, lineWidth: 2)
-                        } else {
-                            // Keep the selection lens separate from the colored glass below it.
-                            GlassEffectContainer {
-                                Color.clear
-                                    .frame(width: diameter + 12, height: diameter + 12)
-                                    .glassEffect(.regular.tint(SnipSnapTheme.listSelectionGlassTint), in: Circle())
-                            }
-                        }
-                    }
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+                    SnipListSelectionLens()
+                        .frame(width: diameter + 12, height: diameter + 12)
                 }
             }
+    }
+}
+
+/// The same circular selection treatment for list icons and colors.
+struct SnipListSelectionLens: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        Group {
+            if reduceTransparency || contrast == .increased {
+                Circle().strokeBorder(Color.primary, lineWidth: 2)
+            } else {
+                GlassEffectContainer {
+                    Color.clear
+                        .glassEffect(.regular.tint(SnipSnapTheme.listSelectionGlassTint), in: Circle())
+                }
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
