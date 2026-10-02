@@ -1,0 +1,3 @@
+Snip Snap 0.6.1 Beta 144 — iOS
+
+- Give the iOS list editor room to breathe
