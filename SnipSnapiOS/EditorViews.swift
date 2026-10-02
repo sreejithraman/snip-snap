@@ -432,17 +432,25 @@ struct InlineListEditor: View {
     let cancelNewList: (UUID) async -> Bool
     @Bindable private var draft: InlineListDraft
     @State private var showsIcons = false
+    @State private var showsIconBrowser = false
     @State private var contentHeight: CGFloat?
     @FocusState private var isNameFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     init(model: IOSAppModel, list: SnipList, cancelNewList: @escaping (UUID) async -> Bool) {
         self.model = model
         self.list = list
         self.cancelNewList = cancelNewList
         draft = model.listDraft(for: list)
+    }
+
+    private var canPresentCompactIconBrowser: Bool {
+        verticalSizeClass == .compact
+            && model.selectedPage == .list(list.id)
+            && !model.isSearchPresented
     }
 
     var body: some View {
@@ -473,6 +481,22 @@ struct InlineListEditor: View {
         .padding(.horizontal, SnipSnapSpacing.relatedContent)
         .padding(.top, SnipSnapSpacing.relatedContent)
         .padding(.bottom, SnipSnapSpacing.relatedContent)
+        .sheet(isPresented: $showsIconBrowser) {
+            NavigationStack {
+                SnipListIconBrowser(selection: $draft.systemImage)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel", role: .cancel) { showsIconBrowser = false }
+                        }
+                    }
+            }
+        }
+        .onChange(of: canPresentCompactIconBrowser) { _, canPresent in
+            if canPresent, showsIcons {
+                showsIcons = false
+                showsIconBrowser = true
+            }
+        }
         .task { isNameFocused = model.newListID == list.id && !model.isSearchPresented }
         .onChange(of: model.isSearchPresented) { _, presented in
             if presented { isNameFocused = false }
@@ -484,6 +508,10 @@ struct InlineListEditor: View {
             HStack(spacing: 12) {
                 Button {
                     isNameFocused = false
+                    if canPresentCompactIconBrowser {
+                        showsIconBrowser = true
+                        return
+                    }
                     withAnimation(reduceMotion ? nil : ListEditorPresentation.animation(
                         reduceMotion: false,
                         isPresented: !showsIcons
