@@ -34,6 +34,7 @@ struct ClipboardListView: View {
     var body: some View {
         ClipboardEntriesList(
             entries: model.clipboardViewOptions.apply(to: history.entries),
+            filePreviewRevision: history.filePreviewRevision,
             model: model,
             dragSessionController: dragSessionController,
             commandNumberPicker: commandNumberPicker,
@@ -70,6 +71,7 @@ struct ClipboardListView: View {
 
 private struct ClipboardEntriesList<HeaderActions: View>: View {
     let entries: [ClipboardEntry]
+    let filePreviewRevision: Int
     @ObservedObject var model: AppModel
     let dragSessionController: PanelDragSessionController
     @ObservedObject var commandNumberPicker: CommandNumberPicker
@@ -108,6 +110,7 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
                                 },
                                 copiedPulse: model.clipboardCopyPulse,
                                 onPreviewAttachments: onPreviewAttachments,
+                                filePreviewRevision: filePreviewRevision,
                                 syncStatus: model.clipboardHistory.status(for: entry),
                                 retrySync: { Task { await model.clipboardHistory.syncNow() } }
                             ) {
@@ -226,6 +229,7 @@ struct ClipboardEntryRow: View {
     let onPickCommandNumber: () -> Void
     let copiedPulse: ClipboardCopyPulse?
     let onPreviewAttachments: ([URL], URL) -> Void
+    var filePreviewRevision = 0
     var syncStatus: String? = nil
     var retrySync: (() -> Void)? = nil
     let place: (ClipboardPlacementFeedback) -> Bool
@@ -287,6 +291,8 @@ struct ClipboardEntryRow: View {
                             onPreviewAttachments(entry.fileURLs, url)
                         }
                     )
+                    // Keep the row and its expanded text alive while retrying previews.
+                    .id(filePreviewRevision)
                 }
             } metadata: {
                 ClipboardEntryMetadata(entry: entry)

@@ -255,6 +255,7 @@ final class ClipboardHistory: ObservableObject {
     @Published private(set) var persistenceError: String?
     @Published private(set) var clipboardSyncEnabled: Bool = false
     @Published private(set) var isSyncing = false
+    @Published private(set) var filePreviewRevision = 0
     @Published private(set) var syncError: String?
     @Published private(set) var pendingUploadIDs: Set<UUID> = [] {
         didSet { defaults.set(pendingUploadIDs.map(\.uuidString), forKey: "clipboardPendingUploadIDs") }
@@ -421,7 +422,11 @@ final class ClipboardHistory: ObservableObject {
         guard let cloudService, !isSyncing else { return }
         guard clipboardSyncEnabled, mainSyncEnabled?() == true else { cloudService.stop(); return }
         isSyncing = true
-        defer { isSyncing = false }
+        defer {
+            isSyncing = false
+            // Downloads may restore bytes without changing entry metadata or URLs.
+            filePreviewRevision &+= 1
+        }
         do {
             await flushPersistence()
             guard let generation = try await syncGeneration?() else { return }

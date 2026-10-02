@@ -37,6 +37,7 @@ struct SnipListView: View {
     let captureScreenAreaForEdit: (@escaping @MainActor (URL?) -> Void) -> Void
     let bottomContentInset: CGFloat
     let clipboardEntries: [ClipboardEntry]
+    let clipboardFilePreviewRevision: Int
     let onPreviewAttachments: ([URL], URL) -> Void
     let onRemovePreviewURL: (URL) -> Void
 
@@ -409,6 +410,7 @@ struct SnipListView: View {
             },
             copiedPulse: model.clipboardCopyPulse,
             onPreviewAttachments: onPreviewAttachments,
+            filePreviewRevision: clipboardFilePreviewRevision,
             syncStatus: model.clipboardHistory.status(for: entry),
             retrySync: { Task { await model.clipboardHistory.syncNow() } }
         ) {
