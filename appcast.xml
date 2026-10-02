@@ -5,15 +5,35 @@
         <item>
             <title>0.6.0</title>
             <pubDate>Fri, 02 Oct 2026 02:09:20 +0000</pubDate>
-            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.0-beta.136</link>
-            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.6.0-beta.136-mac.txt</sparkle:fullReleaseNotesLink>
-            <sparkle:channel>beta</sparkle:channel>
-            <sparkle:version>136</sparkle:version>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.0</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.6.0-mac.txt</sparkle:fullReleaseNotesLink>
+<sparkle:version>136</sparkle:version>
             <sparkle:shortVersionString>0.6.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.0-beta.136/Snip-Snap-0.6.0.zip" length="15703786" type="application/octet-stream" sparkle:edSignature="LMt6DKyRCewUytFfbASBSZ24MI3C4bpSP0n2lMeZqWjpKiXAuosO/VvFUntys3/jysVTV0wQRoN0V0+2VrA6AQ=="/>
-            <description sparkle:format="plain-text">Snip Snap 0.6.0 Beta 136 — Mac
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.0/Snip-Snap-0.6.0.zip" length="15703786" type="application/octet-stream" sparkle:edSignature="LMt6DKyRCewUytFfbASBSZ24MI3C4bpSP0n2lMeZqWjpKiXAuosO/VvFUntys3/jysVTV0wQRoN0V0+2VrA6AQ=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.0 — Mac
 
+- Add app-owned CLI CRUD and Snip Snap skill
+- Revert direct CLI merge for PR review
+- Add app-owned Snip Snap CLI CRUD and agent skill
+- Set Snip Snap 0.6.0 for CLI beta
+- Require running app for CLI add
+- Show every list in the share page and drop save to Clipboard
+- Own the share list catalog in the running app
+- Fix recording double Shift shortcuts
+- Recover stalled iCloud snips through shared reconciliation
+- Allow uncached attachments when re-enabling iCloud
+- Fix re-enable retry after a rejected first sync send
+- Remove Mac floating header title
+- Organize Settings, simplify menus, and add Sync
+- Align snip controls and inline editing across Mac and iOS
+- Fix stalled iCloud sync and add private sync diagnostics
+- Center Mac search pill and add panel close button
+- Left-align Mac diagnostic controls
+- Expand and collapse long snips on tap
+- Match search tint and spacing across states
+- Give panel dialogs a solid background and shadow
+- Send composer drafts to any list on Mac and iOS
 - Refine list and snip UI on macOS and iOS
 </description>
         </item>
