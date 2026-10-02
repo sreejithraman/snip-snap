@@ -273,7 +273,12 @@ struct ClipboardEntryRow: View {
                 onPickCommandNumber: onPickCommandNumber
             )
         } main: {
-            PanelContentCardMain {
+            ItemRowContent {
+                ItemRowText(
+                    text: entry.text.isEmpty ? String(localized: "Clipboard item") : entry.text,
+                    accessibilityIdentifier: "clipboard-text-\(entry.id)"
+                )
+            } previews: {
                 if !liveAttachmentPreviewItems.isEmpty {
                     AttachmentPreviewStrip(
                         items: liveAttachmentPreviewItems,
@@ -283,14 +288,12 @@ struct ClipboardEntryRow: View {
                         }
                     )
                 }
-            } content: {
-                VStack(alignment: .leading, spacing: 4) {
-                    ClipboardEntryCardContent(entry: entry)
-                    if let syncStatus, entry.isSyncEligible {
-                        Text(syncStatus).font(.caption2).foregroundStyle(.secondary)
-                        if syncStatus == String(localized: "Upload failed"), let retrySync {
-                            Button("Retry", action: retrySync).font(.caption2)
-                        }
+            } metadata: {
+                ClipboardEntryMetadata(entry: entry)
+                if let syncStatus, entry.isSyncEligible {
+                    Text(syncStatus).font(.caption2).foregroundStyle(.secondary)
+                    if syncStatus == String(localized: "Upload failed"), let retrySync {
+                        Button("Retry", action: retrySync).font(.caption2)
                     }
                 }
             }
@@ -342,12 +345,17 @@ struct ClipboardEntryRow: View {
         let attachmentPreviewItems = dragAttachmentPreviewItems(scale: scale)
         let renderer = ImageRenderer(
             content: PanelContentCard(alignment: .top) {
-                PanelContentCardMain {
+                ItemRowContent {
+                    ItemRowText(
+                        text: entry.text.isEmpty ? String(localized: "Clipboard item") : entry.text,
+                        allowsExpansion: false
+                    )
+                } previews: {
                     if !attachmentPreviewItems.isEmpty {
                         AttachmentPreviewStrip(items: attachmentPreviewItems)
                     }
-                } content: {
-                    ClipboardEntryCardContent(entry: entry)
+                } metadata: {
+                    ClipboardEntryMetadata(entry: entry)
                 }
             }
             .frame(width: size.width, height: size.height, alignment: .leading)
@@ -429,32 +437,18 @@ private enum ClipboardEntryCardMetrics {
     static let previewLimit = 3
 }
 
-private struct ClipboardEntryCardContent: View {
+private struct ClipboardEntryMetadata: View {
     let entry: ClipboardEntry
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            SnipCardText(
-                text: entry.text.isEmpty ? "Clipboard item" : entry.text,
-                isDone: false
-            )
-            HStack(spacing: 8) {
-                if entry.isPinned { Label("Pinned", systemImage: "pin.fill").font(.caption2) }
-                sourceApplication
-            }
-            if !entry.fileURLs.isEmpty && !entry.isSyncEligible {
-                Text("Only on this Mac").font(.caption2).foregroundStyle(.secondary)
-                    .help("Pin to sync this file when clipboard sync is enabled.")
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var sourceApplication: some View {
-        if let source = entry.sourceApplication {
-            Text(source)
-                .font(.caption2)
-                .foregroundStyle(SnipSnapColors.textSecondary)
+        SnipRowMetadata(
+            date: entry.capturedAt,
+            isPinned: entry.isPinned,
+            sourceApplication: entry.sourceApplication
+        )
+        if !entry.fileURLs.isEmpty && !entry.isSyncEligible {
+            Text("Only on this Mac").font(.caption2).foregroundStyle(.secondary)
+                .help("Pin to sync this file when clipboard sync is enabled.")
         }
     }
 }

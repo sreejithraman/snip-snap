@@ -63,7 +63,7 @@ struct ExpandableSnipText: View {
 #endif
                 .accessibilityLabel(text)
                 .accessibilityValue(isExpanded ? Text("Expanded") : Text("Collapsed"))
-                .accessibilityHint(isExpanded ? Text("Collapse snip") : Text("Show full snip"))
+                .accessibilityHint(isExpanded ? Text("Collapse text") : Text("Show full text"))
                 .accessibilityIdentifier(accessibilityIdentifier)
             } else {
                 snipText(preview)

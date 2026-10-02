@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AB9100000000000000000001 /* ItemRowContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB9200000000000000000001 /* ItemRowContent.swift */; };
+		AB9100000000000000000002 /* ItemRowContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB9200000000000000000001 /* ItemRowContent.swift */; };
         AD5100000000000000000001 /* SendDestinationPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD5200000000000000000001 /* SendDestinationPicker.swift */; };
         AD5100000000000000000002 /* SendDestinationPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD5200000000000000000001 /* SendDestinationPicker.swift */; };
 		A91000000000000000000002 /* ListLens.metal in Sources */ = {isa = PBXBuildFile; fileRef = A92000000000000000000002 /* ListLens.metal */; };
@@ -214,6 +216,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		AB9200000000000000000001 /* ItemRowContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ItemRowContent.swift; sourceTree = "<group>"; };
         AD5200000000000000000001 /* SendDestinationPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendDestinationPicker.swift; sourceTree = "<group>"; };
 		A92000000000000000000002 /* ListLens.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = ListLens.metal; sourceTree = "<group>"; };
 		A92000000000000000000001 /* ListSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListSelector.swift; sourceTree = "<group>"; };
@@ -559,6 +562,7 @@
 				A20000000000000000000007 /* AgentSnipContextLabel.swift */,
 				AF2000000000000000000001 /* SFSymbolNames.swift */,
 				AE2000000000000000000001 /* ExpandableSnipText.swift */,
+				AB9200000000000000000001 /* ItemRowContent.swift */,
 				A20000000000000000000002 /* AppIcon.icon */,
 				A20000000000000000000005 /* AppIconDev.icon */,
 				A20000000000000000000006 /* AppleAccountNoticeModel.swift */,
@@ -965,6 +969,7 @@
 				A1000000000000000000000F /* AgentSnipContextLabel.swift in Sources */,
 				AF1000000000000000000001 /* SFSymbolNames.swift in Sources */,
 				AE1000000000000000000001 /* ExpandableSnipText.swift in Sources */,
+				AB9100000000000000000001 /* ItemRowContent.swift in Sources */,
 				A10000000000000000000001 /* SnipSnapTheme.swift in Sources */,
 				AD5100000000000000000001 /* SendDestinationPicker.swift in Sources */,
 				AC1000000000000000000001 /* SnipListAppearance.swift in Sources */,
@@ -1037,6 +1042,7 @@
 				A10000000000000000000010 /* AgentSnipContextLabel.swift in Sources */,
 				AF1000000000000000000002 /* SFSymbolNames.swift in Sources */,
 				AE1000000000000000000002 /* ExpandableSnipText.swift in Sources */,
+				AB9100000000000000000002 /* ItemRowContent.swift in Sources */,
 				A10000000000000000000002 /* SnipSnapTheme.swift in Sources */,
 				AD5100000000000000000002 /* SendDestinationPicker.swift in Sources */,
 				AC1000000000000000000002 /* SnipListAppearance.swift in Sources */,

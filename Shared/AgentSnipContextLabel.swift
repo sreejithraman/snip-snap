@@ -42,6 +42,7 @@ struct SnipRowMetadata: View {
     var agentContextLabel: String? = nil
     var isRecovered = false
     var showsPin = true
+    var sourceApplication: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -54,6 +55,10 @@ struct SnipRowMetadata: View {
                         .accessibilityLabel("Pinned")
                 }
                 Text(date, format: .relative(presentation: .named))
+                if let sourceApplication {
+                    Text("·").accessibilityHidden(true)
+                    Text(sourceApplication)
+                }
                 if isRecovered {
                     Label("Recovered", systemImage: "arrow.uturn.backward.circle.fill")
                         .fontWeight(.medium)
