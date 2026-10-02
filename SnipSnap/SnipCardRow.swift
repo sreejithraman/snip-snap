@@ -134,22 +134,17 @@ struct SnipCardRow: View {
     }
 
     private var draggableBody: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        ItemRowContent {
             if !snip.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                ExpandableSnipText(
+                ItemRowText(
                     text: snip.content,
-                    lineLimit: 5,
                     isDone: snip.isDone && !snip.isPinned,
-                    strikethroughColor: SnipSnapColors.doneStrikethrough,
-                    lineSpacing: 2,
                     accessibilityIdentifier: "snip-text-\(snip.id)",
                     onActivate: onSelectForExpansion,
                     onDoubleClick: onOpen
                 )
-                .font(.body)
-                .foregroundStyle(SnipSnapColors.textPrimary)
-                .opacity(snip.isDone && !snip.isPinned ? SnipSnapColors.doneTextOpacity : 1)
             }
+        } previews: {
             if !snip.attachments.isEmpty {
                 AttachmentPreviewStrip(
                     items: attachmentPreviewItems,
@@ -161,6 +156,7 @@ struct SnipCardRow: View {
                     }
                 )
             }
+        } metadata: {
             SnipRowMetadata(
                 date: snip.updatedAt,
                 isPinned: snip.isPinned,
@@ -389,25 +385,6 @@ struct SnipCardRow: View {
             if saved {
                 editorFocused = false
             }
-        }
-    }
-}
-
-struct SnipCardText: View {
-    let text: String
-    let isDone: Bool
-
-    private static let previewLineLimit = 5
-
-    var body: some View {
-        if !text.isEmpty {
-            Text(SnipTextPreview.displayText(text, lineLimit: Self.previewLineLimit))
-                .foregroundStyle(SnipSnapColors.textPrimary)
-                .strikethrough(isDone, color: SnipSnapColors.doneStrikethrough)
-                .opacity(isDone ? SnipSnapColors.doneTextOpacity : 1)
-                .lineLimit(Self.previewLineLimit)
-                .lineSpacing(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

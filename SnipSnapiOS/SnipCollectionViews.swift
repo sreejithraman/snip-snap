@@ -686,22 +686,26 @@ struct LibrarySearchView: View {
                     isFocused: $isInlineEditorFocused
                 )
             } else {
-                HStack(alignment: .top, spacing: 12) {
+                IOSItemRow {
                     SnipCopyControl(appearance: listAppearance(for: snip, in: model.lists), isPinned: snip.isPinned) {
                         Task { await copyShare.copy(snips: [snip], model: model) }
                     }
                     .accessibilityLabel(snip.isPinned ? "Copy Pinned Snip" : "Copy Snip")
                     .accessibilityIdentifier("copy-search-snip-\(snip.id)")
-                    SnipRow(
+                } content: {
+                    SnipContentView(
                         snip: snip,
                         model: model,
                         isRecovered: model.isRecoveredSnip(snip.id),
-                        showsStatusIcon: false,
-                        showsPinInMetadata: false,
+                        allowsTextExpansion: true,
                         onPreviewAttachment: { attachment in
                             Task { previewURL = await model.prepareAttachment(attachment.id, for: .preview) }
-                        }
+                        },
+                        showsPin: false
                     )
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel(SnipContentView.accessibilityLabel(for: snip))
+                    .accessibilityValue(snip.isPinned ? String(localized: "Pinned") : SnipCompletionLanguage.stateTitle(isDone: snip.isDone))
                     .contentShape(Rectangle())
                     .highPriorityGesture(
                         TapGesture(count: 2).onEnded { beginEditing(snip) }
@@ -736,21 +740,9 @@ struct LibrarySearchView: View {
     }
 
     private func clipboardResult(_ entry: ClipboardEntry) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            SnipCopyControl { copyShare.copyClipboardEntry(entry, clipboard: clipboard) }
-                .accessibilityLabel("Copy Clipboard Entry")
-            VStack(alignment: .leading, spacing: 6) {
-                if let image = entry.imageRepresentations.first.flatMap({ UIImage(data: $0.data) }) {
-                    Image(uiImage: image)
-                        .resizable().scaledToFit().frame(maxHeight: 120)
-                }
-                Text(clipboardTitle(entry))
-                    .lineLimit(3)
-                SnipRowMetadata(date: entry.capturedAt, isPinned: entry.isPinned)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        ClipboardItemRow(entry: entry, model: clipboard) {
+            copyShare.copyClipboardEntry(entry, clipboard: clipboard)
         }
-        .padding(.vertical, 4)
         .listRowSeparator(.hidden)
         .accessibilityIdentifier("search-clipboard-\(entry.id)")
         .contextMenu {
@@ -761,12 +753,6 @@ struct LibrarySearchView: View {
                 Task { await clipboard.togglePin(entry) }
             }
         }
-    }
-
-    private func clipboardTitle(_ entry: ClipboardEntry) -> String {
-        if !entry.text.isEmpty { return entry.text }
-        if !entry.ownedFiles.isEmpty { return entry.ownedFiles.map(\.name).joined(separator: ", ") }
-        return entry.imageRepresentations.isEmpty ? String(localized: "Clipboard Entry") : String(localized: "Image")
     }
 
 }
