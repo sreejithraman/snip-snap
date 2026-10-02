@@ -44,6 +44,7 @@ if [[ "$run_common_tests" == YES ]]; then
     "$script_dir/test-runner-tests.sh"
     "$script_dir/release-matrix-tests-tests.sh"
     "$script_dir/cloud-dev-transport-contract-tests.sh"
+    /usr/bin/ruby "$script_dir/cloudkit-schema-tests.rb"
     "$script_dir/cloud-dev-tests.sh"
     "$script_dir/cloud-dev-run-tests.sh"
     "$script_dir/ios-target-policy-tests.sh"

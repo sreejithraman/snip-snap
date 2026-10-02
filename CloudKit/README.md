@@ -39,3 +39,72 @@ ignored local credentials. Normal builds and tests do not need an Apple team,
 CloudKit credentials, a signed app, or access to the production container.
 Review this file before promotion: CloudKit does not let a production ordinary
 field become encrypted later.
+
+## Opt-in Production release preflight
+
+The account-free codec/schema tests prove the baseline matches current codecs;
+only a fresh Production export can detect deployment drift. Maintainers can run
+this read-only check before publishing a beta:
+
+```sh
+# Authenticate once; paste a management token at the secure prompt.
+# The token stays outside the checkout in the local macOS Keychain.
+xcrun cktool save-token --type management --method keychain
+
+# Set these to the team and container used by the signed release.
+export SNIP_SNAP_CLOUDKIT_PREFLIGHT_TEAM_ID='EXAMPLE_TEAM'
+export SNIP_SNAP_CLOUDKIT_PREFLIGHT_CONTAINER_ID='iCloud.org.example.snipsnap'
+./scripts/cloudkit-release-preflight.sh
+```
+
+For file-based authentication, `cktool save-token --type management --method file`
+stores the token in local `~/.config/cktool`, outside tracked repository state.
+Never put tokens in tracked files, shell command arguments, or release reports.
+The command and authentication options follow [Apple's cktool guide](https://developer.apple.com/icloud/ck-tool/)
+and the installed tool's `--help`.
+
+Set `SNIP_SNAP_CLOUDKIT_PREFLIGHT_ENABLED=YES` in the maintainer release shell to
+make `scripts/publish-beta.sh` and `scripts/testflight.sh upload` fail before
+publishing when this check fails. The TestFlight hook uses the resolved release
+team and container after validating the archive and matching its runtime
+`Info.plist` container; the Mac publishing hook verifies the exact release ZIP’s
+signature and Production provisioning profile and reads its signed team and
+container, requiring the signed runtime `Info.plist` container to match.
+Any explicit target overrides must match that signed artifact.
+Use `--mac-release-zip PATH` to perform the same bound check standalone.
+The extracted app is inspected without being launched. In protected automation, provision cktool authentication only
+in the maintainer release job and set the same environment variables there.
+The default is disabled; normal clean-checkout builds and tests never contact
+CloudKit or require a maintainer account. Archive and validate commands remain
+account-free with respect to this additional check.
+
+Each invocation reruns `CloudKitSchemaContractTests` and requires its expected
+test to pass (empty, unmatched, and skipped runs fail), exports **Production**
+with `cktool export-schema`, and compares every live field's name, type, and
+`ENCRYPTED` storage class. Missing record types/fields and incompatible fields
+produce a nonzero exit and a report such as:
+
+```text
+CloudKit preflight: missing field List.colorPreset (expected ENCRYPTED BYTES)
+```
+
+Extra deployed record types and retired fields (including legacy `List.color`)
+are allowed and retained. Export system fields, indexes, and grants are parsed
+but are not part of this compatibility check. Malformed or unsupported exports
+fail closed. `ASSET` remains an asset field; its CloudKit encryption is not an
+`ENCRYPTED` schema modifier.
+
+Reports, the fresh export, and codec test/export logs are saved under ignored
+`artifacts/cloudkit-preflight/<unique-run>/`. They include the time, commit,
+target, baseline checksum, and result. Set
+`SNIP_SNAP_CLOUDKIT_PREFLIGHT_REPORT_DIR` to use another local, untracked report
+root. An offline comparison is available with
+`ruby scripts/cloudkit-schema.rb CloudKit/SnipSnap.ckdb /path/to/export.ckdb`;
+that does not prove the export is current and cannot replace the live preflight.
+
+The preflight never imports, resets, or deploys schema. When it reports missing
+fields, review an additive rollout separately, preserve retired fields, and
+review the **entire** pending Development-to-Production change set before manual
+promotion. Do not deploy unrelated changes merely to make a release gate pass.
+Rerun the live preflight after promotion. This checks deployed schema
+compatibility; it does not exercise account sync, delivery, or receipt recovery.

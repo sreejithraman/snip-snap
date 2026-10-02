@@ -83,6 +83,7 @@ for artifact_path in "$release_zip" "$release_dmg" "$zip_checksum_file" "$dmg_ch
 done
 release_policy_verify_checksum "$release_zip" "$zip_checksum_file"
 release_policy_verify_checksum "$release_dmg" "$dmg_checksum_file"
+"$script_dir/cloudkit-release-preflight.sh" --if-enabled --mac-release-zip "$release_zip"
 brew_tool="$(release_automation_brew_tool "${SNIP_SNAP_BREW:-}")" || fail "install Homebrew"
 tap_name="$(release_automation_tap_name "$tap_repo")" || fail "set a valid Homebrew tap repo"
 working_tap_name="$(release_automation_working_tap_name)" || fail "make a working Homebrew tap name"
