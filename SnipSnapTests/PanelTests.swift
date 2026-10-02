@@ -1529,7 +1529,7 @@ final class PanelTests: StoreBackedTestCase {
         XCTAssertGreaterThanOrEqual(hugePrompt.count, 200_000)
 
         let cardTime = firstLayoutTime(
-            SnipCardText(text: hugePrompt, isDone: false).frame(width: 420)
+            ItemRowText(text: hugePrompt, isDone: false).frame(width: 420)
         )
 
         let defaultsName = "SnipSnapLargePromptLayout-\(UUID().uuidString)"

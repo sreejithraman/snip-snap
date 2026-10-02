@@ -24,6 +24,10 @@ Use the default triage label vocabulary. See `docs/agents/triage-labels.md`.
 
 This is a single-context repo using the root glossary and ADR directory. See `docs/agents/domain.md`.
 
+### Releases
+
+When preparing a beta, promoting stable, or recovering a failed delivery, use [the project release skill](.agents/skills/snip-snap-release/SKILL.md).
+
 ### iCloud sync
 
 Before diagnosing or changing iCloud sync, running live CloudKit checks, or

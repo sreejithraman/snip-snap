@@ -200,6 +200,88 @@ done
 
 beta_workflow="$script_dir/../.github/workflows/beta.yml"
 beta_candidate_workflow="$script_dir/../.github/workflows/beta-candidate.yml"
+
+# Execute the real prepare step against local release tags, without Apple inputs.
+/usr/bin/ruby - "$beta_workflow" "$script_dir" "$test_root" <<'RUBY'
+require "yaml"
+require "fileutils"
+require "open3"
+require "shellwords"
+
+workflow = YAML.load_file(ARGV.fetch(0))
+scripts = ARGV.fetch(1)
+root = File.join(ARGV.fetch(2), "prepare-release")
+remote = File.join(root, "origin.git")
+repo = File.join(root, "checkout")
+FileUtils.mkdir_p(File.join(repo, "scripts"))
+FileUtils.mkdir_p(File.join(repo, "Config"))
+
+def git!(*args)
+  output, status = Open3.capture2e("git", *args)
+  abort "prepare release fixture failed: #{output}" unless status.success?
+end
+
+git!("init", "--quiet", "--bare", remote)
+git!("-C", repo, "init", "--quiet", "--initial-branch=main")
+git!("-C", repo, "-c", "user.name=Release Test", "-c", "user.email=release@example.invalid",
+     "-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty", "-m", "Fixture")
+git!("-C", repo, "remote", "add", "origin", remote)
+git!("-C", repo, "tag", "v0.6.0")
+git!("-C", repo, "tag", "v0.7.0-beta.139")
+git!("-C", repo, "push", "--quiet", "origin", "--tags")
+%w[release-policy.sh release-automation.sh release-build-number.sh].each do |name|
+  FileUtils.cp(File.join(scripts, name), File.join(repo, "scripts", name))
+end
+
+step = workflow.fetch("jobs").fetch("prepare").fetch("steps").find { |entry| entry["id"] == "release" }
+abort "missing release prepare step" unless step
+command_file = File.join(root, "prepare.sh")
+File.write(command_file, step.fetch("run"))
+shell = Shellwords.split(step.fetch("shell", "bash --noprofile --norc -e {0}"))
+command = shell.map { |argument| argument == "{0}" ? command_file : argument }
+outputs = File.join(root, "outputs")
+
+def prepare(command, repo, outputs, version, settings_version = version)
+  File.write(File.join(repo, "release.json"), %({"version":"#{version}"}\n))
+  File.write(File.join(repo, "Config", "Shared.xcconfig"),
+             "MARKETING_VERSION = #{settings_version}\nCURRENT_PROJECT_VERSION = 1\n")
+  File.write(outputs, "")
+  log, status = Open3.capture2e(
+    { "GITHUB_RUN_NUMBER" => "132", "GITHUB_OUTPUT" => outputs,
+      "SNIP_SNAP_VERSION" => nil, "SNIP_SNAP_BUILD_NUMBER" => nil, "SNIP_SNAP_BUILD_OFFSET" => nil },
+    *command, chdir: repo
+  )
+  [log, status, File.read(outputs)]
+end
+
+%w[0.6.0 0.5.9].each do |version|
+  log, status, values = prepare(command, repo, outputs, version)
+  abort "prepare release test failed: published version #{version} started delivery" if status.success?
+  abort "prepare release test failed: missing published-version diagnostic" unless log.include?("must be newer than v0.6.0")
+  abort "prepare release test failed: rejected version emitted release outputs" unless values.empty?
+end
+
+log, status, values = prepare(command, repo, outputs, "0.6.1")
+abort "prepare release test failed: next version was rejected: #{log}" unless status.success?
+abort "prepare release test failed: wrong version or generated build: #{values}" unless values == "version=0.6.1\nbuild=138\n"
+
+log, status, values = prepare(command, repo, outputs, "0.6.1", "0.6.0")
+abort "prepare release test failed: inconsistent Xcode version started delivery" if status.success?
+abort "prepare release test failed: missing Xcode-version diagnostic" unless log.include?("MARKETING_VERSION")
+abort "prepare release test failed: inconsistent version emitted release outputs" unless values.empty?
+
+git!("-C", repo, "remote", "set-url", "origin", File.join(root, "missing-origin.git"))
+log, status, values = prepare(command, repo, outputs, "0.6.1")
+abort "prepare release test failed: unavailable release tags started delivery" if status.success?
+abort "prepare release test failed: missing tag-fetch diagnostic" unless log.include?("could not read release tags")
+abort "prepare release test failed: unavailable tags emitted release outputs" unless values.empty?
+
+%w[mac-build ios-upload].each do |name|
+  dependencies = Array(workflow.fetch("jobs").fetch(name).fetch("needs"))
+  abort "prepare release test failed: #{name} bypasses prepare" unless dependencies.include?("prepare")
+end
+RUBY
+
 [[ -f "$beta_candidate_workflow" ]] || fail_test "missing beta-candidate.yml"
 /usr/bin/grep -F '${{ runner.temp }}' "$beta_workflow" >/dev/null && \
     fail_test "beta workflow uses runner context before a job starts"

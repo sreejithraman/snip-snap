@@ -228,6 +228,16 @@ case "$action" in
             "$cloudkit_container_identifier" \
             "$version" \
             "$build_number"
+        if [[ "${SNIP_SNAP_CLOUDKIT_PREFLIGHT_ENABLED:-NO}" == YES ]]; then
+            runtime_container="$(/usr/bin/plutil -extract SnipSnapCloudKitContainerIdentifier raw -o - \
+                "$archive_path/Products/Applications/Snip Snap iOS.app/Info.plist" 2>/dev/null)" || \
+                fail 'signed iOS archive is missing its runtime CloudKit container'
+            [[ "$runtime_container" == "$cloudkit_container_identifier" ]] || \
+                fail 'signed iOS runtime CloudKit container differs from its verified release target'
+        fi
+        SNIP_SNAP_CLOUDKIT_PREFLIGHT_TEAM_ID="$development_team" \
+            SNIP_SNAP_CLOUDKIT_PREFLIGHT_CONTAINER_ID="$cloudkit_container_identifier" \
+            "$script_dir/cloudkit-release-preflight.sh" --if-enabled
         testflight_policy_write_export_options \
             "$export_options" "$development_team" \
             "$app_bundle_identifier" "$share_bundle_identifier" \

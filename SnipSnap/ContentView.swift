@@ -233,10 +233,6 @@ struct ContentView: View {
             }
         }
         .onReceive(coordinator.panelFocusRequests, perform: handlePanelFocusRequest)
-        .focusedValue(
-            \.snipCommandModel,
-            hasSnipCommandFocus ? model : nil
-        )
         .onChange(of: hasSnipCommandFocus, initial: true) { _, isActive in
             coordinator.setSnipCommandFocusActive(isActive)
         }

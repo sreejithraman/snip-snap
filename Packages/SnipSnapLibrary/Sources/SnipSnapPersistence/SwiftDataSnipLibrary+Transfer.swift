@@ -11,19 +11,14 @@ struct CloudFullReenableCommitProof: Sendable {
 
 extension SwiftDataSnipLibrary {
   public func transferSnapshot(revision: UInt64) async throws -> SnipLibraryTransferSnapshot {
-    let current = try await checkedSnapshot(sortedBy: .manual)
-    var attachmentData: [UUID: Data] = [:]
-    for (id, url) in current.attachmentURLs {
-      do {
-        attachmentData[id] = try Data(contentsOf: url)
-      } catch {
-        throw SnipLibraryError.attachmentCopyFailed
-      }
-    }
-    guard let container else { throw SnipLibraryError.storeUnavailable }
+    let current = try checkedSnapshot(sortedBy: .manual)
+    guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
     let context = Self.makeContext(container: container)
+    let attachmentData = try readTransferAttachments(in: current.snips, lock: lock) {
+      try Data(contentsOf: $0)
+    }
     let transferMetadata = try Self.transferMetadata(context: context)
     return SnipLibraryTransferSnapshot(
       revision: revision,
@@ -39,23 +34,22 @@ extension SwiftDataSnipLibrary {
   public func previewTransferSnapshot(
     revision: UInt64
   ) async throws -> SnipLibraryTransferSnapshot {
-    let current = try await checkedSnapshot(sortedBy: .manual)
-    var digests: [UUID: Data] = [:]
-    for (id, url) in current.attachmentURLs {
-      digests[id] = try AttachmentFileIO.digest(at: url)
-    }
-    guard let container else { throw SnipLibraryError.storeUnavailable }
+    let current = try checkedSnapshot(sortedBy: .manual)
+    guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
     let context = Self.makeContext(container: container)
+    let files = try readTransferAttachments(in: current.snips, lock: lock) {
+      (url: $0, digest: try AttachmentFileIO.digest(at: $0))
+    }
     let transferMetadata = try Self.transferMetadata(context: context)
     return SnipLibraryTransferSnapshot(
       revision: revision,
       snips: current.snips,
       lists: current.lists,
       attachmentData: [:],
-      attachmentFileURLs: current.attachmentURLs,
-      attachmentFileDigests: digests,
+      attachmentFileURLs: files.mapValues(\.url),
+      attachmentFileDigests: files.mapValues(\.digest),
       legacyManualPositions: transferMetadata.legacyManualPositions,
       opaqueSyncStateDigest: transferMetadata.opaqueSyncStateDigest,
       opaqueSyncStatePayload: transferMetadata.opaqueSyncStatePayload
@@ -147,15 +141,8 @@ extension SwiftDataSnipLibrary {
     try requireContentWritesAllowed(context: context)
     let loaded = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
     let currentSnips = loaded.state.allSnips(sortMode: .manual)
-    var currentAttachmentData: [UUID: Data] = [:]
-    for attachment in currentSnips.flatMap(\.attachments) {
-      try lock.check()
-      let url = try attachmentURL(relativePath: attachment.relativePath)
-      do {
-        currentAttachmentData[attachment.id] = try Data(contentsOf: url)
-      } catch {
-        throw SnipLibraryError.attachmentCopyFailed
-      }
+    let currentAttachmentData = try readTransferAttachments(in: currentSnips, lock: lock) {
+      try Data(contentsOf: $0)
     }
     let transferMetadata = try Self.transferMetadata(context: context)
     let current = SnipLibraryTransferSnapshot(
@@ -172,6 +159,10 @@ extension SwiftDataSnipLibrary {
     else { throw SnipLibraryError.invalidStore }
     var createdDirectories: [URL] = []
     var transferredSnips = plan.snips
+    let currentAttachments = Dictionary(
+      currentSnips.flatMap(\.attachments).map { ($0.id, $0) },
+      uniquingKeysWith: { first, _ in first }
+    )
 
     do {
       for snipIndex in transferredSnips.indices {
@@ -179,6 +170,11 @@ extension SwiftDataSnipLibrary {
         for attachmentIndex in transferredSnips[snipIndex].attachments.indices {
           try lock.check()
           var attachment = transferredSnips[snipIndex].attachments[attachmentIndex]
+          // Retained remote metadata already names its validated cache location.
+          // An unrelated transfer must not promote or require its evictable bytes.
+          if attachment.relativePath.hasPrefix("CloudDownloads/"),
+            currentAttachments[attachment.id] == attachment
+          { continue }
           let safeName = URL(fileURLWithPath: attachment.fileName).lastPathComponent
           guard !safeName.isEmpty else { throw SnipLibraryError.attachmentCopyFailed }
           let relativePath = "\(attachment.id.uuidString)/\(safeName)"
@@ -254,16 +250,8 @@ extension SwiftDataSnipLibrary {
     }
     let loaded = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
     let currentSnips = loaded.state.allSnips(sortMode: .manual)
-    var currentAttachmentData: [UUID: Data] = [:]
-    for attachment in currentSnips.flatMap(\.attachments) {
-      try lock.check()
-      let url = try attachmentURL(relativePath: attachment.relativePath)
-      // Planning permits an absent downloaded file; the source may still carry
-      // its durable bytes. Compare that same cache-miss state before committing.
-      if attachment.relativePath.hasPrefix("CloudDownloads/"),
-        !FileManager.default.fileExists(atPath: url.path)
-      { continue }
-      currentAttachmentData[attachment.id] = try Data(contentsOf: url)
+    let currentAttachmentData = try readTransferAttachments(in: currentSnips, lock: lock) {
+      try Data(contentsOf: $0)
     }
     let transferMetadata = try Self.transferMetadata(context: context)
     let current = SnipLibraryTransferSnapshot(
@@ -386,6 +374,33 @@ extension SwiftDataSnipLibrary {
       removeAttachmentDirectories(createdDirectories)
       throw error
     }
+  }
+
+  /// Uses the caller's store lock so planning and commit observe the same file
+  /// policy without reacquiring it. Resolve paths before recognizing cache misses;
+  /// missing durable files and unsafe paths must still reject the transfer.
+  private func readTransferAttachments<Value>(
+    in snips: [Snip],
+    lock: SnipStoreFileLock,
+    read: (URL) throws -> Value
+  ) throws -> [UUID: Value] {
+    var values: [UUID: Value] = [:]
+    var readAttachmentIDs: Set<UUID> = []
+    for attachment in snips.flatMap(\.attachments) {
+      try lock.check()
+      guard readAttachmentIDs.insert(attachment.id).inserted else { continue }
+      let url = try attachmentURL(relativePath: attachment.relativePath)
+      if attachment.relativePath.hasPrefix("CloudDownloads/"),
+        !FileManager.default.fileExists(atPath: url.path)
+      { continue }
+      do {
+        values[attachment.id] = try read(url)
+      } catch {
+        throw SnipLibraryError.attachmentCopyFailed
+      }
+    }
+    try lock.check()
+    return values
   }
 
   func retireCompletedCloudFullReenable(

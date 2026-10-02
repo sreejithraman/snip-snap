@@ -17,6 +17,7 @@ final class IOSClipboardModel {
     private let preferences: UserDefaults
     private let diagnostics: any AppDiagnosticRecording
     private(set) var entries: [ClipboardEntry] = []
+    private(set) var filePreviewRevision = 0
     private(set) var pendingUploadIDs: Set<UUID> = []
     private(set) var isSyncing = false
     private(set) var syncEnabled: Bool
@@ -81,6 +82,7 @@ final class IOSClipboardModel {
     func load() async {
         do {
             entries = try await store.load().entries
+            filePreviewRevision &+= 1
             loadErrorMessage = nil
         } catch {
             if loadErrorMessage == nil {
@@ -149,7 +151,10 @@ final class IOSClipboardModel {
         await load()
         guard let cloud, syncEnabled, settings.mode == .iCloudSync else { cloud?.stop(); return }
         isSyncing = true
-        defer { isSyncing = false }
+        defer {
+            isSyncing = false
+            filePreviewRevision &+= 1
+        }
         do {
             guard let generation = try await generation() else { return }
             entries = try await cloud.synchronize(mainSyncEnabled: true, clipboardSyncEnabled: true, generation: generation).entries
@@ -243,6 +248,10 @@ final class IOSClipboardModel {
             ))
             errorMessage = String(localized: "Couldn’t clear clipboard history. Try again.")
         }
+    }
+
+    func previewFileURLs(for entry: ClipboardEntry) -> [URL] {
+        files.resolvedFileURLs(for: entry)
     }
 
     func copy(_ entry: ClipboardEntry) {

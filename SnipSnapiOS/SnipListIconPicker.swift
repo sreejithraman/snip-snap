@@ -42,6 +42,7 @@ struct SnipListIconBrowser: View {
                     .padding(SnipSnapSpacing.paneContentInset)
             }
             .scrollDismissesKeyboard(.interactively)
+            .accessibilityIdentifier("list-icon-results")
         }
         .navigationTitle("Choose List Icon")
         .navigationBarTitleDisplayMode(.inline)
@@ -60,6 +61,7 @@ struct InlineListIconPicker: View {
             }
             .frame(height: 192)
             .scrollDismissesKeyboard(.interactively)
+            .accessibilityIdentifier("list-icon-results")
         }
     }
 }

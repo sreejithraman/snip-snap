@@ -143,7 +143,15 @@ private struct SnipDragPreviewCard: View {
         PanelContentCard(
             state: PanelContentCardState(isSubdued: payload.previewIsDone)
         ) {
-            PanelContentCardMain {
+            ItemRowContent {
+                if !payload.text.isEmpty {
+                    ItemRowText(
+                        text: payload.text,
+                        isDone: payload.previewIsDone,
+                        allowsExpansion: false
+                    )
+                }
+            } previews: {
                 if !attachmentImages.isEmpty {
                     HStack(spacing: SnipSnapSpacing.relatedContent) {
                         ForEach(Array(attachmentImages.enumerated()), id: \.offset) { _, item in
@@ -154,11 +162,8 @@ private struct SnipDragPreviewCard: View {
                         }
                     }
                 }
-            } content: {
-                SnipCardText(
-                    text: payload.text,
-                    isDone: payload.previewIsDone
-                )
+            } metadata: {
+                EmptyView()
             }
         }
     }

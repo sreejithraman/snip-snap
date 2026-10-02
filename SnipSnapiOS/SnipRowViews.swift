@@ -26,7 +26,7 @@ struct SnipRow: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        IOSItemRow(hasLeading: showsStatusIcon || isGathering) {
             if isGathering {
                 SnipCompletionIcon(isDone: snip.isDone, appearance: appearance)
                     .opacity(0.35)
@@ -58,6 +58,7 @@ struct SnipRow: View {
                     .accessibilityIdentifier("completion-\(snip.id)")
                 }
             }
+        } content: {
             SnipContentView(
                 snip: snip,
                 model: model,
@@ -66,9 +67,7 @@ struct SnipRow: View {
                 onPreviewAttachment: onPreviewAttachment,
                 showsPin: showsPinInMetadata && (isGathering || !showsStatusIcon || onCopy == nil)
             )
-            .padding(.top, showsStatusIcon || isGathering ? 8 : 0)
         }
-        .padding(.vertical, 4)
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { sourceFrameChanged?($0) }
         // Give the native reorder handle the snip's name.
         .accessibilityElement(children: isReordering ? .ignore : (onPreviewAttachment == nil ? .combine : .contain))
@@ -109,28 +108,19 @@ struct SnipContentView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        ItemRowContent {
             if hasVisibleText {
-                if let lineLimit {
-                    ExpandableSnipText(
-                        text: snip.content,
-                        lineLimit: lineLimit,
-                        isDone: snip.isDone,
-                        allowsExpansion: allowsTextExpansion,
-                        accessibilityIdentifier: "snip-text-\(snip.id)"
-                    )
-                    .font(.body)
-                    .foregroundStyle(snip.isDone ? .secondary : .primary)
-                } else {
-                    Text(snip.content)
-                        .font(.body)
-                        .foregroundStyle(snip.isDone ? .secondary : .primary)
-                        .strikethrough(snip.isDone)
-                        .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                ItemRowText(
+                    text: snip.content,
+                    lineLimit: lineLimit,
+                    isDone: snip.isDone,
+                    allowsExpansion: allowsTextExpansion,
+                    accessibilityIdentifier: "snip-text-\(snip.id)"
+                )
             }
+        } previews: {
             attachmentPreviews
+        } metadata: {
             SnipRowMetadata(
                 date: snip.updatedAt,
                 isPinned: snip.isPinned,
@@ -140,33 +130,23 @@ struct SnipContentView: View {
                 showsPin: showsPin
             )
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
     private var attachmentPreviews: some View {
         if !snip.attachments.isEmpty {
-            HStack(spacing: 8) {
-                ForEach(Array(snip.attachments.prefix(3))) { attachment in
-                    if !loadsAttachmentPreviews {
-                        // Preserve measurement without starting work for a hidden card.
-                        Color.clear.frame(width: 64, height: 64)
-                            .accessibilityHidden(true)
-                    } else if let onPreviewAttachment {
-                        CompactAttachmentPreviewButton(
-                            attachment: attachment,
-                            model: model,
-                            action: { onPreviewAttachment(attachment) }
-                        )
-                    } else {
-                        AttachmentStatusThumbnail(attachment: attachment, model: model)
-                            .frame(width: 64, height: 64)
-                    }
-                }
-                if snip.attachments.count > 3 {
-                    Text("+\(snip.attachments.count - 3)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            CompactItemPreviews(items: snip.attachments) { attachment in
+                if !loadsAttachmentPreviews {
+                    // Preserve measurement without starting work for a hidden card.
+                    Color.clear.accessibilityHidden(true)
+                } else if let onPreviewAttachment {
+                    CompactAttachmentPreviewButton(
+                        attachment: attachment,
+                        model: model,
+                        action: { onPreviewAttachment(attachment) }
+                    )
+                } else {
+                    AttachmentStatusThumbnail(attachment: attachment, model: model)
                 }
             }
         }
@@ -302,5 +282,43 @@ struct SnipCircularControlLabel: View {
         .frame(width: controlDiameter, height: controlDiameter)
         .frame(width: max(44, controlDiameter), height: max(44, controlDiameter))
         .contentShape(Rectangle())
+    }
+}
+
+/// Controls keep the same slot and the text starts on the same baseline.
+struct IOSItemRow<Leading: View, Content: View>: View {
+    var hasLeading = true
+    @ViewBuilder let leading: () -> Leading
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            leading()
+            content()
+                .padding(.top, hasLeading ? SnipSnapSpacing.relatedContent : 0)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct CompactItemPreviews<Item: Identifiable, Preview: View>: View {
+    let items: [Item]
+    @ViewBuilder let preview: (Item) -> Preview
+
+    var body: some View {
+        if !items.isEmpty {
+            HStack(spacing: SnipSnapSpacing.relatedContent) {
+                ForEach(Array(items.prefix(3))) { item in
+                    preview(item)
+                        .frame(width: 64, height: 64)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                if items.count > 3 {
+                    Text("+\(items.count - 3)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 }

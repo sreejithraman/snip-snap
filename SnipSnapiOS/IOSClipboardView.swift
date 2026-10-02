@@ -105,38 +105,9 @@ struct IOSClipboardView: View {
                 }
             }
             ForEach(entries) { entry in
-                HStack(alignment: .top, spacing: 12) {
-                    SnipCopyControl { copyShare.copyClipboardEntry(entry, clipboard: model) }
-                    .accessibilityLabel("Copy Clipboard Entry")
-                    VStack(alignment: .leading, spacing: 6) {
-                        if let image = entry.imageRepresentations.first.flatMap({ UIImage(data: $0.data) }) {
-                            Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 120)
-                        }
-                        Text(entry.text.isEmpty ? (entry.imageRepresentations.isEmpty ? String(localized: "Clipboard Entry") : String(localized: "Image")) : entry.text)
-                            .lineLimit(3)
-                        SnipRowMetadata(date: entry.capturedAt, isPinned: entry.isPinned)
-                        if !entry.isSyncEligible {
-                            Label(model.localDeviceLabel, systemImage: "iphone")
-                                .font(.caption).foregroundStyle(.secondary)
-                            if model.syncIsActive {
-                                Text("Pin to sync this file").font(.caption).foregroundStyle(.secondary)
-                            }
-                        } else if model.syncIsActive && model.pendingUploadIDs.contains(entry.id) {
-                            if model.errorMessage != nil {
-                                Label("Upload failed", systemImage: "exclamationmark.icloud")
-                                    .font(.caption).foregroundStyle(.red)
-                                Button("Retry clipboard sync") { Task { await model.synchronize() } }
-                                    .buttonStyle(.borderless)
-                            } else {
-                                Label(model.isSyncing ? "Uploading…" : "Waiting for sync", systemImage: "icloud.and.arrow.up")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
+                ClipboardItemRow(entry: entry, model: model, showsSyncStatus: true) {
+                    copyShare.copyClipboardEntry(entry, clipboard: model)
                 }
-                .padding(.vertical, 4)
                 .listRowSeparator(.hidden)
                 .accessibilityValue(entry.isPinned ? String(localized: "Pinned") : "")
                 .accessibilityAction(named: Text(entry.isPinned ? "Unpin" : "Pin")) {
@@ -194,4 +165,88 @@ struct IOSClipboardView: View {
         .task { await model.load() }
         .refreshable { await model.synchronize() }
     }
+}
+
+/// Clipboard screen and search share the same row; hosts own menus and actions.
+struct ClipboardItemRow: View {
+    let entry: ClipboardEntry
+    let model: IOSClipboardModel
+    var showsSyncStatus = false
+    let onCopy: () -> Void
+
+    private var title: String {
+        if !entry.text.isEmpty { return entry.text }
+        if !entry.ownedFiles.isEmpty { return entry.ownedFiles.map(\.name).joined(separator: ", ") }
+        return entry.imageRepresentations.isEmpty ? String(localized: "Clipboard Entry") : String(localized: "Image")
+    }
+
+    var body: some View {
+        IOSItemRow {
+            SnipCopyControl(action: onCopy)
+                .accessibilityLabel("Copy Clipboard Entry")
+        } content: {
+            ItemRowContent {
+                ItemRowText(text: title, accessibilityIdentifier: "clipboard-text-\(entry.id)")
+            } previews: {
+                ClipboardItemPreviews(entry: entry, fileURLs: model.previewFileURLs(for: entry))
+                    // Sync can restore bytes at the same URL; retry only the preview subtree.
+                    .id(model.filePreviewRevision)
+            } metadata: {
+                SnipRowMetadata(date: entry.capturedAt, isPinned: entry.isPinned, sourceApplication: entry.sourceApplication)
+                if showsSyncStatus {
+                    if !entry.isSyncEligible {
+                        Label(model.localDeviceLabel, systemImage: "iphone")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if model.syncIsActive {
+                            Text("Pin to sync this file").font(.caption).foregroundStyle(.secondary)
+                        }
+                    } else if model.syncIsActive && model.pendingUploadIDs.contains(entry.id) {
+                        if model.errorMessage != nil {
+                            Label("Upload failed", systemImage: "exclamationmark.icloud")
+                                .font(.caption).foregroundStyle(.red)
+                            Button("Retry clipboard sync") { Task { await model.synchronize() } }
+                                .buttonStyle(.borderless)
+                        } else {
+                            Label(model.isSyncing ? "Uploading…" : "Waiting for sync", systemImage: "icloud.and.arrow.up")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .contentShape(Rectangle())
+        }
+    }
+}
+
+private struct ClipboardItemPreviews: View {
+    let entry: ClipboardEntry
+    let fileURLs: [URL]
+
+    var body: some View {
+        CompactItemPreviews(items: previews) { preview in
+            if let data = preview.imageData {
+                if let image = UIImage(data: data) {
+                    Image(uiImage: image).resizable().scaledToFill()
+                } else {
+                    Image(systemName: "photo").foregroundStyle(.secondary)
+                }
+            } else if let url = preview.fileURL {
+                AttachmentThumbnail(url: url)
+            }
+        }
+    }
+
+    private var previews: [ClipboardItemPreview] {
+        entry.standaloneImageRepresentations.enumerated().map { index, representation in
+            ClipboardItemPreview(id: "image-\(index)", imageData: representation.data)
+        } + fileURLs.enumerated().map { index, url in
+            ClipboardItemPreview(id: "file-\(index)", fileURL: url)
+        }
+    }
+}
+
+private struct ClipboardItemPreview: Identifiable {
+    let id: String
+    var imageData: Data? = nil
+    var fileURL: URL? = nil
 }

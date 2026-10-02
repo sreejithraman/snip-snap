@@ -35,6 +35,11 @@ final class PanelDialogPresentationState: ObservableObject {
     @Published fileprivate(set) var isPresented = false
 }
 
+@MainActor
+final class PanelSnipCommandFocusState: ObservableObject {
+    @Published fileprivate(set) var isActive = false
+}
+
 enum SelectionAttachmentStagingError: Error, Equatable, Sendable {
     case writeFailed
 }
@@ -58,6 +63,7 @@ final class AppCoordinator {
     private var hotKeys: (any GlobalHotKeyManaging)?
     private weak var panelWindow: NSWindow?
     let panelDialogs = PanelDialogPresentationState()
+    let snipCommandFocus = PanelSnipCommandFocusState()
     private let panelDialogPresenter = PanelDialogPresenter()
     private var requestedPanelComposerExpansion: CGFloat = 0
     private var appliedPanelComposerExpansion: CGFloat = 0
@@ -292,6 +298,7 @@ final class AppCoordinator {
     }
 
     func setSnipCommandFocusActive(_ isActive: Bool) {
+        snipCommandFocus.isActive = isActive
         if isActive {
             refreshAppShortcutMenu()
         }

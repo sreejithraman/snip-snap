@@ -16,6 +16,11 @@ print -r -- "policy:${0:t}" >> "$SNIP_SNAP_TEST_CALLS"' > "$fixture/scripts/${po
     /bin/chmod +x "$fixture/scripts/${policy:t}"
 done
 
+cat > "$fixture/scripts/cloudkit-schema-tests.rb" <<'RUBY'
+File.open(ENV.fetch('SNIP_SNAP_TEST_CALLS'), 'a') { |file| file.puts('policy:cloudkit-schema-tests.rb') }
+exit 1 if ENV['SNIP_SNAP_TEST_FAILURE'] == 'cloudkit-schema'
+RUBY
+
 cat > "$test_root/bin/swift" <<'SWIFT'
 #!/bin/zsh
 print -r -- "swift:$*" >> "$SNIP_SNAP_TEST_CALLS"
@@ -70,6 +75,7 @@ run_tests() {
 
 assert_groups() {
     local common="$1" mac="$2" ios="$3"
+    [[ "$(/usr/bin/grep -c '^policy:cloudkit-schema-tests.rb$' "$SNIP_SNAP_TEST_CALLS" || true)" == "$common" ]]
     [[ "$(/usr/bin/grep -c '^swift:' "$SNIP_SNAP_TEST_CALLS" || true)" == "$common" ]]
     [[ "$(/usr/bin/grep -c '^policy:release-policy-tests.sh$' "$SNIP_SNAP_TEST_CALLS" || true)" == "$common" ]]
     [[ "$(/usr/bin/grep -c -- '-scheme SnipSnap ' "$SNIP_SNAP_TEST_CALLS" || true)" == "$mac" ]]
@@ -97,7 +103,7 @@ for arguments in '--unknown' '--mac-only --ios-only'; do
     [[ ! -s "$SNIP_SNAP_TEST_CALLS" ]]
 done
 
-for failure in package SnipSnap SnipSnapiOS; do
+for failure in cloudkit-schema package SnipSnap SnipSnapiOS; do
     if SNIP_SNAP_TEST_FAILURE="$failure" run_tests; then
         print -u2 "Test runner hid a failure in $failure."
         exit 1

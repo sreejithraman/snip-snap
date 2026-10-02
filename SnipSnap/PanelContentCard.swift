@@ -197,37 +197,3 @@ extension PanelContentCard where Leading == EmptyView {
         self.main = main()
     }
 }
-
-struct PanelContentCardMain<Media: View, Content: View>: View {
-    private let hasMedia: Bool
-    private let media: Media
-    private let content: Content
-
-    init(
-        @ViewBuilder media: () -> Media,
-        @ViewBuilder content: () -> Content
-    ) {
-        hasMedia = true
-        self.media = media()
-        self.content = content()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
-            if hasMedia {
-                media
-            }
-
-            content
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-extension PanelContentCardMain where Media == EmptyView {
-    init(@ViewBuilder content: () -> Content) {
-        hasMedia = false
-        media = EmptyView()
-        self.content = content()
-    }
-}

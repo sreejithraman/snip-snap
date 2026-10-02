@@ -3,11 +3,30 @@
     <channel>
         <title>Snip Snap</title>
         <item>
+            <title>0.6.1</title>
+            <pubDate>Fri, 02 Oct 2026 15:45:24 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.142</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.6.1-beta.142-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>142</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.142/Snip-Snap-0.6.1.zip" length="15707660" type="application/octet-stream" sparkle:edSignature="vnxGrIRY5eHZ0kfZ06k2wK4NSMgymjM4B9qlkKqoQlt9MzFg39fgyrYaiJv9xhHFmibfdoXQ+alvidM4Q6MhDA=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 142 — Mac
+
+- Fix backup import with evicted retained iCloud attachments
+- Add opt-in Production CloudKit release preflight
+- Prevent beta delivery with a published version and add release skill
+- Fix text copy and snip keyboard focus
+- Align clipboard and snip rows on Mac and iOS
+</description>
+        </item>
+        <item>
             <title>0.6.0</title>
             <pubDate>Fri, 02 Oct 2026 02:09:20 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.0</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/Snip-Snap-0.6.0-mac.txt</sparkle:fullReleaseNotesLink>
-<sparkle:version>136</sparkle:version>
+            <sparkle:version>136</sparkle:version>
             <sparkle:shortVersionString>0.6.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.0/Snip-Snap-0.6.0.zip" length="15703786" type="application/octet-stream" sparkle:edSignature="LMt6DKyRCewUytFfbASBSZ24MI3C4bpSP0n2lMeZqWjpKiXAuosO/VvFUntys3/jysVTV0wQRoN0V0+2VrA6AQ=="/>

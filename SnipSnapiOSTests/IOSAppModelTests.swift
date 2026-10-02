@@ -3292,9 +3292,32 @@ final class IOSAppModelTests: XCTestCase {
         await coordinator.copy(snips: [missing], model: model)
         XCTAssertEqual(pasteboard.writes.count, writeCount)
         XCTAssertEqual(coordinator.unavailableFilesNotice?.payload.unavailableFileNames, ["missing.txt"])
-        await coordinator.copyTextFromNotice(model: model)
+        await coordinator.copyTextFromNotice(try XCTUnwrap(coordinator.unavailableFilesNotice), model: model)
         XCTAssertEqual(pasteboard.writes.last, [.text("Safe text")])
         XCTAssertNil(coordinator.unavailableFilesNotice)
+    }
+
+    func testCopyTextOnlyRetainsSelectedNoticeAfterAlertDismissal() async throws {
+        let attachment = try testAttachment(id: UUID(), fileName: "missing.txt")
+        let snip = Snip(content: "Safe text", origin: .quickEntry, attachments: [attachment])
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [snip]))
+        await model.load()
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+        let initialCopy = await coordinator.copy(snips: [snip], model: model)
+        XCTAssertFalse(initialCopy)
+        let selectedNotice = try XCTUnwrap(coordinator.unavailableFilesNotice)
+
+        // SwiftUI clears the presentation binding before the button's Task runs.
+        coordinator.cancelUnavailableFilesNotice()
+        XCTAssertTrue(pasteboard.writes.isEmpty)
+        XCTAssertFalse(try XCTUnwrap(model.snips.first).isDone)
+        let copied = await coordinator.copyTextFromNotice(selectedNotice, model: model)
+
+        XCTAssertTrue(copied)
+        XCTAssertEqual(pasteboard.writes, [[.text("Safe text")]])
+        XCTAssertTrue(try XCTUnwrap(model.snips.first).isDone)
+        XCTAssertEqual(model.toast?.message, "Copied Text")
     }
 
     func testCopyChecksSnipAndCheckingCopiesSnip() async throws {
@@ -3497,7 +3520,7 @@ final class IOSAppModelTests: XCTestCase {
 
         let edited = await model.editSnip(original, content: "Edited text")
         XCTAssertTrue(edited)
-        let copiedText = await coordinator.copyTextFromNotice(model: model)
+        let copiedText = await coordinator.copyTextFromNotice(try XCTUnwrap(coordinator.unavailableFilesNotice), model: model)
 
         XCTAssertTrue(copiedText)
         XCTAssertEqual(pasteboard.writes, [[.text("Original text")]])
@@ -5218,7 +5241,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         coordinator.cancelUnavailableFilesNotice()
         XCTAssertEqual(feedback.event, warning)
         await coordinator.copy(snips: [snip], model: model)
-        await coordinator.copyTextFromNotice(model: model)
+        await coordinator.copyTextFromNotice(try XCTUnwrap(coordinator.unavailableFilesNotice), model: model)
         XCTAssertEqual(feedback.event?.kind, .copied)
     }
 
@@ -6596,6 +6619,64 @@ final class ListSelectorExpansionTests: XCTestCase {
         XCTAssertEqual(expansion.distance, 0)
         expansion.update(distance: 8)
         XCTAssertEqual(expansion.distance, 8)
+    }
+}
+
+@MainActor
+final class ClipboardRowPreviewTests: XCTestCase {
+    func testMountedRowReloadsRestoredFileAtTheSameURL() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let filesRoot = root.appendingPathComponent("ClipboardFiles", isDirectory: true)
+        try FileManager.default.createDirectory(at: filesRoot, withIntermediateDirectories: true)
+        let url = filesRoot.appendingPathComponent("preview.png")
+        func imageData(width: Int) -> Data {
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = 1
+            return UIGraphicsImageRenderer(size: CGSize(width: CGFloat(width), height: 3), format: format).pngData { context in
+                UIColor.red.setFill()
+                context.fill(CGRect(x: 0, y: 0, width: CGFloat(width), height: 3))
+            }
+        }
+        try imageData(width: 4).write(to: url)
+        let entry = ClipboardEntry(items: [ClipboardPayloadItem(representations: [
+            ClipboardRepresentation(type: UTType.fileURL.identifier, data: Data(url.absoluteString.utf8)),
+        ])], ownedFiles: [ClipboardOwnedFile(name: "preview.png", relativePath: "preview.png")])
+        let store = ClipboardHistoryStore(url: root.appendingPathComponent("clipboard.json"))
+        _ = try await store.insert(entry)
+        let preferencesName = UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: preferencesName))
+        defer { preferences.removePersistentDomain(forName: preferencesName) }
+        let model = IOSClipboardModel(
+            rootURL: root, settings: SyncedContentSettingsModel(mode: .localOnly), preferences: preferences
+        )
+        await model.load()
+        let host = UIHostingController(rootView: ClipboardItemRow(entry: entry, model: model, onCopy: {}))
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        host.view.layoutIfNeeded()
+        let scale = host.traitCollection.displayScale
+        func waitForThumbnail(width: Int) async throws -> Bool {
+            let deadline = ContinuousClock.now + .seconds(5)
+            while ContinuousClock.now < deadline {
+                if AttachmentThumbnailCache.shared.cachedImage(
+                    for: url, size: AttachmentThumbnailCache.tileSize, scale: scale
+                )?.width == width { return true }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            return false
+        }
+        let initiallyLoaded = try await waitForThumbnail(width: 4)
+        XCTAssertTrue(initiallyLoaded)
+        try FileManager.default.removeItem(at: url)
+        try imageData(width: 16).write(to: url)
+        await model.load()
+        XCTAssertEqual(model.entries.map(\.id), [entry.id])
+        let restored = try await waitForThumbnail(width: 16)
+        XCTAssertTrue(restored, "A mounted row must retry the same URL after its file is restored.")
     }
 }
 
