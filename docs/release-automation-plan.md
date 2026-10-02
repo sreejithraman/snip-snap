@@ -33,8 +33,10 @@ check marks the delivery as started; a later push does not stop it.
 The workflows:
 
 1. Test the full unsigned matrix once in the candidate workflow.
-2. Check that the tested commit is still current, then read the planned
-   marketing version from `release.json`.
+2. Check that the tested commit is still current, then validate the planned
+   marketing version from `release.json` against Xcode and published stable
+   tags. Stop before either platform starts if the planned version is not newer
+   than the latest stable release or the versions disagree.
 3. Set the build number to the delivery workflow run number plus the migration
    offset, then build iOS and Mac from the same clean commit and number. Local
    release commands still test by default.
@@ -116,6 +118,13 @@ build number. It:
 
 Apple may still need a manual App Store review and release choice. The workflow
 must stop with clear steps when Apple needs that choice.
+
+After promotion, prepare a follow-up PR for the next planned marketing version
+with `scripts/set-release.sh MAJOR.MINOR.PATCH`, unless `main` already targets a
+newer version. Merge that PR before the next beta delivery. The promotion
+workflow preserves the tested version; it does not advance `release.json`.
+Use the [project release skill](../.agents/skills/snip-snap-release/SKILL.md) to
+carry promotion through this follow-up and to recover failed deliveries.
 
 ## Open-source boundary
 
