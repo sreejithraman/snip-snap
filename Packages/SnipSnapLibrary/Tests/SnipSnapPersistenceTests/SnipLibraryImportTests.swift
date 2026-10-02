@@ -6,6 +6,48 @@ import XCTest
 @testable import SnipSnapPersistence
 
 final class SnipLibraryImportTests: XCTestCase {
+  func testImportPreviewRejectsMissingDurableAndUnsafeRetainedAttachmentPaths() async throws {
+    for relativePath in [
+      "missing/file.txt",
+      "CloudDownloads/not-a-namespace/Files/file.txt",
+      "CloudDownloads/\(String(repeating: "a", count: 64))/Files/dangling.txt",
+    ] {
+      let fixture = try makeBackupFixture(relativePath: nil)
+      defer { try? FileManager.default.removeItem(at: fixture.root) }
+      let target = try SwiftDataSnipLibrary(storeURL: fixture.root.appendingPathComponent("target.store"))
+      let attachmentRoot = await target.attachmentRootURL
+      try FileManager.default.createDirectory(at: attachmentRoot, withIntermediateDirectories: true)
+      let attachment = SnipAttachment(
+        id: UUID(), fileName: "file.txt", relativePath: relativePath,
+        contentType: "public.plain-text", byteCount: 4
+      )
+      _ = try await target.perform(
+        .restore(snips: [Snip(content: "Retained", origin: .quickEntry, attachments: [attachment])]),
+        sortedBy: .manual
+      )
+      if relativePath.hasSuffix("dangling.txt") {
+        let path = attachmentRoot.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+          at: path.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+          at: path, withDestinationURL: fixture.root.appendingPathComponent("absent")
+        )
+      }
+
+      do {
+        let preview = try await SnipLibraryImport.preview(backupURL: fixture.backupURL, target: target)
+        try preview.stagingLease?.release()
+        XCTFail("Expected retained attachment path to be rejected: \(relativePath)")
+      } catch {
+        XCTAssertTrue(
+          error is SnipLibraryError || error is CloudAttachmentStorageError,
+          "Unexpected error for \(relativePath): \(error)"
+        )
+      }
+    }
+  }
+
   func testBackupImportCanReadGrantedRootWithoutAncestorDirectoryReadAccess() throws {
     let bytes = Data("readable inside the granted directory".utf8)
     let fixture = try makeBackupFixture(relativePath: "Nested/file.txt", attachmentBytes: bytes)
