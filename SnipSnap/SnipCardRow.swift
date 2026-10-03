@@ -46,6 +46,7 @@ struct SnipCardRow: View {
                 PanelCopySlot(
                     isCopied: isCopied,
                     isPinned: true,
+                    appearance: appearance,
                     commandNumber: commandNumber,
                     copy: {
                         Task {
@@ -66,6 +67,7 @@ struct SnipCardRow: View {
             } else if let commandNumber {
                 PanelCommandNumberButton(
                     number: commandNumber,
+                    appearance: appearance,
                     action: onPickCommandNumber
                 )
             } else {
@@ -73,7 +75,7 @@ struct SnipCardRow: View {
                     Image(systemName: snip.isDone ? "checkmark.circle.fill" : "circle")
                         .resizable()
                         .scaledToFit()
-                        .foregroundStyle(SnipSnapColors.controlTint)
+                        .foregroundStyle(appearance.controlTint)
                         .frame(
                             width: PanelCardLeadingMetrics.controlSide,
                             height: PanelCardLeadingMetrics.controlSide
