@@ -19,8 +19,11 @@ struct IOSClipboardView: View {
     let syncNow: @MainActor () async -> Void
     @Binding var sheet: AppSheet?
     var settings: () -> Void = {}
+    var isActivePage = true
     @State var viewState = ClipboardViewState()
     @State private var confirmsClear = false
+
+    private var isSearching: Bool { isActivePage && libraryModel.isSearchPresented }
 
     private var entries: [ClipboardEntry] {
         ClipboardViewOptions(
@@ -69,11 +72,14 @@ struct IOSClipboardView: View {
     }
 
     var body: some View {
-        Group {
-            if libraryModel.isSearchPresented {
+        ZStack {
+            clipboardContent
+                .environment(\.attachmentPreparationIsActive, isActivePage && !isSearching)
+                .opacity(isSearching ? 0 : 1)
+                .allowsHitTesting(!isSearching)
+                .accessibilityHidden(isSearching)
+            if isSearching {
                 LibrarySearchView(model: libraryModel, clipboard: model, copyShare: copyShare)
-            } else {
-                clipboardContent
             }
         }
         .modifier(CollectionScreenPresentation(
@@ -81,6 +87,9 @@ struct IOSClipboardView: View {
             showsControls: !libraryModel.isSearchPresented,
             trailingControls: clipboardToolbar
         ))
+        .onChange(of: isActivePage) { _, active in
+            if !active { confirmsClear = false }
+        }
     }
 
     private var clipboardContent: some View {
@@ -150,16 +159,12 @@ struct IOSClipboardView: View {
             Text(model.syncIsActive ? "This clears unpinned history across synced devices. Pinned items stay." : "This clears unpinned history on this device. Pinned items stay.")
         }
         .overlay(alignment: .bottom) {
-            if model.copied {
+            if isActivePage && !isSearching && model.copied {
                 Label("Copied", systemImage: "checkmark")
                     .font(.subheadline.weight(.semibold))
                     .padding(12)
                     .background(.regularMaterial, in: Capsule())
                     .padding()
-                    .task {
-                        try? await Task.sleep(for: .seconds(2))
-                        model.copied = false
-                    }
             }
         }
         .task { await model.load() }

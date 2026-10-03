@@ -323,10 +323,14 @@ final class IOSAppModel {
     }
 
     func visibleSnips(in listID: UUID) -> [Snip] {
+        visibleSnips(in: listID, matching: searchText)
+    }
+
+    func visibleSnips(in listID: UUID, matching query: String) -> [Snip] {
         let selected = snips.filter { $0.listID == listID }
         let matches = SnipFilter.apply(
             snips: selected,
-            query: searchText,
+            query: query,
             completionFilter: completionFilter,
             sourceLabel: { $0.displaySourceLabel }
         )
@@ -775,13 +779,25 @@ final class IOSAppModel {
         return attachmentURLs[attachmentID] == nil ? .waiting : .available
     }
 
+    /// Prepared bytes may be cached, but a stale page/search request must not present them.
+    func prepareAttachmentPreview(_ attachmentID: UUID) async -> URL? {
+        let originRevision = selectionRevision
+        let url = await prepareAttachment(
+            attachmentID, for: .preview,
+            failureIsRelevant: { self.selectionRevision == originRevision }
+        )
+        guard !Task.isCancelled, selectionRevision == originRevision else { return nil }
+        return url
+    }
+
     func prepareAttachment(
         _ attachmentID: UUID,
         for use: SyncedAttachmentUse,
         fallbackLocalURL: URL? = nil,
         showsFailureAlert: Bool = true,
         onFailure: ((String) -> Void)? = nil,
-        onCancellation: (() -> Void)? = nil
+        onCancellation: (() -> Void)? = nil,
+        failureIsRelevant: () -> Bool = { true }
     ) async -> URL? {
         if let preparedURL = preparedAttachments[attachmentID]?.url,
            isAvailablePreparedAttachment(preparedURL)
@@ -845,7 +861,7 @@ final class IOSAppModel {
             let code = diagnosticErrorCode(error)
             switch use {
             case .preview, .open:
-                if showsFailureAlert {
+                if showsFailureAlert && failureIsRelevant() {
                     let message = String(localized: "Couldn’t download this file. Try again.")
                     if errorMessage != message {
                         diagnostics.record(.failure(

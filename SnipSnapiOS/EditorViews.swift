@@ -80,7 +80,7 @@ final class SnipEditorDraft {
         Task {
             defer { isPreparingPreview = false }
             guard let url = await attachment.previewURL(prepareExisting: {
-                await model.prepareAttachment($0, for: .preview)
+                await model.prepareAttachmentPreview($0)
             }),
                   !isDiscarded,
                   let index = attachments.firstIndex(where: { $0.id == attachment.id })
@@ -196,6 +196,8 @@ struct InlineSnipEditor: View {
     @Bindable var draft: SnipEditorDraft
     let model: IOSAppModel
     @FocusState.Binding var isFocused: Bool
+    var isSearchResult = false
+    var sourceListID: UUID? = nil
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
 
@@ -239,8 +241,8 @@ struct InlineSnipEditor: View {
                     .textFieldStyle(.plain)
                     .lineLimit(2...8)
                     .focused($isFocused)
-                    .disabled(!draft.canDismiss)
-                    .accessibilityIdentifier("inline-snip-text")
+                    .disabled(!ownsPresentation || !draft.canDismiss)
+                    .accessibilityIdentifier(ownsPresentation ? "inline-snip-text" : "inactive-inline-snip-text")
 
                 if draft.isStaging {
                     HStack {
@@ -285,36 +287,60 @@ struct InlineSnipEditor: View {
                 .allowsHitTesting(false)
         }
         .padding(.vertical, SnipSnapSpacing.relatedContent)
-        .onChange(of: draft.content) { model.haptics.invalidatePendingFeedback() }
+        .onChange(of: draft.content) {
+            if ownsPresentation { model.haptics.invalidatePendingFeedback() }
+        }
         .fileImporter(
-            isPresented: $draft.isImporting,
+            isPresented: presentationBinding(\.isImporting, inactiveValue: false),
             allowedContentTypes: [.data],
             allowsMultipleSelection: draft.replacementID == nil,
             onCompletion: { draft.stage($0, using: model) }
         )
         .photosPicker(
-            isPresented: $draft.isPickingPhotos,
+            isPresented: presentationBinding(\.isPickingPhotos, inactiveValue: false),
             selection: $draft.selectedPhotos,
             maxSelectionCount: draft.replacementID == nil ? nil : 1,
             matching: .images
         )
         .onChange(of: draft.selectedPhotos) { _, items in
-            guard !items.isEmpty else { return }
+            guard ownsPresentation, !items.isEmpty else { return }
             draft.selectedPhotos = []
             draft.stageMedia(.photos(items), using: model)
         }
-        .fullScreenCover(isPresented: $draft.isTakingPhoto) {
+        .fullScreenCover(isPresented: presentationBinding(\.isTakingPhoto, inactiveValue: false)) {
             AttachmentCameraPicker { image in
                 draft.isTakingPhoto = false
                 if let image { draft.stageMedia(.camera(image), using: model) } else { draft.replacementID = nil }
             }
         }
-        .attachmentPreview($draft.previewURL, in: draft.attachments.compactMap { attachment in
+        .attachmentPreview(presentationBinding(\.previewURL, inactiveValue: nil), in: draft.attachments.compactMap { attachment in
             if case .existing = attachment.source {
                 return model.usableAttachmentURL(for: attachment.id)
             }
             return attachment.url
         })
+    }
+
+    // A native List may keep cached cells while its source sits behind search.
+    // Read ownership when the binding is accessed, rather than capturing visibility.
+    private var ownsPresentation: Bool {
+        guard model.snipEditorDraft === draft,
+              isSearchResult == model.isSearchPresented else { return false }
+        if isSearchResult { return true }
+        guard let sourceListID else { return false }
+        return model.selectedPage == .list(sourceListID)
+    }
+
+    private func presentationBinding<Value>(
+        _ keyPath: ReferenceWritableKeyPath<SnipEditorDraft, Value>, inactiveValue: Value
+    ) -> Binding<Value> {
+        Binding(
+            get: { ownsPresentation ? draft[keyPath: keyPath] : inactiveValue },
+            set: { value in
+                guard ownsPresentation else { return }
+                draft[keyPath: keyPath] = value
+            }
+        )
     }
 
     private var addAttachmentButton: some View {
