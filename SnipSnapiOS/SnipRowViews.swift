@@ -273,11 +273,20 @@ struct SnipCircularControlLabel: View {
     let appearance: SnipListAppearance
 
     var body: some View {
-        ZStack {
-            Circle().fill(appearance.controlTint)
-            Image(systemName: systemImage)
-                .font(.system(size: symbolSize, weight: .semibold))
-                .foregroundStyle(Color(uiColor: .systemBackground))
+        Group {
+            if systemImage == "pin.fill" {
+                Image(systemName: "pin.circle.fill")
+                    .resizable()
+                    .scaledToFit()
+                    .foregroundStyle(appearance.controlTint)
+            } else {
+                ZStack {
+                    Circle().fill(appearance.controlTint)
+                    Image(systemName: systemImage)
+                        .font(.system(size: symbolSize, weight: .semibold))
+                        .foregroundStyle(Color(uiColor: .systemBackground))
+                }
+            }
         }
         .frame(width: controlDiameter, height: controlDiameter)
         .frame(width: max(44, controlDiameter), height: max(44, controlDiameter))

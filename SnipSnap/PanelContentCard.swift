@@ -12,16 +12,19 @@ enum PanelCardLeadingMetrics {
 /// Filled chip chrome shared by every control in a card's leading slot, so the
 /// slot keeps one look when its control swaps between copy and a command number.
 struct PanelLeadingChip<Content: View>: View {
+    @Environment(\.self) private var environment
+    private let appearance: SnipListAppearance?
     private let content: Content
 
-    init(@ViewBuilder content: () -> Content) {
+    init(appearance: SnipListAppearance? = nil, @ViewBuilder content: () -> Content) {
+        self.appearance = appearance
         self.content = content()
     }
 
     var body: some View {
         ZStack {
-            shape.fill(SnipSnapColors.compactActionFill)
-            content.foregroundStyle(SnipSnapColors.textPrimary)
+            shape.fill(appearance?.controlTint ?? SnipSnapColors.compactActionFill)
+            content.foregroundStyle(appearance.map { AnyShapeStyle($0.filledControlLabel(in: environment)) } ?? SnipSnapColors.textPrimary)
         }
         .frame(
             width: PanelCardLeadingMetrics.side,
@@ -39,14 +42,24 @@ struct PanelLeadingChip<Content: View>: View {
 struct PanelCopyButton: View {
     let isCopied: Bool
     var isPinned = false
+    var appearance: SnipListAppearance? = nil
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            PanelLeadingChip {
-                Image(systemName: isCopied ? "checkmark" : (isPinned ? "pin.fill" : "doc.on.doc"))
-                    .font(.system(size: 10, weight: .medium))
-                    .symbolRenderingMode(.monochrome)
+            if isPinned, let appearance {
+                Image(systemName: isCopied ? "checkmark.circle.fill" : "pin.circle.fill")
+                    .resizable()
+                    .scaledToFit()
+                    .foregroundStyle(appearance.controlTint)
+                    .frame(width: PanelCardLeadingMetrics.side, height: PanelCardLeadingMetrics.side)
+                    .contentShape(Circle())
+            } else {
+                PanelLeadingChip(appearance: appearance) {
+                    Image(systemName: isCopied ? "checkmark" : (isPinned ? "pin.fill" : "doc.on.doc"))
+                        .font(.system(size: 10, weight: .medium))
+                        .symbolRenderingMode(.monochrome)
+                }
             }
         }
         .buttonStyle(.plain)
@@ -59,11 +72,12 @@ struct PanelCopyButton: View {
 struct PanelCommandNumberButton: View {
     let number: Int
     var isPinned = false
+    var appearance: SnipListAppearance? = nil
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            PanelLeadingChip {
+            PanelLeadingChip(appearance: appearance) {
                 Text(String(number))
                     .font(.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
             }
@@ -90,6 +104,7 @@ struct PanelCommandNumberButton: View {
 struct PanelCopySlot: View {
     let isCopied: Bool
     var isPinned = false
+    var appearance: SnipListAppearance? = nil
     let commandNumber: Int?
     let copy: () -> Void
     let onPickCommandNumber: () -> Void
@@ -99,10 +114,11 @@ struct PanelCopySlot: View {
             PanelCommandNumberButton(
                 number: commandNumber,
                 isPinned: isPinned,
+                appearance: appearance,
                 action: onPickCommandNumber
             )
         } else {
-            PanelCopyButton(isCopied: isCopied, isPinned: isPinned, action: copy)
+            PanelCopyButton(isCopied: isCopied, isPinned: isPinned, appearance: appearance, action: copy)
         }
     }
 }
