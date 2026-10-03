@@ -155,6 +155,119 @@ final class SnipSnapiOSUITests: XCTestCase {
         add(proof)
     }
 
+    func testPageSwipePreservesListPositionAndTitle() throws {
+        continueAfterFailure = false
+        let app = launchApp(withLongList: true)
+        try requireCompactSelector(in: app)
+        let anchor = scrollToListAnchor(in: app)
+        let originalY = anchor.frame.minY
+        let originalHeaderHeight = app.navigationBars["Inbox"].frame.height
+
+        for _ in 0..<3 {
+            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.45))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 200, dy: 0)))
+            XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+            let back = app.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.45))
+            back.press(forDuration: 0.05, thenDragTo: back.withOffset(CGVector(dx: -200, dy: 0)))
+            XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+            assertListAnchor(anchor, at: originalY, headerHeight: originalHeaderHeight, in: app)
+        }
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "List position and compact title after repeated page swipes"
+        proof.lifetime = .keepAlways
+        add(proof)
+    }
+
+    func testSearchPreservesListPositionAndTitle() throws {
+        continueAfterFailure = false
+        let app = launchApp(withLongList: true)
+        try requireCompactSelector(in: app)
+        let anchor = scrollToListAnchor(in: app)
+        let originalY = anchor.frame.minY
+        let originalHeaderHeight = app.navigationBars["Inbox"].frame.height
+
+        let search = openSearch(in: app)
+        search.typeText("No fixture matches this query")
+        XCTAssertTrue(app.descendants(matching: .any)["empty-search"].waitForExistence(timeout: 3))
+        closeSearch(in: app)
+
+        assertListAnchor(anchor, at: originalY, headerHeight: originalHeaderHeight, in: app)
+    }
+
+    func testNewListCreationAndCancellationPreservePreviousListPosition() throws {
+        continueAfterFailure = false
+        let app = launchApp(withLongList: true)
+        try requireCompactSelector(in: app)
+        let expandedHeaderHeight = app.navigationBars["Inbox"].frame.height
+        let anchor = scrollToListAnchor(in: app)
+        let originalY = anchor.frame.minY
+        let originalHeaderHeight = app.navigationBars["Inbox"].frame.height
+
+        openNewList(in: app)
+        XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 3))
+        app.buttons["cancel-new-list"].tap()
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+        assertListAnchor(anchor, at: originalY, headerHeight: originalHeaderHeight, in: app)
+
+        createList("Position check", in: app)
+        XCTAssertTrue(app.descendants(matching: .any)["empty-snips"].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.navigationBars["Position check"].frame.height, expandedHeaderHeight, accuracy: 1,
+                       "A new empty list must start with its native expanded title")
+        createSnip("First snip in the new list", in: app)
+        XCTAssertFalse(app.descendants(matching: .any)["empty-snips"].exists)
+        XCTAssertEqual(app.navigationBars["Position check"].frame.height, expandedHeaderHeight, accuracy: 1)
+
+        revealCompactList(named: "Inbox", in: app)
+        let inboxTab = compactListTab(named: "Inbox", in: app)
+        let selector = app.descendants(matching: .any)["list-selector"]
+        XCTAssertTrue(selector.frame.contains(inboxTab.frame), "Reveal Inbox inside the selector before tapping")
+        inboxTab.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+        assertListAnchor(anchor, at: originalY, headerHeight: originalHeaderHeight, in: app)
+        XCTAssertFalse(app.textFields["list-name"].exists, "Inactive list editors must not remain accessible")
+
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Scrolled Inbox after canceling and saving a new list"
+        proof.lifetime = .keepAlways
+        add(proof)
+    }
+
+    func testInlineDraftRemainsEditableWhenItsListIsDeleted() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        createList("Work", in: app)
+        createSnip("Moving draft", in: app)
+        row(named: "Moving draft", in: app)
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleTap()
+        let editor = app.descendants(matching: .any)["inline-snip-text"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        editor.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        editor.typeText(" unsaved")
+        XCTAssertEqual(editor.value as? String, "Moving draft unsaved")
+        app.swipeDown()
+
+        compactListTab(named: "Work", in: app)
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.7)
+        XCTAssertTrue(app.buttons["Delete Work"].waitForExistence(timeout: 3))
+        app.buttons["Delete Work"].tap()
+        let dialog = app.alerts["Delete Work?"]
+        XCTAssertTrue(dialog.waitForExistence(timeout: 3))
+        dialog.buttons["Delete List"].tap()
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+
+        XCTAssertTrue(editor.waitForExistence(timeout: 3), "The retained draft must belong to its new collection host")
+        XCTAssertTrue(editor.isEnabled)
+        XCTAssertEqual(editor.value as? String, "Moving draft unsaved")
+        editor.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        editor.typeText(" in Inbox")
+        XCTAssertEqual(editor.value as? String, "Moving draft unsaved in Inbox")
+        app.swipeDown()
+        app.buttons["inline-snip-cancel"]
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(row(named: "Moving draft", in: app).waitForExistence(timeout: 3))
+    }
+
     func testListSwipeSwitchesEmptyListsFromContent() throws {
         continueAfterFailure = false
         let app = launchApp()
@@ -409,7 +522,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         compactListTab(named: "Inbox", in: app).tap()
         let preview = app.buttons["compact-attachment-preview-sample.png"]
         XCTAssertTrue(preview.waitForExistence(timeout: 5))
-        preview.tap()
+        preview.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         let image = app.images["Image preview"]
         XCTAssertTrue(image.waitForExistence(timeout: 5))
 
@@ -1042,7 +1155,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         let app = launchApp()
         try requireCompactSelector(in: app)
         createSnip("Inline draft", in: app)
-        row(named: "Inline draft", in: app).doubleTap()
+        row(named: "Inline draft", in: app).coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleTap()
         let editor = app.descendants(matching: .any)["inline-snip-text"]
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
         editor.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
@@ -1062,22 +1175,24 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         let matchingSearch = openSearch(in: app)
         matchingSearch.typeText("Inline draft")
-        XCTAssertTrue(editor.waitForExistence(timeout: 3))
-        XCTAssertEqual(editor.value as? String, draft)
-        editor.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
-        editor.typeText(" from search")
+        let searchEditor = app.descendants(matching: .any)["global-search-results"]
+            .descendants(matching: .any)["inline-snip-text"]
+        XCTAssertTrue(searchEditor.waitForExistence(timeout: 3))
+        XCTAssertEqual(searchEditor.value as? String, draft)
+        searchEditor.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        searchEditor.typeText(" from search")
         let sharedDraft = "Inline draft unsaved from search"
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value == %@", sharedDraft), object: editor
-        )], timeout: 5), .completed, "Actual text: \(String(describing: editor.value))")
+            predicate: NSPredicate(format: "value == %@", sharedDraft), object: searchEditor
+        )], timeout: 5), .completed, "Actual text: \(String(describing: searchEditor.value))")
         app.descendants(matching: .any)["global-search-results"].swipeDown()
         closeSearch(in: app)
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
         XCTAssertEqual(editor.value as? String, sharedDraft)
-        app.buttons["inline-snip-save"].tap()
+        app.buttons["inline-snip-save"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         let saved = row(named: "Inline draft unsaved from search", in: app)
         enterSelection(in: app)
-        saved.tap()
+        saved.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(app.buttons["selection-actions"].isEnabled)
         let selectionSearch = openSearch(in: app)
         selectionSearch.typeText("Inline draft")
@@ -1085,13 +1200,13 @@ final class SnipSnapiOSUITests: XCTestCase {
             format: "identifier BEGINSWITH %@", "search-snip-"
         )).firstMatch
         XCTAssertTrue(result.waitForExistence(timeout: 3))
-        result.doubleTap()
-        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        result.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleTap()
+        XCTAssertTrue(searchEditor.waitForExistence(timeout: 3))
         app.descendants(matching: .any)["global-search-results"].swipeDown()
         closeSearch(in: app)
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
         XCTAssertFalse(app.buttons["selection-actions"].exists)
-        app.buttons["inline-snip-cancel"].tap()
+        app.buttons["inline-snip-cancel"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(saved.waitForExistence(timeout: 3))
     }
 
@@ -4077,6 +4192,31 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(collectionRow(named: "Move into a new list", in: app).waitForExistence(timeout: 3))
         listControl(named: "Inbox", in: app).tap()
         XCTAssertTrue(collectionRow(named: "Move into a new list", in: app).waitForNonExistence(timeout: 3))
+    }
+
+    private func scrollToListAnchor(in app: XCUIApplication) -> XCUIElement {
+        XCTAssertTrue(collectionRow(named: "Fixture 23", in: app).waitForExistence(timeout: 5))
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.68))
+        start.press(forDuration: 0.05,
+                    thenDragTo: start.withOffset(CGVector(dx: 0, dy: -300)),
+                    withVelocity: .slow, thenHoldForDuration: 0.2)
+        XCTAssertFalse(collectionRow(named: "Fixture 23", in: app).exists)
+        let anchor = collectionRow(named: "Fixture 17", in: app)
+        XCTAssertTrue(anchor.exists)
+        XCTAssertGreaterThan(anchor.frame.minY, app.navigationBars["Inbox"].frame.maxY)
+        XCTAssertLessThan(anchor.frame.maxY, app.descendants(matching: .any)["composer-text"].frame.minY)
+        return anchor
+    }
+
+    private func assertListAnchor(
+        _ anchor: XCUIElement, at y: CGFloat, headerHeight: CGFloat, in app: XCUIApplication
+    ) {
+        let restored = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            anchor.exists && abs(anchor.frame.minY - y) <= 3
+                && abs(app.navigationBars["Inbox"].frame.height - headerHeight) <= 1
+        }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 4), .completed,
+                       "Returning to Inbox must preserve the visible snip position and native title state")
     }
 
     private func createSnip(_ text: String, in app: XCUIApplication) {

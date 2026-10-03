@@ -168,7 +168,24 @@ private struct AttachmentEditorTile: View {
     }
 }
 
+private struct AttachmentPreparationActivityKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var attachmentPreparationIsActive: Bool {
+        get { self[AttachmentPreparationActivityKey.self] }
+        set { self[AttachmentPreparationActivityKey.self] = newValue }
+    }
+}
+
 struct VisibleAttachmentPreparation: ViewModifier {
+    @Environment(\.attachmentPreparationIsActive) private var isActive
+
+    private struct TaskIdentity: Hashable {
+        let revision: UUID
+        let isEnabled: Bool
+    }
     @Environment(\.scenePhase) private var scenePhase
     @State private var preparationID = UUID()
     let attachmentID: UUID
@@ -177,10 +194,12 @@ struct VisibleAttachmentPreparation: ViewModifier {
     let model: IOSAppModel
     var enabled = true
 
+    private var shouldPrepare: Bool { enabled && isActive }
+
     func body(content: Content) -> some View {
         content
-            .task(id: preparationID) {
-                guard enabled,
+            .task(id: TaskIdentity(revision: preparationID, isEnabled: shouldPrepare)) {
+                guard shouldPrepare,
                       AttachmentImageType.shouldPrepare(
                         fileName: fileName, contentType: contentType
                       ),
@@ -191,13 +210,13 @@ struct VisibleAttachmentPreparation: ViewModifier {
                 )
             }
             .onChange(of: model.attachmentTransferState(for: attachmentID)) { _, state in
-                if state == .available { preparationID = UUID() }
+                if shouldPrepare, state == .available { preparationID = UUID() }
             }
             .onChange(of: model.usableAttachmentURL(for: attachmentID)) { oldURL, newURL in
-                if oldURL != nil && newURL == nil { preparationID = UUID() }
+                if shouldPrepare, oldURL != nil && newURL == nil { preparationID = UUID() }
             }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active { preparationID = UUID() }
+                if shouldPrepare, phase == .active { preparationID = UUID() }
             }
     }
 }
@@ -335,6 +354,7 @@ struct AttachmentPreviewTile: View {
 }
 
 struct AttachmentThumbnail: View {
+    @Environment(\.attachmentPreparationIsActive) private var isActive
     let url: URL
     @Environment(\.displayScale) private var displayScale
     @State private var image: Image?
@@ -363,12 +383,20 @@ struct AttachmentThumbnail: View {
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
         }
-        .task(id: url) {
+        .task(id: isActive ? url : nil) {
+            guard isActive else { return }
             await loadThumbnail()
+        }
+        .onChange(of: isActive) { _, active in
+            if !active {
+                image = nil
+                loadedURL = nil
+            }
         }
     }
 
     private var displayedImage: Image? {
+        guard isActive else { return nil }
         if loadedURL == url, let image { return image }
         guard let cached = AttachmentThumbnailCache.shared.cachedImage(
             for: url,
@@ -395,6 +423,7 @@ struct AttachmentThumbnail: View {
 
 /// The identifier versions immutable clipboard bytes; decoding never runs in body.
 struct ClipboardImageThumbnail: View {
+    @Environment(\.attachmentPreparationIsActive) private var isActive
     let data: Data
     let id: String
     @Environment(\.displayScale) private var displayScale
@@ -405,10 +434,10 @@ struct ClipboardImageThumbnail: View {
 
     var body: some View {
         Group {
-            if loadedRequestID == requestID, let image {
+            if isActive, loadedRequestID == requestID, let image {
                 Image(decorative: image, scale: displayScale, orientation: .up)
                     .resizable().scaledToFill()
-            } else if let cached = AttachmentThumbnailCache.shared.cachedClipboardImage(
+            } else if isActive, let cached = AttachmentThumbnailCache.shared.cachedClipboardImage(
                 id: id, size: CGSize(width: 64, height: 64), scale: displayScale
             ) {
                 Image(decorative: cached, scale: displayScale, orientation: .up)
@@ -417,7 +446,8 @@ struct ClipboardImageThumbnail: View {
                 Image(systemName: "photo").foregroundStyle(.secondary)
             }
         }
-        .task(id: requestID) {
+        .task(id: isActive ? requestID : nil) {
+            guard isActive else { return }
             let requestedID = requestID
             let thumbnail = await AttachmentThumbnailCache.shared.clipboardImage(
                 data: data, id: id, size: CGSize(width: 64, height: 64), scale: displayScale
@@ -425,6 +455,12 @@ struct ClipboardImageThumbnail: View {
             guard !Task.isCancelled else { return }
             image = thumbnail
             loadedRequestID = requestedID
+        }
+        .onChange(of: isActive) { _, active in
+            if !active {
+                image = nil
+                loadedRequestID = nil
+            }
         }
     }
 }

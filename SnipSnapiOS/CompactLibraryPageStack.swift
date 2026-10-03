@@ -24,6 +24,7 @@ struct CompactLibraryPageStack: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.glassMenuPresentation) private var glassMenuPresentation
     @Environment(\.layoutDirection) private var layoutDirection
+    @State private var visitedPages: Set<LibraryPage> = []
     @State private var swipeBlockingPages: Set<LibraryPage> = []
     @State private var pagePanMayStart = false
     @State private var interactionFrames = PageInteractionFrames()
@@ -43,6 +44,12 @@ struct CompactLibraryPageStack: View {
     let dismissComposerKeyboard: () -> Void
     let cancelNewList: (UUID) async -> Bool
     let libraryActions: LibraryActionsMenu
+
+    // Native scroll and navigation state survives only while the page stays mounted.
+    // Motion decides visibility; the current library bounds the retained lifetime.
+    private var mountedPages: [LibraryPage] {
+        model.pages.filter { visitedPages.contains($0) || frame.retainedPages.contains($0) }
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -72,13 +79,14 @@ struct CompactLibraryPageStack: View {
                         .offset(x: cancelSourceOffset)
                         .zIndex(1)
                 }
-                ForEach(frame.retainedPages, id: \.self) { page in
+                ForEach(mountedPages, id: \.self) { page in
                     libraryPage(page, isActivePage: page == model.selectedPage)
-                        .offset(x: frame.offset(
+                        .offset(x: frame.retainedPages.contains(page) ? frame.offset(
                             for: page, width: proxy.size.width,
                             layoutDirection: layoutDirection, reduceMotion: reduceMotion
-                        ))
-                        .opacity(frame.opacity(for: page, reduceMotion: reduceMotion))
+                        ) : proxy.size.width * 2)
+                        .opacity(frame.retainedPages.contains(page)
+                                 ? frame.opacity(for: page, reduceMotion: reduceMotion) : 0)
                         .accessibilityHidden(page != model.selectedPage)
                         .disabled(frame.isMoving || page != model.selectedPage)
                         .allowsHitTesting(!frame.isMoving && page == model.selectedPage)
@@ -104,6 +112,14 @@ struct CompactLibraryPageStack: View {
                     }
                 )
             }
+        }
+        .onChange(of: frame.retainedPages, initial: true) { _, pages in
+            visitedPages.formUnion(pages)
+            visitedPages.formIntersection(model.pages)
+        }
+        .onChange(of: model.pages) { _, pages in
+            visitedPages.formIntersection(pages)
+            swipeBlockingPages.formIntersection(pages)
         }
     }
 
@@ -144,6 +160,7 @@ struct CompactLibraryPageStack: View {
                         syncNow: libraryActions.syncNow,
                         sheet: $sheet,
                         settings: { sheet = .settings },
+                        isActivePage: isActivePage,
                         viewState: clipboardViewState
                     )
                 case .list(let listID):

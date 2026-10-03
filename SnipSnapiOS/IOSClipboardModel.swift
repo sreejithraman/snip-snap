@@ -39,7 +39,8 @@ final class IOSClipboardModel {
         default: return true
         }
     }
-    var copied = false
+    private(set) var copied = false
+    @ObservationIgnored private var copyFeedbackTask: Task<Void, Never>?
     var localDeviceLabel: String {
         UIDevice.current.userInterfaceIdiom == .pad ? String(localized: "Only on this iPad") : String(localized: "Only on this iPhone")
     }
@@ -277,6 +278,15 @@ final class IOSClipboardModel {
         guard !payload.isEmpty else { return }
         UIPasteboard.general.setItems(payload)
         copied = true
+        copyFeedbackTask?.cancel()
+        copyFeedbackTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(2))
+            } catch {
+                return
+            }
+            self?.copied = false
+        }
     }
 
     static func previewText(from items: [ClipboardPayloadItem]) -> String {

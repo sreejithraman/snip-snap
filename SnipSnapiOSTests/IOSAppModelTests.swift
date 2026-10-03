@@ -2166,6 +2166,94 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(rebindCount, 2)
     }
 
+    func testPreviewPreparationRejectsPageAndSearchChangesWhileWaiting() async {
+        for change in 0..<3 {
+            let id = UUID()
+            let handler = IOSCloudSyncHandlerProbe(states: [id: .waiting])
+            let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
+            await model.load()
+            let preparing = Task { await model.prepareAttachmentPreview(id) }
+            await handler.waitUntilPrepareStarts()
+            switch change {
+            case 0:
+                model.selectPage(.clipboard)
+            case 1:
+                model.selectPage(.clipboard)
+                model.selectPage(.list(SnipList.inboxID))
+            default:
+                model.isSearchPresented = true
+                model.isSearchPresented = false
+            }
+            await handler.finishPrepare(with: .success(URL(fileURLWithPath: "/tmp/stale-preview.txt")))
+            let preview = await preparing.value
+            XCTAssertNil(preview, "A completed download must not revive its former presentation")
+        }
+    }
+
+    func testPreviewFailureOnlyPresentsForItsCurrentPageAndSearchOwner() async {
+        for change in 0..<6 {
+            let id = UUID()
+            let handler = IOSCloudSyncHandlerProbe(states: [id: .waiting])
+            let diagnostics = IOSDiagnosticRecorderProbe()
+            let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler,
+                diagnostics: diagnostics.recorder)
+            await model.load()
+            if change == 3 || change == 4 { model.isSearchPresented = true }
+            let preparing = Task { await model.prepareAttachmentPreview(id) }
+            await handler.waitUntilPrepareStarts()
+            switch change {
+            case 1, 5:
+                model.selectPage(.clipboard)
+            case 2:
+                model.selectPage(.clipboard)
+                model.selectPage(.list(SnipList.inboxID))
+            case 3:
+                model.isSearchPresented = false
+            case 4:
+                model.isSearchPresented = false
+                model.isSearchPresented = true
+            default:
+                break
+            }
+            if change == 5 { model.errorMessage = "Newer action failed" }
+            await handler.finishPrepare(with: .failure(SnipLibraryError.attachmentCopyFailed))
+            let preview = await preparing.value
+            XCTAssertNil(preview)
+            if change == 0 {
+                XCTAssertNotNil(model.errorMessage, "The current request still needs its failure alert")
+            } else if change == 5 {
+                XCTAssertEqual(model.errorMessage, "Newer action failed")
+            } else {
+                XCTAssertNil(model.errorMessage, "A stale preview must not interrupt the current screen")
+            }
+            XCTAssertEqual(diagnostics.events.count, 1)
+            XCTAssertEqual(diagnostics.events.first?.operation, "attachment.prepare")
+            XCTAssertEqual(diagnostics.events.first?.visibility, change == 0 ? .user : .background)
+        }
+    }
+
+    func testClipboardCopyFeedbackExpiresFromTheLatestCopyWithoutAPresenter() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let preferencesName = UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: preferencesName))
+        defer { preferences.removePersistentDomain(forName: preferencesName) }
+        let model = IOSClipboardModel(rootURL: root,
+            settings: SyncedContentSettingsModel(mode: .localOnly), preferences: preferences)
+        let entry = ClipboardEntry(items: [ClipboardPayloadItem(representations: [
+            ClipboardRepresentation(type: UTType.utf8PlainText.identifier, data: Data("Feedback".utf8))
+        ])])
+
+        model.copy(entry)
+        XCTAssertTrue(model.copied)
+        try await Task.sleep(for: .seconds(1))
+        model.copy(entry)
+        try await Task.sleep(for: .milliseconds(1200))
+        XCTAssertTrue(model.copied, "The first copy must not expire feedback for the second")
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertFalse(model.copied, "Feedback must expire even when its source view is hidden")
+    }
+
     func testRemoteAttachmentShowsWaitingSyncingAndAvailableStates() async throws {
         let attachmentID = UUID()
         let handler = IOSCloudSyncHandlerProbe(states: [attachmentID: .waiting])

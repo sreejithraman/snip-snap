@@ -26,6 +26,7 @@ struct SnipCollectionView: View {
     private var inlineEditDraft: SnipEditorDraft? { model.snipEditorDraft }
     @State private var previewURLs: [URL] = []
     @State private var selectedPreviewURL: URL?
+    @State private var previewTask: Task<Void, Never>?
     // Geometry is sampled by actions, so scrolling should not invalidate the collection.
     @State private var gatheringFrames = GatheringFrames()
     @State private var gatheringFlights: [GatheringFlight] = []
@@ -39,150 +40,22 @@ struct SnipCollectionView: View {
     private var displayedList: SnipList {
         model.lists.first(where: { $0.id == displayedListID }) ?? .inbox
     }
-    private var displayedSnips: [Snip] { model.visibleSnips(in: displayedListID) }
-    private var remainingSnips: [Snip] {
-        isSelecting ? displayedSnips.filter {
-            !model.selectedSnipIDs.contains($0.id) || departingRows[$0.id] != nil
-        } : displayedSnips
-    }
+    // Global search owns its results; its query must not filter the hidden source list.
+    private var displayedSnips: [Snip] { model.visibleSnips(in: displayedListID, matching: "") }
+    private var isSearching: Bool { isActivePage && model.isSearchPresented }
     private var isEditingList: Bool {
-        model.editingListID == displayedListID
+        isActivePage && model.editingListID == displayedListID
     }
     private var showsListEditor: Bool { isEditingList && !model.isSearchPresented }
 
     var body: some View {
-        Group {
-            if model.isSearchPresented {
+        ZStack {
+            collectionList
+                .opacity(isSearching ? 0 : 1)
+                .allowsHitTesting(!isSearching)
+                .accessibilityHidden(isSearching)
+            if isSearching {
                 LibrarySearchView(model: model, clipboard: clipboard, copyShare: copyShare)
-            } else if displayedSnips.isEmpty {
-                if layout == .compactStack {
-                    compactEmptyState
-                } else {
-                    ContentUnavailableView(
-                        emptyTitle,
-                        systemImage: emptySystemImage,
-                        description: Text(emptyDescription)
-                    )
-                    .accessibilityIdentifier("empty-snips")
-                }
-            } else {
-                List {
-                    ForEach(model.recoverySnapshot.pendingSnips.filter { recovery in
-                        recovery.recovered.listID == displayedListID
-                            && !model.snips.contains { $0.id == recovery.id }
-                    }) { recovery in
-                        Button {
-                            sheet = .recoverSnip(id: recovery.id)
-                        } label: {
-                            RecoveredSnipRow(recovery: recovery)
-                        }
-                        .buttonStyle(.plain)
-                        .listRowSeparator(.hidden)
-                        .accessibilityIdentifier("recovered-snip-\(recovery.id)")
-                    }
-                    ForEach(remainingSnips) { snip in
-                        let departure = departingRows[snip.id]
-                        Group {
-                            if isSelecting {
-                                Button {
-                                    gather(snip)
-                                } label: {
-                                    SnipRow(
-                                        snip: snip,
-                                        model: model,
-                                        isRecovered: model.isRecoveredSnip(snip.id),
-                                        isGathering: true,
-                                        sourceFrameChanged: { gatheringFrames.rows[snip.id] = $0 }
-                                    )
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(model.isPerformingGatheredAction || departingRows[snip.id] != nil)
-                                .accessibilityHint("Select this item.")
-                                .accessibilityIdentifier("snip-\(snip.id)")
-                            } else {
-                                if let draft = inlineEditDraft, draft.original.id == snip.id {
-                                    InlineSnipEditor(
-                                        draft: draft,
-                                        model: model,
-                                        isFocused: $isInlineEditorFocused
-                                    )
-                                } else {
-                                    SnipRow(
-                                        snip: snip,
-                                        model: model,
-                                        isRecovered: model.isRecoveredSnip(snip.id),
-                                        isReordering: isReordering,
-                                        sourceFrameChanged: { gatheringFrames.rows[snip.id] = $0 },
-                                        onPreviewAttachment: previewAttachment,
-                                        onCopy: { Task { await copyShare.copy(snips: [snip], model: model) } },
-                                        onToggleDone: {
-                                            await copyShare.toggleDone(snip: snip, model: model)
-                                        }
-                                    )
-                                    .contentShape(Rectangle())
-                                    .highPriorityGesture(
-                                        TapGesture(count: 2).onEnded {
-                                            beginEditing(snip)
-                                        }
-                                    )
-                                    .accessibilityAddTraits(.isButton)
-                                    .accessibilityHint("Double tap to edit. Touch and hold for actions.")
-                                    .accessibilityAction {
-                                        beginEditing(snip)
-                                    }
-                                    .accessibilityAction(named: "Edit") {
-                                        beginEditing(snip)
-                                    }
-                                    .accessibilityAction(named: Text(snip.isPinned ? "Unpin" : "Pin")) {
-                                        Task { await model.togglePinned(id: snip.id) }
-                                    }
-                                    .accessibilityAction(named: "Delete") {
-                                        Task { await model.deleteSnip(id: snip.id) }
-                                    }
-                                    .accessibilityActions {
-                                        if snip.isPinned {
-                                            Button("Copy") {
-                                                Task { await copyShare.copy(snips: [snip], model: model) }
-                                            }
-                                        } else {
-                                            Button(SnipCompletionLanguage.actionTitle(isDone: snip.isDone)) {
-                                                Task { await copyShare.toggleDone(snip: snip, model: model) }
-                                            }
-                                        }
-                                    }
-                                    .accessibilityIdentifier("snip-\(snip.id)")
-                                }
-                            }
-                        }
-                        .modifier(SelectionSourceVisibility(
-                            opacity: model.selectedSnipIDs.contains(snip.id) ? 0 : 1,
-                            completed: {
-                                guard let departure else { return }
-                                finishDeparture(of: snip.id, departure: departure)
-                            }
-                        ))
-                        .animation(reduceMotion ? nil : .linear(duration: 0.06), value: model.selectedSnipIDs.contains(snip.id))
-                        .accessibilityHidden(model.selectedSnipIDs.contains(snip.id))
-                        .transition(isSelecting ? .identity : .opacity)
-                        .tag(snip.id)
-                        .listRowSeparator(.hidden)
-                        .contextMenu {
-                            if inlineEditDraft == nil { itemContextActions(for: snip) }
-                        }
-                        .moveDisabled(isSelecting || snip.isPinned || !model.canReorderVisibleSnips || inlineEditDraft != nil)
-                    }
-                    .onMove(perform: move)
-                }
-                .listStyle(.plain)
-                .environment(\.editMode, .constant(isReordering ? .active : .inactive))
-                .scrollDismissesKeyboard(.interactively)
-                .overlay {
-                    if isSelecting && remainingSnips.isEmpty {
-                        ContentUnavailableView("All items selected", systemImage: "square.stack", description: Text("Move selected items to a list, or cancel to deselect them."))
-                            .accessibilityIdentifier("all-snips-gathered")
-                    }
-                }
             }
         }
         .disabled(model.isPerformingGatheredAction)
@@ -310,7 +183,9 @@ struct SnipCollectionView: View {
         .environment(\.editMode, $editMode)
         .onChange(of: isActivePage) { _, isActive in
             if !isActive {
+                isReordering = false
                 isInlineEditorFocused = false
+                cancelAttachmentPreview()
                 gatheringFlights = []
                 departingRows = [:]
             }
@@ -322,6 +197,8 @@ struct SnipCollectionView: View {
             blocksPageSwipe.wrappedValue = isReordering || inlineEditDraft != nil
         }
         .onDisappear {
+            previewTask?.cancel()
+            previewTask = nil
             blocksPageSwipe.wrappedValue = false
             gatheringFlights = []
             departingRows = [:]
@@ -336,6 +213,7 @@ struct SnipCollectionView: View {
             // The persistent dock can retain its frame without another geometry callback.
         }
         .onChange(of: model.completionFilter) {
+            guard isActivePage else { return }
             model.haptics.invalidatePendingFeedback()
         }
         .onChange(of: editMode) { _, mode in
@@ -355,10 +233,16 @@ struct SnipCollectionView: View {
                 model.selectedSnipID = nil
             }
         }
-        .onChange(of: model.searchText) { model.haptics.invalidatePendingFeedback() }
+        .onChange(of: isActivePage ? model.searchText : "") {
+            guard isActivePage else { return }
+            model.haptics.invalidatePendingFeedback()
+        }
         .onChange(of: model.isSearchPresented) { _, isPresented in
+            guard isActivePage else { return }
             model.haptics.invalidatePendingFeedback()
             if isPresented {
+                cancelAttachmentPreview()
+                isInlineEditorFocused = false
                 isReordering = false
                 gatheringFlights = []
                 departingRows = [:]
@@ -366,12 +250,155 @@ struct SnipCollectionView: View {
         }
     }
 
-    private var emptyTitle: String {
-        if hasSearchQuery {
-            return String(localized: "No results")
+    // Search and empty states must not replace the native scrolling container.
+    private var collectionList: some View {
+        let snips = displayedSnips
+        let remainingSnips = isSelecting ? snips.filter {
+            !model.selectedSnipIDs.contains($0.id) || departingRows[$0.id] != nil
+        } : snips
+        let recoveries = snips.isEmpty ? [] : model.recoverySnapshot.pendingSnips.filter { recovery in
+            recovery.recovered.listID == displayedListID
+                && !model.snips.contains { $0.id == recovery.id }
         }
-        return model.completionFilter.emptyStateTitle
+        return List {
+            ForEach(recoveries) { recovery in
+                Button {
+                    sheet = .recoverSnip(id: recovery.id)
+                } label: {
+                    RecoveredSnipRow(recovery: recovery)
+                }
+                .buttonStyle(.plain)
+                .listRowSeparator(.hidden)
+                .accessibilityIdentifier("recovered-snip-\(recovery.id)")
+            }
+            ForEach(remainingSnips) { snip in
+                let departure = departingRows[snip.id]
+                Group {
+                    if isSelecting {
+                        Button {
+                            gather(snip)
+                        } label: {
+                            SnipRow(
+                                snip: snip,
+                                model: model,
+                                isRecovered: model.isRecoveredSnip(snip.id),
+                                isGathering: true,
+                                sourceFrameChanged: { gatheringFrames.rows[snip.id] = $0 }
+                            )
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.isPerformingGatheredAction || departingRows[snip.id] != nil)
+                        .accessibilityHint("Select this item.")
+                        .accessibilityIdentifier("snip-\(snip.id)")
+                    } else {
+                        if let draft = inlineEditDraft, draft.original.id == snip.id,
+                            isActivePage, !isSearching {
+                            InlineSnipEditor(
+                                draft: draft,
+                                model: model,
+                                isFocused: $isInlineEditorFocused,
+                                sourceListID: displayedListID
+                            )
+                        } else {
+                            SnipRow(
+                                snip: snip,
+                                model: model,
+                                isRecovered: model.isRecoveredSnip(snip.id),
+                                isReordering: isReordering,
+                                sourceFrameChanged: { gatheringFrames.rows[snip.id] = $0 },
+                                onPreviewAttachment: previewAttachment,
+                                onCopy: { Task { await copyShare.copy(snips: [snip], model: model) } },
+                                onToggleDone: {
+                                    await copyShare.toggleDone(snip: snip, model: model)
+                                }
+                            )
+                            .contentShape(Rectangle())
+                            .highPriorityGesture(
+                                TapGesture(count: 2).onEnded {
+                                    beginEditing(snip)
+                                }
+                            )
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityHint("Double tap to edit. Touch and hold for actions.")
+                            .accessibilityAction {
+                                beginEditing(snip)
+                            }
+                            .accessibilityAction(named: "Edit") {
+                                beginEditing(snip)
+                            }
+                            .accessibilityAction(named: Text(snip.isPinned ? "Unpin" : "Pin")) {
+                                Task { await model.togglePinned(id: snip.id) }
+                            }
+                            .accessibilityAction(named: "Delete") {
+                                Task { await model.deleteSnip(id: snip.id) }
+                            }
+                            .accessibilityActions {
+                                if snip.isPinned {
+                                    Button("Copy") {
+                                        Task { await copyShare.copy(snips: [snip], model: model) }
+                                    }
+                                } else {
+                                    Button(SnipCompletionLanguage.actionTitle(isDone: snip.isDone)) {
+                                        Task { await copyShare.toggleDone(snip: snip, model: model) }
+                                    }
+                                }
+                            }
+                            .accessibilityIdentifier("snip-\(snip.id)")
+                        }
+                    }
+                }
+                .modifier(SelectionSourceVisibility(
+                    opacity: model.selectedSnipIDs.contains(snip.id) ? 0 : 1,
+                    completed: {
+                        guard let departure else { return }
+                        finishDeparture(of: snip.id, departure: departure)
+                    }
+                ))
+                .animation(reduceMotion ? nil : .linear(duration: 0.06), value: model.selectedSnipIDs.contains(snip.id))
+                .accessibilityHidden(model.selectedSnipIDs.contains(snip.id))
+                .transition(isSelecting ? .identity : .opacity)
+                .tag(snip.id)
+                .listRowSeparator(.hidden)
+                .contextMenu {
+                    if inlineEditDraft == nil { itemContextActions(for: snip) }
+                }
+                .moveDisabled(
+                    !isActivePage || isSearching || isSelecting || snip.isPinned
+                        || !model.canReorderVisibleSnips || inlineEditDraft != nil
+                )
+            }
+            .onMove(perform: move)
+        }
+        .listStyle(.plain)
+        .environment(\.attachmentPreparationIsActive, isActivePage && !isSearching)
+        .environment(\.editMode, .constant(isReordering ? .active : .inactive))
+        .scrollDismissesKeyboard(.interactively)
+        .overlay {
+            if snips.isEmpty {
+                collectionEmptyState
+            } else if isSelecting && remainingSnips.isEmpty {
+                ContentUnavailableView("All items selected", systemImage: "square.stack", description: Text("Move selected items to a list, or cancel to deselect them."))
+                    .accessibilityIdentifier("all-snips-gathered")
+            }
+        }
     }
+
+    @ViewBuilder
+    private var collectionEmptyState: some View {
+        if layout == .compactStack {
+            compactEmptyState
+        } else {
+            ContentUnavailableView(
+                emptyTitle,
+                systemImage: emptySystemImage,
+                description: Text(emptyDescription)
+            )
+            .accessibilityIdentifier("empty-snips")
+        }
+    }
+
+    private var emptyTitle: String { model.completionFilter.emptyStateTitle }
 
     @ViewBuilder
     private var collectionToolbar: some View {
@@ -400,18 +427,9 @@ struct SnipCollectionView: View {
         .disabled(model.isPerformingGatheredAction)
     }
 
-    private var hasSearchQuery: Bool {
-        !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private var emptySystemImage: String {
-        hasSearchQuery ? "magnifyingglass" : "text.page"
-    }
+    private var emptySystemImage: String { "text.page" }
 
     private var emptyDescription: String {
-        if hasSearchQuery {
-            return String(localized: "Try a different search.")
-        }
         return model.completionFilter == .all
             ? String(localized: "Type or paste text below.")
             : String(localized: "Change the filter to see other snips.")
@@ -427,22 +445,33 @@ struct SnipCollectionView: View {
         dismissComposerKeyboard()
         isReordering = false
         if isSelecting { endSelection() }
+        let owner = LibraryPage.list(displayedListID)
         Task { @MainActor in
             await Task.yield()
-            guard inlineEditDraft?.original.id == snip.id else { return }
+            guard model.selectedPage == owner, !model.isSearchPresented,
+                  inlineEditDraft?.original.id == snip.id else { return }
             isInlineEditorFocused = true
         }
     }
 
     private func previewAttachment(_ attachment: SnipAttachment) {
         model.haptics.invalidatePendingFeedback()
-        Task { @MainActor in
-            guard let url = await model.prepareAttachment(attachment.id, for: .preview) else {
-                return
-            }
+        previewTask?.cancel()
+        let owner = LibraryPage.list(displayedListID)
+        previewTask = Task { @MainActor in
+            guard let url = await model.prepareAttachmentPreview(attachment.id),
+                  !Task.isCancelled, model.selectedPage == owner,
+                  !model.isSearchPresented else { return }
             previewURLs = [url]
             selectedPreviewURL = url
         }
+    }
+
+    private func cancelAttachmentPreview() {
+        previewTask?.cancel()
+        previewTask = nil
+        selectedPreviewURL = nil
+        previewURLs = []
     }
 
     @ViewBuilder
@@ -669,10 +698,6 @@ struct LibrarySearchView: View {
                     .padding(12)
                     .background(.regularMaterial, in: Capsule())
                     .padding()
-                    .task {
-                        try? await Task.sleep(for: .seconds(2))
-                        clipboard.copied = false
-                    }
             }
         }
     }
@@ -683,7 +708,8 @@ struct LibrarySearchView: View {
                 InlineSnipEditor(
                     draft: draft,
                     model: model,
-                    isFocused: $isInlineEditorFocused
+                    isFocused: $isInlineEditorFocused,
+                    isSearchResult: true
                 )
             } else {
                 IOSItemRow {
@@ -699,7 +725,7 @@ struct LibrarySearchView: View {
                         isRecovered: model.isRecoveredSnip(snip.id),
                         allowsTextExpansion: true,
                         onPreviewAttachment: { attachment in
-                            Task { previewURL = await model.prepareAttachment(attachment.id, for: .preview) }
+                            Task { previewURL = await model.prepareAttachmentPreview(attachment.id) }
                         },
                         showsPin: false
                     )
