@@ -1952,13 +1952,22 @@ final class SnipSnapiOSUITests: XCTestCase {
         readingTab.press(forDuration: 0.7)
         let close = app.buttons["list-management-close"]
         XCTAssertTrue(close.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Lists"].exists)
+        let clipboard = app.buttons["list-management-select-clipboard"]
+        let inbox = app.buttons["list-management-select-00000000-0000-0000-0000-000000000001"]
+        XCTAssertFalse(clipboard.exists)
+        XCTAssertFalse(inbox.exists)
+        XCTAssertFalse(app.buttons["Reorder Clipboard"].exists)
+        XCTAssertFalse(app.buttons["Reorder Inbox"].exists)
         let reading = app.buttons["list-management-select-" + readingID]
         let work = app.buttons["list-management-select-" + workID]
         let source = app.cells.containing(.button, identifier: reading.identifier).firstMatch
         let destination = app.cells.containing(.button, identifier: work.identifier).firstMatch
         XCTAssertTrue(source.exists)
         XCTAssertTrue(destination.exists)
-        source.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5))
+        let grabber = app.buttons["Reorder Reading"]
+        XCTAssertTrue(grabber.exists)
+        grabber.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 0.4, thenDragTo:
                 destination.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.1)))
         let reordered = XCTNSPredicateExpectation(
@@ -3197,7 +3206,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         compactListTab(named: "Inbox", in: app).press(forDuration: 0.7)
         let manager = app.descendants(matching: .any)["list-management-panel"]
         XCTAssertTrue(manager.waitForExistence(timeout: 3))
-        XCTAssertFalse(app.staticTexts["Lists"].exists)
+        XCTAssertTrue(app.staticTexts["Lists"].exists)
         XCTAssertFalse(app.staticTexts["Drag to reorder"].exists)
         XCTAssertTrue(app.buttons["Edit Work"].isHittable)
         let listProof = XCTAttachment(screenshot: app.screenshot())

@@ -12,7 +12,9 @@ private struct ListManagementMenu: ViewModifier {
         content.glassMenu(
             isPresented: Binding(get: { model.isManagingLists }, set: { model.isManagingLists = $0 }),
             layout: .expanding(preferredSize: CGSize(
-                width: 420, height: min(520, CGFloat(model.lists.count) * max(56, rowHeight) + 64)
+                width: 420, height: min(520,
+                    CGFloat(model.lists.filter { $0.id != SnipList.inboxID }.count + 2) * max(56, rowHeight) + 8
+                )
             )),
             label: "List actions", identifier: "list-management-panel", sourceFocus: sourceFocus
         ) { _ in
@@ -37,11 +39,12 @@ private struct ListManagementPanel: View {
     @ScaledMetric(relativeTo: .body) private var rowHeight: CGFloat = 56
 
     private var displayedLists: [SnipList] {
-        guard let pendingOrder else { return model.lists }
-        let lists = Dictionary(uniqueKeysWithValues: model.lists.map { ($0.id, $0) })
+        let customLists = model.lists.filter { $0.id != SnipList.inboxID }
+        guard let pendingOrder else { return customLists }
+        let lists = Dictionary(uniqueKeysWithValues: customLists.map { ($0.id, $0) })
         let pendingIDs = Set(pendingOrder)
         return pendingOrder.compactMap { lists[$0] }
-            + model.lists.filter { !pendingIDs.contains($0.id) }
+            + customLists.filter { !pendingIDs.contains($0.id) }
     }
 
     private var animation: Animation? {
@@ -62,13 +65,32 @@ private struct ListManagementPanel: View {
 
     private var panel: some View {
         VStack(spacing: 0) {
+            HStack {
+                Text("Lists")
+                    .font(.body.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                Button(action: dismiss) {
+                    Image(systemName: "xmark")
+                        .font(.body.weight(.semibold))
+                        .frame(width: 44, height: 44)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close list manager")
+                .accessibilityIdentifier("list-management-close")
+            }
+            .frame(minHeight: max(56, rowHeight))
+            .padding(.leading, 20)
+            .padding(.trailing, 8)
+
             List {
                 ForEach(displayedLists) { list in
                     listRow(list)
                         .environment(\.layoutDirection, layoutDirection)
                         .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                         .listRowInsets(EdgeInsets(top: 0, leading: 14, bottom: 0, trailing: 8))
-                        .moveDisabled(list.id == SnipList.inboxID)
                 }
                 .onMove(perform: moveLists)
             }
@@ -81,14 +103,13 @@ private struct ListManagementPanel: View {
             .disabled(isSavingOrder)
             .animation(animation, value: displayedLists.map(\.id))
 
-            Divider().padding(.horizontal, 20)
             Button {
                 dismiss()
                 createList()
             } label: {
                 Label("New List", systemImage: "plus")
                     .font(.body.weight(.semibold))
-                    .frame(maxWidth: .infinity, minHeight: 48)
+                    .frame(maxWidth: .infinity, minHeight: max(48, rowHeight))
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -99,77 +120,71 @@ private struct ListManagementPanel: View {
 
     private func listRow(_ list: SnipList) -> some View {
         HStack(spacing: 0) {
+            selectionButton(page: .list(list.id), title: list.displayName,
+                            systemImage: list.displaySystemImage, color: list.accent.color,
+                            identifier: "list-management-select-\(list.id.uuidString)")
+            .accessibilityActions {
+                if let index = displayedLists.firstIndex(where: { $0.id == list.id }) {
+                    if index > 0 { Button("Move up") { move(list, by: -1) } }
+                    if index < displayedLists.count - 1 { Button("Move down") { move(list, by: 1) } }
+                }
+            }
+
             Button {
                 dismiss()
-                model.selectList(list.id)
+                model.editListInline(id: list.id)
             } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: list.displaySystemImage)
-                        .foregroundStyle(list.accent.color)
-                        .frame(width: 24)
-                    Text(list.displayName)
-                        .foregroundStyle(list.accent.color)
-                        .font(.body.weight(model.selectedPage == .list(list.id) ? .semibold : .regular))
-                        .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 4)
-                }
-                .frame(maxWidth: .infinity, minHeight: max(56, rowHeight))
-                .contentShape(Rectangle())
+                Image(systemName: "pencil").frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.primary)
-            .accessibilityAddTraits(model.selectedPage == .list(list.id) ? .isSelected : [])
-            .accessibilityIdentifier("list-management-select-\(list.id.uuidString)")
-            .accessibilityActions {
-                if let index = model.lists.firstIndex(where: { $0.id == list.id }), index > 0 {
-                    if index > 1 { Button("Move up") { move(list, by: -1) } }
-                    if index < model.lists.count - 1 { Button("Move down") { move(list, by: 1) } }
-                }
-            }
+            .accessibilityLabel("Edit \(list.displayName)")
+            .accessibilityIdentifier("list-management-edit-\(list.id.uuidString)")
 
-            if list.id == SnipList.inboxID {
-                Button(action: dismiss) {
-                    Image(systemName: "xmark")
-                        .font(.body.weight(.semibold))
-                        .frame(width: 44, height: 44)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Close list manager")
-                .accessibilityIdentifier("list-management-close")
-            } else {
-                Button {
-                    dismiss()
-                    model.editListInline(id: list.id)
-                } label: {
-                    Image(systemName: "pencil").frame(width: 44, height: 44)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Edit \(list.displayName)")
-                .accessibilityIdentifier("list-management-edit-\(list.id.uuidString)")
-
-                Button(role: .destructive) {
-                    model.haptics.invalidatePendingFeedback()
-                    deletionTarget = list
-                    confirmsDeletion = true
-                } label: {
-                    Image(systemName: "trash").frame(width: 44, height: 44)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.red)
-                .accessibilityLabel("Delete \(list.displayName)")
-                .accessibilityIdentifier("list-management-delete-\(list.id.uuidString)")
+            Button(role: .destructive) {
+                model.haptics.invalidatePendingFeedback()
+                deletionTarget = list
+                confirmsDeletion = true
+            } label: {
+                Image(systemName: "trash").frame(width: 44, height: 44)
             }
+            .buttonStyle(.plain)
+            .foregroundStyle(.red)
+            .accessibilityLabel("Delete \(list.displayName)")
+            .accessibilityIdentifier("list-management-delete-\(list.id.uuidString)")
         }
+    }
+
+    private func selectionButton(
+        page: LibraryPage, title: String, systemImage: String, color: Color, identifier: String
+    ) -> some View {
+        Button {
+            dismiss()
+            model.selectPage(page)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .frame(width: 24)
+                Text(title)
+                    .font(.body.weight(model.selectedPage == page ? .semibold : .regular))
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+            }
+            .foregroundStyle(color)
+            .frame(maxWidth: .infinity, minHeight: max(56, rowHeight))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(model.selectedPage == page ? .isSelected : [])
+        .accessibilityIdentifier(identifier)
     }
 
     private func moveLists(from offsets: IndexSet, to destination: Int) {
         let lists = displayedLists
         guard !isSavingOrder, let source = offsets.first, offsets.count == 1,
-              lists.indices.contains(source), lists[source].id != SnipList.inboxID else { return }
+              lists.indices.contains(source) else { return }
         var order = lists
-        order.move(fromOffsets: offsets, toOffset: max(1, destination))
+        order.move(fromOffsets: offsets, toOffset: max(0, destination))
         pendingOrder = order.map(\.id)
         guard let moved = order.firstIndex(where: { $0.id == lists[source].id }) else { return }
         saveMove(lists[source].id, before: moved + 1 < order.count ? order[moved + 1].id : nil)
@@ -179,7 +194,7 @@ private struct ListManagementPanel: View {
         let lists = displayedLists
         guard let index = lists.firstIndex(where: { $0.id == list.id }) else { return }
         let destination = index + offset
-        guard destination > 0, lists.indices.contains(destination) else { return }
+        guard destination >= 0, lists.indices.contains(destination) else { return }
         moveLists(from: IndexSet(integer: index), to: offset < 0 ? destination : destination + 1)
     }
 
