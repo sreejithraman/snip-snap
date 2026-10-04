@@ -252,27 +252,6 @@ struct PanelEdgeStyle: Equatable {
 }
 
 extension View {
-    func panelControlBaseline() -> some View {
-        controlSize(.regular)
-    }
-
-    func panelInputStyle() -> some View {
-        modifier(PanelInputModifier())
-    }
-
-    func panelInputSurface(
-        height: CGFloat = PanelControlMetrics.regularControlLength,
-        expanded: Bool = false
-    ) -> some View {
-        let shape = RoundedRectangle(
-            cornerRadius: expanded ? PanelShapeMetrics.expandedInputCornerRadius : height / 2,
-            style: .continuous
-        )
-        return frame(height: height)
-            .panelGlassSurface(in: shape)
-            .contentShape(shape)
-    }
-
     func panelStandaloneActionControl(
         length: CGFloat = PanelControlMetrics.compactControlLength
     ) -> some View {
@@ -310,13 +289,8 @@ extension View {
         interactive: Bool = false,
         tint: Color? = nil
     ) -> some View {
-        modifier(
-            PanelGlassSurfaceModifier(
-                shape: shape,
-                interactive: interactive,
-                tint: tint
-            )
-        )
+        let glass = Glass.regular.tint(tint)
+        return glassEffect(interactive ? glass.interactive() : glass, in: shape)
     }
 
     func panelDropTargetState<S: InsettableShape>(
@@ -344,13 +318,16 @@ extension View {
         isSubdued: Bool = false,
         tint: Color? = nil
     ) -> some View {
-        modifier(
-            PanelCompactStateSurfaceModifier(
-                isEmphasized: isEmphasized,
-                isSubdued: isSubdued,
-                tint: tint
-            )
-        )
+        background {
+            Capsule(style: .continuous)
+                .fill(
+                    isEmphasized
+                        ? (tint?.opacity(0.18) ?? SnipSnapTheme.compactSelectionFill)
+                        : isSubdued
+                            ? SnipSnapColors.compactSubduedFill
+                            : .clear
+                )
+        }
     }
 
     func panelMeasuredHeight(_ height: Binding<CGFloat>) -> some View {
@@ -376,35 +353,6 @@ extension View {
             }
     }
 
-}
-
-private struct PanelCompactStateSurfaceModifier: ViewModifier {
-    let isEmphasized: Bool
-    let isSubdued: Bool
-    let tint: Color?
-
-    func body(content: Content) -> some View {
-        content
-            .background {
-                Capsule(style: .continuous)
-                    .fill(
-                        isEmphasized
-                            ? (tint?.opacity(0.18) ?? SnipSnapColors.compactSelectionFill)
-                            : isSubdued
-                                ? SnipSnapColors.compactSubduedFill
-                                : .clear
-                    )
-            }
-    }
-}
-
-private struct PanelInputModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        content
-            .textFieldStyle(.plain)
-            .font(.body)
-            .foregroundStyle(SnipSnapColors.textPrimary)
-    }
 }
 
 struct PanelDragRegion: View {
@@ -439,18 +387,6 @@ struct PanelBlankDragRegion: View {
     }
 }
 
-private struct PanelGlassSurfaceModifier<S: InsettableShape>: ViewModifier {
-    let shape: S
-    let interactive: Bool
-    let tint: Color?
-
-    func body(content: Content) -> some View {
-        let glass = Glass.regular.tint(tint)
-        content
-            .glassEffect(interactive ? glass.interactive() : glass, in: shape)
-    }
-}
-
 struct PanelGlassActionButton: View {
     let systemImage: String
     let isEnabled: Bool
@@ -464,26 +400,6 @@ struct PanelGlassActionButton: View {
         }
         .buttonStyle(PanelGlassActionButtonStyle(tint: tint, labelColor: labelColor))
         .disabled(!isEnabled)
-    }
-}
-
-struct PanelComposerSendControl: View {
-    let sourceID: UUID
-    let isEnabled: Bool
-    let tint: Color
-    let labelColor: Color
-    let destinations: [SnipList]
-    @Binding var isChoosingDestination: Bool
-    let send: () -> Void
-    let choose: (UUID) -> Void
-
-    var body: some View {
-        AppMorphingSendControl(
-            sourceID: sourceID, isEnabled: isEnabled, tint: tint, labelColor: labelColor,
-            size: CGSize(width: PanelControlMetrics.actionWidth, height: PanelControlMetrics.actionHeight),
-            iconLength: PanelControlMetrics.actionIconLength, destinations: destinations,
-            isPresented: $isChoosingDestination, send: send, choose: choose
-        )
     }
 }
 

@@ -119,7 +119,7 @@ final class AppModel: ObservableObject {
 
     let session: SavedSnipsSession
     private let attachmentPreparation: AttachmentPreparationCoordinator
-    private let diagnostics: any AppDiagnosticRecording
+    private let diagnostics: AppDiagnosticRecorder
     private var cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private let defaults: UserDefaults
     let composerDrafts: ComposerDraftStore
@@ -182,7 +182,7 @@ final class AppModel: ObservableObject {
         recoveryScope: SnipRecoveryScope? = nil,
         cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
         userActions: (any SnipLibraryUserActions)? = nil,
-        userActionsRebinder: SnipLibraryUserActionsRebinder = .direct,
+        userActionsFactory: @escaping SnipLibraryUserActionsFactory = { DirectSnipLibraryUserActions(library: $0) },
         preparePasteboardExport: @escaping @Sendable (String, [URL]) async throws
             -> SnipPasteboardExport = {
             try await SnipPasteboardExport.preparingClipboardExport(
@@ -190,7 +190,7 @@ final class AppModel: ObservableObject {
                 attachmentURLs: $1
             )
         },
-        diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared,
+        diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
         publishShareDestinations: (([SnipList]) -> Void)? = nil
     ) {
         self.defaults = defaults
@@ -211,7 +211,7 @@ final class AppModel: ObservableObject {
         session = SavedSnipsSession(
             library: library,
             userActions: userActions,
-            userActionsRebinder: userActionsRebinder,
+            userActionsFactory: userActionsFactory,
             recoveryScope: recoveryScope
         )
         attachmentPreparation = AttachmentPreparationCoordinator(
@@ -422,10 +422,6 @@ final class AppModel: ObservableObject {
     func isRecoveredSnip(_ snipID: UUID) -> Bool {
         recoverySnapshot.pendingSnips.contains { $0.id == snipID }
             || recoverySnapshot.promotedSnips.contains { $0.id == snipID }
-    }
-
-    func refreshRecovery() async {
-        await withCommandLock { await reloadUnlocked() }
     }
 
     @discardableResult

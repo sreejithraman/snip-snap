@@ -36,7 +36,7 @@ struct IOSLibraryStartup {
     let library: any SnipLibrary
     let sourceLibrary: any SnipLibrary
     let userActions: any SnipLibraryUserActions
-    let userActionsRebinder: SnipLibraryUserActionsRebinder
+    let userActionsFactory: SnipLibraryUserActionsFactory
     let shareImports: ShareImportStore?
     let error: String?
     let uiTestAttachmentURLs: [URL]
@@ -63,7 +63,7 @@ final class IOSAppSession {
     init(
         library: any SnipLibrary,
         userActions: (any SnipLibraryUserActions)? = nil,
-        userActionsRebinder: SnipLibraryUserActionsRebinder = .direct,
+        userActionsFactory: @escaping SnipLibraryUserActionsFactory = { DirectSnipLibraryUserActions(library: $0) },
         recoveryScope: SnipRecoveryScope? = nil,
         shareImports: ShareImportStore? = nil,
         initialSnapshot: SnipLibrarySnapshot = SnipLibrarySnapshot(
@@ -88,7 +88,7 @@ final class IOSAppSession {
         let model = IOSAppModel(
             library: library,
             userActions: userActions,
-            userActionsRebinder: userActionsRebinder,
+            userActionsFactory: userActionsFactory,
             recoveryScope: recoveryScope,
             initialSnapshot: initialSnapshot,
             startupError: startupError,
@@ -185,7 +185,7 @@ final class IOSAppSession {
     func launch() async {
         await model.load()
         shareDestinationPublisher?.enqueue(model.lists, force: true)
-        await cloudLifecycleHooks.launch()
+        await cloudLifecycleHooks.run()
         await clipboard.foreground()
         if let shareImporter {
             await shareImporter.importPendingAndReload()
@@ -195,7 +195,7 @@ final class IOSAppSession {
 
     func foreground() async {
         shareDestinationPublisher?.enqueue(model.lists, force: true)
-        await cloudLifecycleHooks.foreground()
+        await cloudLifecycleHooks.run()
         await clipboard.foreground()
         await shareImporter?.importPendingAndReload()
         await accountNoticeModel?.refresh()

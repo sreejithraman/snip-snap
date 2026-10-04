@@ -194,21 +194,6 @@ final class CommandNumberPickerTests: XCTestCase {
         XCTAssertEqual(picker.target(forNumber: 1), target)
     }
 
-    func testDragPlacementIgnoresInListDropsAndCancelledDrags() {
-        XCTAssertTrue(
-            ClipboardDragPlacement.shouldPlace(outcome: .copy, droppedInList: false)
-        )
-        XCTAssertFalse(
-            ClipboardDragPlacement.shouldPlace(outcome: .copy, droppedInList: true)
-        )
-        XCTAssertFalse(
-            ClipboardDragPlacement.shouldPlace(outcome: .move, droppedInList: false)
-        )
-        XCTAssertFalse(
-            ClipboardDragPlacement.shouldPlace(outcome: .cancelled, droppedInList: false)
-        )
-    }
-
     private func uuid(_ value: Int) -> UUID {
         UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", value))!
     }

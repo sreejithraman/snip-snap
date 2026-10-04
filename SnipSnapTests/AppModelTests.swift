@@ -405,7 +405,7 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(model.needsAttentionCount, 1)
         XCTAssertEqual(model.pendingRecoveredSnips, [recovered])
         await library.replaceText("Changed while open", for: current.id)
-        await model.refreshRecovery()
+        await model.reload()
         XCTAssertEqual(model.currentSnip(for: recovered)?.content, "Changed while open")
 
         let opened = await model.beginEditing(current.id)
@@ -3127,7 +3127,7 @@ final class AppModelTests: StoreBackedTestCase {
             fileURL: root.appendingPathComponent("replacement.json")
         )
         let gatedActions = GatedDiscardUserActions(base: userActions(for: active))
-        let rebinder = SnipLibraryUserActionsRebinder { library in
+        let factory: SnipLibraryUserActionsFactory = { library in
             DirectSnipLibraryUserActions(
                 library: library,
                 previewBackupImport: { backupURL, target in
@@ -3142,7 +3142,7 @@ final class AppModelTests: StoreBackedTestCase {
             library: active,
             defaults: defaults(),
             userActions: gatedActions,
-            userActionsRebinder: rebinder
+            userActionsFactory: factory
         )
         await model.reload()
         model.selection = [activeSnip.id]

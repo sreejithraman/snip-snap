@@ -106,10 +106,6 @@ extension ClipboardEntry {
 }
 
 private extension NSAttributedString {
-    var stringByRemovingAttachments: String {
-        removingAttachments.string
-    }
-
     var removingAttachments: NSAttributedString {
         let text = NSMutableAttributedString(attributedString: self)
         var ranges: [NSRange] = []
@@ -202,13 +198,13 @@ private final class ClipboardCaptureReader {
               let pasteboardItems = pasteboard.pasteboardItems,
               !pasteboardItems.isEmpty,
               !pasteboardItems.contains(where: { Self.shouldIgnore($0.types) }) else { return nil }
-        var remainingBytes = ClipboardHistory.entryByteLimit
+        var remainingBytes = ClipboardHistoryState.entryByteLimit
         let items = pasteboardItems.compactMap { pasteboardItem -> ClipboardPayloadItem? in
             let representations = Self.supportedTypes(in: pasteboardItem).compactMap {
                 type -> ClipboardRepresentation? in
                 guard remainingBytes > 0,
                       let data = pasteboardItem.data(forType: type),
-                      data.count <= ClipboardHistory.representationByteLimit,
+                      data.count <= ClipboardHistoryState.representationByteLimit,
                       data.count <= remainingBytes else { return nil }
                 remainingBytes -= data.count
                 return ClipboardRepresentation(type: type.rawValue, data: data)
@@ -244,10 +240,6 @@ private final class ClipboardCaptureReader {
 
 @MainActor
 final class ClipboardHistory: ObservableObject {
-    nonisolated static let limit = ClipboardHistoryState.limit
-    nonisolated static let representationByteLimit = ClipboardHistoryState.representationByteLimit
-    nonisolated static let entryByteLimit = ClipboardHistoryState.entryByteLimit
-    nonisolated static let historyByteLimit = ClipboardHistoryState.historyByteLimit
     nonisolated static let backgroundProcessingThreshold = 256 * 1_024
 
     @Published private(set) var entries: [ClipboardEntry] = []
@@ -275,7 +267,7 @@ final class ClipboardHistory: ObservableObject {
     private var lastChangeCount: Int
     private let pollingTimer = ClipboardPollingTimer()
     private let defaults: UserDefaults
-    private let diagnostics: any AppDiagnosticRecording
+    private let diagnostics: AppDiagnosticRecorder
     private var suppressionTokens: Set<UUID> = []
     private var initialLoadTask: Task<Void, Never>?
     private var clearTask: Task<Void, Never>?
@@ -288,7 +280,7 @@ final class ClipboardHistory: ObservableObject {
         pasteboard: NSPasteboard = .general,
         defaults: UserDefaults = .standard,
         storeURL: URL = ClipboardHistory.defaultStoreURL(),
-        diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared
+        diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live
     ) {
         self.pasteboard = pasteboard
         self.defaults = defaults
@@ -702,13 +694,4 @@ final class ClipboardHistory: ObservableObject {
         await initialLoadTask?.value
     }
 
-    nonisolated static func trimmed(
-        _ entries: [ClipboardEntry],
-        maximumEntryBytes: Int = entryByteLimit,
-        maximumHistoryBytes: Int = historyByteLimit,
-        maximumCount: Int = limit
-    ) -> [ClipboardEntry] {
-        ClipboardHistoryState.trimmed(entries, maximumEntryBytes: maximumEntryBytes,
-                                      maximumHistoryBytes: maximumHistoryBytes, maximumCount: maximumCount)
-    }
 }

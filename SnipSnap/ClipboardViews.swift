@@ -257,10 +257,7 @@ struct ClipboardEntryRow: View {
                 onBegan: {},
                 onMoved: { _ in },
                 onEnded: { outcome, _ in
-                    if ClipboardDragPlacement.shouldPlace(
-                        outcome: outcome,
-                        droppedInList: false
-                    ) {
+                    if outcome == .copy {
                         _ = place(.silent)
                     }
                 }

@@ -200,7 +200,7 @@ struct VisibleAttachmentPreparation: ViewModifier {
         content
             .task(id: TaskIdentity(revision: preparationID, isEnabled: shouldPrepare)) {
                 guard shouldPrepare,
-                      AttachmentImageType.shouldPrepare(
+                      AttachmentImageType.isImage(
                         fileName: fileName, contentType: contentType
                       ),
                       model.usableAttachmentURL(for: attachmentID) == nil,
@@ -228,10 +228,6 @@ struct StagedAttachment: Sendable {
 }
 
 enum AttachmentDraftLifecycle {
-    static func allowsDismissal(isSaving: Bool, isStaging: Bool) -> Bool {
-        !isSaving && !isStaging
-    }
-
     static func allowsSaving(
         isSaving: Bool,
         isStaging: Bool,

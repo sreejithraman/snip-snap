@@ -326,15 +326,6 @@ struct GlobalShortcutConfiguration: Codable, Equatable, Sendable {
         return triggers.allSatisfy { $0.chord?.conflictsWithFixedCommand != true }
     }
 
-    var usesDoubleShift: Bool {
-        GlobalHotKeyAction.allCases.contains {
-            switch trigger(for: $0) {
-            case .doubleShift, .commandDoubleShift: true
-            case .keyChord: false
-            }
-        }
-    }
-
     private enum CodingKeys: String, CodingKey {
         case captureSelection
         case togglePanel

@@ -175,7 +175,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     override init() {
         let isReleaseApp = Bundle.main.bundleIdentifier == "world.sree.snipsnap"
         let libraryStoreURL = SwiftDataSnipLibrary.defaultStoreURL()
-        let store = Self.openLibrary(storeURL: libraryStoreURL)
+        let store = MacLocalSnipLibraryBootstrap.open(storeURL: libraryStoreURL)
         let library = store.library
         let attachmentCacheRootURL = FileManager.default.urls(
             for: .cachesDirectory,
@@ -206,7 +206,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             initialError: store.errorMessage,
             recoveryScope: assembly.recoveryScope,
             userActions: assembly.userActions,
-            userActionsRebinder: assembly.userActionsRebinder,
+            userActionsFactory: assembly.userActionsFactory,
             publishShareDestinations: shareListCatalogPublisher.map { publisher in
                 { lists in publisher.enqueue(lists) }
             }
@@ -416,12 +416,6 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         super.init()
     }
 
-    static func openLibrary(
-        storeURL: URL = SwiftDataSnipLibrary.defaultStoreURL()
-    ) -> LocalSnipLibraryOpenResult {
-        MacLocalSnipLibraryBootstrap.open(storeURL: storeURL)
-    }
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else {
             return
@@ -457,7 +451,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 await model.reload()
                 shareListCatalogPublisher?.enqueue(model.lists, force: true)
                 try await cliRequests.pruneAbandoned()
-                await cloudLifecycleHooks.launch()
+                await cloudLifecycleHooks.run()
                 await self.restoreCLIAvailabilityIfNeeded()
                 await accountNoticeModel?.refresh()
             } catch {
@@ -480,7 +474,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                await self.cloudLifecycleHooks.foreground()
+                await self.cloudLifecycleHooks.run()
                 await self.accountNoticeModel?.refresh()
             }
         }
@@ -521,7 +515,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 catch { model.presentError(error) }
             }
             shareListCatalogPublisher?.enqueue(model.lists, force: true)
-            await cloudLifecycleHooks.foreground()
+            await cloudLifecycleHooks.run()
             await accountNoticeModel?.refresh()
             await self.restoreCLIAvailabilityIfNeeded()
         }

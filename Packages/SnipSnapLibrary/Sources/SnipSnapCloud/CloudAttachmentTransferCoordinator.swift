@@ -157,7 +157,7 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
         guard values.isRegularFile == true, values.isSymbolicLink != true,
           Int64(values.fileSize ?? -1) == publication.metadata.byteCount
         else { throw CloudAttachmentStorageError.sizeMismatch }
-        guard try Self.sha256(of: local) == publication.metadata.sha256 else {
+        guard try AttachmentFileIO.digest(at: local) == publication.metadata.sha256 else {
           throw CloudAttachmentStorageError.hashMismatch
         }
         return local
@@ -392,10 +392,6 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
       remaining -= byteCount
     }
     return false
-  }
-
-  private static func sha256(of url: URL) throws -> Data {
-    try AttachmentFileIO.digest(at: url)
   }
 
 }

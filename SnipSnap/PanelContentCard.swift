@@ -23,7 +23,7 @@ struct PanelLeadingChip<Content: View>: View {
 
     var body: some View {
         ZStack {
-            shape.fill(appearance?.controlTint ?? SnipSnapColors.compactActionFill)
+            shape.fill(appearance?.controlTint ?? SnipSnapTheme.compactActionFill)
             content.foregroundStyle(appearance.map { AnyShapeStyle($0.filledControlLabel(in: environment)) } ?? SnipSnapColors.textPrimary)
         }
         .frame(
@@ -169,7 +169,7 @@ struct PanelContentCard<Leading: View, Main: View>: View {
                 .fill(.regularMaterial)
                 .overlay {
                     if state.isSelected {
-                        shape.fill(SnipSnapColors.selectionFill)
+                        shape.fill(SnipSnapTheme.selectionFill)
                     }
                 }
                 .overlay {

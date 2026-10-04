@@ -30,14 +30,14 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
     private var sendCycleInProgress = false
     private var requiresInitialFetch = true
     private var fetchCycleWasInitial = false
-    private let diagnostics: any AppDiagnosticRecording
+    private let diagnostics: AppDiagnosticRecorder
     private var lastDiagnosticSnapshot: AppDiagnosticEvent?
 
     package init(
         database: CKDatabase,
         namespace: CloudSyncNamespace,
         automaticallyFetchedZones: Set<CloudZoneID>? = nil,
-        diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared
+        diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live
     ) {
         self.database = database
         self.namespace = namespace
@@ -76,7 +76,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         engine = CKSyncEngine(configuration)
         observePendingAdmission()
         if let initialOutbound {
-            try schedule(initialOutbound)
+            try scheduleAutomaticSync(initialOutbound)
         }
         recordDiagnosticSnapshot()
     }
@@ -135,7 +135,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
 
     package func fetch(scope: CloudFetchScope) async throws -> CloudFetchedBatch {
         guard let engine else { throw CloudTransportError.notStarted }
-        try await waitForCurrentCycle()
+        try await finishCurrentSyncCycle()
         guard self.engine === engine else { throw CloudTransportError.notStarted }
         guard !isPerformingSyncOperation else { throw CloudTransportError.syncAlreadyRunning }
         isPerformingSyncOperation = true
@@ -169,13 +169,13 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
             throw CloudTransportError.invalidRecord
         }
         guard let engine else { throw CloudTransportError.notStarted }
-        try await waitForCurrentCycle()
+        try await finishCurrentSyncCycle()
         guard self.engine === engine else { throw CloudTransportError.notStarted }
         guard !isPerformingSyncOperation else { throw CloudTransportError.syncAlreadyRunning }
         isPerformingSyncOperation = true
         defer { if self.engine === engine { isPerformingSyncOperation = false } }
         explicitSentBatch = nil
-        try schedule(batch)
+        try scheduleAutomaticSync(batch)
         do {
             try await engine.sendChanges(CKSyncEngine.SendChangesOptions(scope: .all))
         } catch {
@@ -226,10 +226,11 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         })
     }
 
-    package func finishCurrentSyncCycle() async throws { try await waitForCurrentCycle() }
-
-    package func scheduleAutomaticSync(_ batch: CloudOutboundBatch) throws {
-        try schedule(batch)
+    package func finishCurrentSyncCycle() async throws {
+        while let completion = cycleCompletion {
+            try await completion.wait()
+        }
+        try Task.checkCancellation()
     }
 
     package func pendingEvent() -> CloudRecordTransportEvent? { mailbox.first }
@@ -615,13 +616,6 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         recordDiagnosticSnapshot()
     }
 
-    private func waitForCurrentCycle() async throws {
-        while let completion = cycleCompletion {
-            try await completion.wait()
-        }
-        try Task.checkCancellation()
-    }
-
     private func resumeCycleWaiters() {
         guard !fetchCycleInProgress, !sendCycleInProgress else { return }
         let completion = cycleCompletion
@@ -644,7 +638,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         }
     }
 
-    private func schedule(_ batch: CloudOutboundBatch) throws {
+    package func scheduleAutomaticSync(_ batch: CloudOutboundBatch) throws {
         guard let engine else { throw CloudTransportError.notStarted }
         defer { recordDiagnosticSnapshot() }
         let admitted = outboundQueue.schedule(batch)

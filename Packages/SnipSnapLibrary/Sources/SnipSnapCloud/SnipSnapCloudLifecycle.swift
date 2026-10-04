@@ -81,10 +81,7 @@ public final class SnipSnapCloudLifecycleHooks {
     syncAction = syncWhenPossible
   }
 
-  public func launch() async { await run() }
-  public func foreground() async { await run() }
-
-  private func run() async {
+  public func run() async {
     if isSyncing {
       needsAnotherSync = true
       return
@@ -521,7 +518,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     makeAttachmentCoordinator: AppleAccountCacheCoordinatorHandler.AttachmentCoordinatorFactory? = nil
   ) -> AppleAccountCacheCoordinatorHandler {
     AppleAccountCacheCoordinatorHandler(
-      persistence: { await self.accountServicePersistence() },
+      persistence: { await self.persistence },
       controlTransport: controlTransport,
       accountStateSource: self,
       makeSyncCoordinator: { [makeRecordTransport, accountStateSource] persistence, namespace, descriptor in
@@ -549,8 +546,6 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       scheduleSyncAfterLocalChange: scheduleSyncAfterLocalChange
     )
   }
-
-  private func accountServicePersistence() -> SwiftDataSyncModePersistence? { persistence }
 
   package func currentAccountState() async -> ICloudAccountState {
     if let accountStateSource { return await accountStateSource.currentAccountState() }

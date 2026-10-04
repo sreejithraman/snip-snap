@@ -14,10 +14,7 @@ enum SnipSnapColors {
 
     // MARK: Controls and interaction
 
-    static let controlTint = SnipSnapTheme.controlTint
-    static let selectionFill = SnipSnapTheme.selectionFill
     static let selectionEdge = Color.primary.opacity(0.50)
-    static let compactSelectionFill = SnipSnapTheme.compactSelectionFill
     static let compactSubduedFill = Color.primary.opacity(0.05)
     static let dropTargetFill = Color.primary.opacity(0.08)
     static let dropTargetEdge = Color.primary.opacity(0.48)
@@ -48,10 +45,7 @@ enum SnipSnapColors {
 
     // MARK: Surfaces
 
-    static let compactActionFill = SnipSnapTheme.compactActionFill
     static let nestedGlassTint = Color("NestedGlassTint")
-    static let actionGlassTint = SnipSnapTheme.actionGlassTint
-    static let actionGlassLabel = SnipSnapTheme.actionGlassLabel
     static let idleActionGlassTint = Color(nsColor: .tertiaryLabelColor)
     static let idleActionLabel = Color(nsColor: .secondaryLabelColor)
     static let attachmentFill = Color.primary.opacity(0.055)

@@ -340,35 +340,6 @@ final class SnipRepositoryTests: StoreBackedTestCase {
         XCTAssertEqual(lists.map(\.name), ["Inbox", "Agents"])
     }
 
-    func testCorruptStoreIsBackedUpAndNewSavesPersistAtTheDefaultPath() async throws {
-        let url = try storeURL()
-        let corruptData = Data("not json".utf8)
-        try corruptData.write(to: url)
-        let attachmentDirectory = url.deletingLastPathComponent()
-            .appendingPathComponent("Attachments/kept", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: attachmentDirectory,
-            withIntermediateDirectories: true
-        )
-        let attachment = attachmentDirectory.appendingPathComponent("context.md")
-        try Data("Keep me".utf8).write(to: attachment)
-
-        let result = try JSONSnipLibrary.openRecoveringCorruptStore(fileURL: url)
-        let backupURL = try XCTUnwrap(result.backupURL)
-        XCTAssertEqual(try Data(contentsOf: backupURL), corruptData)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
-        let recoveryID = backupURL.deletingPathExtension().lastPathComponent
-            .replacingOccurrences(of: "snips.corrupt-", with: "")
-        let backupAttachment = url.deletingLastPathComponent()
-            .appendingPathComponent("Attachments.corrupt-\(recoveryID)/kept/context.md")
-        XCTAssertEqual(try String(contentsOf: backupAttachment, encoding: .utf8), "Keep me")
-
-        _ = try await result.repository.add(content: "Safe after recovery", origin: .quickEntry)
-        let reopened = try JSONSnipLibrary(fileURL: url)
-        let reopenedContents = await reopened.allSnips().map(\.content)
-        XCTAssertEqual(reopenedContents, ["Safe after recovery"])
-    }
-
     func testUnavailableStoreRejectsNewSnips() async {
         let repository = JSONSnipLibrary.unavailable(fileURL: URL(fileURLWithPath: "/unavailable/snips.json"))
         do {

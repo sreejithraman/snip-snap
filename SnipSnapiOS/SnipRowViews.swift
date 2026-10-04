@@ -11,7 +11,6 @@ struct SnipRow: View {
     let model: IOSAppModel
     let isRecovered: Bool
     var showsStatusIcon = true
-    var showsPinInMetadata = true
     var allowsTextExpansion = true
     var isGathering = false
     var isReordering = false
@@ -65,7 +64,7 @@ struct SnipRow: View {
                 isRecovered: isRecovered,
                 allowsTextExpansion: allowsTextExpansion && !isReordering && !isGathering,
                 onPreviewAttachment: onPreviewAttachment,
-                showsPin: showsPinInMetadata && (isGathering || !showsStatusIcon || onCopy == nil)
+                showsPin: isGathering || !showsStatusIcon || onCopy == nil
             )
         }
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { sourceFrameChanged?($0) }

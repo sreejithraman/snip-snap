@@ -316,11 +316,6 @@ final class AppCoordinator {
         previousExternalApplication = nil
     }
 
-    @discardableResult
-    func copyClipboardEntry(_ entry: ClipboardEntry) -> Bool {
-        model.placeOnClipboard(.clipboardEntry(entry), feedback: .notify)
-    }
-
     func captureSelection() {
         guard !panelDialogs.isPresented else { return }
         guard accessibilityPermissions.refresh() else {

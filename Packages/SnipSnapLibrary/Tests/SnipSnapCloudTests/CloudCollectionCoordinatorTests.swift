@@ -14,8 +14,8 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
       await calls.record()
     }
 
-    await hooks.launch()
-    await hooks.foreground()
+    await hooks.run()
+    await hooks.run()
 
     let count = await calls.value()
     XCTAssertEqual(count, 2)
@@ -28,9 +28,9 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
       await calls.run()
     }
 
-    let first = Task { await hooks.launch() }
+    let first = Task { await hooks.run() }
     await calls.waitUntilFirstCallStarts()
-    await hooks.foreground()
+    await hooks.run()
     await calls.releaseFirstCall()
     await first.value
 

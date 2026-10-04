@@ -424,10 +424,26 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         let defaultsName = "Snip SnapOpenPanelTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
         defer { defaults.removePersistentDomain(forName: defaultsName) }
-        let parent = SnipSnapPanel.make(
-            contentViewController: NSViewController(),
-            frameAutosaveName: nil
+        // Exercise native key restoration without requiring app activation
+        // permission for the XCTest host.
+        let parent = SnipSnapPanel(
+            contentRect: NSRect(origin: .zero, size: AppWindowDefaults.defaultSize),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
         )
+        parent.becomesKeyOnlyIfNeeded = false
+        let pickerFocusWindow = NSPanel(
+            contentRect: NSRect(x: 20, y: 20, width: 200, height: 100),
+            styleMask: [.titled, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        pickerFocusWindow.becomesKeyOnlyIfNeeded = false
+        defer {
+            pickerFocusWindow.orderOut(nil)
+            parent.orderOut(nil)
+        }
         let importer = StandaloneFileImporter.makePanel()
         var panelCompletion: ((NSApplication.ModalResponse) -> Void)?
         var importedURLs: [URL]?
@@ -444,14 +460,22 @@ final class AppCoordinatorTests: StoreBackedTestCase {
                 XCTAssertTrue(panel === importer)
                 XCTAssertTrue(sheetParent === parent)
                 panelCompletion = completion
+                pickerFocusWindow.makeKeyAndOrderFront(nil)
             }
         )
         coordinator.attachPanelWindow(parent)
 
+        let pickerBecameKey = expectation(
+            forNotification: NSWindow.didBecomeKeyNotification,
+            object: pickerFocusWindow
+        )
         XCTAssertTrue(coordinator.presentOpenPanel(importer) { importedURLs = $0 })
+        await fulfillment(of: [pickerBecameKey], timeout: 2)
 
         XCTAssertTrue(coordinator.panelDialogs.isPresented)
         XCTAssertFalse(parent.canBecomeKey)
+        XCTAssertFalse(parent.isKeyWindow)
+        XCTAssertTrue(pickerFocusWindow.isKeyWindow)
         XCTAssertEqual(parent.alphaValue, 0.45, accuracy: 0.001)
         XCTAssertEqual(importer.appearance?.name, .aqua)
         // The injected presenter captures the request without asking AppKit to show it.
@@ -459,8 +483,12 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         XCTAssertFalse(parent.childWindows?.contains(importer) == true)
         XCTAssertFalse(coordinator.presentOpenPanel(NSOpenPanel()) { _ in })
 
+        let parentRegainedKey = expectation(
+            forNotification: NSWindow.didBecomeKeyNotification,
+            object: parent
+        )
         panelCompletion?(.cancel)
-        await Task.yield()
+        await fulfillment(of: [parentRegainedKey], timeout: 2)
 
         XCTAssertFalse(coordinator.panelDialogs.isPresented)
         XCTAssertTrue(parent.canBecomeKey)
@@ -751,7 +779,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             ]
         )
 
-        XCTAssertTrue(coordinator.copyClipboardEntry(entry))
+        XCTAssertTrue(model.placeOnClipboard(.clipboardEntry(entry), feedback: .notify))
 
         XCTAssertEqual(pasteboard.string(forType: .string), "Copied from history")
         XCTAssertTrue(panel.isVisible)

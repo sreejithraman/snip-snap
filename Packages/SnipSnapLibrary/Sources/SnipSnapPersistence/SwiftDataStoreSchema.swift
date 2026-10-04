@@ -2,10 +2,6 @@ import Foundation
 import SnipSnapCore
 import SwiftData
 
-public enum SnipSnapStoreSchemaContract {
-  public static let currentVersion = 9
-}
-
 package enum SnipSnapSchemaV1: VersionedSchema {
   package static let versionIdentifier = Schema.Version(1, 0, 0)
   package static var models: [any PersistentModel.Type] {
@@ -197,13 +193,5 @@ package enum SnipSnapSchemaMigrationPlan: SchemaMigrationPlan {
       .lightweight(fromVersion: SnipSnapSchemaV7.self, toVersion: SnipSnapSchemaV8.self),
       .lightweight(fromVersion: SnipSnapSchemaV8.self, toVersion: SnipSnapSchemaV9.self),
     ]
-  }
-
-  package static var supportedMarkerSchemaVersions: Set<Int> {
-    Set(schemas.compactMap { schema in
-      let version = schema.versionIdentifier
-      guard version.minor == 0, version.patch == 0 else { return nil }
-      return version.major
-    })
   }
 }

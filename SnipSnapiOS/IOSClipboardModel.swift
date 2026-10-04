@@ -15,7 +15,7 @@ final class IOSClipboardModel {
     private let cloud: ClipboardCloudSyncService?
     private let generation: @MainActor () async throws -> String?
     private let preferences: UserDefaults
-    private let diagnostics: any AppDiagnosticRecording
+    private let diagnostics: AppDiagnosticRecorder
     private(set) var entries: [ClipboardEntry] = []
     private(set) var filePreviewRevision = 0
     private(set) var pendingUploadIDs: Set<UUID> = []
@@ -31,7 +31,6 @@ final class IOSClipboardModel {
     private(set) var pasteErrorMessage: String?
     private(set) var isPasting = false
     private static let representationTypes: [UTType] = [.utf8PlainText, .plainText, .url, .rtf, .html, .png, .jpeg, .tiff]
-    static let pasteContentTypes: [UTType] = representationTypes + [.image]
     var syncIsActive: Bool {
         guard syncEnabled, settings.mode == .iCloudSync else { return false }
         switch settings.state {
@@ -48,7 +47,7 @@ final class IOSClipboardModel {
     init(rootURL: URL, settings: SyncedContentSettingsModel, containerIdentifier: String? = nil,
          preferences: UserDefaults = .standard,
          generation: @escaping @MainActor () async throws -> String? = { nil },
-         diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared) {
+         diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live) {
         let store = ClipboardHistoryStore(url: rootURL.appendingPathComponent("clipboard.json"))
         let files = ClipboardFileStore(rootURL: rootURL.appendingPathComponent("ClipboardFiles", isDirectory: true))
         self.store = store

@@ -118,7 +118,7 @@ private struct SnipListIconBrowser: View {
                 .frame(width: 36, height: 36)
                 .background {
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(selection == icon ? SnipSnapColors.selectionFill : .clear)
+                        .fill(selection == icon ? SnipSnapTheme.selectionFill : .clear)
                 }
                 .overlay {
                     RoundedRectangle(cornerRadius: 8)

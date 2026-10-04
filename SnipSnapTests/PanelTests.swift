@@ -450,7 +450,7 @@ final class PanelTests: StoreBackedTestCase {
     func testMacApplicationBootstrapUsesSwiftDataForSavedSnipCommands() async throws {
         let supportRoot = try storeURL().deletingLastPathComponent()
         let storeURL = LocalSnipStorePaths(rootDirectory: supportRoot).swiftDataStoreURL
-        let opened = SnipSnapApplicationDelegate.openLibrary(storeURL: storeURL)
+        let opened = MacLocalSnipLibraryBootstrap.open(storeURL: storeURL)
         XCTAssertNil(opened.errorMessage)
         let defaultsName = "SnipSnapSwiftDataWiring-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
@@ -472,7 +472,7 @@ final class PanelTests: StoreBackedTestCase {
 
         let added = await model.add(content: "After open", origin: .quickEntry)
         XCTAssertTrue(added)
-        let reopened = SnipSnapApplicationDelegate.openLibrary(storeURL: storeURL)
+        let reopened = MacLocalSnipLibraryBootstrap.open(storeURL: storeURL)
         XCTAssertNil(reopened.errorMessage)
         let snapshot = await reopened.library.snapshot(sortedBy: .chronological)
         XCTAssertEqual(snapshot.snips.map(\.content), ["After open"])

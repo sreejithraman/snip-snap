@@ -348,7 +348,7 @@ struct SyncedContentSettingsView: View {
                 try? FileManager.default.removeItem(at: root)
             } catch {
                 try? FileManager.default.removeItem(at: root)
-                AppDiagnostics.shared.record(.failure(
+                AppDiagnosticRecorder.live.record(.failure(
                     operation: "backup.export", error: error, visibility: .user
                 ))
                 if backupLifetime.isActive, !Task.isCancelled { backupError = error.localizedDescription }
@@ -445,10 +445,10 @@ struct SyncedContentSettingsView: View {
 
     private func shareDiagnostics() {
         do {
-            let url = try CloudSyncDiagnosticsExport.makeShareableFile()
+            let url = try AppDiagnosticsExport.makeShareableFile()
             diagnosticsShareRequest = IOSShareRequest(items: [.file(url)])
         } catch {
-            AppDiagnostics.shared.record(.failure(
+            AppDiagnosticRecorder.live.record(.failure(
                 operation: "diagnostics.export",
                 error: error,
                 visibility: .user
@@ -459,10 +459,10 @@ struct SyncedContentSettingsView: View {
 
     private func clearDiagnostics() {
         do {
-            try CloudSyncDiagnosticsExport.clear()
+            try AppDiagnosticsExport.clear()
             diagnosticsMessage = String(localized: "Diagnostic log cleared.")
         } catch {
-            AppDiagnostics.shared.record(.failure(
+            AppDiagnosticRecorder.live.record(.failure(
                 operation: "diagnostics.clear",
                 error: error,
                 visibility: .user

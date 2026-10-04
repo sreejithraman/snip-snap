@@ -30,7 +30,7 @@ final class CloudBackupImportTests: XCTestCase {
             else { try fixture.bytes.write(to: cachedURL) }
 
             do {
-                _ = try await SnipLibraryImport.apply(preview, to: active)
+                _ = try await active.applyImport(preview)
                 XCTFail("Expected the changed target digest to reject the import")
             } catch SnipLibraryError.importChanged {
             }
@@ -76,7 +76,7 @@ final class CloudBackupImportTests: XCTestCase {
         )
         let preview = try await SnipLibraryImport.preview(backupURL: backupURL, target: active)
 
-        let result = try await SnipLibraryImport.apply(preview, to: active)
+        let result = try await active.applyImport(preview)
 
         XCTAssertEqual(result.addedSnipCount, 1)
         XCTAssertEqual(result.snapshot.snips.first { $0.id == retained.id }, retained)

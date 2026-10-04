@@ -45,7 +45,7 @@ final class IOSAppModel {
     var isManagingLists = false
     let haptics: IOSHapticFeedback
     private let cloudSyncHandler: (any OptionalCloudSyncHandling)?
-    private let diagnostics: any AppDiagnosticRecording
+    private let diagnostics: AppDiagnosticRecorder
     private let publishShareDestinations: (([SnipList]) -> Void)?
 
     private(set) var snips: [Snip]
@@ -152,7 +152,7 @@ final class IOSAppModel {
     init(
         library: any SnipLibrary,
         userActions: (any SnipLibraryUserActions)? = nil,
-        userActionsRebinder: SnipLibraryUserActionsRebinder = .direct,
+        userActionsFactory: @escaping SnipLibraryUserActionsFactory = { DirectSnipLibraryUserActions(library: $0) },
         recoveryScope: SnipRecoveryScope? = nil,
         initialSnapshot: SnipLibrarySnapshot = SnipLibrarySnapshot(
             snips: [],
@@ -161,13 +161,13 @@ final class IOSAppModel {
         startupError: String? = nil,
         cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
         haptics: IOSHapticFeedback = IOSHapticFeedback(),
-        diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared,
+        diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
         publishShareDestinations: (([SnipList]) -> Void)? = nil
     ) {
         session = SavedSnipsSession(
             library: library,
             userActions: userActions,
-            userActionsRebinder: userActionsRebinder,
+            userActionsFactory: userActionsFactory,
             recoveryScope: recoveryScope
         )
         self.cloudSyncHandler = cloudSyncHandler
@@ -661,7 +661,9 @@ final class IOSAppModel {
     func renameList(_ list: SnipList, name: String, systemImage: String, color: SnipListColorChange = .keep) async -> Bool {
         guard !(isCancellingNewList && newListID == list.id) else { return false }
         return await withUserMutation { _ in
-            await renameListUnlocked(list, name: name, systemImage: systemImage, color: color)
+            await performUserAction(
+                .updateList(id: list.id, name: name, systemImage: systemImage, color: color)
+            )
         }
     }
 
@@ -1076,17 +1078,6 @@ final class IOSAppModel {
             }
         }
         return succeeded ? createdID : nil
-    }
-
-    private func renameListUnlocked(
-        _ list: SnipList,
-        name: String,
-        systemImage: String,
-        color: SnipListColorChange
-    ) async -> Bool {
-        await performUserAction(
-            .updateList(id: list.id, name: name, systemImage: systemImage, color: color)
-        )
     }
 
     private func deleteListUnlocked(

@@ -348,7 +348,7 @@ struct InlineSnipEditor: View {
             draft.replacementID = nil
             draft.presentAttachmentSource(source)
         }) {
-            secondaryActionIcon("plus")
+            EditorSecondaryActionIcon(systemName: "plus")
         }
         .buttonStyle(.plain)
         .disabled(!draft.canDismiss)
@@ -365,7 +365,7 @@ struct InlineSnipEditor: View {
                 model.cancelInlineSnipEdit()
             }
         } label: {
-            secondaryActionIcon("xmark")
+            EditorSecondaryActionIcon(systemName: "xmark")
         }
         .buttonStyle(.plain)
         .disabled(!draft.canDismiss && !draft.isStaging)
@@ -392,10 +392,6 @@ struct InlineSnipEditor: View {
         .disabled(!draft.canSave)
         .accessibilityLabel(draft.isSaving ? "Saving…" : "Save")
         .accessibilityIdentifier("inline-snip-save")
-    }
-
-    private func secondaryActionIcon(_ systemName: String) -> some View {
-        EditorSecondaryActionIcon(systemName: systemName)
     }
 }
 
