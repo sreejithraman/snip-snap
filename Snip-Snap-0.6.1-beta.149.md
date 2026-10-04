@@ -1,0 +1,9 @@
+# Snip Snap 0.6.1 Beta 149
+
+## Mac
+
+- Remove shallow helpers and redundant forwarding abstractions
+
+## iOS
+
+- Remove shallow helpers and redundant forwarding abstractions
