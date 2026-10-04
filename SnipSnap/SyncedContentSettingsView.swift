@@ -143,11 +143,11 @@ struct SyncedContentSettingsView: View {
             let didAccess = destination.startAccessingSecurityScopedResource()
             defer { if didAccess { destination.stopAccessingSecurityScopedResource() } }
             do {
-                let source = try CloudSyncDiagnosticsExport.makeShareableFile()
+                let source = try AppDiagnosticsExport.makeShareableFile()
                 try Data(contentsOf: source).write(to: destination, options: .atomic)
                 diagnosticsMessage = String(localized: "Diagnostic log saved. You can attach it to your support message.")
             } catch {
-                AppDiagnostics.shared.record(.failure(
+                AppDiagnosticRecorder.live.record(.failure(
                     operation: "diagnostics.export",
                     error: error,
                     visibility: .user
@@ -165,10 +165,10 @@ struct SyncedContentSettingsView: View {
     private func clearDiagnostics() {
         guard !isExportingDiagnostics else { return }
         do {
-            try CloudSyncDiagnosticsExport.clear()
+            try AppDiagnosticsExport.clear()
             diagnosticsMessage = String(localized: "Diagnostic log cleared.")
         } catch {
-            AppDiagnostics.shared.record(.failure(
+            AppDiagnosticRecorder.live.record(.failure(
                 operation: "diagnostics.clear",
                 error: error,
                 visibility: .user

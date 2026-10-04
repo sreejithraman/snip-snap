@@ -20,7 +20,7 @@ public enum SnipRecoveryScopeFactory {
 public struct SnipLibraryAssembly: Sendable {
   public let library: any SnipLibrary
   public let userActions: any SnipLibraryUserActions
-  public let userActionsRebinder: SnipLibraryUserActionsRebinder
+  public let userActionsFactory: SnipLibraryUserActionsFactory
   public let recoveryScope: SnipRecoveryScope?
   public let syncModeStore: SnipSyncModeStore?
 
@@ -29,9 +29,9 @@ public struct SnipLibraryAssembly: Sendable {
     activeCloudNamespace: ICloudSyncNamespaceBinding?
   ) {
     self.library = library
-    let rebinder = Self.makeUserActionsRebinder()
-    userActionsRebinder = rebinder
-    userActions = rebinder.actions(for: library)
+    let factory = Self.makeUserActionsFactory()
+    userActionsFactory = factory
+    userActions = factory(library)
     recoveryScope = SnipRecoveryScopeFactory.scope(
       forActiveCloudNamespace: activeCloudNamespace
     )
@@ -67,13 +67,13 @@ public struct SnipLibraryAssembly: Sendable {
       syncModeStore = nil
     }
     self.library = resolvedLibrary
-    let rebinder = Self.makeUserActionsRebinder()
-    userActionsRebinder = rebinder
-    userActions = rebinder.actions(for: resolvedLibrary)
+    let factory = Self.makeUserActionsFactory()
+    userActionsFactory = factory
+    userActions = factory(resolvedLibrary)
   }
 
-  private static func makeUserActionsRebinder() -> SnipLibraryUserActionsRebinder {
-    SnipLibraryUserActionsRebinder { library in
+  private static func makeUserActionsFactory() -> SnipLibraryUserActionsFactory {
+    { library in
       DirectSnipLibraryUserActions(
         library: library,
         previewBackupImport: { backupURL, target in

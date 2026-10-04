@@ -308,7 +308,7 @@ struct IOSShareRequest: Identifiable {
 final class IOSCopyShareCoordinator {
     private let pasteboard: any IOSPasteboardWriting
     private let payloadBuilder: IOSCopySharePayloadBuilder
-    private let diagnostics: any AppDiagnosticRecording
+    private let diagnostics: AppDiagnosticRecorder
     private var copyGeneration = 0
 
     var unavailableFilesNotice: IOSUnavailableFilesNotice?
@@ -318,7 +318,7 @@ final class IOSCopyShareCoordinator {
     init(
         pasteboard: any IOSPasteboardWriting = IOSSystemPasteboard(),
         payloadBuilder: IOSCopySharePayloadBuilder = IOSCopySharePayloadBuilder(),
-        diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared
+        diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live
     ) {
         self.pasteboard = pasteboard
         self.payloadBuilder = payloadBuilder

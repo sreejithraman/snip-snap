@@ -99,7 +99,7 @@ struct ShortcutSettingsView: View {
             try change()
             errorMessage = nil
         } catch {
-            AppDiagnostics.shared.record(.failure(
+            AppDiagnosticRecorder.live.record(.failure(
                 operation: "shortcut.save",
                 error: error,
                 visibility: .user

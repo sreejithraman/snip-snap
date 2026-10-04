@@ -23,7 +23,7 @@ public struct SavedSnipsImportPreview: Sendable {
 public actor SavedSnipsSession {
     private var library: any SnipLibrary
     private var userActions: any SnipLibraryUserActions
-    private let userActionsRebinder: SnipLibraryUserActionsRebinder
+    private let userActionsFactory: SnipLibraryUserActionsFactory
     private var recoveryScope: SnipRecoveryScope?
     private var pendingImportPreview: SavedSnipsImportPreview?
     private var pendingDeletionToken: UUID?
@@ -33,12 +33,12 @@ public actor SavedSnipsSession {
     public init(
         library: any SnipLibrary,
         userActions: (any SnipLibraryUserActions)? = nil,
-        userActionsRebinder: SnipLibraryUserActionsRebinder = .direct,
+        userActionsFactory: @escaping SnipLibraryUserActionsFactory = { DirectSnipLibraryUserActions(library: $0) },
         recoveryScope: SnipRecoveryScope? = nil
     ) {
         self.library = library
-        self.userActionsRebinder = userActionsRebinder
-        self.userActions = userActions ?? userActionsRebinder.actions(for: library)
+        self.userActionsFactory = userActionsFactory
+        self.userActions = userActions ?? userActionsFactory(library)
         self.recoveryScope = recoveryScope
     }
 
@@ -59,7 +59,7 @@ public actor SavedSnipsSession {
     public func state(sortedBy sortMode: SnipSortMode) async -> SavedSnipsSessionState {
         SavedSnipsSessionState(
             library: await library.snapshot(sortedBy: sortMode),
-            recovery: await recoveryState()
+            recovery: await refreshRecovery()
         )
     }
 
@@ -70,7 +70,7 @@ public actor SavedSnipsSession {
     ) async -> SavedSnipsSessionState {
         await discardPendingDeletion(sortedBy: sortMode)
         self.library = library
-        userActions = userActionsRebinder.actions(for: library)
+        userActions = userActionsFactory(library)
         self.recoveryScope = recoveryScope
         pendingImportPreview = nil
         return await state(sortedBy: sortMode)
@@ -127,7 +127,8 @@ public actor SavedSnipsSession {
     }
 
     public func refreshRecovery() async -> SnipRecoverySnapshot {
-        await recoveryState()
+        guard let recoveryScope else { return .empty }
+        return (try? await library.recoverySnapshot(in: recoveryScope)) ?? .empty
     }
 
     public func resolveRecovery(
@@ -163,12 +164,7 @@ public actor SavedSnipsSession {
         pendingImportPreview = nil
         let result = try await userActions.applyImport(preview.value, sortedBy: sortMode)
         pendingDeletionToken = nil
-        return (result, await recoveryState())
-    }
-
-    private func recoveryState() async -> SnipRecoverySnapshot {
-        guard let recoveryScope else { return .empty }
-        return (try? await library.recoverySnapshot(in: recoveryScope)) ?? .empty
+        return (result, await refreshRecovery())
     }
 
     private func discardPendingDeletion(sortedBy sortMode: SnipSortMode) async {

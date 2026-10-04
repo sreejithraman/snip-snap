@@ -285,11 +285,7 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
 
 }
 
-public protocol AppDiagnosticRecording: Sendable {
-  func record(_ event: AppDiagnosticEvent)
-}
-
-public struct AppDiagnosticRecorder: AppDiagnosticRecording, Sendable {
+public struct AppDiagnosticRecorder: Sendable {
   private let recordEvent: @Sendable (AppDiagnosticEvent) -> Void
 
   public init(record: @escaping @Sendable (AppDiagnosticEvent) -> Void) {
@@ -303,10 +299,6 @@ public struct AppDiagnosticRecorder: AppDiagnosticRecording, Sendable {
   public static let live = AppDiagnosticRecorder { event in
     AppDiagnosticLiveSink.shared.record(event)
   }
-}
-
-public enum AppDiagnostics {
-  public static let shared = AppDiagnosticRecorder.live
 }
 
 /// Creates and clears the bounded, privacy-safe diagnostic file shared from app settings.

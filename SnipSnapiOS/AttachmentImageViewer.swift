@@ -10,10 +10,6 @@ enum AttachmentImageType {
         return fileType?.conforms(to: .image) == true
             || recordedType?.conforms(to: .image) == true
     }
-
-    static func shouldPrepare(fileName: String, contentType: String?) -> Bool {
-        isImage(fileName: fileName, contentType: contentType)
-    }
 }
 
 extension View {

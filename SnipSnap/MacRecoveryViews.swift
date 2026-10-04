@@ -35,7 +35,7 @@ struct MacRecoveryReviewSheet: View {
         .frame(height: 420)
         .task {
             while !Task.isCancelled {
-                await model.refreshRecovery()
+                await model.reload()
                 try? await Task.sleep(for: .seconds(1))
             }
         }

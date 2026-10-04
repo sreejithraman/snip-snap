@@ -114,40 +114,6 @@ public actor JSONSnipLibrary: SnipLibrary {
         seenRequestIDs = []
     }
 
-    public static func openRecoveringCorruptStore(
-        fileURL: URL = JSONSnipLibrary.defaultStoreURL()
-    ) throws -> (repository: JSONSnipLibrary, backupURL: URL?) {
-        do {
-            return (try JSONSnipLibrary(fileURL: fileURL), nil)
-        } catch SnipLibraryError.invalidStore {
-            guard FileManager.default.fileExists(atPath: fileURL.path) else {
-                throw SnipLibraryError.invalidStore
-            }
-            let recoveryID = UUID().uuidString
-            let parentURL = fileURL.deletingLastPathComponent()
-            let backupURL = parentURL
-                .appendingPathComponent(
-                    "snips.corrupt-\(recoveryID).json",
-                    isDirectory: false
-                )
-            try FileManager.default.moveItem(at: fileURL, to: backupURL)
-            let attachmentURL = parentURL.appendingPathComponent("Attachments", isDirectory: true)
-            if FileManager.default.fileExists(atPath: attachmentURL.path) {
-                let backupAttachmentURL = parentURL.appendingPathComponent(
-                    "Attachments.corrupt-\(recoveryID)",
-                    isDirectory: true
-                )
-                do {
-                    try FileManager.default.moveItem(at: attachmentURL, to: backupAttachmentURL)
-                } catch {
-                    try? FileManager.default.moveItem(at: backupURL, to: fileURL)
-                    throw error
-                }
-            }
-            return (try JSONSnipLibrary(fileURL: fileURL), backupURL)
-        }
-    }
-
     public static func unavailable(
         fileURL: URL = JSONSnipLibrary.defaultStoreURL()
     ) -> JSONSnipLibrary {

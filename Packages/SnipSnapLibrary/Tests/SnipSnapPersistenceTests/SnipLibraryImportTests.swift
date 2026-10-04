@@ -246,7 +246,7 @@ final class SnipLibraryImportTests: XCTestCase {
       backupURL: fixture.documentURL,
       target: target
     )
-    let result = try await SnipLibraryImport.apply(preview, to: target)
+    let result = try await target.applyImport(preview)
 
     let attachmentID = try XCTUnwrap(result.snapshot.snips.first?.attachments.first?.id)
     let targetURL = try XCTUnwrap(result.snapshot.attachmentURLs[attachmentID])
@@ -298,7 +298,7 @@ final class SnipLibraryImportTests: XCTestCase {
     let sourceAttachmentURL = try XCTUnwrap(sourceSnapshot.attachmentURLs.values.first)
     try changed.write(to: sourceAttachmentURL, options: .atomic)
 
-    let result = try await SnipLibraryImport.apply(preview, to: target)
+    let result = try await target.applyImport(preview)
 
     let attachmentID = try XCTUnwrap(result.snapshot.snips.first?.attachments.first?.id)
     let targetSnapshot = try await target.transferSnapshot(revision: 0)
@@ -404,7 +404,7 @@ final class SnipLibraryImportTests: XCTestCase {
       options: .atomic
     )
 
-    let result = try await SnipLibraryImport.apply(preview, to: target)
+    let result = try await target.applyImport(preview)
 
     let attachmentID = try XCTUnwrap(result.snapshot.snips.first?.attachments.first?.id)
     let importedURL = try XCTUnwrap(result.snapshot.attachmentURLs[attachmentID])
@@ -434,7 +434,7 @@ final class SnipLibraryImportTests: XCTestCase {
     )
 
     do {
-      _ = try await SnipLibraryImport.apply(preview, to: target)
+      _ = try await target.applyImport(preview)
       XCTFail("Expected a changed target to reject the import")
     } catch SnipLibraryError.importChanged {
     }
@@ -595,7 +595,7 @@ final class SnipLibraryImportTests: XCTestCase {
     let beforeApply = await target.snapshot(sortedBy: .chronological)
     XCTAssertEqual(beforeApply.snips.map(\.content), ["Current"])
 
-    let result = try await SnipLibraryImport.apply(preview, to: target)
+    let result = try await target.applyImport(preview)
 
     XCTAssertEqual(result.addedSnipCount, 1)
     XCTAssertEqual(result.recoveredSnipCount, 1)
@@ -620,7 +620,7 @@ final class SnipLibraryImportTests: XCTestCase {
     )
 
     do {
-      _ = try await SnipLibraryImport.apply(preview, to: target)
+      _ = try await target.applyImport(preview)
       XCTFail("Expected a stale preview to fail")
     } catch SnipLibraryError.importChanged {
     }
@@ -698,7 +698,7 @@ final class SnipLibraryImportTests: XCTestCase {
     let target = try await persistence.activeLibrary()
 
     let preview = try await SnipLibraryImport.preview(source: source, target: target)
-    let result = try await SnipLibraryImport.apply(preview, to: target)
+    let result = try await target.applyImport(preview)
 
     XCTAssertEqual(result.snapshot.snips.map(\.content), ["Managed import"])
     let reopened = try SwiftDataSyncModePersistence(
@@ -851,7 +851,7 @@ final class SnipLibraryImportTests: XCTestCase {
     try changed.write(to: stagedURL, options: .atomic)
 
     do {
-      _ = try await SnipLibraryImport.apply(preview, to: target)
+      _ = try await target.applyImport(preview)
       XCTFail("Expected changed staged bytes to reject the import")
     } catch SnipLibraryError.importChanged {
     }

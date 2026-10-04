@@ -200,7 +200,7 @@ public final class SyncedContentSettingsModel {
   private let cancelEnableAction: CancelEnableAction?
   private let disableAction: DisableAction?
   private let deleteAction: DeleteAction?
-  private let diagnostics: any AppDiagnosticRecording
+  private let diagnostics: AppDiagnosticRecorder
   private var enableCompletionAction: DeleteCompletionAction?
   private var disableCompletionAction: DeleteCompletionAction?
   private var deleteCompletionAction: DeleteCompletionAction?
@@ -213,7 +213,7 @@ public final class SyncedContentSettingsModel {
     cancelEnableAction: CancelEnableAction? = nil,
     disableAction: DisableAction? = nil,
     deleteAction: DeleteAction? = nil,
-    diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared
+    diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live
   ) {
     self.mode = mode
     self.issueMapper = issueMapper

@@ -198,7 +198,7 @@ struct CloudAttachmentCacheFiles {
       let stagedValues = try destination.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
       if sourceValues.isRegularFile == true, stagedValues.isRegularFile == true,
         sourceValues.fileSize == stagedValues.fileSize,
-        try Self.digest(at: sourceURL) == Self.digest(at: destination)
+        try AttachmentFileIO.digest(at: sourceURL) == AttachmentFileIO.digest(at: destination)
       {
         return (relativePath, destination)
       }
@@ -306,7 +306,7 @@ struct CloudAttachmentCacheFiles {
     return values.isRegularFile == true
       && values.isSymbolicLink != true
       && Int64(values.fileSize ?? -1) == expectedByteCount
-      && (try? Self.digest(at: url)) == expectedSHA256
+      && (try? AttachmentFileIO.digest(at: url)) == expectedSHA256
   }
 
   func clearCacheDirectories(namespaceKey: String) throws {
@@ -481,10 +481,6 @@ struct CloudAttachmentCacheFiles {
   static func namespaceDigest(_ namespaceKey: String) -> String {
     Data(SHA256.hash(data: Data(namespaceKey.utf8)))
       .map { String(format: "%02x", $0) }.joined()
-  }
-
-  static func digest(at url: URL) throws -> Data {
-    try AttachmentFileIO.digest(at: url)
   }
 
   static func safeFileName(_ fileName: String) -> String {

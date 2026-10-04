@@ -278,25 +278,6 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     try context.save()
   }
 
-  package static func readArchive(storeURL: URL) throws -> JSONSnipArchive {
-    let lock = try SnipStoreFileLock(url: storeURL.appendingPathExtension("lock"))
-    defer { withExtendedLifetime(lock) {} }
-    let container: ModelContainer
-    do {
-      container = try makeContainer(storeURL: storeURL)
-    } catch {
-      throw SnipLibraryError.invalidStore
-    }
-    let loaded = try load(context: makeContext(container: container), seenRequestIDs: [])
-    try validate(loaded.state)
-    return JSONSnipArchive(
-      version: JSONSnipLibrary.currentVersion,
-      snips: loaded.state.snips,
-      lists: loaded.state.lists,
-      seenRequestIDs: loaded.state.seenRequestIDs
-    )
-  }
-
   public func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
     _ = try? checkedSnapshot(sortedBy: sortMode)
     return makeSnapshot(state: lastKnownState, sortedBy: sortMode)

@@ -36,7 +36,7 @@ enum CloudSyncDiagnostics {
 
   static func record(_ error: Error, operation: String) {
     let retry = ((error as? CKError)?.userInfo[CKErrorRetryAfterKey] as? NSNumber)?.doubleValue
-    AppDiagnostics.shared.record(
+    AppDiagnosticRecorder.live.record(
       .failure(
         operation: diagnosticOperation(operation),
         errorCode: attachmentErrorCode(error),
@@ -52,7 +52,7 @@ enum CloudSyncDiagnostics {
     selectedDelay: Duration?,
     nextAttemptIn: Duration?
   ) {
-    AppDiagnostics.shared.record(
+    AppDiagnosticRecorder.live.record(
       .failure(
         operation: diagnosticOperation(operation),
         errorCode: attachmentErrorCode(error),
@@ -64,19 +64,19 @@ enum CloudSyncDiagnostics {
   }
 
   static func attachmentStarted(_ stage: AttachmentStage) {
-    AppDiagnostics.shared.record(.started(operation: stage.operation))
+    AppDiagnosticRecorder.live.record(.started(operation: stage.operation))
   }
 
   static func attachmentSucceeded(_ stage: AttachmentStage, byteCount: Int64? = nil) {
-    AppDiagnostics.shared.record(.succeeded(operation: stage.operation, byteCount: byteCount))
+    AppDiagnosticRecorder.live.record(.succeeded(operation: stage.operation, byteCount: byteCount))
   }
 
   static func attachmentMissing(_ stage: AttachmentStage) {
-    AppDiagnostics.shared.record(.missing(operation: stage.operation))
+    AppDiagnosticRecorder.live.record(.missing(operation: stage.operation))
   }
 
   static func attachmentFailed(_ stage: AttachmentStage, error: Error) {
-    AppDiagnostics.shared.record(
+    AppDiagnosticRecorder.live.record(
       .failure(
         operation: stage.operation,
         errorCode: attachmentErrorCode(error),
@@ -112,16 +112,4 @@ enum CloudSyncDiagnostics {
     }
   }
 
-}
-
-/// Creates a small, privacy-safe attachment diagnostic file suitable for TestFlight feedback.
-/// The file contains only stable stage, outcome, error, byte-count, version, and timestamp fields.
-public enum CloudSyncDiagnosticsExport {
-  public static func makeShareableFile() throws -> URL {
-    try AppDiagnosticsExport.makeShareableFile()
-  }
-
-  public static func clear() throws {
-    try AppDiagnosticsExport.clear()
-  }
 }

@@ -57,7 +57,7 @@ package actor CloudFullSyncCoordinator {
   private let transport: any CloudRecordTransport
   private let fetchScope: CloudFetchScope
   private let reportResult: @Sendable (SnipSnapCloudSyncResult) async throws -> Void
-  private let diagnostics: any AppDiagnosticRecording
+  private let diagnostics: AppDiagnosticRecorder
   private var started = false
   private let operationGate = AsyncOperationGate()
   private var requiresInitialFetch = true
@@ -66,7 +66,7 @@ package actor CloudFullSyncCoordinator {
     store: any CloudFullSyncStore,
     transport: any CloudRecordTransport,
     fetchScope: CloudFetchScope = .all,
-    diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared,
+    diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
     reportResult: @escaping @Sendable (SnipSnapCloudSyncResult) async throws -> Void = { _ in }
   ) {
     self.store = store
@@ -516,7 +516,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   let namespaceKey: CloudSyncNamespaceKey
   let now: @Sendable () -> Date
   let afterCommitHook: ApplyHook
-  let diagnostics: any AppDiagnosticRecording
+  let diagnostics: AppDiagnosticRecorder
   private var observedDestructiveReset: CloudZoneDeletionReason?
   private let mutationLease: SyncModeActiveMutationLease?
 
@@ -528,7 +528,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     mutationLease: SyncModeActiveMutationLease? = nil,
     attachmentPolicy: CloudAttachmentCompatibilityPolicy = .openSourceDefault,
     now: @escaping @Sendable () -> Date = Date.init,
-    diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared,
+    diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
     afterCommitHook: @escaping ApplyHook = {}
   ) {
     precondition(namespace.zones.contains(dataZone))

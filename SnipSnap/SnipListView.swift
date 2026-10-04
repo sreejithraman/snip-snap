@@ -586,7 +586,7 @@ struct SnipListView: View {
             commitDrop(payload, target: finalTarget, listID: listID)
             return
         }
-        if ClipboardDragPlacement.shouldPlace(outcome: outcome, droppedInList: false) {
+        if outcome == .copy {
             model.setDoneAfterExternalDrop(versions: payload.versions)
             let placed = payload.ids.compactMap { id in
                 model.snips.first { $0.id == id }
@@ -748,7 +748,7 @@ struct SnipListView: View {
                 controller: cardInteractionController,
                 id: snip.id,
                 contextMenu: model.editingID == snip.id ? nil : PanelCardContextMenu(
-                    makeMenu: { makeContextMenu(for: snip.id) },
+                    makeMenu: { makeSelectionMenu(for: contextSelection(for: snip.id)) },
                     onOpen: {
                         contextMenuSelection = contextSelection(for: snip.id)
                     },
@@ -913,10 +913,6 @@ struct SnipListView: View {
 
     private func contextSelection(for id: UUID) -> Set<UUID> {
         model.selection.contains(id) ? model.selection : [id]
-    }
-
-    private func makeContextMenu(for id: UUID) -> NSMenu {
-        makeSelectionMenu(for: contextSelection(for: id))
     }
 
     private func makeSelectionMenu(for ids: Set<UUID>) -> NSMenu {

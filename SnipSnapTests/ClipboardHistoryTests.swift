@@ -145,7 +145,7 @@ final class ClipboardHistoryTests: XCTestCase {
         let source = directory.appendingPathComponent("large-mixed-history.bin")
         try Data(
             repeating: 7,
-            count: ClipboardHistory.representationByteLimit + 1
+            count: ClipboardHistoryState.representationByteLimit + 1
         ).write(to: source)
         let writers = SnipPasteboardExport(
             text: "Keep this large text",
@@ -331,7 +331,7 @@ final class ClipboardHistoryTests: XCTestCase {
         let item = NSPasteboardItem()
         item.setString("Visible text", forType: .string)
         item.setData(
-            Data(repeating: 7, count: ClipboardHistory.representationByteLimit + 1),
+            Data(repeating: 7, count: ClipboardHistoryState.representationByteLimit + 1),
             forType: .png
         )
         item.setData(Data([1, 2, 3]), forType: .init("world.sree.snipsnap.tests.unsupported"))
@@ -492,7 +492,7 @@ final class ClipboardHistoryTests: XCTestCase {
         let next = clipboardEntry("M", byteCount: 4)
         let older = clipboardEntry("L", byteCount: 2)
 
-        let result = ClipboardHistory.trimmed(
+        let result = ClipboardHistoryState.trimmed(
             [oversized, newest, next, older],
             maximumEntryBytes: 8,
             maximumHistoryBytes: 8,
@@ -510,12 +510,12 @@ final class ClipboardHistoryTests: XCTestCase {
         await context.history.togglePinned(id: id)
         let pinnedAt = try XCTUnwrap(context.history.entry(id: id)?.pinnedAt)
 
-        for index in 0..<(ClipboardHistory.limit + 5) {
+        for index in 0..<(ClipboardHistoryState.limit + 5) {
             writeText("Entry \(index)", to: context.pasteboard)
             context.history.poll()
         }
         await context.history.flushPersistence()
-        XCTAssertEqual(context.history.entries.count, ClipboardHistory.limit + 1)
+        XCTAssertEqual(context.history.entries.count, ClipboardHistoryState.limit + 1)
         XCTAssertEqual(context.history.entries.first?.id, id)
 
         context.history.clear()
@@ -615,7 +615,7 @@ final class ClipboardHistoryTests: XCTestCase {
 
     private func makeContext(
         persistedEntries: [ClipboardEntry] = [],
-        diagnostics: any AppDiagnosticRecording = AppDiagnostics.shared
+        diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live
     ) throws -> (
         history: ClipboardHistory,
         pasteboard: NSPasteboard,

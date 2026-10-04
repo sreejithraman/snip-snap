@@ -81,7 +81,9 @@ struct PanelHeaderView: View {
                 .accessibilityIdentifier("global-search-expand")
 
                 TextField("Search", text: $model.query)
-                    .panelInputStyle()
+                    .textFieldStyle(.plain)
+                    .font(.body)
+                    .foregroundStyle(SnipSnapColors.textPrimary)
                     .focused($focusedTarget, equals: .search)
                     .disabled(model.editingID != nil)
                     .accessibilityLabel("Search all lists and Clipboard")

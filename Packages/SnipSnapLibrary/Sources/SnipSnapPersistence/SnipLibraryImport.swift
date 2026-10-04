@@ -49,13 +49,6 @@ public enum SnipLibraryImport {
       throw error
     }
   }
-
-  public static func apply(
-    _ preview: SnipImportPreview,
-    to target: any SnipLibrary
-  ) async throws -> SnipImportResult {
-    try await target.applyImport(preview)
-  }
 }
 
 extension JSONSnipLibrary {

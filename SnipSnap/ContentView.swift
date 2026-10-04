@@ -115,7 +115,7 @@ struct ContentView: View {
             }
         }
         .glassMenuHost(isBlocked: panelDialogs.isPresented || selectedPreviewURL != nil)
-        .tint(SnipSnapColors.controlTint)
+        .tint(SnipSnapTheme.controlTint)
         .preferredColorScheme(model.appearance.colorScheme)
         .quickLookPreview($selectedPreviewURL, in: previewURLs)
         .onChange(of: showingFileImporter) { _, isPresented in
@@ -170,7 +170,7 @@ struct ContentView: View {
                 }
             }
         }
-        .panelControlBaseline()
+        .controlSize(.regular)
         .background {
             PanelDragRegion()
         }
@@ -288,7 +288,7 @@ struct ContentView: View {
         guard isPresented else {
             coordinator.dismissPanelDialog(id: .newList)
             newListMovingIDs = []
-            restoreListFocus()
+            focusedTarget = .list
             return
         }
         coordinator.presentPanelDialog(id: .newList, title: String(localized: "New list")) {
@@ -670,7 +670,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
                     if !draft.attachments.isEmpty {
                         AttachmentPreviewStrip(
-                            items: draftAttachmentPreviewItems(for: listID),
+                            items: draft.attachments.map(AttachmentPreviewItem.init(url:)),
                             onPreview: { item in
                                 guard let url = item.url else { return }
                                 openAttachmentPreview(draft.attachments, selectedURL: url)
@@ -827,13 +827,18 @@ struct ContentView: View {
             in: model.appearance.colorScheme ?? colorScheme,
             chrome: .glass
         )
-        return PanelComposerSendControl(
+        return AppMorphingSendControl(
             sourceID: listID,
             isEnabled: isInteractive && canSaveInlineEntry(for: listID),
             tint: colors.tint,
             labelColor: colors.label,
+            size: CGSize(
+                width: PanelControlMetrics.actionWidth,
+                height: PanelControlMetrics.actionHeight
+            ),
+            iconLength: PanelControlMetrics.actionIconLength,
             destinations: model.lists,
-            isChoosingDestination: Binding(
+            isPresented: Binding(
                 get: { isInteractive && sendDestination?.sourceID == listID },
                 set: { isPresented in
                     if isPresented {
@@ -912,10 +917,6 @@ struct ContentView: View {
             && selectedPreviewURL == nil
             && (!draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || !draft.attachments.isEmpty)
-    }
-
-    private func draftAttachmentPreviewItems(for listID: UUID) -> [AttachmentPreviewItem] {
-        composerDraft(for: listID).attachments.map(AttachmentPreviewItem.init(url:))
     }
 
     private func composerDraft(for listID: UUID) -> ComposerDraft {
@@ -1088,10 +1089,6 @@ struct ContentView: View {
     private func selectAllVisible() {
         guard model.editingID == nil, model.canSelectVisibleSnips else { return }
         model.selectAllVisible()
-        focusedTarget = .list
-    }
-
-    private func restoreListFocus() {
         focusedTarget = .list
     }
 

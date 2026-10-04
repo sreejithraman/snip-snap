@@ -11,15 +11,6 @@ enum ClipboardPlacementFeedback: Equatable {
     case silent
 }
 
-enum ClipboardDragPlacement {
-    static func shouldPlace(
-        outcome: PanelDragSessionOutcome,
-        droppedInList: Bool
-    ) -> Bool {
-        outcome == .copy && !droppedInList
-    }
-}
-
 struct ClipboardCopyPulse: Equatable {
     let entryID: UUID
     let token: UUID

@@ -301,21 +301,8 @@ private actor ModeManagedSnipLibrary: SnipLibrary {
     return update
   }
 
-  func transferSnapshot(revision: UInt64) async throws -> SnipLibraryTransferSnapshot {
-    throw SnipLibraryError.transferUnsupported
-  }
-
   func previewTransferSnapshot(revision: UInt64) async throws -> SnipLibraryTransferSnapshot {
     try await persistence.managedPreviewTransferSnapshot(revision: revision)
-  }
-
-  func mergeTransferSnapshot(
-    _ source: SnipLibraryTransferSnapshot,
-    transitionID: UUID,
-    expectedTargetDigest: Data?
-  ) async throws -> SnipLibraryTransferResult {
-    _ = (source, transitionID, expectedTargetDigest)
-    throw SnipLibraryError.transferUnsupported
   }
 
   func previewImport(

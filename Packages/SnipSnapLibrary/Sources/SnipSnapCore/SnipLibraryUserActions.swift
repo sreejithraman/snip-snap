@@ -33,23 +33,9 @@ public typealias SnipBackupImportPreviewer = @Sendable (
   _ target: any SnipLibrary
 ) async throws -> SnipImportPreview
 
-public struct SnipLibraryUserActionsRebinder: Sendable {
-  private let makeActions: @Sendable (any SnipLibrary) -> any SnipLibraryUserActions
-
-  public init(
-    _ makeActions: @escaping @Sendable (any SnipLibrary) -> any SnipLibraryUserActions
-  ) {
-    self.makeActions = makeActions
-  }
-
-  public static var direct: Self {
-    Self { DirectSnipLibraryUserActions(library: $0) }
-  }
-
-  public func actions(for library: any SnipLibrary) -> any SnipLibraryUserActions {
-    makeActions(library)
-  }
-}
+public typealias SnipLibraryUserActionsFactory = @Sendable (
+  _ library: any SnipLibrary
+) -> any SnipLibraryUserActions
 
 public actor DirectSnipLibraryUserActions: SnipLibraryUserActions {
   private struct PendingDeletion: Sendable {

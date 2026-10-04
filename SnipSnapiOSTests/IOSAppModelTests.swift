@@ -4072,15 +4072,6 @@ final class IOSAppModelTests: XCTestCase {
 
     func testAttachmentDraftCleanupWaitsForChildPresentations() {
         XCTAssertFalse(
-            AttachmentDraftLifecycle.allowsDismissal(isSaving: false, isStaging: true)
-        )
-        XCTAssertFalse(
-            AttachmentDraftLifecycle.allowsDismissal(isSaving: true, isStaging: false)
-        )
-        XCTAssertTrue(
-            AttachmentDraftLifecycle.allowsDismissal(isSaving: false, isStaging: false)
-        )
-        XCTAssertFalse(
             AttachmentDraftLifecycle.allowsSaving(
                 isSaving: true,
                 isStaging: false,
@@ -5034,22 +5025,19 @@ final class IOSAppModelTests: XCTestCase {
     }
 
     func testImagePreviewEligibilityUsesContentTypeAndChecksUnknownFiles() {
+        XCTAssertFalse(AttachmentImageType.isImage(
+            fileName: "image-without-extension", contentType: UTType.data.identifier
+        ))
+        XCTAssertFalse(AttachmentImageType.isImage(
+            fileName: "image-without-extension", contentType: nil
+        ))
         XCTAssertTrue(AttachmentImageType.isImage(
             fileName: "image-without-extension", contentType: UTType.png.identifier
         ))
-        XCTAssertFalse(AttachmentImageType.shouldPrepare(
-            fileName: "image-without-extension", contentType: UTType.data.identifier
-        ))
-        XCTAssertFalse(AttachmentImageType.shouldPrepare(
-            fileName: "image-without-extension", contentType: nil
-        ))
-        XCTAssertTrue(AttachmentImageType.shouldPrepare(
-            fileName: "image-without-extension", contentType: UTType.png.identifier
-        ))
-        XCTAssertFalse(AttachmentImageType.shouldPrepare(
+        XCTAssertFalse(AttachmentImageType.isImage(
             fileName: "notes", contentType: UTType.plainText.identifier
         ))
-        XCTAssertFalse(AttachmentImageType.shouldPrepare(
+        XCTAssertFalse(AttachmentImageType.isImage(
             fileName: "notes.txt", contentType: nil
         ))
     }
@@ -5195,7 +5183,7 @@ final class IOSAppModelTests: XCTestCase {
         return IOSAppModel(
             library: assembly.library,
             userActions: assembly.userActions,
-            userActionsRebinder: assembly.userActionsRebinder
+            userActionsFactory: assembly.userActionsFactory
         )
     }
 

@@ -41,13 +41,9 @@ struct SnipDragPayload: Codable, Equatable, Sendable, Transferable {
         ProxyRepresentation(exporting: \.text)
     }
 
-    static func make(snips: [Snip]) -> SnipDragPayload {
-        make(snips: snips, attachmentURL: nil)
-    }
-
     static func make(
         snips: [Snip],
-        attachmentURL: ((SnipAttachment) -> URL?)?
+        attachmentURL: ((SnipAttachment) -> URL?)? = nil
     ) -> SnipDragPayload {
         var seenAttachmentIDs: Set<UUID> = []
         let attachments = snips.flatMap(\.attachments).filter {
