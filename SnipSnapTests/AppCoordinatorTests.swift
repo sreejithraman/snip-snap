@@ -8,6 +8,94 @@ import SwiftUI
 @testable import SnipSnapPersistence
 
 final class AppCoordinatorTests: StoreBackedTestCase {
+    @MainActor
+    func testRecordingRejectsUnregisterableChordAndResumesPreviousShortcuts() throws {
+        let settings = ShortcutSettings(defaults: defaults())
+        let original = StubGlobalHotKeyManager()
+        let failedCandidate = StubGlobalHotKeyManager(error: StubHotKeyError.registration)
+        let resumed = StubGlobalHotKeyManager()
+        var managers = [original, failedCandidate, resumed]
+        let coordinator = AppCoordinator(
+            model: AppModel(library: try JSONSnipLibrary(fileURL: storeURL()), defaults: defaults()),
+            shortcutSettings: settings,
+            makeHotKeyManager: { _ in managers.removeFirst() },
+            isAccessibilityTrusted: { true }
+        )
+        coordinator.start()
+        let recorder = NSObject()
+        ShortcutRecordingState.begin(recorder)
+        defer { ShortcutRecordingState.end(recorder) }
+
+        XCTAssertThrowsError(try coordinator.setShortcut(
+            .keyChord(keyCode: UInt32(kVK_ANSI_K), modifiers: UInt32(controlKey | optionKey), keyLabel: "K"),
+            for: .togglePanel
+        ))
+        XCTAssertEqual(settings.configuration, .snipSnapDefaults)
+
+        ShortcutRecordingState.end(recorder)
+
+        XCTAssertEqual(resumed.registeredConfigurations, [.snipSnapDefaults])
+    }
+
+    @MainActor
+    func testRecordingReleasesGlobalKeyChordsAndRestoresThemAfterRecording() throws {
+        let suiteName = "Snip SnapShortcutRecordingTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = ShortcutSettings(defaults: defaults)
+        let chord = ShortcutKeyChord(keyCode: kVK_ANSI_K, modifiers: controlKey | optionKey, keyLabel: "K")
+        settings.save(try settings.candidate(setting: .keyChord(chord), for: .togglePanel))
+        let coordinator = AppCoordinator(
+            model: AppModel(library: try JSONSnipLibrary(fileURL: storeURL()), defaults: defaults),
+            shortcutSettings: settings,
+            isAccessibilityTrusted: { true }
+        )
+        let button = ShortcutRecorderButton.RecorderButton()
+        let window = NSWindow()
+        window.contentView = button
+        defer { window.contentView = nil }
+        var recorded: ShortcutTrigger?
+        button.onRecord = {
+            recorded = $0
+            do {
+                try coordinator.setShortcut($0, for: .togglePanel)
+            } catch {
+                XCTFail("Saving the recorded shortcut failed: \(error)")
+            }
+            XCTAssertTrue(chordIsAvailable(), "Saving must leave live chords suspended until recording ends")
+        }
+
+        func chordIsAvailable() -> Bool {
+            var hotKey: EventHotKeyRef?
+            let status = RegisterEventHotKey(
+                chord.keyCode, chord.modifiers,
+                EventHotKeyID(signature: 0x54455354, id: 1),
+                GetApplicationEventTarget(), 0, &hotKey
+            )
+            if let hotKey { UnregisterEventHotKey(hotKey) }
+            return status == noErr
+        }
+        guard chordIsAvailable() else {
+            throw XCTSkip("The OS could not provide the integration test's chord")
+        }
+        coordinator.start()
+        XCTAssertFalse(chordIsAvailable())
+
+        button.performClick(nil)
+
+        XCTAssertTrue(chordIsAvailable(), "The recorder must receive an already assigned global chord")
+        button.keyDown(with: try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [.control, .option],
+            timestamp: 1, windowNumber: window.windowNumber, context: nil,
+            characters: "k", charactersIgnoringModifiers: "k", isARepeat: false,
+            keyCode: UInt16(kVK_ANSI_K)
+        )))
+
+        XCTAssertEqual(recorded, .keyChord(chord))
+        XCTAssertFalse(chordIsAvailable(), "Global chords must resume after recording")
+        withExtendedLifetime(coordinator) {}
+    }
+
     func testPendingErrorsWaitForAUsablePanel() {
         XCTAssertTrue(AppCoordinator.shouldPresentPendingError(
             isVisible: true,

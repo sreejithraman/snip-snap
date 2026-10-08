@@ -61,6 +61,8 @@ final class AppCoordinator {
     private let hud = CaptureHUDController()
     let panelFocusRequests = PassthroughSubject<PanelFocusRequest, Never>()
     private var hotKeys: (any GlobalHotKeyManaging)?
+    private var hasStarted = false
+    private var shortcutRecordingSubscription: AnyCancellable?
     private weak var panelWindow: NSWindow?
     let panelDialogs = PanelDialogPresentationState()
     let snipCommandFocus = PanelSnipCommandFocusState()
@@ -125,7 +127,18 @@ final class AppCoordinator {
             openSettings: openAccessibilitySettings
         )
         accessibilityPermissions.onBecameGranted = { [weak self] in
-            self?.restartShortcutsAfterAccessibilityGrant()
+            self?.restartShortcuts()
+        }
+        shortcutRecordingSubscription = ShortcutRecordingState.changes.sink { [weak self] isActive in
+            MainActor.assumeIsolated {
+                guard let self, self.hasStarted else { return }
+                if isActive {
+                    self.hotKeys?.unregister()
+                    self.hotKeys = nil
+                } else {
+                    self.restartShortcuts()
+                }
+            }
         }
     }
 
@@ -156,9 +169,10 @@ final class AppCoordinator {
     }
 
     func start() {
+        hasStarted = true
         observeExternalApplicationActivations()
         accessibilityPermissions.start()
-        guard hotKeys == nil else { return }
+        guard hotKeys == nil, !ShortcutRecordingState.isActive else { return }
         refreshAppShortcutMenu()
         let manager = newHotKeyManager()
         do {
@@ -383,10 +397,7 @@ final class AppCoordinator {
                         self.presentAccessibilityRepair()
                         return
                     }
-                    self.hud.show(
-                        message: error.localizedDescription,
-                        symbol: error == .duplicateSelection ? "minus" : "exclamationmark"
-                    )
+                    self.hud.show(failure: error)
                 }
             }
         }
@@ -398,8 +409,8 @@ final class AppCoordinator {
         showPanel(panelWindow, focusing: nil)
     }
 
-    private func restartShortcutsAfterAccessibilityGrant() {
-        guard hotKeys != nil else { return }
+    private func restartShortcuts() {
+        guard hasStarted, !ShortcutRecordingState.isActive else { return }
         do {
             try installShortcuts(shortcutSettings.configuration)
         } catch {
@@ -718,6 +729,7 @@ final class AppCoordinator {
     }
 
     private func handle(_ action: GlobalHotKeyAction) {
+        guard !ShortcutRecordingState.isActive else { return }
         switch action {
         case .captureSelection:
             captureSelection()
@@ -743,6 +755,14 @@ final class AppCoordinator {
     }
 
     private func installShortcuts(_ configuration: GlobalShortcutConfiguration) throws {
+        if ShortcutRecordingState.isActive {
+            // Validate the new binding while recording, then release it so the
+            // recorder keeps receiving input until recording ends.
+            let candidate = newHotKeyManager()
+            defer { candidate.unregister() }
+            try candidate.register(configuration: configuration)
+            return
+        }
         let previous = shortcutSettings.configuration
         hotKeys?.unregister()
         hotKeys = nil

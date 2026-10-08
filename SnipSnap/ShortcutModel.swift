@@ -105,6 +105,27 @@ struct ShortcutKeyChord: Codable, Hashable, Sendable {
         ].contains(Int(keyCode))
     }
 
+    var isShiftOnlyLetter: Bool {
+        guard modifiers == UInt32(shiftKey) else { return false }
+        let isANSILetter = [
+            kVK_ANSI_A, kVK_ANSI_B, kVK_ANSI_C, kVK_ANSI_D, kVK_ANSI_E,
+            kVK_ANSI_F, kVK_ANSI_G, kVK_ANSI_H, kVK_ANSI_I, kVK_ANSI_J,
+            kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_M, kVK_ANSI_N, kVK_ANSI_O,
+            kVK_ANSI_P, kVK_ANSI_Q, kVK_ANSI_R, kVK_ANSI_S, kVK_ANSI_T,
+            kVK_ANSI_U, kVK_ANSI_V, kVK_ANSI_W, kVK_ANSI_X, kVK_ANSI_Y,
+            kVK_ANSI_Z
+        ].contains(Int(keyCode))
+        if isANSILetter { return true }
+        // Other layouts place letters on punctuation keys. Keep named special
+        // keys such as Space distinct from the recorded character label.
+        guard ![
+            kVK_Space, kVK_Return, kVK_ANSI_KeypadEnter, kVK_Tab,
+            kVK_Delete, kVK_ForwardDelete, kVK_Escape, kVK_Home, kVK_End, kVK_Help
+        ].contains(Int(keyCode)) else { return false }
+        let letterCharacters = CharacterSet.letters.union(.nonBaseCharacters)
+        return !keyLabel.isEmpty && keyLabel.unicodeScalars.allSatisfy(letterCharacters.contains)
+    }
+
     var conflictsWithFixedCommand: Bool {
         let key = Int(keyCode)
         let command = UInt32(cmdKey)
@@ -323,7 +344,9 @@ struct GlobalShortcutConfiguration: Codable, Equatable, Sendable {
         guard Set(triggers).count == triggers.count else {
             return false
         }
-        return triggers.allSatisfy { $0.chord?.conflictsWithFixedCommand != true }
+        return triggers.allSatisfy {
+            $0.chord?.conflictsWithFixedCommand != true && $0.chord?.isShiftOnlyLetter != true
+        }
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -417,12 +440,14 @@ enum ShortcutSettingsError: Error, Equatable, LocalizedError {
     case duplicate
     case defaultForAnotherAction
     case reserved
+    case typingShortcut
 
     var errorDescription: String? {
         switch self {
         case .duplicate: String(localized: "Another action already uses that shortcut.")
         case .defaultForAnotherAction: String(localized: "That shortcut is the default for another action.")
         case .reserved: String(localized: "macOS or a fixed Snip Snap command uses that shortcut.")
+        case .typingShortcut: String(localized: "Add Command, Control, or Option to a global letter shortcut.")
         }
     }
 }
@@ -444,7 +469,26 @@ final class ShortcutSettings: ObservableObject {
             .flatMap { try? JSONDecoder().decode(GlobalShortcutConfiguration.self, from: $0) }
         let decodedApp = storedAppData
             .flatMap { try? JSONDecoder().decode(AppShortcutConfiguration.self, from: $0) }
-        let validDecodedGlobal = decodedGlobal.flatMap { $0.isValid ? $0 : nil }
+        let repairedGlobal = decodedGlobal.map { configuration in
+            var repaired = configuration
+            let unsafeActions = GlobalHotKeyAction.allCases.filter {
+                configuration.trigger(for: $0).chord?.isShiftOnlyLetter == true
+            }
+            var usedTriggers = Set(GlobalHotKeyAction.allCases
+                .filter { !unsafeActions.contains($0) }
+                .map(configuration.trigger))
+            for action in unsafeActions {
+                // Preserve safe saved assignments, including ones using another action's default.
+                let fallbacks = [action.defaultTrigger, .commandDoubleShift(.right)]
+                    + GlobalHotKeyAction.allCases.map(\.defaultTrigger)
+                if let replacement = fallbacks.first(where: { !usedTriggers.contains($0) }) {
+                    repaired.set(replacement, for: action)
+                    usedTriggers.insert(replacement)
+                }
+            }
+            return repaired
+        }
+        let validDecodedGlobal = repairedGlobal.flatMap { $0.isValid ? $0 : nil }
         var resolvedGlobal = validDecodedGlobal ?? .snipSnapDefaults
         var resolvedApp = (decodedApp ?? .snipSnapDefaults).fillingMissingDefaults
         if !resolvedApp.isValid {
@@ -490,6 +534,9 @@ final class ShortcutSettings: ObservableObject {
         setting trigger: ShortcutTrigger,
         for action: GlobalHotKeyAction
     ) throws -> GlobalShortcutConfiguration {
+        if trigger.chord?.isShiftOnlyLetter == true {
+            throw ShortcutSettingsError.typingShortcut
+        }
         if trigger.chord?.conflictsWithFixedCommand == true {
             throw ShortcutSettingsError.reserved
         }

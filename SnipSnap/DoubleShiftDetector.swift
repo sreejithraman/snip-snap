@@ -60,6 +60,9 @@ struct DoubleShiftRouter: Sendable {
         .flagsChanged,
         .keyDown,
         .keyUp,
+        .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
+        .otherMouseDown, .otherMouseUp, .leftMouseDragged,
+        .rightMouseDragged, .otherMouseDragged, .scrollWheel,
     ]
 
     private var detectors: [DoubleShiftGesture: DoubleShiftDetector]

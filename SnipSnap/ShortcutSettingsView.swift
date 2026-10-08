@@ -1,20 +1,26 @@
 import AppKit
 import Carbon.HIToolbox
+import Combine
 import SnipSnapCore
 import SwiftUI
 
 @MainActor
 enum ShortcutRecordingState {
     private static var activeRecorders: Set<ObjectIdentifier> = []
+    static let changes = PassthroughSubject<Bool, Never>()
 
     static var isActive: Bool { !activeRecorders.isEmpty }
 
     static func begin(_ recorder: AnyObject) {
+        let wasActive = isActive
         activeRecorders.insert(ObjectIdentifier(recorder))
+        if !wasActive, isActive { changes.send(true) }
     }
 
     static func end(_ recorder: AnyObject) {
+        let wasActive = isActive
         activeRecorders.remove(ObjectIdentifier(recorder))
+        if wasActive, !isActive { changes.send(false) }
     }
 }
 
@@ -237,7 +243,7 @@ struct ShortcutRecorderButton: NSViewRepresentable {
             }
             if inputMonitor == nil {
                 inputMonitor = NSEvent.addLocalMonitorForEvents(
-                    matching: [.flagsChanged, .keyDown, .keyUp]
+                    matching: DoubleShiftRouter.eventMask
                 ) {
                     [weak self] event in
                     guard let self, self.isRecording else { return event }
@@ -288,7 +294,10 @@ struct ShortcutRecorderButton: NSViewRepresentable {
                 doubleShiftRouter.cancel()
                 return false
             }
-            guard event.type == .keyDown else { return false }
+            guard event.type == .keyDown else {
+                doubleShiftRouter.cancel()
+                return false
+            }
             doubleShiftRouter.cancel()
             if event.keyCode == UInt16(kVK_Escape) {
                 stopRecording()
