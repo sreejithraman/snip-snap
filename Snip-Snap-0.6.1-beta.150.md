@@ -1,0 +1,9 @@
+# Snip Snap 0.6.1 Beta 150
+
+## Mac
+
+- Keep empty captures quiet and make shortcuts safe to record
+
+## iOS
+
+- No iOS changes in this build.
