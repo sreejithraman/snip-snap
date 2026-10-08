@@ -4,6 +4,67 @@ import AppKit
 @testable import SnipSnap
 
 final class SelectionCaptureTests: XCTestCase {
+    @MainActor
+    func testEmptySelectionDoesNotShowCaptureError() async {
+        for behavior in [SelectionCaptureFixture.CopyBehavior.timeout, .writeWithoutText] {
+            let fixture = SelectionCaptureFixture(axTexts: [nil], copyBehaviors: [behavior])
+            let reader = fixture.makeReader(copyTimeout: 0.03, pollInterval: 0.01)
+            let result = await withCheckedContinuation { continuation in
+                reader.capture(processID: 74, applicationName: "Editor") {
+                    continuation.resume(returning: $0)
+                }
+            }
+            guard case .failure(let failure) = result else {
+                XCTFail("An empty selection should not produce a capture")
+                continue
+            }
+            let existingWindows = Set(NSApp.windows.map(ObjectIdentifier.init))
+            let hud = CaptureHUDController()
+            defer {
+                for window in NSApp.windows where !existingWindows.contains(ObjectIdentifier(window)) {
+                    window.orderOut(nil)
+                }
+            }
+
+            hud.show(failure: failure)
+
+            XCTAssertFalse(
+                NSApp.windows.contains {
+                    !existingWindows.contains(ObjectIdentifier($0)) && $0.isVisible
+                },
+                "Empty selection should stay quiet, including when Copy leaves the clipboard unchanged"
+            )
+            XCTAssertEqual(fixture.restoreCount, failure == .noSelection ? 1 : 0)
+        }
+    }
+
+    @MainActor
+    func testCaptureFailuresStillShowFeedback() {
+        let failures: [SelectionCaptureFailure] = [
+            .sourceUnavailable, .selectionUnavailable, .clipboardUnavailable,
+            .clipboardSnapshotTimedOut, .clipboardChanged, .clipboardRestoreFailed,
+            .sourceChanged, .duplicateSelection
+        ]
+        for failure in failures {
+            let existingWindows = Set(NSApp.windows.map(ObjectIdentifier.init))
+            let hud = CaptureHUDController()
+            defer {
+                for window in NSApp.windows where !existingWindows.contains(ObjectIdentifier(window)) {
+                    window.orderOut(nil)
+                }
+            }
+
+            hud.show(failure: failure)
+
+            XCTAssertTrue(
+                NSApp.windows.contains {
+                    !existingWindows.contains(ObjectIdentifier($0)) && $0.isVisible
+                },
+                "Capture feedback should remain visible for \(failure)"
+            )
+        }
+    }
+
     func testSelectionCaptureFallsBackToFocusedAXTextWhenCopyIsUnavailable() {
         let fixture = SelectionCaptureFixture(axTexts: ["  exact selection\n"])
         let reader = fixture.makeReader()

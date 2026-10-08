@@ -16,6 +16,7 @@ final class GlobalHotKeyManager: GlobalHotKeyManaging {
     private var doubleShiftRouter = DoubleShiftRouter(gestures: [])
     private var doubleShiftActions: [DoubleShiftGesture: GlobalHotKeyAction] = [:]
     private let handler: (GlobalHotKeyAction) -> Void
+    private var isRegistered = false
 
     init(handler: @escaping (GlobalHotKeyAction) -> Void) {
         self.handler = handler
@@ -42,6 +43,7 @@ final class GlobalHotKeyManager: GlobalHotKeyManaging {
                 doubleShiftRouter = DoubleShiftRouter(gestures: doubleShiftActions.keys)
                 installDoubleShiftMonitors()
             }
+            isRegistered = true
         } catch {
             unregister()
             throw error
@@ -49,10 +51,12 @@ final class GlobalHotKeyManager: GlobalHotKeyManaging {
     }
 
     fileprivate func receive(_ action: GlobalHotKeyAction) {
+        guard isRegistered, !ShortcutRecordingState.isActive else { return }
         handler(action)
     }
 
     func unregister() {
+        isRegistered = false
         hotKeys.forEach { UnregisterEventHotKey($0) }
         hotKeys = []
         if let eventHandler {
@@ -168,7 +172,7 @@ private func snipSnapGlobalHotKeyHandler(
     let manager = Unmanaged<GlobalHotKeyManager>
         .fromOpaque(userData)
         .takeUnretainedValue()
-    Task { @MainActor in
+    MainActor.assumeIsolated {
         manager.receive(action)
     }
     return noErr

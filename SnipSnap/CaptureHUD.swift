@@ -21,6 +21,16 @@ final class CaptureHUDController {
         panel.hidesOnDeactivate = false
     }
 
+    func show(failure: SelectionCaptureFailure) {
+        // With no selection, many apps leave the clipboard unchanged on Copy.
+        // The reader reports that as a timeout, so keep both empty outcomes quiet.
+        guard failure != .noSelection, failure != .copyTimedOut else { return }
+        show(
+            message: failure.localizedDescription,
+            symbol: failure == .duplicateSelection ? "minus" : "exclamationmark"
+        )
+    }
+
     func show(message: String, symbol: String) {
         dismissWorkItem?.cancel()
         let hostingView = NSHostingView(

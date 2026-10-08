@@ -165,10 +165,50 @@ final class ShortcutTests: StoreBackedTestCase {
     }
 
     func testDoubleShiftMonitorSeesKeyReleaseBetweenShiftTaps() {
-        XCTAssertEqual(
-            DoubleShiftRouter.eventMask,
-            [.flagsChanged, .keyDown, .keyUp]
-        )
+        XCTAssertTrue(DoubleShiftRouter.eventMask.isSuperset(of: [.flagsChanged, .keyDown, .keyUp]))
+    }
+
+    @MainActor
+    func testMouseInteractionsCancelDoubleShiftBeforeItCanRunAnAction() throws {
+        var actions: [GlobalHotKeyAction] = []
+        let manager = GlobalHotKeyManager { actions.append($0) }
+        try manager.register(configuration: .snipSnapDefaults)
+        defer { manager.unregister() }
+        let pointerTypes: [CGEventType] = [
+            .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
+            .otherMouseDown, .otherMouseUp, .leftMouseDragged,
+            .rightMouseDragged, .otherMouseDragged, .scrollWheel
+        ]
+        for (index, type) in pointerTypes.enumerated() {
+            actions.removeAll()
+            let start = Double(index * 2)
+            manager.receiveForDoubleShift(keyEvent(
+                type: .flagsChanged, flags: .shift, timestamp: start, keyCode: UInt16(kVK_Shift)
+            ))
+            let cgEvent = try XCTUnwrap(CGEvent(source: nil))
+            cgEvent.type = type
+            let pointer = try XCTUnwrap(NSEvent(cgEvent: cgEvent))
+            let mask = NSEvent.EventTypeMask(rawValue: UInt64(1) << pointer.type.rawValue)
+            if DoubleShiftRouter.eventMask.contains(mask) {
+                manager.receiveForDoubleShift(pointer)
+            }
+            manager.receiveForDoubleShift(keyEvent(
+                type: .flagsChanged, flags: [], timestamp: start + 0.08, keyCode: UInt16(kVK_Shift)
+            ))
+            manager.receiveForDoubleShift(keyEvent(
+                type: .flagsChanged, flags: .shift, timestamp: start + 0.20, keyCode: UInt16(kVK_Shift)
+            ))
+
+            XCTAssertTrue(actions.isEmpty, "Mouse interaction \(type) must cancel the pending tap")
+
+            manager.receiveForDoubleShift(keyEvent(
+                type: .flagsChanged, flags: [], timestamp: start + 0.28, keyCode: UInt16(kVK_Shift)
+            ))
+            manager.receiveForDoubleShift(keyEvent(
+                type: .flagsChanged, flags: .shift, timestamp: start + 0.40, keyCode: UInt16(kVK_Shift)
+            ))
+            XCTAssertEqual(actions, [.captureSelection], "Two clean taps should still work after \(type)")
+        }
     }
 
     @MainActor
@@ -391,6 +431,104 @@ final class ShortcutTests: StoreBackedTestCase {
         XCTAssertFalse(router.shiftChanged(gesture: command, isDown: true, timestamp: 2.00))
         XCTAssertFalse(router.shiftChanged(gesture: command, isDown: false, timestamp: 2.08))
         XCTAssertTrue(router.shiftChanged(gesture: command, isDown: true, timestamp: 2.20))
+    }
+
+    @MainActor
+    func testGlobalShortcutsRejectShiftOnlyLettersWithoutRestrictingAppShortcuts() throws {
+        let suiteName = "Snip SnapTypingShortcutTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = ShortcutSettings(defaults: defaults)
+        for (keyCode, label) in [(kVK_ANSI_A, "A"), (kVK_ANSI_K, "K"), (kVK_ANSI_Z, "Z")] {
+            let chord = ShortcutKeyChord(keyCode: keyCode, modifiers: shiftKey, keyLabel: label)
+
+            XCTAssertThrowsError(try settings.candidate(setting: .keyChord(chord), for: .togglePanel)) {
+                XCTAssertEqual($0 as? ShortcutSettingsError, .typingShortcut)
+            }
+            XCTAssertNoThrow(try settings.candidate(setting: chord, for: .toggleDone))
+            for modifiers in [controlKey | shiftKey, optionKey | shiftKey] {
+                let safeChord = ShortcutKeyChord(keyCode: keyCode, modifiers: modifiers, keyLabel: label)
+                XCTAssertNoThrow(try settings.candidate(setting: .keyChord(safeChord), for: .togglePanel))
+            }
+        }
+        XCTAssertNoThrow(try settings.candidate(
+            setting: .keyChord(.init(keyCode: kVK_ANSI_K, modifiers: cmdKey | shiftKey, keyLabel: "K")),
+            for: .togglePanel
+        ))
+    }
+
+    @MainActor
+    func testGlobalShortcutsRejectLettersRecordedOnNonANSIKeyPositions() throws {
+        let suiteName = "Snip SnapKeyboardLayoutShortcutTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        for (keyCode, letter) in [(kVK_ANSI_LeftBracket, "Ü"), (kVK_ANSI_Semicolon, "M")] {
+            let settings = ShortcutSettings(defaults: defaults)
+            let chord = ShortcutKeyChord(keyCode: keyCode, modifiers: shiftKey, keyLabel: letter)
+            XCTAssertThrowsError(try settings.candidate(setting: .keyChord(chord), for: .togglePanel)) {
+                XCTAssertEqual($0 as? ShortcutSettingsError, .typingShortcut)
+            }
+            var saved = GlobalShortcutConfiguration.snipSnapDefaults
+            saved.togglePanel = .keyChord(chord)
+            defaults.set(try JSONEncoder().encode(saved), forKey: "globalShortcutConfiguration")
+
+            XCTAssertEqual(ShortcutSettings(defaults: defaults).configuration, .snipSnapDefaults)
+        }
+        let settings = ShortcutSettings(defaults: defaults)
+        for chord in [
+            ShortcutKeyChord(keyCode: kVK_F1, modifiers: shiftKey, keyLabel: "F1"),
+            ShortcutKeyChord(keyCode: kVK_Space, modifiers: shiftKey, keyLabel: "Space")
+        ] {
+            XCTAssertNoThrow(try settings.candidate(setting: .keyChord(chord), for: .togglePanel))
+        }
+    }
+
+    @MainActor
+    func testUnsafeSavedBindingRepairPreservesOccupiedDefaults() throws {
+        let suiteName = "Snip SnapOccupiedShortcutRepairTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let safePanel = ShortcutTrigger.keyChord(
+            keyCode: UInt32(kVK_ANSI_K), modifiers: UInt32(controlKey | optionKey), keyLabel: "K"
+        )
+        let stored = GlobalShortcutConfiguration(
+            captureSelection: .commandDoubleShift(.left),
+            togglePanel: safePanel,
+            toggleClipboard: .keyChord(.init(keyCode: kVK_ANSI_A, modifiers: shiftKey, keyLabel: "A"))
+        )
+        defaults.set(try JSONEncoder().encode(stored), forKey: "globalShortcutConfiguration")
+        let settings = ShortcutSettings(defaults: defaults)
+
+        XCTAssertEqual(settings.configuration.captureSelection, .commandDoubleShift(.left))
+        XCTAssertEqual(settings.configuration.togglePanel, safePanel)
+        XCTAssertEqual(settings.configuration.toggleClipboard, .commandDoubleShift(.right))
+        XCTAssertTrue(settings.configuration.isValid)
+        XCTAssertEqual(ShortcutSettings(defaults: defaults).configuration, settings.configuration)
+    }
+
+    @MainActor
+    func testSavedShiftOnlyLettersAreRepairedWithoutLosingOtherCustomShortcuts() throws {
+        let suiteName = "Snip SnapTypingShortcutRepairTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let safeCapture = ShortcutTrigger.keyChord(
+            keyCode: UInt32(kVK_ANSI_K), modifiers: UInt32(controlKey | optionKey), keyLabel: "K"
+        )
+        let safeClipboard = ShortcutTrigger.keyChord(
+            keyCode: UInt32(kVK_ANSI_L), modifiers: UInt32(controlKey | optionKey), keyLabel: "L"
+        )
+        let stored = GlobalShortcutConfiguration(
+            captureSelection: safeCapture,
+            togglePanel: .keyChord(.init(keyCode: kVK_ANSI_A, modifiers: shiftKey, keyLabel: "A")),
+            toggleClipboard: safeClipboard
+        )
+        defaults.set(try JSONEncoder().encode(stored), forKey: "globalShortcutConfiguration")
+        let settings = ShortcutSettings(defaults: defaults)
+
+        XCTAssertEqual(settings.configuration.captureSelection, safeCapture)
+        XCTAssertEqual(settings.configuration.togglePanel, GlobalHotKeyAction.togglePanel.defaultTrigger)
+        XCTAssertEqual(settings.configuration.toggleClipboard, safeClipboard)
+        XCTAssertEqual(ShortcutSettings(defaults: defaults).configuration, settings.configuration)
     }
 
     @MainActor
