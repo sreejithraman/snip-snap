@@ -593,7 +593,6 @@ package actor SwiftDataSyncModePersistence {
     }
   }
 
-  /// Fences an active-store mutation performed by a store-specific adapter.
   package func recordPreparationComplete() throws {
     guard manifest.transition?.phase == .candidateReady else {
       throw SyncModePersistenceError.transitionInProgress

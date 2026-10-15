@@ -452,7 +452,6 @@ release_automation_ensure_notes_asset() {
     assets="$("$gh_command" release view "$tag" --repo "$release_repo" \
         --json assets --jq '.assets[].name')" || return 1
     if ! print -r -- "$assets" | /usr/bin/grep -Fxq "$asset_name"; then
-        # Resume a partial release creation, but never replace an existing asset.
         "$gh_command" release upload "$tag" "$notes_file" --repo "$release_repo" || return 1
     fi
     "$gh_command" release download "$tag" --repo "$release_repo" \

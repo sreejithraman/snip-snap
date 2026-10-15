@@ -410,7 +410,7 @@ signing_policy_verify_cloud_dev_profile() {
     # macOS authorizes team-prefixed groups through the signing team, without registration.
     # Registered group.* identifiers and every iOS group require profile grants.
     if [[ "$platform" == macos && -n "$expected_team" && "$app_group" == "$expected_team."* ]]; then
-        : # The checked signing team authorizes this Mac-only identifier.
+        :
     elif [[ "$app_group" == group.* ]]; then
         signing_policy_plist_array_contains "$grants" com.apple.security.application-groups "$app_group" || missing+=("profile App Group grant")
     else

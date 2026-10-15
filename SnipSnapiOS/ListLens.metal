@@ -1,8 +1,6 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// Sample once at a displaced point. The inner face is unchanged; only the
-// curved rim bends the label. There is no blur kernel or second text layer.
 [[ stitchable ]] float2 listLens(float2 position, float4 bounds) {
     float2 center = bounds.xy + bounds.zw * 0.5;
     float radius = bounds.w * 0.5;

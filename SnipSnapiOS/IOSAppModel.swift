@@ -80,15 +80,13 @@ final class IOSAppModel {
     var toast: AppToast?
     private(set) var selectedPage: LibraryPage = .list(SnipList.inboxID)
     private var selectionRevision: UInt64 = 0
-    private var lastSelectedListID: UUID
-    /// The last saved list stays available for drafts while Clipboard is selected.
-    var selectedListID: UUID { lastSelectedListID }
+    private(set) var lastSelectedListID: UUID
     var pages: [LibraryPage] { [.clipboard] + lists.map { .list($0.id) } }
     var editingListID: UUID?
     var newListID: UUID?
     private struct NewListOrigin {
         let page: LibraryPage
-        let selectedListID: UUID
+        let lastSelectedListID: UUID
     }
     private var newListOrigin: NewListOrigin?
     var newListOriginPage: LibraryPage? { newListOrigin?.page }
@@ -124,7 +122,6 @@ final class IOSAppModel {
     }
     var newListMoveRequest: NewListMoveRequest?
     var isPerformingGatheredAction = false
-    /// Identifies gathering work across asynchronous move requests.
     @ObservationIgnored private(set) var gatheringSessionID = UUID()
     var isSearchPresented = false {
         didSet {
@@ -189,7 +186,7 @@ final class IOSAppModel {
     }
 
     var selectedList: SnipList {
-        lists.first(where: { $0.id == selectedListID }) ?? .inbox
+        lists.first(where: { $0.id == lastSelectedListID }) ?? .inbox
     }
 
     var selectedSnip: Snip? {
@@ -319,7 +316,7 @@ final class IOSAppModel {
     }
 
     var visibleSnips: [Snip] {
-        visibleSnips(in: selectedListID)
+        visibleSnips(in: lastSelectedListID)
     }
 
     func visibleSnips(in listID: UUID) -> [Snip] {
@@ -550,7 +547,7 @@ final class IOSAppModel {
             finishListEditing(id: newListID)
         }
         guard !isCreatingList else { return }
-        let origin = NewListOrigin(page: selectedPage, selectedListID: selectedListID)
+        let origin = NewListOrigin(page: selectedPage, lastSelectedListID: lastSelectedListID)
         let originSelectionRevision = selectionRevision
         isCreatingList = true
         defer { isCreatingList = false }
@@ -599,11 +596,11 @@ final class IOSAppModel {
         guard listDrafts[id]?.isSaving != true || listDrafts[id]?.isCancelling == true else { return false }
         isCancellingNewList = true
         let origin = newListOrigin ?? NewListOrigin(
-            page: .list(SnipList.inboxID), selectedListID: SnipList.inboxID
+            page: .list(SnipList.inboxID), lastSelectedListID: SnipList.inboxID
         )
         let previousPage = selectedPage
-        lastSelectedListID = lists.contains(where: { $0.id == origin.selectedListID })
-            ? origin.selectedListID : SnipList.inboxID
+        lastSelectedListID = lists.contains(where: { $0.id == origin.lastSelectedListID })
+            ? origin.lastSelectedListID : SnipList.inboxID
         let originPage = newListCancellationPage
         selectPage(originPage)
         let originSelectionRevision = selectionRevision
@@ -1041,7 +1038,7 @@ final class IOSAppModel {
         let pinnedIDs = visibleSnips.filter(\.isPinned).map(\.id)
         guard Array(orderedIDs.prefix(pinnedIDs.count)) == pinnedIDs else { return false }
         guard orderedIDs != visibleSnips.map(\.id) else { return true }
-        let listID = selectedListID
+        let listID = lastSelectedListID
         return await performUserAction(
             .place(ids: orderedIDs, in: listID, before: nil, basedOn: sortMode)
         ) { _ in
@@ -1054,7 +1051,6 @@ final class IOSAppModel {
         return await setDoneUnlocked(ids: [id], done: !snip.isDone, feedbackInteraction: feedbackInteraction)
     }
 
-    // Every completion control reaches this command, including batch actions.
     private func setDoneUnlocked(ids: Set<UUID>, done: Bool, feedbackInteraction: UUID?) async -> Bool {
         let ids = Set(snips.filter { ids.contains($0.id) && !$0.isPinned }.map(\.id))
         guard !ids.isEmpty else { return false }
@@ -1323,7 +1319,7 @@ final class IOSAppModel {
         if let editingListID, !lists.contains(where: { $0.id == editingListID }) {
             finishListEditing(id: editingListID)
         }
-        if !lists.contains(where: { $0.id == selectedListID }) {
+        if !lists.contains(where: { $0.id == lastSelectedListID }) {
             rememberSelectedList(SnipList.inboxID)
         }
         if let selectedSnipID, !snips.contains(where: { $0.id == selectedSnipID }) {

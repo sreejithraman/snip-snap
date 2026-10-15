@@ -387,7 +387,6 @@ extension CloudFullSyncPersistenceTests {
     let local = await library.snapshot(sortedBy: .manual)
     XCTAssertFalse(local.snips.contains { $0.id == snip.id })
     if deleteBeforeDeferral {
-      // A remote move after a local deletion requires the existing delete-conflict flow.
       let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
       XCTAssertTrue(stored.deferredEntities.first { $0.reference.domainID == snip.id }?
         .wasMaterializedBeforeDeferral == true)

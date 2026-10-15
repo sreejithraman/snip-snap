@@ -13,6 +13,8 @@ enum PanelSwipeDecision: Equatable {
 }
 
 struct PanelTrackpadSwipeState {
+    private static let axisCommitmentDistance: CGFloat = 4
+
     private enum Axis {
         case undecided
         case horizontal
@@ -71,8 +73,9 @@ struct PanelTrackpadSwipeState {
         verticalDistance += vertical
         if axis == .undecided {
             guard horizontalDistance != 0 || verticalDistance != 0 else { return .pass }
-            // Do not commit an axis from a couple of noisy opening deltas.
-            guard max(abs(horizontalDistance), abs(verticalDistance)) >= 4 else { return .consume }
+            guard max(abs(horizontalDistance), abs(verticalDistance)) >= Self.axisCommitmentDistance else {
+                return .consume
+            }
             axis = abs(horizontalDistance) > abs(verticalDistance) ? .horizontal : .vertical
             if axis == .horizontal { horizontalDirection = horizontalDistance > 0 ? 1 : -1 }
         }
@@ -100,7 +103,6 @@ enum PanelTrackpadSwipeRegion {
     }
 }
 
-/// Routes horizontal trackpad swipes to tabs while preserving vertical list scrolling.
 struct PanelTrackpadSwipeObserver: NSViewRepresentable {
     let excludedBottomHeight: CGFloat
     let canNavigate: () -> Bool

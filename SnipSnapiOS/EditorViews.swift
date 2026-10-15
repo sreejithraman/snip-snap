@@ -6,7 +6,6 @@ import SnipSnapCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// One session follows the snip between collection and search rows.
 @Observable @MainActor
 final class SnipEditorDraft {
     let original: Snip
@@ -403,7 +402,6 @@ enum ListEditorPresentation {
     }
 }
 
-/// Keeps nearby content available while the list editor has focus.
 struct ListEditorRecession: ViewModifier {
     let isActive: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -419,7 +417,6 @@ struct ListEditorRecession: ViewModifier {
     }
 }
 
-/// Compact controls for inline snip editing.
 private struct EditorSecondaryActionIcon: View {
     let systemName: String
     @ScaledMetric(relativeTo: .body) private var diameter: CGFloat = 28

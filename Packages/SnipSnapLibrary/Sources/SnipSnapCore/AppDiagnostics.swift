@@ -1,7 +1,6 @@
 import Foundation
 import OSLog
 
-/// Persist only codes owned by this app. Unknown values keep the event but lose the value.
 private enum AppDiagnosticCodePolicy {
   static let unknownError = "other.UnknownError"
 
@@ -411,7 +410,6 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
     )
   }
 
-  /// A diagnostics-only override isolates hosts while normal launches keep the bundle cache.
   static func storageDirectoryURL(
     cachesURL: URL,
     bundleIdentifier: String?,

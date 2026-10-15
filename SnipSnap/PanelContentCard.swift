@@ -9,8 +9,6 @@ enum PanelCardLeadingMetrics {
     static let controlSide: CGFloat = 20
 }
 
-/// Filled chip chrome shared by every control in a card's leading slot, so the
-/// slot keeps one look when its control swaps between copy and a command number.
 struct PanelLeadingChip<Content: View>: View {
     @Environment(\.self) private var environment
     private let appearance: SnipListAppearance?
@@ -99,8 +97,6 @@ struct PanelCommandNumberButton: View {
     }
 }
 
-/// The copy chip and its command-number stand-in, swapping in one leading slot.
-/// A running copy confirmation keeps the chip visible and stands the number down.
 struct PanelCopySlot: View {
     let isCopied: Bool
     var isPinned = false

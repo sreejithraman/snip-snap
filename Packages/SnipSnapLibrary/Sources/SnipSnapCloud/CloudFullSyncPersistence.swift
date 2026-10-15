@@ -387,7 +387,6 @@ package actor CloudFullSyncCoordinator {
     state.blocksOutbound = state.blocksOutbound || CloudSyncIssueError.blocksOutbound(in: batch)
   }
 
-  /// Classification only: the store continues to own all replay validation and effects.
   private func diagnosticBatch(in commit: CloudFullBatchCommit) -> CloudSyncBatch? {
     guard let data = commit.rawBatchData,
       let raw = try? JSONDecoder().decode(CloudFullSyncPersistence.RawStagedBatch.self, from: data),

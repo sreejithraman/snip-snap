@@ -1,7 +1,6 @@
 import Observation
 import SwiftUI
 
-/// The feature owns its intent and actions; the host owns the floating presentation.
 enum GlassMenuLayout {
     case attached
     case expanding(preferredSize: CGSize)
@@ -27,8 +26,7 @@ final class GlassMenuPresentation {
         cancelActive = nil
     }
 
-    func dismiss() {
-        // Keep the backdrop and accessibility isolation until the matching surface closes.
+    func requestDismissal() {
         cancelActive?()
     }
 }
@@ -141,7 +139,7 @@ private struct GlassMenuHost: ViewModifier {
                             dismissalBackdrop
                                 .ignoresSafeArea()
                                 .contentShape(Rectangle())
-                                .onTapGesture { presentation.dismiss() }
+                                .onTapGesture { presentation.requestDismissal() }
                                 .accessibilityHidden(true)
                                 .zIndex(1)
                         }
@@ -169,10 +167,10 @@ private struct GlassMenuHost: ViewModifier {
                 }
             }
             .onChange(of: scenePhase) { _, phase in
-                if phase != .active { presentation.dismiss() }
+                if phase != .active { presentation.requestDismissal() }
             }
             .onChange(of: isBlocked) { _, blocked in
-                if blocked { presentation.dismiss() }
+                if blocked { presentation.requestDismissal() }
             }
     }
 
@@ -194,7 +192,6 @@ private struct GlassMenuHost: ViewModifier {
     }
 }
 
-/// One material and motion treatment, with steady content inside a growing mask.
 private struct GlassMenuSurface: View {
     let anchor: GlassMenuAnchor
     let source: CGRect
@@ -388,7 +385,6 @@ private struct GlassMenuReveal: ViewModifier {
     }
 }
 
-/// Measure unsqueezed rows before placing the scrollable instance at its final size.
 private struct GlassMenuContentLayout: Layout {
     let maximumSize: CGSize
 

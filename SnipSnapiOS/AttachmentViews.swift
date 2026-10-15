@@ -417,16 +417,36 @@ struct AttachmentThumbnail: View {
     }
 }
 
-/// The identifier versions immutable clipboard bytes; decoding never runs in body.
+struct ClipboardImageThumbnailID: Hashable, Sendable {
+    private let entryID: UUID
+    private let contentFingerprint: String
+    private let representationIndex: Int
+
+    init(entry: ClipboardEntry, representationIndex: Int) {
+        entryID = entry.id
+        contentFingerprint = entry.fingerprint
+        self.representationIndex = representationIndex
+    }
+
+    func cacheKey(pixelLength: Int) -> String {
+        "clipboard|\(entryID)|\(contentFingerprint)|image-\(representationIndex)|\(pixelLength)"
+    }
+}
+
 struct ClipboardImageThumbnail: View {
     @Environment(\.attachmentPreparationIsActive) private var isActive
     let data: Data
-    let id: String
+    let id: ClipboardImageThumbnailID
     @Environment(\.displayScale) private var displayScale
     @State private var image: CGImage?
-    @State private var loadedRequestID: String?
+    @State private var loadedRequestID: RequestID?
 
-    private var requestID: String { "\(id)|\(displayScale)" }
+    private struct RequestID: Hashable {
+        let imageID: ClipboardImageThumbnailID
+        let displayScale: CGFloat
+    }
+
+    private var requestID: RequestID { RequestID(imageID: id, displayScale: displayScale) }
 
     var body: some View {
         Group {
@@ -505,12 +525,11 @@ final class AttachmentThumbnailCache {
         }
     }
 
-    /// `id` must change when the clipboard representation bytes change.
-    func cachedClipboardImage(id: String, size: CGSize, scale: CGFloat) -> CGImage? {
+    func cachedClipboardImage(id: ClipboardImageThumbnailID, size: CGSize, scale: CGFloat) -> CGImage? {
         images.object(forKey: Self.clipboardKey(id: id, size: size, scale: scale) as NSString)?.image
     }
 
-    func clipboardImage(data: Data, id: String, size: CGSize, scale: CGFloat) async -> CGImage? {
+    func clipboardImage(data: Data, id: ClipboardImageThumbnailID, size: CGSize, scale: CGFloat) async -> CGImage? {
         await image(forKey: Self.clipboardKey(id: id, size: size, scale: scale)) {
             guard !Task.isCancelled,
                   let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
@@ -518,8 +537,8 @@ final class AttachmentThumbnailCache {
         }
     }
 
-    private nonisolated static func clipboardKey(id: String, size: CGSize, scale: CGFloat) -> String {
-        "clipboard|\(id)|\(pixelLength(size, scale: scale))"
+    private nonisolated static func clipboardKey(id: ClipboardImageThumbnailID, size: CGSize, scale: CGFloat) -> String {
+        id.cacheKey(pixelLength: pixelLength(size, scale: scale))
     }
 
     private func image(

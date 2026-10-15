@@ -1,5 +1,4 @@
 #!/usr/bin/env ruby
-# Read-only comparison of the live codec schema with a cktool schema export.
 require 'strscan'
 require 'json'
 

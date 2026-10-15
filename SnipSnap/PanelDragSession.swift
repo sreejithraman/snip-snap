@@ -126,10 +126,6 @@ struct PanelDragSessionInspection: Equatable {
     let regionID: PanelDragSessionRegionID
 }
 
-/// Shared AppKit bridge for registering one SwiftUI card as a drag source.
-///
-/// Content-specific views only build the adapter; this view owns registration,
-/// window attachment, hit testing, updates, and teardown.
 struct PanelDragSourceRegion: NSViewRepresentable {
     @Environment(\.isEnabled) private var isEnabled
     let controller: PanelDragSessionController
@@ -207,10 +203,6 @@ final class PanelDragSourceRegionView: NSView {
     }
 }
 
-/// Owns the panel's single drag gesture and drag-session lifecycle.
-///
-/// Content adapters provide their own writers, previews, and operation policy
-/// without competing for the same mouse gesture.
 @MainActor
 final class PanelDragSessionController: NSObject, NSDraggingSource, NSGestureRecognizerDelegate {
     private final class WeakView {

@@ -132,6 +132,7 @@ final class AppModel: ObservableObject {
     private let publishShareDestinations: (([SnipList]) -> Void)?
     private var clipboardWriteGeneration = 0
     private var pendingClipboardWriteTask: Task<Bool, Never>?
+    private var initialLoadTask: Task<Void, Never>?
     let clipboardHistory: ClipboardHistory
 
     var filteredSnips: [Snip] {
@@ -227,7 +228,9 @@ final class AppModel: ObservableObject {
             operation: "app.startup",
             diagnosticCode: "presentation.startup"
         )
-        Task { await reload() }
+        initialLoadTask = Task { [weak self] in
+            await self?.reload()
+        }
     }
 
     func presentError(
@@ -324,6 +327,10 @@ final class AppModel: ObservableObject {
             presentError(error, operation: "attachment.prepare")
             return false
         }
+    }
+
+    func waitForInitialLoad() async {
+        await initialLoadTask?.value
     }
 
     func reload() async {

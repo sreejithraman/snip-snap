@@ -1,6 +1,7 @@
 import SnipSnapCore
 import SnipSnapPersistence
 @testable import SnipSnapCloud
+import Synchronization
 import XCTest
 
 final class ICloudSyncModeCoordinatorTests: XCTestCase {
@@ -222,17 +223,18 @@ final class CrashInjector: @unchecked Sendable {
     }
 }
 
-final class FailingManifestWriter: @unchecked Sendable {
+final class FailingManifestWriter: Sendable {
     enum Failure: Error { case injected }
 
-    private let lock = NSLock()
-    var failWrites = false
+    private let failureEnabled = Mutex<Bool>(false)
+
+    var failWrites: Bool {
+        get { failureEnabled.withLock { $0 } }
+        set { failureEnabled.withLock { $0 = newValue } }
+    }
 
     func write(_ data: Data, to url: URL) throws {
-        lock.lock()
-        let shouldFail = failWrites
-        lock.unlock()
-        if shouldFail { throw Failure.injected }
+        if failWrites { throw Failure.injected }
         try data.write(to: url, options: .atomic)
     }
 }

@@ -34,7 +34,6 @@ struct AgentSnipContextLabel: View {
     }
 }
 
-/// Content stays primary; origin context and update time form a quiet footer.
 struct SnipRowMetadata: View {
     let date: Date
     let isPinned: Bool

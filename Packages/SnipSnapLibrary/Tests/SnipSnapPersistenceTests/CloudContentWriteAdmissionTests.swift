@@ -280,7 +280,6 @@ final class CloudContentWriteAdmissionTests: XCTestCase {
           XCTAssertTrue(allowed.contains(error as? SnipLibraryError ?? .storeUnavailable), label)
         }
       } else {
-        // Preview again after each accepted edit so import checks the current content.
         _ = try await library.perform(update, sortedBy: .manual)
         let currentPreview = try await library.previewImport(preview.source, transitionID: UUID())
         _ = try await library.applyImport(currentPreview)

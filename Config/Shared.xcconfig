@@ -1,4 +1,3 @@
-// Settings shared by all Snip Snap app builds.
 // Public product names stay here so forks can replace them in Local.xcconfig.
 
 SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER = world.sree.snipsnap

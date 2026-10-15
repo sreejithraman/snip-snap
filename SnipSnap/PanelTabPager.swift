@@ -44,7 +44,6 @@ enum PanelTabPage: Hashable {
     }
 }
 
-/// Owns tab motion while the caller owns the contents and per-list drafts.
 struct PanelTabPager<Page: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.layoutDirection) private var layoutDirection
