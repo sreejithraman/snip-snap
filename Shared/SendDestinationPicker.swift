@@ -4,7 +4,6 @@ import SwiftUI
 import AppKit
 #endif
 
-/// Send offers every list; Move omits a destination only when all sources already belong to it.
 enum ListDestinationPurpose {
     case send
     case move(sourceListIDs: Set<UUID>)
@@ -27,7 +26,6 @@ enum ListDestinationPurpose {
     }
 }
 
-/// The same list identity, name and icon in the anchored picker and native menus.
 struct ListDestinationLabel: View {
     let list: SnipList
 
@@ -45,7 +43,6 @@ struct ListDestinationLabel: View {
     }
 }
 
-/// One send surface on both platforms, with platform-specific activation paths.
 struct AppMorphingSendControl: View {
     let sourceID: UUID
     let isEnabled: Bool
@@ -119,7 +116,6 @@ struct AppMorphingSendControl: View {
         .buttonStyle(.plain)
         .foregroundStyle(isEnabled ? labelColor : SnipSnapTheme.disabledActionGlassLabel)
         .glassEffect(.regular.tint(isEnabled ? tint : SnipSnapTheme.disabledActionGlassTint), in: Capsule())
-        // Keep the visible capsule inset while retaining the full touch target.
         .frame(width: controlSize.width, height: controlSize.height)
         .contentShape(Rectangle())
         .disabled(!isEnabled)
@@ -156,7 +152,6 @@ struct AppMorphingSendControl: View {
     }
 }
 
-/// Measure the same rows without creating a second scroll view or keyboard monitor.
 private struct SendPickerMeasure: View {
     let destinations: [SnipList]
 
@@ -197,6 +192,7 @@ private struct SendPickerPanel: View {
     @State private var selection: UUID?
     @AccessibilityFocusState private var titleIsAccessibilityFocused: Bool
 #if os(macOS)
+    private static let passthroughCommandKeys: Set<String> = ["q", "w", "h"]
     @State private var typedPrefix = ""
     @State private var lastTypedAt = Date.distantPast
 #endif
@@ -250,8 +246,6 @@ private struct SendPickerPanel: View {
             }
         }
         .background {
-            // Monitor ownership follows the intent, independently of the
-            // menu's reveal animation.
             Group {
                 if isPresented {
                     SendPickerKeyboardInput(handle: handleKey)
@@ -283,8 +277,7 @@ private struct SendPickerPanel: View {
             moveSelection(modifiers.contains(.shift) ? -1 : 1)
         default:
             if modifiers.contains(.command) {
-                // Keep standard window/app shortcuts available, without editing the draft.
-                return !["q", "w", "h"].contains(event.charactersIgnoringModifiers?.lowercased() ?? "")
+                return !Self.passthroughCommandKeys.contains(event.charactersIgnoringModifiers?.lowercased() ?? "")
             }
             guard !modifiers.contains(.control), !modifiers.contains(.option),
                   let characters = event.characters, !characters.isEmpty else { return true }
@@ -309,7 +302,6 @@ private struct SendPickerPanel: View {
 }
 
 #if os(macOS)
-/// Scope menu keys to this panel while the composer temporarily stops accepting input.
 private struct SendPickerKeyboardInput: NSViewRepresentable {
     let handle: (NSEvent) -> Bool
 

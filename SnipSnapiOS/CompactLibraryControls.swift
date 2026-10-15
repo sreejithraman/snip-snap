@@ -114,10 +114,9 @@ struct CompactLibraryControls: View {
 
     private var showsListEditor: Bool {
         !isClipboardSelected && !model.isSearchPresented
-            && model.editingListID == model.selectedListID
+            && model.editingListID == model.lastSelectedListID
     }
 
-    // Navigation belongs to the resting library, rather than the keyboard's input controls.
     private var showsNavigation: Bool {
         !model.isSearchPresented && !showsListEditor && !isComposerFocused
     }
@@ -169,12 +168,12 @@ struct CompactLibraryControls: View {
         }
         .attachmentPreview($previewURL, in: draft.attachments)
         .onAppear {
-            draftListID = model.selectedListID
-            if storage.savingListID != model.selectedListID {
-                draft = storage.draftStore.draft(for: model.selectedListID)
+            draftListID = model.lastSelectedListID
+            if storage.savingListID != model.lastSelectedListID {
+                draft = storage.draftStore.draft(for: model.lastSelectedListID)
             }
         }
-        .onChange(of: model.selectedListID) { _, listID in
+        .onChange(of: model.lastSelectedListID) { _, listID in
             sendDestination = nil
             composerFieldID = UUID()
             draftListID = listID
@@ -284,7 +283,7 @@ struct CompactLibraryControls: View {
     private func pasteAndSave() {
         guard showsComposer, !storage.isSaving, !isStaging else { return }
         model.haptics.invalidatePendingFeedback()
-        let listID = model.selectedListID
+        let listID = model.lastSelectedListID
         let pasteboard = UIPasteboard.general
         let text = pasteboard.string ?? ""
         let image = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -514,7 +513,7 @@ struct CompactLibraryControls: View {
         return Binding(
             get: { draft(for: listID).text },
             set: { value in
-                guard fieldID == composerFieldID, listID == model.selectedListID,
+                guard fieldID == composerFieldID, listID == model.lastSelectedListID,
                       draftListID == listID else { return }
                 model.haptics.invalidatePendingFeedback()
                 guard storage.savingListID != listID else {
@@ -547,7 +546,7 @@ struct CompactLibraryControls: View {
         from sourceID: UUID, to destinationID: UUID, expectedLibraryRevision: UUID
     ) async {
         guard expectedLibraryRevision == model.libraryRevision,
-              !frame.isMoving, sourceID == model.selectedListID,
+              !frame.isMoving, sourceID == model.lastSelectedListID,
               model.lists.contains(where: { $0.id == destinationID }),
               canSend(draft: draft(for: sourceID)) else { return }
         let snapshot = storage.draftStore.beginSave(listID: sourceID)
@@ -568,7 +567,7 @@ struct CompactLibraryControls: View {
         }
         storage.savingListID = nil
         storage.isSaving = false
-        if model.selectedListID == snapshot.listID {
+        if model.lastSelectedListID == snapshot.listID {
             draft = storage.draftStore.draft(for: snapshot.listID)
         }
         if !saved {
@@ -608,7 +607,7 @@ struct CompactLibraryControls: View {
 
     private func stagePastedText(_ text: String) {
         guard stagingTask == nil else { return }
-        let listID = model.selectedListID
+        let listID = model.lastSelectedListID
         stagingTask = Task {
             var unclaimedURL: URL?
             defer {
@@ -622,7 +621,7 @@ struct CompactLibraryControls: View {
                 guard model.lists.contains(where: { $0.id == listID }) else { return }
                 storage.draftStore.addTemporary(url, to: listID)
                 unclaimedURL = nil
-                if model.selectedListID == listID {
+                if model.lastSelectedListID == listID {
                     draft = storage.draftStore.draft(for: listID)
                 }
             } catch is CancellationError {
@@ -652,7 +651,7 @@ struct CompactLibraryControls: View {
 
     private func stageMedia(_ input: AttachmentMediaInput) {
         guard stagingTask == nil else { return }
-        let listID = model.selectedListID
+        let listID = model.lastSelectedListID
         stagingTask = Task {
             var stagedFiles: [StagedAttachment] = []
             defer { stagingTask = nil }
@@ -678,15 +677,15 @@ struct CompactLibraryControls: View {
         for file in files {
             storage.draftStore.addTemporary(file.url, to: listID)
         }
-        if model.selectedListID == listID {
+        if model.lastSelectedListID == listID {
             draft = storage.draftStore.draft(for: listID)
         }
     }
 
     private func removeAttachment(_ url: URL) {
         model.haptics.invalidatePendingFeedback()
-        storage.draftStore.remove(url, from: model.selectedListID)
-        draft = storage.draftStore.draft(for: model.selectedListID)
+        storage.draftStore.remove(url, from: model.lastSelectedListID)
+        draft = storage.draftStore.draft(for: model.lastSelectedListID)
     }
 
 }

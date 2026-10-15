@@ -80,7 +80,6 @@ module ReleaseNotes
     named = []
     named << 'mac' if title.match?(/\b(?:Mac|macOS)\b/i)
     named << 'ios' if title.match?(/\b(?:iOS|iPhone|iPad)\b/i)
-    # A title that names one platform narrows shared implementation changes.
     shared_platforms = shared ? (named.length == 1 ? named : %w[mac ios]) : []
     (platforms + shared_platforms).uniq
   end

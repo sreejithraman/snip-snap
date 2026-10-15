@@ -105,7 +105,6 @@ extension CloudFullRecordPersistenceTests {
         _ = try await store.commitCloudFullBatch(batch)
         XCTFail("Expired store work must roll back before committing")
       } catch is CancellationError {
-        // Expected: the batch stays staged and its engine state stays uncommitted.
       }
     }
     let local = try await store.checkedSnapshot(sortedBy: .manual)

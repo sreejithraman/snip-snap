@@ -707,7 +707,6 @@ struct SnipListView: View {
                     focusedTarget = .list
                     return modifiers.isEmpty
                 }
-                // Keyboard and accessibility activation have no mouse-selection modifiers.
                 selectExclusively(snip.id)
                 return true
             },

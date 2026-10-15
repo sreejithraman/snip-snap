@@ -17,16 +17,17 @@ private struct ListManagementMenu: ViewModifier {
                 )
             )),
             label: "List actions", identifier: "list-management-panel", sourceFocus: sourceFocus
-        ) { _ in
-            ListManagementPanel(model: model, deleteList: deleteList, createList: createList,
+        ) { isInteractive in
+            ListManagementPanel(model: model, isInteractive: isInteractive,
+                                deleteList: deleteList, createList: createList,
                                 dismiss: { model.isManagingLists = false })
         }
     }
 }
 
-/// List-specific state and actions; the shared host owns presentation.
 private struct ListManagementPanel: View {
     let model: IOSAppModel
+    let isInteractive: Bool
     let deleteList: (UUID) async -> Void
     let createList: () -> Void
     let dismiss: () -> Void
@@ -113,7 +114,7 @@ private struct ListManagementPanel: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityIdentifier("list-management-new")
+            .accessibilityIdentifier(isInteractive ? "list-management-new" : "")
             .padding(.bottom, 8)
         }
     }

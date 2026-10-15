@@ -91,7 +91,6 @@ xcodebuild "${build_arguments[@]}" build > "$build_log" 2>&1 || {
     exit 1
 }
 
-# Verify the build before any install can touch a simulator application.
 actual_identifier="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Info.plist")"
 [[ "$actual_identifier" == "$bundle_identifier" ]] || { print -u2 "Dev bundle identity did not match."; exit 1; }
 xcrun simctl terminate "$simulator_id" "$bundle_identifier" 2>/dev/null || true

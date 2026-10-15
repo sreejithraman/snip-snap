@@ -25,7 +25,6 @@ public struct ClipboardHistoryState: Codable, Equatable, Sendable {
 
     public mutating func insert(_ entry: ClipboardEntry) {
         if let index = entries.firstIndex(where: { $0.hasSamePayload(as: entry) }) {
-            // Copying again updates recency while keeping identity and pin order.
             entries[index].capturedAt = max(entries[index].capturedAt, entry.capturedAt)
             entries[index].modifiedAt = max(entries[index].modifiedAt, entry.modifiedAt)
         } else { entries.append(entry) }
@@ -94,35 +93,48 @@ public struct ClipboardHistoryState: Codable, Equatable, Sendable {
     }
 
     private mutating func normalize() {
-        // Carry a deletion through every known alias before filtering old snapshots.
+        propagateExplicitDeletionsAcrossAliases()
+        let liveEntries = entries.filter(isLive)
+        let distinctIdentities = Self.mergingDuplicateIdentities(in: liveEntries)
+        let distinctPayloads = Self.mergingDuplicatePayloads(in: distinctIdentities)
+        applyRetentionBudgets(to: distinctPayloads)
+    }
+
+    private mutating func propagateExplicitDeletionsAcrossAliases() {
         for entry in entries {
             let ids = [entry.id] + entry.duplicateIDs
             if let deletedAt = ids.compactMap({ tombstones[$0] }).max() {
                 for id in ids { tombstones[id] = max(tombstones[id] ?? .distantPast, deletedAt) }
             }
         }
-        // Deletion wins over stale updates, including edits from an offline device.
-        let live = entries.filter { entry in
-            let ids = [entry.id] + entry.duplicateIDs
-            return ids.allSatisfy { tombstones[$0] == nil }
-                && (entry.isPinned || ids.allSatisfy { entry.modifiedAt > (retentionTombstones[$0] ?? .distantPast) })
-        }
+    }
+
+    private func isLive(_ entry: ClipboardEntry) -> Bool {
+        let ids = [entry.id] + entry.duplicateIDs
+        return ids.allSatisfy { tombstones[$0] == nil }
+            && (entry.isPinned || ids.allSatisfy { entry.modifiedAt > (retentionTombstones[$0] ?? .distantPast) })
+    }
+
+    private static func mergingDuplicateIdentities(in entries: [ClipboardEntry]) -> [ClipboardEntry] {
         var byID: [UUID: ClipboardEntry] = [:]
-        for entry in live {
+        for entry in entries {
             if let old = byID[entry.id] {
-                var latest = Self.preferred(old, entry)
+                var latest = preferred(old, entry)
                 latest.hasBeenShared = old.hasBeenShared || entry.hasBeenShared
                 latest.duplicateIDs = Array(Set(old.duplicateIDs + entry.duplicateIDs)).sorted { $0.uuidString < $1.uuidString }
                 byID[entry.id] = latest
             }
             else { byID[entry.id] = entry }
         }
+        return Array(byID.values)
+    }
+
+    private static func mergingDuplicatePayloads(in entries: [ClipboardEntry]) -> [ClipboardEntry] {
         var byPayload: [String: ClipboardEntry] = [:]
-        for entry in byID.values.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
+        for entry in entries.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
             let key = entry.fingerprint
             guard let old = byPayload[key] else { byPayload[key] = entry; continue }
-            let latest = Self.preferred(old, entry)
-            // Stable identity independent of device merge order, with newest metadata.
+            let latest = preferred(old, entry)
             var merged = ClipboardEntry(id: min(old.id.uuidString, entry.id.uuidString) == old.id.uuidString ? old.id : entry.id,
                 capturedAt: max(old.capturedAt, entry.capturedAt), sourceApplication: latest.sourceApplication,
                 items: latest.items, plainText: latest.plainText, pinnedAt: latest.pinnedAt,
@@ -137,11 +149,13 @@ public struct ClipboardHistoryState: Codable, Equatable, Sendable {
             }
             byPayload[key] = merged
         }
-        let normalized = Array(byPayload.values)
-        // Local-only files must not evict shared history on another device.
-        let shared = Self.trimmed(Self.ordered(normalized.filter(\.isSyncEligible)))
-        let local = Self.trimmed(Self.ordered(normalized.filter { !$0.isSyncEligible }))
-        entries = Self.ordered(shared + local)
+        return Array(byPayload.values)
+    }
+
+    private mutating func applyRetentionBudgets(to normalized: [ClipboardEntry]) {
+        let syncEligibleEntries = Self.trimmed(Self.ordered(normalized.filter(\.isSyncEligible)))
+        let localOnlyEntries = Self.trimmed(Self.ordered(normalized.filter { !$0.isSyncEligible }))
+        entries = Self.ordered(syncEligibleEntries + localOnlyEntries)
         let retainedIDs = Set(entries.map(\.id))
         let trimDate = normalized.map(\.capturedAt).max() ?? .distantPast
         for entry in normalized where !retainedIDs.contains(entry.id) {
@@ -151,8 +165,12 @@ public struct ClipboardHistoryState: Codable, Equatable, Sendable {
 
     private static func preferred(_ lhs: ClipboardEntry, _ rhs: ClipboardEntry) -> ClipboardEntry {
         if lhs.modifiedAt != rhs.modifiedAt { return lhs.modifiedAt > rhs.modifiedAt ? lhs : rhs }
-        // A fixed byte comparison also resolves equal-clock updates the same way on each device.
-        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        return preferredByStableEncoding(lhs, rhs)
+    }
+
+    private static func preferredByStableEncoding(_ lhs: ClipboardEntry, _ rhs: ClipboardEntry) -> ClipboardEntry {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
         let left = (try? encoder.encode(lhs)) ?? Data()
         let right = (try? encoder.encode(rhs)) ?? Data()
         return left.lexicographicallyPrecedes(right) ? rhs : lhs

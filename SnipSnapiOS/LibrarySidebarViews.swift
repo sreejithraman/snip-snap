@@ -68,7 +68,7 @@ struct ListSidebarView: View {
                     reviewRecoveredEdits: model.recoverySnapshot.needsAttentionCount > 0
                         ? { sheet = .recoveryCenter }
                         : nil,
-                    editSelectedList: { model.editListInline(id: model.selectedListID) },
+                    editSelectedList: { model.editListInline(id: model.lastSelectedListID) },
                     deleteList: deleteList
                 )
             }
@@ -108,7 +108,7 @@ struct LibraryActionsMenu: View {
             .anchorPreference(key: DevelopmentMenuBoundsKey.self, value: .bounds) { $0 }
             .accessibilityIdentifier("library-actions")
             .listDeletionConfirmation(list: model.selectedList, isPresented: $confirmsDeleteList) {
-                Task { await deleteList(model.selectedListID) }
+                Task { await deleteList(model.lastSelectedListID) }
             }
         } else {
             standardMenu
@@ -122,7 +122,7 @@ struct LibraryActionsMenu: View {
         Menu("Library actions", systemImage: "ellipsis") { menuActions }
             .accessibilityIdentifier("library-actions")
             .listDeletionConfirmation(list: model.selectedList, isPresented: $confirmsDeleteList) {
-                Task { await deleteList(model.selectedListID) }
+                Task { await deleteList(model.lastSelectedListID) }
             }
     }
 

@@ -1,7 +1,6 @@
 import SnipSnapCore
 import SwiftUI
 
-/// Measures only the bounded preview until the reader asks for the full snip.
 struct ExpandableSnipText: View {
     let text: String
     let lineLimit: Int
@@ -128,8 +127,6 @@ struct ExpandableSnipText: View {
 }
 
 #if os(iOS)
-/// Interpolate the row's height instead of replacing two intrinsic text sizes.
-/// The text stays at the top, and full text is retained until collapse finishes.
 private struct ExpandingSnipTextLayout: Layout {
     let collapsedHeight: CGFloat
     var expansion: CGFloat

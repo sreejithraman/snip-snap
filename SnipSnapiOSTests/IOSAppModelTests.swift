@@ -33,13 +33,13 @@ final class IOSAppModelTests: XCTestCase {
         model.selectedSnipIDs = [UUID()]
         model.selectPage(.clipboard)
         XCTAssertEqual(model.selectedPage, .clipboard)
-        XCTAssertEqual(model.selectedListID, workID)
+        XCTAssertEqual(model.lastSelectedListID, workID)
         XCTAssertNil(model.selectedSnipID)
         XCTAssertTrue(model.selectedSnipIDs.isEmpty)
 
         model.selectPage(.list(SnipList.inboxID))
         XCTAssertEqual(model.selectedPage, .list(SnipList.inboxID))
-        XCTAssertEqual(model.selectedListID, SnipList.inboxID)
+        XCTAssertEqual(model.lastSelectedListID, SnipList.inboxID)
     }
 
     func testDeletingTheLastListKeepsTheSelectedPageValid() async throws {
@@ -52,7 +52,7 @@ final class IOSAppModelTests: XCTestCase {
         let deleted = await model.deleteList(id: workID)
         XCTAssertTrue(deleted)
         XCTAssertEqual(model.selectedPage, .list(SnipList.inboxID))
-        XCTAssertEqual(model.selectedListID, SnipList.inboxID)
+        XCTAssertEqual(model.lastSelectedListID, SnipList.inboxID)
 
         let createdAgain = await model.createList(name: "Work")
         XCTAssertTrue(createdAgain)
@@ -61,7 +61,7 @@ final class IOSAppModelTests: XCTestCase {
         let deletedWhileOnClipboard = await model.deleteList(id: nextWorkID)
         XCTAssertTrue(deletedWhileOnClipboard)
         XCTAssertEqual(model.selectedPage, .clipboard)
-        XCTAssertEqual(model.selectedListID, SnipList.inboxID)
+        XCTAssertEqual(model.lastSelectedListID, SnipList.inboxID)
     }
 
     func testOpenNewListWithExistingDefaultNamesOpensANewEditor() async throws {
@@ -73,7 +73,7 @@ final class IOSAppModelTests: XCTestCase {
         let base = String(localized: "New List")
         let created = await model.createList(name: base)
         XCTAssertTrue(created)
-        let originalID = model.selectedListID
+        let originalID = model.lastSelectedListID
 
         for suffix in 2...3 {
             model.searchText = "a search with no matches"
@@ -81,12 +81,12 @@ final class IOSAppModelTests: XCTestCase {
 
             XCTAssertNil(model.errorMessage)
             XCTAssertEqual(model.selectedList.name, "\(base) (\(suffix))")
-            XCTAssertNotEqual(model.selectedListID, originalID)
-            XCTAssertEqual(model.newListID, model.selectedListID)
-            XCTAssertEqual(model.editingListID, model.selectedListID)
+            XCTAssertNotEqual(model.lastSelectedListID, originalID)
+            XCTAssertEqual(model.newListID, model.lastSelectedListID)
+            XCTAssertEqual(model.editingListID, model.lastSelectedListID)
             XCTAssertEqual(model.searchText, "")
             XCTAssertEqual(model.lists.count, suffix + 1)
-            model.finishListEditing(id: model.selectedListID)
+            model.finishListEditing(id: model.lastSelectedListID)
         }
         XCTAssertEqual(model.lists.first(where: { $0.id == originalID })?.name, base)
     }
@@ -105,8 +105,8 @@ final class IOSAppModelTests: XCTestCase {
 
         XCTAssertNil(model.errorMessage)
         XCTAssertEqual(model.selectedList.name, "\(base) (2)")
-        XCTAssertEqual(model.editingListID, model.selectedListID)
-        XCTAssertEqual(model.newListID, model.selectedListID)
+        XCTAssertEqual(model.editingListID, model.lastSelectedListID)
+        XCTAssertEqual(model.newListID, model.lastSelectedListID)
         XCTAssertEqual(model.lists.count, 3)
     }
 
@@ -115,10 +115,10 @@ final class IOSAppModelTests: XCTestCase {
         await model.load()
         let workCreated = await model.createList(name: "Work")
         XCTAssertTrue(workCreated)
-        let workID = model.selectedListID
+        let workID = model.lastSelectedListID
         model.selectPage(.clipboard)
         await model.openNewList()
-        let newListID = model.selectedListID
+        let newListID = model.lastSelectedListID
         let created = await model.createSnip(content: "Keep this note", in: newListID)
         XCTAssertTrue(created)
 
@@ -126,7 +126,7 @@ final class IOSAppModelTests: XCTestCase {
 
         XCTAssertTrue(cancelled)
         XCTAssertEqual(model.selectedPage, .clipboard)
-        XCTAssertEqual(model.selectedListID, workID)
+        XCTAssertEqual(model.lastSelectedListID, workID)
         XCTAssertFalse(model.lists.contains { $0.id == newListID })
         XCTAssertEqual(model.snips.first?.listID, SnipList.inboxID)
         XCTAssertNil(model.newListID)
@@ -138,7 +138,7 @@ final class IOSAppModelTests: XCTestCase {
         await model.load()
         let created = await model.createList(name: "Work")
         XCTAssertTrue(created)
-        let workID = model.selectedListID
+        let workID = model.lastSelectedListID
         await model.openNewList()
         let newListID = try XCTUnwrap(model.newListID)
         XCTAssertEqual(model.newListOriginPage, .list(workID))
@@ -294,20 +294,20 @@ final class IOSAppModelTests: XCTestCase {
         await model.load()
         let createdWork = await model.createList(name: "Work")
         XCTAssertTrue(createdWork)
-        let workID = model.selectedListID
+        let workID = model.lastSelectedListID
         await model.openNewList()
         let pendingID = model.newListID
         let listCount = model.lists.count
 
         model.selectList(workID)
         model.editListInline(id: workID)
-        XCTAssertEqual(model.selectedListID, workID)
+        XCTAssertEqual(model.lastSelectedListID, workID)
         XCTAssertEqual(model.editingListID, workID)
 
         model.selectList(workID)
         await model.openNewList()
 
-        XCTAssertEqual(model.selectedListID, pendingID)
+        XCTAssertEqual(model.lastSelectedListID, pendingID)
         XCTAssertEqual(model.newListID, pendingID)
         XCTAssertEqual(model.editingListID, pendingID)
         XCTAssertEqual(model.lists.count, listCount)
@@ -826,11 +826,11 @@ final class IOSAppModelTests: XCTestCase {
         _ = await model.createSnip(content: "Inbox item", in: SnipList.inboxID)
         let inbox = try XCTUnwrap(model.snips.first)
         _ = await model.createList(name: "Work")
-        let workID = model.selectedListID
+        let workID = model.lastSelectedListID
         _ = await model.createSnip(content: "Work item", in: workID)
         let work = try XCTUnwrap(model.snips.first { $0.content == "Work item" })
         _ = await model.createList(name: "Destination")
-        let destinationID = model.selectedListID
+        let destinationID = model.lastSelectedListID
         model.selectList(SnipList.inboxID)
         model.selectSnips([inbox.id])
         let sessionID = model.gatheringSessionID
@@ -901,7 +901,7 @@ final class IOSAppModelTests: XCTestCase {
         _ = await model.createSnip(content: "Inbox item", in: SnipList.inboxID)
         let first = try XCTUnwrap(model.snips.first)
         _ = await model.createList(name: "Work")
-        _ = await model.createSnip(content: "Work item", in: model.selectedListID)
+        _ = await model.createSnip(content: "Work item", in: model.lastSelectedListID)
         let second = try XCTUnwrap(model.snips.first { $0.content == "Work item" })
         model.selectSnips([first.id, second.id])
         let marked = await model.setSelectionDone(true)
@@ -966,7 +966,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(model.visibleSnips.map(\.id), [first.id, second.id, third.id])
         await model.load()
         XCTAssertEqual(model.snips, originalSnips)
-        XCTAssertEqual(model.selectedListID, SnipList.inboxID)
+        XCTAssertEqual(model.lastSelectedListID, SnipList.inboxID)
     }
 
     func testMovingSelectedSnipsCommitsTheirSourceOrderAheadOfTheDestinationSnips() async throws {
@@ -984,7 +984,7 @@ final class IOSAppModelTests: XCTestCase {
         let third = try XCTUnwrap(model.snips.first { $0.content == "Third" })
         let createdList = await model.createList(name: "Work")
         XCTAssertTrue(createdList)
-        let workID = model.selectedListID
+        let workID = model.lastSelectedListID
         for content in ["Destination first", "Destination second"] {
             let created = await model.createSnip(content: content, in: workID)
             XCTAssertTrue(created)
@@ -1008,7 +1008,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertTrue(model.selectedSnipIDs.isEmpty)
         XCTAssertTrue(model.selectedSnips.isEmpty)
         XCTAssertNil(model.selectedSnipID)
-        XCTAssertEqual(model.selectedListID, SnipList.inboxID)
+        XCTAssertEqual(model.lastSelectedListID, SnipList.inboxID)
         XCTAssertEqual(model.visibleSnips.map(\.id), [third.id])
         XCTAssertEqual(
             model.visibleSnips(in: workID).map(\.id),
@@ -1103,7 +1103,7 @@ final class IOSAppModelTests: XCTestCase {
                 let created = await model.createList(name: "Later page")
                 XCTAssertTrue(created)
             }
-            let laterListID = model.selectedListID
+            let laterListID = model.lastSelectedListID
             let created = await model.createSnip(content: "Later editor", in: laterListID, selectCreatedSnip: false)
             XCTAssertTrue(created)
             let later = try XCTUnwrap(model.snips.first { $0.content == "Later editor" })
@@ -1130,7 +1130,7 @@ final class IOSAppModelTests: XCTestCase {
             XCTAssertTrue(merged)
             XCTAssertTrue(model.snips.contains { $0.content == "Controlled merge result" })
             XCTAssertFalse(model.snips.contains { $0.id == first.id || $0.id == second.id })
-            XCTAssertEqual(model.selectedListID, laterListID)
+            XCTAssertEqual(model.lastSelectedListID, laterListID)
             XCTAssertEqual(model.selectedSnipIDs, [later.id])
             XCTAssertEqual(model.selectedSnipID, later.id)
             XCTAssertEqual(model.completionFilter, .done)
@@ -1152,10 +1152,10 @@ final class IOSAppModelTests: XCTestCase {
         await model.load()
         let destinationCreated = await model.createList(name: "Destination")
         XCTAssertTrue(destinationCreated)
-        let destinationID = model.selectedListID
+        let destinationID = model.lastSelectedListID
         let laterCreated = await model.createList(name: "Later")
         XCTAssertTrue(laterCreated)
-        let laterID = model.selectedListID
+        let laterID = model.lastSelectedListID
         let snipCreated = await model.createSnip(content: "New selection", in: laterID)
         XCTAssertTrue(snipCreated)
         let laterSnip = try XCTUnwrap(model.snips.first { $0.content == "New selection" })
@@ -1187,7 +1187,7 @@ final class IOSAppModelTests: XCTestCase {
 
         XCTAssertTrue(created)
         XCTAssertTrue(moved)
-        XCTAssertEqual(model.selectedListID, laterID)
+        XCTAssertEqual(model.lastSelectedListID, laterID)
         XCTAssertEqual(model.selectedSnipIDs, [laterSnip.id])
         XCTAssertEqual(model.selectedSnipID, laterSnip.id)
         XCTAssertEqual(model.selectedSnips.map(\.id), [laterSnip.id])
@@ -1217,7 +1217,7 @@ final class IOSAppModelTests: XCTestCase {
         await model.load()
         let destinationCreated = await model.createList(name: "Destination")
         XCTAssertTrue(destinationCreated)
-        let destinationID = model.selectedListID
+        let destinationID = model.lastSelectedListID
         model.selectList(SnipList.inboxID)
         model.sortMode = .manual
         model.selectSnips([original.id])
@@ -1268,7 +1268,7 @@ final class IOSAppModelTests: XCTestCase {
             let model = makeModel(library: library)
             await model.load()
             _ = await model.createList(name: "Destination")
-            let destinationID = model.selectedListID
+            let destinationID = model.lastSelectedListID
             model.selectList(SnipList.inboxID)
             if movesSelection { model.selectSnips([original.id]) }
             await library.suspendNextCommand()
@@ -1327,7 +1327,7 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(model.selectedSnipIDs, [first.id, second.id])
         XCTAssertEqual(model.snips, originalSnips)
         XCTAssertEqual(model.visibleSnips.map(\.id), [first.id, second.id])
-        XCTAssertEqual(model.selectedListID, SnipList.inboxID)
+        XCTAssertEqual(model.lastSelectedListID, SnipList.inboxID)
         let reopened = makeModel(library: try JSONSnipLibrary(fileURL: storeURL))
         await reopened.load()
         reopened.sortMode = .manual
@@ -4145,7 +4145,7 @@ final class IOSAppModelTests: XCTestCase {
 
         let movedSnip = await model.moveSnip(id: snip.id, to: workID)
         XCTAssertTrue(movedSnip)
-        XCTAssertEqual(model.selectedListID, workID)
+        XCTAssertEqual(model.lastSelectedListID, workID)
         XCTAssertEqual(model.selectedSnip?.listID, workID)
 
         let deletedSnip = await model.deleteSnip(id: snip.id)
@@ -4173,7 +4173,7 @@ final class IOSAppModelTests: XCTestCase {
         )
 
         XCTAssertTrue(created)
-        XCTAssertEqual(model.selectedListID, SnipList.inboxID)
+        XCTAssertEqual(model.lastSelectedListID, SnipList.inboxID)
         XCTAssertNil(model.selectedSnipID)
         XCTAssertEqual(model.snips.first(where: { $0.content == "Saved in the background" })?.listID, workID)
     }
@@ -4843,7 +4843,7 @@ final class IOSAppModelTests: XCTestCase {
 
         let deletedList = await model.deleteList(id: list.id)
         XCTAssertTrue(deletedList)
-        XCTAssertEqual(model.selectedListID, SnipList.inboxID)
+        XCTAssertEqual(model.lastSelectedListID, SnipList.inboxID)
         XCTAssertEqual(model.snips.first?.listID, SnipList.inboxID)
         XCTAssertEqual(model.lists.first?.id, SnipList.inboxID)
         XCTAssertEqual(model.lists.first?.name, SnipList.inbox.name)
@@ -5462,7 +5462,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
                 let deleted = await model.deleteSnip(id: snip.id)
                 XCTAssertTrue(deleted)
             case 2:
-                model.selectList(model.selectedListID)
+                model.selectList(model.lastSelectedListID)
             default:
                 await session.retrySyncWhenPossible()
             }
@@ -6726,7 +6726,7 @@ final class ClipboardRowPreviewTests: XCTestCase {
         host.view.layoutIfNeeded()
         let size = CGSize(width: 64, height: 64)
         let scale = host.traitCollection.displayScale
-        let keys = (0..<3).map { "\(entry.id)|\(entry.fingerprint)|image-\($0)" }
+        let keys = (0..<3).map { ClipboardImageThumbnailID(entry: entry, representationIndex: $0) }
         func cached() -> [CGImage] {
             keys.compactMap { AttachmentThumbnailCache.shared.cachedClipboardImage(id: $0, size: size, scale: scale) }
         }
@@ -6813,16 +6813,18 @@ final class AttachmentThumbnailCacheTests: XCTestCase {
         let cache = AttachmentThumbnailCache()
         let source = thumbnailTestImage(width: 1024, height: 512)
         let data = try XCTUnwrap(UIImage(cgImage: source).pngData())
+        let entry = ClipboardEntry(items: [.init(representations: [.init(type: UTType.png.identifier, data: data)])])
+        let id = ClipboardImageThumbnailID(entry: entry, representationIndex: 0)
         let size = CGSize(width: 64, height: 64)
-        XCTAssertNil(cache.cachedClipboardImage(id: "entry-image", size: size, scale: 3))
-        let loaded = await cache.clipboardImage(data: data, id: "entry-image", size: size, scale: 3)
+        XCTAssertNil(cache.cachedClipboardImage(id: id, size: size, scale: 3))
+        let loaded = await cache.clipboardImage(data: data, id: id, size: size, scale: 3)
         let first = try XCTUnwrap(loaded)
         XCTAssertEqual(first.width, 192)
         XCTAssertEqual(first.height, 96)
-        let refreshed = await cache.clipboardImage(data: data, id: "entry-image", size: size, scale: 3)
+        let refreshed = await cache.clipboardImage(data: data, id: id, size: size, scale: 3)
         XCTAssertTrue(first === refreshed)
-        XCTAssertTrue(first === cache.cachedClipboardImage(id: "entry-image", size: size, scale: 3))
-        let higherScale = await cache.clipboardImage(data: data, id: "entry-image", size: size, scale: 4)
+        XCTAssertTrue(first === cache.cachedClipboardImage(id: id, size: size, scale: 3))
+        let higherScale = await cache.clipboardImage(data: data, id: id, size: size, scale: 4)
         XCTAssertEqual(higherScale?.width, 256)
         XCTAssertEqual(data, UIImage(cgImage: source).pngData())
     }
@@ -6832,18 +6834,32 @@ final class AttachmentThumbnailCacheTests: XCTestCase {
         let entryID = UUID()
         let firstData = try XCTUnwrap(UIImage(cgImage: thumbnailTestImage(width: 500, height: 250)).pngData())
         let secondData = try XCTUnwrap(UIImage(cgImage: thumbnailTestImage(width: 250, height: 500)).pngData())
-        let entry = ClipboardEntry(id: entryID, items: [.init(representations: [.init(type: "public.png", data: firstData)])])
+        let entry = ClipboardEntry(id: entryID, items: [firstData, secondData].map {
+            .init(representations: [.init(type: UTType.png.identifier, data: $0)])
+        })
         var changed = entry
-        changed.items = [.init(representations: [.init(type: "public.png", data: secondData)])]
+        changed.items[0] = .init(representations: [.init(type: UTType.png.identifier, data: secondData)])
+        let firstID = ClipboardImageThumbnailID(entry: entry, representationIndex: 0)
+        let replacementID = ClipboardImageThumbnailID(entry: changed, representationIndex: 0)
+        let alternateID = ClipboardImageThumbnailID(entry: entry, representationIndex: 1)
         let size = CGSize(width: 64, height: 64)
-        let first = await cache.clipboardImage(data: firstData, id: "\(entry.id)|\(entry.fingerprint)|image-0", size: size, scale: 2)
-        let replacement = await cache.clipboardImage(data: secondData, id: "\(changed.id)|\(changed.fingerprint)|image-0", size: size, scale: 2)
+        let first = await cache.clipboardImage(data: firstData, id: firstID, size: size, scale: 2)
+        XCTAssertNil(cache.cachedClipboardImage(id: replacementID, size: size, scale: 2))
+        XCTAssertNil(cache.cachedClipboardImage(id: alternateID, size: size, scale: 2))
+        let replacement = await cache.clipboardImage(data: secondData, id: replacementID, size: size, scale: 2)
         XCTAssertEqual(first?.width, 128)
         XCTAssertEqual(first?.height, 64)
         XCTAssertEqual(replacement?.width, 64)
         XCTAssertEqual(replacement?.height, 128)
-        let alternate = await cache.clipboardImage(data: secondData, id: "\(entry.id)|\(entry.fingerprint)|image-1", size: size, scale: 2)
+        let alternate = await cache.clipboardImage(data: secondData, id: alternateID, size: size, scale: 2)
         XCTAssertEqual(alternate?.height, 128)
+        XCTAssertTrue(first === cache.cachedClipboardImage(id: firstID, size: size, scale: 2))
+
+        var pinned = entry
+        pinned.pinnedAt = Date()
+        let pinnedID = ClipboardImageThumbnailID(entry: pinned, representationIndex: 0)
+        let refreshed = await cache.clipboardImage(data: firstData, id: pinnedID, size: size, scale: 2)
+        XCTAssertTrue(first === refreshed)
     }
 
     func testClipboardThumbnailHonorsImageOrientationAndRejectsInvalidBytes() async throws {
@@ -6853,12 +6869,17 @@ final class AttachmentThumbnailCacheTests: XCTestCase {
         CGImageDestinationAddImage(destination, thumbnailTestImage(width: 800, height: 400), [kCGImagePropertyOrientation: 6] as CFDictionary)
         XCTAssertTrue(CGImageDestinationFinalize(destination))
         let size = CGSize(width: 64, height: 64)
-        let oriented = await cache.clipboardImage(data: bytes as Data, id: "oriented", size: size, scale: 3)
+        let entry = ClipboardEntry(items: [.init(representations: [.init(type: UTType.jpeg.identifier, data: bytes as Data)])])
+        let orientedID = ClipboardImageThumbnailID(entry: entry, representationIndex: 0)
+        let oriented = await cache.clipboardImage(data: bytes as Data, id: orientedID, size: size, scale: 3)
         XCTAssertEqual(oriented?.width, 96)
         XCTAssertEqual(oriented?.height, 192)
-        let invalid = await cache.clipboardImage(data: Data([1, 2, 3]), id: "invalid", size: size, scale: 3)
+        let invalidData = Data([1, 2, 3])
+        let invalidEntry = ClipboardEntry(items: [.init(representations: [.init(type: UTType.png.identifier, data: invalidData)])])
+        let invalidID = ClipboardImageThumbnailID(entry: invalidEntry, representationIndex: 0)
+        let invalid = await cache.clipboardImage(data: invalidData, id: invalidID, size: size, scale: 3)
         XCTAssertNil(invalid)
-        XCTAssertNil(cache.cachedClipboardImage(id: "invalid", size: size, scale: 3))
+        XCTAssertNil(cache.cachedClipboardImage(id: invalidID, size: size, scale: 3))
     }
 
     func testLargeClipboardImageDecodeBenchmark() async throws {
@@ -6873,6 +6894,10 @@ final class AttachmentThumbnailCacheTests: XCTestCase {
         var warm: [Double] = []
         let size = CGSize(width: 64, height: 64)
         let renderer = UIGraphicsImageRenderer(size: size)
+        let entry = ClipboardEntry(items: (0..<3).map { _ in
+            .init(representations: [.init(type: UTType.jpeg.identifier, data: data)])
+        })
+        let ids = (0..<3).map { ClipboardImageThumbnailID(entry: entry, representationIndex: $0) }
         for _ in 0..<15 {
             let start = CACurrentMediaTime()
             for _ in 0..<3 {
@@ -6884,10 +6909,10 @@ final class AttachmentThumbnailCacheTests: XCTestCase {
             full.append((CACurrentMediaTime() - start) * 1000)
             let cache = AttachmentThumbnailCache()
             let asyncStart = CACurrentMediaTime()
-            for n in 0..<3 { _ = await cache.clipboardImage(data: data, id: "benchmark-\(n)", size: size, scale: 3) }
+            for id in ids { _ = await cache.clipboardImage(data: data, id: id, size: size, scale: 3) }
             thumb.append((CACurrentMediaTime() - asyncStart) * 1000)
             let warmStart = CACurrentMediaTime()
-            for n in 0..<3 { _ = await cache.clipboardImage(data: data, id: "benchmark-\(n)", size: size, scale: 3) }
+            for id in ids { _ = await cache.clipboardImage(data: data, id: id, size: size, scale: 3) }
             warm.append((CACurrentMediaTime() - warmStart) * 1000)
         }
         print("THUMBNAIL-BENCH full-three-ms=\(full) cold-three-ms=\(thumb) warm-three-ms=\(warm) jpeg-bytes=\(data.count)")

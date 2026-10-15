@@ -1,7 +1,6 @@
 import SnipSnapCore
 import SwiftUI
 
-/// Both item and selection menus offer the same destination and creation actions.
 struct MoveDestinationOptions: View {
     let destinations: [SnipList]
     let identifierPrefix: String

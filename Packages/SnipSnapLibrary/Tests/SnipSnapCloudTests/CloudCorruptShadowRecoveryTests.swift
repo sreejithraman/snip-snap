@@ -536,7 +536,6 @@ final class CloudCorruptShadowRecoveryTests: XCTestCase {
           record.recordName = legacyDraft.id.name
         default: XCTFail("Unknown test case")
         }
-        // Keep the key valid except in the key test, so each other check must stand alone.
         if failure != "key" {
           let reference = CloudEntityReference(kind: CloudEntityKind(rawValue: record.kind)!, domainID: record.domainID)
           record.id = StoredCloudMappingQuarantine.key(namespaceKey: fixture.namespace.namespaceKey.rawValue,

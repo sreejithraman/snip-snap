@@ -38,7 +38,6 @@ enum SnipListIconOptions {
     private static let availableIconSet = Set(availableIcons)
 
     static func prepareCatalog() async {
-        // Checking thousands of OS-rendered symbols is work for a background thread.
         _ = await Task.detached(priority: .utility) { availableIcons }.value
     }
     static var searchPlaceholder: String {
@@ -378,7 +377,6 @@ enum SnipListIconOptions {
     }
 }
 
-/// A shared search surface; the placeholder reports the catalog actually available here.
 enum ListAppearanceField: Hashable {
     case name
     case iconSearch

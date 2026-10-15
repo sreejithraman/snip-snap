@@ -77,7 +77,6 @@ struct SnipRow: View {
     }
 }
 
-/// Shared content for source rows and selected glass cards. Controls belong to the host.
 struct SnipContentView: View {
     let snip: Snip
     let model: IOSAppModel
@@ -249,7 +248,6 @@ struct SnipCopyControl: View {
     }
 }
 
-/// Shared visual language for row copy and gathered-item return controls.
 struct SnipCircularControl: View {
     let systemImage: String
     let appearance: SnipListAppearance
@@ -264,7 +262,6 @@ struct SnipCircularControl: View {
     }
 }
 
-/// The transfer uses the same return-control drawing as its eventual button.
 struct SnipCircularControlLabel: View {
     @ScaledMetric(relativeTo: .body) private var controlDiameter: CGFloat = 28
     @ScaledMetric(relativeTo: .body) private var symbolSize: CGFloat = 13
@@ -293,7 +290,6 @@ struct SnipCircularControlLabel: View {
     }
 }
 
-/// Controls keep the same slot and the text starts on the same baseline.
 struct IOSItemRow<Leading: View, Content: View>: View {
     var hasLeading = true
     @ViewBuilder let leading: () -> Leading

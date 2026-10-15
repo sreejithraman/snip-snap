@@ -4,7 +4,6 @@ import UIKit
 @MainActor
 @Observable
 final class IOSHapticFeedback {
-    // Outcomes retain their source; meanings define the shared tactile policy.
     enum Kind: Equatable, CaseIterable {
         case selection, snap, saved, copied, markedDone, reopened, deleted, restored, moved, merged, warning, error
 
@@ -28,7 +27,6 @@ final class IOSHapticFeedback {
         let id = UUID()
         let kinds: [Kind]
 
-        // A compound result gets one system response; failures take precedence.
         var kind: Kind {
             if kinds.contains(.error) { return .error }
             if kinds.contains(.warning) { return .warning }
@@ -89,7 +87,6 @@ final class IOSHapticFeedback {
         event = result
     }
 
-    // Leaving a flow must not let its pending work produce a late haptic.
     func invalidatePendingFeedback() {
         interactionID = UUID()
     }
@@ -109,7 +106,6 @@ struct IOSHapticFeedbackModifier: ViewModifier {
     }
 }
 
-// Actions report outcomes; this adapter makes one direct system feedback call.
 @MainActor
 protocol IOSHapticPlaying {
     func play(_ meaning: IOSHapticFeedback.Meaning)

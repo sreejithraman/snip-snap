@@ -1,18 +1,12 @@
 import AppKit
 import SwiftUI
 
-/// The app's semantic color roles. Views choose a role; this type owns the
-/// visible color and opacity needed to express it.
 enum SnipSnapColors {
-    // MARK: Text
-
     static let textPrimary = AnyShapeStyle(HierarchicalShapeStyle.primary)
     static let textSecondary = AnyShapeStyle(HierarchicalShapeStyle.secondary)
     static let textTertiary = AnyShapeStyle(HierarchicalShapeStyle.tertiary)
     static let textError = AnyShapeStyle(Color(nsColor: .systemRed))
     static let doneStrikethrough = Color.secondary
-
-    // MARK: Controls and interaction
 
     static let selectionEdge = Color.primary.opacity(0.50)
     static let compactSubduedFill = Color.primary.opacity(0.05)
@@ -43,8 +37,6 @@ enum SnipSnapColors {
         tone == .white ? .black.opacity(0.30) : .white.opacity(0.75)
     }
 
-    // MARK: Surfaces
-
     static let nestedGlassTint = Color("NestedGlassTint")
     static let idleActionGlassTint = Color(nsColor: .tertiaryLabelColor)
     static let idleActionLabel = Color(nsColor: .secondaryLabelColor)
@@ -56,12 +48,8 @@ enum SnipSnapColors {
         Color.black.opacity(isSelected ? 0.14 : 0.10)
     }
 
-    // MARK: State strength
-
     static let doneTextOpacity = 0.65
     static let doneCardOpacity = 0.55
-
-    // MARK: Generated document previews
 
     // These are document pixels rather than app chrome. Fixed paper and ink
     // keep a generated text-file thumbnail stable in either app theme.

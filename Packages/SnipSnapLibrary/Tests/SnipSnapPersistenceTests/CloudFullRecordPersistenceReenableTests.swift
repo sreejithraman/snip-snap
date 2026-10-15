@@ -107,7 +107,6 @@ extension CloudFullRecordPersistenceTests {
       _ = try await store.commitCloudFullBatch(try XCTUnwrap(batches.first))
       XCTFail("Expected the oldest batch receipt to be pruned")
     } catch CloudFullStorageError.invalidBatchReplay {
-      // Expected.
     }
     let retainedReplay = try await store.commitCloudFullBatch(try XCTUnwrap(batches.dropFirst().first))
     XCTAssertEqual(retainedReplay, .replayed)
@@ -243,7 +242,6 @@ extension CloudFullRecordPersistenceTests {
       _ = try await store.applyCloudFullReenablePlan(mismatchedReplay, currentRevision: 9)
       XCTFail("Expected the receipt digest mismatch")
     } catch CloudFullStorageError.invalidBatchReplay {
-      // Expected.
     }
     let receiptAfterMismatch = try await store.recognizesAppliedCloudFullReenable(
       CloudFullReenableCommitProof(

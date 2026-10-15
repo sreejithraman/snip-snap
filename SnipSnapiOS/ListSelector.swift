@@ -145,7 +145,7 @@ struct ListSelector: View {
             model.isManagingLists = false
             if destination == nil { resetCreation() }
         }
-        .onChange(of: model.selectedListID) { _, _ in
+        .onChange(of: model.lastSelectedListID) { _, _ in
             if presentingCreation { resetCreation() }
         }
         .onChange(of: model.selectedPage) { _, _ in
@@ -379,12 +379,10 @@ struct ListSelector: View {
     }
 
     private func plusReveal(progress: CGFloat) -> CGFloat {
-        // Spread travel through the edge fade across the full pull.
         progress * progress * (3 - 2 * progress)
     }
 
     private func plusX(viewport: CGFloat, reveal: CGFloat) -> CGFloat {
-        // Hover over Add when ready; reversing the pull returns it to the edge.
         let halfIcon = fontSize / 2
         let inset = viewport * edgeFadeFraction + halfIcon
         guard !reduceMotion else { return viewport / 2 }
@@ -480,7 +478,6 @@ struct ListSelector: View {
     }
 }
 
-// Keep the selection color smooth as the strip moves between lists.
 nonisolated private struct ListSelectionGlass: View, Animatable {
     let width: CGFloat
     let height: CGFloat

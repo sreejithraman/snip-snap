@@ -358,15 +358,34 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             shortcutSettings: ShortcutSettings(defaults: defaults),
             isAccessibilityTrusted: { false }
         )
-        let parent = NSWindow()
+        // Receive native key notifications even when the XCTest host is inactive.
+        let parent = SnipSnapPanel(
+            contentRect: NSRect(origin: .zero, size: AppWindowDefaults.defaultSize),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        parent.becomesKeyOnlyIfNeeded = false
         coordinator.attachPanelWindow(parent)
         coordinator.presentPanelDialog(id: .backupImport, title: "Import") {} content: {
             Text("Review backup")
         }
 
+        XCTAssertFalse(parent.isVisible)
+        XCTAssertNil(parent.childWindows?.first)
+        let dialogBecameKey = expectation(
+            forNotification: NSWindow.didBecomeKeyNotification,
+            object: nil
+        ) { notification in
+            let window = notification.object as? NSWindow
+            return MainActor.assumeIsolated {
+                window?.parent === parent
+            }
+        }
+
         parent.makeKeyAndOrderFront(nil)
         defer { parent.orderOut(nil) }
-        try await Task.sleep(for: .milliseconds(100))
+        await fulfillment(of: [dialogBecameKey], timeout: 2)
 
         XCTAssertNotNil(parent.childWindows?.first)
         XCTAssertEqual(parent.childWindows?.first?.isOpaque, false)
@@ -566,7 +585,6 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         XCTAssertTrue(pickerFocusWindow.isKeyWindow)
         XCTAssertEqual(parent.alphaValue, 0.45, accuracy: 0.001)
         XCTAssertEqual(importer.appearance?.name, .aqua)
-        // The injected presenter captures the request without asking AppKit to show it.
         XCTAssertNil(parent.childWindows?.first)
         XCTAssertFalse(parent.childWindows?.contains(importer) == true)
         XCTAssertFalse(coordinator.presentOpenPanel(NSOpenPanel()) { _ in })

@@ -3,8 +3,6 @@ import SnipSnapCore
 import Carbon.HIToolbox
 import Foundation
 
-// MARK: - Shortcut model
-
 struct ShortcutKeyChord: Codable, Hashable, Sendable {
     let keyCode: UInt32
     let modifiers: UInt32

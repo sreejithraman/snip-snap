@@ -1,7 +1,6 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Writes the TestFlight "What's New" text for one exact iOS build.
 require "base64"
 require "json"
 require "net/http"

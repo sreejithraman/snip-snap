@@ -1302,7 +1302,6 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       )
       XCTFail("Expected the injected save failure.")
     } catch is InjectedFailure {
-      // Expected.
     }
 
     let failedSnapshot = await library.snapshot(sortedBy: .chronological)

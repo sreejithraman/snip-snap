@@ -112,7 +112,6 @@ if [[ "$platform" == ios ]]; then
 fi
 typeset -gx SNIP_SNAP_APP_GROUP_IDENTIFIER="$dev_app_group_identifier"
 
-# Resolve the isolated Mac app's signing settings.
 if [[ "$platform" == macos ]]; then
     typeset -gx SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER="$dev_product_identifier"
 fi

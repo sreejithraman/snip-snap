@@ -6,7 +6,6 @@ final class SnipStoreBackgroundActivity: Sendable {
   typealias End = @Sendable () -> Void
   typealias Runner = @Sendable (@escaping @Sendable () -> Void) -> End
 
-  // Task-local injection keeps concurrent tests and separate stores independent.
   @TaskLocal static var runner: Runner? = platformRunner
 
   private static var platformRunner: Runner? {

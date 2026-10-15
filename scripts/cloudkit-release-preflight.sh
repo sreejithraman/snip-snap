@@ -114,7 +114,6 @@ fi
     /usr/bin/shasum -a 256 "$repo_dir/CloudKit/SnipSnap.ckdb"
 } > "$report"
 
-# This account-free check proves the checked-in baseline still matches live codecs.
 if ! swift test --package-path "$repo_dir/Packages/SnipSnapLibrary" \
     --filter CloudKitSchemaContractTests > "$report_dir/codec-tests.log" 2>&1; then
     fail "live codec/schema contract failed; see $report_dir/codec-tests.log"

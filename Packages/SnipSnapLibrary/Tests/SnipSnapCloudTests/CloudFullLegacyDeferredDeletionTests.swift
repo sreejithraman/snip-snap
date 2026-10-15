@@ -130,7 +130,6 @@ extension CloudFullSyncPersistenceTests {
         _ = try await reopened.pendingChanges()
         XCTFail("An unknown deferred format must not authorize any outbound operation")
       } catch CloudFullStorageError.invalidBatchReplay {
-        // Fail closed before interpreting unknown materialization provenance.
       }
       let local = await reopenedLibrary.snapshot(sortedBy: .manual)
       XCTAssertFalse(local.snips.contains { $0.id == snipID })
@@ -185,7 +184,6 @@ extension CloudFullSyncPersistenceTests {
       let afterListPending = try await reopened.pendingChanges()
       XCTAssertFalse(afterListPending.operations.contains { $0.id == saved.id })
       if case .issue(.appDataIssue) = try await reopened.syncStatus() {
-        // The ambiguous absence still needs conflict attention.
       } else {
         XCTFail("The ambiguous absence must keep conflict attention after a list-only arrival")
       }
@@ -203,7 +201,6 @@ extension CloudFullSyncPersistenceTests {
       let afterRestartPending = try await restarted.pendingChanges()
       XCTAssertFalse(afterRestartPending.operations.contains { $0.id == saved.id })
       if case .issue(.appDataIssue) = try await restarted.syncStatus() {
-        // The persisted marker must survive a fresh process.
       } else {
         XCTFail("Restart must retain conflict attention for the ambiguous absence")
       }

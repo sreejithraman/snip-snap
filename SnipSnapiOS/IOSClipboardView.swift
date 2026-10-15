@@ -172,7 +172,6 @@ struct IOSClipboardView: View {
     }
 }
 
-/// Clipboard screen and search share the same row; hosts own menus and actions.
 struct ClipboardItemRow: View {
     let entry: ClipboardEntry
     let model: IOSClipboardModel
@@ -229,12 +228,13 @@ private struct ClipboardItemPreviews: View {
 
     var body: some View {
         CompactItemPreviews(items: previews) { preview in
-            if let data = preview.imageData {
+            switch preview {
+            case .image(let index, let data):
                 ClipboardImageThumbnail(
                     data: data,
-                    id: "\(entry.id)|\(entry.fingerprint)|\(preview.id)"
+                    id: ClipboardImageThumbnailID(entry: entry, representationIndex: index)
                 )
-            } else if let url = preview.fileURL {
+            case .file(_, let url):
                 AttachmentThumbnail(url: url)
             }
         }
@@ -242,15 +242,26 @@ private struct ClipboardItemPreviews: View {
 
     private var previews: [ClipboardItemPreview] {
         entry.standaloneImageRepresentations.enumerated().map { index, representation in
-            ClipboardItemPreview(id: "image-\(index)", imageData: representation.data)
+            ClipboardItemPreview.image(index: index, data: representation.data)
         } + fileURLs.enumerated().map { index, url in
-            ClipboardItemPreview(id: "file-\(index)", fileURL: url)
+            ClipboardItemPreview.file(index: index, url: url)
         }
     }
 }
 
-private struct ClipboardItemPreview: Identifiable {
-    let id: String
-    var imageData: Data? = nil
-    var fileURL: URL? = nil
+private enum ClipboardItemPreview: Identifiable {
+    case image(index: Int, data: Data)
+    case file(index: Int, url: URL)
+
+    enum ID: Hashable {
+        case image(Int)
+        case file(Int)
+    }
+
+    var id: ID {
+        switch self {
+        case .image(let index, _): .image(index)
+        case .file(let index, _): .file(index)
+        }
+    }
 }

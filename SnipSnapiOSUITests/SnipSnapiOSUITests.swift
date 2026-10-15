@@ -1724,6 +1724,27 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["settings"].waitForExistence(timeout: 3))
     }
 
+    func testNewListFromClipboardOpensWhenButtonBecomesAvailable() async throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        let clipboard = app.buttons["clipboard-tab"]
+        clipboard.tap()
+        XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+        clipboard.tap()
+        let newList = app.buttons["list-management-new"]
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !newList.exists && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(newList.exists)
+        newList.tap()
+        XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 4))
+        app.buttons["save-list"].tap()
+        XCTAssertTrue(app.navigationBars["New List"].waitForExistence(timeout: 3))
+        XCTAssertTrue(compactListTab(named: "New List", in: app).isSelected)
+    }
+
     func testClipboardAndSelectorPreserveNavigationAndDraft() throws {
         continueAfterFailure = false
         let app = launchApp()
@@ -1767,7 +1788,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         screenshot.lifetime = .keepAlways
         add(screenshot)
         clipboard.tap()
-        app.buttons["list-management-new"].tap()
+        let newList = app.buttons["list-management-new"]
+        XCTAssertTrue(newList.waitForExistence(timeout: 3))
+        newList.tap()
         let field = app.textFields["list-name"]
         XCTAssertTrue(field.waitForExistence(timeout: 4))
         field.tap()
@@ -1862,7 +1885,6 @@ final class SnipSnapiOSUITests: XCTestCase {
             )
         }
 
-        // A short pull returns to the current page and keeps its unsent text.
         dragTabs(20)
         XCTAssertTrue(compactListTab(named: "Work", in: app).isSelected)
         XCTAssertEqual(composer.value as? String, "Work unsent draft")
@@ -1884,7 +1906,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(compactListTab(named: "Work", in: app).isSelected)
         XCTAssertEqual(composer.value as? String, "Work unsent draft")
 
-        // Cross Inbox in one continuous pull to Clipboard, then return to Work.
         func dragAcrossTabs(_ distance: CGFloat) {
             let selector = app.descendants(matching: .any)["list-selector"]
             let start = selector.coordinate(withNormalizedOffset: CGVector(
@@ -3216,7 +3237,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         let clipboard = app.buttons["clipboard-tab"]
         let selector = app.descendants(matching: .any)["list-selector"]
         if selector.exists {
-            // Swipe directly from Work to Clipboard, which lies outside the strip.
             let start = selector.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5))
             start.press(
                 forDuration: 0.05,
@@ -3610,7 +3630,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["gathering-instructions"].exists)
         let emptyFrame = preview.frame
         let emptyHeaderY = app.buttons["finish-selecting"].frame.midY
-        // The completion control is decorative while the row gathers, so it cannot mark Done.
         XCTAssertFalse(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "completion-")).firstMatch.exists)
         row(named: "Sketch a simpler selection flow", in: app).tap()
         XCTAssertEqual(preview.frame.height, emptyFrame.height, accuracy: 1)

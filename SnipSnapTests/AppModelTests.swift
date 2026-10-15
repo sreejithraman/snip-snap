@@ -54,6 +54,23 @@ private actor EvictingBackupAttachmentHandler: OptionalCloudSyncHandling {
 
 final class AppModelTests: StoreBackedTestCase {
     @MainActor
+    func testInitialLoadRestoresSavedListAndSnips() async {
+        let list = SnipList(id: UUID(), name: "Work", systemImage: "folder", position: 1)
+        let snip = Snip(content: "Saved before launch", origin: .quickEntry, listID: list.id)
+        let settings = defaults()
+        settings.set(list.id.uuidString, forKey: AppModel.activeListDefaultsKey)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [snip], lists: [.inbox, list]),
+            defaults: settings
+        )
+
+        await model.waitForInitialLoad()
+
+        XCTAssertEqual(model.activeList, list)
+        XCTAssertEqual(model.filteredSnips, [snip])
+    }
+
+    @MainActor
     func testCLIAddUsesLiveLibraryAndRecordsAgentContext() async throws {
         let library = try JSONSnipLibrary(fileURL: storeURL())
         let model = AppModel(library: library, defaults: defaults())
@@ -2687,9 +2704,7 @@ final class AppModelTests: StoreBackedTestCase {
         let root = store.deletingLastPathComponent()
         let library = try JSONSnipLibrary(fileURL: store)
         let model = AppModel(library: library, defaults: defaults())
-        await model.reload()
-        // Drain the initialization reload before simulating another client’s import.
-        await model.reload()
+        await model.waitForInitialLoad()
         XCTAssertTrue(model.snips.isEmpty)
 
         let source = root.appendingPathComponent("externally-added.txt")

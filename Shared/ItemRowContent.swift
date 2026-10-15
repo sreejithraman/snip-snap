@@ -1,6 +1,5 @@
 import SwiftUI
 
-/// List and clipboard items keep the same text, previews, and footer order.
 struct ItemRowContent<TextContent: View, Previews: View, Metadata: View>: View {
     @ViewBuilder let text: () -> TextContent
     @ViewBuilder let previews: () -> Previews
@@ -16,7 +15,6 @@ struct ItemRowContent<TextContent: View, Previews: View, Metadata: View>: View {
     }
 }
 
-/// The same bounded, expandable text presentation for either kind of item.
 struct ItemRowText: View {
     let text: String
     var lineLimit: Int? = previewLineLimit

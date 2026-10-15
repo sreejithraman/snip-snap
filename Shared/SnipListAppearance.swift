@@ -6,7 +6,6 @@ import AppKit
 import UIKit
 #endif
 
-/// List identity is shared; native controls still own their size and behavior.
 extension SnipListColorPreset {
 
     var title: String {
@@ -29,6 +28,7 @@ extension SnipListColorPreset {
 
 struct SnipListAppearance {
     let preset: SnipListColorPreset?
+    private static let blackWhiteLabelContrastThreshold: Float = 0.179
 
     var title: String {
         preset?.title ?? String(localized: "Neutral")
@@ -65,8 +65,7 @@ struct SnipListAppearance {
     func filledControlLabel(in environment: EnvironmentValues) -> Color {
         let tint = controlTint.resolve(in: environment)
         let luminance = 0.2126 * tint.linearRed + 0.7152 * tint.linearGreen + 0.0722 * tint.linearBlue
-        // This threshold chooses the higher-contrast black or white label.
-        return luminance > 0.179 ? .black : .white
+        return luminance > Self.blackWhiteLabelContrastThreshold ? .black : .white
     }
 
     func sendIconColor(in colorScheme: ColorScheme) -> Color {
@@ -166,7 +165,6 @@ struct SnipListColorPicker: View {
     }
 }
 
-/// A tinted glass circle marks selection while keeping the swatch's color visible.
 struct SnipListColorSwatch: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
@@ -199,7 +197,6 @@ struct SnipListColorSwatch: View {
     }
 }
 
-/// The same circular selection treatment for list icons and colors.
 struct SnipListSelectionLens: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast

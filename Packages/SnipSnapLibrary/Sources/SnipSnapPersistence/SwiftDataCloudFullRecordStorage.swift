@@ -285,7 +285,6 @@ extension SwiftDataSnipLibrary {
       try Self.insertQuarantineIfNeeded(value.corruptShadowRecoveryMarker,
         namespaceKey: namespaceKey.rawValue, context: context)
     }
-    // Recovery starts a fresh engine even when an old token remains on disk.
     try Self.startFullFetchInventory(namespaceKey: namespaceKey.rawValue, reset: true, context: context)
     try afterMutationBeforeSave()
     try lock.check()

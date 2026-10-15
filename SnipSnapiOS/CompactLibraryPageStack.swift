@@ -67,7 +67,6 @@ struct CompactLibraryPageStack: View {
                              layoutDirection: layoutDirection, reduceMotion: reduceMotion)
             } ?? 0
             ZStack {
-                // The incoming page covers this space during a direct entrance.
                 if !reduceMotion, creationCueProgress > 0, frame.directEntrance == nil {
                     edgeCue(kind: .add, progress: creationCueProgress)
                         .frame(width: proxy.size.width, height: proxy.size.height)

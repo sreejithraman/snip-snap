@@ -15,7 +15,6 @@ final class SnipStoreFileLock {
       opened = Darwin.open(url.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
       guard opened >= 0 else { throw SnipLibraryError.storeUnavailable }
       if let activity {
-        // Check expiry while waiting for another store instance to unlock.
         while flock(opened, LOCK_EX | LOCK_NB) != 0 {
           guard errno == EWOULDBLOCK || errno == EINTR else {
             throw SnipLibraryError.storeUnavailable

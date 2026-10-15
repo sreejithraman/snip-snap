@@ -36,7 +36,7 @@ struct SnipCollectionView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
 
-    private var displayedListID: UUID { listID ?? model.selectedListID }
+    private var displayedListID: UUID { listID ?? model.lastSelectedListID }
     private var displayedList: SnipList {
         model.lists.first(where: { $0.id == displayedListID }) ?? .inbox
     }
@@ -203,7 +203,7 @@ struct SnipCollectionView: View {
             gatheringFlights = []
             departingRows = [:]
         }
-        .onChange(of: model.selectedListID) {
+        .onChange(of: model.lastSelectedListID) {
             guard isActivePage else { return }
             isReordering = false
             isInlineEditorFocused = false
@@ -571,7 +571,7 @@ struct SnipCollectionView: View {
         requiresEmptySelection: Bool = false
     ) {
         guard !model.isPerformingGatheredAction, isActivePage, isSelecting,
-              displayedListID == model.selectedListID, !model.selectedSnips.isEmpty else { return }
+              displayedListID == model.lastSelectedListID, !model.selectedSnips.isEmpty else { return }
         model.isPerformingGatheredAction = true
         let sessionID = model.gatheringSessionID
         Task { @MainActor in
@@ -783,7 +783,6 @@ struct LibrarySearchView: View {
 
 }
 
-/// Transient measurements read by gathering actions, independent of rendered state.
 private final class GatheringFrames {
     var rows: [UUID: CGRect] = [:]
 }

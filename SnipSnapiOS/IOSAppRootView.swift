@@ -551,8 +551,8 @@ struct IOSAppRootView: View {
             reviewRecoveredEdits: model.recoverySnapshot.needsAttentionCount > 0
                 ? { sheet = .recoveryCenter }
                 : nil,
-            editSelectedList: model.selectedListID == SnipList.inboxID
-                ? nil : { model.editListInline(id: model.selectedListID) },
+            editSelectedList: model.lastSelectedListID == SnipList.inboxID
+                ? nil : { model.editListInline(id: model.lastSelectedListID) },
             deleteList: deleteList
         )
     }

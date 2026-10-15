@@ -49,9 +49,6 @@ struct AppToast: Identifiable {
     }
 }
 
-/// The preferred, nondestructive action in the current view.
-///
-/// The role is shared, while each platform keeps its native prominent style.
 enum AppPrimaryActionPresentation {
     case content
     case floatingGlass
@@ -241,10 +238,6 @@ extension View {
 
 }
 
-/// Color roles shared by the Mac and iOS app chrome.
-///
-/// Platform views own their layout, but both apps read these roles so controls
-/// share neutral chrome and list accents in light and dark mode.
 enum SnipSnapTheme {
     static let listGlassTintOpacity = 0.8
     static let listSelectionGlassTint = Color.primary.opacity(0.12)
@@ -253,8 +246,8 @@ enum SnipSnapTheme {
         Color.white.mix(with: tint, by: 0.12)
     }
 
-    /// The app's monochrome accent. Reserve it for active controls,
-    /// selection, and one preferred action in a view.
+    /// Reserve the monochrome accent for active controls, selection,
+    /// and one preferred action in a view.
 #if os(macOS)
     static let actionAccent = Color(nsColor: NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
@@ -293,9 +286,6 @@ enum SnipSnapTheme {
 
 }
 
-/// Shared gaps and insets for custom surfaces on both platforms.
-/// Platform views keep their own control sizes because pointer and touch
-/// controls have different system defaults.
 enum SnipSnapSpacing {
     static let relatedContent: CGFloat = 8
     static let controlContentInset: CGFloat = 10

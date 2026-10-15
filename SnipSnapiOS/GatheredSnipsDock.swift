@@ -44,16 +44,19 @@ struct GatheredSnipsDock: View {
     }
 
     private var cardGap: CGFloat { 12 }
+    private var containerPadding: CGFloat { 12 }
+    private var outerVerticalPadding: CGFloat { 8 }
+    private var sourceRowReservedHeight: CGFloat { 80 }
     private var usesCompactControls: Bool {
         verticalSizeClass == .compact || (containerFrame.height > 0 && containerFrame.height < 400)
     }
     private var minimumCardHeight: CGFloat { max(44, returnControlDiameter) + 20 }
     private var landedCount: Int { snips.lazy.filter { !arrivingSnipIDs.contains($0.id) }.count }
     private func boundedViewportHeight(_ contentHeight: CGFloat) -> CGFloat {
-        // Keep the controls and one source row reachable in short windows.
         let chrome = usesCompactControls ? headerFrame.height : headerFrame.height + actionRowHeight
         let gaps = usesCompactControls ? cardGap : cardGap * 2
-        let available = containerFrame.height - chrome - gaps - 24 - 16 - 80
+        let verticalPadding = 2 * (containerPadding + outerVerticalPadding)
+        let available = containerFrame.height - chrome - gaps - verticalPadding - sourceRowReservedHeight
         let minimum = minimumCardHeight
         return min(max(minimum, contentHeight), 320, max(minimum, available))
     }
@@ -108,10 +111,10 @@ struct GatheredSnipsDock: View {
                 .zIndex(1)
             if !usesCompactControls { actionRow }
         }
-        .padding(12)
+        .padding(containerPadding)
         .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 26))
         .padding(.horizontal, SnipSnapSpacing.cardContentInset)
-        .padding(.vertical, 8)
+        .padding(.vertical, outerVerticalPadding)
         .disabled(isPerformingAction)
         .onChange(of: snips.isEmpty) { _, isEmpty in
             if isEmpty { showsContents = false }
@@ -491,7 +494,6 @@ private struct SelectedCardsViewport: ViewModifier {
     }
 }
 
-/// Keeps the destination measured without drawing a second copy during arrival.
 private struct SelectedCardArrivalVisibility: ViewModifier {
     let isArriving: Bool
 
@@ -524,7 +526,6 @@ struct GatheringGlassSurface: ViewModifier {
     }
 }
 
-/// Transient transfer state; selection and list membership remain model-owned.
 struct GatheringFlight: Identifiable {
     let id = UUID()
     let snip: Snip
@@ -570,7 +571,6 @@ struct GatheringFlightView: View {
     }
 }
 
-/// One canonical content view travels intact; only its framing and control change.
 nonisolated private struct GatheringTransferCard: View, Animatable {
     let snip: Snip
     let model: IOSAppModel

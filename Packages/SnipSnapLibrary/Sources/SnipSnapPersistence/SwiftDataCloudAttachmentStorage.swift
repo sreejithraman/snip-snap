@@ -706,7 +706,6 @@ extension SwiftDataSnipLibrary {
     )
   }
 
-  /// Removes only direct, unowned upload directories so recovery work stays bounded.
   private func sweepCloudAttachmentUploads(
     namespaceKey: String,
     keeping recordNames: Set<String>
