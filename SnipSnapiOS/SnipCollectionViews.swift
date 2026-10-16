@@ -31,7 +31,7 @@ struct SnipCollectionView: View {
     @State private var gatheringFrames = GatheringFrames()
     @State private var gatheringFlights: [GatheringFlight] = []
     @State private var departingRows: [UUID: UUID] = [:]
-    @State private var gatheringPageFrame = CGRect.zero
+    @State private var gatheringAvailableHeight: CGFloat = 0
     @FocusState private var isInlineEditorFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
@@ -70,7 +70,7 @@ struct SnipCollectionView: View {
                     performAction: { action in performGatheredAction(action) },
                     cancel: endSelection,
                     previewAttachment: previewAttachment,
-                    containerFrame: gatheringPageFrame,
+                    containerHeight: gatheringAvailableHeight,
                     arrivingSnipIDs: Set(gatheringFlights.map { $0.snip.id }),
                     settleArrivals: {
                         var transaction = Transaction(animation: nil)
@@ -149,14 +149,11 @@ struct SnipCollectionView: View {
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }
-        .onGeometryChange(for: CGRect.self) { geometry in
-            let frame = geometry.frame(in: .global)
-            // The navigation bar overlays this frame; the tray needs the usable height.
-            let topInset = geometry.safeAreaInsets.top
-            return CGRect(x: frame.minX, y: frame.minY + topInset,
-                          width: frame.width, height: max(0, frame.height - topInset))
+        .onGeometryChange(for: CGFloat.self) { geometry in
+            // The dock needs usable height, which stays stable as pages move sideways.
+            max(0, geometry.size.height - geometry.safeAreaInsets.top)
         } action: {
-            gatheringPageFrame = $0
+            gatheringAvailableHeight = $0
         }
         .onChange(of: model.selectedSnipIDs) { _, selectedIDs in
             gatheringFlights.removeAll { !selectedIDs.contains($0.snip.id) }

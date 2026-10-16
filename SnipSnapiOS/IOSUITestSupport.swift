@@ -184,3 +184,16 @@ actor UITestAppleAccountCacheHandler: AppleAccountCacheHandling {
     }
 }
 #endif
+
+#if DEBUG
+@MainActor
+func seedListHistoryUITestFixture(in model: IOSAppModel) async {
+    guard ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_LIST_HISTORY"] == "1" else { return }
+    for name in ["Scale 07", "Scale 08"] {
+        _ = await model.createList(name: name)
+    }
+    if let work = model.lists.first(where: { $0.name == "Work" }) {
+        _ = await model.createSnip(content: "Work history note", in: work.id)
+    }
+}
+#endif
