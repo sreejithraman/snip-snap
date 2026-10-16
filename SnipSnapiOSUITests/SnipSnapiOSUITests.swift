@@ -25,6 +25,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         withHapticsTrace: Bool = false,
         withLongList: Bool = false,
         withGatheringFixtures: Bool = false,
+        withListHistoryFixtures: Bool = false,
         withClipboardEntry: Bool = false,
         syncIssue: String? = nil,
         contentSizeCategory: UIContentSizeCategory? = nil
@@ -33,7 +34,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         app.launchEnvironment["SNIP_SNAP_UI_TESTING"] = "1"
         if withHapticsTrace { app.launchEnvironment["SNIP_SNAP_UI_TEST_HAPTICS"] = "1" }
         if withLongList { app.launchEnvironment["SNIP_SNAP_UI_TEST_LONG_LIST"] = "1" }
-        if withGatheringFixtures { app.launchEnvironment["SNIP_SNAP_UI_TEST_GATHERING"] = "1" }
+        if withGatheringFixtures || withListHistoryFixtures {
+            app.launchEnvironment["SNIP_SNAP_UI_TEST_GATHERING"] = "1"
+        }
+        if withListHistoryFixtures { app.launchEnvironment["SNIP_SNAP_UI_TEST_LIST_HISTORY"] = "1" }
         if withClipboardEntry { app.launchEnvironment["SNIP_SNAP_UI_TEST_CLIPBOARD_ENTRY"] = "1" }
         app.launchEnvironment["SNIP_SNAP_UI_TEST_STORE"] = storeName
         if withAttachments { app.launchEnvironment["SNIP_SNAP_UI_TEST_ATTACHMENTS"] = "1" }
@@ -151,6 +155,92 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(row(named: "Work page note", in: app).value as? String, "Not Done")
         let proof = XCTAttachment(screenshot: app.screenshot())
         proof.name = "List swipe from row content"
+        proof.lifetime = .keepAlways
+        add(proof)
+    }
+
+    func testListSwipePerformanceAfterVisitingEightLists() throws {
+        continueAfterFailure = false
+        let app = launchApp(withListHistoryFixtures: true)
+        try requireCompactSelector(in: app)
+        let fixtureReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.descendants(matching: .any).matching(
+                NSPredicate(format: "identifier BEGINSWITH 'list-tab-'")
+            ).count == 9 && app.navigationBars["Inbox"].isEnabled
+        }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [fixtureReady], timeout: 8), .completed)
+
+        func swipe(to title: String, distance: Double) {
+            let start = app.coordinate(withNormalizedOffset: CGVector(
+                dx: distance < 0 ? 0.8 : 0.2, dy: 0.36
+            ))
+            start.press(
+                forDuration: 0.1,
+                thenDragTo: start.withOffset(CGVector(dx: distance, dy: 0)),
+                withVelocity: XCUIGestureVelocity(rawValue: 180),
+                thenHoldForDuration: 0
+            )
+            let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                app.navigationBars[title].exists && app.navigationBars[title].isEnabled
+            }, object: app)
+            XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 4), .completed)
+            if title == "Inbox" {
+                XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).exists)
+                XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).exists)
+            } else if title == "Work" {
+                XCTAssertTrue(collectionRow(named: "Work history note", in: app).exists)
+            }
+        }
+
+        for title in ["Work", "Ideas", "Reading", "Project reference library", "Weekend plans", "Archive", "Scale 07", "Scale 08"] {
+            swipe(to: title, distance: -220)
+        }
+        for title in ["Scale 07", "Archive", "Weekend plans", "Project reference library", "Reading", "Ideas", "Work", "Inbox"] {
+            swipe(to: title, distance: 220)
+        }
+
+        // This records completed-navigation CPU work. Device input/visual timing
+        // needs a separate physical trace and user check; there is no portable ms gate.
+        let options = XCTMeasureOptions()
+        options.iterationCount = 3
+        measure(metrics: [XCTCPUMetric(application: app)], options: options) {
+            Thread.sleep(forTimeInterval: 3)
+            swipe(to: "Work", distance: -220)
+            Thread.sleep(forTimeInterval: 3)
+            swipe(to: "Inbox", distance: 220)
+        }
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Main-content swipes return through eight visited lists"
+        proof.lifetime = .keepAlways
+        add(proof)
+    }
+
+    func testListSwipePerformance() throws {
+        continueAfterFailure = false
+        let app = launchApp(withLongList: true)
+        try requireCompactSelector(in: app)
+        createList("Work", in: app)
+        createSnip("Work page note", in: app)
+        let options = XCTMeasureOptions()
+        options.iterationCount = 4
+
+        measure(metrics: [XCTHitchMetric(application: app), XCTCPUMetric(application: app)], options: options) {
+            for (distance, title, content) in [(180.0, "Inbox", "Fixture 23"), (-180.0, "Work", "Work page note")] {
+                let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
+                start.press(
+                    forDuration: 0.05,
+                    thenDragTo: start.withOffset(CGVector(dx: distance, dy: 0)),
+                    withVelocity: XCUIGestureVelocity(rawValue: 240),
+                    thenHoldForDuration: 0
+                )
+                XCTAssertTrue(app.navigationBars[title].exists)
+                let destinationRow = row(named: content, in: app)
+                XCTAssertTrue(destinationRow.exists)
+                XCTAssertTrue(destinationRow.isEnabled, "The destination must finish settling before measurement ends.")
+            }
+        }
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Measured list swipes completed at Work"
         proof.lifetime = .keepAlways
         add(proof)
     }

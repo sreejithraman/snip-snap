@@ -26,11 +26,12 @@ struct CompactLibraryPageStack: View {
     @Environment(\.layoutDirection) private var layoutDirection
     @State private var visitedPages: Set<LibraryPage> = []
     @State private var swipeBlockingPages: Set<LibraryPage> = []
-    @State private var pagePanMayStart = false
-    @State private var interactionFrames = PageInteractionFrames()
+    @State private var interactionState = PageInteractionState()
 
-    private final class PageInteractionFrames {
+    private final class PageInteractionState {
         var selectionDock = CGRect.zero
+        // Gesture bookkeeping does not affect rendering or invalidate mounted pages.
+        var pagePanMayStart = false
     }
     let model: IOSAppModel
     let clipboard: IOSClipboardModel
@@ -38,8 +39,7 @@ struct CompactLibraryPageStack: View {
     let copyShare: IOSCopyShareCoordinator
     @Binding var sheet: AppSheet?
     @Binding var editMode: EditMode
-    @Binding var motion: ListPageMotion
-    let frame: ListPageFrame
+    let motionState: ListPageMotionState
     let isComposerFocused: Bool
     let dismissComposerKeyboard: () -> Void
     let cancelNewList: (UUID) async -> Bool
@@ -48,57 +48,29 @@ struct CompactLibraryPageStack: View {
     // Native scroll and navigation state survives only while the page stays mounted.
     // Motion decides visibility; the current library bounds the retained lifetime.
     private var mountedPages: [LibraryPage] {
-        model.pages.filter { visitedPages.contains($0) || frame.retainedPages.contains($0) }
+        model.pages.filter { visitedPages.contains($0) || $0 == model.selectedPage }
     }
 
     var body: some View {
         GeometryReader { proxy in
-            let creationCueProgress = frame.creationProgress(
-                dragProgress: motion.pageCreationProgress,
-                holdsAtAdd: motion.isCreatingFromEdge || motion.transition?.settlement?.createsList == true
+            ListPageMotionStage(
+                state: motionState, pages: model.pages, selectedPage: model.selectedPage,
+                width: proxy.size.width,
+                content: mountedPages.map { page in
+                    MountedListPage(id: page, content: libraryPage(page, isActivePage: page == model.selectedPage))
+                },
+                retainedPagesChanged: { pages in
+                    visitedPages.formUnion(pages)
+                    visitedPages.formIntersection(model.pages)
+                }
             )
-            let lastPageOffset = frame.pages.last.map {
-                frame.offset(for: $0, width: proxy.size.width,
-                             layoutDirection: layoutDirection, reduceMotion: reduceMotion)
-            } ?? 0
-            let cancelSource = frame.directEntrance?.source ?? frame.pages.last
-            let cancelSourceOffset = cancelSource.map {
-                frame.offset(for: $0, width: proxy.size.width,
-                             layoutDirection: layoutDirection, reduceMotion: reduceMotion)
-            } ?? 0
-            ZStack {
-                if !reduceMotion, creationCueProgress > 0, frame.directEntrance == nil {
-                    edgeCue(kind: .add, progress: creationCueProgress)
-                        .frame(width: proxy.size.width, height: proxy.size.height)
-                        .offset(x: lastPageOffset)
-                }
-                if !reduceMotion, frame.edgeCancelProgress > 0 {
-                    edgeCue(kind: .cancel, progress: frame.edgeCancelProgress)
-                        .frame(width: proxy.size.width, height: proxy.size.height)
-                        .offset(x: cancelSourceOffset)
-                        .zIndex(1)
-                }
-                ForEach(mountedPages, id: \.self) { page in
-                    libraryPage(page, isActivePage: page == model.selectedPage)
-                        .offset(x: frame.retainedPages.contains(page) ? frame.offset(
-                            for: page, width: proxy.size.width,
-                            layoutDirection: layoutDirection, reduceMotion: reduceMotion
-                        ) : proxy.size.width * 2)
-                        .opacity(frame.retainedPages.contains(page)
-                                 ? frame.opacity(for: page, reduceMotion: reduceMotion) : 0)
-                        .accessibilityHidden(page != model.selectedPage)
-                        .disabled(frame.isMoving || page != model.selectedPage)
-                        .allowsHitTesting(!frame.isMoving && page == model.selectedPage)
-                        .zIndex(!reduceMotion && frame.edgeCancelProgress > 0 && page == cancelSource ? 2 : 0)
-                }
-            }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .clipped()
             .background {
                 ListPagePanObserver(
                     canBegin: { direction in canPanPage(direction: direction) },
                     canBeginAt: { point in
-                        !model.isSelectingSnips || !interactionFrames.selectionDock.contains(point)
+                        !model.isSelectingSnips || !interactionState.selectionDock.contains(point)
                     },
                     onPan: { direction, translation, predictedTranslation, phase in
                         handlePagePan(
@@ -112,38 +84,10 @@ struct CompactLibraryPageStack: View {
                 )
             }
         }
-        .onChange(of: frame.retainedPages, initial: true) { _, pages in
-            visitedPages.formUnion(pages)
-            visitedPages.formIntersection(model.pages)
-        }
         .onChange(of: model.pages) { _, pages in
             visitedPages.formIntersection(pages)
             swipeBlockingPages.formIntersection(pages)
         }
-    }
-
-    private func edgeCue(kind: ListEdgeCueLayout.Kind, progress: CGFloat) -> some View {
-        let stretch = ListEdgeCueLayout.stretch(progress: progress)
-        let armed = progress >= 1
-        return GeometryReader { proxy in
-            Image(systemName: kind == .add ? "plus" : "xmark")
-                .font(.system(size: 30, weight: .semibold))
-                .frame(width: ListAddCueLayout.diameter + stretch, height: ListAddCueLayout.diameter)
-                .background(Color.primary.opacity(0.10), in: Capsule())
-                .overlay { Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5) }
-                .scaleEffect(armed ? ListAddCueLayout.armedScale : 1)
-                .animation(.spring(duration: 0.24, bounce: 0.22), value: armed)
-                .opacity(Double(min(1, progress * 1.5)))
-                .position(
-                    x: ListEdgeCueLayout.centerX(
-                        for: kind, in: proxy.size.width, progress: progress,
-                        layoutDirection: layoutDirection
-                    ),
-                    y: proxy.size.height / 2
-                )
-        }
-        .accessibilityHidden(true)
-        .allowsHitTesting(false)
     }
 
     private func libraryPage(_ page: LibraryPage, isActivePage: Bool) -> some View {
@@ -174,7 +118,7 @@ struct CompactLibraryPageStack: View {
                         editMode: $editMode,
                         cancelNewList: cancelNewList,
                         blocksPageSwipe: swipeBlockedBinding(for: page),
-                        selectionDockFrameChanged: { interactionFrames.selectionDock = $0 },
+                        selectionDockFrameChanged: { interactionState.selectionDock = $0 },
                         dismissComposerKeyboard: dismissComposerKeyboard,
                         libraryActions: libraryActions
                     )
@@ -211,6 +155,11 @@ struct CompactLibraryPageStack: View {
         )
     }
 
+    private var motion: ListPageMotion {
+        get { motionState.value }
+        nonmutating set { motionState.value = newValue }
+    }
+
     private func handlePagePan(
         direction: ListPagePanDirection,
         translation: CGSize,
@@ -220,7 +169,7 @@ struct CompactLibraryPageStack: View {
     ) {
         guard canPanPage(direction: direction) else {
             if phase != .began {
-                pagePanMayStart = false
+                interactionState.pagePanMayStart = false
                 motion.cancelPageDrag(reduceMotion: reduceMotion, at: Date())
             }
             return
@@ -230,7 +179,7 @@ struct CompactLibraryPageStack: View {
         switch phase {
         case .began, .changed:
             if phase == .began {
-                pagePanMayStart = true
+                interactionState.pagePanMayStart = true
                 if cancelTarget != nil {
                     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
                                                     to: nil, from: nil, for: nil)
@@ -245,11 +194,11 @@ struct CompactLibraryPageStack: View {
                 pageWidth: pageWidth,
                 layoutDirection: layoutDirection,
                 // The .began event may have no translation; start on its first horizontal update.
-                isStart: pagePanMayStart,
+                isStart: interactionState.pagePanMayStart,
                 cancelTo: cancelTarget,
                 at: Date()
             )
-            if motion.isDragging { pagePanMayStart = false }
+            if motion.isDragging { interactionState.pagePanMayStart = false }
             if previousCreationProgress < 1, motion.pageCreationProgress >= 1 {
                 model.haptics.emit(.snap, for: model.haptics.beginInteraction())
             }
@@ -257,7 +206,7 @@ struct CompactLibraryPageStack: View {
                 model.haptics.emit(.snap, for: model.haptics.beginInteraction())
             }
         case .ended:
-            pagePanMayStart = false
+            interactionState.pagePanMayStart = false
             guard let dragPages = motion.transition?.pages, dragPages == model.pages else {
                 motion.interrupt()
                 return
@@ -279,7 +228,7 @@ struct CompactLibraryPageStack: View {
                 model.haptics.emit(.selection, for: model.haptics.beginInteraction())
             }
         default:
-            pagePanMayStart = false
+            interactionState.pagePanMayStart = false
             motion.cancelPageDrag(reduceMotion: reduceMotion, at: Date())
         }
     }
@@ -307,6 +256,92 @@ struct CompactLibraryPageStack: View {
               !swipeBlockingPages.contains(model.selectedPage) else { return false }
         if isEditingVisiblePage { return newListSwipeBackTarget(for: direction) != nil }
         return model.pages.count > 1 && model.pages.contains(model.selectedPage)
+    }
+
+}
+
+// Construct content above the motion reader so drag samples update its transform
+// without rebuilding the navigation, collection, and action closures inside it.
+private struct MountedListPage<Content: View>: Identifiable {
+    let id: LibraryPage
+    let content: Content
+}
+
+private struct ListPageMotionStage<PageContent: View>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.layoutDirection) private var layoutDirection
+    let state: ListPageMotionState
+    let pages: [LibraryPage]
+    let selectedPage: LibraryPage
+    let width: CGFloat
+    let content: [MountedListPage<PageContent>]
+    let retainedPagesChanged: ([LibraryPage]) -> Void
+
+    var body: some View {
+        ListPageFrameReader(state: state, pages: pages, selectedPage: selectedPage) { frame in
+            let motion = state.value
+            let creationCueProgress = frame.creationProgress(
+                dragProgress: motion.pageCreationProgress,
+                holdsAtAdd: motion.isCreatingFromEdge || motion.transition?.settlement?.createsList == true
+            )
+            let cancelSource = frame.directEntrance?.source ?? frame.pages.last
+            ZStack {
+                if !reduceMotion, creationCueProgress > 0, frame.directEntrance == nil {
+                    edgeCue(kind: .add, progress: creationCueProgress)
+                        .offset(x: frame.pages.last.map {
+                            frame.offset(for: $0, width: width, layoutDirection: layoutDirection, reduceMotion: reduceMotion)
+                        } ?? 0)
+                }
+                if !reduceMotion, frame.edgeCancelProgress > 0 {
+                    edgeCue(kind: .cancel, progress: frame.edgeCancelProgress)
+                        .offset(x: cancelSource.map {
+                            frame.offset(for: $0, width: width, layoutDirection: layoutDirection, reduceMotion: reduceMotion)
+                        } ?? 0)
+                        .zIndex(1)
+                }
+                ForEach(content) { page in
+                    let isRetained = frame.retainedPages.contains(page.id)
+                    page.content
+                        .offset(x: isRetained ? frame.offset(
+                            for: page.id, width: width,
+                            layoutDirection: layoutDirection, reduceMotion: reduceMotion
+                        ) : width * 2)
+                        .opacity(isRetained ? frame.opacity(for: page.id, reduceMotion: reduceMotion) : 0)
+                        .accessibilityHidden(page.id != selectedPage)
+                        .disabled(frame.isMoving || page.id != selectedPage)
+                        .allowsHitTesting(!frame.isMoving && page.id == selectedPage)
+                        // All layers share this stack: destination, cancel cue, then source.
+                        .zIndex(!reduceMotion && frame.edgeCancelProgress > 0 && page.id == cancelSource ? 2 : 0)
+                }
+            }
+            .onChange(of: frame.retainedPages, initial: true) { _, pages in
+                retainedPagesChanged(pages)
+            }
+        }
+    }
+
+    private func edgeCue(kind: ListEdgeCueLayout.Kind, progress: CGFloat) -> some View {
+        let stretch = ListEdgeCueLayout.stretch(progress: progress)
+        let armed = progress >= 1
+        return GeometryReader { proxy in
+            Image(systemName: kind == .add ? "plus" : "xmark")
+                .font(.system(size: 30, weight: .semibold))
+                .frame(width: ListAddCueLayout.diameter + stretch, height: ListAddCueLayout.diameter)
+                .background(Color.primary.opacity(0.10), in: Capsule())
+                .overlay { Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5) }
+                .scaleEffect(armed ? ListAddCueLayout.armedScale : 1)
+                .animation(.spring(duration: 0.24, bounce: 0.22), value: armed)
+                .opacity(Double(min(1, progress * 1.5)))
+                .position(
+                    x: ListEdgeCueLayout.centerX(
+                        for: kind, in: proxy.size.width, progress: progress,
+                        layoutDirection: layoutDirection
+                    ),
+                    y: proxy.size.height / 2
+                )
+        }
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
     }
 
 }

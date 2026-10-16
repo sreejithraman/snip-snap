@@ -425,7 +425,8 @@ struct CompactLibraryControls: View {
                     }
                     .padding(.leading, SnipSnapSpacing.relatedContent / 2)
                     .padding(.trailing, SnipSnapSpacing.relatedContent)
-                    .id(isPreview ? "preview-\(list.id.uuidString)" : composerFieldID.uuidString)
+                    // Keep the native field alive when a preview becomes the active page.
+                    .id(composerFieldID.uuidString)
                 }
                 .frame(minHeight: controlLength)
                 .glassEffect(
@@ -694,13 +695,10 @@ private struct ComposerAccessibility: ViewModifier {
     let isPreview: Bool
     let identifier: String
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if isPreview {
-            content.accessibilityHidden(true)
-        } else {
-            content.accessibilityIdentifier(identifier)
-        }
+        content
+            .accessibilityIdentifier(isPreview ? "" : identifier)
+            .accessibilityHidden(isPreview)
     }
 }
 
@@ -709,15 +707,10 @@ private struct ComposerGlassID: ViewModifier {
     let id: String
     let namespace: Namespace.ID
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if isPreview {
-            content
-        } else {
-            content
-                .glassEffectID(id, in: namespace)
-                .glassEffectTransition(.materialize)
-        }
+        content
+            .glassEffectID(isPreview ? nil : id, in: namespace)
+            .glassEffectTransition(.materialize)
     }
 }
 

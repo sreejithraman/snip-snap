@@ -16,7 +16,7 @@ struct IOSAppRootView: View {
     @State private var newMoveListName = ""
     @State private var copyShare = IOSCopyShareCoordinator()
     @State private var compactComposerStorage = CompactComposerStorage()
-    @State private var listPageMotion = ListPageMotion()
+    @State private var listPageMotionState = ListPageMotionState()
     @State private var edgeCreationTask: Task<Void, Never>?
     @State private var edgeCreationTaskID: UUID?
     @State private var clipboardViewState = ClipboardViewState()
@@ -39,6 +39,15 @@ struct IOSAppRootView: View {
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         self.seedsCopyShareFixtures = seedsCopyShareFixtures
         self.shareProcessToken = shareProcessToken
+    }
+
+    private var listPageMotion: ListPageMotion {
+        get { listPageMotionState.value }
+        nonmutating set { listPageMotionState.value = newValue }
+    }
+
+    private var pageMotionBinding: Binding<ListPageMotion> {
+        Binding(get: { listPageMotionState.value }, set: { listPageMotionState.value = $0 })
     }
 
     private var model: IOSAppModel { session.model }
@@ -298,6 +307,49 @@ struct IOSAppRootView: View {
         }
     }
 
+    private func finishListPageSettlement(_ id: UUID) async {
+        guard let settlement = listPageMotion.transition?.settlement, settlement.id == id else { return }
+        if case .cancelNewList = settlement.completion {
+            guard let transition = listPageMotion.transition,
+                  case .list(let id) = transition.source,
+                  model.newListID == id,
+                  model.editingListID == id,
+                  model.selectedPage == .list(id) else {
+                listPageMotion.finishSettlement(settlement.id)
+                return
+            }
+            _ = await cancelNewList(id) {
+                do { try await Task.sleep(for: .seconds(settlement.duration)) }
+                catch { return false }
+                guard listPageMotion.transition?.settlement?.id == settlement.id,
+                      scenePhase == .active, sheet == nil,
+                      !model.isSearchPresented,
+                      model.newListID == id,
+                      model.editingListID == id,
+                      model.selectedPage == .list(id) else { return false }
+                return true
+            }
+            if listPageMotion.transition?.settlement?.id == settlement.id {
+                listPageMotion.interrupt()
+            }
+            return
+        }
+        do { try await Task.sleep(for: .seconds(settlement.duration)) }
+        catch { return }
+        guard let transition = listPageMotion.transition,
+              transition.settlement?.id == settlement.id else { return }
+        switch settlement.completion {
+        case .cancelNewList, .cancelNewListFromButton:
+            break // Their owning tasks finish cancellation.
+        case .createList:
+            await createListFromEdge(
+                transition.source, pages: transition.pages, settlementID: settlement.id
+            )
+        case .navigate:
+            listPageMotion.finishSettlement(settlement.id)
+        }
+    }
+
     private func pollClipboardWhileActive() async {
         guard scenePhase == .active else { return }
         while !Task.isCancelled {
@@ -311,81 +363,38 @@ struct IOSAppRootView: View {
     @ViewBuilder
     private var appNavigation: some View {
         if horizontalSizeClass == .compact {
-            TimelineView(.animation(paused: listPageMotion.transition?.settlement == nil)) { context in
-                let frame = listPageMotion.frame(
-                    pages: model.pages,
-                    selectedPage: model.selectedPage,
-                    at: context.date
-                )
-                GeometryReader { proxy in
-                    VStack(spacing: 0) {
-                        CompactLibraryPageStack(
-                            model: model,
-                            clipboard: session.clipboard,
-                            clipboardViewState: clipboardViewState,
-                            copyShare: copyShare,
-                            sheet: $sheet,
-                            editMode: collectionEditModeBinding,
-                            motion: $listPageMotion,
-                            frame: frame,
-                            isComposerFocused: isCompactComposerFocused,
-                            dismissComposerKeyboard: { isCompactComposerFocused = false },
-                            cancelNewList: requestCancelNewList,
-                            libraryActions: compactLibraryActions
-                        )
-                        .libraryToast(
-                            model: model,
-                            isHidden: model.isSearchPresented,
-                            usesFixedExpiry: true
-                        )
-                        .frame(maxHeight: .infinity)
+            GeometryReader { proxy in
+                VStack(spacing: 0) {
+                    CompactLibraryPageStack(
+                        model: model,
+                        clipboard: session.clipboard,
+                        clipboardViewState: clipboardViewState,
+                        copyShare: copyShare,
+                        sheet: $sheet,
+                        editMode: collectionEditModeBinding,
+                        motionState: listPageMotionState,
+                        isComposerFocused: isCompactComposerFocused,
+                        dismissComposerKeyboard: { isCompactComposerFocused = false },
+                        cancelNewList: requestCancelNewList,
+                        libraryActions: compactLibraryActions
+                    )
+                    .libraryToast(
+                        model: model,
+                        isHidden: model.isSearchPresented,
+                        usesFixedExpiry: true
+                    )
+                    .frame(maxHeight: .infinity)
 
+                    ListPageFrameReader(
+                        state: listPageMotionState, pages: model.pages, selectedPage: model.selectedPage
+                    ) { frame in
                         libraryControls(pageFrame: frame, pageWidth: proxy.size.width)
                     }
                 }
             }
-            .task(id: listPageMotion.transition?.settlement?.id) {
-                guard let settlement = listPageMotion.transition?.settlement else { return }
-                if case .cancelNewList = settlement.completion {
-                    guard let transition = listPageMotion.transition,
-                          case .list(let id) = transition.source,
-                          model.newListID == id,
-                          model.editingListID == id,
-                          model.selectedPage == .list(id) else {
-                        listPageMotion.finishSettlement(settlement.id)
-                        return
-                    }
-                    _ = await cancelNewList(id) {
-                        do { try await Task.sleep(for: .seconds(settlement.duration)) }
-                        catch { return false }
-                        guard listPageMotion.transition?.settlement?.id == settlement.id,
-                              scenePhase == .active, sheet == nil,
-                              !model.isSearchPresented,
-                              model.newListID == id,
-                              model.editingListID == id,
-                              model.selectedPage == .list(id) else { return false }
-                        return true
-                    }
-                    if listPageMotion.transition?.settlement?.id == settlement.id {
-                        listPageMotion.interrupt()
-                    }
-                    return
-                }
-                do { try await Task.sleep(for: .seconds(settlement.duration)) }
-                catch { return }
-                guard let transition = listPageMotion.transition,
-                      transition.settlement?.id == settlement.id else { return }
-                switch settlement.completion {
-                case .cancelNewList, .cancelNewListFromButton:
-                    break // Their owning tasks finish cancellation.
-                case .createList:
-                    await createListFromEdge(
-                        transition.source, pages: transition.pages, settlementID: settlement.id
-                    )
-                case .navigate:
-                    listPageMotion.finishSettlement(settlement.id)
-                }
-            }
+            .modifier(ListPageSettlementObserver(
+                state: listPageMotionState, complete: finishListPageSettlement
+            ))
             .onChange(of: model.selectedPage) { _, page in
                 guard let transition = listPageMotion.transition else { return }
                 if listPageMotion.isCreatingFromEdge,
@@ -578,7 +587,7 @@ struct IOSAppRootView: View {
             showsListTabs: showsListTabs,
             isSelecting: collectionEditMode.isEditing,
             sheet: $sheet,
-            motion: $listPageMotion,
+            motion: pageMotionBinding,
             pageFrame: pageFrame,
             pageWidth: pageWidth,
             deleteList: deleteList,
@@ -692,6 +701,7 @@ struct IOSAppRootView: View {
         for name in ["Work", "Ideas", "Reading", "Project reference library", "Weekend plans", "Archive"] {
             _ = await model.createList(name: name)
         }
+        await seedListHistoryUITestFixture(in: model)
         model.selectList(SnipList.inboxID)
     }
 

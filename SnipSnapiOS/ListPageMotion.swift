@@ -1,5 +1,6 @@
 import SnipSnapCore
 import SwiftUI
+import Observation
 
 enum ListAddCueLayout {
     // Add overscroll uses a fixed point scale even when the page is wider or narrower.
@@ -857,5 +858,37 @@ struct ListSelectorExpansion: Equatable {
 
     mutating func update(distance: CGFloat?) {
         self.distance = distance.map { max(self.distance, $0) } ?? 0
+    }
+}
+
+// Keeping the reference stable lets motion readers update without rebuilding
+// the owners of list content and their action closures on each drag sample.
+@MainActor @Observable
+final class ListPageMotionState {
+    var value = ListPageMotion()
+}
+
+struct ListPageFrameReader<Content: View>: View {
+    let state: ListPageMotionState
+    let pages: [LibraryPage]
+    let selectedPage: LibraryPage
+    @ViewBuilder let content: (ListPageFrame) -> Content
+
+    var body: some View {
+        TimelineView(.animation(paused: state.value.transition?.settlement == nil)) { context in
+            content(state.value.frame(pages: pages, selectedPage: selectedPage, at: context.date))
+        }
+    }
+}
+
+struct ListPageSettlementObserver: ViewModifier {
+    let state: ListPageMotionState
+    let complete: (UUID) async -> Void
+
+    func body(content: Content) -> some View {
+        content.task(id: state.value.transition?.settlement?.id) {
+            guard let id = state.value.transition?.settlement?.id else { return }
+            await complete(id)
+        }
     }
 }

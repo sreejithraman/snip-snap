@@ -11,7 +11,7 @@ struct GatheredSnipsDock: View {
     let performAction: (@escaping @MainActor () async -> Bool) -> Void
     let cancel: () -> Void
     let previewAttachment: (SnipAttachment) -> Void
-    let containerFrame: CGRect
+    let containerHeight: CGFloat
     var arrivingSnipIDs: Set<UUID> = []
     var settleArrivals: () -> Void = {}
     var cardFramesChanged: ([UUID: CGRect]) -> Void = { _ in }
@@ -48,7 +48,7 @@ struct GatheredSnipsDock: View {
     private var outerVerticalPadding: CGFloat { 8 }
     private var sourceRowReservedHeight: CGFloat { 80 }
     private var usesCompactControls: Bool {
-        verticalSizeClass == .compact || (containerFrame.height > 0 && containerFrame.height < 400)
+        verticalSizeClass == .compact || (containerHeight > 0 && containerHeight < 400)
     }
     private var minimumCardHeight: CGFloat { max(44, returnControlDiameter) + 20 }
     private var landedCount: Int { snips.lazy.filter { !arrivingSnipIDs.contains($0.id) }.count }
@@ -56,7 +56,7 @@ struct GatheredSnipsDock: View {
         let chrome = usesCompactControls ? headerFrame.height : headerFrame.height + actionRowHeight
         let gaps = usesCompactControls ? cardGap : cardGap * 2
         let verticalPadding = 2 * (containerPadding + outerVerticalPadding)
-        let available = containerFrame.height - chrome - gaps - verticalPadding - sourceRowReservedHeight
+        let available = containerHeight - chrome - gaps - verticalPadding - sourceRowReservedHeight
         let minimum = minimumCardHeight
         return min(max(minimum, contentHeight), 320, max(minimum, available))
     }
