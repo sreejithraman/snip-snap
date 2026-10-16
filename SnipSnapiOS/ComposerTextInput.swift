@@ -32,6 +32,8 @@ struct ComposerTextInput: UIViewRepresentable {
 
     func updateUIView(_ view: ComposerTextView, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.isUpdatingView = true
+        defer { context.coordinator.isUpdatingView = false }
         view.onPasteAttachments = onPasteAttachments
         view.isPasteEnabled = isPasteEnabled
         view.font = .preferredFont(forTextStyle: .body)
@@ -72,6 +74,7 @@ struct ComposerTextInput: UIViewRepresentable {
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: ComposerTextInput
+        var isUpdatingView = false
         private var selectionBeforeChange: NSRange?
         init(parent: ComposerTextInput) { self.parent = parent }
 
@@ -99,8 +102,15 @@ struct ComposerTextInput: UIViewRepresentable {
             textView.invalidateIntrinsicContentSize()
         }
 
-        func textViewDidBeginEditing(_ textView: UITextView) { parent.isFocused = true }
-        func textViewDidEndEditing(_ textView: UITextView) { parent.isFocused = false }
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            guard !isUpdatingView else { return }
+            parent.isFocused = true
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            guard !isUpdatingView else { return }
+            parent.isFocused = false
+        }
     }
 }
 

@@ -470,6 +470,7 @@ struct InlineListEditor: View {
     @Bindable private var draft: InlineListDraft
     @State private var appearanceTab: AppearanceTab = .color
     @State private var iconQuery = ""
+    @State private var didReceiveInitialFocus = false
     @FocusState private var focusedField: ListAppearanceField?
     @ScaledMetric(relativeTo: .body) private var actionSymbolSize: CGFloat = 16
     @ScaledMetric(relativeTo: .body) private var actionLabelSize: CGFloat = 20
@@ -479,6 +480,7 @@ struct InlineListEditor: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.isEnabled) private var isEnabled
 
     init(model: IOSAppModel, list: SnipList, cancelNewList: @escaping (UUID) async -> Bool) {
         self.model = model
@@ -539,7 +541,15 @@ struct InlineListEditor: View {
         .padding(.horizontal, SnipSnapSpacing.relatedContent)
         .padding(.top, SnipSnapSpacing.relatedContent)
         .padding(.bottom, SnipSnapSpacing.relatedContent)
-        .task { focusedField = model.newListID == list.id && !model.isSearchPresented ? .name : nil }
+        .task(id: isEnabled) {
+            guard isEnabled, !didReceiveInitialFocus,
+                  model.newListID == list.id, !model.isSearchPresented else { return }
+            focusedField = .name
+        }
+        .onChange(of: focusedField) { _, new in
+            // Page entrance can disable the field before a request takes effect.
+            if new != nil { didReceiveInitialFocus = true }
+        }
         .onChange(of: model.isSearchPresented) { _, presented in
             if presented {
                 focusedField = nil

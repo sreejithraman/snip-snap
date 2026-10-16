@@ -4595,6 +4595,70 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(body, "before hello there after")
     }
 
+    func testComposerFocusUpdatesDoNotWriteBindingsDuringViewUpdates() throws {
+        var focused = false
+        var enabled = true
+        var isUpdating = false
+        var writesDuringUpdate = 0
+        func input() -> ComposerTextInput {
+            ComposerTextInput(
+                prompt: "Add a snip",
+                text: .constant("Draft"),
+                isFocused: Binding(get: { focused }, set: {
+                    if isUpdating { writesDuringUpdate += 1 }
+                    focused = $0
+                }),
+                isEnabled: enabled,
+                onPasteAttachments: { _, _ in }
+            )
+        }
+        let host = UIHostingController(rootView: input())
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        )
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        host.view.layoutIfNeeded()
+        func textView(in view: UIView) -> ComposerTextView? {
+            if let input = view as? ComposerTextView { return input }
+            return view.subviews.lazy.compactMap { textView(in: $0) }.first
+        }
+        let view = try XCTUnwrap(textView(in: host.view))
+        XCTAssertTrue(view.becomeFirstResponder())
+        XCTAssertTrue(focused, "User focus must still reach SwiftUI")
+
+        func update() {
+            isUpdating = true
+            host.rootView = input()
+            host.view.setNeedsLayout()
+            host.view.layoutIfNeeded()
+            isUpdating = false
+        }
+        focused = false
+        update()
+        XCTAssertFalse(view.isFirstResponder)
+        XCTAssertEqual(writesDuringUpdate, 0, "SwiftUI-driven focus must not echo through its binding")
+
+        focused = true
+        update()
+        XCTAssertTrue(view.isFirstResponder)
+        XCTAssertEqual(writesDuringUpdate, 0)
+
+        enabled = false
+        update()
+        XCTAssertFalse(view.isFirstResponder)
+        XCTAssertTrue(focused, "Disabling input must preserve SwiftUI's requested focus")
+        XCTAssertEqual(writesDuringUpdate, 0)
+
+        enabled = true
+        update()
+        XCTAssertTrue(view.isFirstResponder)
+        XCTAssertTrue(view.resignFirstResponder())
+        XCTAssertFalse(focused, "User blur must still reach SwiftUI")
+    }
+
     func testComposerKeepsCursorWhenLargePlainTextPasteBecomesAnAttachment() async throws {
         var body = "before after"
         var focused = false
