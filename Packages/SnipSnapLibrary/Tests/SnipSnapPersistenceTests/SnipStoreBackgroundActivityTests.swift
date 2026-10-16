@@ -1,10 +1,18 @@
 import Darwin
 import Foundation
+import ObjectiveC
 import Synchronization
 import XCTest
 
 @testable import SnipSnapPersistence
 @testable import SnipSnapCore
+
+private final class StoreTeardownProbe {
+  let onDeinit: () -> Void
+
+  init(onDeinit: @escaping () -> Void) { self.onDeinit = onDeinit }
+  deinit { onDeinit() }
+}
 
 final class TestStoreActivity: Sendable {
   private let callback = Mutex<(@Sendable () -> Void)?>(nil)
@@ -34,6 +42,85 @@ final class TestStoreActivity: Sendable {
 }
 
 final class SnipStoreBackgroundActivityTests: XCTestCase {
+  private func observeTeardown(
+    of library: SwiftDataSnipLibrary, onDeinit: @escaping () -> Void
+  ) async throws {
+    let storedContainer = await library.container
+    let container = try XCTUnwrap(storedContainer)
+    let probe = StoreTeardownProbe(onDeinit: onDeinit)
+    objc_setAssociatedObject(
+      container, Unmanaged.passUnretained(probe).toOpaque(), probe,
+      .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+    )
+  }
+
+  func testLibraryTeardownKeepsBackgroundTimeUntilContainerIsReleased() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let active = Mutex(0)
+    let protectedTeardown = Mutex<Bool?>(nil)
+    let runner: SnipStoreBackgroundActivity.Runner = { _ in
+      active.withLock { $0 += 1 }
+      return { active.withLock { $0 -= 1 } }
+    }
+
+    try await SnipStoreBackgroundActivity.$runner.withValue(runner) {
+      let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("snips.store"))
+      try await observeTeardown(of: library) {
+        protectedTeardown.withLock { $0 = active.withLock { $0 > 0 } }
+      }
+      _ = try await library.checkedSnapshot(sortedBy: .manual)
+    }
+    XCTAssertEqual(protectedTeardown.withLock { $0 }, true,
+      "Closing SwiftData can checkpoint SQLite after the read lock has ended")
+    XCTAssertEqual(active.withLock { $0 }, 0)
+  }
+
+  func testDeniedTeardownWaitsForTheNextAdmittedStoreActivity() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let released = Mutex(false)
+
+    let denyCleanup = Mutex(false)
+    let runner: SnipStoreBackgroundActivity.Runner = { expire in
+      if denyCleanup.withLock({ $0 }) { expire() }
+      return {}
+    }
+    try await SnipStoreBackgroundActivity.$runner.withValue(runner) {
+      let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("snips.store"))
+      try await observeTeardown(of: library) { released.withLock { $0 = true } }
+      denyCleanup.withLock { $0 = true }
+      withExtendedLifetime(library) {}
+    }
+    XCTAssertFalse(released.withLock { $0 }, "Denied execution must not begin a SQLite close")
+    let activity = TestStoreActivity()
+    try SnipStoreBackgroundActivity.$runner.withValue(activity.runner) {
+      let scope = try SnipStoreBackgroundActivity.begin()
+      defer { scope?.finish() }
+      XCTAssertTrue(released.withLock { $0 })
+    }
+    XCTAssertEqual(activity.ended.wait(timeout: .now() + 1), .success)
+  }
+
+  func testExpirationDuringTeardownKeepsTimeUntilContainerReleaseFinishes() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let activity = TestStoreActivity()
+    let released = Mutex(false)
+    try await SnipStoreBackgroundActivity.$runner.withValue(activity.runner) {
+      let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("snips.store"))
+      XCTAssertEqual(activity.ended.wait(timeout: .now() + 1), .success)
+      try await observeTeardown(of: library) {
+        activity.expire()
+        XCTAssertEqual(activity.ended.wait(timeout: .now()), .timedOut)
+        released.withLock { $0 = true }
+      }
+      withExtendedLifetime(library) {}
+    }
+    XCTAssertTrue(released.withLock { $0 })
+    XCTAssertEqual(activity.ended.wait(timeout: .now() + 1), .success)
+  }
+
   func testStoreLockRequestsTimeAndEndsItOnlyAfterUnlocking() throws {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: url) }

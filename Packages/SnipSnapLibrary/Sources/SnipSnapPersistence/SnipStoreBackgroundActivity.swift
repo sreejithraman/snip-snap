@@ -60,6 +60,8 @@ final class SnipStoreBackgroundActivity: Sendable {
     let activity = SnipStoreBackgroundActivity(expiration: expiration, end: end)
     do {
       try activity.check()
+      SnipStoreContainerCleanup.drain(while: activity)
+      try activity.check()
       return activity
     } catch {
       activity.finish()
