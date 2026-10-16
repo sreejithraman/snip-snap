@@ -1,0 +1,9 @@
+# Snip Snap 0.6.1 Beta 152
+
+## Mac
+
+- Centralize Panel presentation and iOS list lifecycle state
+
+## iOS
+
+- Centralize Panel presentation and iOS list lifecycle state
