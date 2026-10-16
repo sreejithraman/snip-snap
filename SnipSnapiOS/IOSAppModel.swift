@@ -27,8 +27,13 @@ final class InlineListDraft {
     var name: String
     var systemImage: String
     var color: SnipListColorPreset?
-    var isSaving = false
-    var isCancelling = false
+    fileprivate enum Operation {
+        case editing
+        case saving
+        case cancelling
+    }
+    fileprivate var operation: Operation = .editing
+    var isSaving: Bool { operation != .editing }
 
     init(list: SnipList, isNew: Bool) {
         name = isNew ? "" : list.name
@@ -82,27 +87,39 @@ final class IOSAppModel {
     private var selectionRevision: UInt64 = 0
     private(set) var lastSelectedListID: UUID
     var pages: [LibraryPage] { [.clipboard] + lists.map { .list($0.id) } }
-    var editingListID: UUID?
-    var newListID: UUID?
+    private(set) var editingListID: UUID?
     private struct NewListOrigin {
         let page: LibraryPage
         let lastSelectedListID: UUID
     }
-    private var newListOrigin: NewListOrigin?
-    var newListOriginPage: LibraryPage? { newListOrigin?.page }
+    private struct PendingNewList {
+        let id: UUID
+        let origin: NewListOrigin
+    }
+    private var pendingNewList: PendingNewList?
+    var newListID: UUID? { pendingNewList?.id }
+    var newListOriginPage: LibraryPage? { pendingNewList?.origin.page }
     var newListCancellationPage: LibraryPage {
         let origin = newListOriginPage ?? .list(SnipList.inboxID)
         return pages.contains(origin) ? origin : .list(SnipList.inboxID)
     }
     private var listDrafts: [UUID: InlineListDraft] = [:]
     private(set) var snipEditorDraft: SnipEditorDraft?
+    // Creation may still refresh after the editor is visible or has finished.
     private(set) var isCreatingList = false
-    private var isCancellingNewList = false
     private struct QueuedNewListRequest {
         let page: LibraryPage
         let selectionRevision: UInt64
     }
-    private var queuedNewListAfterCancel: QueuedNewListRequest?
+    private enum NewListCancellation {
+        case idle
+        case cancelling(queued: QueuedNewListRequest?)
+    }
+    private var newListCancellation: NewListCancellation = .idle
+    private var isCancellingNewList: Bool {
+        if case .cancelling = newListCancellation { return true }
+        return false
+    }
     var selectedSnipID: UUID?
     var selectedSnipIDs: Set<UUID> = [] {
         didSet {
@@ -531,9 +548,9 @@ final class IOSAppModel {
         guard !isSearchPresented else { return }
         if isCancellingNewList {
             if expectedPage.map({ selectedPage == $0 }) ?? true {
-                queuedNewListAfterCancel = QueuedNewListRequest(
+                newListCancellation = .cancelling(queued: QueuedNewListRequest(
                     page: selectedPage, selectionRevision: selectionRevision
-                )
+                ))
             }
             return
         }
@@ -570,9 +587,8 @@ final class IOSAppModel {
                     // Showing the editor commits creation. A later refresh may
                     // suspend, but cancelling it must not erase a visible draft.
                     self.searchText = ""
-                    self.newListOrigin = origin
+                    self.pendingNewList = PendingNewList(id: createdID, origin: origin)
                     self.selectList(createdID)
-                    self.newListID = createdID
                     self.editingListID = createdID
                 }
             ) else { return }
@@ -581,8 +597,7 @@ final class IOSAppModel {
                     id: createdID, feedbackInteraction: nil
                 )
                 if !removed {
-                    newListOrigin = origin
-                    newListID = createdID
+                    pendingNewList = PendingNewList(id: createdID, origin: origin)
                     selectList(createdID)
                     editingListID = createdID
                 }
@@ -590,35 +605,75 @@ final class IOSAppModel {
         }
     }
 
+    /// Owns cancellation from presentation settlement through the serialized deletion.
+    /// The caller keeps presentation checks here; interrupted motion leaves the draft editable.
     @discardableResult
-    func cancelNewList(id: UUID) async -> Bool {
-        guard newListID == id, editingListID == id, !isCancellingNewList else { return false }
-        guard listDrafts[id]?.isSaving != true || listDrafts[id]?.isCancelling == true else { return false }
-        isCancellingNewList = true
-        let origin = newListOrigin ?? NewListOrigin(
-            page: .list(SnipList.inboxID), lastSelectedListID: SnipList.inboxID
-        )
-        let previousPage = selectedPage
-        lastSelectedListID = lists.contains(where: { $0.id == origin.lastSelectedListID })
-            ? origin.lastSelectedListID : SnipList.inboxID
-        let originPage = newListCancellationPage
-        selectPage(originPage)
-        let originSelectionRevision = selectionRevision
-        let cancelled = await withUserMutation { interaction in
-            await deleteListUnlocked(id: id, feedbackInteraction: interaction)
-        }
-        if !cancelled, selectionRevision == originSelectionRevision,
-           pages.contains(previousPage) {
-            selectPage(previousPage)
-        }
-        isCancellingNewList = false
-        if let queuedRequest = queuedNewListAfterCancel {
-            queuedNewListAfterCancel = nil
-            if selectionRevision == queuedRequest.selectionRevision {
+    func cancelNewList(
+        id: UUID,
+        beforeDeletion: @MainActor () async -> Bool = { true }
+    ) async -> Bool {
+        guard let pending = pendingNewList, pending.id == id,
+              editingListID == id, !isCancellingNewList,
+              let list = lists.first(where: { $0.id == id }) else { return false }
+        let draft = listDraft(for: list)
+        guard draft.operation == .editing else { return false }
+        draft.operation = .cancelling
+        newListCancellation = .cancelling(queued: nil)
+
+        let ready = await beforeDeletion()
+        let shouldDelete = ready && !Task.isCancelled
+        // Removing the page invalidates its SwiftUI task. After motion commits,
+        // finish deletion and any queued reopen independently of that task.
+        return await Task { @MainActor in
+            let cancelled: Bool
+            if shouldDelete, pendingNewList?.id == id,
+               editingListID == id, listDrafts[id] === draft {
+                let previousPage = selectedPage
+                lastSelectedListID = lists.contains(where: { $0.id == pending.origin.lastSelectedListID })
+                    ? pending.origin.lastSelectedListID : SnipList.inboxID
+                selectPage(newListCancellationPage)
+                let originSelectionRevision = selectionRevision
+                cancelled = await withUserMutation { interaction in
+                    await deleteListUnlocked(id: id, feedbackInteraction: interaction)
+                }
+                if !cancelled, selectionRevision == originSelectionRevision,
+                   pages.contains(previousPage) {
+                    selectPage(previousPage)
+                }
+            } else {
+                cancelled = false
+            }
+
+            let queuedRequest: QueuedNewListRequest?
+            switch newListCancellation {
+            case .idle: queuedRequest = nil
+            case .cancelling(let queued): queuedRequest = queued
+            }
+            newListCancellation = .idle
+            draft.operation = .editing
+            if let queuedRequest, selectionRevision == queuedRequest.selectionRevision {
                 await openNewList(ifSelectedPageIs: queuedRequest.page)
             }
+            return cancelled
+        }.value
+    }
+
+    @discardableResult
+    func saveListDraft(id: UUID) async -> Bool {
+        guard let draft = listDrafts[id], draft.operation == .editing,
+              editingListID == id,
+              let list = lists.first(where: { $0.id == id }) else { return false }
+        draft.operation = .saving
+        defer { draft.operation = .editing }
+        let cleaned = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let succeeded = await renameList(
+            list, name: cleaned.isEmpty ? list.name : cleaned,
+            systemImage: draft.systemImage, color: .set(draft.color)
+        )
+        if succeeded, listDrafts[id] === draft {
+            finishListEditing(id: id)
         }
-        return cancelled
+        return succeeded
     }
 
     func listDraft(for list: SnipList) -> InlineListDraft {
@@ -636,8 +691,7 @@ final class IOSAppModel {
         listDrafts[id] = nil
         if editingListID == id { editingListID = nil }
         if newListID == id {
-            newListID = nil
-            newListOrigin = nil
+            pendingNewList = nil
         }
     }
 

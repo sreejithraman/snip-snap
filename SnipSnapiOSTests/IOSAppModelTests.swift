@@ -152,22 +152,180 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertNil(model.newListID)
     }
 
-    func testNewListCannotBeSwipeCancelledWhileCreateIsSaving() async {
+    func testSavingNewListRejectsCancellationAndDuplicateSave() async throws {
+        let library = ModelTestLibrary()
+        let model = makeModel(library: library)
+        await model.load()
+        await model.openNewList()
+        let list = model.selectedList
+        let draft = model.listDraft(for: list)
+        draft.name = "  Reading  "
+        draft.systemImage = "book"
+        await library.suspendNextCommand()
+        let saving = Task { await model.saveListDraft(id: list.id) }
+        await library.waitUntilFirstCommandStarts()
+
+        XCTAssertTrue(draft.isSaving)
+        let cancelled = await model.cancelNewList(id: list.id)
+        let duplicateSave = await model.saveListDraft(id: list.id)
+        XCTAssertFalse(cancelled)
+        XCTAssertFalse(duplicateSave)
+        XCTAssertEqual(model.selectedPage, .list(list.id))
+        await library.resumeFirstCommand()
+
+        let saved = await saving.value
+        XCTAssertTrue(saved)
+        let updated = try XCTUnwrap(model.lists.first { $0.id == list.id })
+        XCTAssertEqual(updated.name, "Reading")
+        XCTAssertEqual(updated.systemImage, "book")
+        XCTAssertFalse(draft.isSaving)
+        XCTAssertNil(model.newListID)
+        XCTAssertNil(model.editingListID)
+    }
+
+    func testCancellationOwnsDraftDuringMotionAndReleasesItAfterInterruption() async {
         let model = makeModel(library: ModelTestLibrary())
         await model.load()
         await model.openNewList()
-        guard let id = model.newListID else { return XCTFail("New List did not open") }
-        let draft = model.listDraft(for: model.selectedList)
-        draft.isSaving = true
+        let list = model.selectedList
+        let draft = model.listDraft(for: list)
+        draft.name = "After interruption"
+        let motionStarted = expectation(description: "Cancellation motion started")
+        var settle: CheckedContinuation<Bool, Never>?
+        let cancellation = Task {
+            await model.cancelNewList(id: list.id) {
+                await withCheckedContinuation {
+                    settle = $0
+                    motionStarted.fulfill()
+                }
+            }
+        }
+        await fulfillment(of: [motionStarted], timeout: 2)
 
-        let rejected = await model.cancelNewList(id: id)
-        XCTAssertFalse(rejected)
-        XCTAssertEqual(model.selectedPage, .list(id))
-        XCTAssertTrue(model.lists.contains { $0.id == id })
+        XCTAssertTrue(draft.isSaving)
+        let saveDuringMotion = await model.saveListDraft(id: list.id)
+        let duplicateCancel = await model.cancelNewList(id: list.id)
+        XCTAssertFalse(saveDuringMotion)
+        XCTAssertFalse(duplicateCancel)
+        XCTAssertEqual(model.selectedPage, .list(list.id))
+        cancellation.cancel()
+        settle?.resume(returning: true)
+        let cancelled = await cancellation.value
 
-        draft.isCancelling = true // The editor Cancel button claims this operation first.
-        let accepted = await model.cancelNewList(id: id)
-        XCTAssertTrue(accepted)
+        XCTAssertFalse(cancelled)
+        XCTAssertFalse(draft.isSaving)
+        XCTAssertEqual(model.newListID, list.id)
+        XCTAssertTrue(model.listDraft(for: list) === draft)
+        let savedAfterInterruption = await model.saveListDraft(id: list.id)
+        XCTAssertTrue(savedAfterInterruption)
+        XCTAssertEqual(model.lists.first { $0.id == list.id }?.name, "After interruption")
+    }
+
+    func testCommittedCancellationSurvivesPresentationTaskCancellation() async {
+        let library = ModelTestLibrary(rejectsCancelledCommands: true)
+        let model = makeModel(library: library)
+        await model.load()
+        model.selectPage(.clipboard)
+        await model.openNewList()
+        let list = model.selectedList
+        let draft = model.listDraft(for: list)
+        await library.suspendNextCommand()
+        let cancellation = Task { await model.cancelNewList(id: list.id) }
+        await library.waitUntilFirstCommandStarts()
+        XCTAssertEqual(model.selectedPage, .clipboard)
+        XCTAssertTrue(draft.isSaving)
+        cancellation.cancel() // Removing the page can invalidate SwiftUI's settlement task.
+        await library.resumeFirstCommand()
+
+        let cancelled = await cancellation.value
+        XCTAssertTrue(cancelled)
+        XCTAssertFalse(draft.isSaving)
+        XCTAssertNil(model.newListID)
+        XCTAssertNil(model.editingListID)
+        XCTAssertEqual(model.lists.map(\.id), [SnipList.inboxID])
+    }
+
+    func testInterruptedCancellationReleasesDraftForRetry() async {
+        let model = makeModel(library: ModelTestLibrary())
+        await model.load()
+        await model.openNewList()
+        let list = model.selectedList
+        let draft = model.listDraft(for: list)
+
+        let interrupted = await model.cancelNewList(id: list.id, beforeDeletion: { false })
+        XCTAssertFalse(interrupted)
+        XCTAssertFalse(draft.isSaving)
+        XCTAssertEqual(model.selectedPage, .list(list.id))
+        XCTAssertEqual(model.newListID, list.id)
+        let cancelled = await model.cancelNewList(id: list.id)
+        XCTAssertTrue(cancelled)
+        XCTAssertNil(model.newListID)
+    }
+
+    func testFailedListDraftSaveRetainsEditsForRetry() async {
+        let model = makeModel(library: ModelTestLibrary())
+        await model.load()
+        _ = await model.createList(name: "Work")
+        await model.openNewList()
+        let list = model.selectedList
+        let draft = model.listDraft(for: list)
+        draft.name = "Work"
+
+        let failedSave = await model.saveListDraft(id: list.id)
+        XCTAssertFalse(failedSave)
+        XCTAssertFalse(draft.isSaving)
+        XCTAssertEqual(draft.name, "Work")
+        XCTAssertEqual(model.editingListID, list.id)
+        XCTAssertEqual(model.newListID, list.id)
+        XCTAssertTrue(model.listDraft(for: list) === draft)
+        draft.name = "Reading"
+        let retry = await model.saveListDraft(id: list.id)
+        XCTAssertTrue(retry)
+        XCTAssertEqual(model.lists.first { $0.id == list.id }?.name, "Reading")
+        XCTAssertNil(model.editingListID)
+    }
+
+    func testFailedCancellationReleasesDraftForSaving() async {
+        let model = makeModel(library: ModelTestLibrary(failsListDeletion: true))
+        await model.load()
+        await model.openNewList()
+        let list = model.selectedList
+        let draft = model.listDraft(for: list)
+        draft.name = "Keep this list"
+
+        let cancelled = await model.cancelNewList(id: list.id)
+        XCTAssertFalse(cancelled)
+        XCTAssertFalse(draft.isSaving)
+        XCTAssertEqual(model.selectedPage, .list(list.id))
+        XCTAssertEqual(model.newListID, list.id)
+        let saved = await model.saveListDraft(id: list.id)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(model.lists.first { $0.id == list.id }?.name, "Keep this list")
+        XCTAssertNil(model.newListID)
+    }
+
+    func testSavingOneDraftDoesNotFinishAnotherListsEditor() async {
+        let library = ModelTestLibrary()
+        let model = makeModel(library: library)
+        await model.load()
+        _ = await model.createList(name: "Work")
+        let workID = model.lastSelectedListID
+        await model.openNewList()
+        let list = model.selectedList
+        let draft = model.listDraft(for: list)
+        draft.name = "Reading"
+        await library.suspendNextCommand()
+        let saving = Task { await model.saveListDraft(id: list.id) }
+        await library.waitUntilFirstCommandStarts()
+        model.editListInline(id: workID)
+        XCTAssertEqual(model.newListID, list.id)
+        XCTAssertEqual(model.editingListID, workID)
+        await library.resumeFirstCommand()
+
+        let saved = await saving.value
+        XCTAssertTrue(saved)
+        XCTAssertEqual(model.editingListID, workID)
+        XCTAssertEqual(model.selectedPage, .list(workID))
         XCTAssertNil(model.newListID)
     }
 
@@ -376,6 +534,37 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertEqual(model.newListID, openedID)
         XCTAssertEqual(model.editingListID, openedID)
         XCTAssertEqual(model.lists.map(\.id), [SnipList.inboxID, openedID])
+    }
+
+    func testFinishingEditorDoesNotReleaseOutstandingCreationRefresh() async {
+        let library = ModelTestLibrary()
+        let model = IOSAppModel(
+            library: library,
+            userActions: DirectSnipLibraryUserActions(library: library),
+            recoveryScope: SnipRecoveryScope("finish-during-refresh")
+        )
+        await model.load()
+        await library.suspendNextRecovery()
+        let creation = Task { await model.openNewList() }
+        await library.waitUntilRecoveryStarts()
+        guard let id = model.newListID else {
+            await library.resumeRecovery()
+            await creation.value
+            return XCTFail("New List editor was not opened before the refresh")
+        }
+        model.finishListEditing(id: id)
+        XCTAssertTrue(model.isCreatingList)
+        await model.openNewList()
+        XCTAssertNil(model.newListID)
+        XCTAssertEqual(model.lists.count, 2)
+        await library.resumeRecovery()
+        await creation.value
+
+        XCTAssertFalse(model.isCreatingList)
+        await model.openNewList()
+        XCTAssertNotNil(model.newListID)
+        XCTAssertNotEqual(model.newListID, id)
+        XCTAssertEqual(model.lists.count, 3)
     }
 
     func testCancelVisibleNewListWaitsForCreationRefreshAndDeletesOnce() async {
@@ -6038,6 +6227,7 @@ private actor ModelTestLibrary: SnipLibrary {
     private let commandDelay: Duration?
     private let failsDeletion: Bool
     private let failsListDeletion: Bool
+    private let rejectsCancelledCommands: Bool
     private var suspendsFirstCommand: Bool
     private var suspendsNextSnapshot = false
     private var snapshotStartWaiters: [CheckedContinuation<Void, Never>] = []
@@ -6061,7 +6251,8 @@ private actor ModelTestLibrary: SnipLibrary {
         commandDelay: Duration? = nil,
         suspendsFirstCommand: Bool = false,
         failsDeletion: Bool = false,
-        failsListDeletion: Bool = false
+        failsListDeletion: Bool = false,
+        rejectsCancelledCommands: Bool = false
     ) {
         self.snips = snips
         self.lists = lists
@@ -6071,6 +6262,7 @@ private actor ModelTestLibrary: SnipLibrary {
         self.suspendsFirstCommand = suspendsFirstCommand
         self.failsDeletion = failsDeletion
         self.failsListDeletion = failsListDeletion
+        self.rejectsCancelledCommands = rejectsCancelledCommands
     }
 
     func addedAttachmentURLs() -> [URL] {
@@ -6204,6 +6396,7 @@ private actor ModelTestLibrary: SnipLibrary {
             await withCheckedContinuation { firstCommandContinuation = $0 }
         }
         if let commandDelay { try? await Task.sleep(for: commandDelay) }
+        if rejectsCancelledCommands { try Task.checkCancellation() }
         let outcome = try apply(command)
         return SnipLibraryUpdate(snapshot: makeSnapshot(sortMode: sortMode), outcome: outcome)
     }

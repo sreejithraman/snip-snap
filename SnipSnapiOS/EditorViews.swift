@@ -660,31 +660,13 @@ struct InlineListEditor: View {
     }
 
     private func save() async {
-        guard !draft.isSaving else { return }
-        draft.isSaving = true
-        let cleaned = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let succeeded = await model.renameList(
-            list,
-            name: cleaned.isEmpty ? list.name : cleaned,
-            systemImage: draft.systemImage,
-            color: .set(draft.color)
-        )
-        draft.isSaving = false
-        if succeeded {
+        if await model.saveListDraft(id: list.id) {
             focusedField = nil
-            model.finishListEditing(id: list.id)
         }
     }
 
     private func cancelNewList() async {
-        guard !draft.isSaving else { return }
-        draft.isCancelling = true
-        draft.isSaving = true
-        let cancelled = await cancelNewList(list.id)
-        if !cancelled {
-            draft.isSaving = false
-            draft.isCancelling = false
-        }
+        _ = await cancelNewList(list.id)
     }
 
 }

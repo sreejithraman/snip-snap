@@ -645,6 +645,219 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testReusingPickerIgnoresCompletionFromPreviousPresentation() async throws {
+        let parent = NSWindow()
+        defer { parent.orderOut(nil) }
+        let picker = NSOpenPanel()
+        var completions: [(NSApplication.ModalResponse) -> Void] = []
+        let coordinator = AppCoordinator(
+            model: AppModel(library: try JSONSnipLibrary(fileURL: storeURL()), defaults: defaults()),
+            shortcutSettings: ShortcutSettings(defaults: defaults()),
+            isAccessibilityTrusted: { false },
+            beginFilePanel: { _, _, completion in completions.append(completion) }
+        )
+        coordinator.attachPanelWindow(parent)
+        var firstCompletionCount = 0
+        var secondCompletionCount = 0
+        XCTAssertTrue(coordinator.presentOpenPanel(picker) { _ in
+            firstCompletionCount += 1
+            XCTAssertTrue(coordinator.presentOpenPanel(picker) { _ in secondCompletionCount += 1 })
+        })
+        completions[0](.cancel)
+        await Task.yield()
+        XCTAssertEqual(firstCompletionCount, 1)
+
+        completions[0](.cancel)
+        await Task.yield()
+
+        XCTAssertTrue(coordinator.panelDialogs.isPresented)
+        XCTAssertEqual(parent.alphaValue, 0.45, accuracy: 0.001)
+        XCTAssertEqual(secondCompletionCount, 0)
+        completions[1](.cancel)
+        await Task.yield()
+        XCTAssertEqual(secondCompletionCount, 1)
+        XCTAssertFalse(coordinator.panelDialogs.isPresented)
+        XCTAssertEqual(parent.alphaValue, 1, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testHidingRetiresPickerBeforeCallbacksAndCleansUpReentrantRequests() async throws {
+        let parent = SnipSnapPanel(
+            contentRect: NSRect(origin: .zero, size: AppWindowDefaults.defaultSize),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        parent.alphaValue = 0.8
+        defer { parent.orderOut(nil) }
+        let picker = NSOpenPanel()
+        var nativeCompletion: ((NSApplication.ModalResponse) -> Void)?
+        var events: [String] = []
+        var coordinator: AppCoordinator!
+        coordinator = AppCoordinator(
+            model: AppModel(library: try JSONSnipLibrary(fileURL: storeURL()), defaults: defaults()),
+            shortcutSettings: ShortcutSettings(defaults: defaults()),
+            isAccessibilityTrusted: { false },
+            beginFilePanel: { _, _, completion in nativeCompletion = completion },
+            cancelFilePanel: { _ in
+                XCTAssertEqual(parent.alphaValue, 0.8, accuracy: 0.001)
+                XCTAssertTrue(parent.canBecomeKey)
+                XCTAssertTrue(coordinator.panelDialogs.isPresented)
+                XCTAssertFalse(coordinator.presentOpenPanel(NSOpenPanel()) { _ in })
+                nativeCompletion?(.cancel)
+                coordinator.presentPanelDialog(id: .recovery, title: "During cancel") {
+                    events.append("cancel request dismissed")
+                } content: { Text("Recovery") }
+            }
+        )
+        coordinator.attachPanelWindow(parent)
+        XCTAssertTrue(coordinator.presentOpenPanel(picker) { urls in
+            XCTAssertNil(urls)
+            events.append("picker completed")
+            XCTAssertFalse(coordinator.presentOpenPanel(NSOpenPanel()) { _ in })
+            coordinator.presentPanelDialog(id: .newList, title: "During completion") {
+                events.append("completion request dismissed")
+            } content: { Text("New list") }
+        })
+        coordinator.presentPanelDialog(id: .backupImport, title: "Already pending") {
+            events.append("pending dismissed")
+        } content: { Text("Import") }
+
+        coordinator.hidePanel(restoringPreviousApplication: false)
+        await Task.yield()
+
+        XCTAssertEqual(events, [
+            "picker completed", "pending dismissed", "cancel request dismissed",
+            "completion request dismissed"
+        ])
+        XCTAssertFalse(coordinator.panelDialogs.isPresented)
+        XCTAssertFalse(parent.isVisible)
+        XCTAssertEqual(parent.alphaValue, 0.8, accuracy: 0.001)
+        coordinator.togglePanel()
+        XCTAssertTrue(parent.isVisible)
+        XCTAssertNil(parent.childWindows?.first)
+        XCTAssertFalse(coordinator.panelDialogs.isPresented)
+    }
+
+    @MainActor
+    func testHidingDialogsPreservesDismissalOrderAndBlocksCallbackPresentation() throws {
+        let parent = NSWindow()
+        parent.setContentSize(NSSize(width: 382, height: 500))
+        defer { parent.orderOut(nil) }
+        let coordinator = AppCoordinator(
+            model: AppModel(library: try JSONSnipLibrary(fileURL: storeURL()), defaults: defaults()),
+            shortcutSettings: ShortcutSettings(defaults: defaults()),
+            isAccessibilityTrusted: { false },
+            beginFilePanel: { _, _, _ in XCTFail("No picker may begin during hide") }
+        )
+        coordinator.attachPanelWindow(parent)
+        parent.makeKeyAndOrderFront(nil)
+        var events: [String] = []
+        coordinator.presentPanelDialog(id: .newList, title: "Active") {
+            events.append("active dismissed")
+            XCTAssertFalse(coordinator.presentOpenPanel(NSOpenPanel()) { _ in })
+            coordinator.presentPanelDialog(id: .recovery, title: "During active dismissal") {
+                events.append("reentrant dismissed")
+            } content: { Text("Recovery") }
+        } content: { Text("New list") }
+        coordinator.presentPanelDialog(id: .backupImport, title: "Pending") {
+            XCTAssertNil(parent.childWindows?.first)
+            events.append("pending dismissed")
+            XCTAssertFalse(coordinator.presentOpenPanel(NSOpenPanel()) { _ in })
+            coordinator.togglePanel()
+        } content: { Text("Import") }
+        coordinator.presentPanelDialog(id: .error, title: "Pending error") {
+            XCTFail("Parent hide must leave the model error unacknowledged")
+        } content: { Text("Error") }
+
+        coordinator.hidePanel(restoringPreviousApplication: false)
+
+        XCTAssertEqual(events, ["pending dismissed", "active dismissed", "reentrant dismissed"])
+        XCTAssertFalse(parent.isVisible)
+        XCTAssertFalse(coordinator.panelDialogs.isPresented)
+        coordinator.togglePanel()
+        XCTAssertTrue(parent.isVisible)
+        XCTAssertNil(parent.childWindows?.first)
+        XCTAssertFalse(coordinator.panelDialogs.isPresented)
+    }
+
+    @MainActor
+    func testHidingCoalescesRetryRequestsRaisedByTerminalDismissal() throws {
+        let parent = NSWindow()
+        parent.setContentSize(NSSize(width: 382, height: 500))
+        defer { parent.orderOut(nil) }
+        let coordinator = AppCoordinator(
+            model: AppModel(library: try JSONSnipLibrary(fileURL: storeURL()), defaults: defaults()),
+            shortcutSettings: ShortcutSettings(defaults: defaults()),
+            isAccessibilityTrusted: { false }
+        )
+        coordinator.attachPanelWindow(parent)
+        parent.makeKeyAndOrderFront(nil)
+        var cleanupCount = 0
+        var originalDismissals: [String] = []
+        func requestRetry() {
+            coordinator.presentPanelDialog(id: .recovery, title: "Retry") {
+                cleanupCount += 1
+                // Bound the fixture so the old implementation fails without hanging.
+                if cleanupCount < 3 { requestRetry() }
+            } content: { Text("Recovery") }
+        }
+        coordinator.presentPanelDialog(id: .newList, title: "Active") {
+            originalDismissals.append("active")
+            requestRetry()
+        } content: { Text("New list") }
+        // The queued request shares the active workflow ID but owns its callback.
+        coordinator.presentPanelDialog(id: .newList, title: "Pending") {
+            originalDismissals.append("pending")
+        } content: { Text("New list") }
+
+        coordinator.hidePanel(restoringPreviousApplication: false)
+
+        XCTAssertEqual(originalDismissals, ["pending", "active"])
+        XCTAssertEqual(cleanupCount, 1)
+        XCTAssertFalse(parent.isVisible)
+        XCTAssertFalse(coordinator.panelDialogs.isPresented)
+        coordinator.togglePanel()
+        XCTAssertTrue(parent.isVisible)
+        XCTAssertNil(parent.childWindows?.first)
+        XCTAssertFalse(coordinator.panelDialogs.isPresented)
+    }
+
+    @MainActor
+    func testHidingTerminalCleanupCannotCascadeThroughFreshDialogIDs() throws {
+        let parent = NSWindow()
+        parent.setContentSize(NSSize(width: 382, height: 500))
+        defer { parent.orderOut(nil) }
+        let coordinator = AppCoordinator(
+            model: AppModel(library: try JSONSnipLibrary(fileURL: storeURL()), defaults: defaults()),
+            shortcutSettings: ShortcutSettings(defaults: defaults()),
+            isAccessibilityTrusted: { false }
+        )
+        coordinator.attachPanelWindow(parent)
+        parent.makeKeyAndOrderFront(nil)
+        var cleanupCount = 0
+        func requestAnotherListEditor() {
+            coordinator.presentPanelDialog(id: .editList(UUID()), title: "Edit list") {
+                cleanupCount += 1
+                if cleanupCount < 3 { requestAnotherListEditor() }
+            } content: { Text("Edit list") }
+        }
+        coordinator.presentPanelDialog(id: .newList, title: "Active") {
+            requestAnotherListEditor()
+        } content: { Text("New list") }
+
+        coordinator.hidePanel(restoringPreviousApplication: false)
+
+        XCTAssertEqual(cleanupCount, 1)
+        XCTAssertFalse(parent.isVisible)
+        XCTAssertFalse(coordinator.panelDialogs.isPresented)
+        coordinator.togglePanel()
+        XCTAssertTrue(parent.isVisible)
+        XCTAssertNil(parent.childWindows?.first)
+        XCTAssertFalse(coordinator.panelDialogs.isPresented)
+    }
+
+    @MainActor
     func testHidingPanelCancelsOwnedOpenPanel() throws {
         let defaultsName = "Snip SnapOpenPanelHideTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))

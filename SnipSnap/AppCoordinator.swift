@@ -23,7 +23,7 @@ enum PanelDialogID: Equatable {
 }
 
 @MainActor
-private struct PendingPanelDialog {
+fileprivate struct PendingPanelDialog {
     let id: PanelDialogID
     let title: String
     let content: AnyView
@@ -31,8 +31,36 @@ private struct PendingPanelDialog {
 }
 
 @MainActor
+fileprivate struct PanelDialogSession {
+    let token = UUID()
+    let request: PendingPanelDialog
+}
+
+@MainActor
+fileprivate struct PanelFilePickerSession {
+    let token = UUID()
+    let panel: NSSavePanel
+    let parent: NSWindow
+    let parentAlphaValue: CGFloat
+    let completion: (NSApplication.ModalResponse) -> Void
+}
+
+@MainActor
+fileprivate enum ActivePanelPresentation {
+    case idle
+    case dialog(PanelDialogSession)
+    case filePicker(PanelFilePickerSession)
+    case hiding
+}
+
+@MainActor
 final class PanelDialogPresentationState: ObservableObject {
-    @Published fileprivate(set) var isPresented = false
+    @Published fileprivate var active: ActivePanelPresentation = .idle
+
+    var isPresented: Bool {
+        if case .idle = active { return false }
+        return true
+    }
 }
 
 @MainActor
@@ -74,9 +102,6 @@ final class AppCoordinator {
     private var applicationActivationObserver: NSObjectProtocol?
     private let beginFilePanel: BeginFilePanel
     private let cancelFilePanel: (NSSavePanel) -> Void
-    private var presentedFilePanel: NSSavePanel?
-    private var filePanelCompletion: ((NSApplication.ModalResponse) -> Void)?
-    private var filePanelParentAlphaValue: CGFloat?
     private var pendingPanelDialogs: [PendingPanelDialog] = []
     private var panelUsabilitySubscriptions: Set<AnyCancellable> = []
 
@@ -202,6 +227,11 @@ final class AppCoordinator {
         refreshAppShortcutMenu()
     }
 
+    private var presentedFilePanelIsKey: Bool {
+        guard case .filePicker(let session) = panelDialogs.active else { return false }
+        return session.panel.isKeyWindow
+    }
+
     func togglePanel() {
         guard let panelWindow else { return }
         if Self.shouldHidePanel(
@@ -214,7 +244,7 @@ final class AppCoordinator {
                 restoringPreviousApplication: Self.shouldRestorePreviousApplication(
                     panelIsKey: panelWindow.isKeyWindow,
                     dialogIsKey: panelDialogPresenter.isKeyWindow,
-                    filePanelIsKey: presentedFilePanel?.isKeyWindow == true
+                    filePanelIsKey: presentedFilePanelIsKey
                 )
             )
             return
@@ -255,6 +285,7 @@ final class AppCoordinator {
     }
 
     private func showPanel(_ panelWindow: NSWindow, focusing target: PanelFocusRequest?) {
+        if case .hiding = panelDialogs.active { return }
         panelFocusRequestGeneration += 1
         let focusRequestGeneration = panelFocusRequestGeneration
         if let externalApplication = frontmostExternalApplication() {
@@ -318,16 +349,41 @@ final class AppCoordinator {
         }
     }
 
+    /// Original dismissal callbacks may queue one terminal cleanup batch,
+    /// deduplicated by workflow ID. Requests raised by that batch are discarded
+    /// without callbacks so hiding cannot prolong itself through new requests.
     func hidePanel(restoringPreviousApplication: Bool = true) {
+        if case .hiding = panelDialogs.active { return }
+        let active = panelDialogs.active
+        let pending = pendingPanelDialogs
+        pendingPanelDialogs.removeAll()
+        panelDialogs.active = .hiding
         panelFocusRequestGeneration += 1
-        dismissFilePanel()
-        dismissPendingPanelDialogs()
+
+        // Retire native ownership before external callbacks. Keep admission
+        // blocked until the parent is hidden, including during native cancel.
         panelDialogPresenter.dismissForParentHide()
+        if case .filePicker(let session) = active {
+            restoreFilePanelParent(session)
+            cancelFilePanel(session.panel)
+            session.completion(.cancel)
+        }
+        for request in pending where request.id != .error {
+            request.onDismiss()
+        }
+        if case .dialog(let session) = active, session.request.id != .error {
+            session.request.onDismiss()
+        }
+        // Settle forms requested by the original callbacks once. Terminal
+        // cleanup cannot start another cleanup cascade, even with fresh IDs.
+        dismissPendingPanelDialogs()
+        pendingPanelDialogs.removeAll()
         panelWindow?.orderOut(nil)
         if restoringPreviousApplication {
             previousExternalApplication?.activate(options: [])
         }
         previousExternalApplication = nil
+        panelDialogs.active = .idle
     }
 
     func captureSelection() {
@@ -517,8 +573,7 @@ final class AppCoordinator {
             ),
             onDismiss: onDismiss
         )
-        guard presentedFilePanel == nil,
-              !panelDialogs.isPresented,
+        guard !panelDialogs.isPresented,
               let panelWindow,
               Self.shouldPresentPendingError(
                   isVisible: panelWindow.isVisible,
@@ -533,14 +588,18 @@ final class AppCoordinator {
 
     private func showPanelDialog(_ request: PendingPanelDialog) {
         guard let panelWindow else { return }
+        let session = PanelDialogSession(request: request)
+        panelDialogs.active = .dialog(session)
         panelDialogPresenter.present(
             id: request.id,
             title: request.title,
             parent: panelWindow,
             content: request.content,
             onDismiss: { [weak self] reason in
-                guard let self else { return }
-                panelDialogs.isPresented = false
+                guard let self,
+                      case .dialog(let current) = panelDialogs.active,
+                      current.token == session.token else { return }
+                panelDialogs.active = .idle
                 if request.id != .error || reason != .parentHide {
                     request.onDismiss()
                 }
@@ -554,7 +613,6 @@ final class AppCoordinator {
                 }
             }
         )
-        panelDialogs.isPresented = true
     }
 
     private func enqueuePanelDialog(_ request: PendingPanelDialog) {
@@ -564,8 +622,7 @@ final class AppCoordinator {
 
     @discardableResult
     private func presentNextPendingPanelDialog() -> Bool {
-        guard presentedFilePanel == nil,
-              !panelDialogs.isPresented,
+        guard !panelDialogs.isPresented,
               let panelWindow,
               Self.shouldPresentPendingError(
                   isVisible: panelWindow.isVisible,
@@ -610,7 +667,7 @@ final class AppCoordinator {
         _ panel: NSSavePanel,
         completion: @escaping (NSApplication.ModalResponse) -> Void
     ) -> Bool {
-        guard !panelDialogs.isPresented, presentedFilePanel == nil else { return false }
+        guard !panelDialogs.isPresented else { return false }
         guard let panelWindow else { return false }
         switch model.appearance {
         case .system:
@@ -628,47 +685,42 @@ final class AppCoordinator {
             showPanel(panelWindow, focusing: nil)
         }
         guard !panelDialogs.isPresented else { return false }
-        presentedFilePanel = panel
-        filePanelCompletion = completion
-        filePanelParentAlphaValue = panelWindow.alphaValue
+        let session = PanelFilePickerSession(
+            panel: panel,
+            parent: panelWindow,
+            parentAlphaValue: panelWindow.alphaValue,
+            completion: completion
+        )
+        panelDialogs.active = .filePicker(session)
         panelWindow.alphaValue = 0.45
         (panelWindow as? SnipSnapPanel)?.setPresentedModalWindow(panel)
-        panelDialogs.isPresented = true
-        beginFilePanel(panel, panelWindow) { [weak self, weak panel] response in
+        let token = session.token
+        beginFilePanel(panel, panelWindow) { [weak self] response in
             Task { @MainActor in
-                guard let self, let panel, self.presentedFilePanel === panel else { return }
-                self.finishFilePanel(panel, response: response, updateError: true)
+                self?.finishFilePanel(token: token, response: response)
             }
         }
         return true
     }
 
-    private func dismissFilePanel() {
-        guard let panel = presentedFilePanel else { return }
-        cancelFilePanel(panel)
-        finishFilePanel(panel, response: .cancel, updateError: false)
+    private func restoreFilePanelParent(_ session: PanelFilePickerSession) {
+        session.parent.alphaValue = session.parentAlphaValue
+        (session.parent as? SnipSnapPanel)?.setPresentedModalWindow(nil)
     }
 
     private func finishFilePanel(
-        _ panel: NSSavePanel,
-        response: NSApplication.ModalResponse,
-        updateError: Bool
+        token: UUID,
+        response: NSApplication.ModalResponse
     ) {
-        guard presentedFilePanel === panel else { return }
-        let completion = filePanelCompletion
-        if let filePanelParentAlphaValue {
-            panelWindow?.alphaValue = filePanelParentAlphaValue
+        guard case .filePicker(let session) = panelDialogs.active,
+              session.token == token else { return }
+        restoreFilePanelParent(session)
+        panelDialogs.active = .idle
+        if session.parent.isVisible {
+            session.parent.makeKeyAndOrderFront(nil)
         }
-        (panelWindow as? SnipSnapPanel)?.setPresentedModalWindow(nil)
-        presentedFilePanel = nil
-        filePanelCompletion = nil
-        filePanelParentAlphaValue = nil
-        panelDialogs.isPresented = false
-        if updateError, panelWindow?.isVisible == true {
-            panelWindow?.makeKeyAndOrderFront(nil)
-        }
-        completion?(response)
-        if updateError, !presentNextPendingPanelDialog() { updatePresentedError() }
+        session.completion(response)
+        if !presentNextPendingPanelDialog() { updatePresentedError() }
     }
 
     func dismissPanelDialog(id: PanelDialogID, restoringParent: Bool = true) {
