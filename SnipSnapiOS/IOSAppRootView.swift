@@ -346,38 +346,38 @@ struct IOSAppRootView: View {
             }
             .task(id: listPageMotion.transition?.settlement?.id) {
                 guard let settlement = listPageMotion.transition?.settlement else { return }
-                do { try await Task.sleep(for: .seconds(settlement.duration)) }
-                catch { return }
-                guard let transition = listPageMotion.transition,
-                      transition.settlement?.id == settlement.id else { return }
-                switch settlement.completion {
-                case .cancelNewList:
-                    guard case .list(let id) = transition.source,
+                if case .cancelNewList = settlement.completion {
+                    guard let transition = listPageMotion.transition,
+                          case .list(let id) = transition.source,
                           model.newListID == id,
                           model.editingListID == id,
                           model.selectedPage == .list(id) else {
                         listPageMotion.finishSettlement(settlement.id)
                         return
                     }
-                    Task { @MainActor in
+                    _ = await cancelNewList(id) {
+                        do { try await Task.sleep(for: .seconds(settlement.duration)) }
+                        catch { return false }
                         guard listPageMotion.transition?.settlement?.id == settlement.id,
                               scenePhase == .active, sheet == nil,
                               !model.isSearchPresented,
                               model.newListID == id,
                               model.editingListID == id,
-                              model.selectedPage == .list(id) else {
-                            if listPageMotion.transition?.settlement?.id == settlement.id {
-                                listPageMotion.interrupt()
-                            }
-                            return
-                        }
-                        _ = await cancelNewList(id)
-                        if listPageMotion.transition?.settlement?.id == settlement.id {
-                            listPageMotion.interrupt()
-                        }
+                              model.selectedPage == .list(id) else { return false }
+                        return true
                     }
-                case .cancelNewListFromButton:
-                    break // The button task finishes deletion and reports its result to the editor.
+                    if listPageMotion.transition?.settlement?.id == settlement.id {
+                        listPageMotion.interrupt()
+                    }
+                    return
+                }
+                do { try await Task.sleep(for: .seconds(settlement.duration)) }
+                catch { return }
+                guard let transition = listPageMotion.transition,
+                      transition.settlement?.id == settlement.id else { return }
+                switch settlement.completion {
+                case .cancelNewList, .cancelNewListFromButton:
+                    break // Their owning tasks finish cancellation.
                 case .createList:
                     await createListFromEdge(
                         transition.source, pages: transition.pages, settlementID: settlement.id
@@ -472,7 +472,7 @@ struct IOSAppRootView: View {
                             sheet: $sheet,
                             layout: .inlineList,
                             editMode: collectionEditModeBinding,
-                            cancelNewList: cancelNewList,
+                            cancelNewList: { await cancelNewList($0) },
                             dismissComposerKeyboard: {
                                 isCompactComposerFocused = false
                             }
@@ -494,8 +494,11 @@ struct IOSAppRootView: View {
         }
     }
 
-    private func cancelNewList(_ id: UUID) async -> Bool {
-        let cancelled = await model.cancelNewList(id: id)
+    private func cancelNewList(
+        _ id: UUID,
+        beforeDeletion: @MainActor () async -> Bool = { true }
+    ) async -> Bool {
+        let cancelled = await model.cancelNewList(id: id, beforeDeletion: beforeDeletion)
         if cancelled {
             compactComposerStorage.draftStore.clear(listID: id)
         }
@@ -507,26 +510,31 @@ struct IOSAppRootView: View {
               model.editingListID == id,
               model.selectedPage == .list(id) else { return false }
         guard listPageMotion.transition?.settlement?.cancelsNewList != true else { return false }
-        guard listPageMotion.beginNewListCancellation(
-            from: .list(id), to: model.newListCancellationPage, pages: model.pages,
-            reduceMotion: reduceMotion, at: Date()
-        ), let settlement = listPageMotion.transition?.settlement else {
-            return await cancelNewList(id)
-        }
+        var settlementID: UUID?
         defer {
-            if listPageMotion.transition?.settlement?.id == settlement.id {
+            if let settlementID, listPageMotion.transition?.settlement?.id == settlementID {
                 listPageMotion.interrupt()
             }
         }
-        do {
-            try await Task.sleep(for: .seconds(settlement.duration))
-        } catch {
-            return false
+        return await cancelNewList(id) {
+            guard listPageMotion.beginNewListCancellation(
+                from: .list(id), to: model.newListCancellationPage, pages: model.pages,
+                reduceMotion: reduceMotion, at: Date()
+            ), let settlement = listPageMotion.transition?.settlement else {
+                return true
+            }
+            settlementID = settlement.id
+            do {
+                try await Task.sleep(for: .seconds(settlement.duration))
+            } catch {
+                return false
+            }
+            guard listPageMotion.transition?.settlement?.id == settlement.id,
+                  scenePhase == .active, sheet == nil, !model.isSearchPresented,
+                  model.newListID == id,
+                  model.editingListID == id, model.selectedPage == .list(id) else { return false }
+            return true
         }
-        guard listPageMotion.transition?.settlement?.id == settlement.id else { return false }
-        guard model.newListID == id else { return true }
-        guard model.editingListID == id, model.selectedPage == .list(id) else { return false }
-        return await cancelNewList(id)
     }
 
     private func cancelEdgeCreation() {
