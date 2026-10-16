@@ -7122,6 +7122,7 @@ final class AttachmentThumbnailCacheTests: XCTestCase {
         try Data([1]).write(to: fast)
         try Data([2]).write(to: slow)
         let gate = ThumbnailDecodeGate()
+        defer { gate.release() }
         let cache = AttachmentThumbnailCache { url, _, _ in
             if url.lastPathComponent == "slow.png" {
                 await gate.block()
@@ -7135,15 +7136,21 @@ final class AttachmentThumbnailCacheTests: XCTestCase {
         let slowLoad = Task { await cache.image(for: slow, size: size, scale: 2) }
         await gate.waitUntilBlocked()
 
-        let started = ContinuousClock.now
-        let again = await cache.image(for: fast, size: size, scale: 2)
-        let elapsed = ContinuousClock.now - started
+        let cachedLoadFinished = expectation(description: "Cached thumbnail returns while the other decode is blocked")
+        let cachedLoad = Task {
+            let image = await cache.image(for: fast, size: size, scale: 2)
+            cachedLoadFinished.fulfill()
+            return image
+        }
 
-        XCTAssertNotNil(again)
-        XCTAssertNotNil(cache.cachedImage(for: fast, size: size, scale: 2))
-        XCTAssertLessThan(elapsed, .milliseconds(500))
-        await gate.release()
+        // Bound a stuck request without making runner speed part of the contract.
+        await fulfillment(of: [cachedLoadFinished], timeout: 10)
+        gate.release()
+        let again = await cachedLoad.value
         _ = await slowLoad.value
+
+        XCTAssertTrue(first === again)
+        XCTAssertNotNil(cache.cachedImage(for: fast, size: size, scale: 2))
     }
 
     func testThumbnailIsReusedUntilTheFileChanges() async throws {
