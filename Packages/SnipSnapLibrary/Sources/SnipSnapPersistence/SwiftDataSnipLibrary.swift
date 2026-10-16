@@ -73,13 +73,17 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
   let attachmentCacheRootURL: URL
   let readOnlyRecoveryMarkerURL: URL
   let recoveryQuarantineCompleteMarkerURL: URL
-  let container: ModelContainer?
+  private(set) var container: ModelContainer?
   let isAvailable: Bool
   let afterMutationBeforeSave: @Sendable () throws -> Void
   let beforeImportCommit: @Sendable () async throws -> Void
   var seenRequestIDs: Set<UUID>
   var knownAttachmentPaths: [UUID: String]
   var lastKnownState: SnipLibraryState
+
+  deinit {
+    SnipStoreContainerCleanup.release(&container)
+  }
 
   public init(storeURL: URL = SwiftDataSnipLibrary.defaultStoreURL()) throws {
     try self.init(storeURL: storeURL, afterMutationBeforeSave: {})
