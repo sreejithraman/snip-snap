@@ -5,11 +5,13 @@ import XCTest
 final class SnipSnapiOSUITests: XCTestCase {
     private var shareAppName = ""
 
-    override func tearDown() {
-        if XCUIDevice.shared.orientation != .portrait {
-            XCUIDevice.shared.orientation = .portrait
+    override func tearDown() async throws {
+        await MainActor.run {
+            if XCUIDevice.shared.orientation != .portrait {
+                XCUIDevice.shared.orientation = .portrait
+            }
         }
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func launchApp(
@@ -1840,18 +1842,18 @@ final class SnipSnapiOSUITests: XCTestCase {
         let app = launchApp()
         try requireCompactSelector(in: app)
         createSnip("Selection fixture", in: app)
-        let composer = app.descendants(matching: .any)["composer-text"]
-        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        let composer = app.textViews["composer-text"]
+        waitForHittable(composer)
         composer.tap()
         composer.typeText("Unsent draft")
-        app.swipeDown()
+        dismissComposerKeyboard(in: app)
         let clipboard = app.buttons["clipboard-tab"]
-        clipboard.tap()
+        tapVisibleSelectorTab(clipboard, in: app)
         XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
         XCTAssertFalse(composer.exists)
         let inbox = compactListTab(named: "Inbox", in: app)
         XCTAssertFalse(inbox.isSelected)
-        inbox.tap()
+        tapVisibleSelectorTab(inbox, in: app)
         XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         XCTAssertEqual(composer.value as? String, "Unsent draft")
@@ -1859,17 +1861,18 @@ final class SnipSnapiOSUITests: XCTestCase {
         let search = openSearch(in: app)
         search.typeText("Draft search")
         closeSearch(in: app)
-        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        waitForHittable(composer)
         XCTAssertEqual(composer.value as? String, "Unsent draft")
+        dismissComposerKeyboard(in: app)
         let selectorBeforeSelection = app.descendants(matching: .any)["list-selector"].frame
         enterSelection(in: app)
         XCTAssertTrue(composer.waitForNonExistence(timeout: 3))
         XCTAssertEqual(app.descendants(matching: .any)["list-selector"].frame.midY,
                        selectorBeforeSelection.midY, accuracy: 2)
         app.buttons["finish-selecting"].tap()
-        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        waitForHittable(composer)
         XCTAssertEqual(composer.value as? String, "Unsent draft")
-        clipboard.tap()
+        tapVisibleSelectorTab(clipboard, in: app)
         XCTAssertTrue(clipboard.isSelected)
         let selector = app.descendants(matching: .any)["list-selector"]
         XCTAssertEqual(clipboard.frame.midX, selector.frame.midX, accuracy: 2)
@@ -1877,7 +1880,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         screenshot.name = "Clipboard selected inside list strip"
         screenshot.lifetime = .keepAlways
         add(screenshot)
-        clipboard.tap()
+        tapVisibleSelectorTab(clipboard, in: app)
         let newList = app.buttons["list-management-new"]
         XCTAssertTrue(newList.waitForExistence(timeout: 3))
         newList.tap()
@@ -1954,18 +1957,21 @@ final class SnipSnapiOSUITests: XCTestCase {
         let app = launchApp()
         try requireCompactSelector(in: app)
         createSnip("Inbox page note", in: app)
-        let composer = app.descendants(matching: .any)["composer-text"]
+        let composer = app.textViews["composer-text"]
+        waitForHittable(composer)
         composer.tap()
         composer.typeText("Inbox unsent draft")
-        app.swipeDown()
+        dismissComposerKeyboard(in: app)
         createList("Work", in: app)
         createSnip("Work page note", in: app)
+        waitForHittable(composer)
         composer.tap()
         composer.typeText("Work unsent draft")
-        app.swipeDown()
+        dismissComposerKeyboard(in: app)
 
         func dragTabs(_ distance: CGFloat) {
             let selector = app.descendants(matching: .any)["list-selector"]
+            waitForHittable(app.buttons["Search"])
             let start = selector.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             start.press(
                 forDuration: 0.05,
@@ -1980,14 +1986,20 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(composer.value as? String, "Work unsent draft")
         dragTabs(140)
         XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
-        XCTAssertTrue(collectionRow(named: "Inbox page note", in: app).exists)
-        XCTAssertFalse(collectionRow(named: "Work page note", in: app).exists)
+        waitForHittable(collectionRow(named: "Inbox page note", in: app))
+        // Visited pages stay mounted to preserve native scroll and navigation state.
+        // Their rows must stop accepting input when another list becomes active.
+        XCTAssertFalse(collectionRow(named: "Work page note", in: app).isHittable)
+        XCTAssertFalse(collectionRow(named: "Work page note", in: app).isEnabled)
+        waitForHittable(composer)
         XCTAssertEqual(composer.value as? String, "Inbox unsent draft")
 
         dragTabs(-140)
         XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
-        XCTAssertTrue(collectionRow(named: "Work page note", in: app).exists)
-        XCTAssertFalse(collectionRow(named: "Inbox page note", in: app).exists)
+        waitForHittable(collectionRow(named: "Work page note", in: app))
+        XCTAssertFalse(collectionRow(named: "Inbox page note", in: app).isHittable)
+        XCTAssertFalse(collectionRow(named: "Inbox page note", in: app).isEnabled)
+        waitForHittable(composer)
         XCTAssertEqual(composer.value as? String, "Work unsent draft")
 
         let workRow = row(named: "Work page note", in: app)
@@ -1998,6 +2010,7 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         func dragAcrossTabs(_ distance: CGFloat) {
             let selector = app.descendants(matching: .any)["list-selector"]
+            waitForHittable(app.buttons["Search"])
             let start = selector.coordinate(withNormalizedOffset: CGVector(
                 dx: distance > 0 ? 0.05 : 0.95, dy: 0.5
             ))
@@ -2013,6 +2026,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertFalse(composer.exists)
         dragAcrossTabs(-260)
         XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
+        waitForHittable(composer)
         XCTAssertTrue(app.navigationBars["Work"].staticTexts["Work"].isHittable)
         XCTAssertTrue(
             hasVisibleTitlePixels(app.navigationBars["Work"].staticTexts["Work"].screenshot()),
@@ -2420,21 +2434,21 @@ final class SnipSnapiOSUITests: XCTestCase {
         let app = launchApp()
         try requireCompactSelector(in: app)
         createList("Work", in: app)
-        let composer = app.descendants(matching: .any)["composer-text"]
+        let composer = app.textViews["composer-text"]
         let selector = app.descendants(matching: .any)["list-selector"]
+        waitForHittable(composer)
         composer.tap()
         composer.typeText("Keep this draft")
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
         XCTAssertTrue(selector.waitForNonExistence(timeout: 3))
-        XCTAssertTrue(composer.isHittable)
-        XCTAssertTrue(app.buttons["composer-send"].isHittable)
+        waitForHittable(composer)
+        waitForHittable(app.buttons["composer-send"])
         let itemEntry = XCTAttachment(screenshot: app.screenshot())
         itemEntry.name = "Item entry without bottom navigation"
         itemEntry.lifetime = .keepAlways
         add(itemEntry)
 
-        app.swipeDown()
-        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
+        dismissComposerKeyboard(in: app)
         XCTAssertTrue(selector.waitForExistence(timeout: 3))
         openListEditor(named: "Work", in: app)
         XCTAssertTrue(app.textFields["list-name"].waitForExistence(timeout: 3))
@@ -2519,7 +2533,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(app.textFields["list-name"].value as? String, "Focus stays")
         tabs.buttons["Icon"].tap()
         search.typeText(".fill")
-        XCTAssertEqual(search.value as? String, "circle.fill")
+        let completedQuery = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "circle.fill"), object: search
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [completedQuery], timeout: 3), .completed)
         XCTAssertTrue(app.buttons["save-list"].isHittable)
         XCTAssertLessThanOrEqual(app.buttons["save-list"].frame.maxY, app.keyboards.firstMatch.frame.minY)
         let proof = XCTAttachment(screenshot: app.screenshot())
@@ -4200,25 +4217,41 @@ final class SnipSnapiOSUITests: XCTestCase {
     func testPageSwipePreservesExpandedMultiListSelection() {
         continueAfterFailure = false
         let app = launchApp(withGatheringFixtures: true)
+        func selectableRow(named text: String) -> XCUIElement {
+            // Inactive mounted pages can remain in XCTest's hierarchy. Select
+            // the enabled row on the destination, then wait for motion to settle.
+            let row = app.buttons.matching(NSPredicate(
+                format: "identifier BEGINSWITH 'snip-' AND NOT identifier BEGINSWITH 'snip-text-' AND label BEGINSWITH %@ AND enabled == true",
+                text
+            )).firstMatch
+            waitForHittable(row)
+            return row
+        }
         XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 10))
-        listControl(named: "Work", in: app).tap()
+        tapVisibleSelectorTab(listControl(named: "Work", in: app), in: app)
+        XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
         createSnip("Work selection", in: app)
         returnToCollection(in: app)
-        listControl(named: "Inbox", in: app).tap()
+        tapVisibleSelectorTab(listControl(named: "Inbox", in: app), in: app)
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+        waitForHittable(collectionRow(named: "Sketch a simpler selection flow", in: app))
         enterSelection(in: app)
-        row(named: "Sketch a simpler selection flow", in: app).tap()
+        selectableRow(named: "Sketch a simpler selection flow").tap()
+        waitForHittable(app.buttons["gathered-stack"])
         app.buttons["gathered-stack"].tap()
+        waitForHittable(app.buttons["collapse-gathered"])
 
         let toWork = app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.3))
         toWork.press(forDuration: 0.05, thenDragTo: toWork.withOffset(CGVector(dx: -180, dy: 0)))
         XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["collapse-gathered"].isHittable)
         XCTAssertTrue(app.buttons["Deselect: Sketch a simpler selection flow"].isHittable)
-        row(named: "Work selection", in: app).tap()
+        selectableRow(named: "Work selection").tap()
         app.buttons["collapse-gathered"].tap()
         XCTAssertEqual(app.buttons["gathered-stack"].value as? String, "2 items")
         XCTAssertTrue(app.buttons["Deselect: Work selection"].isHittable)
         app.buttons["gathered-stack"].tap()
+        waitForHittable(app.buttons["collapse-gathered"])
 
         let toInbox = app.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.3))
         toInbox.press(forDuration: 0.05, thenDragTo: toInbox.withOffset(CGVector(dx: 180, dy: 0)))
@@ -4228,7 +4261,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertFalse(collectionRow(named: "Sketch a simpler selection flow", in: app).exists)
         app.buttons["finish-selecting"].tap()
         XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 3))
-        listControl(named: "Work", in: app).tap()
+        tapVisibleSelectorTab(listControl(named: "Work", in: app), in: app)
+        XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
         XCTAssertTrue(collectionRow(named: "Work selection", in: app).waitForExistence(timeout: 3))
     }
 
@@ -4352,6 +4386,53 @@ final class SnipSnapiOSUITests: XCTestCase {
         guard app.keyboards.firstMatch.exists else { return }
         app.swipeDown()
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
+    }
+
+    private func waitForHittable(
+        _ element: XCUIElement,
+        timeout: TimeInterval = 5,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let ready = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND enabled == true AND hittable == true"),
+            object: element
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [ready], timeout: timeout), .completed,
+            "The intended control must be enabled and hittable before continuing.",
+            file: file, line: line
+        )
+    }
+
+    private func tapVisibleSelectorTab(
+        _ tab: XCUIElement,
+        in app: XCUIApplication,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let selector = app.descendants(matching: .any)["list-selector"]
+        guard selector.exists else {
+            waitForHittable(tab, file: file, line: line)
+            tab.tap()
+            return
+        }
+        let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard tab.exists, tab.isEnabled, selector.exists else { return false }
+            let target = tab.frame.intersection(selector.frame.insetBy(dx: 4, dy: 4))
+            return target.width >= 12 && target.height >= 32
+        }, object: tab)
+        guard XCTWaiter.wait(for: [visible], timeout: 5) == .completed else {
+            XCTFail("The intended tab must be visible inside the selector.", file: file, line: line)
+            return
+        }
+        // Neighboring tabs keep full accessibility frames beyond the clipped
+        // strip. Their centers can overlap Paste or Search; tap the visible part.
+        let target = tab.frame.intersection(selector.frame.insetBy(dx: 4, dy: 4))
+        selector.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: target.midX - selector.frame.minX,
+            dy: target.midY - selector.frame.minY
+        )).tap()
     }
 
     private func openSearch(in app: XCUIApplication) -> XCUIElement {

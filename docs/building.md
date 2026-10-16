@@ -124,6 +124,49 @@ Both checks below use this worktree's isolated Dev app:
 
 Choose either a UI test method or a unit test class per run.
 
+For a focused performance investigation, opt in to a coverage-free test build:
+
+```sh
+./scripts/run.sh --ios-simulator --simulator-id "$SIMULATOR_ID" \
+  --unit-test IOSAppModelTests --performance
+```
+
+`--performance` requires `--unit-test` or `--ui-test`. It keeps the Debug
+configuration and its optimization settings. It passes `-enableCodeCoverage NO`
+to both `clean build-for-testing` and `test-without-building`. The clean build
+ensures the log contains fresh compiler evidence. This adds build work; measure
+the same test workload and configuration when comparing results.
+
+Before installing or opening the Dev app, the runner checks the app target's
+emitted Swift compiler command, including arguments from response files. It
+rejects coverage instrumentation or missing compiler evidence. It does not treat
+`CLANG_ENABLE_CODE_COVERAGE=NO` as proof that Swift coverage is disabled.
+Ordinary test runs keep the scheme's coverage settings; the performance option
+does not change the project or scheme.
+
+The runner prints the path to a `build-performance.json` evidence file beside
+the build log. With `--build-log /some/path/check.log`, it writes
+`/some/path/check-performance.json`. The file records the configuration,
+destination, test selector, actions, diagnostics mode, optimization flags,
+coverage flags, raw app compiler commands, expanded arguments, and verification
+result. A failed verification also writes its reason. Keep this file with the
+build log and the corresponding `*-unit-test.log` or `*-ui-test.log` when
+recording results. The evidence verifies app coverage instrumentation; it does
+not establish a performance improvement or replace a measured test result.
+
+To skip Xcode's failure diagnostic collection for an explicitly chosen test run:
+
+```sh
+./scripts/run.sh --ios-simulator --simulator-id "$SIMULATOR_ID" \
+  --ui-test testSelectionPersistsAcrossLists --no-test-diagnostics
+```
+
+This passes `-collect-test-diagnostics never` to the test action. It also works
+with `--unit-test`. Other runs collect diagnostics on failure. Test logs and
+test failures are still reported. The option requires `--ui-test` or
+`--unit-test` and can be combined with `--performance`. Leave it off when
+investigating a failure that needs Xcode's verbose diagnostics.
+
 ## Cloud Dev and physical-device builds
 
 For a local-only preview on a paired iPhone or iPad with Developer Mode enabled:

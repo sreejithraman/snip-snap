@@ -33,17 +33,34 @@ if [[ "$*" == *'-showBuildSettings'* ]]; then
  print -r -- 'Build settings for action build and target SnipSnapiOS:'
  print -r -- '    SNIP_SNAP_IOS_PRODUCT_BUNDLE_IDENTIFIER = org.example.snipsnap.ios'
  print -r -- '    PRODUCT_NAME = Snip Snap iOS'
+ print -r -- '    CLANG_ENABLE_CODE_COVERAGE = NO'
  exit 0
 fi
 print -r -- "$*" >> "$FAKE_BUILD_LOG"
-if [[ "${argv[-1]}" == test && "${FAKE_EXPECT_FIXTURE:-0}" == 1 ]]; then
+if [[ "${argv[-1]}" == build-for-testing ]]; then
+ if [[ "${FAKE_COMPILER_EVIDENCE:-}" != missing ]]; then
+  print -r -- "SwiftDriver SnipSnap_iOS normal arm64 com.apple.xcode.tools.swift.compiler (in target 'SnipSnapiOS' from project 'SnipSnap')"
+  compiler_arguments='-module-name SnipSnap_iOS -Onone -g -enable-testing -c /source/App.swift'
+  case "${FAKE_COMPILER_EVIDENCE:-}" in
+   covered) compiler_arguments+=' -profile-generate -profile-coverage-mapping';;
+   response)
+    print -r -- '-profile-generate -profile-coverage-mapping' > "$FAKE_COMPILER_RESPONSE"
+    compiler_arguments+=" @${(q)FAKE_COMPILER_RESPONSE}";;
+  esac
+  print -r -- "    builtin-SwiftDriver -- /toolchain/usr/bin/swiftc $compiler_arguments"
+ fi
+ # A dependency's flags cannot prove whether the app is instrumented.
+ print -r -- "SwiftDriver SnipSnapCore normal arm64 com.apple.xcode.tools.swift.compiler (in target 'SnipSnapCore' from project 'SnipSnapLibrary')"
+ print -r -- '    builtin-SwiftDriver -- /toolchain/usr/bin/swiftc -module-name SnipSnapCore -profile-generate -profile-coverage-mapping -c /source/Core.swift'
+fi
+if [[ "${argv[-1]}" == test* && "${FAKE_EXPECT_FIXTURE:-0}" == 1 ]]; then
  [[ -s "$FAKE_FIXTURE_PID_FILE" ]] && /bin/kill -0 "$(cat "$FAKE_FIXTURE_PID_FILE")" || {
   print -u2 'The Share fixture was not ready before xcodebuild test'; exit 1
  }
 elif [[ -e "$FAKE_FIXTURE_PID_FILE" ]]; then
  print -u2 'A build or unrelated UI test started the Share fixture'; exit 1
 fi
-if [[ "${argv[-1]}" == test ]]; then
+if [[ "${argv[-1]}" == test* ]]; then
  case "${FAKE_UI_TEST_OUTCOME:-}" in
   failure) exit 23;;
   INT|TERM) /bin/kill -s "$FAKE_UI_TEST_OUTCOME" "$PPID"; exit 0;;
@@ -93,6 +110,80 @@ fi
 grep -F 'SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS=' "$FAKE_BUILD_LOG" >/dev/null
 "$script_dir/run.sh" --ios-simulator --simulator-id TEST-SIM --unit-test IOSAppModelTests > "$test_dir/output"
 grep -F -- '-only-testing:SnipSnapiOSTests/IOSAppModelTests' "$FAKE_BUILD_LOG" >/dev/null
+if [[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *'-enableCodeCoverage NO'* ]]; then
+ print -u2 'An ordinary test run disabled coverage'; exit 1
+fi
+"$script_dir/run.sh" --ios-simulator --unit-test IOSAppModelTests --performance > "$test_dir/output" 2>&1 || {
+ cat "$test_dir/output" >&2; exit 1
+}
+grep -F -- '-enableCodeCoverage NO clean build-for-testing' "$FAKE_BUILD_LOG" >/dev/null
+grep -F -- '-enableCodeCoverage NO -collect-test-diagnostics on-failure -parallel-testing-enabled NO -only-testing:SnipSnapiOSTests/IOSAppModelTests test-without-building' "$FAKE_BUILD_LOG" >/dev/null
+evidence="$SNIP_SNAP_DEV_STATE_DIR/build/ios-slot-1/build-performance.json"
+/usr/bin/ruby -rjson -e '
+ evidence = JSON.parse(File.read(ARGV.fetch(0)))
+ abort "Missing verified app compiler evidence" unless evidence.fetch("verified") &&
+   evidence.fetch("configuration") == "Debug" && evidence.fetch("coverage") == "disabled" &&
+   evidence.fetch("compiler_commands").one? && evidence.fetch("compiler_commands").first.include?("-Onone")
+' "$evidence"
+cp "$FAKE_SIM_LOG" "$test_dir/before-performance-rejection"
+export FAKE_COMPILER_RESPONSE="$test_dir/coverage flags.resp"
+for compiler_evidence in covered response missing; do
+ if FAKE_COMPILER_EVIDENCE="$compiler_evidence" \
+  "$script_dir/run.sh" --ios-simulator --unit-test IOSAppModelTests --performance > "$test_dir/output" 2>&1; then
+  print -u2 "Performance mode accepted $compiler_evidence compiler evidence"; exit 1
+ fi
+ cmp "$test_dir/before-performance-rejection" "$FAKE_SIM_LOG"
+ [[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *' build-for-testing' ]] || {
+  print -u2 'Tests ran after performance compiler verification failed'; exit 1
+ }
+ /usr/bin/ruby -rjson -e '
+  evidence = JSON.parse(File.read(ARGV.fetch(0)))
+  abort "Missing failed verification evidence" unless evidence.fetch("verified") == false && evidence.fetch("error").length > 0
+ ' "$evidence"
+done
+"$script_dir/run.sh" --ios-simulator --ui-test testExample --no-test-diagnostics > "$test_dir/output" 2>&1 || {
+ cat "$test_dir/output" >&2; exit 1
+}
+[[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *'-collect-test-diagnostics never'*' test' ]] || {
+ print -u2 'The opt-in UI run did not disable test diagnostics'; exit 1
+}
+"$script_dir/run.sh" --ios-simulator --ui-test testExample > "$test_dir/output" 2>&1
+[[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *'-collect-test-diagnostics on-failure'* ]] || {
+ print -u2 'An ordinary UI run did not retain failure diagnostics'; exit 1
+}
+"$script_dir/run.sh" --ios-simulator --unit-test IOSAppModelTests --no-test-diagnostics > "$test_dir/output" 2>&1 || {
+ cat "$test_dir/output" >&2; exit 1
+}
+[[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *'-collect-test-diagnostics never'*'-only-testing:SnipSnapiOSTests/IOSAppModelTests test' ]] || {
+ print -u2 'The opt-in unit run did not disable test diagnostics'; exit 1
+}
+for arguments in '--performance' '--no-test-diagnostics'; do
+ cp "$FAKE_BUILD_LOG" "$test_dir/before-invalid-options"
+ if "$script_dir/run.sh" --ios-simulator ${=arguments} > "$test_dir/output" 2>&1; then
+  print -u2 "Accepted invalid simulator test options: $arguments"; exit 1
+ fi
+ cmp "$test_dir/before-invalid-options" "$FAKE_BUILD_LOG"
+done
+"$script_dir/run.sh" --ios-simulator --ui-test testExample --performance --no-test-diagnostics \
+ --build-log "$test_dir/custom logs/performance.log" > "$test_dir/output" 2>&1 || {
+ cat "$test_dir/output" >&2; exit 1
+}
+[[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *'-enableCodeCoverage NO'*'-collect-test-diagnostics never'*' test-without-building' ]] || {
+ print -u2 'Performance UI tests did not combine coverage and diagnostics options'; exit 1
+}
+/usr/bin/ruby -rjson -e '
+ evidence = JSON.parse(File.read(ARGV.fetch(0)))
+ abort "Missing combined performance configuration" unless evidence.fetch("verified") &&
+   evidence.fetch("test_diagnostics") == "never" && evidence.fetch("optimization_flags") == ["-Onone"] &&
+   evidence.fetch("coverage_flags") == [] && File.file?(evidence.fetch("build_log"))
+' "$test_dir/custom logs/performance-performance.json"
+"$script_dir/run.sh" --ios-simulator --unit-test IOSAppModelTests > "$test_dir/output" 2>&1
+[[ "$(tail -n 1 "$FAKE_BUILD_LOG")" != *'-enableCodeCoverage NO'* ]] || {
+ print -u2 'A later ordinary test inherited performance coverage settings'; exit 1
+}
+[[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *'-collect-test-diagnostics on-failure'* ]] || {
+ print -u2 'A later ordinary unit run did not restore failure diagnostics'; exit 1
+}
 if "$script_dir/run.sh" --ios-simulator --simulator-id TEST-SIM --unit-test IOSAppModelTests --ui-test testExample > "$test_dir/output" 2>&1; then
  print -u2 'Accepted simultaneous UI and unit test selectors'; exit 1
 fi
@@ -153,6 +244,14 @@ for outcome in failure INT TERM; do
  fi
  assert_fixture_cleaned_up
 done
+if FAKE_EXPECT_FIXTURE=1 FAKE_UI_TEST_OUTCOME=failure \
+ "$script_dir/run.sh" --ios-simulator --ui-test all --performance --no-test-diagnostics > "$test_dir/output" 2>&1; then
+ print -u2 'The runner hid a performance UI test failure with diagnostics disabled'; exit 1
+fi
+assert_fixture_cleaned_up
+[[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *' test-without-building' ]] || {
+ print -u2 'Performance UI testing failed before its test action'; exit 1
+}
 for fixture_failure in FAKE_FIXTURE_START_FAILURE=1 FAKE_FIXTURE_RETURNED_PORT=12345; do
  if env "$fixture_failure" FAKE_EXPECT_FIXTURE=1 \
   "$script_dir/run.sh" --ios-simulator --ui-test all > "$test_dir/output" 2>&1; then
@@ -183,4 +282,4 @@ for arguments in '--ios-simulator --simulator-id TEST-SIM' 'ios-simulator TEST-S
  fi
  cmp "$test_dir/before" "$FAKE_SIM_LOG"
 done
-print 'iOS Simulator Dev policy tests passed (fixture admission, 4 focused Share cases, cleanup, collisions, and isolation).'
+print 'iOS Simulator Dev policy tests passed (performance compiler evidence, diagnostics options, fixture admission, 4 focused Share cases, cleanup, collisions, and isolation).'

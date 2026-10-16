@@ -9,8 +9,18 @@ simulator_id=""
 build_log=""
 ui_test=""
 unit_test=""
+performance=NO
+test_diagnostics=on-failure
 while (( $# )); do
     case "$1" in
+        --performance)
+            performance=YES
+            shift
+            ;;
+        --no-test-diagnostics)
+            test_diagnostics=never
+            shift
+            ;;
         --simulator-id|--build-log)
             (( $# >= 2 )) || { print -u2 "Missing value for $1"; exit 2; }
             if [[ "$1" == --simulator-id ]]; then simulator_id="$2"; else build_log="$2"; fi
@@ -23,7 +33,7 @@ while (( $# )); do
             shift 2
             ;;
         *)
-            print -u2 "Usage: scripts/run.sh --ios-simulator [--simulator-id UUID] [--build-log PATH] [--ui-test TEST_NAME | --unit-test TEST_CLASS]"
+            print -u2 "Usage: scripts/run.sh --ios-simulator [--simulator-id UUID] [--build-log PATH] [--ui-test TEST_NAME | --unit-test TEST_CLASS] [--performance] [--no-test-diagnostics]"
             exit 2
             ;;
     esac
@@ -31,6 +41,14 @@ done
 
 if [[ -n "$ui_test" && -n "$unit_test" ]]; then
     print -u2 "Choose either --ui-test or --unit-test."
+    exit 2
+fi
+if [[ "$performance" == YES && -z "$ui_test" && -z "$unit_test" ]]; then
+    print -u2 -- "--performance requires --ui-test or --unit-test."
+    exit 2
+fi
+if [[ "$test_diagnostics" == never && -z "$ui_test" && -z "$unit_test" ]]; then
+    print -u2 -- "--no-test-diagnostics requires --ui-test or --unit-test."
     exit 2
 fi
 
@@ -86,10 +104,66 @@ build_arguments=(
     "SNIP_SNAP_DISPLAY_NAME=Snip Snap Dev $slot"
     "SNIP_SNAP_SHARE_DISPLAY_NAME=Save to Snip Snap Dev $slot"
 )
-xcodebuild "${build_arguments[@]}" build > "$build_log" 2>&1 || {
+build_actions=(build)
+test_action=test
+if [[ "$performance" == YES ]]; then
+    # Rebuild so verification observes this run's compiler flags, even on a warm cache.
+    print "Performance mode: Debug, coverage disabled, clean build-for-testing; diagnostics: $test_diagnostics"
+    build_arguments+=(-enableCodeCoverage NO)
+    build_actions=(clean build-for-testing)
+    test_action=test-without-building
+    evidence_file="${build_log:r}-performance.json"
+    /bin/rm -f "$evidence_file"
+fi
+xcodebuild "${build_arguments[@]}" "${build_actions[@]}" > "$build_log" 2>&1 || {
     /usr/bin/tail -n 60 "$build_log"
     exit 1
 }
+if [[ "$performance" == YES ]]; then
+    print "Performance evidence: $evidence_file"
+    /usr/bin/ruby -rjson -rshellwords -rtime - "$build_log" "$evidence_file" "$destination" "${ui_test:-$unit_test}" "$test_diagnostics" <<'RUBY'
+log, output, destination, selector, diagnostics = ARGV
+commands = []
+app_driver = false
+File.foreach(log) do |line|
+  if line.include?("(in target '")
+    app_driver = line.start_with?('SwiftDriver ') && line.include?("(in target 'SnipSnapiOS' ")
+  elsif app_driver && line.match?(/\bswiftc\s/)
+    commands << line.strip
+  end
+end
+evidence = {
+  'recorded_at' => Time.now.utc.iso8601, 'configuration' => 'Debug',
+  'scheme' => 'SnipSnapiOS', 'target' => 'SnipSnapiOS', 'destination' => destination,
+  'test_selector' => selector, 'build_action' => 'clean build-for-testing',
+  'test_action' => 'test-without-building', 'enableCodeCoverage' => 'NO',
+  'test_diagnostics' => diagnostics,
+  'build_log' => File.expand_path(log), 'compiler_commands' => commands, 'verified' => false
+}
+begin
+  raise 'No app Swift compiler command found in the clean build log' if commands.empty?
+  expand = lambda do |arguments, depth|
+    raise 'Compiler response files are nested too deeply' if depth > 8
+    arguments.flat_map do |argument|
+      argument.start_with?('@') ? expand.call(Shellwords.split(File.read(argument[1..-1])), depth + 1) : [argument]
+    end
+  end
+  arguments = commands.map { |command| expand.call(Shellwords.split(command), 0) }
+  coverage = arguments.flatten.grep(/\A-(?:profile-(?:generate|coverage-mapping)|(?:f|cs-|ir-)profile-generate|fprofile-instr-generate|fcoverage-mapping)/)
+  evidence['compiler_arguments'] = arguments
+  evidence['coverage_flags'] = coverage
+  evidence['optimization_flags'] = arguments.flatten.grep(/\A-O/).uniq
+  raise "App compiler still enables coverage: #{coverage.join(' ')}" unless coverage.empty?
+  evidence['coverage'] = 'disabled'
+  evidence['verified'] = true
+rescue StandardError => error
+  evidence['error'] = error.message
+ensure
+  File.write(output, JSON.pretty_generate(evidence) + "\n")
+end
+abort "Performance verification failed: #{evidence['error']} (#{output})" unless evidence['verified']
+RUBY
+fi
 
 actual_identifier="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Info.plist")"
 [[ "$actual_identifier" == "$bundle_identifier" ]] || { print -u2 "Dev bundle identity did not match."; exit 1; }
@@ -102,6 +176,7 @@ print "Bundle: $bundle_identifier"
 print "App: $app_path"
 print "App group: group.$bundle_identifier"
 if [[ -n "$ui_test" || -n "$unit_test" ]]; then
+    test_arguments=(-collect-test-diagnostics "$test_diagnostics")
     if [[ -n "$ui_test" ]]; then
         test_scope="SnipSnapiOSUITests"
         if [[ "$ui_test" != all ]]; then
@@ -118,9 +193,10 @@ if [[ -n "$ui_test" || -n "$unit_test" ]]; then
         test_kind="unit"
     fi
     xcodebuild "${build_arguments[@]}" \
+        "${test_arguments[@]}" \
         -parallel-testing-enabled NO \
         "-only-testing:$test_scope" \
-        test > "${build_log:r}-$test_kind-test.log" 2>&1 || {
+        "$test_action" > "${build_log:r}-$test_kind-test.log" 2>&1 || {
             /usr/bin/tail -n 80 "${build_log:r}-$test_kind-test.log"
             exit 1
         }
