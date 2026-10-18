@@ -1,0 +1,9 @@
+# Snip Snap 0.6.1 Beta 157
+
+## Mac
+
+- Preserve backup request history and remove obsolete import code
+
+## iOS
+
+- Preserve backup request history and remove obsolete import code
