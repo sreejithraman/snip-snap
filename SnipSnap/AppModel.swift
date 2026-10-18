@@ -86,7 +86,6 @@ final class AppModel: ObservableObject {
     private var pendingImportPreviewID: UUID?
     @Published var toast: AppToast?
     @Published var clipboardCopyPulse: ClipboardCopyPulse?
-    var canReorderSelection: Bool { canReorder(ids: selection) }
 
     func enterSearch() {
         guard editingID == nil, !isSearchExpanded else { return }
@@ -1263,11 +1262,6 @@ final class AppModel: ObservableObject {
     @discardableResult
     func copySelection() -> Bool {
         copySnipsAndMarkDone(selectedSnips)
-    }
-
-    @discardableResult
-    func copySelectionNow(to pasteboard: NSPasteboard = .general) async -> Bool {
-        await copySnipsAndMarkDoneNow(selectedSnips, to: pasteboard)
     }
 
     @discardableResult

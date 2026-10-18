@@ -69,7 +69,9 @@ extension SwiftDataSyncModePersistence {
       revision: candidateStore.revision,
       snips: plan.snips,
       lists: plan.lists,
-      attachmentData: plan.attachmentData
+      attachmentData: plan.attachmentData,
+      legacyManualPositions: [:],
+      additionalSeenRequestIDs: plan.additionalSeenRequestIDs
     )
     let provenance = try Self.seedProvenance(
       approvedSnipIDs: plan.result.approvedSnipIDs,

@@ -12,6 +12,7 @@ package struct SnipLibraryTransferPlan: Sendable {
   package let attachmentFileDigests: [UUID: Data]
   package let opaqueSyncStateDigest: Data
   package let opaqueSyncStatePayload: Data
+  package let additionalSeenRequestIDs: Set<UUID>
   package let result: SnipLibraryTransferResult
 
   package var digest: Data {
@@ -29,7 +30,8 @@ package struct SnipLibraryTransferPlan: Sendable {
           attachmentFileDigests: attachmentFileDigests,
           legacyManualPositions: [:],
           opaqueSyncStateDigest: opaqueSyncStateDigest,
-          opaqueSyncStatePayload: opaqueSyncStatePayload
+          opaqueSyncStatePayload: opaqueSyncStatePayload,
+          additionalSeenRequestIDs: additionalSeenRequestIDs
         )
       ),
       to: &bytes
@@ -89,7 +91,8 @@ package enum SnipLibraryTransferPlanner {
         retainedTargetSnips.contains(where: { $0.id == entry.key })
       },
       opaqueSyncStateDigest: target.opaqueSyncStateDigest,
-      opaqueSyncStatePayload: target.opaqueSyncStatePayload
+      opaqueSyncStatePayload: target.opaqueSyncStatePayload,
+      additionalSeenRequestIDs: target.additionalSeenRequestIDs
     )
     let retainedTargetLists = target.lists.filter {
       !priorSeededListIDs.contains($0.id) && !replacingTargetListIDs.contains($0.id)
@@ -176,6 +179,7 @@ package enum SnipLibraryTransferPlanner {
       ) { target, _ in target },
       opaqueSyncStateDigest: Data(SHA256.hash(data: mergedSyncPayload)),
       opaqueSyncStatePayload: mergedSyncPayload,
+      additionalSeenRequestIDs: source.additionalSeenRequestIDs,
       result: SnipLibraryTransferResult(
         approvedSnipIDs: approved,
         recoveredSourceSnipIDs: recovered

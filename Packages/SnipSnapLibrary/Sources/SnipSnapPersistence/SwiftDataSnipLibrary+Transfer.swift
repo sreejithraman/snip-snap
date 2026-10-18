@@ -210,7 +210,9 @@ extension SwiftDataSnipLibrary {
       let state = SnipLibraryState(
         snips: transferredSnips,
         lists: plan.lists,
-        seenRequestIDs: loaded.state.seenRequestIDs.union(transferredSnips.map(\.requestID))
+        seenRequestIDs: loaded.state.seenRequestIDs
+          .union(transferredSnips.map(\.requestID))
+          .union(plan.additionalSeenRequestIDs)
       )
       try Self.validate(state)
       try Self.applyChanges(from: loaded, to: state, context: context)

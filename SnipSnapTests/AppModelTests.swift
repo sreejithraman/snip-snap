@@ -1496,7 +1496,7 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertTrue(model.canReorder(ids: [first.id]))
 
         model.query = "First"
-        XCTAssertFalse(model.canReorderSelection)
+        XCTAssertFalse(model.canReorder(ids: model.selection))
         XCTAssertFalse(model.canReorder(ids: [first.id]))
         await model.moveSelectionNow(by: -1)
         XCTAssertEqual(model.snips.map(\.id), originalIDs)
@@ -1504,7 +1504,7 @@ final class AppModelTests: StoreBackedTestCase {
 
         model.query = ""
         model.completionFilter = .done
-        XCTAssertFalse(model.canReorderSelection)
+        XCTAssertFalse(model.canReorder(ids: model.selection))
         XCTAssertFalse(model.canReorder(ids: [first.id]))
         await model.moveSelectionNow(by: -1)
         XCTAssertEqual(model.snips.map(\.id), originalIDs)
@@ -2004,7 +2004,7 @@ final class AppModelTests: StoreBackedTestCase {
         model.selection = [snip.id]
 
         let pasteboard = NSPasteboard(name: .init("SnipSnapTests-copy-check-\(UUID())"))
-        let copied = await model.copySelectionNow(to: pasteboard)
+        let copied = await model.copySnipsAndMarkDoneNow(model.selectedSnips, to: pasteboard)
         let requests = await handler.preparationRequests()
         XCTAssertTrue(copied)
         XCTAssertTrue(requests.isEmpty)
@@ -2076,7 +2076,7 @@ final class AppModelTests: StoreBackedTestCase {
         model.selection = [snip.id]
         let pasteboard = NSPasteboard(name: .init("SnipSnapTests-mixed-copy-\(UUID())"))
 
-        let copied = await model.copySelectionNow(to: pasteboard)
+        let copied = await model.copySnipsAndMarkDoneNow(model.selectedSnips, to: pasteboard)
         XCTAssertTrue(copied)
 
         let target = NSTextView()
@@ -2611,7 +2611,7 @@ final class AppModelTests: StoreBackedTestCase {
         pasteboard.clearContents()
         pasteboard.setString("Keep this", forType: .string)
 
-        let copied = await model.copySelectionNow(to: pasteboard)
+        let copied = await model.copySnipsAndMarkDoneNow(model.selectedSnips, to: pasteboard)
         let requests = await handler.preparationRequests()
         XCTAssertFalse(copied)
 
@@ -2652,7 +2652,7 @@ final class AppModelTests: StoreBackedTestCase {
         model.selection = [first.id, second.id]
         let pasteboard = NSPasteboard(name: .init("SnipSnapTests-copy-once-\(UUID())"))
 
-        let copied = await model.copySelectionNow(to: pasteboard)
+        let copied = await model.copySnipsAndMarkDoneNow(model.selectedSnips, to: pasteboard)
         let requests = await handler.preparationRequests()
         XCTAssertTrue(copied)
 

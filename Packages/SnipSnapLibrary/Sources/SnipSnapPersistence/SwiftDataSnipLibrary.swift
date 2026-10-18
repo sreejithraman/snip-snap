@@ -256,31 +256,6 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     try FileManager.default.removeItem(at: recoveryQuarantineCompleteMarkerURL)
   }
 
-  package static func importArchive(_ archive: JSONSnipArchive, storeURL: URL) throws {
-    let directory = storeURL.deletingLastPathComponent()
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    let lock = try SnipStoreFileLock(url: storeURL.appendingPathExtension("lock"))
-    defer { withExtendedLifetime(lock) {} }
-    let container: ModelContainer
-    do {
-      container = try makeContainer(storeURL: storeURL)
-    } catch {
-      throw SnipLibraryError.invalidStore
-    }
-    let context = makeContext(container: container)
-    let loaded = try load(context: context, seenRequestIDs: [])
-    guard loaded.isEmpty else { throw SnipLibraryError.invalidStore }
-    let state = SnipLibraryState(
-      snips: archive.snips,
-      lists: archive.lists,
-      seenRequestIDs: archive.seenRequestIDs
-    )
-    try validate(state)
-    try applyChanges(from: loaded, to: state, context: context)
-    try lock.check()
-    try context.save()
-  }
-
   public func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
     _ = try? checkedSnapshot(sortedBy: sortMode)
     return makeSnapshot(state: lastKnownState, sortedBy: sortMode)
@@ -340,7 +315,6 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     )
     var state = loaded.state
     var createdDirectories: [URL] = []
-    var importedFiles: [URL] = []
 
     do {
       let outcome = try state.perform(
@@ -349,16 +323,6 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
           let prepared = try self.prepareAttachments(sourceURLs, currentSnips: currentSnips)
           createdDirectories.append(contentsOf: prepared.createdDirectories)
           return prepared.attachments
-        },
-        prepareImportedSnips: { imported, sourceURLs, currentSnips in
-          let prepared = try ImportedAttachmentPreparer.prepare(
-            snips: imported,
-            sourceURLs: sourceURLs,
-            currentSnips: currentSnips,
-            destinationRoot: self.attachmentRootURL
-          )
-          importedFiles.append(contentsOf: prepared.createdFiles)
-          return prepared.snips
         },
         pruneAttachments: { retainedIDs, currentSnips in
           let liveIDs = Set(currentSnips.flatMap(\.attachments).map(\.id)).union(retainedIDs)
@@ -395,7 +359,6 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     } catch {
       context.rollback()
       removeAttachmentDirectories(createdDirectories)
-      ImportedAttachmentPreparer.remove(createdFiles: importedFiles)
       throw error
     }
   }

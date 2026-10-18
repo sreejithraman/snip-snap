@@ -182,6 +182,29 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
         await #expect(throws: CancellationError.self) { try await running.value }
         #expect(await cloud.fetchCount() == 1)
     }
+    @Test func retrySleepRejectsAnAlreadyCancelledTask() async throws {
+        let sleep = ClipboardRetrySleepGate()
+        let completed = Mutex(false)
+        let running = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            defer { completed.withLock { $0 = true } }
+            try await sleep.wait()
+        }
+        defer {
+            running.cancel()
+            sleep.cancelWaiter()
+        }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !completed.withLock({ $0 }) && !sleep.isWaiting && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let finished = completed.withLock { $0 }
+        let waiting = sleep.isWaiting
+        #expect(finished)
+        guard finished || waiting else { return }
+        sleep.cancelWaiter()
+        await #expect(throws: CancellationError.self) { try await running.value }
+    }
     @Test func accountChangeRequiresQuarantineAndDoesNotUploadOldData() async throws {
         let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
         defer { try? FileManager.default.removeItem(at: client.root) }
@@ -341,14 +364,23 @@ private final class ClipboardRetrySleepGate: @unchecked Sendable {
     func wait() async throws {
         try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
-                lock.lock(); self.continuation = continuation; lock.unlock()
+                let cancelled = lock.withLock {
+                    if Task.isCancelled { return true }
+                    self.continuation = continuation
+                    return false
+                }
+                if cancelled { continuation.resume(throwing: CancellationError()) }
             }
         }, onCancel: {
-            lock.lock()
-            let continuation = self.continuation
-            self.continuation = nil
-            lock.unlock()
-            continuation?.resume(throwing: CancellationError())
+            self.cancelWaiter()
         })
+    }
+
+    func cancelWaiter() {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(throwing: CancellationError())
     }
 }
