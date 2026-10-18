@@ -100,6 +100,12 @@ extension SwiftDataSyncModePersistence {
       .checkedSnapshot(sortedBy: sortedBy)
   }
 
+  fileprivate func managedArchive() async throws -> SnipLibraryArchive {
+    await finishRecoveryQuarantines()
+    try await readHook()
+    return try await libraryForTransition(storeID: manifest.activeStoreID).archive()
+  }
+
   fileprivate func managedPerform(
     _ command: SnipLibraryCommand,
     sortedBy: SnipSortMode
@@ -283,13 +289,26 @@ private actor ModeManagedSnipLibrary: SnipLibrary {
   }
 
   func archive() async throws -> SnipLibraryArchive {
-    let snapshot = try await checkedSnapshot(sortedBy: .manual)
-    return SnipLibraryArchive(
-      snips: snapshot.snips,
-      lists: snapshot.lists,
-      seenRequestIDs: Set(snapshot.snips.map(\.requestID)),
-      attachmentURLs: snapshot.attachmentURLs
+    let attempt = await persistence.beginManagedReadAttempt()
+    let archive: SnipLibraryArchive
+    do {
+      archive = try await persistence.managedArchive()
+    } catch {
+      await persistence.recordStoreReadFailure(at: attempt)
+      throw error
+    }
+    let state = SnipLibraryState(
+      snips: archive.snips,
+      lists: archive.lists,
+      seenRequestIDs: archive.seenRequestIDs
     )
+    lastKnown = SnipLibrarySnapshot(
+      snips: state.allSnips(sortMode: .manual),
+      lists: state.allLists(),
+      attachmentURLs: archive.attachmentURLs
+    )
+    try await persistence.clearRecoveredStoreReadFailure(at: attempt)
+    return archive
   }
 
   func perform(

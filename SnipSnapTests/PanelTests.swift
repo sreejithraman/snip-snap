@@ -2770,12 +2770,14 @@ private struct ClipboardPreviewRefreshTestView: View {
 @MainActor private func clipboardPreviewHasRedPixels(_ host: NSView) throws -> Bool {
     host.layoutSubtreeIfNeeded()
     host.displayIfNeeded()
-    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-    host.cacheDisplay(in: host.bounds, to: bitmap)
+    let captured = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+    host.cacheDisplay(in: host.bounds, to: captured)
+    // Normalize the display profile before sampling the fixture's RGB colors.
+    let bitmap = try XCTUnwrap(captured.converting(to: .sRGB, renderingIntent: .default))
     var count = 0
     for y in stride(from: 0, to: bitmap.pixelsHigh, by: 4) {
         for x in stride(from: 0, to: bitmap.pixelsWide, by: 4) {
-            if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB),
+            if let color = bitmap.colorAt(x: x, y: y),
                color.redComponent > 0.8, color.greenComponent < 0.2, color.blueComponent < 0.2 {
                 count += 1
             }

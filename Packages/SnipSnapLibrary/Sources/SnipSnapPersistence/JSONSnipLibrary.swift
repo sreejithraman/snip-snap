@@ -166,7 +166,6 @@ public actor JSONSnipLibrary: SnipLibrary {
             seenRequestIDs: seenRequestIDs
         )
         var createdDirectories: [URL] = []
-        var importedFiles: [URL] = []
         let outcome: SnipLibraryOutcome
         do {
             outcome = try state.perform(
@@ -178,16 +177,6 @@ public actor JSONSnipLibrary: SnipLibrary {
                     )
                     createdDirectories.append(contentsOf: prepared.createdDirectories)
                     return prepared.attachments
-                },
-                prepareImportedSnips: { imported, sourceURLs, currentSnips in
-                    let prepared = try ImportedAttachmentPreparer.prepare(
-                        snips: imported,
-                        sourceURLs: sourceURLs,
-                        currentSnips: currentSnips,
-                        destinationRoot: self.attachmentRootURL
-                    )
-                    importedFiles.append(contentsOf: prepared.createdFiles)
-                    return prepared.snips
                 },
                 pruneAttachments: { retainedIDs, currentSnips in
                     let liveIDs = Set(currentSnips.flatMap(\.attachments).map(\.id))
@@ -217,7 +206,6 @@ public actor JSONSnipLibrary: SnipLibrary {
             }
         } catch {
             removeAttachmentDirectories(createdDirectories)
-            ImportedAttachmentPreparer.remove(createdFiles: importedFiles)
             throw error
         }
 
@@ -335,6 +323,7 @@ public actor JSONSnipLibrary: SnipLibrary {
                 snips = transferredSnips
                 lists = plan.lists
                 seenRequestIDs.formUnion(transferredSnips.map(\.requestID))
+                seenRequestIDs.formUnion(plan.additionalSeenRequestIDs)
             }
             knownAttachmentPaths = Dictionary(
                 transferredSnips.flatMap(\.attachments).map { ($0.id, $0.relativePath) },

@@ -388,7 +388,8 @@ extension CloudFullSyncPersistence {
       attachmentData: source.attachmentData,
       legacyManualPositions: source.legacyManualPositions,
       opaqueSyncStateDigest: source.opaqueSyncStateDigest,
-      opaqueSyncStatePayload: source.opaqueSyncStatePayload
+      opaqueSyncStatePayload: source.opaqueSyncStatePayload,
+      additionalSeenRequestIDs: source.additionalSeenRequestIDs
     )
     let transfer = try SnipLibraryTransferPlanner.plan(
       source: adjusted,

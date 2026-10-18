@@ -306,7 +306,8 @@ package enum AttachmentFileIO {
           attachmentFileDigests: stagedDigests,
           legacyManualPositions: snapshot.legacyManualPositions,
           opaqueSyncStateDigest: snapshot.opaqueSyncStateDigest,
-          opaqueSyncStatePayload: snapshot.opaqueSyncStatePayload
+          opaqueSyncStatePayload: snapshot.opaqueSyncStatePayload,
+          additionalSeenRequestIDs: snapshot.additionalSeenRequestIDs
         ),
         lease: lease
       )

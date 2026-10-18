@@ -761,10 +761,6 @@ final class AppCoordinator {
         panelWindow?.saveFrame(usingName: frameAutosaveName)
     }
 
-    func isPanelWindow(_ window: NSWindow?) -> Bool {
-        window === panelWindow
-    }
-
     private func applyPanelComposerExpansion() {
         guard let panelWindow else { return }
         let requestedExpansion = requestedPanelComposerExpansion

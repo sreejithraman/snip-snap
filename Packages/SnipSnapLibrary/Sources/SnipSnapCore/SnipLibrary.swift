@@ -236,7 +236,6 @@ public indirect enum SnipLibraryCommand: Sendable {
     case moveChronologically(ids: [UUID], to: UUID)
     case place(ids: [UUID], in: UUID, before: UUID?, basedOn: SnipSortMode)
     case replaceAll([Snip])
-    case importArchive(SnipLibraryArchive)
     case applyDevicePatch(SnipLibraryDevicePatch, now: Date)
     case pruneAttachments(retaining: Set<UUID>)
     case batch([SnipLibraryCommand])
@@ -289,6 +288,10 @@ public struct SnipLibraryTransferSnapshot: Equatable, Sendable {
     package let legacyManualPositions: [UUID: Int64]
     package let opaqueSyncStateDigest: Data
     package let opaqueSyncStatePayload: Data
+    // Backup-only request history merges monotonically into local metadata. Content,
+    // target, and plan digests omit it to preserve persisted sync formats and allow
+    // concurrent request-history additions without invalidating an import preview.
+    package let additionalSeenRequestIDs: Set<UUID>
 
     public init(
         revision: UInt64,
@@ -306,6 +309,7 @@ public struct SnipLibraryTransferSnapshot: Equatable, Sendable {
         legacyManualPositions = [:]
         opaqueSyncStateDigest = Data()
         opaqueSyncStatePayload = Data()
+        additionalSeenRequestIDs = []
     }
 
     package init(
@@ -317,7 +321,8 @@ public struct SnipLibraryTransferSnapshot: Equatable, Sendable {
         attachmentFileDigests: [UUID: Data] = [:],
         legacyManualPositions: [UUID: Int64],
         opaqueSyncStateDigest: Data = Data(),
-        opaqueSyncStatePayload: Data = Data()
+        opaqueSyncStatePayload: Data = Data(),
+        additionalSeenRequestIDs: Set<UUID> = []
     ) {
         let state = SnipLibraryState(snips: snips, lists: lists, seenRequestIDs: [])
         self.revision = revision
@@ -329,6 +334,7 @@ public struct SnipLibraryTransferSnapshot: Equatable, Sendable {
         self.legacyManualPositions = legacyManualPositions
         self.opaqueSyncStateDigest = opaqueSyncStateDigest
         self.opaqueSyncStatePayload = opaqueSyncStatePayload
+        self.additionalSeenRequestIDs = additionalSeenRequestIDs
     }
 
     package func replacingOpaqueSyncStatePayload(_ payload: Data) -> Self {
@@ -341,7 +347,8 @@ public struct SnipLibraryTransferSnapshot: Equatable, Sendable {
             attachmentFileDigests: attachmentFileDigests,
             legacyManualPositions: legacyManualPositions,
             opaqueSyncStateDigest: opaqueSyncStateDigest,
-            opaqueSyncStatePayload: payload
+            opaqueSyncStatePayload: payload,
+            additionalSeenRequestIDs: additionalSeenRequestIDs
         )
     }
 }

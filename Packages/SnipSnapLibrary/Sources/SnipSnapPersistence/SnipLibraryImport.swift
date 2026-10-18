@@ -40,7 +40,8 @@ public enum SnipLibraryImport {
         attachmentData: [:],
         attachmentFileURLs: staged.archive.attachmentURLs,
         attachmentFileDigests: staged.attachmentDigests,
-        legacyManualPositions: [:]
+        legacyManualPositions: [:],
+        additionalSeenRequestIDs: staged.archive.seenRequestIDs
       )
       return try await target.previewImport(source, transitionID: transitionID)
         .withStagingLease(staged.lease)

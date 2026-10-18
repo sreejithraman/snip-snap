@@ -110,14 +110,21 @@ for failure in cloudkit-schema package SnipSnap SnipSnapiOS; do
     fi
 done
 
-for summary_failure in YES NO; do
-    if SNIP_SNAP_TEST_FAILURE=SnipSnap SNIP_SNAP_TEST_SUMMARY_FAILURE="$summary_failure" run_tests --mac-only; then
-        print -u2 "Test runner hid a Mac test failure while reporting it."
-        exit 1
-    else
-        [[ $? == 65 ]]
-    fi
-    /usr/bin/grep -F 'xcrun:xcresulttool get test-results summary --path ' "$SNIP_SNAP_TEST_CALLS" >/dev/null
+for scheme in SnipSnap SnipSnapiOS; do
+    test_group=--mac-only
+    [[ "$scheme" != SnipSnapiOS ]] || test_group=--ios-only
+    for summary_failure in YES NO; do
+        if SNIP_SNAP_TEST_FAILURE="$scheme" SNIP_SNAP_TEST_SUMMARY_FAILURE="$summary_failure" run_tests "$test_group"; then
+            print -u2 "Test runner hid a $scheme test failure while reporting it."
+            exit 1
+        else
+            [[ $? == 65 ]]
+        fi
+        /usr/bin/grep -F 'xcrun:xcresulttool get test-results summary --path ' "$SNIP_SNAP_TEST_CALLS" >/dev/null || {
+            print -u2 "Test runner did not report the $scheme failure summary."
+            exit 1
+        }
+    done
 done
 
 for missing_file in \

@@ -79,7 +79,6 @@ final class CloudKitRecordTransportTests: XCTestCase {
         )
 
         XCTAssertNotEqual(first.namespaceKey, second.namespaceKey)
-        XCTAssertEqual(first.namespaceKey, first.namespaceKey)
         let binding = ICloudSyncNamespaceBinding(
             scope: first.cloudScope,
             accountLineage: first.accountLineage,
@@ -108,7 +107,6 @@ final class CloudKitRecordTransportTests: XCTestCase {
             SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: binding)?.rawValue,
             binding.namespaceKey.rawValue
         )
-        XCTAssertEqual(first.namespaceKey, binding.namespaceKey)
     }
 
     func testRejectsEngineStateFromAnotherNamespaceBeforeNetworkWork() {

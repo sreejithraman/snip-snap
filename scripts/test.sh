@@ -81,7 +81,7 @@ elif [[ "$run_common_tests" == YES ]]; then
 fi
 
 if [[ "$run_ios_app_tests" == YES ]]; then
-    xcodebuild \
+    if xcodebuild \
         -project "$repo_dir/SnipSnap.xcodeproj" \
         -scheme SnipSnapiOS \
         -configuration Debug \
@@ -91,7 +91,15 @@ if [[ "$run_ios_app_tests" == YES ]]; then
         SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER= \
         -parallel-testing-enabled NO \
         -only-testing:SnipSnapiOSTests \
-        test
+        test; then
+        :
+    else
+        test_status=$?
+        for result in "$derived_data/ios/Logs/Test/"*.xcresult(N); do
+            xcrun xcresulttool get test-results summary --path "$result" || true
+        done
+        exit "$test_status"
+    fi
 
     snip_snap_check_ios_bundle \
         "$derived_data/ios/Build/Products/Debug-iphonesimulator/Snip Snap iOS.app"

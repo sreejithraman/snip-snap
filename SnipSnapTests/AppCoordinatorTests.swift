@@ -1414,7 +1414,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testCoordinatorKeepsTheExactPanelWindow() throws {
+    func testComposerExpansionOnlyChangesTheAttachedPanelWindow() throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let model = AppModel(library: repository)
         let settings = ShortcutSettings()
@@ -1427,9 +1427,14 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         let editor = NSWindow()
 
         coordinator.attachPanelWindow(panel)
+        let panelFrame = panel.frame
+        let editorFrame = editor.frame
 
-        XCTAssertTrue(coordinator.isPanelWindow(panel))
-        XCTAssertFalse(coordinator.isPanelWindow(editor))
+        coordinator.updatePanelComposerExpansion(44)
+
+        XCTAssertEqual(panel.frame.height, panelFrame.height + 44)
+        XCTAssertEqual(panel.frame.maxY, panelFrame.maxY)
+        XCTAssertEqual(editor.frame, editorFrame)
     }
 
     @MainActor
