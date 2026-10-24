@@ -6,6 +6,26 @@ import SnipSnapCore
 import XCTest
 
 final class CloudAppAccountOwnershipTests: XCTestCase {
+  func testUnboundLocalStoreDoesNotWaitForCloudAccountLookup() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("LocalReadiness-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+    let source = try await persistence.activeLibrary()
+    let account = OwnerAccountSource()
+    let server = FakeCloudServer()
+    let lifecycle = SnipSnapICloudSyncLifecycle(rootURL: root, sourceLibrary: source,
+      syncModeStore: SnipSyncModeStore(persistence), cloudScope: "private", accountLineage: "account-a",
+      accountStateSource: account, ownerName: "owner",
+      controlTransport: FakeCloudControlTransport(server: server),
+      makeRecordTransport: { FakeCloudRecordTransport(server: server, namespace: $0.namespace) },
+      makeDescriptor: { CloudCollectionDescriptor.fresh(ownerName: "owner") })
+    let handler = lifecycle.makeAccountCacheHandler(operationGate: AsyncOperationGate())
+    let notice = try await handler.refreshAppleAccountNotice()
+    XCTAssertNil(notice)
+    let lookups = await account.lookupCount()
+    XCTAssertEqual(lookups, 0, "An unbound local library does not require a remote account check.")
+  }
+
   func testAccountHandlerIsReadyBeforeOptInWithoutOpeningAnotherModeStore() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("CloudOwnerBeforeOptIn-\(UUID())")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -215,7 +235,9 @@ private struct Fixture: Sendable {
 
 private actor OwnerAccountSource: ICloudAccountStateSource {
   var state: ICloudAccountState = .available(accountLineage: "account-a")
-  func currentAccountState() -> ICloudAccountState { state }
+  private var lookups = 0
+  func currentAccountState() -> ICloudAccountState { lookups += 1; return state }
+  func lookupCount() -> Int { lookups }
   func set(_ state: ICloudAccountState) { self.state = state }
 }
 

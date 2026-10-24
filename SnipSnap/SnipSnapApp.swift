@@ -170,6 +170,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     private var mainPanel: SnipSnapPanel?
     private var isFlushingBeforeTermination = false
     private let cliRequests: SnipCLIRequestStore
+    private let cliLifecycle: SnipCLIAppLifecycle
     private let shareListCatalogPublisher: ShareListCatalogPublisher?
     private lazy var cliApplicationHandler: SnipCLIApplicationHandler = {
         let updater = updaterController
@@ -199,9 +200,16 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         ).first.map(SnipSnapAppGroupContainer.cloudAttachmentCacheRootURL(inCachesDirectory:))
         let syncModeRootURL = LocalSnipStorePaths(storeURL: libraryStoreURL).rootDirectory
             .appendingPathComponent("SyncMode", isDirectory: true)
-        cliRequests = SnipCLIRequestStore(
+        let cliRequestStore = SnipCLIRequestStore(
             rootURL: LocalSnipStorePaths(storeURL: libraryStoreURL).rootDirectory
         )
+        cliRequests = cliRequestStore
+        let cliLifecycle = SnipCLIAppLifecycle(store: cliRequestStore, instance: SnipCLIAppInstance(
+            pid: ProcessInfo.processInfo.processIdentifier,
+            launchDate: NSRunningApplication.current.launchDate ?? .distantPast,
+            applicationURL: Bundle.main.bundleURL
+        ))
+        self.cliLifecycle = cliLifecycle
 #if DEBUG
         let initializeSyncModeStore =
             ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1"
@@ -294,14 +302,8 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
 #else
         updateSettingsVisible = updateChecksEnabled
 #endif
-        let cliRequestStore = cliRequests
         let reloadActiveLibrary: SyncedContentSettingsModel.DeleteCompletionAction = {
-            guard let session = cloudServices.syncSession else { return }
-            try await cliRequestStore.suspendActiveScope()
-            let active = try await session.activeLibrary()
-            try await Self.replaceActiveLibrary(
-                active, model: model, cliRequests: cliRequestStore
-            )
+            try await cliLifecycle.refresh()
         }
         let performSync: @MainActor @Sendable (Bool) async -> Void = { retry in
             guard let session = cloudServices.syncSession else { return }
@@ -385,7 +387,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         }
         let lifecycleScheduleAction: SnipSnapCloudLifecycleHooks.SyncAction = {
             await scheduleAction()
-            await model.clipboardHistory.syncNow()
+            model.clipboardHistory.requestSync()
         }
         cloudLifecycleHooks = SnipSnapCloudLifecycleHooks(
             syncWhenPossible: lifecycleScheduleAction
@@ -461,17 +463,30 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         )
         coordinator.attachPanelWindow(panel)
         coordinator.start()
-        Task { [cloudLifecycleHooks, accountNoticeModel, shareListCatalogPublisher] in
+        Task {
             do {
-                try await cliRequests.suspendActiveScope()
-                await model.reload()
-                shareListCatalogPublisher?.enqueue(model.lists, force: true)
-                try await cliRequests.pruneAbandoned()
-                await cloudLifecycleHooks.run()
-                await self.restoreCLIAvailabilityIfNeeded()
-                await accountNoticeModel?.refresh()
+                try await cliLifecycle.start(reconcile: { [self] in
+                    try await accountNoticeModel?.refreshCheckingAccount(notifyActiveLibraryChange: false)
+                    if let cloudSyncSession {
+                        let active = try await cloudSyncSession.activeLibrary()
+                        // An uncertain account must never expose a cloud-bound library.
+                        if active.recoveryScope != nil, accountNoticeModel?.notice == .paused {
+                            throw SnipCLIAppReadinessError.unavailable
+                        }
+                        await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+                    } else {
+                        await model.reload()
+                    }
+                    shareListCatalogPublisher?.enqueue(model.lists, force: true)
+                    try await cliRequests.pruneAbandoned()
+                    return model.cliScopeToken
+                }, scheduleSync: { [cloudLifecycleHooks] in
+                    await cloudLifecycleHooks.run()
+                })
+            } catch is CancellationError {
+                // Normal termination cancels an unfinished startup check.
             } catch {
-                model.presentError(error)
+                if !isFlushingBeforeTermination { model.presentError(error) }
             }
         }
         if let cloudSyncSession {
@@ -490,8 +505,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                await self.cloudLifecycleHooks.run()
-                await self.accountNoticeModel?.refresh()
+                await self.reloadActiveLibrary()
             }
         }
         cliRequestObserver = DistributedNotificationCenter.default().addObserver(
@@ -525,53 +539,23 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         guard mainPanel != nil else { return }
-        Task { [cloudLifecycleHooks, accountNoticeModel, shareListCatalogPublisher] in
-            if cloudSyncSession != nil {
-                do { try await cliRequests.suspendActiveScope() }
-                catch { model.presentError(error) }
-            }
-            shareListCatalogPublisher?.enqueue(model.lists, force: true)
-            await cloudLifecycleHooks.run()
-            await accountNoticeModel?.refresh()
-            await self.restoreCLIAvailabilityIfNeeded()
-        }
-    }
-
-    private static func replaceActiveLibrary(
-        _ active: SnipSnapCloudActiveLibrary,
-        model: AppModel,
-        cliRequests: SnipCLIRequestStore
-    ) async throws {
-        try await cliRequests.suspendActiveScope()
-        await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
-        try await cliRequests.publishActiveScopeToken(model.cliScopeToken)
+        Task { await self.reloadActiveLibrary() }
     }
 
     private func reloadActiveLibrary() async {
-        guard let cloudSyncSession else { return }
+        guard !isFlushingBeforeTermination else { return }
         do {
-            try await cliRequests.suspendActiveScope()
-            let active = try await cloudSyncSession.activeLibrary()
-            try await Self.replaceActiveLibrary(
-                active, model: model, cliRequests: cliRequests
-            )
+            try await cliLifecycle.refresh()
+        } catch is CancellationError {
         } catch {
-            model.presentError(error)
+            if !isFlushingBeforeTermination { model.presentError(error) }
         }
     }
 
     private func restoreCLIAvailabilityIfNeeded() async {
-        let published = try? await cliRequests.activeScopeToken()
-        guard published != model.cliScopeToken else { return }
-        if cloudSyncSession != nil {
-            await reloadActiveLibrary()
-            return
-        }
-        do {
-            try await cliRequests.publishActiveScopeToken(model.cliScopeToken)
-        } catch {
-            model.presentError(error)
-        }
+        let ready = try? await cliRequests.appReadiness()
+        guard ready?.scopeToken != model.cliScopeToken else { return }
+        await reloadActiveLibrary()
     }
 
     private func processPendingCLIRequests() async {
@@ -638,6 +622,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isFlushingBeforeTermination else { return .terminateLater }
         isFlushingBeforeTermination = true
+        cliLifecycle.beginTermination()
         if let cloudAccountObserver {
             NotificationCenter.default.removeObserver(cloudAccountObserver)
             self.cloudAccountObserver = nil
@@ -647,7 +632,9 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         cliCleanupTask?.cancel()
         cliCleanupTask = nil
         coordinator.savePanelWindowFrame(using: AppWindowDefaults.frameAutosaveName)
-        Task { @MainActor [model] in
+        Task { @MainActor [self] in
+            do { try await cliLifecycle.stop() }
+            catch { model.presentError(error) }
             model.flushComposerDrafts()
             await model.clipboardHistory.flushPersistence()
             sender.reply(toApplicationShouldTerminate: true)

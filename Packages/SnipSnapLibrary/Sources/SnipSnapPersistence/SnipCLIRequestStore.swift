@@ -10,6 +10,9 @@ public actor SnipCLIRequestStore {
   private var isProcessing = false
   private var needsRescan = false
   private var didExcludeRootFromBackup = false
+  private var appInstance: SnipCLIAppInstance?
+  private var appSessionEnded = false
+  private var readinessRevision = UUID()
 
   public init(rootURL: URL) {
     paths = Paths(rootURL: rootURL)
@@ -17,28 +20,90 @@ public actor SnipCLIRequestStore {
 
   public func publishActiveScopeToken(_ token: String) throws {
     try withLock {
+      if let appInstance {
+        guard !appSessionEnded, try readAppInstance() == appInstance else {
+          throw SnipCLIAppReadinessError.unavailable
+        }
+      }
+      // Termination may cancel the lifecycle while this task waits for the lock.
+      try Task.checkCancellation()
       try DurableFile.write(Data(token.utf8), to: paths.activeScopeURL)
+      if let appInstance {
+        try DurableFile.write(try Self.encoder.encode(
+          SnipCLIAppReadiness(instance: appInstance, scopeToken: token)
+        ), to: paths.readinessURL)
+      } else {
+        try removeIfPresent(paths.readinessURL)
+      }
     }
+  }
+
+  /// Called by the main app before initialization. Old launch markers cannot grant admission.
+  public func beginAppSession(_ instance: SnipCLIAppInstance) throws {
+    guard !appSessionEnded else { throw SnipCLIAppReadinessError.unavailable }
+    try withLock {
+      try removeIfPresent(paths.readinessURL)
+      try removeIfPresent(paths.activeScopeURL)
+      try DurableFile.write(try Self.encoder.encode(instance), to: paths.appInstanceURL)
+    }
+    appInstance = instance
+  }
+
+  public func endAppSession() throws {
+    appSessionEnded = true
+    try withLock {
+      guard let appInstance, try readAppInstance() == appInstance else { return }
+      try removeIfPresent(paths.readinessURL)
+      try removeIfPresent(paths.appInstanceURL)
+      try DurableFile.syncDirectory(paths.root)
+    }
+  }
+
+  public func appReadiness() throws -> SnipCLIAppReadiness? {
+    try withLock { try readAppReadiness() }
   }
 
   /// A missing marker denies commands until the app publishes the active library.
   public func suspendActiveScope() throws {
     try withLock {
-      guard FileManager.default.fileExists(atPath: paths.activeScopeURL.path) else { return }
-      try FileManager.default.removeItem(at: paths.activeScopeURL)
+      if let appInstance {
+        guard !appSessionEnded, try readAppInstance() == appInstance else { return }
+      }
+      readinessRevision = UUID()
+      try removeIfPresent(paths.readinessURL)
+      try removeIfPresent(paths.activeScopeURL)
       try DurableFile.syncDirectory(paths.root)
     }
+  }
+
+  public func beginReadinessCheck() throws -> UUID {
+    try suspendActiveScope()
+    return readinessRevision
+  }
+
+  /// A later suspension invalidates a check even when the library scope stays the same.
+  public func publishActiveScopeToken(_ token: String, ifUnchangedSince revision: UUID) throws -> Bool {
+    guard revision == readinessRevision, !appSessionEnded else { return false }
+    try publishActiveScopeToken(token)
+    return true
   }
 
   public func activeScopeToken() throws -> String? {
     try withLock { try readScopeToken() }
   }
 
-  public func enqueue(_ request: SnipCLIRequest) throws -> SnipCLIRequestState {
+  public func enqueue(
+    _ request: SnipCLIRequest, readiness: SnipCLIAppReadiness? = nil
+  ) throws -> SnipCLIRequestState {
     try withLock {
       pruneExpiredFiles()
       guard request.scopeToken == (try readScopeToken()) else {
         throw SnipCLIRequestError.scopeChanged
+      }
+      if let readiness {
+        guard try readAppReadiness() == readiness else {
+          throw SnipCLIAppReadinessError.unavailable
+        }
       }
       if let receipt = try readReceipt(request.requestID) {
         guard receipt.visibleScopeToken == request.scopeToken else {
@@ -309,6 +374,26 @@ public actor SnipCLIRequestStore {
     return String(data: try Data(contentsOf: paths.activeScopeURL), encoding: .utf8)
   }
 
+  private func readAppInstance() throws -> SnipCLIAppInstance? {
+    guard FileManager.default.fileExists(atPath: paths.appInstanceURL.path) else { return nil }
+    return try Self.decoder.decode(SnipCLIAppInstance.self, from: Data(contentsOf: paths.appInstanceURL))
+  }
+
+  private func readAppReadiness() throws -> SnipCLIAppReadiness? {
+    guard FileManager.default.fileExists(atPath: paths.readinessURL.path) else { return nil }
+    let ready = try Self.decoder.decode(SnipCLIAppReadiness.self, from: Data(contentsOf: paths.readinessURL))
+    guard ready.instance == (try readAppInstance()), ready.scopeToken == (try readScopeToken()) else {
+      return nil
+    }
+    return ready
+  }
+
+  private func removeIfPresent(_ url: URL) throws {
+    if FileManager.default.fileExists(atPath: url.path) {
+      try FileManager.default.removeItem(at: url)
+    }
+  }
+
   private func currentReceipt(_ id: UUID) throws -> SnipCLIReceipt? {
     guard let receipt = try readReceipt(id) else { return nil }
     let url = paths.receiptURL(id)
@@ -407,6 +492,8 @@ public actor SnipCLIRequestStore {
     var receiptsRootURL: URL { root.appendingPathComponent("Receipts", isDirectory: true) }
     var lockURL: URL { root.appendingPathComponent("requests.lock") }
     var activeScopeURL: URL { root.appendingPathComponent("active-scope") }
+    var appInstanceURL: URL { root.appendingPathComponent("app-instance.json") }
+    var readinessURL: URL { root.appendingPathComponent("ready-app.json") }
     func pendingURL(_ id: UUID) -> URL {
       pendingRootURL.appendingPathComponent("\(id.uuidString).json")
     }

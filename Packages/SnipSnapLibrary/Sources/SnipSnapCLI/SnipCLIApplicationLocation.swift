@@ -2,11 +2,44 @@ import AppKit
 import Foundation
 import SnipSnapPersistence
 
+struct SnipCLIAppProcess: Sendable {
+  let pid: Int32
+  let launchDate: Date
+  let applicationURL: URL
+}
+
+struct SnipCLIApplicationRuntime: Sendable {
+  var applications: @Sendable (String) async -> [SnipCLIAppProcess]
+  var launch: @Sendable (URL?, String) async throws -> Void
+  var wait: @Sendable () async throws -> Void
+
+  static let live = Self(
+    applications: { bundleID in
+      NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).compactMap {
+        guard !$0.isTerminated, let date = $0.launchDate, let url = $0.bundleURL else { return nil }
+        return SnipCLIAppProcess(pid: $0.processIdentifier, launchDate: date, applicationURL: url)
+      }
+    },
+    launch: { applicationURL, bundleID in
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+      process.arguments = applicationURL.map { ["-g", $0.path] } ?? ["-g", "-b", bundleID]
+      process.standardOutput = FileHandle.nullDevice
+      process.standardError = FileHandle.nullDevice
+      try process.run()
+      process.waitUntilExit()
+      guard process.terminationStatus == 0 else { throw SnipSnapCLIError.appUnavailable }
+    },
+    wait: { try await Task.sleep(for: .milliseconds(50)) }
+  )
+}
+
 /// Resolve the app and its store together, including a symlinked Homebrew CLI.
 struct SnipCLIApplicationLocation {
   let applicationURL: URL?
   let rootURL: URL
   let canLaunch: Bool
+  private let allowsUnhostedStore: Bool
 
   init(
     executableURL: URL,
@@ -42,6 +75,8 @@ struct SnipCLIApplicationLocation {
     let overridden = environment["SNIP_SNAP_STORE_PATH"].flatMap { $0.isEmpty ? nil : $0 }
     canLaunch = environment["SNIP_SNAP_CLI_NO_LAUNCH"] != "1"
       && (overridden == nil || embeddedPath == overridden)
+    allowsUnhostedStore = applicationURL == nil && overridden != nil
+      && environment["SNIP_SNAP_CLI_NO_LAUNCH"] == "1"
   }
 
   private static func info(at applicationURL: URL) -> [String: Any]? {
@@ -51,28 +86,36 @@ struct SnipCLIApplicationLocation {
     return info
   }
 
-  func launchIfNeeded(store: SnipCLIRequestStore) async throws {
+  func launchIfNeeded(
+    store: SnipCLIRequestStore, runtime: SnipCLIApplicationRuntime = .live,
+    timeout: Duration = .seconds(10)
+  ) async throws -> SnipCLIAppReadiness? {
     let bundleID = applicationURL.flatMap(Self.info)?["CFBundleIdentifier"] as? String
       ?? "world.sree.snipsnap"
-    let isRunning = !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
-    if try await store.activeScopeToken() != nil, isRunning || !canLaunch { return }
-    guard canLaunch else { throw SnipSnapCLIError.appUnavailable }
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-    if let applicationURL {
-      process.arguments = ["-g", applicationURL.path]
-    } else {
-      process.arguments = ["-g", "-b", "world.sree.snipsnap"]
+    func currentReadiness() async throws -> SnipCLIAppReadiness? {
+      guard let ready = try await store.appReadiness() else { return nil }
+      if let applicationURL,
+        ready.instance.applicationPath != applicationURL.resolvingSymlinksInPath().standardizedFileURL.path {
+        return nil
+      }
+      let applications = await runtime.applications(bundleID)
+      guard applications.contains(where: {
+        $0.pid == ready.instance.pid && $0.launchDate == ready.instance.launchDate
+          && $0.applicationURL.resolvingSymlinksInPath().standardizedFileURL.path == ready.instance.applicationPath
+      }) else { return nil }
+      return ready
     }
-    process.standardOutput = FileHandle.nullDevice
-    process.standardError = FileHandle.nullDevice
-    try process.run()
-    process.waitUntilExit()
-    guard process.terminationStatus == 0 else { throw SnipSnapCLIError.appUnavailable }
-    let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+    if let ready = try await currentReadiness() { return ready }
+    // Standalone, explicitly isolated test hosts retain their existing scope-only seam.
+    // A bundled CLI always requires its current app, even with automatic launch disabled.
+    if allowsUnhostedStore, try await store.appReadiness() == nil,
+      try await store.activeScopeToken() != nil { return nil }
+    guard canLaunch else { throw SnipSnapCLIError.appUnavailable }
+    try await runtime.launch(applicationURL, bundleID)
+    let deadline = ContinuousClock.now.advanced(by: timeout)
     while ContinuousClock.now < deadline {
-      if try await store.activeScopeToken() != nil { return }
-      try await Task.sleep(for: .milliseconds(50))
+      if let ready = try await currentReadiness() { return ready }
+      try await runtime.wait()
     }
     throw SnipSnapCLIError.appUnavailable
   }
