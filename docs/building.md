@@ -425,8 +425,8 @@ Set the next planned marketing version in a normal reviewed change:
 ./scripts/set-release.sh 0.5.0
 ```
 
-This updates `release.json` and the public Xcode setting. It does not change a
-build counter. Protected CI generates that number when it makes a beta.
+This updates `Config/release.json` and the public Xcode setting. It does not
+change a build counter. Protected CI generates that number when it makes a beta.
 
 Official releases use the team from `Local.xcconfig` or
 `SNIP_SNAP_DEVELOPMENT_TEAM`. They need these environment variables:

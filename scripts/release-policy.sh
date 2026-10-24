@@ -194,7 +194,7 @@ release_policy_preflight() {
     local mode="${3:-release}"
     local build_number="$4"
 
-    release_policy_load_release "$repo_dir/release.json" "$build_number" || return 1
+    release_policy_load_release "$repo_dir/Config/release.json" "$build_number" || return 1
     release_policy_require_project_versions \
         "$repo_dir/Config/Shared.xcconfig" || return 1
     case "$mode" in

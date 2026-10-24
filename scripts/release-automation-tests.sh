@@ -242,7 +242,7 @@ command = shell.map { |argument| argument == "{0}" ? command_file : argument }
 outputs = File.join(root, "outputs")
 
 def prepare(command, repo, outputs, version, settings_version = version)
-  File.write(File.join(repo, "release.json"), %({"version":"#{version}"}\n))
+  File.write(File.join(repo, "Config", "release.json"), %({"version":"#{version}"}\n))
   File.write(File.join(repo, "Config", "Shared.xcconfig"),
              "MARKETING_VERSION = #{settings_version}\nCURRENT_PROJECT_VERSION = 1\n")
   File.write(outputs, "")
@@ -511,6 +511,7 @@ done
 [[ -f "$ci_repo/Config/keep.txt" ]] || fail_test "CI cleanup removed an unrelated file"
 
 /usr/bin/ruby "$script_dir/release-notes-tests.rb"
+/usr/bin/ruby "$script_dir/changelog-tests.rb"
 /usr/bin/ruby "$script_dir/testflight-notes-tests.rb"
 
 print "Release automation checks passed."

@@ -190,7 +190,7 @@ update_root="$test_root/update"
 /bin/mkdir -p "$update_root/scripts" "$update_root/Config"
 /bin/cp "$script_dir/release-policy.sh" "$update_root/scripts/release-policy.sh"
 /bin/cp "$script_dir/set-release.sh" "$update_root/scripts/set-release.sh"
-print '{"version":"0.1.0"}' > "$update_root/release.json"
+print '{"version":"0.1.0"}' > "$update_root/Config/release.json"
 print 'MARKETING_VERSION = 0.1.0' > "$update_root/Config/Shared.xcconfig"
 print 'CURRENT_PROJECT_VERSION = 1' >> "$update_root/Config/Shared.xcconfig"
 assert_succeeds "$update_root/scripts/set-release.sh" 0.2.0

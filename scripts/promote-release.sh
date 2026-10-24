@@ -125,6 +125,7 @@ elif git ls-remote --exit-code "https://github.com/$release_repo.git" \
     fail "$stable_tag exists without a matching GitHub release"
 fi
 
+notes_relative_dir="docs/releases"
 notes_name="Snip-Snap-$version.md"
 mac_notes_name="Snip-Snap-$version-mac.txt"
 ios_notes_name="Snip-Snap-$version-ios.txt"
@@ -136,7 +137,7 @@ mac_notes="$temp_root/notes/$mac_notes_name"
 ios_notes="$temp_root/notes/$ios_notes_name"
 for published_note in "$notes_name" "$mac_notes_name" "$ios_notes_name"; do
     release_automation_require_matching_notes_file \
-        "$release_checkout/$published_note" "$temp_root/notes/$published_note"
+        "$release_checkout/$notes_relative_dir/$published_note" "$temp_root/notes/$published_note"
 done
 if (( release_exists )); then
     release_automation_require_matching_notes_body "$gh_tool" "$stable_tag" "$release_repo" "$stable_notes"
@@ -180,10 +181,12 @@ release_automation_require_appcast_channel \
     "$promoted_appcast" "$version" "$build_number" default
 /usr/bin/ruby "$script_dir/release-notes.rb" appcast \
     "$promoted_appcast" "$version" "$build_number" "$mac_notes"
+/bin/mkdir -p "$release_checkout/$notes_relative_dir"
 /bin/cp "$promoted_appcast" "$release_checkout/appcast.xml"
-/bin/cp "$stable_notes" "$release_checkout/$notes_name"
-/bin/cp "$mac_notes" "$release_checkout/$mac_notes_name"
-/bin/cp "$ios_notes" "$release_checkout/$ios_notes_name"
+/bin/cp "$stable_notes" "$release_checkout/$notes_relative_dir/$notes_name"
+/bin/cp "$mac_notes" "$release_checkout/$notes_relative_dir/$mac_notes_name"
+/bin/cp "$ios_notes" "$release_checkout/$notes_relative_dir/$ios_notes_name"
+/usr/bin/ruby "$script_dir/release-notes.rb" changelog "$release_checkout"
 
 checksum="$(/usr/bin/awk 'NR == 1 { print $1 }' "$zip_checksum_file")"
 cask_path="$tap_checkout/Casks/snip-snap.rb"
@@ -213,7 +216,8 @@ fi
 "$brew_tool" style --cask "$cask_path"
 
 if [[ -n "$(git -C "$release_checkout" status --short)" ]]; then
-    git -C "$release_checkout" add appcast.xml "$notes_name" "$mac_notes_name" "$ios_notes_name"
+    git -C "$release_checkout" add appcast.xml docs/CHANGELOG.md "$notes_relative_dir/$notes_name" \
+        "$notes_relative_dir/$mac_notes_name" "$notes_relative_dir/$ios_notes_name"
     git -C "$release_checkout" commit -m "Promote Snip Snap $version"
     git -C "$release_checkout" push origin main
 fi

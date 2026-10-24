@@ -53,7 +53,7 @@ jobs:
         run: |
           set -euo pipefail
           source scripts/release-policy.sh
-          release_policy_load_manifest release.json
+          release_policy_load_manifest Config/release.json
           release_policy_require_project_versions Config/Shared.xcconfig
           release_policy_require_new_version "$PWD"
           version="$RELEASE_VERSION"
