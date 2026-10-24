@@ -58,18 +58,25 @@ final class AppleAccountNoticeModel {
     }
 
     func refresh() async {
-        guard let handler, !isResolving else { return }
+        guard !isResolving else { return }
         do {
-            let priorNotice = notice
-            let refreshedNotice = try await handler.refreshAppleAccountNotice()
-            notice = refreshedNotice
-            if Self.changesActiveLibrary(priorNotice) || Self.changesActiveLibrary(refreshedNotice) {
-                try await activeLibraryChangeAction?()
-            }
-            errorMessage = nil
+            try await refreshCheckingAccount()
         } catch {
             // Keep the last safe state. Account lookup failures must not prompt removal.
         }
+    }
+
+    /// Readiness must observe lookup failures and adopt the checked library before publishing.
+    func refreshCheckingAccount(notifyActiveLibraryChange: Bool = true) async throws {
+        guard let handler else { return }
+        let priorNotice = notice
+        let refreshedNotice = try await handler.refreshAppleAccountNotice()
+        notice = refreshedNotice
+        if notifyActiveLibraryChange,
+           Self.changesActiveLibrary(priorNotice) || Self.changesActiveLibrary(refreshedNotice) {
+            try await activeLibraryChangeAction?()
+        }
+        errorMessage = nil
     }
 
     private static func changesActiveLibrary(_ notice: AppleAccountNotice?) -> Bool {

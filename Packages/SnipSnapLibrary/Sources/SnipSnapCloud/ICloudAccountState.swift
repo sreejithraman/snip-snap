@@ -129,6 +129,9 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
     private func refreshNotice() async throws -> AppleAccountNotice? {
         if let configuration {
             guard let persistence = try await configuration.persistence() else { return nil }
+            let local = try await persistence.snapshot()
+            guard local.accountIsolation?.namespace != nil || local.transition?.namespace != nil
+                || local.activeStore.namespace != nil else { return nil }
             let account = await configuration.accountStateSource.currentAccountState()
             let storage = try await persistence.snapshot()
             guard let binding = storage.accountIsolation?.namespace

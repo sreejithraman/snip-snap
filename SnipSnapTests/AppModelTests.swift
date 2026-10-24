@@ -250,6 +250,26 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testReadinessAccountCheckPropagatesFailureAndDefersLibraryAdoption() async throws {
+        let failing = MacAppleAccountCacheHandlerProbe(failsRefresh: true)
+        let failedModel = AppleAccountNoticeModel(notice: .signedOut, handler: failing)
+        do {
+            try await failedModel.refreshCheckingAccount(notifyActiveLibraryChange: false)
+            XCTFail("Readiness must observe account lookup failure.")
+        } catch MacAccountProbeError.failed {}
+        XCTAssertEqual(failedModel.notice, .signedOut)
+
+        let handler = MacAppleAccountCacheHandlerProbe(notices: [.signedOut])
+        let rebinds = AccountLibraryRebindCounter()
+        let model = AppleAccountNoticeModel(handler: handler,
+            activeLibraryChangeAction: { await rebinds.record() })
+        try await model.refreshCheckingAccount(notifyActiveLibraryChange: false)
+        XCTAssertEqual(model.notice, .signedOut)
+        let count = await rebinds.value()
+        XCTAssertEqual(count, 0, "The readiness owner adopts the checked library before publishing.")
+    }
+
+    @MainActor
     func testAppModelAcceptsAnInMemoryLibraryWithoutProductionStorage() async {
         let saved = Snip(content: "Already here", origin: .quickEntry)
         let library = InMemorySnipLibrary(snips: [saved])
@@ -3385,12 +3405,15 @@ private actor MacAppleAccountCacheHandlerProbe: AppleAccountCacheHandling {
     private var received: [AppleAccountCacheChoice] = []
     private var notices: [AppleAccountNotice?]
     private var noticeReads = 0
+    private let failsRefresh: Bool
 
-    init(notices: [AppleAccountNotice?] = []) {
+    init(notices: [AppleAccountNotice?] = [], failsRefresh: Bool = false) {
         self.notices = notices
+        self.failsRefresh = failsRefresh
     }
 
     func refreshAppleAccountNotice() async throws -> AppleAccountNotice? {
+        if failsRefresh { throw MacAccountProbeError.failed }
         defer { noticeReads += 1 }
         return notices.indices.contains(noticeReads) ? notices[noticeReads] : nil
     }
@@ -3402,6 +3425,8 @@ private actor MacAppleAccountCacheHandlerProbe: AppleAccountCacheHandling {
     func choices() -> [AppleAccountCacheChoice] { received }
     func refreshCount() -> Int { noticeReads }
 }
+
+private enum MacAccountProbeError: Error { case failed }
 
 private actor AccountLibraryRebindCounter {
     private var count = 0

@@ -215,12 +215,17 @@ enum SnipCLIService {
   static func execute(
     _ request: SnipCLIRequest,
     store: SnipCLIRequestStore,
+    readiness: SnipCLIAppReadiness? = nil,
     timeout: Duration = .seconds(5)
   ) async throws -> SnipCLIReceipt {
-    let activeScope = try await store.activeScopeToken()
+    let activeScope: String?
+    if let readiness { activeScope = readiness.scopeToken }
+    else { activeScope = try await store.activeScopeToken() }
     let request = request.scopeToken == nil ? request.scoped(to: activeScope) : request
     guard request.scopeToken != nil else { throw SnipSnapCLIError.appUnavailable }
-    let initial = try await store.enqueue(request)
+    let initial: SnipCLIRequestState
+    do { initial = try await store.enqueue(request, readiness: readiness) }
+    catch SnipCLIAppReadinessError.unavailable { throw SnipSnapCLIError.appUnavailable }
     if case .completed(let receipt) = initial {
       return try await matchingCompletion(receipt, request: request, store: store)
     }

@@ -98,8 +98,8 @@ struct SnipSnapCLI {
         let location = try applicationLocation()
         let store = SnipCLIRequestStore(rootURL: location.rootURL)
         do {
-          try await location.launchIfNeeded(store: store)
-          let receipt = try await SnipCLIService.execute(request, store: store)
+          let readiness = try await location.launchIfNeeded(store: store)
+          let receipt = try await SnipCLIService.execute(request, store: store, readiness: readiness)
           try await SnipCLIService.requireActiveScope(receipt.visibleScopeToken, store: store)
           try SnipCLIPrinter.printReceipt(receipt, json: options.json)
         } catch {
