@@ -174,3 +174,17 @@ public enum SnipRecoveryChoice: Equatable, Sendable {
   case editSnip(Snip)
   case editList(SnipList)
 }
+
+/// The reviewed recovery and its linked current version, checked in the same
+/// storage transaction that resolves the recovery.
+public struct SnipRecoveryExpectation: Equatable, Sendable {
+  public let record: SnipRecoveryRecord
+  public let currentSnip: Snip?
+  public let currentList: SnipList?
+
+  public init(record: SnipRecoveryRecord, currentSnip: Snip? = nil, currentList: SnipList? = nil) {
+    self.record = record
+    self.currentSnip = currentSnip
+    self.currentList = currentList
+  }
+}

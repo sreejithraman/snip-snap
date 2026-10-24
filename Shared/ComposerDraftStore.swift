@@ -135,6 +135,12 @@ final class ComposerDraftStore {
         set(attachments, for: listID)
     }
 
+    func replaceAttachments(_ urls: [URL], for listID: UUID) {
+        let previous = Set(draft(for: listID).attachments)
+        set(urls, for: listID)
+        removeTemporaryFilesIfUnused(previous.subtracting(urls))
+    }
+
     func addTemporary(_ url: URL, to listID: UUID) {
         temporaryAttachments.insert(url)
         add([url], to: listID)

@@ -106,10 +106,38 @@ extension SwiftDataSyncModePersistence {
     return try await libraryForTransition(storeID: manifest.activeStoreID).archive()
   }
 
+  fileprivate func managedRecoverySnapshot(
+    in scope: SnipRecoveryScope
+  ) async throws -> SnipRecoverySnapshot {
+    await finishRecoveryQuarantines()
+    try await readHook()
+    return try await libraryForTransition(storeID: manifest.activeStoreID)
+      .recoverySnapshot(in: scope)
+  }
+
   fileprivate func managedPerform(
     _ command: SnipLibraryCommand,
     sortedBy: SnipSortMode
   ) async throws -> SnipLibraryUpdate {
+    try await managedWrite { library in
+      try await library.perform(command, sortedBy: sortedBy)
+    }
+  }
+
+  fileprivate func managedResolveRecovery(
+    _ id: UUID,
+    in scope: SnipRecoveryScope,
+    choice: SnipRecoveryChoice,
+    expectation: SnipRecoveryExpectation?
+  ) async throws -> SnipLibrarySnapshot {
+    try await managedWrite { library in
+      try await library.resolveRecovery(id, in: scope, choice: choice, expectation: expectation)
+    }
+  }
+
+  private func managedWrite<Value: Sendable>(
+    _ operation: @Sendable (SwiftDataSnipLibrary) async throws -> Value
+  ) async throws -> Value {
     await finishRecoveryQuarantines()
     guard !writeAdmissionInProgress, manifest.writeReservation == nil else {
       throw SnipLibraryError.modeTransitionInProgress
@@ -135,13 +163,12 @@ extension SwiftDataSyncModePersistence {
     try commit(reserved)
     try await writeHook(.afterRevisionReserved)
     do {
-      let update = try await libraryForTransition(storeID: activeID)
-        .perform(command, sortedBy: sortedBy)
+      let value = try await operation(libraryForTransition(storeID: activeID))
       try await writeHook(.beforeReservationCleared)
       var completed = manifest
       completed.writeReservation = nil
       try commit(completed)
-      return update
+      return value
     } catch {
       guard error is SnipLibraryError || error is SyncModePersistenceError else {
         // Test crash hooks model process loss. Leave the durable reservation for reopen.
@@ -318,6 +345,39 @@ private actor ModeManagedSnipLibrary: SnipLibrary {
     let update = try await persistence.managedPerform(command, sortedBy: sortMode)
     lastKnown = update.snapshot
     return update
+  }
+
+  func recoverySnapshot(in scope: SnipRecoveryScope) async throws -> SnipRecoverySnapshot {
+    let attempt = await persistence.beginManagedReadAttempt()
+    let recovery: SnipRecoverySnapshot
+    do {
+      recovery = try await persistence.managedRecoverySnapshot(in: scope)
+    } catch {
+      await persistence.recordStoreReadFailure(at: attempt)
+      throw error
+    }
+    try await persistence.clearRecoveredStoreReadFailure(at: attempt)
+    return recovery
+  }
+
+  func resolveRecovery(
+    _ id: UUID,
+    in scope: SnipRecoveryScope,
+    choice: SnipRecoveryChoice
+  ) async throws -> SnipLibrarySnapshot {
+    try await resolveRecovery(id, in: scope, choice: choice, expectation: nil)
+  }
+
+  func resolveRecovery(
+    _ id: UUID,
+    in scope: SnipRecoveryScope,
+    choice: SnipRecoveryChoice,
+    expectation: SnipRecoveryExpectation?
+  ) async throws -> SnipLibrarySnapshot {
+    let snapshot = try await persistence.managedResolveRecovery(
+      id, in: scope, choice: choice, expectation: expectation)
+    lastKnown = snapshot
+    return snapshot
   }
 
   func previewTransferSnapshot(revision: UInt64) async throws -> SnipLibraryTransferSnapshot {

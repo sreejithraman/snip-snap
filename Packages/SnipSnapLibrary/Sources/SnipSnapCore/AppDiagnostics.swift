@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import OSLog
 
@@ -300,6 +301,12 @@ public struct AppDiagnosticRecorder: Sendable {
   }
 }
 
+/// Describes the rendered, bounded export, including its header and retained sync health.
+public struct AppDiagnosticExportSnapshot: Equatable, Sendable {
+  public let byteCount: Int
+  public let revision: String
+}
+
 /// Creates and clears the bounded, privacy-safe diagnostic file shared from app settings.
 public enum AppDiagnosticsExport {
   public static func makeShareableFile() throws -> URL {
@@ -308,6 +315,15 @@ public enum AppDiagnosticsExport {
 
   public static func clear() throws {
     try AppDiagnosticLiveSink.shared.clear()
+  }
+
+  public static func snapshot() throws -> AppDiagnosticExportSnapshot {
+    try AppDiagnosticLiveSink.shared.snapshot()
+  }
+
+  /// Returns false without clearing when the rendered export has changed.
+  public static func clear(ifRevision revision: String) throws -> Bool {
+    try AppDiagnosticLiveSink.shared.clear(ifRevision: revision)
   }
 }
 
@@ -392,6 +408,14 @@ private final class AppDiagnosticLiveSink: @unchecked Sendable {
 
   func clear() throws {
     try store.clear()
+  }
+
+  func snapshot() throws -> AppDiagnosticExportSnapshot {
+    try store.snapshot()
+  }
+
+  func clear(ifRevision revision: String) throws -> Bool {
+    try store.clear(ifRevision: revision)
   }
 }
 
@@ -496,38 +520,70 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
 
   func makeShareableFile() throws -> URL {
     try lock.withLock {
-      try FileManager.default.createDirectory(
-        at: directoryURL,
-        withIntermediateDirectories: true
-      )
-      let lines = combinedEventLines()
-      let health = retainedSyncHealth(from: lines)
-      try persistSyncHealth(health)
-      try bounded(lines, prefix: header).write(to: eventsURL, atomically: true, encoding: .utf8)
-      consumeLegacyEvents()
-      var prefix = header
-      for key in SyncHealthKey.allCases {
-        guard let line = health[key] else { continue }
-        let observation = line.replacingOccurrences(
-          of: " diagnostic_event ",
-          with: " \(key.marker) "
-        ) + "\n"
-        if prefix.utf8.count + observation.utf8.count <= maxBytes {
-          prefix += observation
-        }
-      }
-      let contents = bounded(lines, prefix: prefix)
-      try contents.write(to: shareURL, atomically: true, encoding: .utf8)
-      return shareURL
+      try makeShareableFileLocked()
     }
   }
 
   func clear() throws {
     try lock.withLock {
-      for url in [syncHealthURL, eventsURL, legacyEventsURL, shareURL]
-      where FileManager.default.fileExists(atPath: url.path) {
-        try FileManager.default.removeItem(at: url)
+      try clearLocked()
+    }
+  }
+
+  func snapshot() throws -> AppDiagnosticExportSnapshot {
+    try lock.withLock {
+      try snapshotLocked()
+    }
+  }
+
+  func clear(ifRevision revision: String) throws -> Bool {
+    try lock.withLock {
+      // Append and export use this same lock. No event can arrive between comparison
+      // and removal, and the helpers never acquire the nonrecursive lock again.
+      guard try snapshotLocked().revision == revision else { return false }
+      try clearLocked()
+      return true
+    }
+  }
+
+  private func snapshotLocked() throws -> AppDiagnosticExportSnapshot {
+    let data = try Data(contentsOf: makeShareableFileLocked())
+    return AppDiagnosticExportSnapshot(
+      byteCount: data.count,
+      revision: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    )
+  }
+
+  private func makeShareableFileLocked() throws -> URL {
+    try FileManager.default.createDirectory(
+      at: directoryURL,
+      withIntermediateDirectories: true
+    )
+    let lines = combinedEventLines()
+    let health = retainedSyncHealth(from: lines)
+    try persistSyncHealth(health)
+    try bounded(lines, prefix: header).write(to: eventsURL, atomically: true, encoding: .utf8)
+    consumeLegacyEvents()
+    var prefix = header
+    for key in SyncHealthKey.allCases {
+      guard let line = health[key] else { continue }
+      let observation = line.replacingOccurrences(
+        of: " diagnostic_event ",
+        with: " \(key.marker) "
+      ) + "\n"
+      if prefix.utf8.count + observation.utf8.count <= maxBytes {
+        prefix += observation
       }
+    }
+    let contents = bounded(lines, prefix: prefix)
+    try contents.write(to: shareURL, atomically: true, encoding: .utf8)
+    return shareURL
+  }
+
+  private func clearLocked() throws {
+    for url in [syncHealthURL, eventsURL, legacyEventsURL, shareURL]
+    where FileManager.default.fileExists(atPath: url.path) {
+      try FileManager.default.removeItem(at: url)
     }
   }
 

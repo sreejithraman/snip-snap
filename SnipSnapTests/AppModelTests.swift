@@ -3047,6 +3047,43 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testComposerDraftReplacementKeepsTemporaryFilesReferencedByOtherDraftsAndActiveSaves() throws {
+        let directory = try storeURL().deletingLastPathComponent()
+        let retained = directory.appendingPathComponent("retained.txt")
+        let shared = directory.appendingPathComponent("shared.txt")
+        let saving = directory.appendingPathComponent("saving.txt")
+        let omitted = directory.appendingPathComponent("omitted.txt")
+        let bytes = Data("Temporary draft bytes".utf8)
+        for url in [retained, shared, saving, omitted] {
+            try bytes.write(to: url)
+        }
+        let store = ComposerDraftStore(defaults: defaults(), textDefaultsKey: "drafts")
+        let listID = UUID()
+        let otherListID = UUID()
+        store.addTemporary(saving, to: listID)
+        let snapshot = store.beginSave(listID: listID)
+        for url in [retained, shared, omitted] {
+            store.addTemporary(url, to: listID)
+        }
+        store.add([shared], to: otherListID)
+
+        store.replaceAttachments([retained], for: listID)
+
+        XCTAssertEqual(store.draft(for: listID).attachments, [retained])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: omitted.path))
+        for url in [retained, shared, saving] {
+            XCTAssertEqual(try Data(contentsOf: url), bytes)
+        }
+        store.finishSave(snapshot, saved: false)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: saving.path))
+        store.clear(listID: otherListID)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: shared.path))
+        XCTAssertEqual(try Data(contentsOf: retained), bytes)
+        store.clear(listID: listID)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: retained.path))
+    }
+
+    @MainActor
     func testComposerDraftRetainsTemporaryFilesUntilAnActiveSaveFinishes() throws {
         let directory = try storeURL().deletingLastPathComponent()
         let temporary = directory.appendingPathComponent("capture.png")
@@ -3278,9 +3315,10 @@ private actor GatedDiscardUserActions: SnipLibraryUserActions {
     func delete(
         ids: Set<UUID>,
         token: UUID,
+        expectation: SnipLibraryExpectation?,
         sortedBy sortMode: SnipSortMode
     ) async throws -> SnipLibraryUpdate {
-        try await base.delete(ids: ids, token: token, sortedBy: sortMode)
+        try await base.delete(ids: ids, token: token, expectation: expectation, sortedBy: sortMode)
     }
 
     func restoreDeletion(

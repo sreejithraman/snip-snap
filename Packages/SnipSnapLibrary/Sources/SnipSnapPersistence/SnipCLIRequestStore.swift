@@ -41,7 +41,7 @@ public actor SnipCLIRequestStore {
         throw SnipCLIRequestError.scopeChanged
       }
       if let receipt = try readReceipt(request.requestID) {
-        guard receipt.scopeToken == request.scopeToken else {
+        guard receipt.visibleScopeToken == request.scopeToken else {
           throw SnipCLIRequestError.scopeChanged
         }
         guard receipt.matches(request) else { throw SnipCLIRequestError.conflictingRequestID }
@@ -77,14 +77,17 @@ public actor SnipCLIRequestStore {
     try withLock { pruneExpiredFiles() }
   }
 
-  public func state(for requestID: UUID) throws -> SnipCLIRequestState {
+  public func state(
+    for requestID: UUID, waitingFor request: SnipCLIRequest? = nil
+  ) throws -> SnipCLIRequestState {
     try withLock {
       let scopeToken = try readScopeToken()
       if let receipt = try currentReceipt(requestID),
-         receipt.scopeToken == scopeToken { return .completed(receipt) }
+         receipt.visibleScopeToken == scopeToken { return .completed(receipt) }
       let processingURL = paths.processingURL(requestID)
       if let processing = try readProcessing(at: processingURL) {
-        guard processing.scopeToken == scopeToken else { return .missing }
+        guard processing.scopeToken == scopeToken
+          || isAwaitedTransition(processing, request: request) else { return .missing }
         return processingState(processing, at: processingURL)
       }
       let pendingURL = paths.pendingURL(requestID)
@@ -99,19 +102,26 @@ public actor SnipCLIRequestStore {
   }
 
   /// Prevents a command that was never claimed by the app from running later.
-  public func cancelPending(_ requestID: UUID) throws -> SnipCLIRequestState {
+  public func cancelPending(
+    _ requestID: UUID, waitingFor request: SnipCLIRequest? = nil
+  ) throws -> SnipCLIRequestState {
     try withLock {
       let scopeToken = try readScopeToken()
       if let receipt = try readReceipt(requestID),
-         receipt.scopeToken == scopeToken { return .completed(receipt) }
+         receipt.visibleScopeToken == scopeToken { return .completed(receipt) }
       let processingURL = paths.processingURL(requestID)
       if let processing = try readProcessing(at: processingURL) {
-        guard processing.scopeToken == scopeToken else { return .missing }
+        guard processing.scopeToken == scopeToken
+          || isAwaitedTransition(processing, request: request) else { return .missing }
         return processingState(processing, at: processingURL)
       }
       let pending = paths.pendingURL(requestID)
       guard FileManager.default.fileExists(atPath: pending.path) else { return .missing }
-      guard try readRequest(at: pending)?.scopeToken == scopeToken else { return .missing }
+      guard let queued = try readRequest(at: pending),
+        queued.scopeToken == scopeToken
+          || (request?.action.allowsScopeTransition == true
+            && queued.requestID == request?.requestID
+            && queued.fingerprint == request?.fingerprint) else { return .missing }
       try FileManager.default.removeItem(at: pending)
       try DurableFile.syncDirectory(paths.pendingRootURL)
       return .missing
@@ -122,7 +132,7 @@ public actor SnipCLIRequestStore {
   public func releaseReceipt(_ requestID: UUID) throws {
     try withLock {
       guard let receipt = try readReceipt(requestID),
-            receipt.scopeToken == (try readScopeToken()) else { return }
+            receipt.visibleScopeToken == (try readScopeToken()) else { return }
       switch receipt.action.receiptPolicy {
       case .transientRead:
         try FileManager.default.removeItem(at: paths.receiptURL(requestID))
@@ -215,8 +225,15 @@ public actor SnipCLIRequestStore {
 
   private func finish(_ receipt: SnipCLIReceipt, requestID: UUID) throws {
     try withLock {
-      let stored = receipt.status == .success
-        && receipt.action.receiptPolicy != .compactWrite ? receipt : receipt.compacted()
+      let stored: SnipCLIReceipt
+      if case .extended = receipt.action {
+        // Deliver actionable failures once. Release or retention cleanup removes
+        // their user content along with the rest of the extended result.
+        stored = receipt
+      } else {
+        stored = receipt.status == .success
+          && receipt.action.receiptPolicy != .compactWrite ? receipt : receipt.compacted()
+      }
       try DurableFile.write(try Self.encoder.encode(stored), to: paths.receiptURL(requestID))
       try FileManager.default.removeItem(at: paths.processingURL(requestID))
       try DurableFile.syncDirectory(paths.processingRootURL)
@@ -269,6 +286,16 @@ public actor SnipCLIRequestStore {
       return .uncertain
     }
     return errno == EWOULDBLOCK ? .processing : .uncertain
+  }
+
+  /// The original caller may follow its claimed transition while the active scope is
+  /// suspended or replaced. Status by UUID alone still hides another scope's marker.
+  private func isAwaitedTransition(
+    _ marker: ProcessingMarker, request: SnipCLIRequest?
+  ) -> Bool {
+    guard let request, request.action.allowsScopeTransition else { return false }
+    return marker.requestID == request.requestID
+      && marker.fingerprint == request.fingerprint && marker.scopeToken == request.scopeToken
   }
 
   private func readReceipt(_ id: UUID) throws -> SnipCLIReceipt? {

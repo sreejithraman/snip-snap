@@ -1,4 +1,5 @@
 import CloudKit
+import CryptoKit
 import Foundation
 import SnipSnapCore
 import SnipSnapPersistence
@@ -222,7 +223,7 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
 
     public func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] {
         try await operationGate.withLease {
-            let values = try await self.withAttachmentCoordinator { try await $0.transferStates() }
+            let values = try await self.withAttachmentCoordinator { coordinator, _ in try await coordinator.transferStates() }
             return values.mapValues { value in
                 switch value {
                 case .waitingForUpload, .waitingForMetadata, .waitingForDeletion: .waiting
@@ -235,14 +236,72 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
 
     public func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {
         try await operationGate.withLease {
-            try await self.withAttachmentCoordinator { try await $0.prepare(attachmentID: id, for: use) }
+            try await self.withAttachmentCoordinator { coordinator, _ in try await coordinator.prepare(attachmentID: id, for: use) }
         }
     }
 
     public func clearDownloadedFiles() async throws {
         try await operationGate.withLease {
-            try await self.withAttachmentCoordinator { try await $0.clearDownloads() }
+            try await self.withAttachmentCoordinator { coordinator, _ in try await coordinator.clearDownloads() }
         }
+    }
+
+    public func downloadedAttachmentCache(in scope: SnipRecoveryScope) async throws -> SyncedAttachmentCacheSnapshot {
+        try await operationGate.withLease {
+            try await self.withAttachmentCoordinator { _, source in
+                try await Self.cacheSnapshot(source: source, scope: scope)
+            }
+        }
+    }
+
+    public func clearDownloadedFiles(ifRevision revision: String, in scope: SnipRecoveryScope) async throws -> Bool {
+        try await operationGate.withLease {
+            try await self.withAttachmentCoordinator { coordinator, source in
+                let current = try await Self.cacheSnapshot(source: source, scope: scope)
+                guard !revision.isEmpty, current.revision == revision else { return false }
+                try await coordinator.clearDownloads()
+                return true
+            }
+        }
+    }
+
+    private struct AttachmentSource: Sendable {
+        let library: SwiftDataSnipLibrary
+        let storeID: UUID
+        let namespaceKey: CloudSyncNamespaceKey
+    }
+
+    private static func cacheSnapshot(
+        source: AttachmentSource?, scope: SnipRecoveryScope
+    ) async throws -> SyncedAttachmentCacheSnapshot {
+        guard let source, source.namespaceKey.rawValue == scope.rawValue else {
+            throw SyncModePersistenceError.namespaceMismatch
+        }
+        let snapshot = try await source.library.cloudAttachmentStorageSnapshot(namespaceKey: source.namespaceKey)
+        var values = ["store": source.storeID.uuidString, "namespace": source.namespaceKey.rawValue]
+        let states = Dictionary(uniqueKeysWithValues: snapshot.publications.map { publication in
+            let id = publication.metadata.attachmentID
+            values["publication.\(id)"] = String(publication.revision)
+            let state: SyncedAttachmentTransferState = switch publication.transferState {
+            case .waitingForUpload, .waitingForMetadata, .waitingForDeletion: .waiting
+            case .available: .available
+            case .failed: .failed
+            }
+            return (id, state)
+        })
+        for entry in snapshot.cacheEntries {
+            let prefix = "cache.\(entry.attachmentID)"
+            values[prefix + ".payload"] = entry.payloadIdentity.key
+            values[prefix + ".bytes"] = String(entry.byteCount)
+            values[prefix + ".accessed"] = String(entry.lastAccessedAt.timeIntervalSinceReferenceDate)
+            values[prefix + ".file"] = entry.fileURL.lastPathComponent
+            values[prefix + ".present"] = String(FileManager.default.fileExists(atPath: entry.fileURL.path))
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let revision = SHA256.hash(data: try encoder.encode(values))
+            .map { String(format: "%02x", $0) }.joined()
+        return SyncedAttachmentCacheSnapshot(states: states, revision: revision)
     }
 
     private func requireCoordinator() async throws -> ICloudSyncModeCoordinator {
@@ -281,10 +340,10 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
     }
 
     private func withAttachmentCoordinator<Value: Sendable>(
-        _ operation: @escaping @Sendable (any CloudAttachmentTransferring) async throws -> Value
+        _ operation: @escaping @Sendable (any CloudAttachmentTransferring, AttachmentSource?) async throws -> Value
     ) async throws -> Value {
         if let attachmentCoordinator, configuration == nil {
-            return try await operation(attachmentCoordinator)
+            return try await operation(attachmentCoordinator, nil)
         }
         guard let configuration,
               let persistence = try await configuration.persistence()
@@ -300,10 +359,14 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         try await requireCurrentSource(storage, persistence: persistence)
         let lease = try await persistence.activeCloudMutationLease(storeID: storage.activeStore.id)
         return try await lease.run {
+            try await self.requireCurrentSource(storage, persistence: persistence)
             let attachment = try await self.attachmentCoordinator(
                 persistence: persistence, storeID: storage.activeStore.id,
                 binding: binding, descriptor: descriptor, configuration: configuration)
-            return try await operation(attachment)
+            try await self.requireCurrentSource(storage, persistence: persistence)
+            let source = AttachmentSource(library: try await persistence.libraryForTransition(storeID: storage.activeStore.id),
+                storeID: storage.activeStore.id, namespaceKey: binding.namespaceKey)
+            return try await operation(attachment, source)
         }
     }
 
@@ -332,7 +395,8 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         persistence: SwiftDataSyncModePersistence
     ) async throws {
         let current = try await persistence.snapshot()
-        guard current.activeStore.id == storage.activeStore.id,
+        guard current.activeStore.kind == storage.activeStore.kind,
+              current.activeStore.id == storage.activeStore.id,
               current.activeStore.namespace == storage.activeStore.namespace,
               current.accountIsolation == storage.accountIsolation,
               current.transition == storage.transition

@@ -37,7 +37,8 @@ into your work.
 
 The Homebrew cask installs the `snipsnap` CLI with the app. `add` saves text to
 Inbox or a named list and marks its origin as Agent. Snip and list commands
-require the running app. Use `snipsnap --help` for the full syntax.
+run through the app, which the installed CLI starts when needed. Use
+`snipsnap --help` for the full syntax and [CLI guide](docs/cli.md) for workflows.
 
 ```sh
 snipsnap lists create Research
@@ -73,7 +74,7 @@ For list rename and delete, copy `listRevision` from the latest
 invalidates that revision; reread after a conflict.
 List create and rename return `resultListID` in JSON, including on a retry.
 The CLI asks the running app to process reads and edits. The app updates
-the UI and schedules iCloud sync after writes. If the app is closed, a new
+the UI and schedules iCloud sync after writes. If the app cannot start, a new
 command is not left queued. Compact write results and uncertain request markers
 remain on disk so reusing an old request UUID cannot run a mutation twice. Successful
 read results are removed after display.

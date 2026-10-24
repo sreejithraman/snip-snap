@@ -171,6 +171,22 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     private var isFlushingBeforeTermination = false
     private let cliRequests: SnipCLIRequestStore
     private let shareListCatalogPublisher: ShareListCatalogPublisher?
+    private lazy var cliApplicationHandler: SnipCLIApplicationHandler = {
+        let updater = updaterController
+        let checksEnabled = updateChecksEnabled
+        return SnipCLIApplicationHandler(
+            model: model, coordinator: coordinator,
+            syncedContentSettings: syncedContentSettings,
+            updates: SnipCLIApplicationUpdates(
+                settings: updateChannelSettings, settingsVisible: updateSettingsVisible,
+                canCheckForUpdates: { checksEnabled && updater.updater.canCheckForUpdates },
+                checkForUpdates: { updater.checkForUpdates(nil) },
+                resetUpdateCycle: { updater.updater.resetUpdateCycleAfterShortDelay() }
+            ),
+            cloudSyncHandler: cloudSyncHandler, accountNoticeModel: accountNoticeModel,
+            panel: { [weak self] in self?.mainPanel }
+        )
+    }()
 
     override init() {
         let isReleaseApp = Bundle.main.bundleIdentifier == "world.sree.snipsnap"
@@ -560,8 +576,14 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
 
     private func processPendingCLIRequests() async {
         guard !isFlushingBeforeTermination else { return }
-        await cliRequests.processPending { [model] request in
+        await cliRequests.processPending { [self] request in
             guard request.scopeToken != nil else { throw SnipCLIRequestError.scopeChanged }
+            if case .extended(.application(let action)) = request.action {
+                guard request.scopeToken == model.cliScopeToken else {
+                    throw SnipCLIRequestError.scopeChanged
+                }
+                return try await cliApplicationHandler.handle(request, action: action)
+            }
             return try await model.handleCLIRequest(request)
         }
     }

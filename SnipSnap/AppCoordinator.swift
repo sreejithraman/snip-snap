@@ -154,6 +154,10 @@ final class AppCoordinator {
         accessibilityPermissions.onBecameGranted = { [weak self] in
             self?.restartShortcuts()
         }
+        model.cliDialogIsPresented = { [weak self] in
+            guard let self else { return false }
+            return panelDialogs.isPresented || !pendingPanelDialogs.isEmpty
+        }
         shortcutRecordingSubscription = ShortcutRecordingState.changes.sink { [weak self] isActive in
             MainActor.assumeIsolated {
                 guard let self, self.hasStarted else { return }
@@ -386,6 +390,51 @@ final class AppCoordinator {
         panelDialogs.active = .idle
     }
 
+    /// CLI completion follows the saved snip, so retries never start a second capture.
+    func captureSelectionForCLI(requestID: UUID, scopeToken: String?) async throws -> Snip {
+        guard !panelDialogs.isPresented else { throw SnipCLIRequestError.editingInProgress }
+        guard accessibilityPermissions.refresh() else {
+            throw SelectionCaptureFailure.accessibilityPermissionRequired
+        }
+        guard let sourceApplication = frontmostExternalApplication() else {
+            throw SelectionCaptureFailure.sourceUnavailable
+        }
+        let listID = model.activeListID
+        let token = model.clipboardHistory.beginSuppression()
+        defer { model.clipboardHistory.endSuppression(token) }
+        let capture: SelectionCapture = try await withCheckedThrowingContinuation { continuation in
+            selectionReader.capture(
+                processID: sourceApplication.processIdentifier,
+                applicationName: sourceApplication.localizedName ?? "Unknown app"
+            ) { continuation.resume(with: $0) }
+        }
+        let staging = await Task.detached(priority: .userInitiated) {
+            Self.writeTemporaryAttachments(capture.attachments, requestID: requestID)
+        }.value
+        let temporaryAttachments = try staging.get()
+        defer {
+            if let directory = temporaryAttachments.directory {
+                try? FileManager.default.removeItem(at: directory)
+            }
+        }
+        return try await model.performCLIMutation(scopeToken: scopeToken) {
+            guard self.model.editingID == nil else { throw SnipCLIRequestError.editingInProgress }
+            let update = try await self.model.session.performLibraryCommand(
+                .add(content: capture.content, origin: .selection, source: capture.source,
+                     listID: listID, attachmentURLs: temporaryAttachments.urls,
+                     requestID: requestID, now: Date()),
+                sortedBy: self.model.sortMode
+            )
+            guard let snip = update.snapshot.snips.first(where: { $0.requestID == requestID }) else {
+                throw SnipCLIOutcomeUncertain()
+            }
+            return (update, snip)
+        }
+    }
+
+    /// Installed by the panel's SwiftUI environment, which owns the Settings scene.
+    var openSettingsAction: (@MainActor () -> Void)?
+
     func captureSelection() {
         guard !panelDialogs.isPresented else { return }
         guard accessibilityPermissions.refresh() else {
@@ -559,6 +608,10 @@ final class AppCoordinator {
         onDismiss: @escaping () -> Void,
         @ViewBuilder content: () -> Content
     ) {
+        guard !model.isCLIInteractionReserved else {
+            onDismiss()
+            return
+        }
         let request = PendingPanelDialog(
             id: id,
             title: title,
@@ -667,7 +720,7 @@ final class AppCoordinator {
         _ panel: NSSavePanel,
         completion: @escaping (NSApplication.ModalResponse) -> Void
     ) -> Bool {
-        guard !panelDialogs.isPresented else { return false }
+        guard !model.isCLIInteractionReserved, !panelDialogs.isPresented else { return false }
         guard let panelWindow else { return false }
         switch model.appearance {
         case .system:
