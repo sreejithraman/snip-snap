@@ -294,8 +294,10 @@ package actor CloudFullSyncCoordinator {
           try await transport.confirmApplied(batch.batchID, outboundAdmission: store.outboundAdmission())
         }
       } catch {
-        diagnostics.record(.failure(operation: diagnosticOperation(for: observed),
-          error: error, visibility: .background))
+        if !CloudSyncDiagnostics.isCancellation(error) {
+          diagnostics.record(.failure(operation: diagnosticOperation(for: observed),
+            error: error, visibility: .background))
+        }
         throw error
       }
       if let observed {
@@ -361,7 +363,9 @@ package actor CloudFullSyncCoordinator {
       try await store.applyStaged(batch.id)
       try await transport.confirmApplied(batch.id, outboundAdmission: store.outboundAdmission())
     } catch {
-      diagnostics.record(.failure(operation: operation, error: error, visibility: .background))
+      if !CloudSyncDiagnostics.isCancellation(error) {
+        diagnostics.record(.failure(operation: operation, error: error, visibility: .background))
+      }
       throw error
     }
     recordCommittedBatch(batch)

@@ -110,7 +110,11 @@ snipsnap settings show --json
 snipsnap settings set appearance dark --if-revision REVISION
 snipsnap sync status --json
 snipsnap sync clipboard status --json
-snipsnap diagnostics export ./diagnostics.json
+snipsnap diagnostics status --json
+snipsnap diagnostics logs --range 7d --errors-only --limit 100
+snipsnap diagnostics logs --range 24h --json
+snipsnap diagnostics export ./diagnostics.txt --range 7d
+snipsnap diagnostics recording off --if-revision REVISION
 snipsnap app status --json
 snipsnap app show
 snipsnap app select-list Research
@@ -136,6 +140,35 @@ account-notice resolution. They use the app's existing iCloud transitions and
 retry behavior. `sync disable --use-current-cache` explicitly chooses this
 device's current copy. Account removal requires `--yes`. Read status after a
 transition before issuing library commands.
+
+`diagnostics logs` reads local history directly, even when the app is closed or
+unresponsive. It does not launch the app or wait for iCloud. By default it prints
+the newest 200 events from the last 24 hours, in chronological order. Pass
+`--range 7d`, `--errors-only`, or `--limit N` (1–2000) to narrow the result. Error
+filtering happens before the event limit. Plain output is report text; `--json`
+returns it in `result.application.values.log`, with `returned-events` and
+`truncated` values alongside it. Reports retain privacy-safe metadata and explain
+the available history and omissions. This command creates no export file.
+Repeated identical errors can appear as one record with a count and first/last
+timestamps. `--errors-only` selects failed operations; it excludes routine events
+and cancellation notices.
+If another process holds the diagnostic store lock, fetching returns a bounded
+busy error (`diagnostics_busy` in JSON) instead of waiting indefinitely. Retry the
+read shortly; it does not change history or restart the app.
+
+The CLI reads the selected app's logs. `SNIP_SNAP_APP_PATH` selects a Dev app or
+another installation. An arbitrary `SNIP_SNAP_STORE_PATH` without a selected app
+requires an explicit `SNIP_SNAP_DIAGNOSTICS_DIRECTORY`; it never falls back to
+production logs. A bundled CLI also accepts a matching embedded Dev store path.
+These overrides are local environment settings, not required contributor
+configuration.
+
+Diagnostics exports default to the last 24 hours. Pass `--range 24h` or `--range 7d`
+to choose the requested window. Reports identify the actual available history and
+any omissions. `diagnostics recording on|off` uses the revision from `diagnostics
+status`; stopping recording keeps existing history. This setting affects app-owned
+local history, not Apple's system logs. Diagnostic files contain structured
+operational events, not snip content, and are never uploaded automatically.
 
 Diagnostics and downloaded-attachment cache clearing each require their own
 status revision and `--yes`. `updates check` opens the app's updater when it is

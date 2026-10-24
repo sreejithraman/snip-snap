@@ -162,23 +162,46 @@ final class SnipCLIApplicationHandler {
                 message: accountNoticeModel.errorMessage, extendedResult: .application(cliSyncResult()),
                 resultingScopeToken: model.cliScopeToken)
         case .diagnosticsStatus:
-            return receipt(try cliDiagnosticsResult())
-        case .exportDiagnostics(let path):
+            return receipt(try await cliDiagnosticsResult())
+        case .diagnosticLogs(let range, let limit, let errorsOnly):
+            let result = try await Task.detached(priority: .utility) {
+                SnipCLIApplicationResult(diagnosticLog: try AppDiagnosticsExport.readLog(
+                    range: range, limit: limit, errorsOnly: errorsOnly
+                ))
+            }.value
+            return receipt(result)
+        case .setDiagnosticRecording(let enabled, let revision):
+            let saved = try await Task.detached(priority: .utility) {
+                try AppDiagnosticsExport.setRecordingEnabled(enabled, ifRevision: revision)
+            }.value
+            guard saved else {
+                throw cliApplicationError("The state changed. Read its status again and use the latest revision with a new request ID.")
+            }
+            return receipt(try await cliDiagnosticsResult(), message: "Updated diagnostic recording.")
+        case .exportDiagnostics(let path, let range):
             guard !path.isEmpty else { throw cliApplicationError("Choose a diagnostic export path.") }
-            let data = try Data(contentsOf: AppDiagnosticsExport.makeShareableFile())
             let destination = URL(fileURLWithPath: path)
             let access = destination.startAccessingSecurityScopedResource()
             defer { if access { destination.stopAccessingSecurityScopedResource() } }
-            // An export never overwrites an existing file.
-            try data.write(to: destination, options: .withoutOverwriting)
-            return receipt(SnipCLIApplicationResult(values: ["bytes": String(data.count)]),
+            let byteCount = try await Task.detached(priority: .utility) {
+                let source = try AppDiagnosticsExport.makeShareableFile(range: range ?? .last24Hours)
+                defer { AppDiagnosticsExport.removeShareableFile(source) }
+                let data = try Data(contentsOf: source)
+                // An export never overwrites an existing file.
+                try data.write(to: destination, options: .withoutOverwriting)
+                return data.count
+            }.value
+            return receipt(SnipCLIApplicationResult(values: ["bytes": String(byteCount)]),
                            message: "Exported diagnostics.")
         case .clearDiagnostics(let revision, let confirmed):
             guard confirmed else { throw cliApplicationError("Clearing diagnostics requires --yes.") }
-            guard try AppDiagnosticsExport.clear(ifRevision: revision) else {
+            let cleared = try await Task.detached(priority: .utility) {
+                try AppDiagnosticsExport.clear(ifRevision: revision)
+            }.value
+            guard cleared else {
                 throw cliApplicationError("The state changed. Read its status again and use the latest revision with a new request ID.")
             }
-            return receipt(try cliDiagnosticsResult(), message: "Cleared diagnostics.")
+            return receipt(try await cliDiagnosticsResult(), message: "Cleared diagnostics.")
         case .attachmentCacheStatus:
             return receipt(try await cliAttachmentCacheResult(request))
         case .clearAttachmentCache(let revision, let confirmed):
@@ -394,12 +417,15 @@ final class SnipCLIApplicationHandler {
         ])
     }
 
-    private func cliDiagnosticsResult() throws -> SnipCLIApplicationResult {
-        let snapshot = try AppDiagnosticsExport.snapshot()
-        return SnipCLIApplicationResult(values: [
-            "bytes": String(snapshot.byteCount),
-            "content-revision": snapshot.revision,
-        ], revision: snapshot.revision)
+    private func cliDiagnosticsResult() async throws -> SnipCLIApplicationResult {
+        try await Task.detached(priority: .utility) {
+            let snapshot = try AppDiagnosticsExport.snapshot()
+            return SnipCLIApplicationResult(values: [
+                "bytes": String(snapshot.byteCount),
+                "content-revision": snapshot.revision,
+                "recording-enabled": String(try AppDiagnosticsExport.readRecordingEnabled()),
+            ], revision: snapshot.revision)
+        }.value
     }
 
     private func cliAttachmentCacheResult(_ request: SnipCLIRequest) async throws -> SnipCLIApplicationResult {

@@ -60,7 +60,8 @@ enum SnipSnapCLIParser {
 
     Add marks a snip as Agent. Add and update read standard input when TEXT is
     omitted or '-'. Commands start the installed app when needed. Take SECONDS from
-    list/show --json. Delete requires --yes.
+    list/show --json. Diagnostic log reads work without starting the app.
+    Delete requires --yes.
     Take the snip delete TOKEN from show/list --json and the list TOKEN from
     'lists show UUID --json'. Every command except status accepts --request-id UUID
     before or after arguments. Use it when you may need to retry, and check
@@ -96,6 +97,18 @@ struct SnipSnapCLI {
         )
         requestID = request.requestID
         let location = try applicationLocation()
+        if case .extended(.application(.diagnosticLogs(let range, let limit, let errorsOnly))) = request.action {
+          let identity = try location.diagnosticIdentity()
+          let report = try AppDiagnosticsExport.readLog(
+            bundleIdentifier: identity.bundleIdentifier,
+            appVersion: identity.appVersion, appBuild: identity.appBuild,
+            range: range, limit: limit, errorsOnly: errorsOnly
+          )
+          let receipt = SnipCLIReceipt(request: request, status: .success,
+            extendedResult: .application(.init(diagnosticLog: report)))
+          try SnipCLIPrinter.printReceipt(receipt, json: options.json)
+          return
+        }
         let store = SnipCLIRequestStore(rootURL: location.rootURL)
         do {
           let readiness = try await location.launchIfNeeded(store: store)

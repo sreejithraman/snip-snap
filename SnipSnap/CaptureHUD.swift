@@ -1,12 +1,15 @@
 import AppKit
+import SnipSnapCore
 import SwiftUI
 
 @MainActor
 final class CaptureHUDController {
     private let panel: NSPanel
     private var dismissWorkItem: DispatchWorkItem?
+    private let diagnostics: AppDiagnosticRecorder
 
-    init() {
+    init(diagnostics: AppDiagnosticRecorder = .live) {
+        self.diagnostics = diagnostics
         panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 310, height: 58),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -25,6 +28,9 @@ final class CaptureHUDController {
         // With no selection, many apps leave the clipboard unchanged on Copy.
         // The reader reports that as a timeout, so keep both empty outcomes quiet.
         guard failure != .noSelection, failure != .copyTimedOut else { return }
+        if failure != .duplicateSelection {
+            diagnostics.record(.failure(operation: "selection.capture", error: failure, visibility: .user))
+        }
         show(
             message: failure.localizedDescription,
             symbol: failure == .duplicateSelection ? "minus" : "exclamationmark"

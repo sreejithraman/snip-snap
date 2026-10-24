@@ -458,7 +458,9 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         do {
             try await recordSendGate?()
         } catch {
-            diagnostics.record(.failure(operation: "sync.provider", error: error, visibility: .background))
+            if !CloudSyncDiagnostics.isCancellation(error) {
+                diagnostics.record(.failure(operation: "sync.provider", error: error, visibility: .background))
+            }
             return nil
         }
         guard syncEngine === engine, !requiresInitialFetch, !mailbox.blocksRecordProvider,

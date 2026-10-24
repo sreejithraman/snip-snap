@@ -2,7 +2,7 @@ import Foundation
 import SnipSnapCore
 
 enum SnipCLIApplicationParser {
-  static let valueOptions: Set<String> = ["--if-revision"]
+  static let valueOptions: Set<String> = ["--if-revision", "--range", "--limit"]
   static let usage = """
     settings show
     settings set KEY VALUE --if-revision TOKEN
@@ -20,7 +20,9 @@ enum SnipCLIApplicationParser {
       enable and disable require --if-revision TOKEN from sync clipboard status.
     sync account keep|remove --if-revision TOKEN [--yes]
       remove requires --yes; TOKEN comes from sync status.
-    diagnostics status|export PATH|clear --if-revision TOKEN --yes
+    diagnostics status|export PATH [--range 24h|7d]|clear --if-revision TOKEN --yes
+    diagnostics recording on|off --if-revision TOKEN
+    diagnostics logs [--range 24h|7d] [--errors-only] [--limit 1...2000]
     attachments cache status|clear --if-revision TOKEN --yes
       clear tokens come from the corresponding status command.
     app status|show|hide|clipboard|close-search|select-list NAME_OR_UUID|search QUERY|settings
@@ -59,6 +61,14 @@ enum SnipCLIApplicationParser {
       guard let value = try option("--if-revision"), value.count == 64,
         value.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { throw invalid() }
       return value
+    }
+    func diagnosticRange() throws -> AppDiagnosticExportRange? {
+      switch try option("--range") {
+      case nil: nil
+      case "24h": .last24Hours
+      case "7d": .last7Days
+      default: throw invalid()
+      }
     }
     switch command {
     case "settings":
@@ -114,8 +124,23 @@ enum SnipCLIApplicationParser {
       }
     case "diagnostics":
       if args == ["status"] { action = .diagnosticsStatus }
-      else if args.count == 2, args[0] == "export", !args[1].isEmpty {
-        action = .exportDiagnostics(path: URL(fileURLWithPath: args[1]).standardizedFileURL.path)
+      else if args.first == "logs" {
+        let range = try diagnosticRange() ?? .last24Hours
+        let errorsOnly = try flag("--errors-only")
+        let rawLimit = try option("--limit") ?? "200"
+        guard let limit = Int(rawLimit), (1...2_000).contains(limit), args == ["logs"] else {
+          throw invalid()
+        }
+        action = .diagnosticLogs(range: range, limit: limit, errorsOnly: errorsOnly)
+      }
+      else if args.first == "export" {
+        let range = try diagnosticRange()
+        guard args.count == 2, !args[1].isEmpty else { throw invalid() }
+        action = .exportDiagnostics(path: URL(fileURLWithPath: args[1]).standardizedFileURL.path, range: range)
+      } else if args.first == "recording" {
+        let token = try revision()
+        guard args.count == 2, ["on", "off"].contains(args[1]) else { throw invalid() }
+        action = .setDiagnosticRecording(enabled: args[1] == "on", expectedRevision: token)
       } else {
         let token = try revision()
         guard try flag("--yes"), args == ["clear"] else { throw invalid() }

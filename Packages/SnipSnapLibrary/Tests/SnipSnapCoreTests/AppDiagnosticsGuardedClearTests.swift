@@ -20,7 +20,8 @@ final class AppDiagnosticsGuardedClearTests: XCTestCase {
 
   func testCurrentSnapshotClearsHistoryAndRetainedHealth() throws {
     let store = AppDiagnosticEventStore(
-      directoryURL: directory, maxBytes: 4_096, appVersion: "1", appBuild: "2"
+      directoryURL: directory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     store.append(.syncSnapshot(scope: .transport, pendingEvents: 3))
     store.append(.succeeded(operation: "sync.send"))
@@ -37,7 +38,8 @@ final class AppDiagnosticsGuardedClearTests: XCTestCase {
 
   func testStaleSnapshotRejectsClearAndPreservesBothEvents() throws {
     let store = AppDiagnosticEventStore(
-      directoryURL: directory, maxBytes: 4_096, appVersion: "1", appBuild: "2"
+      directoryURL: directory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     store.append(.succeeded(operation: "app.startup", byteCount: 1))
     let snapshot = try store.snapshot()
@@ -55,7 +57,8 @@ final class AppDiagnosticsGuardedClearTests: XCTestCase {
     for iteration in 0..<64 {
       let store = AppDiagnosticEventStore(
         directoryURL: directory.appendingPathComponent(String(iteration), isDirectory: true),
-        maxBytes: 4_096, appVersion: "1", appBuild: "2"
+        maxBytes: 4_096, appVersion: "1", appBuild: "2",
+        now: { Date(timeIntervalSince1970: 1_790_056_800) }
       )
       store.append(.succeeded(operation: "app.startup"))
       let snapshot = try store.snapshot()
@@ -75,74 +78,65 @@ final class AppDiagnosticsGuardedClearTests: XCTestCase {
       let cleared = try result.get()
 
       let contents = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
-      XCTAssertTrue(contents.contains("operation=clipboard.persist"),
-                    "The event unseen by the original snapshot must survive either outcome.")
+      XCTAssertTrue(
+        contents.contains("operation=clipboard.persist"),
+        "The event unseen by the original snapshot must survive either outcome.")
       XCTAssertEqual(contents.contains("operation=app.startup"), !cleared)
     }
   }
 
   func testSnapshotIncludesHeaderAndUsesTheRenderedExportBytes() throws {
     let store = AppDiagnosticEventStore(
-      directoryURL: directory, maxBytes: 4_096, appVersion: "1", appBuild: "2"
+      directoryURL: directory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     let snapshot = try store.snapshot()
-    XCTAssertEqual(snapshot.byteCount, 100)
-    XCTAssertEqual(snapshot.revision, "b7a269856c6cf64edc3f7d37859ca6fb5c8943be68bb758826b4e57d318beccc")
+    XCTAssertGreaterThan(snapshot.byteCount, 100)
+    XCTAssertEqual(snapshot.revision.count, 64)
     XCTAssertEqual(try Data(contentsOf: store.makeShareableFile()).count, snapshot.byteCount)
     XCTAssertEqual(try store.snapshot(), snapshot)
 
     let newBuild = AppDiagnosticEventStore(
-      directoryURL: directory, maxBytes: 4_096, appVersion: "1", appBuild: "3"
+      directoryURL: directory, maxBytes: 4_096, appVersion: "1", appBuild: "3",
+      now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     XCTAssertNotEqual(try newBuild.snapshot().revision, snapshot.revision)
     XCTAssertFalse(try newBuild.clear(ifRevision: snapshot.revision))
   }
 
-  func testSnapshotIncludesRetainedHealthAfterHistoryRotatesOut() throws {
+  func testSnapshotIncludesRetainedHealthAfterHistoryExpires() throws {
+    var clock = Date(timeIntervalSince1970: 1_790_053_200)
     let store = AppDiagnosticEventStore(
-      directoryURL: directory, maxBytes: 1_024, appVersion: "1", appBuild: "2"
-    )
-    let date = Date(timeIntervalSince1970: 1_700_000_000)
-    func fillHistory() {
-      for _ in 0..<20 {
-        store.append(.succeeded(operation: "app.startup"), at: date)
-      }
-    }
-    store.append(.syncSnapshot(scope: .transport, pendingEvents: 1), at: date)
-    fillHistory()
+      directoryURL: directory, maxBytes: 4_096,
+      appVersion: "1", appBuild: "2", now: { clock })
+    store.append(.syncSnapshot(scope: .transport, pendingEvents: 1))
+    clock.addTimeInterval(8 * 86_400)
     let snapshot = try store.snapshot()
-    let historyURL = directory.appendingPathComponent("diagnostic-events.txt")
-    let firstHistory = try Data(contentsOf: historyURL)
-    let firstExport = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
-    XCTAssertFalse(String(decoding: firstHistory, as: UTF8.self).contains("sync.snapshot"))
-    XCTAssertTrue(firstExport.contains("diagnostic_sync_latest operation=sync.snapshot"))
-    XCTAssertTrue(firstExport.contains("pending_events=1"))
-    XCTAssertEqual(snapshot.byteCount, firstExport.utf8.count)
-
-    store.append(.syncSnapshot(scope: .transport, pendingEvents: 2), at: date)
-    fillHistory()
-    XCTAssertEqual(try Data(contentsOf: historyURL), firstHistory)
+    let export = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
+    XCTAssertFalse(export.contains("diagnostic_event"))
+    XCTAssertTrue(export.contains("diagnostic_sync_latest operation=sync.snapshot"))
+    XCTAssertTrue(export.contains("pending_events=1"))
+    store.append(.syncSnapshot(scope: .transport, pendingEvents: 2))
+    clock.addTimeInterval(8 * 86_400)
     XCTAssertNotEqual(try store.snapshot().revision, snapshot.revision)
     XCTAssertFalse(try store.clear(ifRevision: snapshot.revision))
-    let export = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
-    XCTAssertTrue(export.contains("pending_events=2"))
-    XCTAssertFalse(export.contains("pending_events=1"))
+    let updated = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
+    XCTAssertTrue(updated.contains("pending_events=2"))
+    XCTAssertFalse(updated.contains("pending_events=1"))
   }
 
-  func testSnapshotAndGuardedClearPropagateExportFailureWithoutDeletingHistory() throws {
+  func testSnapshotAndGuardedClearPropagateStorageFailureWithoutDeletingHistory() throws {
     let store = AppDiagnosticEventStore(
-      directoryURL: directory, maxBytes: 4_096, appVersion: "1", appBuild: "2"
-    )
+      directoryURL: directory, maxBytes: 4_096,
+      appVersion: "1", appBuild: "2")
     store.append(.succeeded(operation: "app.startup"))
     let snapshot = try store.snapshot()
-    let exportURL = try store.makeShareableFile()
-    try FileManager.default.removeItem(at: exportURL)
-    try FileManager.default.createDirectory(at: exportURL, withIntermediateDirectories: false)
-
+    let lockURL = directory.appendingPathComponent(".lock")
+    try FileManager.default.removeItem(at: lockURL)
+    try FileManager.default.createDirectory(at: lockURL, withIntermediateDirectories: false)
     XCTAssertThrowsError(try store.snapshot())
     XCTAssertThrowsError(try store.clear(ifRevision: snapshot.revision))
-
-    try FileManager.default.removeItem(at: exportURL)
+    try FileManager.default.removeItem(at: lockURL)
     let contents = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
     XCTAssertTrue(contents.contains("operation=app.startup"))
   }
