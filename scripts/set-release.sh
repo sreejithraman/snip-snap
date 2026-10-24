@@ -16,7 +16,7 @@ release_policy_valid_version "$requested_version" || {
     exit 1
 }
 
-release_policy_load_manifest "$repo_dir/release.json"
+release_policy_load_manifest "$repo_dir/Config/release.json"
 current_version="$RELEASE_VERSION"
 
 if release_policy_version_is_greater "$current_version" "$requested_version"; then
@@ -29,7 +29,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-manifest="$repo_dir/release.json"
+manifest="$repo_dir/Config/release.json"
 settings="$repo_dir/Config/Shared.xcconfig"
 new_manifest="$temp_root/release.json"
 new_settings="$temp_root/Shared.xcconfig"

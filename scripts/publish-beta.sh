@@ -37,7 +37,7 @@ generate_beta_appcast() {
         --download-url-prefix "https://github.com/$release_repo/releases/download/$beta_tag/" \
         --link "https://github.com/$release_repo/releases/tag/$beta_tag" \
         --full-release-notes-url \
-            "https://raw.githubusercontent.com/$release_repo/main/$mac_notes_name" \
+            "https://raw.githubusercontent.com/$release_repo/main/$notes_relative_dir/$mac_notes_name" \
         --versions "$build_number" \
         "$target_dir"
     /usr/bin/ruby "$script_dir/release-notes.rb" appcast \
@@ -119,6 +119,7 @@ tap_checkout="$(release_automation_tap_checkout "$brew_tool" "$working_tap_name"
     fail "could not open a working copy of Homebrew tap $tap_name"
 release_policy_require_build_not_older "$release_checkout/appcast.xml"
 
+notes_relative_dir="docs/releases"
 notes_name="Snip-Snap-$version-beta.$build_number.md"
 mac_notes_name="Snip-Snap-$version-beta.$build_number-mac.txt"
 ios_notes_name="Snip-Snap-$version-beta.$build_number-ios.txt"
@@ -133,7 +134,7 @@ if [[ -n "${SNIP_SNAP_RELEASE_NOTES_FILE:-}" ]]; then
 fi
 for published_note in "$notes_name" "$mac_notes_name" "$ios_notes_name"; do
     release_automation_require_matching_notes_file \
-        "$release_checkout/$published_note" "$notes_dir/$published_note"
+        "$release_checkout/$notes_relative_dir/$published_note" "$notes_dir/$published_note"
 done
 
 /bin/cp -p "$release_zip" "$feed_dir/"
@@ -226,12 +227,14 @@ fi
 /bin/cp "$desired_cask" "$cask_path"
 "$brew_tool" style --cask "$cask_path"
 
+/bin/mkdir -p "$release_checkout/$notes_relative_dir"
 /bin/cp "$feed_dir/appcast.xml" "$release_checkout/appcast.xml"
-/bin/cp "$notes_path" "$release_checkout/$notes_name"
-/bin/cp "$mac_notes_path" "$release_checkout/$mac_notes_name"
-/bin/cp "$notes_dir/$ios_notes_name" "$release_checkout/$ios_notes_name"
+/bin/cp "$notes_path" "$release_checkout/$notes_relative_dir/$notes_name"
+/bin/cp "$mac_notes_path" "$release_checkout/$notes_relative_dir/$mac_notes_name"
+/bin/cp "$notes_dir/$ios_notes_name" "$release_checkout/$notes_relative_dir/$ios_notes_name"
 if [[ -n "$(git -C "$release_checkout" status --short)" ]]; then
-    git -C "$release_checkout" add appcast.xml "$notes_name" "$mac_notes_name" "$ios_notes_name"
+    git -C "$release_checkout" add appcast.xml "$notes_relative_dir/$notes_name" \
+        "$notes_relative_dir/$mac_notes_name" "$notes_relative_dir/$ios_notes_name"
     git -C "$release_checkout" commit -m "Publish Snip Snap $version beta $build_number"
     git -C "$release_checkout" push origin main
 fi

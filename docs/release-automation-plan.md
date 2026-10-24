@@ -34,7 +34,7 @@ The workflows:
 
 1. Test the full unsigned matrix once in the candidate workflow.
 2. Check that the tested commit is still current, then validate the planned
-   marketing version from `release.json` against Xcode and published stable
+   marketing version from `Config/release.json` against Xcode and published stable
    tags. Stop before either platform starts if the planned version is not newer
    than the latest stable release or the versions disagree.
 3. Set the build number to the delivery workflow run number plus the migration
@@ -76,6 +76,12 @@ TestFlight receives only the iOS text. Each release also saves separate
 links it in the workflow summary for the existing App Store handoff: paste it
 into What's New when selecting the tested build. Stable promotion does not
 submit App Store metadata or send a release for review.
+
+Published notes live in `docs/releases/`. Stable promotion rebuilds
+`docs/CHANGELOG.md` from the stable feed entries and their archived notes, then
+commits it with the feed and notes. Beta delivery leaves the stable changelog
+alone. The [changelog](CHANGELOG.md) links to each release's full notes; the
+root README links to the changelog.
 
 For local beta publishing, `SNIP_SNAP_RELEASE_NOTES_FILE` overrides the GitHub
 text. The note generator accepts `SNIP_SNAP_MAC_RELEASE_NOTES_FILE` and
@@ -122,7 +128,7 @@ must stop with clear steps when Apple needs that choice.
 After promotion, prepare a follow-up PR for the next planned marketing version
 with `scripts/set-release.sh MAJOR.MINOR.PATCH`, unless `main` already targets a
 newer version. Merge that PR before the next beta delivery. The promotion
-workflow preserves the tested version; it does not advance `release.json`.
+workflow preserves the tested version; it does not advance `Config/release.json`.
 Use the [project release skill](../.agents/skills/snip-snap-release/SKILL.md) to
 carry promotion through this follow-up and to recover failed deliveries.
 

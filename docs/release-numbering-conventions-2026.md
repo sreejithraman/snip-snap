@@ -59,7 +59,7 @@ number, commit, workflow run, checksums, and upload results with each beta.
 
 ## Change from the old policy
 
-Keep only the planned marketing version in `release.json`. Pass the generated
+Keep only the planned marketing version in `Config/release.json`. Pass the generated
 build number to the archive scripts. This removes counter-only pull requests
 while leaving a record in GitHub Actions, TestFlight, Sparkle, and each GitHub
 release.

@@ -69,7 +69,7 @@ done
 }
 
 [[ -n "$requested_build" ]] || fail "pass --build-number with the generated build number"
-release_policy_load_release "$repo_dir/release.json" "$requested_build"
+release_policy_load_release "$repo_dir/Config/release.json" "$requested_build"
 version="$RELEASE_VERSION"
 build_number="$RELEASE_BUILD_NUMBER"
 release_policy_require_project_versions "$repo_dir/Config/Shared.xcconfig"

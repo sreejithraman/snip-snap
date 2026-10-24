@@ -19,7 +19,6 @@ on:
       - "SnipSnapTests/**"
       - "SnipSnap.xcodeproj/**"
       - "scripts/**"
-      - "release.json"
   workflow_dispatch:
 
 permissions:

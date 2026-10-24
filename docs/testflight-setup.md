@@ -201,7 +201,7 @@ has no separate Snip Snap login, so it needs no demo account.
   app gets CloudKit.
 - `scripts/build-matrix.sh` checks iPhone and iPad Simulator builds and confirms
   that the Share extension is embedded.
-- `release.json`, `Config/Shared.xcconfig`, and ADR 0011 establish one planned
+- `Config/release.json`, `Config/Shared.xcconfig`, and ADR 0011 establish one planned
   marketing version. Protected CI generates a rising build number and passes
   the same number to the iOS app, Share extension, and Mac app.
 - `Config/TestFlight.example.entitlements` provides a public production template.
@@ -259,7 +259,7 @@ has no separate Snip Snap login, so it needs no demo account.
    - Only the main app contains CloudKit, and its environment is production.
    - The main app has the production push entitlement; the Share extension does
      not.
-   - The version matches `release.json` and the build matches the workflow's
+   - The version matches `Config/release.json` and the build matches the workflow's
      generated value.
    - Privacy manifests and dSYMs are present.
 6. In Organizer, choose **Distribute App**, **TestFlight & App Store**, automatic

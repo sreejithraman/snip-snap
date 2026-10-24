@@ -10,7 +10,8 @@
 
 <p align="center">
   <a href="https://sree.world/snip-snap">Website</a> ·
-  <a href="https://github.com/sreejithraman/snip-snap/releases/latest">Latest release</a>
+  <a href="https://github.com/sreejithraman/snip-snap/releases/latest">Latest release</a> ·
+  <a href="docs/CHANGELOG.md">Changelog</a>
 </p>
 
 ## Install

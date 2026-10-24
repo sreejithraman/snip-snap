@@ -4,12 +4,12 @@
 
 GitHub, Sparkle, Homebrew, TestFlight, and the signed apps must agree on each
 release. The old policy kept both the marketing version and build number in
-`release.json`. That made each beta need a pull request which changed only a
-counter. A single maintainer should not need to edit that counter by hand.
+the release manifest. That made each beta need a pull request which changed
+only a counter. A single maintainer should not need to edit that counter by hand.
 
 ## Decision
 
-Keep the next planned marketing version in `release.json`. Use numeric
+Keep the next planned marketing version in `Config/release.json`. Use numeric
 `MAJOR.MINOR.PATCH` versions. Before 1.0, a patch contains fixes or small polish
 and a minor version contains a feature or an intentional break. After 1.0, use
 a major version for a break, a minor version for a compatible feature, and a
