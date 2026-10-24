@@ -4,6 +4,21 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.1</title>
+            <pubDate>Sat, 24 Oct 2026 18:35:50 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.161</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.161-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>161</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.161/Snip-Snap-0.6.1.zip" length="17452549" type="application/octet-stream" sparkle:edSignature="0maYFY4lbP3OqVuSRwVhNzidtpe00We+aYIUJYPm5wZVJvt2F5MQ+B3Zp2/k8bQV3aK9oF2NP4ngrZ7wrS3cAg=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 161 — Mac
+
+- Reduce idle memory and unchanged clipboard merge costs
+</description>
+        </item>
+        <item>
+            <title>0.6.1</title>
             <pubDate>Sat, 24 Oct 2026 16:50:36 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.160</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.160-mac.txt</sparkle:fullReleaseNotesLink>
