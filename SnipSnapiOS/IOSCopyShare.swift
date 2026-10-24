@@ -310,6 +310,7 @@ final class IOSCopyShareCoordinator {
     private let payloadBuilder: IOSCopySharePayloadBuilder
     private let diagnostics: AppDiagnosticRecorder
     private var copyGeneration = 0
+    @ObservationIgnored private var clipboardCopyTask: Task<Bool, Never>?
 
     var unavailableFilesNotice: IOSUnavailableFilesNotice?
     var shareRequest: IOSShareRequest?
@@ -323,6 +324,10 @@ final class IOSCopyShareCoordinator {
         self.pasteboard = pasteboard
         self.payloadBuilder = payloadBuilder
         self.diagnostics = diagnostics
+    }
+
+    deinit {
+        clipboardCopyTask?.cancel()
     }
 
     @discardableResult
@@ -452,9 +457,12 @@ final class IOSCopyShareCoordinator {
         unavailableFilesNotice = nil
     }
 
-    func copyClipboardEntry(_ entry: ClipboardEntry, clipboard: IOSClipboardModel) {
+    @discardableResult
+    func copyClipboardEntry(_ entry: ClipboardEntry, clipboard: IOSClipboardModel) -> Task<Bool, Never> {
         beginCopyRequest()
-        clipboard.copy(entry)
+        let task = Task { await clipboard.copy(entry) }
+        clipboardCopyTask = task
+        return task
     }
 
     private func makePayload(snips: [Snip], model: IOSAppModel) -> IOSCopySharePayload {
@@ -467,6 +475,8 @@ final class IOSCopyShareCoordinator {
     }
 
     private func beginCopyRequest() -> Int {
+        clipboardCopyTask?.cancel()
+        clipboardCopyTask = nil
         copyGeneration += 1
         return copyGeneration
     }

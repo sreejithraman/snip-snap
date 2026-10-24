@@ -16,6 +16,8 @@ final class IOSClipboardModel {
     private let generation: @MainActor () async throws -> String?
     private let preferences: UserDefaults
     private let diagnostics: AppDiagnosticRecorder
+    private let readCopyFile: @Sendable (URL) throws -> Data
+    @ObservationIgnored private var copyRequestID = UUID()
     private(set) var entries: [ClipboardEntry] = []
     private(set) var filePreviewRevision = 0
     private(set) var pendingUploadIDs: Set<UUID> = []
@@ -47,7 +49,8 @@ final class IOSClipboardModel {
     init(rootURL: URL, settings: SyncedContentSettingsModel, containerIdentifier: String? = nil,
          preferences: UserDefaults = .standard,
          generation: @escaping @MainActor () async throws -> String? = { nil },
-         diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live) {
+         diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
+         readCopyFile: @escaping @Sendable (URL) throws -> Data = { try Data(contentsOf: $0) }) {
         let store = ClipboardHistoryStore(url: rootURL.appendingPathComponent("clipboard.json"))
         let files = ClipboardFileStore(rootURL: rootURL.appendingPathComponent("ClipboardFiles", isDirectory: true))
         self.store = store
@@ -57,6 +60,7 @@ final class IOSClipboardModel {
         self.generation = generation
         self.preferences = preferences
         self.diagnostics = diagnostics
+        self.readCopyFile = readCopyFile
         syncEnabled = preferences.bool(forKey: "syncClipboardHistory")
         pendingUploadIDs = Set((preferences.stringArray(forKey: "clipboardPendingUploads") ?? []).compactMap(UUID.init(uuidString:)))
         cloud = containerIdentifier.flatMap {
@@ -254,27 +258,38 @@ final class IOSClipboardModel {
         files.resolvedFileURLs(for: entry)
     }
 
-    func copy(_ entry: ClipboardEntry) {
+    @discardableResult
+    func copy(_ entry: ClipboardEntry) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        let requestID = UUID()
+        copyRequestID = requestID
+        errorMessage = nil
+        copyFeedbackTask?.cancel()
+        copyFeedbackTask = nil
+        copied = false
         var payload = entry.items.map { item in
             Dictionary(item.representations.filter { $0.type != UTType.fileURL.identifier }.map { ($0.type, $0.data as Any) }, uniquingKeysWith: { first, _ in first })
         }.filter { !$0.isEmpty }
-        for url in files.resolvedFileURLs(for: entry) {
-            let data: Data
+        let urls = files.resolvedFileURLs(for: entry)
+        if !urls.isEmpty {
             do {
-                data = try Data(contentsOf: url)
+                let filePayload = try await Self.prepareCopyFiles(urls, readFile: readCopyFile)
+                payload.append(contentsOf: filePayload.map { $0.mapValues { $0 as Any } })
+            } catch is CancellationError {
+                return false
             } catch {
+                let isCurrent = !Task.isCancelled && copyRequestID == requestID
                 diagnostics.record(.failure(
                     operation: "clipboard.copy_file",
                     error: error,
-                    visibility: .user
+                    visibility: isCurrent ? .user : .background
                 ))
+                guard isCurrent else { return false }
                 errorMessage = String(localized: "This file isn’t on this device. If it synced before, sync your clipboard and try again.")
-                return
+                return false
             }
-            let type = UTType(filenameExtension: url.pathExtension)?.identifier ?? UTType.data.identifier
-            payload.append([type: data])
         }
-        guard !payload.isEmpty else { return }
+        guard !Task.isCancelled, copyRequestID == requestID, !payload.isEmpty else { return false }
         UIPasteboard.general.setItems(payload)
         copied = true
         copyFeedbackTask?.cancel()
@@ -285,6 +300,20 @@ final class IOSClipboardModel {
                 return
             }
             self?.copied = false
+        }
+        return true
+    }
+
+    @concurrent private nonisolated static func prepareCopyFiles(
+        _ urls: [URL],
+        readFile: @Sendable (URL) throws -> Data
+    ) async throws -> [[String: Data]] {
+        try urls.map { url in
+            try Task.checkCancellation()
+            let data = try readFile(url)
+            try Task.checkCancellation()
+            let type = UTType(filenameExtension: url.pathExtension)?.identifier ?? UTType.data.identifier
+            return [type: data]
         }
     }
 

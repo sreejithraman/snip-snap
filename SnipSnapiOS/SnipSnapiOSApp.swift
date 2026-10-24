@@ -280,6 +280,15 @@ struct SnipSnapiOSApp: App {
 
 #if DEBUG
     private static func makeUITestAttachmentFiles(nextTo storeURL: URL) -> [URL] {
+        if let path = ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_ATTACHMENTS_DIRECTORY"] {
+            guard let urls = try? FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: path, isDirectory: true),
+                includingPropertiesForKeys: [.isRegularFileKey]
+            ) else { return [] }
+            return urls.filter {
+                (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        }
         let directory = storeURL.deletingLastPathComponent()
             .appendingPathComponent("UITestFixtures", isDirectory: true)
         let imageURL = directory.appendingPathComponent("sample.png", isDirectory: false)
