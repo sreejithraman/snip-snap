@@ -25,8 +25,11 @@ enum SnipListIconOptions {
         "fork.knife", "cart.fill", "creditcard.fill", "airplane", "map.fill"
     ]
 
-    // Cache availability once so search never renders symbols missing on this OS.
-    static let availableIcons: [String] = SFSymbolNames.all.filter { name in
+    // Loading an image for every name retains hundreds of MB in the OS glyph cache.
+    // Use release metadata; probe only names not covered by that snapshot.
+    static let availableIcons = SFSymbolNames.available(
+        in: ProcessInfo.processInfo.operatingSystemVersion
+    ) { name in
         autoreleasepool {
 #if os(macOS)
             NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil
@@ -37,9 +40,6 @@ enum SnipListIconOptions {
     }
     private static let availableIconSet = Set(availableIcons)
 
-    static func prepareCatalog() async {
-        _ = await Task.detached(priority: .utility) { availableIcons }.value
-    }
     static var searchPlaceholder: String {
         String(localized: "Search \(availableIcons.count) icons")
     }

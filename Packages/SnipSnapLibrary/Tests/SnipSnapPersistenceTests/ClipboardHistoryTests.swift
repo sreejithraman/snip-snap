@@ -4,6 +4,48 @@ import SnipSnapPersistence
 import XCTest
 
 final class ClipboardHistoryTests: XCTestCase {
+    func testIdenticalEntryMergePreservesCompleteState() {
+        var entry = text("keep", time: 10, pinned: 11)
+        entry.sourceApplication = "Editor"
+        entry.sourceDeviceName = "Mac"
+        entry.ownedFiles = [ClipboardOwnedFile(name: "note.txt", relativePath: "note.txt", byteCount: 4)]
+        entry.duplicateIDs = [UUID()]
+        entry.hasBeenShared = true
+        let original = ClipboardHistoryState(entries: [entry],
+            tombstones: [UUID(): Date(timeIntervalSince1970: 1)],
+            retentionTombstones: [UUID(): Date(timeIntervalSince1970: 2)])
+        var merged = original
+
+        merged.merge(original)
+        merged.merge(original)
+
+        XCTAssertEqual(merged, original)
+    }
+
+    func testEqualTimestampConflictsKeepStableWinnerInEitherMergeDirection() {
+        var first = text("a")
+        first.sourceApplication = "Alpha"
+        var differentPayload = text("z", id: first.id)
+        differentPayload.sourceApplication = "Alpha"
+        var differentMetadata = first
+        differentMetadata.sourceApplication = "Zulu"
+
+        for winner in [differentPayload, differentMetadata] {
+            let original = ClipboardHistoryState(entries: [first])
+            let expected = ClipboardHistoryState(entries: [winner])
+            var forward = original
+            var reverse = expected
+
+            forward.merge(expected)
+            reverse.merge(original)
+            forward.merge(original)
+            reverse.merge(expected)
+
+            XCTAssertEqual(forward, expected)
+            XCTAssertEqual(reverse, expected)
+        }
+    }
+
     func testUnpinnedOwnedFilesCountAgainstHistoryBudget() {
         let entries = (0..<4).map { index in
             var entry = text("file-\(index)")

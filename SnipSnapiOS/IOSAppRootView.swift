@@ -266,7 +266,6 @@ struct IOSAppRootView: View {
         .onChange(of: model.sortMode) { _, mode in
             savedSortMode = mode.rawValue
         }
-        .task { await SnipListIconOptions.prepareCatalog() }
         .task {
             model.sortMode = SnipSortMode(rawValue: savedSortMode) ?? .chronological
             await session.launch()

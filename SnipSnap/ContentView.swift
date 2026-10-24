@@ -183,7 +183,6 @@ struct ContentView: View {
 
     private var panelShell: some View {
         panelLayout
-        .task { await SnipListIconOptions.prepareCatalog() }
         .onAppear {
             coordinator.openSettingsAction = { openSettings() }
             cacheComposerDraft(for: model.activeListID)

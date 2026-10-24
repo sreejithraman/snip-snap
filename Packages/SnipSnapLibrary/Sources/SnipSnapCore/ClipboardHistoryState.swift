@@ -165,6 +165,7 @@ public struct ClipboardHistoryState: Codable, Equatable, Sendable {
 
     private static func preferred(_ lhs: ClipboardEntry, _ rhs: ClipboardEntry) -> ClipboardEntry {
         if lhs.modifiedAt != rhs.modifiedAt { return lhs.modifiedAt > rhs.modifiedAt ? lhs : rhs }
+        if lhs == rhs { return lhs }
         return preferredByStableEncoding(lhs, rhs)
     }
 
