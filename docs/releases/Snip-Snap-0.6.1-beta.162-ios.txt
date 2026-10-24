@@ -1,0 +1,3 @@
+Snip Snap 0.6.1 Beta 162 — iOS
+
+- Keep iOS clipboard file reads off the main thread
