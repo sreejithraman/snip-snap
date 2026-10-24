@@ -669,6 +669,48 @@ final class PanelTests: StoreBackedTestCase {
         )
     }
 
+    func testListSymbolAvailabilityChecksOnlyNamesWithoutReleaseMetadata() {
+        var checkedNames: [String] = []
+        let names = SFSymbolNames.available(
+            in: OperatingSystemVersion(majorVersion: 27, minorVersion: 0, patchVersion: 0)
+        ) { name in
+            checkedNames.append(name)
+            return name != "app.grid.2x2"
+        }
+
+        XCTAssertTrue(names.contains("stethoscope.circle"))
+        XCTAssertTrue(names.contains("star.fill"))
+        XCTAssertFalse(names.contains("app.grid.2x2"))
+        XCTAssertTrue(checkedNames.contains("app.grid.2x2"))
+        XCTAssertFalse(checkedNames.contains("star.fill"))
+        XCTAssertLessThan(checkedNames.count, 100)
+        XCTAssertGreaterThan(names.count, 9_000)
+        XCTAssertEqual(names, names.sorted())
+        XCTAssertEqual(Set(names).count, names.count)
+    }
+
+    func testListSymbolAvailabilityRespectsSupportedOSReleases() {
+        let initialRelease = SFSymbolNames.available(
+            in: OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0),
+            validateUnknown: { _ in false }
+        )
+        let minorRelease = SFSymbolNames.available(
+            in: OperatingSystemVersion(majorVersion: 26, minorVersion: 1, patchVersion: 0),
+            validateUnknown: { _ in false }
+        )
+        let nextRelease = SFSymbolNames.available(
+            in: OperatingSystemVersion(majorVersion: 27, minorVersion: 0, patchVersion: 0),
+            validateUnknown: { _ in false }
+        )
+
+        XCTAssertTrue(initialRelease.contains("star.fill"))
+        XCTAssertFalse(initialRelease.contains("air.conditioner"))
+        XCTAssertTrue(minorRelease.contains("air.conditioner"))
+        XCTAssertTrue(Set(initialRelease).isSubset(of: Set(minorRelease)))
+        XCTAssertTrue(Set(minorRelease).isSubset(of: Set(nextRelease)))
+        XCTAssertGreaterThan(nextRelease.count, minorRelease.count)
+    }
+
     func testDevelopmentBuildIdentityReadsTheSlotFromTheBundleIdentifier() {
         XCTAssertEqual(
             DevelopmentBuildIdentity(bundleIdentifier: "world.sree.snipsnap.dev3")?.slot,
