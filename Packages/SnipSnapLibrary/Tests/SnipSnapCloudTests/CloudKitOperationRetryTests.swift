@@ -7,6 +7,35 @@ import XCTest
 @testable import SnipSnapCloud
 
 final class CloudKitOperationRetryTests: XCTestCase {
+  func testTransientFailureRecordsTheRetryDeadlineButCancellationDoesNotRecordFailure() async throws {
+    let clock = RetryClock()
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let retry = CloudKitOperationRetry(now: { clock.now }, sleep: { clock.advance($0) },
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } })
+    let firstAttempt = Mutex(true)
+    let value = try await retry.run(operationName: "control fetch") {
+      if firstAttempt.withLock({ value in defer { value = false }; return value }) {
+        throw Self.cloudError(.serviceUnavailable, retryAfter: 7.5)
+      }
+      return "synced"
+    }
+    XCTAssertEqual(value, "synced")
+    XCTAssertEqual(events.withLock { $0 }, [
+      .failure(operation: "cloudkit.control_fetch", errorCode: "cloudkit.6", visibility: .background,
+        retryAfterSeconds: 7.5, nextAttemptSeconds: 7.5)
+    ])
+    events.withLock { $0.removeAll() }
+
+    for error in [CancellationError(), CKError(.operationCancelled), CocoaError(.userCancelled),
+                  URLError(.cancelled)] as [any Error] {
+      do {
+        try await retry.run(operationName: "control fetch") { throw error }
+        XCTFail("Cancellation must reach the caller")
+      } catch {}
+    }
+    XCTAssertTrue(events.withLock { $0.isEmpty })
+  }
+
   func testTryAgainWaitsForTheFinalServerDeadline() async throws {
     let clock = RetryClock()
     let retry = CloudKitOperationRetry(now: { clock.now }, sleep: { clock.advance($0) })

@@ -22,7 +22,11 @@ final class CloudDevTransportContractTests: XCTestCase {
       URL(fileURLWithPath: isolatedStorePath).deletingLastPathComponent()
         .appendingPathComponent("SnipSnapDiagnostics").path)
     let diagnosticExport = try AppDiagnosticsExport.makeShareableFile()
-    XCTAssertEqual(diagnosticExport.deletingLastPathComponent().path, diagnosticsPath)
+    defer { AppDiagnosticsExport.removeShareableFile(diagnosticExport) }
+    XCTAssertEqual(diagnosticExport.lastPathComponent, "Snip-Snap-Diagnostics.txt")
+    let stagingDirectory = diagnosticExport.deletingLastPathComponent()
+    XCTAssertTrue(stagingDirectory.lastPathComponent.hasPrefix("share-"))
+    XCTAssertEqual(stagingDirectory.deletingLastPathComponent().path, diagnosticsPath)
     XCTAssertTrue(FileManager.default.fileExists(atPath: diagnosticExport.path))
     let identifier = try XCTUnwrap(
       Bundle.main.object(

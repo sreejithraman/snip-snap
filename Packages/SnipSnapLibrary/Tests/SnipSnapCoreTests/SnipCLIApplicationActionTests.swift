@@ -13,6 +13,8 @@ final class SnipCLIApplicationActionTests: XCTestCase {
       .cancelSyncSetup(expectedRevision: "private-revision"),
       .resolveAccount(choice: .keep, expectedRevision: "private-revision", confirmed: false),
       .exportDiagnostics(path: "/private/export"),
+      .exportDiagnostics(path: "/private/export", range: .last7Days),
+      .setDiagnosticRecording(enabled: false, expectedRevision: "private-revision"),
       .clearDiagnostics(expectedRevision: "private-revision", confirmed: true),
       .clearAttachmentCache(expectedRevision: "private-revision", confirmed: true),
       .selectList(selector: "private-list"), .search(query: "private-search"),
@@ -25,9 +27,18 @@ final class SnipCLIApplicationActionTests: XCTestCase {
     }
   }
 
+  func testOlderDiagnosticExportRequestsStillDecodeWithoutARange() throws {
+    let olderRequest = Data(#"{"exportDiagnostics":{"path":"/tmp/report.txt"}}"#.utf8)
+    XCTAssertEqual(try JSONDecoder().decode(SnipCLIApplicationAction.self, from: olderRequest),
+                   .exportDiagnostics(path: "/tmp/report.txt"))
+    let ranged = SnipCLIApplicationAction.exportDiagnostics(path: "/tmp/report.txt", range: .last7Days)
+    XCTAssertEqual(try JSONDecoder().decode(SnipCLIApplicationAction.self, from: JSONEncoder().encode(ranged)), ranged)
+  }
+
   func testOnlyStatusAndSettingsReadsAreTransient() {
     for action in [SnipCLIApplicationAction.settingsShow, .syncStatus, .clipboardSyncStatus,
-                   .diagnosticsStatus, .attachmentCacheStatus, .status] {
+                   .diagnosticsStatus, .diagnosticLogs(range: .last7Days, limit: 5, errorsOnly: true),
+                   .attachmentCacheStatus, .status] {
       XCTAssertTrue(action.isReadOnly)
     }
     for action in [SnipCLIApplicationAction.captureScreen, .captureSelection, .retrySync,

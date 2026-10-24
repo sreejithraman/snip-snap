@@ -740,7 +740,7 @@ struct SnipListView: View {
                     : .list
                 return true
             },
-            onEditError: { model.presentError($0) }
+            onEditError: { model.presentError($0, operation: "composer.paste_stage") }
         )
         .overlay {
             PanelCardInteractionRegion(

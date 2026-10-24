@@ -208,7 +208,10 @@ final class AppCoordinator {
             try manager.register(configuration: shortcutSettings.configuration)
             hotKeys = manager
         } catch {
-            model.presentError(String(localized: "Couldn’t enable keyboard shortcuts. Try again."))
+            model.presentError(
+                String(localized: "Couldn’t enable keyboard shortcuts. Try again."),
+                operation: "shortcut.register", diagnosticCode: diagnosticErrorCode(error)
+            )
         }
         if accessibilityPermissions.isSetupCardVisible, let panelWindow {
             showPanel(panelWindow, focusing: nil)
@@ -442,10 +445,7 @@ final class AppCoordinator {
             return
         }
         guard let sourceApplication = frontmostExternalApplication() else {
-            hud.show(
-                message: SelectionCaptureFailure.sourceUnavailable.localizedDescription,
-                symbol: "exclamationmark"
-            )
+            hud.show(failure: .sourceUnavailable)
             return
         }
         let requestID = UUID()
@@ -469,7 +469,8 @@ final class AppCoordinator {
                     }.value
                     guard case .success(let temporaryAttachments) = staging else {
                         let message = String(localized: "Couldn’t prepare the captured images. Try again.")
-                        self.model.presentError(message)
+                        self.model.presentError(message, operation: "selection.capture",
+                                                diagnosticCode: "selection.attachmentStagingFailed")
                         self.hud.show(message: message, symbol: "exclamationmark")
                         return
                     }
@@ -521,7 +522,7 @@ final class AppCoordinator {
         } catch {
             model.presentError(String(
                 localized: "Couldn’t restart keyboard shortcuts. Try again."
-            ))
+            ), operation: "shortcut.register", diagnosticCode: diagnosticErrorCode(error))
         }
     }
 

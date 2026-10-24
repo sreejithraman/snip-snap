@@ -890,7 +890,10 @@ final class AppModel: ObservableObject {
                 try entry.materializeForSnip()
             }.value
         } catch {
-            presentError(String(localized: "Couldn’t prepare the clipboard image. Try again."))
+            presentError(
+                String(localized: "Couldn’t prepare the clipboard image. Try again."),
+                operation: "attachment.prepare", diagnosticCode: diagnosticErrorCode(error)
+            )
             return false
         }
         defer { materialization.removeTemporaryFiles() }
@@ -1414,7 +1417,10 @@ final class AppModel: ObservableObject {
         feedback: ClipboardPlacementFeedback = .notify
     ) -> Bool {
         guard clipboardHistory.restore(entry) else {
-            presentError(String(localized: "Couldn’t set the clipboard. Try again."))
+            presentError(
+                String(localized: "Couldn’t set the clipboard. Try again."),
+                operation: "clipboard.write", diagnosticCode: "pasteboard.writeFailed"
+            )
             return false
         }
         if feedback == .notify {

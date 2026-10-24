@@ -610,6 +610,8 @@ struct CopyShareActions: View {
 
 struct IOSShareSheetPresenter: UIViewControllerRepresentable {
     @Binding var request: IOSShareRequest?
+    var diagnosticOperation: StaticString = "app.user_action"
+    var diagnostics: AppDiagnosticRecorder = .live
 
     func makeUIViewController(context: Context) -> UIViewController {
         UIViewController()
@@ -617,13 +619,7 @@ struct IOSShareSheetPresenter: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: UIViewController, context: Context) {
         guard let request, controller.presentedViewController == nil else { return }
-        let activity = UIActivityViewController(
-            activityItems: request.items.map(shareItem),
-            applicationActivities: nil
-        )
-        activity.completionWithItemsHandler = { _, _, _, _ in
-            DispatchQueue.main.async { self.request = nil }
-        }
+        let activity = makeActivityController(for: request)
         if let popover = activity.popoverPresentationController {
             popover.sourceView = controller.view
             popover.sourceRect = CGRect(
@@ -638,6 +634,34 @@ struct IOSShareSheetPresenter: UIViewControllerRepresentable {
             guard controller.presentedViewController == nil else { return }
             controller.present(activity, animated: true)
         }
+    }
+
+    func makeActivityController(for request: IOSShareRequest) -> UIActivityViewController {
+        let activity = UIActivityViewController(
+            activityItems: request.items.map(shareItem),
+            applicationActivities: nil
+        )
+        activity.completionWithItemsHandler = { _, _, _, error in
+            DispatchQueue.main.async {
+                if let error, !Self.isCancellation(error) {
+                    diagnostics.record(.failure(
+                        operation: diagnosticOperation,
+                        error: error,
+                        visibility: .user
+                    ))
+                }
+                guard self.request?.id == request.id else { return }
+                self.request = nil
+            }
+        }
+        return activity
+    }
+
+    private static func isCancellation(_ error: any Error) -> Bool {
+        if error is CancellationError { return true }
+        let error = error as NSError
+        return (error.domain == NSCocoaErrorDomain && error.code == NSUserCancelledError)
+            || (error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled)
     }
 
     private func shareItem(_ item: IOSCopyItem) -> Any {

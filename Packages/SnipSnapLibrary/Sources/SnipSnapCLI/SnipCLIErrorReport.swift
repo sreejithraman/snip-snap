@@ -1,4 +1,5 @@
 import Foundation
+import SnipSnapCore
 
 /// Add request identity without discarding the error's machine-readable cause.
 struct SnipCLIRequestFailure: Error, LocalizedError {
@@ -23,6 +24,8 @@ struct SnipCLIErrorReport: Encodable {
     message = (error as? SnipSnapCLIError)?.description ?? error.localizedDescription
     var causeRequestID: UUID?
     switch cause {
+    case AppDiagnosticAccessError.busy:
+      code = "diagnostics_busy"
     case SnipSnapCLIError.usage, SnipSnapCLIError.missingContent,
          SnipSnapCLIError.invalidRequestID:
       code = "invalid_arguments"

@@ -4,10 +4,40 @@ import AppKit
 import Carbon.HIToolbox
 import Combine
 import SwiftUI
+import Synchronization
 @testable import SnipSnap
 @testable import SnipSnapPersistence
 
+private final class ShortcutDiagnosticProbe: Sendable {
+    private let recorded = Mutex<[AppDiagnosticEvent]>([])
+    var recorder: AppDiagnosticRecorder {
+        AppDiagnosticRecorder { [self] event in recorded.withLock { $0.append(event) } }
+    }
+    var events: [AppDiagnosticEvent] { recorded.withLock { $0 } }
+}
+
 final class AppCoordinatorTests: StoreBackedTestCase {
+    @MainActor
+    func testShortcutStartupFailureRecordsItsOperationWithoutTheAlertMessage() {
+        let events = ShortcutDiagnosticProbe()
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults(), diagnostics: events.recorder)
+        let coordinator = AppCoordinator(
+            model: model,
+            shortcutSettings: ShortcutSettings(defaults: defaults()),
+            makeHotKeyManager: { _ in StubGlobalHotKeyManager(error: GlobalHotKeyError.registration(-9876)) },
+            isAccessibilityTrusted: { true }
+        )
+
+        coordinator.start()
+
+        XCTAssertNotNil(model.presentedError)
+        XCTAssertTrue(events.events.contains {
+            $0.operation == "shortcut.register" && $0.errorCode == "shortcut.registrationFailed"
+                && $0.outcome == .failed && $0.visibility == .user
+        })
+        XCTAssertFalse(events.events.map(\.line).joined().contains("-9876"))
+    }
+
     @MainActor
     func testRecordingRejectsUnregisterableChordAndResumesPreviousShortcuts() throws {
         let settings = ShortcutSettings(defaults: defaults())
@@ -572,17 +602,25 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         )
         coordinator.attachPanelWindow(parent)
 
+        // Keep opening a hidden parent (and activating the app) out of this
+        // picker-focus test, so activation cannot race the simulated picker.
+        parent.makeKeyAndOrderFront(nil)
         let pickerBecameKey = expectation(
             forNotification: NSWindow.didBecomeKeyNotification,
             object: pickerFocusWindow
-        )
+        ) { _ in
+            MainActor.assumeIsolated {
+                // Check the transition before an async yield lets another app take focus.
+                XCTAssertTrue(pickerFocusWindow.isKeyWindow)
+                return true
+            }
+        }
         XCTAssertTrue(coordinator.presentOpenPanel(importer) { importedURLs = $0 })
         await fulfillment(of: [pickerBecameKey], timeout: 2)
 
         XCTAssertTrue(coordinator.panelDialogs.isPresented)
         XCTAssertFalse(parent.canBecomeKey)
         XCTAssertFalse(parent.isKeyWindow)
-        XCTAssertTrue(pickerFocusWindow.isKeyWindow)
         XCTAssertEqual(parent.alphaValue, 0.45, accuracy: 0.001)
         XCTAssertEqual(importer.appearance?.name, .aqua)
         XCTAssertNil(parent.childWindows?.first)
@@ -592,13 +630,17 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         let parentRegainedKey = expectation(
             forNotification: NSWindow.didBecomeKeyNotification,
             object: parent
-        )
+        ) { _ in
+            MainActor.assumeIsolated {
+                XCTAssertTrue(parent.isKeyWindow)
+                return true
+            }
+        }
         panelCompletion?(.cancel)
         await fulfillment(of: [parentRegainedKey], timeout: 2)
 
         XCTAssertFalse(coordinator.panelDialogs.isPresented)
         XCTAssertTrue(parent.canBecomeKey)
-        XCTAssertTrue(parent.isKeyWindow)
         XCTAssertEqual(parent.alphaValue, 1, accuracy: 0.001)
         XCTAssertNil(importedURLs)
     }

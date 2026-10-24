@@ -210,6 +210,48 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testFailedAccountChoiceRecordsItsVisibleFailureWithoutPrivateDetails() async {
+        let diagnostics = MacDiagnosticRecorderProbe()
+        let model = AppleAccountNoticeModel(
+            notice: .signedOut,
+            handler: MacAppleAccountCacheHandlerProbe(),
+            activeLibraryChangeAction: {
+                throw NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError,
+                              userInfo: [NSLocalizedDescriptionKey: "private account path"])
+            },
+            diagnostics: diagnostics.recorder
+        )
+
+        await model.resolve(.keepLocalCopy)
+
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertTrue(diagnostics.events.contains {
+            $0.operation == "sync.account_resolve" && $0.outcome == .failed
+                && $0.errorCode == "cocoa.513" && $0.visibility == .user
+        })
+        XCTAssertFalse(diagnostics.events.map(\.line).joined().contains("private account path"))
+    }
+
+    @MainActor
+    func testAccountRefreshRecordsBackgroundFailureWhileKeepingTheSafeNotice() async {
+        let diagnostics = MacDiagnosticRecorderProbe()
+        let model = AppleAccountNoticeModel(
+            notice: .signedOut,
+            handler: MacAppleAccountCacheHandlerProbe(failsRefresh: true),
+            diagnostics: diagnostics.recorder
+        )
+
+        await model.refresh()
+
+        XCTAssertEqual(model.notice, .signedOut)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertTrue(diagnostics.events.contains {
+            $0.operation == "sync.account_refresh" && $0.outcome == .failed
+                && $0.visibility == .background
+        })
+    }
+
+    @MainActor
     func testMacLocalOnlyAssemblyHidesNoticeWithoutAHandler() {
         let model = AppleAccountNoticeModel(notice: .signedOut, handler: nil)
         XCTAssertNil(model.notice)

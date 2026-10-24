@@ -7,6 +7,30 @@ import XCTest
 @testable import SnipSnapPersistence
 
 final class CloudSyncDiagnosticsTests: XCTestCase {
+  func testCancelledLocalCommitDoesNotRecordASyncFailure() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let zone = CloudZoneID(name: "metadata", ownerName: "owner")
+    let namespace = CloudSyncNamespace(cloudScope: "private", accountLineage: "account",
+      generation: UUID(), zones: [zone])
+    let server = FakeCloudServer()
+    await server.createZones([zone])
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let probe = SyncDiagnosticProbe()
+    let store = CloudFullSyncPersistence(library: library, namespace: namespace, dataZone: zone,
+      diagnostics: probe.recorder, afterCommitHook: { throw CancellationError() })
+    let coordinator = CloudFullSyncCoordinator(store: store,
+      transport: FakeCloudRecordTransport(server: server, namespace: namespace), diagnostics: probe.recorder)
+
+    do {
+      _ = try await coordinator.fetchRemote()
+      XCTFail("Expected cancellation to reach the caller")
+    } catch is CancellationError {}
+
+    XCTAssertFalse(probe.events.contains { $0.outcome == .failed })
+    XCTAssertFalse(probe.events.contains { $0.operation == "sync.fetch" && $0.outcome == .succeeded })
+  }
+
   func testRecoveredStagedFetchAndSendReportSuccessfulCommittedTransfers() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }

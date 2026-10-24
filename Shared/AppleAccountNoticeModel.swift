@@ -10,16 +10,20 @@ final class AppleAccountNoticeModel {
     private(set) var isResolving = false
     private(set) var errorMessage: String?
     private let handler: (any AppleAccountCacheHandling)?
+    private let diagnostics: AppDiagnosticRecorder
     private var activeLibraryChangeAction: ActiveLibraryChangeAction?
 
     init(
         notice: AppleAccountNotice? = nil,
         handler: (any AppleAccountCacheHandling)? = nil,
-        activeLibraryChangeAction: ActiveLibraryChangeAction? = nil
+        activeLibraryChangeAction: ActiveLibraryChangeAction? = nil,
+        diagnostics: AppDiagnosticRecorder = .live
     ) {
         self.notice = handler == nil ? nil : notice
         self.handler = handler
         self.activeLibraryChangeAction = activeLibraryChangeAction
+        self.diagnostics = diagnostics
+        recordNotice()
     }
 
     func setActiveLibraryChangeAction(_ action: @escaping ActiveLibraryChangeAction) {
@@ -50,9 +54,16 @@ final class AppleAccountNoticeModel {
         do {
             try await handler.resolveAppleAccountCache(choice)
             try await activeLibraryChangeAction?()
-            notice = try await handler.refreshAppleAccountNotice()
+            let refreshedNotice = try await handler.refreshAppleAccountNotice()
+            if notice != refreshedNotice {
+                notice = refreshedNotice
+                recordNotice()
+            }
             errorMessage = nil
+        } catch is CancellationError {
+            // Dismissing an account action does not create a new failure presentation.
         } catch {
+            diagnostics.record(.failure(operation: "sync.account_resolve", error: error, visibility: .user))
             errorMessage = String(localized: "Couldn’t save your choice. Try again.")
         }
     }
@@ -62,6 +73,9 @@ final class AppleAccountNoticeModel {
         do {
             try await refreshCheckingAccount()
         } catch {
+            if !(error is CancellationError) {
+                diagnostics.record(.failure(operation: "sync.account_refresh", error: error, visibility: .background))
+            }
             // Keep the last safe state. Account lookup failures must not prompt removal.
         }
     }
@@ -72,6 +86,7 @@ final class AppleAccountNoticeModel {
         let priorNotice = notice
         let refreshedNotice = try await handler.refreshAppleAccountNotice()
         notice = refreshedNotice
+        if priorNotice != refreshedNotice { recordNotice() }
         if notifyActiveLibraryChange,
            Self.changesActiveLibrary(priorNotice) || Self.changesActiveLibrary(refreshedNotice) {
             try await activeLibraryChangeAction?()
@@ -81,5 +96,18 @@ final class AppleAccountNoticeModel {
 
     private static func changesActiveLibrary(_ notice: AppleAccountNotice?) -> Bool {
         notice == .signedOut || notice == .accountChanged
+    }
+
+    private func recordNotice() {
+        let issue: SyncedContentSyncIssue
+        switch notice {
+        case .paused: issue = .checkingAccount
+        case .signedOut: issue = .signInRequired
+        case .accountChanged: issue = .iCloudAccountChanged
+        case nil: return
+        }
+        diagnostics.record(.failure(
+            operation: "sync.account_status", errorCode: issue.diagnosticCode, visibility: .user
+        ))
     }
 }

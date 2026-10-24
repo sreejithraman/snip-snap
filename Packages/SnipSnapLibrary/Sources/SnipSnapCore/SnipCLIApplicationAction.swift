@@ -52,8 +52,10 @@ public enum SnipCLIApplicationAction: Codable, Equatable, Sendable {
   case setClipboardSync(enabled: Bool, expectedRevision: String)
   case retryClipboardSync
   case resolveAccount(choice: SnipCLIAccountChoice, expectedRevision: String, confirmed: Bool)
-  case exportDiagnostics(path: String)
+  case exportDiagnostics(path: String, range: AppDiagnosticExportRange? = nil)
   case diagnosticsStatus
+  case diagnosticLogs(range: AppDiagnosticExportRange, limit: Int, errorsOnly: Bool)
+  case setDiagnosticRecording(enabled: Bool, expectedRevision: String)
   case clearDiagnostics(expectedRevision: String, confirmed: Bool)
   case attachmentCacheStatus
   case clearAttachmentCache(expectedRevision: String, confirmed: Bool)
@@ -71,7 +73,8 @@ public enum SnipCLIApplicationAction: Codable, Equatable, Sendable {
 
   public var isReadOnly: Bool {
     switch self {
-    case .settingsShow, .syncStatus, .clipboardSyncStatus, .diagnosticsStatus, .attachmentCacheStatus, .status: true
+    case .settingsShow, .syncStatus, .clipboardSyncStatus, .diagnosticsStatus, .diagnosticLogs,
+         .attachmentCacheStatus, .status: true
     default: false
     }
   }
@@ -86,7 +89,8 @@ public enum SnipCLIApplicationAction: Codable, Equatable, Sendable {
     case .cancelSyncSetup: .cancelSyncSetup(expectedRevision: "")
     case .setClipboardSync(let enabled, _): .setClipboardSync(enabled: enabled, expectedRevision: "")
     case .resolveAccount(let choice, _, let confirmed): .resolveAccount(choice: choice, expectedRevision: "", confirmed: confirmed)
-    case .exportDiagnostics: .exportDiagnostics(path: "")
+    case .exportDiagnostics(_, let range): .exportDiagnostics(path: "", range: range)
+    case .setDiagnosticRecording(let enabled, _): .setDiagnosticRecording(enabled: enabled, expectedRevision: "")
     case .clearDiagnostics(_, let confirmed): .clearDiagnostics(expectedRevision: "", confirmed: confirmed)
     case .clearAttachmentCache(_, let confirmed): .clearAttachmentCache(expectedRevision: "", confirmed: confirmed)
     case .selectList: .selectList(selector: "")
@@ -113,5 +117,13 @@ public struct SnipCLIApplicationResult: Codable, Equatable, Sendable {
     encoder.outputFormatting = [.sortedKeys]
     let data = try! encoder.encode(values)
     revision = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+  }
+
+  public init(diagnosticLog report: AppDiagnosticLogReport) {
+    self.init(values: [
+      "log": report.text,
+      "returned-events": String(report.returnedEvents),
+      "truncated": String(report.truncated),
+    ])
   }
 }

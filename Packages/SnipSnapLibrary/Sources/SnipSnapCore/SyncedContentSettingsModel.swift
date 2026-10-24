@@ -223,6 +223,12 @@ public final class SyncedContentSettingsModel {
     self.deleteAction = deleteAction
     self.diagnostics = diagnostics
     state = initialState
+    switch initialState {
+    case .failed(let issue): record(issue, operation: "sync.run")
+    case .enabling(let issue?): record(issue, operation: "sync.setup")
+    case .removalPending: record(.someChangesPending, operation: "sync.delete")
+    default: break
+    }
   }
 
   public func setEnableCompletionAction(_ action: @escaping DeleteCompletionAction) {
@@ -389,6 +395,7 @@ public final class SyncedContentSettingsModel {
 
   public func recordRemovalPending(_ pending: Bool) {
     guard mode == .iCloudSync else { return }
+    if pending, state != .removalPending { record(.someChangesPending, operation: "sync.delete") }
     state = pending ? .removalPending : .deleted
   }
 
@@ -477,6 +484,7 @@ public final class SyncedContentSettingsModel {
     do {
       let outcome = try await deleteAction()
       try await deleteCompletionAction?()
+      if outcome == .removalPending { record(.someChangesPending, operation: "sync.delete") }
       state = outcome == .completed ? .deleted : .removalPending
     } catch {
       diagnostics.record(.failure(

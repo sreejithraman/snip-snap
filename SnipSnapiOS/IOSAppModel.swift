@@ -1266,6 +1266,14 @@ final class IOSAppModel {
         self.toast = nil
     }
 
+    func backupImportSelectionFailed(_ error: any Error) -> String? {
+        let nsError = error as NSError
+        guard !(error is CancellationError),
+              nsError.domain != NSCocoaErrorDomain || nsError.code != NSUserCancelledError else { return nil }
+        diagnostics.record(.failure(operation: "backup.import_select", error: error, visibility: .user))
+        return error.localizedDescription
+    }
+
     func createBackup(at destination: URL) async throws {
         haptics.invalidatePendingFeedback()
         let archive = try await session.withExclusiveAccess { session in
