@@ -12,7 +12,6 @@ enum SnipSnapCLIError: Error, Equatable, CustomStringConvertible {
   case commandInProgress(UUID)
   case outcomeUnknown(UUID)
   case requestNotFound
-  case requestFailed(UUID, String)
 
   var description: String {
     switch self {
@@ -27,8 +26,6 @@ enum SnipSnapCLIError: Error, Equatable, CustomStringConvertible {
     case .outcomeUnknown(let id):
       "The outcome of request \(id) is unknown. Inspect the snip or list before retrying."
     case .requestNotFound: "No request with that UUID exists."
-    case .requestFailed(let id, let message):
-      "Request \(id.uuidString): \(message) Check 'snipsnap status \(id.uuidString)' before retrying if the outcome is unclear."
     }
   }
 
@@ -36,7 +33,7 @@ enum SnipSnapCLIError: Error, Equatable, CustomStringConvertible {
     switch self {
     case .usage, .missingContent, .invalidRequestID: true
     case .importFailed, .appUnavailable, .commandInProgress, .outcomeUnknown,
-         .requestNotFound, .requestFailed: false
+         .requestNotFound: false
     }
   }
 }
@@ -62,7 +59,7 @@ enum SnipSnapCLIParser {
       snipsnap status REQUEST_UUID [--json]
 
     Add marks a snip as Agent. Add and update read standard input when TEXT is
-    omitted or '-'. Snip and list commands require the running app. Take SECONDS from
+    omitted or '-'. Commands start the installed app when needed. Take SECONDS from
     list/show --json. Delete requires --yes.
     Take the snip delete TOKEN from show/list --json and the list TOKEN from
     'lists show UUID --json'. Every command except status accepts --request-id UUID
@@ -73,6 +70,7 @@ enum SnipSnapCLIParser {
   static func parse(_ arguments: [String]) throws -> SnipSnapCLICommand {
     guard let command = arguments.first else { return .help }
     if command == "help" || command == "--help" || command == "-h" { return .help }
+    if let extended = try SnipCLIExtendedParser.parse(arguments) { return extended }
     return try SnipCLIParser.parse(arguments)
   }
 }
@@ -80,34 +78,44 @@ enum SnipSnapCLIParser {
 @main
 struct SnipSnapCLI {
   static func main() async {
+    let arguments = Array(CommandLine.arguments.dropFirst())
+    let wantsJSON = SnipCLIExtendedParser.requestsJSON(arguments)
+    var requestID: UUID?
     do {
-      let command = try SnipSnapCLIParser.parse(Array(CommandLine.arguments.dropFirst()))
+      let command = try SnipSnapCLIParser.parse(arguments)
       switch command {
       case .help:
         print(SnipSnapCLIParser.usage)
+        print("\n" + SnipCLILibraryParser.usage)
+        print("\n" + SnipCLIClipboardParser.usage)
+        print("\n" + SnipCLIDataParser.usage)
+        print("\n" + SnipCLIApplicationParser.usage)
       case .request(let options):
         let request = SnipCLIRequest(
           action: try options.action(), requestID: options.requestID ?? UUID()
         )
-        let store = SnipCLIRequestStore(rootURL: importRoot())
+        requestID = request.requestID
+        let location = try applicationLocation()
+        let store = SnipCLIRequestStore(rootURL: location.rootURL)
         do {
+          try await location.launchIfNeeded(store: store)
           let receipt = try await SnipCLIService.execute(request, store: store)
-          try await SnipCLIService.requireActiveScope(receipt.scopeToken, store: store)
+          try await SnipCLIService.requireActiveScope(receipt.visibleScopeToken, store: store)
           try SnipCLIPrinter.printReceipt(receipt, json: options.json)
         } catch {
           if let cliError = error as? SnipSnapCLIError, case .importFailed = cliError {
             try? await store.releaseReceipt(request.requestID)
           }
-          let message = (error as? SnipSnapCLIError)?.description ?? error.localizedDescription
-          throw SnipSnapCLIError.requestFailed(request.requestID, message)
+          throw SnipCLIRequestFailure(requestID: request.requestID, cause: error)
         }
         try? await store.releaseReceipt(request.requestID)
       case .status(let id, let json):
-        let store = SnipCLIRequestStore(rootURL: importRoot())
+        requestID = id
+        let store = SnipCLIRequestStore(rootURL: try applicationLocation().rootURL)
         let state = try await SnipCLIService.status(id, store: store)
         do {
           if case .completed(let receipt) = state {
-            try await SnipCLIService.requireActiveScope(receipt.scopeToken, store: store)
+            try await SnipCLIService.requireActiveScope(receipt.visibleScopeToken, store: store)
           }
           try SnipCLIPrinter.printState(state, requestID: id, json: json)
         } catch {
@@ -117,20 +125,28 @@ struct SnipSnapCLI {
         if case .completed = state { try? await store.releaseReceipt(id) }
       }
     } catch let error as SnipSnapCLIError {
-      FileHandle.standardError.write(Data("snipsnap: \(error.description)\n".utf8))
-      if error.isUsageError {
+      if wantsJSON, let data = try? SnipCLIErrorReport(error: error, requestID: requestID).data() {
+        FileHandle.standardError.write(data)
+      } else {
+        FileHandle.standardError.write(Data("snipsnap: \(error.description)\n".utf8))
+      }
+      if error.isUsageError && !wantsJSON {
         FileHandle.standardError.write(Data("\(SnipSnapCLIParser.usage)\n".utf8))
       }
       exit(error.isUsageError ? 2 : 1)
     } catch {
-      FileHandle.standardError.write(Data("snipsnap: \(error.localizedDescription)\n".utf8))
+      if wantsJSON, let data = try? SnipCLIErrorReport(error: error, requestID: requestID).data() {
+        FileHandle.standardError.write(data)
+      } else {
+        FileHandle.standardError.write(Data("snipsnap: \(error.localizedDescription)\n".utf8))
+      }
       exit(1)
     }
   }
 
-  private static func importRoot() -> URL {
-    let storeURL = SwiftDataSnipLibrary.defaultStoreURL()
-    return LocalSnipStorePaths(storeURL: storeURL).rootDirectory
+  private static func applicationLocation() throws -> SnipCLIApplicationLocation {
+    try SnipCLIApplicationLocation(executableURL:
+      Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0]))
   }
 
 

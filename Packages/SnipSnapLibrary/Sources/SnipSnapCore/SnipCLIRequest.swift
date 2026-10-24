@@ -4,6 +4,7 @@ import Foundation
 
 /// Commands exchanged with the running main app. The CLI never opens its library.
 public enum SnipCLIAction: Codable, Equatable, Sendable {
+  case extended(SnipCLIExtendedAction)
   case add(content: String, list: String?, agentContext: SnipAgentContext?)
   case listSnips(list: String?)
   case showSnip(id: UUID)
@@ -23,8 +24,19 @@ public enum SnipCLIReceiptPolicy: Equatable, Sendable {
 }
 
 public extension SnipCLIAction {
+  /// Only these awaited app actions may replace the library they started in.
+  var allowsScopeTransition: Bool {
+    switch self {
+    case .extended(.application(.setSync)), .extended(.application(.cancelSyncSetup)),
+         .extended(.application(.retrySync)), .extended(.application(.resolveAccount)):
+      true
+    default: false
+    }
+  }
+
   var receiptPolicy: SnipCLIReceiptPolicy {
     switch self {
+    case .extended(let action): action.isReadOnly ? .transientRead : .listWrite
     case .add: .compactWrite
     case .listSnips, .showSnip, .listLists, .showList: .transientRead
     case .createList, .updateList: .listWrite
@@ -103,6 +115,8 @@ public enum SnipCLIScopeToken {
 }
 
 public struct SnipCLIReceipt: Codable, Equatable, Sendable {
+  private static let compactedFailureMessage = "Snip Snap could not complete the command."
+
   public enum Status: String, Codable, Sendable {
     case success
     case failed
@@ -112,6 +126,20 @@ public struct SnipCLIReceipt: Codable, Equatable, Sendable {
   public let requestFingerprint: String
   public let scopeToken: String?
   public let action: SnipCLIAction
+  private let storedResultingScopeToken: String?
+
+  /// Validate decoded metadata too: ordinary commands cannot widen receipt visibility.
+  public var resultingScopeToken: String? {
+    action.allowsScopeTransition ? storedResultingScopeToken : nil
+  }
+
+  public var visibleScopeToken: String? { resultingScopeToken ?? scopeToken }
+
+  private enum CodingKeys: String, CodingKey {
+    case requestID, requestFingerprint, scopeToken, action, status, snips, lists, message
+    case listRevision, snipRevisions, updatedSnipID, updatedAt, resultListID, resultSnipID, extendedResult
+    case storedResultingScopeToken = "resultingScopeToken"
+  }
   public let status: Status
   public let snips: [Snip]
   public let lists: [SnipList]
@@ -122,6 +150,7 @@ public struct SnipCLIReceipt: Codable, Equatable, Sendable {
   public let updatedAt: Date?
   public let resultListID: UUID?
   public let resultSnipID: UUID?
+  public let extendedResult: SnipCLIExtendedResult?
 
   public init(
     request: SnipCLIRequest,
@@ -129,17 +158,21 @@ public struct SnipCLIReceipt: Codable, Equatable, Sendable {
     snips: [Snip] = [],
     lists: [SnipList] = [],
     message: String? = nil,
-    listRevision: String? = nil
+    listRevision: String? = nil,
+    extendedResult: SnipCLIExtendedResult? = nil,
+    resultingScopeToken: String? = nil
   ) {
     requestID = request.requestID
     requestFingerprint = request.fingerprint
     scopeToken = request.scopeToken
     action = request.action
+    storedResultingScopeToken = request.action.allowsScopeTransition ? resultingScopeToken : nil
     self.status = status
     self.snips = snips
     self.lists = lists
     self.message = message
     self.listRevision = listRevision
+    self.extendedResult = extendedResult
     snipRevisions = Dictionary(uniqueKeysWithValues: snips.map {
       ($0.id.uuidString, SnipCLIItemRevision.token(snip: $0))
     })
@@ -151,12 +184,18 @@ public struct SnipCLIReceipt: Codable, Equatable, Sendable {
       updatedAt = nil
     }
     switch request.action {
-    case .add, .createList, .updateList: resultListID = lists.first?.id
+    case .add, .createList, .updateList,
+         .extended(.library(.addFiles)), .extended(.data(.saveDraftAsSnip)),
+         .extended(.clipboard(.save)):
+      resultListID = lists.first?.id
     default: resultListID = nil
     }
-    if case .add = request.action {
+    switch request.action {
+    case .add, .extended(.library(.addFiles)), .extended(.data(.saveDraftAsSnip)),
+         .extended(.clipboard(.save)), .extended(.application(.captureSelection)),
+         .extended(.application(.captureScreen)):
       resultSnipID = snips.first?.id
-    } else {
+    default:
       resultSnipID = nil
     }
   }
@@ -169,6 +208,9 @@ public struct SnipCLIReceipt: Codable, Equatable, Sendable {
     var storedAction = action
     var storedMessage = message
     switch action {
+    case .extended(let action):
+      storedAction = .extended(action.compacted)
+      if status == .failed { storedMessage = Self.compactedFailureMessage }
     case .add:
       storedAction = .add(content: "", list: nil, agentContext: nil)
       if status == .success, let id = resultSnipID {
@@ -192,7 +234,7 @@ public struct SnipCLIReceipt: Codable, Equatable, Sendable {
     }
     return SnipCLIReceipt(
       requestID: requestID, requestFingerprint: requestFingerprint,
-      scopeToken: scopeToken, action: storedAction,
+      scopeToken: scopeToken, resultingScopeToken: resultingScopeToken, action: storedAction,
       status: status, snips: [], lists: [], message: storedMessage,
       listRevision: nil, snipRevisions: [:],
       updatedSnipID: updatedSnipID, updatedAt: updatedAt, resultListID: resultListID,
@@ -202,6 +244,10 @@ public struct SnipCLIReceipt: Codable, Equatable, Sendable {
 
   public var hasListWritePayload: Bool {
     switch action {
+    case .extended(let action):
+      extendedResult != nil || !snips.isEmpty || !lists.isEmpty
+        || action != action.compacted
+        || (status == .failed && message != Self.compactedFailureMessage)
     case .createList(let name), .updateList(_, let name, _):
       !name.isEmpty || !lists.isEmpty
     case .add, .listSnips, .showSnip, .updateSnip, .deleteSnip,
@@ -210,7 +256,7 @@ public struct SnipCLIReceipt: Codable, Equatable, Sendable {
   }
 
   private init(requestID: UUID, requestFingerprint: String,
-               scopeToken: String?, action: SnipCLIAction,
+               scopeToken: String?, resultingScopeToken: String?, action: SnipCLIAction,
                status: Status, snips: [Snip], lists: [SnipList], message: String?,
                listRevision: String?, snipRevisions: [String: String],
                updatedSnipID: UUID?, updatedAt: Date?, resultListID: UUID?,
@@ -219,6 +265,7 @@ public struct SnipCLIReceipt: Codable, Equatable, Sendable {
     self.requestFingerprint = requestFingerprint
     self.scopeToken = scopeToken
     self.action = action
+    storedResultingScopeToken = action.allowsScopeTransition ? resultingScopeToken : nil
     self.status = status
     self.snips = snips
     self.lists = lists
@@ -229,6 +276,7 @@ public struct SnipCLIReceipt: Codable, Equatable, Sendable {
     self.updatedAt = updatedAt
     self.resultListID = resultListID
     self.resultSnipID = resultSnipID
+    extendedResult = nil
   }
 }
 

@@ -9,6 +9,7 @@ public protocol SnipLibraryUserActions: Sendable {
   func delete(
     ids: Set<UUID>,
     token: UUID,
+    expectation: SnipLibraryExpectation?,
     sortedBy sortMode: SnipSortMode
   ) async throws -> SnipLibraryUpdate
 
@@ -32,6 +33,14 @@ public typealias SnipBackupImportPreviewer = @Sendable (
   _ backupURL: URL,
   _ target: any SnipLibrary
 ) async throws -> SnipImportPreview
+
+public extension SnipLibraryUserActions {
+  func delete(
+    ids: Set<UUID>, token: UUID, sortedBy sortMode: SnipSortMode
+  ) async throws -> SnipLibraryUpdate {
+    try await delete(ids: ids, token: token, expectation: nil, sortedBy: sortMode)
+  }
+}
 
 public typealias SnipLibraryUserActionsFactory = @Sendable (
   _ library: any SnipLibrary
@@ -73,13 +82,17 @@ public actor DirectSnipLibraryUserActions: SnipLibraryUserActions {
   public func delete(
     ids: Set<UUID>,
     token: UUID,
+    expectation: SnipLibraryExpectation? = nil,
     sortedBy sortMode: SnipSortMode
   ) async throws -> SnipLibraryUpdate {
     await acquireMutation()
     defer { releaseMutation() }
     let before = try await library.checkedSnapshot(sortedBy: sortMode)
     let deleted = before.snips.filter { ids.contains($0.id) }
-    let update = try await library.perform(.delete(ids: ids), sortedBy: sortMode)
+    let deletion = SnipLibraryCommand.delete(ids: ids)
+    let command = expectation.map { SnipLibraryCommand.guarded(expectation: $0, command: deletion) }
+      ?? deletion
+    let update = try await library.perform(command, sortedBy: sortMode)
     pendingDeletion = deleted.isEmpty ? nil : PendingDeletion(token: token, snips: deleted)
     await pruneAttachments(
       retaining: Set(deleted.flatMap(\.attachments).map(\.id)),

@@ -171,7 +171,19 @@
 		E100000000000000000000F2 /* IOSClipboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E200000000000000000000F2 /* IOSClipboardView.swift */; };
 		AF1000000000000000000001 /* SFSymbolNames.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF2000000000000000000001 /* SFSymbolNames.swift */; };
 		AF1000000000000000000002 /* SFSymbolNames.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF2000000000000000000001 /* SFSymbolNames.swift */; };
-		/* End PBXBuildFile section */
+				B10C6F69A47E922E224444A2 /* AppModel+CLILibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 927FB1964550BA812F693419 /* AppModel+CLILibrary.swift */; };
+		626BC7C345FC5524324CB728 /* AppModel+CLIClipboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E237065943A675526AE64D1 /* AppModel+CLIClipboard.swift */; };
+		B700FEAA79234CD1F200C2CE /* AppModel+CLIData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24DC1E8CE2768BCAF08C075B /* AppModel+CLIData.swift */; };
+		EFFC6CBE9CD8E8D7E08F0852 /* AppModelCLILibraryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA32E18D7F9312C2A81EB069 /* AppModelCLILibraryTests.swift */; };
+		217DAC270CDC9FE0B0A1CD29 /* AppModelCLIClipboardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CCB870A1CDC9EF6AE9931C0 /* AppModelCLIClipboardTests.swift */; };
+		9A679104D7B9F2790053689F /* AppModelCLIDataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13838D2E5E0F167E01486223 /* AppModelCLIDataTests.swift */; };
+		C60E991148D38496C99D8A58 /* SnipCLIApplicationSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9378292606E8DEA49D03FDDE /* SnipCLIApplicationSettingsTests.swift */; };
+		490BB32C29F93A3A58EEF383 /* SnipCLIApplicationHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = E456E24078FD5BF4C22A8691 /* SnipCLIApplicationHandler.swift */; };
+		C806CFDB2FEACD6D219D2963 /* SnipCLIApplicationSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85737BC6BCF049385441C07F /* SnipCLIApplicationSettings.swift */; };
+		31B155B7091CF17782049D45 /* InteractiveScreenCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = C55BAB9DA46E821CD8B96915 /* InteractiveScreenCapture.swift */; };
+		DF6F788FC5F4AC6561583F5F /* SnipCLIApplicationHandlerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A18FC2685DF00D7A9E4404E5 /* SnipCLIApplicationHandlerTests.swift */; };
+		B707D9502ADBE72703534E6B /* SnipCLIApplicationNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8158732842310D3EC301C480 /* SnipCLIApplicationNavigationTests.swift */; };
+/* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
 		300000000000000000000001 /* PBXContainerItemProxy */ = {
@@ -369,7 +381,19 @@
 		E200000000000000000000F1 /* IOSClipboardModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSClipboardModel.swift; sourceTree = "<group>"; };
 		E200000000000000000000F2 /* IOSClipboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSClipboardView.swift; sourceTree = "<group>"; };
 		AF2000000000000000000001 /* SFSymbolNames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SFSymbolNames.swift; sourceTree = "<group>"; };
-		/* End PBXFileReference section */
+				927FB1964550BA812F693419 /* AppModel+CLILibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppModel+CLILibrary.swift"; sourceTree = "<group>"; };
+		6E237065943A675526AE64D1 /* AppModel+CLIClipboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppModel+CLIClipboard.swift"; sourceTree = "<group>"; };
+		24DC1E8CE2768BCAF08C075B /* AppModel+CLIData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppModel+CLIData.swift"; sourceTree = "<group>"; };
+		BA32E18D7F9312C2A81EB069 /* AppModelCLILibraryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppModelCLILibraryTests.swift"; sourceTree = "<group>"; };
+		7CCB870A1CDC9EF6AE9931C0 /* AppModelCLIClipboardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppModelCLIClipboardTests.swift"; sourceTree = "<group>"; };
+		13838D2E5E0F167E01486223 /* AppModelCLIDataTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppModelCLIDataTests.swift"; sourceTree = "<group>"; };
+		9378292606E8DEA49D03FDDE /* SnipCLIApplicationSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SnipCLIApplicationSettingsTests.swift"; sourceTree = "<group>"; };
+		E456E24078FD5BF4C22A8691 /* SnipCLIApplicationHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SnipCLIApplicationHandler.swift"; sourceTree = "<group>"; };
+		85737BC6BCF049385441C07F /* SnipCLIApplicationSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SnipCLIApplicationSettings.swift"; sourceTree = "<group>"; };
+		C55BAB9DA46E821CD8B96915 /* InteractiveScreenCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "InteractiveScreenCapture.swift"; sourceTree = "<group>"; };
+		A18FC2685DF00D7A9E4404E5 /* SnipCLIApplicationHandlerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SnipCLIApplicationHandlerTests.swift"; sourceTree = "<group>"; };
+		8158732842310D3EC301C480 /* SnipCLIApplicationNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SnipCLIApplicationNavigationTests.swift"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		600000000000000000000001 /* Frameworks */ = {
@@ -456,6 +480,12 @@
 				200000000000000000000019 /* SnipListModels.swift */,
 				20000000000000000000001A /* AppModel.swift */,
 				F20600000000000000000002 /* AppModel+CLI.swift */,
+				C55BAB9DA46E821CD8B96915 /* InteractiveScreenCapture.swift */,
+				85737BC6BCF049385441C07F /* SnipCLIApplicationSettings.swift */,
+				E456E24078FD5BF4C22A8691 /* SnipCLIApplicationHandler.swift */,
+				24DC1E8CE2768BCAF08C075B /* AppModel+CLIData.swift */,
+				6E237065943A675526AE64D1 /* AppModel+CLIClipboard.swift */,
+				927FB1964550BA812F693419 /* AppModel+CLILibrary.swift */,
 				C20000000000000000000002 /* AttachmentPreparationCoordinator.swift */,
 				200000000000000000000008 /* SelectionCapture.swift */,
 				200000000000000000000021 /* SelectionCaptureAccess.swift */,
@@ -517,6 +547,12 @@
 				200000000000000000000028 /* SnipRepositoryTests.swift */,
 				200000000000000000000029 /* AppModelTests.swift */,
 				A6B000000000000000000002 /* AppModelCLITests.swift */,
+				8158732842310D3EC301C480 /* SnipCLIApplicationNavigationTests.swift */,
+				A18FC2685DF00D7A9E4404E5 /* SnipCLIApplicationHandlerTests.swift */,
+				9378292606E8DEA49D03FDDE /* SnipCLIApplicationSettingsTests.swift */,
+				13838D2E5E0F167E01486223 /* AppModelCLIDataTests.swift */,
+				7CCB870A1CDC9EF6AE9931C0 /* AppModelCLIClipboardTests.swift */,
+				BA32E18D7F9312C2A81EB069 /* AppModelCLILibraryTests.swift */,
 				A6B000000000000000000004 /* AppModelTestSupport.swift */,
 				20000000000000000000002A /* SnipListModelsTests.swift */,
 				20000000000000000000002C /* ShortcutTests.swift */,
@@ -924,6 +960,12 @@
 				100000000000000000000011 /* SnipListModels.swift in Sources */,
 				100000000000000000000012 /* AppModel.swift in Sources */,
 				F20600000000000000000001 /* AppModel+CLI.swift in Sources */,
+				31B155B7091CF17782049D45 /* InteractiveScreenCapture.swift in Sources */,
+				C806CFDB2FEACD6D219D2963 /* SnipCLIApplicationSettings.swift in Sources */,
+				490BB32C29F93A3A58EEF383 /* SnipCLIApplicationHandler.swift in Sources */,
+				B700FEAA79234CD1F200C2CE /* AppModel+CLIData.swift in Sources */,
+				626BC7C345FC5524324CB728 /* AppModel+CLIClipboard.swift in Sources */,
+				B10C6F69A47E922E224444A2 /* AppModel+CLILibrary.swift in Sources */,
 				C10000000000000000000002 /* AttachmentPreparationCoordinator.swift in Sources */,
 				100000000000000000000006 /* SelectionCapture.swift in Sources */,
 				100000000000000000000019 /* SelectionCaptureAccess.swift in Sources */,
@@ -993,6 +1035,12 @@
 				100000000000000000000020 /* SnipRepositoryTests.swift in Sources */,
 				100000000000000000000021 /* AppModelTests.swift in Sources */,
 				A6B000000000000000000001 /* AppModelCLITests.swift in Sources */,
+				B707D9502ADBE72703534E6B /* SnipCLIApplicationNavigationTests.swift in Sources */,
+				DF6F788FC5F4AC6561583F5F /* SnipCLIApplicationHandlerTests.swift in Sources */,
+				C60E991148D38496C99D8A58 /* SnipCLIApplicationSettingsTests.swift in Sources */,
+				9A679104D7B9F2790053689F /* AppModelCLIDataTests.swift in Sources */,
+				217DAC270CDC9FE0B0A1CD29 /* AppModelCLIClipboardTests.swift in Sources */,
+				EFFC6CBE9CD8E8D7E08F0852 /* AppModelCLILibraryTests.swift in Sources */,
 				A6B000000000000000000003 /* AppModelTestSupport.swift in Sources */,
 				100000000000000000000022 /* SnipListModelsTests.swift in Sources */,
 				100000000000000000000024 /* ShortcutTests.swift in Sources */,

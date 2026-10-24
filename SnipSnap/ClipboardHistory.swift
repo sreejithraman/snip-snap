@@ -694,4 +694,47 @@ final class ClipboardHistory: ObservableObject {
         await initialLoadTask?.value
     }
 
+    /// CLI reads include the initial load and every pending capture/write. Retry
+    /// any failed queued persistence before returning a durable snapshot.
+    func checkedCLISnapshot() async throws -> [ClipboardEntry] {
+        await flushPersistence()
+        let loaded = try await sharedStore.merge(state)
+        state.merge(loaded)
+        entries = state.entries
+        persistenceError = nil
+        return entries
+    }
+
+    func checkedCLIEntry(id: UUID, revision: String) async throws -> ClipboardEntry {
+        _ = try await checkedCLISnapshot()
+        return try await sharedStore.checkedCLIEntry(id: id, revision: revision)
+    }
+
+    func performCLI(_ action: SnipCLIClipboardAction) async throws -> [ClipboardEntry] {
+        _ = try await checkedCLISnapshot()
+        switch action {
+        case .setPaused(let paused, let revision):
+            guard SnipCLIClipboardRevision.token(entries: entries, isPaused: isPaused) == revision else {
+                throw SnipCLIClipboardError.historyChanged
+            }
+            setPaused(paused)
+        case .restore(let id, let revision):
+            let entry = try await sharedStore.checkedCLIEntry(id: id, revision: revision)
+            state.merge(ClipboardHistoryState(entries: [entry]))
+            guard restore(entry) else { throw SnipCLIClipboardError.copyFailed }
+            do { _ = try await checkedCLISnapshot() }
+            catch { throw SnipCLIOutcomeUncertain() }
+        case .setPinned, .delete, .clear:
+            let updated = try await sharedStore.performCLI(action, isPaused: isPaused)
+            state.merge(updated)
+            entries = state.entries
+            persistenceError = nil
+            if case .setPinned(let id, _, _) = action { pendingUploadIDs.insert(id) }
+            onChange?()
+        default:
+            throw SnipLibraryError.invalidCommand
+        }
+        return entries
+    }
+
 }

@@ -222,15 +222,15 @@ enum SnipCLIService {
     guard request.scopeToken != nil else { throw SnipSnapCLIError.appUnavailable }
     let initial = try await store.enqueue(request)
     if case .completed(let receipt) = initial {
-      return try await completed(receipt, expectedScope: request.scopeToken, store: store)
+      return try await matchingCompletion(receipt, request: request, store: store)
     }
     if case .uncertain = initial { throw SnipSnapCLIError.outcomeUnknown(request.requestID) }
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: timeout)
     var nextNotification = clock.now
     while clock.now < deadline {
-      guard try await store.activeScopeToken() == request.scopeToken else {
-        throw SnipCLIRequestError.scopeChanged
+      if !request.action.allowsScopeTransition {
+        try await requireActiveScope(request.scopeToken, store: store)
       }
       if clock.now >= nextNotification {
         DistributedNotificationCenter.default().postNotificationName(
@@ -242,16 +242,16 @@ enum SnipCLIService {
         nextNotification = clock.now.advanced(by: .milliseconds(250))
       }
       try await Task.sleep(for: .milliseconds(50))
-      switch try await store.state(for: request.requestID) {
+      switch try await store.state(for: request.requestID, waitingFor: request) {
       case .completed(let receipt):
-        return try await completed(receipt, expectedScope: request.scopeToken, store: store)
+        return try await matchingCompletion(receipt, request: request, store: store)
       case .uncertain: throw SnipSnapCLIError.outcomeUnknown(request.requestID)
       case .missing, .pending, .processing: break
       }
     }
-    let final = try await store.cancelPending(request.requestID)
+    let final = try await store.cancelPending(request.requestID, waitingFor: request)
     if case .completed(let receipt) = final {
-      return try await completed(receipt, expectedScope: request.scopeToken, store: store)
+      return try await matchingCompletion(receipt, request: request, store: store)
     }
     if case .uncertain = final { throw SnipSnapCLIError.outcomeUnknown(request.requestID) }
     if case .processing = final {
@@ -265,7 +265,7 @@ enum SnipCLIService {
     let scope = try await store.activeScopeToken()
     let state = try await store.state(for: id)
     try await requireActiveScope(scope, store: store)
-    if case .completed(let receipt) = state, receipt.scopeToken != scope {
+    if case .completed(let receipt) = state, receipt.visibleScopeToken != scope {
       throw SnipCLIRequestError.scopeChanged
     }
     return state
@@ -284,12 +284,19 @@ enum SnipCLIService {
     expectedScope: String?,
     store: SnipCLIRequestStore
   ) async throws -> SnipCLIReceipt {
-    try await requireActiveScope(expectedScope, store: store)
     guard receipt.scopeToken == expectedScope else { throw SnipCLIRequestError.scopeChanged }
+    try await requireActiveScope(receipt.visibleScopeToken, store: store)
     guard receipt.status == .success else {
       throw SnipSnapCLIError.importFailed(receipt.message ?? "Snip Snap could not complete the command.")
     }
     return receipt
+  }
+
+  private static func matchingCompletion(
+    _ receipt: SnipCLIReceipt, request: SnipCLIRequest, store: SnipCLIRequestStore
+  ) async throws -> SnipCLIReceipt {
+    guard receipt.matches(request) else { throw SnipCLIRequestError.conflictingRequestID }
+    return try await completed(receipt, expectedScope: request.scopeToken, store: store)
   }
 }
 
@@ -306,6 +313,7 @@ enum SnipCLIPrinter {
     let resultListID: UUID?
     let resultSnipID: UUID?
     let message: String?
+    let result: SnipCLIExtendedResult?
 
     init(_ receipt: SnipCLIReceipt) {
       requestID = receipt.requestID
@@ -319,6 +327,7 @@ enum SnipCLIPrinter {
       resultListID = receipt.resultListID
       resultSnipID = receipt.resultSnipID
       message = receipt.message
+      result = receipt.extendedResult
     }
   }
 
@@ -332,6 +341,20 @@ enum SnipCLIPrinter {
       return
     }
     switch receipt.action {
+    case .extended:
+      if let result = receipt.extendedResult {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(result)
+        FileHandle.standardOutput.write(data)
+        FileHandle.standardOutput.write(Data("\n".utf8))
+      } else if let message = receipt.message {
+        print(message)
+      }
+      for snip in receipt.snips {
+        print("\(snip.id.uuidString)\t\(snip.content)")
+      }
+      for list in receipt.lists { print("\(list.id.uuidString)\t\(list.name)") }
     case .add:
       guard let id = receipt.resultSnipID else {
         throw SnipSnapCLIError.importFailed("Snip Snap did not return the added snip.")

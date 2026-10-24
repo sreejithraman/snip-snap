@@ -24,6 +24,16 @@ public enum SyncedAttachmentTransferState: Equatable, Sendable {
     case available
 }
 
+public struct SyncedAttachmentCacheSnapshot: Equatable, Sendable {
+    public let states: [UUID: SyncedAttachmentTransferState]
+    public let revision: String
+
+    public init(states: [UUID: SyncedAttachmentTransferState], revision: String) {
+        self.states = states
+        self.revision = revision
+    }
+}
+
 /// One main-app owner for optional sync and verified, on-demand attachment files.
 public protocol OptionalCloudSyncHandling: AppleAccountCacheHandling {
     func syncWhenPossible() async
@@ -33,9 +43,19 @@ public protocol OptionalCloudSyncHandling: AppleAccountCacheHandling {
     func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState]
     func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL
     func clearDownloadedFiles() async throws
+    func downloadedAttachmentCache(in scope: SnipRecoveryScope) async throws -> SyncedAttachmentCacheSnapshot
+    func clearDownloadedFiles(ifRevision revision: String, in scope: SnipRecoveryScope) async throws -> Bool
 }
 
 public extension OptionalCloudSyncHandling {
+    func downloadedAttachmentCache(in scope: SnipRecoveryScope) async throws -> SyncedAttachmentCacheSnapshot {
+        throw SnipLibraryError.transferUnsupported
+    }
+
+    func clearDownloadedFiles(ifRevision revision: String, in scope: SnipRecoveryScope) async throws -> Bool {
+        throw SnipLibraryError.transferUnsupported
+    }
+
     func retrySyncWhenPossible() async {
         await syncWhenPossible()
     }
@@ -524,6 +544,14 @@ public protocol SnipLibrary: Sendable {
         choice: SnipRecoveryChoice
     ) async throws -> SnipLibrarySnapshot
 
+    @discardableResult
+    func resolveRecovery(
+        _ id: UUID,
+        in scope: SnipRecoveryScope,
+        choice: SnipRecoveryChoice,
+        expectation: SnipRecoveryExpectation?
+    ) async throws -> SnipLibrarySnapshot
+
     func archive() async throws -> SnipLibraryArchive
 }
 
@@ -582,6 +610,18 @@ public extension SnipLibrary {
     ) async throws -> SnipLibrarySnapshot {
         _ = (id, scope, choice)
         throw SnipLibraryError.recoveryNotFound
+    }
+
+    @discardableResult
+    func resolveRecovery(
+        _ id: UUID,
+        in scope: SnipRecoveryScope,
+        choice: SnipRecoveryChoice,
+        expectation: SnipRecoveryExpectation?
+    ) async throws -> SnipLibrarySnapshot {
+        // Adapters that cannot check a guard atomically must reject it.
+        guard expectation == nil else { throw SnipLibraryError.invalidCommand }
+        return try await resolveRecovery(id, in: scope, choice: choice)
     }
 
     func archive() async throws -> SnipLibraryArchive {

@@ -80,12 +80,36 @@ final class AppModel: ObservableObject {
     @Published private(set) var latestAddedSnipID: UUID?
     @Published private(set) var sortMode: SnipSortMode
     @Published private(set) var appearance: AppAppearance
-    @Published private(set) var recoverySnapshot: SnipRecoverySnapshot = .empty
-    @Published private(set) var legacyDraftCount = 0
-    @Published private(set) var pendingImportPreview: SnipImportPreview?
-    private var pendingImportPreviewID: UUID?
+    @Published var recoverySnapshot: SnipRecoverySnapshot = .empty
+    @Published var legacyDraftCount = 0
+    @Published var pendingImportPreview: SnipImportPreview?
+    var pendingImportPreviewID: UUID?
+    var cliImportPreviewID: UUID?
     @Published var toast: AppToast?
     @Published var clipboardCopyPulse: ClipboardCopyPulse?
+    @Published private(set) var cliScopeChangeInProgress = false
+    private(set) var cliMutationInProgress = false
+    var cliDialogIsPresented: @MainActor () -> Bool = { false }
+
+    var isCLIInteractionReserved: Bool { cliScopeChangeInProgress || cliMutationInProgress }
+
+    func beginCLIScopeChange() throws {
+        guard !isCLIInteractionReserved else { throw SnipLibraryError.modeTransitionInProgress }
+        guard editingID == nil, !cliDialogIsPresented() else {
+            throw SnipCLIRequestError.editingInProgress
+        }
+        cliScopeChangeInProgress = true
+    }
+
+    func endCLIScopeChange() { cliScopeChangeInProgress = false }
+
+    func beginCLIMutation() throws {
+        guard !isCLIInteractionReserved else { throw SnipLibraryError.modeTransitionInProgress }
+        guard !cliDialogIsPresented() else { throw SnipCLIRequestError.editingInProgress }
+        cliMutationInProgress = true
+    }
+
+    func endCLIMutation() { cliMutationInProgress = false }
 
     func enterSearch() {
         guard editingID == nil, !isSearchExpanded else { return }
@@ -372,6 +396,10 @@ final class AppModel: ObservableObject {
         let archive = try await session.withExclusiveAccess { session in
             try await session.archive()
         }
+        try await writeBackup(archive, at: url)
+    }
+
+    func writeBackup(_ archive: SnipLibraryArchive, at url: URL) async throws {
         try await JSONSnipArchiveTransfer.write(
             archive,
             to: url,
@@ -670,6 +698,11 @@ final class AppModel: ObservableObject {
     func addDraftAttachments(_ urls: [URL], to listID: UUID) {
         guard !retiredComposerListIDs.contains(listID) else { return }
         composerDrafts.add(urls, to: liveComposerListID(listID))
+    }
+
+    func replaceDraftAttachments(_ urls: [URL], in listID: UUID) {
+        guard !retiredComposerListIDs.contains(listID) else { return }
+        composerDrafts.replaceAttachments(urls, for: liveComposerListID(listID))
     }
 
     func addTemporaryDraftAttachment(_ url: URL, to listID: UUID) {
@@ -1226,6 +1259,7 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func beginEditing(_ id: UUID) async -> Bool {
+        guard !isCLIInteractionReserved else { return false }
         if editingID == id { return true }
         guard editingID == nil,
               (!isSearchExpanded || hasActiveQuery),
@@ -1239,7 +1273,7 @@ final class AppModel: ObservableObject {
             _ = try await prepareAttachments(snip.attachments, for: .open)
             return await withCommandLock {
                 if editingID == id { return true }
-                guard editingID == nil,
+                guard !isCLIInteractionReserved, editingID == nil,
                       isSearchExpanded == startingSearchState,
                       query == startingQuery,
                       activeListID == startingListID,
@@ -1590,7 +1624,7 @@ final class AppModel: ObservableObject {
         await session.withExclusiveAccess { _ in await operation() }
     }
 
-    private func clearPendingDeletionToast() {
+    func clearPendingDeletionToast() {
         guard let toast, toast.action == .undoDelete else { return }
         self.toast = nil
     }

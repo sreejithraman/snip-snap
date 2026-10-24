@@ -105,9 +105,12 @@ public actor SavedSnipsSession {
     public func delete(
         ids: Set<UUID>,
         token: UUID,
+        expectation: SnipLibraryExpectation? = nil,
         sortedBy sortMode: SnipSortMode
     ) async throws -> SnipLibraryUpdate {
-        let update = try await userActions.delete(ids: ids, token: token, sortedBy: sortMode)
+        let update = try await userActions.delete(
+            ids: ids, token: token, expectation: expectation, sortedBy: sortMode
+        )
         pendingDeletionToken = token
         return update
     }
@@ -127,17 +130,23 @@ public actor SavedSnipsSession {
     }
 
     public func refreshRecovery() async -> SnipRecoverySnapshot {
+        (try? await checkedRecovery()) ?? .empty
+    }
+
+    public func checkedRecovery() async throws -> SnipRecoverySnapshot {
         guard let recoveryScope else { return .empty }
-        return (try? await library.recoverySnapshot(in: recoveryScope)) ?? .empty
+        return try await library.recoverySnapshot(in: recoveryScope)
     }
 
     public func resolveRecovery(
         _ id: UUID,
         choice: SnipRecoveryChoice,
+        expectation: SnipRecoveryExpectation? = nil,
         sortedBy sortMode: SnipSortMode
     ) async throws -> SavedSnipsSessionState? {
         guard let recoveryScope else { return nil }
-        _ = try await library.resolveRecovery(id, in: recoveryScope, choice: choice)
+        _ = try await library.resolveRecovery(id, in: recoveryScope, choice: choice,
+                                              expectation: expectation)
         return await state(sortedBy: sortMode)
     }
 

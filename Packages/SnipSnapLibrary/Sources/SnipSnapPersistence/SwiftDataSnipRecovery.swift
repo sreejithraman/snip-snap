@@ -75,6 +75,16 @@ extension SwiftDataSnipLibrary {
     in scope: SnipRecoveryScope,
     choice: SnipRecoveryChoice
   ) async throws -> SnipLibrarySnapshot {
+    try await resolveRecovery(id, in: scope, choice: choice, expectation: nil)
+  }
+
+  @discardableResult
+  public func resolveRecovery(
+    _ id: UUID,
+    in scope: SnipRecoveryScope,
+    choice: SnipRecoveryChoice,
+    expectation: SnipRecoveryExpectation?
+  ) async throws -> SnipLibrarySnapshot {
     guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     do {
       let lock = try SnipStoreFileLock(url: lockURL)
@@ -97,6 +107,19 @@ extension SwiftDataSnipLibrary {
 
       let loaded = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
       var state = loaded.state
+      if let expectation {
+        guard expectation.record == review.recovery else { throw SnipLibraryError.recoveryChanged }
+        switch review.recovery {
+        case .snip(let recovery):
+          guard expectation.currentList == nil,
+                expectation.currentSnip == state.snips.first(where: { $0.id == recovery.currentSnipID })
+          else { throw SnipLibraryError.recoveryChanged }
+        case .list(let recovery):
+          guard expectation.currentSnip == nil,
+                expectation.currentList == state.lists.first(where: { $0.id == recovery.currentListID })
+          else { throw SnipLibraryError.recoveryChanged }
+        }
+      }
       var promotedReview: RecoveredSnip?
       switch review.recovery {
       case .snip(let recovery):

@@ -33,6 +33,7 @@ struct ContentView: View {
     @Environment(\.controlActiveState) private var controlActiveState
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.layoutDirection) private var layoutDirection
+    @Environment(\.openSettings) private var openSettings
     let coordinator: AppCoordinator
     @ObservedObject private var accessibilityPermissions: AccessibilityPermissionController
     @ObservedObject private var clipboardHistory: ClipboardHistory
@@ -184,6 +185,7 @@ struct ContentView: View {
         panelLayout
         .task { await SnipListIconOptions.prepareCatalog() }
         .onAppear {
+            coordinator.openSettingsAction = { openSettings() }
             cacheComposerDraft(for: model.activeListID)
             if model.hasActiveQuery { model.enterSearch() }
             focusedTarget = model.isSearchExpanded
@@ -193,6 +195,7 @@ struct ContentView: View {
             commandNumberPicker.setEnabled(hasCommandNumberFocus)
         }
         .onDisappear {
+            coordinator.openSettingsAction = nil
             commandNumberPicker.stopMonitoring()
         }
         .onChange(of: hasCommandNumberFocus, initial: true) { _, isEnabled in
@@ -1070,19 +1073,13 @@ struct ContentView: View {
         to url: URL,
         completion: @escaping @MainActor (Bool) -> Void
     ) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-        process.arguments = ["-i", url.path]
-        process.terminationHandler = { process in
-            Task { @MainActor in
-                let succeeded = process.terminationStatus == 0
-                    && FileManager.default.fileExists(atPath: url.path)
-                completion(succeeded)
+        Task { @MainActor in
+            do {
+                completion(try await InteractiveScreenCapture.capture(to: url))
+            } catch {
+                completion(false)
+                model.presentError(String(localized: "Couldn’t start screen capture. Try again."))
             }
-        }
-        do { try process.run() } catch {
-            completion(false)
-            model.presentError(String(localized: "Couldn’t start screen capture. Try again."))
         }
     }
 

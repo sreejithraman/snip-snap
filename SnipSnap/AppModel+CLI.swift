@@ -5,6 +5,20 @@ import SnipSnapCore
 extension AppModel {
     func handleCLIRequest(_ request: SnipCLIRequest) async throws -> SnipCLIReceipt {
         switch request.action {
+        case .extended(let action):
+            guard request.scopeToken == nil || request.scopeToken == cliScopeToken else {
+                throw SnipCLIRequestError.scopeChanged
+            }
+            switch action {
+            case .library(let action):
+                return try await handleCLILibraryRequest(request, action: action)
+            case .clipboard(let action):
+                return try await handleCLIClipboard(action, request: request)
+            case .data(let action):
+                return try await handleCLIDataRequest(request, action: action)
+            case .application:
+                throw SnipLibraryError.invalidCommand
+            }
         case .add(let content, let selector, let agentContext):
             let source = agentContext.map {
                 SnipSource(applicationName: "", agentContext: $0)
@@ -177,7 +191,7 @@ extension AppModel {
         }
     }
 
-    private func cliArchive(scopeToken: String?) async throws -> SnipLibrarySnapshot {
+    func cliArchive(scopeToken: String?) async throws -> SnipLibrarySnapshot {
         let result: Result<SnipLibrarySnapshot, Error> = await withCommandLock {
             guard scopeToken == nil || scopeToken == cliScopeToken else {
                 return .failure(SnipCLIRequestError.scopeChanged)
@@ -188,7 +202,7 @@ extension AppModel {
         return try result.get()
     }
 
-    private func performCLIMutation<Value: Sendable>(
+    func performCLIMutation<Value: Sendable>(
         scopeToken: String? = nil,
         recover: (@MainActor @Sendable (SnipLibrarySnapshot) -> Value?)? = nil,
         _ mutation: @MainActor @Sendable () async throws -> (SnipLibraryUpdate, Value)
@@ -197,18 +211,22 @@ extension AppModel {
             guard scopeToken == nil || scopeToken == cliScopeToken else {
                 return .failure(SnipCLIRequestError.scopeChanged)
             }
+            do { try beginCLIMutation() }
+            catch { return .failure(error) }
+            defer { endCLIMutation() }
             switch await performMutationUnlocked(mutation) {
             case .success(let value):
                 return .success(value)
             case .failure(let error):
-                if error is SnipCLIRequestError {
+                if error is SnipCLIRequestError || error is SnipCLIClipboardError {
                     return .failure(error)
                 }
                 if let libraryError = error as? SnipLibraryError {
                     switch libraryError {
                     case .emptyContent, .snipNotFound, .snipChanged, .duplicateList,
                          .invalidList, .invalidCommand, .modeTransitionInProgress,
-                         .readOnlyRecovery:
+                         .readOnlyRecovery, .recoveryNotFound, .recoveryChanged,
+                         .invalidRecoveryChoice, .importChanged:
                         return .failure(error)
                     default:
                         break
@@ -227,14 +245,14 @@ extension AppModel {
         return try result.get()
     }
 
-    private func cliList(_ selector: String, in lists: [SnipList]) throws -> SnipList {
+    func cliList(_ selector: String, in lists: [SnipList]) throws -> SnipList {
         guard let list = SnipListNameAllocator.matching(selector, in: lists) else {
             throw SnipLibraryError.invalidList
         }
         return list
     }
 
-    private func cliListGuard(
+    func cliListGuard(
         id: UUID, revision: String, in archive: SnipLibrarySnapshot
     ) throws -> (SnipList, SnipLibraryExpectation) {
         guard let list = archive.lists.first(where: { $0.id == id }) else {
