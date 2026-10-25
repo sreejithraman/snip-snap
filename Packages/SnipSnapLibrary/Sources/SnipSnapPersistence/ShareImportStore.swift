@@ -177,18 +177,22 @@ public enum ShareProviderFileLoader {
 /// Publishes Share-extension saves to the atomic pending-import inbox.
 public actor ShareImportStore {
   private let paths: ShareImportPaths
+  private let diagnostics: AppDiagnosticRecorder
   private let afterPendingSaveBeforeCleanup: @Sendable () throws -> Void
 
-  public init(sharedRootURL: URL) {
+  public init(sharedRootURL: URL, diagnostics: AppDiagnosticRecorder = .live) {
     paths = ShareImportPaths(rootURL: sharedRootURL)
+    self.diagnostics = diagnostics
     afterPendingSaveBeforeCleanup = {}
   }
 
   package init(
     sharedRootURL: URL,
+    diagnostics: AppDiagnosticRecorder = .live,
     afterPendingSaveBeforeCleanup: @escaping @Sendable () throws -> Void
   ) {
     paths = ShareImportPaths(rootURL: sharedRootURL)
+    self.diagnostics = diagnostics
     self.afterPendingSaveBeforeCleanup = afterPendingSaveBeforeCleanup
   }
 
@@ -197,7 +201,7 @@ public actor ShareImportStore {
   }
 
   public func availableLists() async -> [SnipList] {
-    return ShareDestinationCatalog.read(from: paths.catalogURL)
+    return ShareDestinationCatalog.read(from: paths.catalogURL, diagnostics: diagnostics)
   }
 
   /// Writes Share/destinations.json. This is the only production write, in both
@@ -437,16 +441,30 @@ package struct ShareImportPaths: Sendable {
 }
 
 package enum ShareDestinationCatalog {
+
   static func write(_ lists: [SnipList], to url: URL) throws {
     try DurableFile.write(JSONEncoder.shareImport.encode(lists), to: url)
   }
 
-  static func read(from url: URL) -> [SnipList] {
-    guard let data = try? Data(contentsOf: url),
-      let lists = try? JSONDecoder.shareImport.decode([SnipList].self, from: data),
-      lists.contains(where: { $0.id == SnipList.inboxID })
-    else { return [.inbox] }
-    return lists
+  static func read(from url: URL, diagnostics: AppDiagnosticRecorder) -> [SnipList] {
+    do {
+      let data = try Data(contentsOf: url)
+      let lists = try JSONDecoder.shareImport.decode([SnipList].self, from: data)
+      guard lists.contains(where: { $0.id == SnipList.inboxID }) else {
+        throw CocoaError(.fileReadCorruptFile)
+      }
+      return lists
+    } catch {
+      let nsError = error as NSError
+      let isMissing = nsError.domain == NSCocoaErrorDomain
+        && (nsError.code == NSFileReadNoSuchFileError || nsError.code == NSFileNoSuchFileError)
+      if !isMissing && !isDiagnosticCancellation(error) {
+        diagnostics.record(
+          .failure(operation: "share.catalog_read", error: error, visibility: .background)
+        )
+      }
+      return [.inbox]
+    }
   }
 }
 

@@ -13,24 +13,29 @@ import SnipSnapCore
 @MainActor
 public final class ShareListCatalogPublisher {
   private let write: @Sendable ([SnipList]) async throws -> Void
+  private let diagnostics: AppDiagnosticRecorder
   private let beforePublish: (@Sendable () async -> Void)?
   private var latest: Task<Void, Never>?
   private var published: [SnipList]?
 
   public init(
     write: @escaping @Sendable ([SnipList]) async throws -> Void,
+    diagnostics: AppDiagnosticRecorder = .live,
     beforePublish: (@Sendable () async -> Void)? = nil
   ) {
     self.write = write
+    self.diagnostics = diagnostics
     self.beforePublish = beforePublish
   }
 
   public convenience init(
     imports: ShareImportStore,
+    diagnostics: AppDiagnosticRecorder = .live,
     beforePublish: (@Sendable () async -> Void)? = nil
   ) {
     self.init(
       write: { try await imports.publishAvailableLists($0) },
+      diagnostics: diagnostics,
       beforePublish: beforePublish
     )
   }
@@ -46,6 +51,10 @@ public final class ShareListCatalogPublisher {
         published = lists
       } catch {
         published = nil
+        guard !isDiagnosticCancellation(error) else { return }
+        diagnostics.record(
+          .failure(operation: "share.catalog_publish", error: error, visibility: .background)
+        )
       }
     }
   }

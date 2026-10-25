@@ -2,27 +2,18 @@ import CryptoKit
 import Darwin
 import Foundation
 
-/// All byte budgets count encoded bytes, including duplicated failure context.
-struct AppDiagnosticRetentionPolicy: Sendable {
-  var historyBytes = 10 * 1_024 * 1_024
-  var protectedBytes = 2 * 1_024 * 1_024
-  var segmentBytes = 1_024 * 1_024
-  var segmentAge: TimeInterval = 86_400
-  var retentionAge: TimeInterval = 7 * 86_400
-  var exportBytes = 5 * 1_024 * 1_024
-  var stagingBytes = 5 * 1_024 * 1_024
-  var aggregationWindow: TimeInterval = 60
-  var contextCount = 8
-}
-
-/// Owns a bundle's local files. No document, app-group, or network storage is used.
+/// Owns one resolved local history. Scope resolution alone selects bundle or app-group storage.
 /// flock serializes separate instances/processes; NSLock also protects instance state.
 final class AppDiagnosticEventStore: @unchecked Sendable {
+  private typealias Record = AppDiagnosticRecord
+  private typealias ControlFence = AppDiagnosticControlFence
   private static let unbundledNamespace = "unbundled-\(UUID().uuidString)"
   private static let session = UUID().uuidString
   private static let recordLimit = 4_096
   private let directoryURL: URL
   private let legacyDirectoryURL: URL?
+  private let priorDirectoryURLs: [URL]
+  private let legacyMigrationMarker: String
   private let policy: AppDiagnosticRetentionPolicy
   private let now: () -> Date
   private let appVersion: String
@@ -33,61 +24,28 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
   private var context: [Record] = []
   private var contextClearToken: Data?
 
-  private struct Record: Codable {
-    var id: UUID
-    var first: Date
-    var last: Date
-    var count: Int
-    var line: String
-    var version: String
-    var build: String
-    var os: String
-    var context: Bool = false
-    var schema: Int = 1
-    var severity: String = "info"
-
-    static func severity(for line: String) -> String {
-      if line.contains("outcome=failed") { return "error" }
-      if line.contains("outcome=missing") || line.contains("outcome=cancelled") { return "notice" }
-      return "info"
-    }
-
-    var protected: Bool {
-      context || line.contains("outcome=failed") || line.contains("outcome=missing")
-        || line.contains("outcome=cancelled")
-    }
-
-    var exportPriority: Int {
-      if line.contains("outcome=failed") { return 3 }
-      if protected && !context { return 2 }
-      return context ? 1 : 0
-    }
-
-    var rendered: String {
-      let event = line.split(separator: " ", maxSplits: 1).last.map(String.init) ?? ""
-      var result = "\(last.ISO8601Format()) \(event)"
-      if count > 1 {
-        result += " count=\(count) first=\(first.ISO8601Format()) last=\(last.ISO8601Format())"
-      }
-      result += " schema=1 severity=\(severity)"
-      result += " app_version=\(version) app_build=\(build) os=\(os)"
-      if context { result += " context=true" }
-      return result
-    }
-  }
-
   init(
     directoryURL: URL, policy: AppDiagnosticRetentionPolicy = .init(),
     appVersion: String, appBuild: String, legacyDirectoryURL: URL? = nil,
+    priorDirectoryURLs: [URL] = [],
     now: @escaping () -> Date = Date.init, lockTimeout: TimeInterval = 0.25
   ) {
     self.lockTimeout = lockTimeout.isFinite ? max(0, min(lockTimeout, 0.5)) : 0.25
     self.directoryURL = directoryURL
     self.legacyDirectoryURL = legacyDirectoryURL
+    self.priorDirectoryURLs = priorDirectoryURLs
+    if priorDirectoryURLs.isEmpty {
+      legacyMigrationMarker = "migration-complete"
+    } else {
+      let namespace = priorDirectoryURLs[0].deletingLastPathComponent().lastPathComponent
+      let key = SHA256.hash(data: Data(namespace.utf8)).prefix(8).map { String(format: "%02x", $0) }
+        .joined()
+      legacyMigrationMarker = "migration-cache-\(key).complete"
+    }
     self.policy = policy
     self.now = now
-    self.appVersion = Self.safeVersion(appVersion)
-    self.appBuild = Self.safeVersion(appBuild)
+    self.appVersion = Record.safeVersion(appVersion)
+    self.appBuild = Record.safeVersion(appBuild)
     let version = ProcessInfo.processInfo.operatingSystemVersion
     #if os(iOS)
       let platform = "iOS"
@@ -169,56 +127,66 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
     try? appendThrowing(event, at: date)
   }
 
-  func appendThrowing(
-    _ event: AppDiagnosticEvent, at date: Date? = nil, count: Int = 1, first: Date? = nil
-  ) throws {
+  /// Selection and every resulting append share one bounded lock acquisition.
+  func appendThrowing(_ event: AppDiagnosticEvent, occurrences: [AppDiagnosticOccurrence]) throws {
     try synchronized {
-      guard recordingEnabledLocked else { return }
-      let clearToken = read(url("clear-token"), limit: 64) ?? Data()
-      if contextClearToken != clearToken {
-        context.removeAll()
-        contextClearToken = clearToken
-      }
-      let date = date ?? now()
-      let first = first ?? date
-      guard count > 0, first <= date,
-        first.timeIntervalSince1970.isFinite, abs(first.timeIntervalSince1970) < 253_402_300_800,
-        date.timeIntervalSince1970.isFinite, abs(date.timeIntervalSince1970) < 253_402_300_800,
-        let line = AppDiagnosticLine.sanitize("\(date.ISO8601Format()) \(event.line)")
-      else { return }
-      var record = Record(
-        id: UUID(), first: first, last: date, count: count, line: line,
-        version: appVersion, build: appBuild, os: os)
-      record.severity = Record.severity(for: line)
-      try updateHealth(record)
-      if var previous = pending(),
-        previous.line.split(separator: " ", maxSplits: 1).last
-          == line.split(separator: " ", maxSplits: 1).last,
-        previous.version == appVersion, previous.build == appBuild,
-        date >= previous.last, date.timeIntervalSince(previous.first) < policy.aggregationWindow,
-        previous.count <= Int.max - count
+      for selection in AppDiagnosticOccurrence.retained(
+        occurrences, event: event, after: try controlFence()?.submission)
       {
-        previous.last = date
-        previous.count += count
-        try write(previous, to: url("aggregate.json"))
-      } else {
-        try flushPending()
-        if record.protected {
-          for var breadcrumb in context.suffix(max(0, min(policy.contextCount, 8))) {
-            breadcrumb.id = UUID()
-            breadcrumb.context = true
-            try appendRecord(breadcrumb)
-          }
-        }
-        try appendRecord(record)
-        try write(record, to: url("aggregate.json"))
+        let retained = selection.occurrence
+        try appendLocked(
+          selection.event, at: retained.last, count: retained.count,
+          first: retained.first, submitted: retained.stamp)
       }
-      if !record.protected {
-        context.append(record)
-        context = Array(context.suffix(max(0, min(policy.contextCount, 8))))
-      }
-      try cleanup()
     }
+  }
+
+  func appendThrowing(
+    _ event: AppDiagnosticEvent, at date: Date? = nil, count: Int = 1, first: Date? = nil,
+    submitted: AppDiagnosticSubmissionStamp? = nil
+  ) throws {
+    try synchronized { try appendLocked(event, at: date, count: count, first: first, submitted: submitted) }
+  }
+
+  private func appendLocked(
+    _ event: AppDiagnosticEvent, at date: Date?, count: Int, first: Date?,
+    submitted: AppDiagnosticSubmissionStamp?
+  ) throws {
+    guard recordingEnabledLocked else { return }
+    if let submitted, let fence = try controlFence(), submitted.precedes(fence.submission) { return }
+    let clearToken = read(url("clear-token"), limit: 64) ?? Data()
+    if contextClearToken != clearToken {
+      context.removeAll()
+      contextClearToken = clearToken
+    }
+    let date = date ?? now()
+    let first = first ?? date
+    guard let record = Record.make(
+      event: event, first: first, last: date, count: count,
+      version: appVersion, build: appBuild, os: os)
+    else { return }
+    try updateHealth(record)
+    if var previous = pending(), previous.aggregates(record, window: policy.aggregationWindow) {
+      previous.last = date
+      previous.count += count
+      try write(previous, to: url("aggregate.json"))
+    } else {
+      try flushPending()
+      if record.protected {
+        for var breadcrumb in context.suffix(max(0, min(policy.contextCount, 8))) {
+          breadcrumb.id = UUID()
+          breadcrumb.context = true
+          try appendRecord(breadcrumb)
+        }
+      }
+      try appendRecord(record)
+      try write(record, to: url("aggregate.json"))
+    }
+    if !record.protected {
+      context.append(record)
+      context = Array(context.suffix(max(0, min(policy.contextCount, 8))))
+    }
+    try cleanup()
   }
 
   func makeShareableFile(range: AppDiagnosticExportRange = .last24Hours) throws -> URL {
@@ -257,15 +225,7 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
   }
 
   func readRecordingEnabled() throws -> Bool {
-    try synchronized {
-      guard let data = read(url("recording.json"), limit: 64) else {
-        guard !exists(url("recording.json")) else { throw CocoaError(.fileReadUnknown) }
-        return true
-      }
-      if data == Data("enabled\n".utf8) { return true }
-      if data == Data("disabled\n".utf8) { return false }
-      throw CocoaError(.fileReadCorruptFile)
-    }
+    try synchronized { try recordingPreference() }
   }
 
   func setRecordingEnabled(_ enabled: Bool) throws {
@@ -318,29 +278,103 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
       defer { flock(descriptor, LOCK_UN) }
       if prepareHistory {
         try discardAbandonedShares()
+        try migrateOwnedHistory()
         try migrateLegacy()
       }
       return try operation()
     }()
   }
 
-  /// Older stores were capped at 64 KiB. Import at most that much per owned file.
-  /// Stable IDs make a retry after interruption idempotent, including overlapping exports.
+  /// Scope-owned history is consumed repeatedly; completion gates preference adoption.
+  /// Clear discards pending imports, including later writes in rediscovered sandboxes.
+  /// Unreadable files retry; readable sources are consumed after ID/count deduplication.
+  private func migrateOwnedHistory() throws {
+    for sourceURL in priorDirectoryURLs
+    where sourceURL.standardizedFileURL != directoryURL.standardizedFileURL {
+      let namespace = sourceURL.deletingLastPathComponent().lastPathComponent
+      let key = SHA256.hash(data: Data(namespace.utf8)).prefix(8).map { String(format: "%02x", $0) }
+        .joined()
+      let marker = url("migration-owned-\(key).complete")
+      guard exists(sourceURL),
+        (try? sourceURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == false
+      else { continue }
+      let source = AppDiagnosticEventStore(
+        directoryURL: sourceURL, policy: policy,
+        appVersion: appVersion, appBuild: appBuild, now: now, lockTimeout: lockTimeout)
+      let optOutPending = url("migration-off-\(key).pending")
+      if exists(marker), !exists(optOutPending), !source.exists(source.url("aggregate.json")),
+        !source.exists(source.url("diagnostic-sync-health.txt")),
+        (try? source.segments().isEmpty) == true
+      { continue }
+      if exists(optOutPending)
+        || (!exists(marker) && !exists(url("recording.json"))
+          && source.exists(source.url("recording.json")) && !source.recordingEnabledLocked)
+      {
+        // Adopt an old opt-out only once, before taking the source history lock.
+        // This keeps early extension evidence private even while the source is busy.
+        // A pending marker retries any interrupted purge before the next export.
+        try Data("1\n".utf8).write(to: optOutPending, options: .atomic)
+        try setRecordingLocked(false)
+        for file in (try segments()) + [
+          url("aggregate.json"), url("diagnostic-sync-health.txt"),
+        ] { try remove(file) }
+        try remove(optOutPending)
+      }
+      do {
+        try source.synchronized(prepareHistory: false) {
+          if source.exists(source.url("aggregate.json")),
+            source.read(source.url("aggregate.json"), limit: Self.recordLimit) == nil
+          {
+            throw CocoaError(.fileReadUnknown)
+          }
+          let incomingHealth = try source.healthLines()
+          let incoming = try source.recordsLocked()
+          let existing = Dictionary(
+            try recordsLocked().map { ($0.id, $0.count) }, uniquingKeysWith: max)
+          let discardPending = try controlFence()?.clearedAt != nil
+          for record in incoming.sorted(by: { $0.last < $1.last })
+          where !discardPending && existing[record.id, default: 0] < record.count
+          {
+            try appendRecord(record)
+          }
+          if !discardPending, !incomingHealth.isEmpty { try mergeHealth(incomingHealth) }
+          try cleanup()
+          // Delete only after every source was readable and every destination write
+          // succeeded. Partial deletion is safe: the next pass deduplicates by ID.
+          for file in try source.segments() { try source.remove(file) }
+          try source.remove(source.url("aggregate.json"))
+          try source.remove(source.url("diagnostic-sync-health.txt"))
+          try Data("1\n".utf8).write(to: marker, options: .atomic)
+        }
+      } catch {
+        // Leave busy/unreadable sources for retry while shared recording/export continues.
+        continue
+      }
+    }
+  }
+
+  /// Imports at most 64 KiB per owned legacy file; a persisted clear discards pending
+  /// sources regardless of record dates. Stable IDs deduplicate interrupted imports.
   private func migrateLegacy() throws {
-    guard !exists(url("migration-complete")), recordingEnabledLocked else { return }
-    var roots = [directoryURL]
+    guard !exists(url(legacyMigrationMarker)), recordingEnabledLocked else { return }
+    var roots = [directoryURL] + priorDirectoryURLs.filter {
+      (try? $0.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == false
+    }
     if let legacyDirectoryURL,
       legacyDirectoryURL.standardizedFileURL != directoryURL.standardizedFileURL,
       (try? legacyDirectoryURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true
     {
       roots.append(legacyDirectoryURL)
     }
+    let discardPending = try controlFence()?.clearedAt != nil
     var consumed: [URL] = []
     var needsRetry = false
     var recoveredHealth: [String: Record] = [:]
     var sidecarHealth: [String: Record] = [:]
     for root in roots {
-      for name in ["attachment-events.txt", "diagnostic-events.txt", "diagnostic-sync-health.txt"] {
+      for name in ["attachment-events.txt", "diagnostic-events.txt", "diagnostic-sync-health.txt"]
+      where name != "diagnostic-sync-health.txt" || root == directoryURL || !priorDirectoryURLs.contains(root)
+      {
         let source = root.appendingPathComponent(name)
         var occurrences: [String: Int] = [:]
         var imported: [Record] = []
@@ -371,7 +405,7 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
           continue
         }
         if !completed { needsRetry = true }
-        for record in imported {
+        for record in imported where !discardPending {
           if name != "diagnostic-sync-health.txt",
             record.last >= now().addingTimeInterval(-policy.retentionAge)
           {
@@ -379,43 +413,64 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
           }
           if let key = healthKey(record.line) {
             if name == "diagnostic-sync-health.txt" {
-              if sidecarHealth[key] == nil || root == directoryURL { sidecarHealth[key] = record }
+              if sidecarHealth[key].map({ $0.last >= record.last }) != true { sidecarHealth[key] = record }
             } else if recoveredHealth[key].map({ $0.last >= record.last }) != true {
               recoveredHealth[key] = record
             }
           }
         }
-        if completed, name != "diagnostic-sync-health.txt",
+        if completed, name != "diagnostic-sync-health.txt" || root != directoryURL,
           (try? source.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
         {
           consumed.append(source)
         }
-        if completed, root != directoryURL, name == "diagnostic-sync-health.txt", exists(source) {
-          consumed.append(source)
-        }
       }
     }
-    for key in recoveredHealth.keys.sorted() {
-      if let record = recoveredHealth[key], sidecarHealth[key] == nil { try updateHealth(record) }
-    }
-    for key in sidecarHealth.keys.sorted() {
-      if let record = sidecarHealth[key] { try updateHealth(record) }
-    }
+    let importedHealth = recoveredHealth.values.map(\.line) + sidecarHealth.values.map(\.line)
+    if !importedHealth.isEmpty { try mergeHealth(importedHealth) }
     if !needsRetry {
-      try Data("1\n".utf8).write(to: url("migration-complete"), options: .atomic)
+      try Data("1\n".utf8).write(to: url(legacyMigrationMarker), options: .atomic)
     }
     for source in consumed { try? remove(source) }
     try cleanup()
   }
 
-  private var recordingEnabledLocked: Bool {
+  private var recordingEnabledLocked: Bool { (try? recordingPreference()) ?? false }
+
+  private func recordingPreference() throws -> Bool {
     guard let data = read(url("recording.json"), limit: 64) else {
-      return !exists(url("recording.json"))
+      guard !exists(url("recording.json")) else { throw CocoaError(.fileReadUnknown) }
+      return true
     }
-    return String(decoding: data, as: UTF8.self) == "enabled\n"
+    if data == Data("enabled\n".utf8) { return true }
+    if data == Data("disabled\n".utf8) { return false }
+    throw CocoaError(.fileReadCorruptFile)
+  }
+
+  private func controlFence() throws -> ControlFence? {
+    guard exists(url("submission-fence.json")) else { return nil }
+    guard let data = read(url("submission-fence.json"), limit: 512) else {
+      throw CocoaError(.fileReadUnknown)
+    }
+    let result = try JSONDecoder().decode(ControlFence.self, from: data)
+    guard result.submission.uptime.isFinite, result.submission.uptime >= 0 else {
+      throw CocoaError(.fileReadCorruptFile)
+    }
+    return result
+  }
+
+  private func advanceFence(clearing: Bool = false) throws {
+    let fence = ControlFence(
+      submission: .capture(), clearedAt: clearing ? now() : try controlFence()?.clearedAt)
+    try JSONEncoder().encode(fence).write(to: url("submission-fence.json"), options: .atomic)
+    let token = Data(UUID().uuidString.utf8)
+    try token.write(to: url("clear-token"), options: .atomic)
+    contextClearToken = token
+    context.removeAll()
   }
 
   private func setRecordingLocked(_ enabled: Bool) throws {
+    try advanceFence()
     try Data((enabled ? "enabled\n" : "disabled\n").utf8).write(
       to: url("recording.json"), options: .atomic)
   }
@@ -530,10 +585,18 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
       }
       files = try segments().filter { $0.lastPathComponent.hasPrefix(stream) }
       // Sidecars and duplicated aggregate/context bytes belong to the history budget too.
-      let overhead = [
-        "aggregate.json", "diagnostic-sync-health.txt", "recording.json", "migration-complete",
-        "clear-token",
-      ].reduce(0) { $0 + size(url($1)) }
+      let overhead =
+        [
+          "aggregate.json", "diagnostic-sync-health.txt", "recording.json", "migration-complete",
+          "clear-token", "submission-fence.json",
+        ].reduce(0) { $0 + size(url($1)) }
+        + ((try? FileManager.default.contentsOfDirectory(
+          at: directoryURL, includingPropertiesForKeys: nil)) ?? [])
+        .filter {
+          $0.lastPathComponent.hasPrefix("migration-")
+            && ["complete", "pending"].contains($0.pathExtension)
+        }
+        .reduce(0) { $0 + size($1) }
       let budget =
         stream == "protected"
         ? max(0, policy.protectedBytes - overhead)
@@ -697,7 +760,7 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
       + "privacy=structured-operational-events-only\nrecording_enabled=\(recordingEnabledLocked) OSLog=separate\n"
       + "selected_range=\(range.rawValue) available_first=\(available) available_last=\(latest)\n"
       + "coverage=best-effort; gaps possible from expiry, caps, disabled recording, writer overflow, or disk failure\n"
-    for line in healthLines() {
+    for line in (try? healthLines()) ?? [] {
       let marker =
         line.contains("operation=sync.snapshot")
         ? "diagnostic_sync_latest" : "diagnostic_sync_last_success"
@@ -756,8 +819,8 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
       abs(input.first.timeIntervalSince1970) < 253_402_300_800,
       abs(input.last.timeIntervalSince1970) < 253_402_300_800,
       let line = AppDiagnosticLine.sanitize(input.line),
-      Self.safeVersion(input.version) == input.version,
-      Self.safeVersion(input.build) == input.build,
+      Record.safeVersion(input.version) == input.version,
+      Record.safeVersion(input.build) == input.build,
       input.os == os
         || input.os.range(
           of: "^(macOS|iOS)-[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$", options: .regularExpression)
@@ -768,17 +831,15 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
     return record
   }
 
-  private func healthLines() -> [String] {
-    var result: [String] = []
-    _ = try? forEachLine(url("diagnostic-sync-health.txt"), byteLimit: 4_096, allowTrailing: true) {
-      data in
-      if let line = String(data: data, encoding: .utf8).flatMap(AppDiagnosticLine.sanitize),
-        healthKey(line) != nil
-      {
-        result.append(line)
-      }
+  private func healthLines() throws -> [String] {
+    let file = url("diagnostic-sync-health.txt")
+    guard let data = read(file, limit: 4_096) else {
+      guard !exists(file) else { throw CocoaError(.fileReadUnknown) }
+      return []
     }
-    return Array(result.suffix(4))
+    return Array(data.split(separator: 10).compactMap {
+      String(data: $0, encoding: .utf8).flatMap(AppDiagnosticLine.sanitize)
+    }.filter { healthKey($0) != nil }.suffix(4))
   }
 
   private func healthKey(_ line: String) -> String? {
@@ -794,15 +855,26 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
   }
 
   private func updateHealth(_ record: Record) throws {
-    guard let key = healthKey(record.line) else { return }
+    guard healthKey(record.line) != nil else { return }
+    try writeHealth(((try? healthLines()) ?? []) + [record.line])
+  }
+
+  private func mergeHealth(_ incoming: [String]) throws {
+    // Stable sorting leaves destination observations last when timestamps tie.
+    let observations = (incoming + (try healthLines())).compactMap { line -> (date: Date, line: String)? in
+      guard let timestamp = line.split(separator: " ").first,
+        let date = try? Date(String(timestamp), strategy: .iso8601) else { return nil }
+      return (date, line)
+    }
+    try writeHealth(observations.sorted { $0.date < $1.date }.map(\.line))
+  }
+
+  private func writeHealth(_ lines: [String]) throws {
     var health: [String: String] = [:]
-    for line in healthLines() { if let key = healthKey(line) { health[key] = line } }
-    health[key] = record.line
-    try Data(
-      (["transport", "records", "fetch", "send"].compactMap { health[$0] }.joined(separator: "\n")
-        + "\n").utf8
-    )
-    .write(to: url("diagnostic-sync-health.txt"), options: .atomic)
+    for line in lines { if let key = healthKey(line) { health[key] = line } }
+    let orderedHealth = ["transport", "records", "fetch", "send"].compactMap { health[$0] }
+    try Data((orderedHealth.joined(separator: "\n") + "\n").utf8)
+      .write(to: url("diagnostic-sync-health.txt"), options: .atomic)
   }
 
   private func snapshotLocked() throws -> AppDiagnosticExportSnapshot {
@@ -811,7 +883,7 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
     hash.update(data: Data("\(appVersion):\(appBuild):\(os):\(recordingEnabledLocked)".utf8))
     for file in (try segments()) + [
       url("aggregate.json"), url("diagnostic-sync-health.txt"), url("recording.json"),
-      url("clear-token"),
+      url("clear-token"), url("submission-fence.json"),
     ] {
       guard let handle = try? FileHandle(forReadingFrom: file) else { continue }
       defer { try? handle.close() }
@@ -828,11 +900,8 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
   }
 
   private func clearLocked() throws {
-    // Invalidate context held by other instances before removing history.
-    let clearToken = Data(UUID().uuidString.utf8)
-    try clearToken.write(to: url("clear-token"), options: .atomic)
-    contextClearToken = clearToken
-    context.removeAll()
+    // Invalidate queued submissions and context held by other processes first.
+    try advanceFence(clearing: true)
     for file in (try segments()) + [
       url("aggregate.json"), url("diagnostic-sync-health.txt"), url("diagnostic-events.txt"),
       url("attachment-events.txt"), url("Snip-Snap-Diagnostics.txt"),
@@ -925,11 +994,5 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
     if !completed { completed = (try handle.read(upToCount: 1) ?? Data()).isEmpty }
     if completed && allowTrailing && !oversized && !line.isEmpty { body(line) }
     return completed
-  }
-
-  private static func safeVersion(_ value: String) -> String {
-    guard !value.isEmpty, value.utf8.count <= 32, value.allSatisfy({ "0123456789.".contains($0) })
-    else { return "unknown" }
-    return value
   }
 }

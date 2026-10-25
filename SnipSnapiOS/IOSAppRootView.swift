@@ -13,6 +13,7 @@ struct IOSAppRootView: View {
     @AppStorage("snip-sort-mode") private var savedSortMode = SnipSortMode.chronological.rawValue
     @State private var sheet: AppSheet?
     @State private var settingsBackupLifetime = IOSSettingsBackupLifetime()
+    @State private var diagnosticSettings = AppDiagnosticSettingsModel()
     @State private var newMoveListName = ""
     @State private var copyShare = IOSCopyShareCoordinator()
     @State private var compactComposerStorage = CompactComposerStorage()
@@ -177,6 +178,7 @@ struct IOSAppRootView: View {
                     haptics: model.haptics,
                     library: model,
                     backupLifetime: settingsBackupLifetime,
+                    diagnostics: diagnosticSettings,
                     retryAction: {
                         if session.syncedContentSettings.mode == .localOnly {
                             await session.syncedContentSettings.enableICloudSync()

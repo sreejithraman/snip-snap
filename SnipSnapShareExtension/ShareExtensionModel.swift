@@ -11,6 +11,8 @@ final class ShareExtensionModel {
         case editing
         case saving
         case failed(String)
+        case unavailable
+        case cancelled
     }
 
     var content = ""
@@ -24,26 +26,58 @@ final class ShareExtensionModel {
     }
 
     private let extensionContext: NSExtensionContext
-    private let imports: ShareImportStore
-    private let staging: ShareImportStagingArea
+    private let imports: ShareImportStore?
+    private let staging: ShareImportStagingArea?
+    private let diagnostics: AppDiagnosticRecorder
+    private let saveImport: (@MainActor (ShareImportRequest) async throws -> Void)?
     private let defaults: UserDefaults
     private var isCanceled = false
 
-    init?(
+    convenience init(
         extensionContext: NSExtensionContext,
         bundle: Bundle = .main,
         fileManager: FileManager = .default
     ) {
-        guard let container = SnipSnapAppGroupContainer.resolve(
-                bundle: bundle,
-                fileManager: fileManager
-            ),
-            let staging = try? ShareImportStagingArea(sharedRootURL: container.url)
-        else { return nil }
+        let container = SnipSnapAppGroupContainer.resolve(bundle: bundle, fileManager: fileManager)
+        self.init(
+            extensionContext: extensionContext,
+            sharedRootURL: container?.url,
+            defaults: container.flatMap { UserDefaults(suiteName: $0.identifier) } ?? .standard
+        )
+    }
+
+    // Only filesystem/provider publication effects vary in native tests. The model still
+    // runs the real input loader and import store unless a failing effect is supplied.
+    init(
+        extensionContext: NSExtensionContext,
+        sharedRootURL: URL?,
+        defaults: UserDefaults = .standard,
+        diagnostics: AppDiagnosticRecorder = .live,
+        makeStaging: (URL) throws -> ShareImportStagingArea = { try ShareImportStagingArea(sharedRootURL: $0) },
+        saveImport: (@MainActor (ShareImportRequest) async throws -> Void)? = nil
+    ) {
         self.extensionContext = extensionContext
-        imports = ShareImportStore(sharedRootURL: container.url)
-        self.staging = staging
-        defaults = UserDefaults(suiteName: container.identifier) ?? .standard
+        self.defaults = defaults
+        self.diagnostics = diagnostics
+        self.saveImport = saveImport
+        guard let sharedRootURL else {
+            imports = nil
+            staging = nil
+            phase = .unavailable
+            diagnostics.record(.failure(operation: "share.extension_startup",
+                errorCode: "share.sharedContainerUnavailable", visibility: .user))
+            return
+        }
+        imports = ShareImportStore(sharedRootURL: sharedRootURL)
+        do {
+            staging = try makeStaging(sharedRootURL)
+        } catch {
+            staging = nil
+            phase = .failed(error.localizedDescription)
+            if !isDiagnosticCancellation(error) {
+                diagnostics.record(.failure(operation: "share.extension_startup", error: error, visibility: .user))
+            }
+        }
     }
 
     var canSave: Bool {
@@ -53,6 +87,10 @@ final class ShareExtensionModel {
     }
 
     func load() async {
+        guard phase == .loading, let imports, let staging else {
+            _ = await diagnostics.flush(timeout: 0.5)
+            return
+        }
         do {
             await imports.removeAbandonedIntake()
             let loaded = try await ShareExtensionInputLoader.load(
@@ -76,24 +114,33 @@ final class ShareExtensionModel {
             phase = .editing
         } catch {
             staging.discard()
-            guard !isCanceled else { return }
+            guard !isCanceled, !Task.isCancelled else { return }
+            if isDiagnosticCancellation(error) {
+                cancel()
+                return
+            }
+            diagnostics.record(.failure(operation: "share.extension_load", error: error, visibility: .user))
+            _ = await diagnostics.flush(timeout: 0.5)
+            guard !isCanceled, !Task.isCancelled else { return }
             phase = .failed(error.localizedDescription)
         }
     }
 
     func cancel() {
+        guard !isCanceled else { return }
         isCanceled = true
-        staging.discard()
-        extensionContext.cancelRequest(
-            withError: NSError(
-                domain: NSCocoaErrorDomain,
-                code: NSUserCancelledError
-            )
-        )
+        phase = .cancelled
+        staging?.discard()
+        Task {
+            // Keep the extension alive for a finite best-effort write window before
+            // asking the host to finish. This never blocks the main actor on disk.
+            _ = await diagnostics.flush(timeout: 0.5)
+            extensionContext.cancelRequest(withError: CocoaError(.userCancelled))
+        }
     }
 
     func save() async {
-        guard canSave, !isCanceled else { return }
+        guard canSave, !isCanceled, !Task.isCancelled, let imports, let staging else { return }
         phase = .saving
         let request = ShareImportRequest(
             content: content,
@@ -102,15 +149,23 @@ final class ShareExtensionModel {
             requestID: staging.requestID
         )
         do {
-            _ = try await imports.save(request)
-            guard !isCanceled else { return }
+            if let saveImport { try await saveImport(request) }
+            else { _ = try await imports.save(request) }
+            _ = await diagnostics.flush(timeout: 0.5)
+            guard !isCanceled, !Task.isCancelled else { return }
             defaults.set(destinationListID.uuidString, forKey: Self.destinationKey)
             extensionContext.completeRequest(returningItems: nil)
         } catch {
             guard !isCanceled else { return }
+            if Task.isCancelled || isDiagnosticCancellation(error) {
+                phase = .editing
+                return
+            }
+            diagnostics.record(.failure(operation: "share.extension_save", error: error, visibility: .user))
+            _ = await diagnostics.flush(timeout: 0.5)
+            guard !isCanceled, !Task.isCancelled else { return }
             phase = .failed(error.localizedDescription)
         }
     }
-
     private static let destinationKey = "share.lastDestinationListID"
 }

@@ -1,6 +1,7 @@
 import Foundation
 import SnipSnapCore
 import SwiftData
+import Synchronization
 @testable import SnipSnapPersistence
 import XCTest
 
@@ -100,12 +101,113 @@ final class ShareImportStoreTests: XCTestCase {
     let root = try makeRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let reading = SnipList(id: UUID(), name: "Reading", systemImage: "list.bullet", position: 1)
-    let imports = ShareImportStore(sharedRootURL: root)
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let imports = ShareImportStore(
+      sharedRootURL: root,
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } }
+    )
 
     try await imports.publishAvailableLists([.inbox, reading])
 
     let lists = await imports.availableLists()
     XCTAssertEqual(lists, [.inbox, reading])
+    XCTAssertTrue(events.withLock { $0.isEmpty })
+  }
+
+  func testCorruptShareCatalogRecordsSafeFailureAndFallsBackToInbox() async throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let privateID = UUID().uuidString
+    let privateName = "Private destination"
+    let catalog = importsCatalog(in: root)
+    try FileManager.default.createDirectory(
+      at: catalog.deletingLastPathComponent(), withIntermediateDirectories: true
+    )
+    let corruptData = Data("[{\"name\":\"\(privateName) \(privateID) \(root.path)".utf8)
+    try corruptData.write(to: catalog)
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let imports = ShareImportStore(
+      sharedRootURL: root,
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } }
+    )
+
+    let lists = await imports.availableLists()
+
+    XCTAssertEqual(lists, [.inbox])
+    XCTAssertEqual(try Data(contentsOf: catalog), corruptData)
+    XCTAssertEqual(events.withLock { $0 }, [
+      .failure(
+        operation: "share.catalog_read", errorCode: "other.UnknownError", visibility: .background
+      )
+    ])
+    XCTAssertEqual(events.withLock { $0.first?.operation }, "share.catalog_read")
+    let lines = events.withLock { $0.map(\.line).joined() }
+    for privateValue in [privateName, privateID, root.path] {
+      XCTAssertFalse(lines.contains(privateValue))
+    }
+  }
+
+  func testMissingShareCatalogQuietlyFallsBackToInbox() async throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let imports = ShareImportStore(
+      sharedRootURL: root,
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } }
+    )
+
+    let lists = await imports.availableLists()
+
+    XCTAssertEqual(lists, [.inbox])
+    XCTAssertTrue(events.withLock { $0.isEmpty })
+    XCTAssertFalse(FileManager.default.fileExists(atPath: importsCatalog(in: root).path))
+  }
+
+  func testUnreadableShareCatalogRecordsFailureAndFallsBackToInbox() async throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    // A directory at the catalog URL fails a real read without relying on user permissions.
+    try FileManager.default.createDirectory(
+      at: importsCatalog(in: root), withIntermediateDirectories: true
+    )
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let imports = ShareImportStore(
+      sharedRootURL: root,
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } }
+    )
+
+    let lists = await imports.availableLists()
+
+    XCTAssertEqual(lists, [.inbox])
+    XCTAssertEqual(events.withLock { $0 }, [
+      .failure(operation: "share.catalog_read", errorCode: "cocoa.256", visibility: .background)
+    ])
+    XCTAssertFalse(events.withLock { $0.map(\.line).joined().contains(root.path) })
+  }
+
+  func testShareCatalogWithoutInboxRecordsFailureAndFallsBackToInbox() async throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let reading = SnipList(id: UUID(), name: "Private Reading", systemImage: "book", position: 1)
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let imports = ShareImportStore(
+      sharedRootURL: root,
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } }
+    )
+    try await imports.publishAvailableLists([reading])
+    let originalData = try Data(contentsOf: importsCatalog(in: root))
+
+    let lists = await imports.availableLists()
+
+    XCTAssertEqual(lists, [.inbox])
+    XCTAssertEqual(try Data(contentsOf: importsCatalog(in: root)), originalData)
+    XCTAssertEqual(events.withLock { $0 }, [
+      .failure(operation: "share.catalog_read", errorCode: "cocoa.259", visibility: .background)
+    ])
+    let lines = events.withLock { $0.map(\.line).joined() }
+    for privateValue in [reading.name, reading.id.uuidString, root.path] {
+      XCTAssertFalse(lines.contains(privateValue))
+    }
   }
 
   @MainActor

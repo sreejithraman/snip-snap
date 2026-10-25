@@ -56,6 +56,8 @@ struct ShareExtensionView: View {
     @ViewBuilder
     private var content: some View {
         switch model.phase {
+        case .cancelled:
+            EmptyView()
         case .loading:
             ProgressView("Loading shared content…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -99,6 +101,13 @@ struct ShareExtensionView: View {
                 }
             }
             .disabled(model.phase == .saving)
+        case .unavailable:
+            ContentUnavailableView(
+                "Shared Storage Unavailable",
+                systemImage: "externaldrive.badge.exclamationmark",
+                description: Text("Snip Snap can’t access shared storage. Update the app and try again.")
+            )
+            .accessibilityIdentifier("share-storage-unavailable")
         case .failed(let message):
             ContentUnavailableView(
                 "Could Not Save",

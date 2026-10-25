@@ -30,6 +30,8 @@
 	<false/>
 	<key>SnipSnapAppGroupIdentifier</key>
 	<string>$(SNIP_SNAP_APP_GROUP_IDENTIFIER)</string>
+	<key>SnipSnapDiagnosticsApplicationIdentifier</key>
+	<string>$(SNIP_SNAP_IOS_PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>SnipSnapCloudKitContainerIdentifier</key>
 	<string>$(SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER)</string>
 	<key>SnipSnapCloudKitEnvironment</key>

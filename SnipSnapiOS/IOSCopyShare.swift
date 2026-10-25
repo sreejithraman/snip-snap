@@ -299,8 +299,49 @@ struct IOSUnavailableFilesNotice: Identifiable {
 }
 
 struct IOSShareRequest: Identifiable {
-    let id = UUID()
+    let id: UUID
     let items: [IOSCopyItem]
+    let completion: IOSShareCompletion?
+
+    init(id: UUID = UUID(), items: [IOSCopyItem], completion: IOSShareCompletion? = nil) {
+        self.id = id
+        self.items = items
+        self.completion = completion
+    }
+}
+
+/// A terminal callback consumes its handler before resuming a suspended delivery.
+@MainActor
+final class IOSShareCompletion {
+    private var handler: ((Result<AppDiagnosticSettingsModel.DeliveryOutcome, any Error>) -> Void)?
+
+    init(_ handler: @escaping (Result<AppDiagnosticSettingsModel.DeliveryOutcome, any Error>) -> Void) {
+        self.handler = handler
+    }
+
+    func finish(_ result: Result<AppDiagnosticSettingsModel.DeliveryOutcome, any Error>) {
+        let pending = handler
+        handler = nil
+        pending?(result)
+    }
+}
+
+/// Cancellation leaves native ownership intact until its callback or presenter teardown.
+@MainActor
+@Observable
+final class IOSDiagnosticShareDelivery {
+    var request: IOSShareRequest?
+
+    func deliver(_ url: URL) async throws -> AppDiagnosticSettingsModel.DeliveryOutcome {
+        try Task.checkCancellation()
+        let id = UUID()
+        defer { if request?.id == id { request = nil } }
+        return try await withCheckedThrowingContinuation { continuation in
+            request = IOSShareRequest(id: id, items: [.file(url)], completion: IOSShareCompletion {
+                continuation.resume(with: $0)
+            })
+        }
+    }
 }
 
 @MainActor
@@ -613,13 +654,52 @@ struct IOSShareSheetPresenter: UIViewControllerRepresentable {
     var diagnosticOperation: StaticString = "app.user_action"
     var diagnostics: AppDiagnosticRecorder = .live
 
+    @MainActor
+    final class Coordinator {
+        var activity: UIActivityViewController?
+        var completion: IOSShareCompletion?
+        var requestID: UUID?
+        var isDismantled = false
+        private let request: Binding<IOSShareRequest?>
+
+        init(request: Binding<IOSShareRequest?>) { self.request = request }
+
+        func tearDown(_ controller: UIViewController) {
+            guard !isDismantled else { return }
+            isDismantled = true
+            // A host can disappear before SwiftUI schedules presentation of a new request.
+            let terminal = completion ?? request.wrappedValue?.completion
+            let presented = activity
+            activity = nil
+            completion = nil
+            requestID = nil
+            presented?.completionWithItemsHandler = nil
+            // Wait for dismissal before releasing bytes a presented activity may read.
+            if controller.presentedViewController != nil {
+                controller.dismiss(animated: false) { terminal?.finish(.success(.cancelled)) }
+            } else if let presented, presented.presentingViewController != nil {
+                presented.dismiss(animated: false) { terminal?.finish(.success(.cancelled)) }
+            } else {
+                terminal?.finish(.success(.cancelled))
+            }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(request: $request) }
+
     func makeUIViewController(context: Context) -> UIViewController {
         UIViewController()
     }
 
+    static func dismantleUIViewController(_ controller: UIViewController, coordinator: Coordinator) {
+        coordinator.tearDown(controller)
+    }
+
     func updateUIViewController(_ controller: UIViewController, context: Context) {
-        guard let request, controller.presentedViewController == nil else { return }
-        let activity = makeActivityController(for: request)
+        let coordinator = context.coordinator
+        guard let request, controller.presentedViewController == nil,
+              coordinator.requestID == nil, !coordinator.isDismantled else { return }
+        let activity = makeActivityController(for: request, coordinator: coordinator)
         if let popover = activity.popoverPresentationController {
             popover.sourceView = controller.view
             popover.sourceRect = CGRect(
@@ -631,37 +711,52 @@ struct IOSShareSheetPresenter: UIViewControllerRepresentable {
             popover.permittedArrowDirections = []
         }
         DispatchQueue.main.async {
-            guard controller.presentedViewController == nil else { return }
+            guard !coordinator.isDismantled, coordinator.requestID == request.id else { return }
+            guard self.request?.id == request.id, controller.presentedViewController == nil else {
+                coordinator.completion?.finish(.success(.cancelled))
+                return
+            }
             controller.present(activity, animated: true)
         }
     }
 
-    func makeActivityController(for request: IOSShareRequest) -> UIActivityViewController {
+    func makeActivityController(
+        for request: IOSShareRequest, coordinator: Coordinator? = nil
+    ) -> UIActivityViewController {
         let activity = UIActivityViewController(
             activityItems: request.items.map(shareItem),
             applicationActivities: nil
         )
-        activity.completionWithItemsHandler = { _, _, _, error in
+        let terminal = IOSShareCompletion { [weak coordinator] result in
+            if case .failure(let error) = result, request.completion == nil {
+                // Awaited diagnostic delivery records at the shared model. Ordinary sharing
+                // still records here, through the same private-safe error sanitizer.
+                diagnostics.record(.failure(
+                    operation: diagnosticOperation, error: error, visibility: .user
+                ))
+            }
+            request.completion?.finish(result)
+            if coordinator?.requestID == request.id {
+                coordinator?.activity = nil
+                coordinator?.completion = nil
+                coordinator?.requestID = nil
+            }
+            guard self.request?.id == request.id else { return }
+            self.request = nil
+        }
+        coordinator?.activity = activity
+        coordinator?.completion = terminal
+        coordinator?.requestID = request.id
+        activity.completionWithItemsHandler = { _, completed, _, error in
             DispatchQueue.main.async {
-                if let error, !Self.isCancellation(error) {
-                    diagnostics.record(.failure(
-                        operation: diagnosticOperation,
-                        error: error,
-                        visibility: .user
-                    ))
+                if let error, !isDiagnosticCancellation(error) {
+                    terminal.finish(.failure(error))
+                } else {
+                    terminal.finish(.success(completed && error == nil ? .shared : .cancelled))
                 }
-                guard self.request?.id == request.id else { return }
-                self.request = nil
             }
         }
         return activity
-    }
-
-    private static func isCancellation(_ error: any Error) -> Bool {
-        if error is CancellationError { return true }
-        let error = error as NSError
-        return (error.domain == NSCocoaErrorDomain && error.code == NSUserCancelledError)
-            || (error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled)
     }
 
     private func shareItem(_ item: IOSCopyItem) -> Any {
