@@ -543,7 +543,7 @@ final class AppDiagnosticRetentionTests: XCTestCase {
     try file.write(contentsOf: JSONSerialization.data(withJSONObject: invalidDate) + Data([10]))
     try file.write(contentsOf: Data("{broken}\n".utf8))
     try file.write(contentsOf: Data(repeating: 97, count: 100_000))
-    try file.write(contentsOf: Data("\n{\"private_path\":\"/Users/private/secret.txt".utf8))
+    try file.write(contentsOf: Data("\n{\"private_path\":\"/private/fixture/secret.txt".utf8))
     try file.close()
     store.append(.succeeded(operation: "clipboard.persist"))
     let report = try store.readLog()
