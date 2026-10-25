@@ -4,12 +4,11 @@ import SwiftUI
 final class ShareViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
-        guard let extensionContext,
-            let model = ShareExtensionModel(extensionContext: extensionContext)
-        else {
+        guard let extensionContext else {
             showUnavailable()
             return
         }
+        let model = ShareExtensionModel(extensionContext: extensionContext)
         let host = UIHostingController(rootView: ShareExtensionView(model: model))
         addChild(host)
         host.view.translatesAutoresizingMaskIntoConstraints = false

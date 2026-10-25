@@ -279,10 +279,29 @@ Release builds, including App Store builds. It needs no debugger, account, or
 service. History lasts up to seven days within a 10 MiB disk budget; high activity
 can shorten that range. A reserved 2 MiB protects failures and nearby context from
 routine event traffic. Repeated events are summarized with counts and timestamps.
-Logs live in bundle-specific Application Support, separate from user content,
-and are marked excluded from backup. Existing cached logs migrate automatically.
+Mac logs live in bundle-specific Application Support. On iOS, the app and its share
+extension use one diagnostic history in their app-group container, separate from
+user content. Both use the same recording preference, clear control, and size
+budget. The diagnostic directory is excluded from backup. Existing owned app
+history and cached logs migrate automatically when their source is readable.
 Test runners keep their explicit isolated diagnostic directory. Nothing is
 transmitted automatically.
+
+With readable shared controls, the extension records startup, intake, and save
+failures. Before finishing, it uses a bounded, asynchronous write window; an abrupt
+process stop can still lose queued events. If intended shared controls cannot be
+read or the app group is unavailable, new app-owned history is not persisted and
+settings report unavailable. This deliberately loses outage diagnostics even when
+recording was on. Structured events can still reach the separate system log;
+this does not mean a shared-container startup failure was stored in app history.
+Ordinary lock contention retains the bounded retry path.
+
+After shared access is repaired, relaunch the app or extension to resolve its
+shared scope again. Older readable owned private history and cached logs may still
+migrate into the app's export. App Settings cannot retrieve an inaccessible
+extension sandbox. Clear durably discards pending owned history, including sources
+discovered later and later writes in those old sandboxes. Fresh shared events
+after Clear remain eligible for recording.
 
 After reproducing an error on iPhone or iPad, open **Settings → Support →
 Diagnostics → Share diagnostic log**. On Mac, open **Settings → iCloud → Support →
@@ -312,6 +331,48 @@ diagnostic log** in the same controls for a fresh capture. Copies already saved 
 shared remain wherever you sent them. These controls do not erase Apple's separate
 system logs. Latest sync health and last successful fetch/send observations are
 retained separately from ordinary history rotation.
+
+#### Investigate an iOS TestFlight issue
+
+For a sync failure or error dialog, ask the tester for the approximate time,
+time zone, build number, and steps. In Snip Snap, choose **Settings → Support →
+Diagnostics → Last 7 days → Share diagnostic log**. Save or send the text file
+through the agreed support channel. For a two-device sync issue, collect a report
+from each device. Export before clearing history or deleting the app.
+
+Share this text file separately from TestFlight feedback. TestFlight's documented
+feedback downloads contain screenshots or crash reports and comments; they do
+not automatically include Snip Snap's custom diagnostic export. A handled sync
+error may leave the app running and produce no crash report. [Apple feedback
+guide](https://developer.apple.com/help/app-store-connect/test-a-beta-version/view-tester-feedback).
+
+TestFlight also collects crash reports. Keep the distributed archive and its
+matching app and share-extension dSYMs so a crash stack can identify the code
+involved. Rebuilding the source does not replace that build's matching symbols.
+If the app cannot open, use Apple's crash-report channel and preserve the
+installation until a repair build can recover its local history. [Apple crash
+collection](https://developer.apple.com/documentation/xcode/acquiring-crash-reports-and-diagnostic-logs),
+[symbolication](https://developer.apple.com/documentation/xcode/adding-identifiable-symbol-names-to-a-crash-report).
+
+Agents can read the exported text attachment. The Mac `snipsnap diagnostics logs`
+command reads logs on that Mac; it cannot retrieve an iPhone's private app data.
+Check the report's available time range, omitted-event and loss markers before
+inferring that no failure occurred. Correlate its timestamps and build with any
+Apple crash report. Events still queued in memory can be lost if the app stops;
+unrecorded or expired history cannot be recovered by a later export.
+Authorized maintainers can retrieve submitted TestFlight crash feedback through
+App Store Connect or the optional `asc` tool:
+
+```sh
+asc testflight crashes list --app APP_ID --build-id BUILD_ID --sort -createdDate --limit 10
+asc testflight crashes log --submission-id SUBMISSION_ID
+```
+
+Use existing approved App Store Connect credentials and keep retrieved reports
+in ignored incident files. These tools and credentials are not required for
+contributor builds or local diagnostic exports. The feedback list covers
+submitted feedback; do not treat an empty result as proof that no crash occurred.
+[Apple crash-feedback interface](https://developer.apple.com/documentation/appstoreconnectapi/betafeedbackcrashsubmission).
 
 ## Repeat for each beta build
 

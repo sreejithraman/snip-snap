@@ -47,6 +47,7 @@ private extension View {
 @MainActor
 struct SnipSnapApp: App {
     @NSApplicationDelegateAdaptor(SnipSnapApplicationDelegate.self) private var appDelegate
+    @State private var diagnosticSettings = AppDiagnosticSettingsModel()
 
     var body: some Scene {
         Settings {
@@ -60,7 +61,8 @@ struct SnipSnapApp: App {
                 updateChannelSettings: appDelegate.updateChannelSettings,
                 updaterController: appDelegate.updateSettingsVisible
                     ? appDelegate.updaterController
-                    : nil
+                    : nil,
+                diagnostics: diagnosticSettings
             )
         }
         .defaultSize(width: 560, height: 500)
@@ -86,6 +88,7 @@ private struct AppSettingsContent: View {
     let cloudSyncHandler: (any OptionalCloudSyncHandling)?
     let updateChannelSettings: UpdateChannelSettings
     let updaterController: SPUStandardUpdaterController?
+    let diagnostics: AppDiagnosticSettingsModel
 
     var body: some View {
         TabView {
@@ -120,6 +123,7 @@ private struct AppSettingsContent: View {
                 SyncedContentSettingsView(
                     model: syncedContentSettings,
                     clipboard: model.clipboardHistory,
+                    diagnostics: diagnostics,
                     retryAction: {
                         if syncedContentSettings.mode == .localOnly {
                             await syncedContentSettings.enableICloudSync()

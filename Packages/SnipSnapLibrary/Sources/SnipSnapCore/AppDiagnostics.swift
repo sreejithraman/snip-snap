@@ -20,7 +20,9 @@ enum AppDiagnosticCodePolicy {
     "cloudkit.control_create_zones", "cloudkit.control_delete_zones", "cloudkit.control_fetch",
     "cloudkit.control_save", "cloudkit.record_fetch", "cloudkit.record_send", "cloudkit.request",
     "diagnostics.clear", "diagnostics.export", "diagnostics.recording", "import.file",
-    "share.import", "shortcut.save", "shortcut.register", "capture.screen", "selection.capture",
+    "share.import", "share.extension_startup", "share.extension_load", "share.extension_save",
+    "share.catalog_publish", "share.catalog_read", "shortcut.save", "shortcut.register",
+    "capture.screen", "selection.capture",
     "snip.paste_read", "snip.paste_save",
     "sync.account_refresh", "sync.account_resolve", "sync.account_status",
     "sync.cancel_setup", "sync.delete", "sync.disable", "sync.enable", "sync.run",
@@ -30,7 +32,7 @@ enum AppDiagnosticCodePolicy {
 
   static let errorCodes: Set<String> = [
     "diagnostics.busy", "diagnostics.routineOverflow", "diagnostics.failureOverflow",
-    "diagnostics.writeFailed",
+    "diagnostics.writeFailed", "share.sharedContainerUnavailable",
     "clipboard.empty", "clipboard.tooLarge", "clipboard.unreadable", "clipboard.unsupported",
     "import.partialFailure", "import.readFailed", "pasteboard.writeFailed",
     "presentation.message", "presentation.startup", "attachment.unavailableAfterPrepare",
@@ -297,18 +299,34 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
 
 public struct AppDiagnosticRecorder: Sendable {
   private let recordEvent: @Sendable (AppDiagnosticEvent) -> Void
+  private let flushEvents: @Sendable (TimeInterval) async -> Bool
 
   public init(record: @escaping @Sendable (AppDiagnosticEvent) -> Void) {
     recordEvent = record
+    flushEvents = { _ in true }
+  }
+
+  init(
+    record: @escaping @Sendable (AppDiagnosticEvent) -> Void,
+    flush: @escaping @Sendable (TimeInterval) async -> Bool
+  ) {
+    recordEvent = record
+    flushEvents = flush
+  }
+
+  /// Best effort for a finite queued batch. False means timeout, cancellation, or
+  /// unavailable storage; pending work remains eligible for the writer's retry.
+  /// The wait is capped at two seconds and never blocks the caller's executor.
+  public func flush(timeout: TimeInterval = 0.5) async -> Bool {
+    guard !Task.isCancelled else { return false }
+    return await flushEvents(timeout)
   }
 
   public func record(_ event: AppDiagnosticEvent) {
     recordEvent(event)
   }
 
-  public static let live = AppDiagnosticRecorder { event in
-    AppDiagnosticLiveSink.shared.record(event)
-  }
+  public static var live: AppDiagnosticRecorder { AppDiagnosticScope.live.recorder }
 }
 
 /// Describes the default rendered report. Its revision covers all history, health, and recording state.
@@ -346,7 +364,7 @@ public enum AppDiagnosticsExport {
   public static func readLog(
     range: AppDiagnosticExportRange = .last24Hours, limit: Int = 200, errorsOnly: Bool = false
   ) throws -> AppDiagnosticLogReport {
-    try AppDiagnosticLiveSink.shared.readLog(range: range, limit: limit, errorsOnly: errorsOnly)
+    try AppDiagnosticScope.live.readLog(range: range, limit: limit, errorsOnly: errorsOnly)
   }
 
   /// Reads a target bundle's local history without starting the app or using its live sink.
@@ -361,40 +379,41 @@ public enum AppDiagnosticsExport {
 
   /// Reads the preference without treating unavailable storage as recording off.
   public static func readRecordingEnabled() throws -> Bool {
-    try AppDiagnosticLiveSink.shared.readRecordingEnabled()
+    try AppDiagnosticScope.live.readRecordingEnabled()
   }
 
   public static func setRecordingEnabled(_ enabled: Bool) throws {
-    try AppDiagnosticLiveSink.shared.setRecordingEnabled(enabled)
+    try AppDiagnosticScope.live.setRecordingEnabled(enabled)
   }
 
   public static func setRecordingEnabled(_ enabled: Bool, ifRevision revision: String) throws
     -> Bool
   {
-    try AppDiagnosticLiveSink.shared.setRecordingEnabled(enabled, ifRevision: revision)
+    try AppDiagnosticScope.live.setRecordingEnabled(enabled, ifRevision: revision)
   }
 
   public static func makeShareableFile(range: AppDiagnosticExportRange = .last24Hours) throws -> URL
   {
-    try AppDiagnosticLiveSink.shared.makeShareableFile(range: range)
+    try AppDiagnosticScope.live.makeShareableFile(range: range)
   }
 
   /// Removes an owned staging file and its directory. User-saved copies are left alone.
   public static func removeShareableFile(_ fileURL: URL) {
+    AppDiagnosticScope.removeLiveShareableFile(fileURL)
     AppDiagnosticEventStore.removeOwnedShareableFile(fileURL)
   }
 
   public static func clear() throws {
-    try AppDiagnosticLiveSink.shared.clear()
+    try AppDiagnosticScope.live.clear()
   }
 
   public static func snapshot() throws -> AppDiagnosticExportSnapshot {
-    try AppDiagnosticLiveSink.shared.snapshot()
+    try AppDiagnosticScope.live.snapshot()
   }
 
   /// Returns false without clearing when history, health, app context, or recording state has changed.
   public static func clear(ifRevision revision: String) throws -> Bool {
-    try AppDiagnosticLiveSink.shared.clear(ifRevision: revision)
+    try AppDiagnosticScope.live.clear(ifRevision: revision)
   }
 }
 
@@ -444,20 +463,110 @@ extension SnipLibraryError: AppDiagnosticErrorCodeProviding {
   }
 }
 
-private final class AppDiagnosticLiveSink: @unchecked Sendable {
-  static let shared = AppDiagnosticLiveSink()
+/// One explicitly owned history, writer, recording preference, and export scope.
+/// Live iOS sharing requires matching application metadata and an accessible app group.
+/// Other bundles keep their private history; no global configuration order is required.
+public final class AppDiagnosticScope: @unchecked Sendable {
+  public static let live = resolve(bundle: .main)
+
+  public var recorder: AppDiagnosticRecorder {
+    AppDiagnosticRecorder(
+      record: { [self] in record($0) }, flush: { [self] in await writer.flush(timeout: $0) })
+  }
 
   private let logger = Logger(subsystem: "SnipSnap", category: "Operations")
-  private let store = AppDiagnosticEventStore.forBundle(
-    bundleIdentifier: Bundle.main.bundleIdentifier,
-    appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-      ?? "unknown",
-    appBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
-  )
-
+  private let store: AppDiagnosticEventStore
   private let writer: AppDiagnosticWriter
+  private let controlsAvailable: Bool
+  public let sharesApplicationHistory: Bool
 
-  private init() { writer = AppDiagnosticWriter(store: store) }
+  init(
+    store: AppDiagnosticEventStore, writer: AppDiagnosticWriter? = nil,
+    sharesApplicationHistory: Bool = false, controlsAvailable: Bool = true
+  ) {
+    self.store = store
+    self.sharesApplicationHistory = sharesApplicationHistory
+    self.controlsAvailable = controlsAvailable
+    self.writer = writer ?? AppDiagnosticWriter(
+      store: store, requiresReadableControls: sharesApplicationHistory)
+  }
+
+  private static func resolve(bundle: Bundle) -> AppDiagnosticScope {
+    let manager = FileManager.default
+    let environment = ProcessInfo.processInfo.environment
+    #if os(iOS)
+      let application =
+        bundle.object(forInfoDictionaryKey: "SnipSnapDiagnosticsApplicationIdentifier") as? String
+      let group = bundle.object(forInfoDictionaryKey: "SnipSnapAppGroupIdentifier") as? String
+      let isolated = environment["SNIP_SNAP_DIAGNOSTICS_DIRECTORY"]?.hasPrefix("/") == true
+      let container =
+        !isolated && validIdentifier(group)
+        ? manager.containerURL(forSecurityApplicationGroupIdentifier: group!) : nil
+    #else
+      let application: String? = nil
+      let group: String? = nil
+      let container: URL? = nil
+    #endif
+    return resolve(
+      bundleIdentifier: bundle.bundleIdentifier, applicationIdentifier: application,
+      appGroupIdentifier: group, sharedContainerURL: container,
+      applicationSupportURL: manager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[
+        0],
+      cachesURL: manager.urls(for: .cachesDirectory, in: .userDomainMask)[0],
+      environment: environment,
+      appVersion: bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        ?? "unknown",
+      appBuild: bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown")
+  }
+
+  // The internal resolution seam substitutes only OS directory and bundle metadata in tests.
+  static func resolve(
+    bundleIdentifier: String?, applicationIdentifier: String?, appGroupIdentifier: String?,
+    sharedContainerURL: URL?, applicationSupportURL: URL, cachesURL: URL,
+    environment: [String: String], appVersion: String, appBuild: String
+  ) -> AppDiagnosticScope {
+    let isolated = environment["SNIP_SNAP_DIAGNOSTICS_DIRECTORY"]?.hasPrefix("/") == true
+    let owned =
+      validIdentifier(applicationIdentifier)
+      && (bundleIdentifier == applicationIdentifier
+        || bundleIdentifier == applicationIdentifier.map { $0 + ".share" })
+    let shared = !isolated && owned && validIdentifier(appGroupIdentifier)
+      && sharedContainerURL?.isFileURL == true
+    let base =
+      shared
+      ? sharedContainerURL!.appendingPathComponent("Library/Application Support", isDirectory: true)
+      : applicationSupportURL
+    let directory = AppDiagnosticEventStore.storageDirectoryURL(
+      applicationSupportURL: base,
+      bundleIdentifier: shared ? applicationIdentifier : bundleIdentifier, environment: environment)
+    let oldSupport = AppDiagnosticEventStore.storageDirectoryURL(
+      applicationSupportURL: applicationSupportURL, bundleIdentifier: bundleIdentifier,
+      environment: [:])
+    let oldCache = AppDiagnosticEventStore.storageDirectoryURL(
+      cachesURL: cachesURL, bundleIdentifier: bundleIdentifier, environment: [:])
+    return AppDiagnosticScope(
+      store: AppDiagnosticEventStore(
+        directoryURL: directory, appVersion: appVersion, appBuild: appBuild,
+        legacyDirectoryURL: isolated ? nil : oldCache,
+        priorDirectoryURLs: shared ? [oldSupport] : []), sharesApplicationHistory: shared,
+      controlsAvailable: isolated || !owned || shared)
+  }
+
+  // Cleanup must not initialize the process's live writer. CLI/tests can clean an
+  // independently created export before first recording in their own isolated scope.
+  static func removeLiveShareableFile(_ fileURL: URL) {
+    resolve(bundle: .main).store.removeShareableFile(fileURL)
+  }
+
+  private static func validIdentifier(_ value: String?) -> Bool {
+    guard let value, !value.isEmpty, value.utf8.count <= 200,
+      value != ".", value != ".."
+    else { return false }
+    return value.unicodeScalars.allSatisfy {
+      CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-")
+        .contains($0)
+    }
+  }
 
   func record(_ event: AppDiagnosticEvent) {
     let submittedAt = Date()
@@ -469,40 +578,54 @@ private final class AppDiagnosticLiveSink: @unchecked Sendable {
     case .started, .succeeded:
       logger.info("\(event.line, privacy: .public)")
     }
-    writer.submit(event, at: submittedAt)
+    if controlsAvailable { writer.submit(event, at: submittedAt) }
   }
 
-  func readLog(range: AppDiagnosticExportRange, limit: Int, errorsOnly: Bool) throws
+  private func perform<T>(_ operation: () throws -> T) throws -> T {
+    guard controlsAvailable else { throw CocoaError(.fileReadNoPermission) }
+    return try writer.perform {
+      if sharesApplicationHistory { _ = try store.readRecordingEnabled() }
+      return try operation()
+    }
+  }
+
+  public func readLog(
+    range: AppDiagnosticExportRange = .last24Hours, limit: Int = 200, errorsOnly: Bool = false
+  ) throws
     -> AppDiagnosticLogReport
   {
-    try writer.perform { try store.readLog(range: range, limit: limit, errorsOnly: errorsOnly) }
+    try perform { try store.readLog(range: range, limit: limit, errorsOnly: errorsOnly) }
   }
 
-  func readRecordingEnabled() throws -> Bool {
-    try writer.perform { try store.readRecordingEnabled() }
+  public func readRecordingEnabled() throws -> Bool {
+    try perform { try store.readRecordingEnabled() }
   }
 
-  func setRecordingEnabled(_ enabled: Bool) throws {
-    try writer.perform { try store.setRecordingEnabled(enabled) }
+  public func setRecordingEnabled(_ enabled: Bool) throws {
+    try perform { try store.setRecordingEnabled(enabled) }
   }
 
-  func setRecordingEnabled(_ enabled: Bool, ifRevision revision: String) throws -> Bool {
-    try writer.perform { try store.setRecordingEnabled(enabled, ifRevision: revision) }
+  public func setRecordingEnabled(_ enabled: Bool, ifRevision revision: String) throws -> Bool {
+    try perform { try store.setRecordingEnabled(enabled, ifRevision: revision) }
   }
 
-  func makeShareableFile(range: AppDiagnosticExportRange) throws -> URL {
-    try writer.perform { try store.makeShareableFile(range: range) }
+  public func makeShareableFile(range: AppDiagnosticExportRange = .last24Hours) throws -> URL {
+    try perform { try store.makeShareableFile(range: range) }
   }
 
-  func clear() throws {
-    try writer.perform { try store.clear() }
+  public func removeShareableFile(_ fileURL: URL) {
+    store.removeShareableFile(fileURL)
   }
 
-  func snapshot() throws -> AppDiagnosticExportSnapshot {
-    try writer.perform { try store.snapshot() }
+  public func clear() throws {
+    try perform { try store.clear() }
   }
 
-  func clear(ifRevision revision: String) throws -> Bool {
-    try writer.perform { try store.clear(ifRevision: revision) }
+  public func snapshot() throws -> AppDiagnosticExportSnapshot {
+    try perform { try store.snapshot() }
+  }
+
+  public func clear(ifRevision revision: String) throws -> Bool {
+    try perform { try store.clear(ifRevision: revision) }
   }
 }

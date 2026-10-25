@@ -181,8 +181,24 @@ grep -F -- 'INFOPLIST_FILE = SnipSnapiOS/Info.plist' "$ios_settings" >/dev/null
 [[ "$(/usr/bin/plutil -extract SnipSnapAppGroupIdentifier raw -o - \
     "$share_source_dir/Info.plist")" == '$(SNIP_SNAP_APP_GROUP_IDENTIFIER)' ]]
 
+for info in "$ios_info" "$share_source_dir/Info.plist"; do
+    if [[ "$(/usr/bin/plutil -extract SnipSnapDiagnosticsApplicationIdentifier raw -o - \
+        "$info" 2>/dev/null)" != '$(SNIP_SNAP_IOS_PRODUCT_BUNDLE_IDENTIFIER)' ]]; then
+        print -u2 "The app and Share extension must use the same diagnostic application identifier."
+        exit 1
+    fi
+done
+
 for manifest in "$ios_privacy" "$share_privacy"; do
     /usr/bin/plutil -lint "$manifest" >/dev/null
+    /usr/bin/plutil -convert json -o - "$manifest" | /usr/bin/ruby -rjson -e '
+        types = JSON.parse(STDIN.read).fetch("NSPrivacyAccessedAPITypes", [])
+        valid = types.any? do |entry|
+            entry["NSPrivacyAccessedAPIType"] == "NSPrivacyAccessedAPICategorySystemBootTime" &&
+                entry.fetch("NSPrivacyAccessedAPITypeReasons", []).include?("35F9.1")
+        end
+        abort "Diagnostics need the elapsed-event timing privacy reason." unless valid
+    '
 done
 /usr/bin/grep -F 'E10000000000000000000035 /* PrivacyInfo.xcprivacy in Resources */' \
     "$project_file" >/dev/null
