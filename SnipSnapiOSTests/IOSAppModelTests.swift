@@ -4931,6 +4931,30 @@ final class IOSAppModelTests: XCTestCase {
         model.cancelBackupImport()
     }
 
+    func testBackupPickerFailureRecordsTheLocalAlertAndIgnoresCancellation() {
+        let diagnostics = IOSDiagnosticRecorderProbe()
+        let model = IOSAppModel(library: ModelTestLibrary(), diagnostics: diagnostics.recorder)
+        model.errorMessage = "Unrelated library error"
+        let error = NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError,
+                            userInfo: [NSLocalizedDescriptionKey: "private backup path"])
+
+        XCTAssertNil(model.backupImportSelectionFailed(CancellationError()))
+        XCTAssertNil(model.backupImportSelectionFailed(CocoaError(.userCancelled)))
+        XCTAssertTrue(diagnostics.events.isEmpty)
+        XCTAssertEqual(model.backupImportSelectionFailed(error), "private backup path")
+        XCTAssertEqual(model.errorMessage, "Unrelated library error")
+        XCTAssertEqual(diagnostics.events, [
+            .failure(operation: "backup.import_select", errorCode: "cocoa.257", visibility: .user)
+        ])
+        XCTAssertFalse(diagnostics.events.map(\.line).joined().contains("private backup path"))
+
+        let unrelated = NSError(domain: "PrivateBackupDomain", code: NSUserCancelledError)
+        XCTAssertNotNil(model.backupImportSelectionFailed(unrelated))
+        XCTAssertEqual(diagnostics.events.last?.operation, "backup.import_select")
+        XCTAssertEqual(diagnostics.events.last?.outcome, .failed)
+        XCTAssertEqual(diagnostics.events.last?.errorCode, "other.UnknownError")
+    }
+
     func testBackupPreviewFailureThrowsWithoutReplacingAnUnrelatedGlobalError() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("IOSImportErrorTests-\(UUID().uuidString)", isDirectory: true)

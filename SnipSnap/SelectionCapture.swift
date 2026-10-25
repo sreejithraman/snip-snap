@@ -2,7 +2,7 @@ import AppKit
 import SnipSnapCore
 import Foundation
 
-enum SelectionCaptureFailure: Error, Equatable, LocalizedError, Sendable {
+enum SelectionCaptureFailure: Error, Equatable, LocalizedError, Sendable, AppDiagnosticErrorCodeProviding {
     case accessibilityPermissionRequired
     case sourceUnavailable
     case selectionUnavailable
@@ -14,6 +14,22 @@ enum SelectionCaptureFailure: Error, Equatable, LocalizedError, Sendable {
     case clipboardRestoreFailed
     case sourceChanged
     case duplicateSelection
+
+    var appDiagnosticCode: String {
+        switch self {
+        case .accessibilityPermissionRequired: "selection.accessibilityPermissionRequired"
+        case .sourceUnavailable: "selection.sourceUnavailable"
+        case .selectionUnavailable: "selection.selectionUnavailable"
+        case .noSelection: "selection.noSelection"
+        case .copyTimedOut: "selection.copyTimedOut"
+        case .clipboardUnavailable: "selection.clipboardUnavailable"
+        case .clipboardSnapshotTimedOut: "selection.clipboardSnapshotTimedOut"
+        case .clipboardChanged: "selection.clipboardChanged"
+        case .clipboardRestoreFailed: "selection.clipboardRestoreFailed"
+        case .sourceChanged: "selection.sourceChanged"
+        case .duplicateSelection: "selection.duplicateSelection"
+        }
+    }
 
     var errorDescription: String? {
         switch self {

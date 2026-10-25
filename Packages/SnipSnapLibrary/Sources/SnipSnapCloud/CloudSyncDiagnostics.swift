@@ -35,6 +35,7 @@ enum CloudSyncDiagnostics {
   }
 
   static func record(_ error: Error, operation: String) {
+    guard !isCancellation(error) else { return }
     let retry = ((error as? CKError)?.userInfo[CKErrorRetryAfterKey] as? NSNumber)?.doubleValue
     AppDiagnosticRecorder.live.record(
       .failure(
@@ -50,9 +51,11 @@ enum CloudSyncDiagnostics {
     _ error: Error,
     operation: String,
     selectedDelay: Duration?,
-    nextAttemptIn: Duration?
+    nextAttemptIn: Duration?,
+    diagnostics: AppDiagnosticRecorder = .live
   ) {
-    AppDiagnosticRecorder.live.record(
+    guard !isCancellation(error) else { return }
+    diagnostics.record(
       .failure(
         operation: diagnosticOperation(operation),
         errorCode: attachmentErrorCode(error),
@@ -76,6 +79,7 @@ enum CloudSyncDiagnostics {
   }
 
   static func attachmentFailed(_ stage: AttachmentStage, error: Error) {
+    guard !isCancellation(error) else { return }
     AppDiagnosticRecorder.live.record(
       .failure(
         operation: stage.operation,
@@ -90,6 +94,14 @@ enum CloudSyncDiagnostics {
       return "cloudkit.\(error.errorCode)"
     }
     return diagnosticErrorCode(error)
+  }
+
+  static func isCancellation(_ error: any Error) -> Bool {
+    if error is CancellationError { return true }
+    if let error = error as? CKError, error.code == .operationCancelled { return true }
+    let error = error as NSError
+    return (error.domain == NSCocoaErrorDomain && error.code == NSUserCancelledError)
+      || (error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled)
   }
 
   private static func seconds(_ duration: Duration?) -> Double {

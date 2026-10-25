@@ -274,22 +274,25 @@ builds](https://developer.apple.com/help/app-store-connect/manage-builds/upload-
 
 ### App diagnostics
 
-Diagnostic recording is enabled in Dev, TestFlight, and normal Release builds,
-including App Store builds. It does not require a debug build or an attached
-debugger. Event history and each exported report are bounded to 64 KiB. A small
-separate cache retains the latest observed sync state and last successful
-fetch/send timestamps after older events rotate out. The operating system can
-remove cached logs. Normal Mac apps keep diagnostics separate by bundle ID;
-test runners explicitly place diagnostics beside their isolated store. Nothing
-is transmitted automatically.
+Local diagnostic recording is enabled by default in Dev, TestFlight, and normal
+Release builds, including App Store builds. It needs no debugger, account, or
+service. History lasts up to seven days within a 10 MiB disk budget; high activity
+can shorten that range. A reserved 2 MiB protects failures and nearby context from
+routine event traffic. Repeated events are summarized with counts and timestamps.
+Logs live in bundle-specific Application Support, separate from user content,
+and are marked excluded from backup. Existing cached logs migrate automatically.
+Test runners keep their explicit isolated diagnostic directory. Nothing is
+transmitted automatically.
 
 After reproducing an error on iPhone or iPad, open **Settings → Support →
 Diagnostics → Share diagnostic log**. On Mac, open **Settings → iCloud → Support →
-Share diagnostic log**, save the text file, and attach it to your
-support message. Export happens only when you choose this action. The export
-identifies the running app version and build, even if its latest event came from
-an older build. It includes timestamps, fixed operation and outcome codes,
-stable error codes, counts and other bounded numeric fields, and version fields.
+Share diagnostic log**. Choose the last 24 hours or seven days, save the text file,
+and attach it to your support message. Export happens only when you choose this
+action. Reports have a separate 5 MiB limit and identify the selected and available
+time ranges and any omitted events. They include the running app version, build,
+and OS context, and preserve the version associated with older events. Reports
+include timestamps, fixed operation and outcome codes, stable error codes,
+counts and other bounded numeric fields, and version fields.
 Attachment stages and older attachment log entries are included until the size
 limit evicts old events. It contains no snip content, filenames, file paths,
 account identifiers, CloudKit record IDs, or hashes.
@@ -303,9 +306,12 @@ Environment is declared build metadata: guarded Cloud Dev runs declare
 Development, distribution scripts declare Production, and unconfigured builds
 report unknown. Exporting reads local evidence without fetching from iCloud.
 
-Use **Clear diagnostic log** in the same Diagnostics controls when a fresh
-capture is useful. Clearing is user initiated and removes the cached log; copies
-you have already saved or shared remain wherever you sent them.
+Turn off **Record local diagnostics** to stop adding app-owned diagnostic events.
+Existing history remains available until it expires or you clear it. Use **Clear
+diagnostic log** in the same controls for a fresh capture. Copies already saved or
+shared remain wherever you sent them. These controls do not erase Apple's separate
+system logs. Latest sync health and last successful fetch/send observations are
+retained separately from ordinary history rotation.
 
 ## Repeat for each beta build
 

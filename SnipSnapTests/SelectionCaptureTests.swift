@@ -1,9 +1,35 @@
 import XCTest
 import SnipSnapCore
 import AppKit
+import Synchronization
 @testable import SnipSnap
 
 final class SelectionCaptureTests: XCTestCase {
+    @MainActor
+    func testVisibleCaptureErrorsRecordDiagnosticsWhileEmptyAndDuplicateFeedbackDoNot() {
+        let events = Mutex<[AppDiagnosticEvent]>([])
+        let hud = CaptureHUDController(diagnostics: AppDiagnosticRecorder { event in
+            events.withLock { $0.append(event) }
+        })
+        let existingWindows = Set(NSApp.windows.map(ObjectIdentifier.init))
+        defer {
+            for window in NSApp.windows where !existingWindows.contains(ObjectIdentifier(window)) {
+                window.orderOut(nil)
+            }
+        }
+
+        hud.show(failure: .noSelection)
+        hud.show(failure: .copyTimedOut)
+        hud.show(failure: .duplicateSelection)
+        XCTAssertTrue(events.withLock { $0.isEmpty })
+
+        hud.show(failure: .sourceUnavailable)
+        let failures = events.withLock { $0 }
+        XCTAssertEqual(failures.map(\.operation), ["selection.capture"])
+        XCTAssertEqual(failures.map(\.errorCode), ["selection.sourceUnavailable"])
+        XCTAssertTrue(failures.allSatisfy { $0.outcome == .failed && $0.visibility == .user })
+    }
+
     @MainActor
     func testEmptySelectionDoesNotShowCaptureError() async {
         for behavior in [SelectionCaptureFixture.CopyBehavior.timeout, .writeWithoutText] {

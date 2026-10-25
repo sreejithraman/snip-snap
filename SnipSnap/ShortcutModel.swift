@@ -649,9 +649,16 @@ enum GlobalHotKeyAction: UInt32, CaseIterable, Identifiable {
     }
 }
 
-enum GlobalHotKeyError: Error, LocalizedError {
+enum GlobalHotKeyError: Error, LocalizedError, AppDiagnosticErrorCodeProviding {
     case eventHandler(OSStatus)
     case registration(OSStatus)
+
+    var appDiagnosticCode: String {
+        switch self {
+        case .eventHandler: "shortcut.eventHandlerFailed"
+        case .registration: "shortcut.registrationFailed"
+        }
+    }
 
     var errorDescription: String? {
         switch self {

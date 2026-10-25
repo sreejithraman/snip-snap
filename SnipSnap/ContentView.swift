@@ -974,10 +974,10 @@ struct ContentView: View {
                 }
                 model.addTemporaryDraftAttachment(url, to: listID)
                 cacheComposerDraft(for: listID)
-            case .failure:
+            case .failure(let error):
                 model.presentError(String(
                     localized: "Couldn’t prepare pasted text. Try again."
-                ))
+                ), operation: "composer.paste_stage", diagnosticCode: diagnosticErrorCode(error))
             }
         }
     }
@@ -1077,7 +1077,10 @@ struct ContentView: View {
                 completion(try await InteractiveScreenCapture.capture(to: url))
             } catch {
                 completion(false)
-                model.presentError(String(localized: "Couldn’t start screen capture. Try again."))
+                model.presentError(
+                    String(localized: "Couldn’t start screen capture. Try again."),
+                    operation: "capture.screen", diagnosticCode: diagnosticErrorCode(error)
+                )
             }
         }
     }

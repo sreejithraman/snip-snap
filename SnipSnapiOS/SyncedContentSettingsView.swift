@@ -8,6 +8,7 @@ import SwiftUI
 
 struct SyncedContentSettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @ScaledMetric(relativeTo: .body) private var settingsIconWidth: CGFloat = 24
     @Bindable var model: SyncedContentSettingsModel
     var clipboard: IOSClipboardModel?
@@ -19,8 +20,7 @@ struct SyncedContentSettingsView: View {
     @State private var confirmsUsingDeviceCopy = false
     @State private var isRetryingSync = false
     @State private var isRetryingClipboardSync = false
-    @State private var diagnosticsShareRequest: IOSShareRequest?
-    @State private var diagnosticsMessage: String?
+    @State private var diagnostics = IOSDiagnosticSettingsState()
     @State private var isImportingBackup = false
     @State private var isPreparingBackup = false
     @State private var isProcessingImport = false
@@ -172,8 +172,8 @@ struct SyncedContentSettingsView: View {
                 guard let url = urls.first else { return }
                 previewBackupImport(from: url)
             case .failure(let error):
-                if backupLifetime.isActive, (error as NSError).code != NSUserCancelledError {
-                    backupError = error.localizedDescription
+                if backupLifetime.isActive {
+                    backupError = library?.backupImportSelectionFailed(error)
                 }
             }
         }
@@ -199,16 +199,23 @@ struct SyncedContentSettingsView: View {
             Text(backupError ?? "")
         }
         .background {
-            IOSShareSheetPresenter(request: $diagnosticsShareRequest)
+            IOSShareSheetPresenter(
+                request: $diagnostics.shareRequest,
+                diagnosticOperation: "diagnostics.export"
+            )
                 .frame(width: 0, height: 0)
         }
+        .onDisappear { diagnostics.deactivate() }
         .alert("Diagnostics", isPresented: Binding(
-            get: { diagnosticsMessage != nil },
-            set: { if !$0 { diagnosticsMessage = nil } }
+            get: { diagnostics.message != nil },
+            set: { if !$0 { diagnostics.message = nil } }
         )) {
-            Button("OK") { diagnosticsMessage = nil }
+            if diagnostics.recordingEnabled == nil {
+                Button("Try Again") { diagnostics.refreshRecording() }
+            }
+            Button("OK") { diagnostics.message = nil }
         } message: {
-            Text(diagnosticsMessage ?? "")
+            Text(diagnostics.message ?? "")
         }
         .onChange(of: model.canEnableClipboardSync) { _, canEnable in
             if !canEnable { confirmsClipboardSync = false }
@@ -312,21 +319,43 @@ struct SyncedContentSettingsView: View {
     private var diagnosticsView: some View {
         Form {
             Section {
-                Button(action: shareDiagnostics) {
+                Toggle(isOn: Binding(
+                    get: { diagnostics.recordingEnabled ?? true },
+                    set: { diagnostics.setRecordingEnabled($0) }
+                )) {
+                    settingsLabel("Record local diagnostics", systemImage: "waveform.path")
+                }
+                .accessibilityIdentifier("diagnostics-recording-toggle")
+                Picker("Diagnostic log range", selection: $diagnostics.range) {
+                    Text("Last 24 hours").tag(AppDiagnosticExportRange.last24Hours)
+                    Text("Last 7 days").tag(AppDiagnosticExportRange.last7Days)
+                }
+                .accessibilityIdentifier("diagnostic-log-range")
+                Button(action: diagnostics.share) {
                     settingsLabel("Share diagnostic log", systemImage: "square.and.arrow.up")
                 }
                 .accessibilityIdentifier("share-diagnostic-log")
-                Button(action: clearDiagnostics) {
+                Button(action: diagnostics.clear) {
                     settingsLabel("Clear diagnostic log", systemImage: "trash")
                 }
                 .accessibilityIdentifier("clear-diagnostic-log")
+                if diagnostics.isPreparing {
+                    ProgressView()
+                        .accessibilityLabel("Updating diagnostics")
+                }
             } footer: {
-                Text("Includes only recent sync stages and error codes—not your content or file names.")
+                Text("Diagnostics stay on this device for up to 7 days; storage limits may shorten history. They exclude snip content and file names. Nothing is uploaded automatically. Turning recording off keeps retained logs; clear them separately. The system may keep separate logs.")
             }
+            .disabled(diagnostics.isBusy || diagnostics.recordingEnabled == nil)
         }
         .formStyle(.grouped)
         .navigationTitle("Diagnostics")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear { diagnostics.activate() }
+        .onDisappear { diagnostics.deactivate() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { diagnostics.refreshRecording() }
+        }
     }
 
     private func createBackup() {
@@ -443,34 +472,6 @@ struct SyncedContentSettingsView: View {
 #endif
     }
 
-    private func shareDiagnostics() {
-        do {
-            let url = try AppDiagnosticsExport.makeShareableFile()
-            diagnosticsShareRequest = IOSShareRequest(items: [.file(url)])
-        } catch {
-            AppDiagnosticRecorder.live.record(.failure(
-                operation: "diagnostics.export",
-                error: error,
-                visibility: .user
-            ))
-            diagnosticsMessage = String(localized: "Couldn’t prepare the diagnostic log. Try again.")
-        }
-    }
-
-    private func clearDiagnostics() {
-        do {
-            try AppDiagnosticsExport.clear()
-            diagnosticsMessage = String(localized: "Diagnostic log cleared.")
-        } catch {
-            AppDiagnosticRecorder.live.record(.failure(
-                operation: "diagnostics.clear",
-                error: error,
-                visibility: .user
-            ))
-            diagnosticsMessage = String(localized: "Couldn’t clear the diagnostic log. Try again.")
-        }
-    }
-
     private var canChangeSync: Bool {
         if model.canCancelEnable { return true }
         return model.mode == .iCloudSync ? model.canDisable : model.canEnable
@@ -553,5 +554,140 @@ final class IOSSettingsBackupLifetime {
         guard let root = exportRoot else { return }
         try? FileManager.default.removeItem(at: root)
         exportRoot = nil
+    }
+}
+
+/// Keeps diagnostic work and its staged share file within the settings presentation.
+@MainActor
+@Observable
+private final class IOSDiagnosticSettingsState {
+    var range: AppDiagnosticExportRange = .last24Hours
+    private(set) var recordingEnabled: Bool?
+    var message: String?
+    var shareRequest: IOSShareRequest? {
+        didSet {
+            if shareRequest == nil { finishSharing() }
+        }
+    }
+    private var task: Task<Void, Never>?
+    private var exportURL: URL?
+    private var isActive = false
+
+    var isPreparing: Bool { task != nil }
+    var isBusy: Bool { isPreparing || shareRequest != nil }
+
+    func activate() {
+        isActive = true
+        refreshRecording()
+    }
+
+    func deactivate() {
+        isActive = false
+        message = nil
+        task?.cancel()
+        if shareRequest == nil { finishSharing() }
+    }
+
+    func refreshRecording() {
+        guard isActive, !isBusy else { return }
+        perform(operation: "diagnostics.recording", work: { try AppDiagnosticsExport.readRecordingEnabled() }) { result in
+            switch result {
+            case .success(let enabled): self.recordingEnabled = enabled
+            case .failure:
+                self.message = String(localized: "Couldn’t read the diagnostics setting. Try again.")
+            }
+        }
+    }
+
+    func setRecordingEnabled(_ enabled: Bool) {
+        guard let previous = recordingEnabled, isActive, !isBusy else { return }
+        recordingEnabled = enabled
+        perform(operation: "diagnostics.recording", work: {
+            try AppDiagnosticsExport.setRecordingEnabled(enabled)
+            return enabled
+        }) { result in
+            switch result {
+            case .success(let saved): self.recordingEnabled = saved
+            case .failure:
+                self.recordingEnabled = previous
+                self.message = String(localized: "Couldn’t save the diagnostics setting. Try again.")
+            }
+        }
+    }
+
+    func share() {
+        guard isActive, !isBusy else { return }
+        let selectedRange = range
+        perform(operation: "diagnostics.export", work: {
+            try AppDiagnosticsExport.makeShareableFile(range: selectedRange)
+        }, discard: { url in
+            AppDiagnosticsExport.removeShareableFile(url)
+        }) { result in
+            switch result {
+            case .success(let url):
+                self.exportURL = url
+                self.shareRequest = IOSShareRequest(items: [.file(url)])
+            case .failure:
+                self.message = String(localized: "Couldn’t prepare the diagnostic log. Try again.")
+            }
+        }
+    }
+
+    func finishSharing() {
+        guard let url = exportURL else { return }
+        exportURL = nil
+        Task.detached(priority: .utility) { AppDiagnosticsExport.removeShareableFile(url) }
+    }
+
+    func clear() {
+        guard isActive, !isBusy else { return }
+        perform(operation: "diagnostics.clear", work: { try AppDiagnosticsExport.clear() }) { result in
+            switch result {
+            case .success: self.message = String(localized: "Diagnostic log cleared.")
+            case .failure: self.message = String(localized: "Couldn’t clear the diagnostic log. Try again.")
+            }
+        }
+    }
+
+    private func perform<Output: Sendable>(
+        operation: StaticString? = nil,
+        work: @escaping @Sendable () throws -> Output,
+        discard: @escaping @Sendable (Output) -> Void = { _ in },
+        completion: @escaping @MainActor (Result<Output, any Error>) -> Void
+    ) {
+        guard isActive, !isBusy else { return }
+        let worker = Task.detached(priority: .utility) {
+            do {
+                try Task.checkCancellation()
+                return try work()
+            } catch {
+                if !(error is CancellationError), let operation {
+                    AppDiagnosticRecorder.live.record(.failure(operation: operation, error: error, visibility: .user))
+                }
+                throw error
+            }
+        }
+        task = Task {
+            defer {
+                task = nil
+                // A reopened settings view must reconcile a write that finished after cancellation.
+                if isActive, Task.isCancelled { refreshRecording() }
+            }
+            do {
+                let output = try await withTaskCancellationHandler {
+                    try await worker.value
+                } onCancel: {
+                    worker.cancel()
+                }
+                guard isActive, !Task.isCancelled else {
+                    await Task.detached(priority: .utility) { discard(output) }.value
+                    return
+                }
+                completion(.success(output))
+            } catch {
+                guard isActive, !Task.isCancelled else { return }
+                completion(.failure(error))
+            }
+        }
     }
 }

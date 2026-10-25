@@ -680,9 +680,42 @@ final class SnipSnapiOSUITests: XCTestCase {
         let share = app.buttons["share-diagnostic-log"]
         XCTAssertTrue(share.waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["clear-diagnostic-log"].exists)
+        XCTAssertTrue(app.switches["diagnostics-recording-toggle"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["diagnostic-log-range"].firstMatch.exists)
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(
-            format: "label CONTAINS %@", "not your content or file names"
+            format: "label CONTAINS %@", "exclude snip content and file names"
         )).firstMatch.exists)
+    }
+
+    func testDiagnosticRecordingChoiceSurvivesRelaunchAndCanResume() {
+        continueAfterFailure = false
+        let app = launchApp()
+        func openDiagnostics() {
+            openSettings(in: app)
+            let diagnostics = app.buttons["diagnostics"]
+            for _ in 0..<3 where !diagnostics.exists { app.swipeUp() }
+            XCTAssertTrue(diagnostics.waitForExistence(timeout: 3))
+            diagnostics.tap()
+        }
+        openDiagnostics()
+        let recording = app.switches["diagnostics-recording-toggle"]
+        XCTAssertTrue(recording.waitForExistence(timeout: 3))
+        if recording.value as? String != "1" { toggle(recording) }
+        expectation(for: NSPredicate(format: "value == '1' AND enabled == true"), evaluatedWith: recording)
+        waitForExpectations(timeout: 5)
+        toggle(recording)
+        expectation(for: NSPredicate(format: "value == '0' AND enabled == true"), evaluatedWith: recording)
+        waitForExpectations(timeout: 5)
+
+        app.terminate()
+        app.launch()
+        openDiagnostics()
+        expectation(for: NSPredicate(format: "value == '0' AND enabled == true"), evaluatedWith: recording)
+        waitForExpectations(timeout: 5)
+        XCTAssertTrue(app.buttons["share-diagnostic-log"].isEnabled)
+        toggle(recording)
+        expectation(for: NSPredicate(format: "value == '1' AND enabled == true"), evaluatedWith: recording)
+        waitForExpectations(timeout: 5)
     }
 
     func testExplicitEnableKeepsLocalContentAndTurnsSyncOn() {

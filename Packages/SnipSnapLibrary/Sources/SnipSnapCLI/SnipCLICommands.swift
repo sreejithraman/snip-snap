@@ -346,6 +346,13 @@ enum SnipCLIPrinter {
       return
     }
     switch receipt.action {
+    case .extended(.application(.diagnosticLogs)):
+      guard case .application(let result) = receipt.extendedResult,
+            let text = result.values["log"] else {
+        throw SnipSnapCLIError.importFailed("Snip Snap did not return diagnostic logs.")
+      }
+      FileHandle.standardOutput.write(Data(text.utf8))
+      if !text.hasSuffix("\n") { FileHandle.standardOutput.write(Data("\n".utf8)) }
     case .extended:
       if let result = receipt.extendedResult {
         let encoder = JSONEncoder()

@@ -1,5 +1,6 @@
 import CloudKit
 import Foundation
+import SnipSnapCore
 
 package enum CloudKitRetryPolicy {
   package static func isTransient(_ error: Error) -> Bool {
@@ -53,13 +54,16 @@ package actor CloudKitOperationRetry {
   private var consecutiveFailures = 0
   private let gate = AsyncOperationGate()
   private let sleep: @Sendable (Duration) async throws -> Void
+  private let diagnostics: AppDiagnosticRecorder
 
   package init(
     now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now },
-    sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+    diagnostics: AppDiagnosticRecorder = .live
   ) {
     self.now = now
     self.sleep = sleep
+    self.diagnostics = diagnostics
   }
 
   package func run<Value: Sendable>(
@@ -93,7 +97,8 @@ package actor CloudKitOperationRetry {
           nextAttempt = max(nextAttempt ?? deadline, deadline)
         }
         CloudSyncDiagnostics.recordRetry(error, operation: operationName,
-          selectedDelay: delay, nextAttemptIn: nextAttempt.map { max(.zero, now().duration(to: $0)) })
+          selectedDelay: delay, nextAttemptIn: nextAttempt.map { max(.zero, now().duration(to: $0)) },
+          diagnostics: diagnostics)
         guard transient, attempt < 3 else { throw error }
         attempt += 1
       }

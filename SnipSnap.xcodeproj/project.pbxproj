@@ -121,6 +121,7 @@
 		E1000000000000000000000A /* SnipSnapPersistence in Frameworks */ = {isa = PBXBuildFile; productRef = EF0000000000000000000002 /* SnipSnapPersistence */; };
 		E1000000000000000000000E /* SnipSnapCloud in Frameworks */ = {isa = PBXBuildFile; productRef = EF0000000000000000000004 /* SnipSnapCloud */; };
 		E1000000000000000000000B /* IOSAppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000009 /* IOSAppModelTests.swift */; };
+		F8A1D64C09284B9B91D17A01 /* IOSCopyShareTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8A1D64C09284B9B91D17A02 /* IOSCopyShareTests.swift */; };
 		B1A000000000000000000001 /* ListPageGestureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1A000000000000000000101 /* ListPageGestureTests.swift */; };
 		B1A000000000000000000002 /* ListPageTransitionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1A000000000000000000102 /* ListPageTransitionTests.swift */; };
 		E1000000000000000000000C /* SnipSnapiOSUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2000000000000000000000A /* SnipSnapiOSUITests.swift */; };
@@ -349,6 +350,7 @@
 		E20000000000000000000007 /* PreviewSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewSupport.swift; sourceTree = "<group>"; };
 		E20000000000000000000008 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		E20000000000000000000009 /* IOSAppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAppModelTests.swift; sourceTree = "<group>"; };
+		F8A1D64C09284B9B91D17A02 /* IOSCopyShareTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSCopyShareTests.swift; sourceTree = "<group>"; };
 		B1B000000000000000000101 /* CompactLibraryPageStack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompactLibraryPageStack.swift; sourceTree = "<group>"; };
 		B1A000000000000000000101 /* ListPageGestureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListPageGestureTests.swift; sourceTree = "<group>"; };
 		B1A000000000000000000102 /* ListPageTransitionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListPageTransitionTests.swift; sourceTree = "<group>"; };
@@ -666,6 +668,7 @@
 			isa = PBXGroup;
 			children = (
 				E20000000000000000000009 /* IOSAppModelTests.swift */,
+				F8A1D64C09284B9B91D17A02 /* IOSCopyShareTests.swift */,
 				B1A000000000000000000101 /* ListPageGestureTests.swift */,
 				B1A000000000000000000102 /* ListPageTransitionTests.swift */,
 			);
@@ -1113,6 +1116,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				E1000000000000000000000B /* IOSAppModelTests.swift in Sources */,
+				F8A1D64C09284B9B91D17A01 /* IOSCopyShareTests.swift in Sources */,
 				B1A000000000000000000001 /* ListPageGestureTests.swift in Sources */,
 				B1A000000000000000000002 /* ListPageTransitionTests.swift in Sources */,
 			);

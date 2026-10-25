@@ -25,14 +25,18 @@ final class AppDiagnosticsTests: XCTestCase {
       cachesURL: cachesURL,
       bundleIdentifier: "org.example.snipsnap.dev1",
       environment: [
-        "SNIP_SNAP_STORE_PATH": temporaryDirectory.appendingPathComponent("first-library/items.json").path,
+        "SNIP_SNAP_STORE_PATH": temporaryDirectory.appendingPathComponent(
+          "first-library/items.json"
+        ).path
       ]
     )
     let changedStoreDirectory = AppDiagnosticEventStore.storageDirectoryURL(
       cachesURL: cachesURL,
       bundleIdentifier: "org.example.snipsnap.dev1",
       environment: [
-        "SNIP_SNAP_STORE_PATH": temporaryDirectory.appendingPathComponent("other-library/items.json").path,
+        "SNIP_SNAP_STORE_PATH": temporaryDirectory.appendingPathComponent(
+          "other-library/items.json"
+        ).path
       ]
     )
     let ordinaryRelaunchDirectory = AppDiagnosticEventStore.storageDirectoryURL(
@@ -41,7 +45,8 @@ final class AppDiagnosticsTests: XCTestCase {
       environment: [:]
     )
     let firstStore = AppDiagnosticEventStore(
-      directoryURL: firstLaunchDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2"
+      directoryURL: firstLaunchDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     firstStore.append(.syncSnapshot(scope: .transport, environment: .development, pendingEvents: 2))
 
@@ -50,14 +55,16 @@ final class AppDiagnosticsTests: XCTestCase {
     XCTAssertEqual(ordinaryRelaunchDirectory, expected)
     for directory in [changedStoreDirectory, ordinaryRelaunchDirectory] {
       let reopenedStore = AppDiagnosticEventStore(
-        directoryURL: directory, maxBytes: 4_096, appVersion: "1", appBuild: "2"
+        directoryURL: directory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+        now: { Date(timeIntervalSince1970: 1_790_056_800) }
       )
       let export = try String(contentsOf: reopenedStore.makeShareableFile(), encoding: .utf8)
       XCTAssertTrue(export.contains("diagnostic_sync_latest"))
       XCTAssertTrue(export.contains("pending_events=2"))
     }
     let relaunchedStore = AppDiagnosticEventStore(
-      directoryURL: ordinaryRelaunchDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2"
+      directoryURL: ordinaryRelaunchDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     try relaunchedStore.clear()
     let clearedExport = try String(contentsOf: firstStore.makeShareableFile(), encoding: .utf8)
@@ -77,12 +84,15 @@ final class AppDiagnosticsTests: XCTestCase {
       isolatedDirectoryPath: nil
     )
     let releaseStore = AppDiagnosticEventStore(
-      directoryURL: releaseDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2"
+      directoryURL: releaseDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     let devStore = AppDiagnosticEventStore(
-      directoryURL: devDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2"
+      directoryURL: devDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
-    releaseStore.append(.syncSnapshot(scope: .transport, environment: .production, pendingUploads: 3))
+    releaseStore.append(
+      .syncSnapshot(scope: .transport, environment: .production, pendingUploads: 3))
     releaseStore.append(.succeeded(operation: "sync.send"))
     devStore.append(.syncSnapshot(scope: .transport, environment: .development, pendingEvents: 2))
 
@@ -98,11 +108,13 @@ final class AppDiagnosticsTests: XCTestCase {
     XCTAssertFalse(devExport.contains("org.example.snipsnap.dev1"))
 
     try devStore.clear()
-    let retainedReleaseExport = try String(contentsOf: releaseStore.makeShareableFile(), encoding: .utf8)
+    let retainedReleaseExport = try String(
+      contentsOf: releaseStore.makeShareableFile(), encoding: .utf8)
     let clearedDevExport = try String(contentsOf: devStore.makeShareableFile(), encoding: .utf8)
 
     XCTAssertTrue(retainedReleaseExport.contains("environment=production"))
-    XCTAssertTrue(retainedReleaseExport.contains("diagnostic_sync_last_success operation=sync.send"))
+    XCTAssertTrue(
+      retainedReleaseExport.contains("diagnostic_sync_last_success operation=sync.send"))
     XCTAssertFalse(clearedDevExport.contains("diagnostic_event"))
     XCTAssertFalse(clearedDevExport.contains("diagnostic_sync_"))
   }
@@ -122,10 +134,12 @@ final class AppDiagnosticsTests: XCTestCase {
       isolatedDirectoryPath: secondRoot.path
     )
     let firstStore = AppDiagnosticEventStore(
-      directoryURL: firstDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2"
+      directoryURL: firstDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     let secondStore = AppDiagnosticEventStore(
-      directoryURL: secondDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2"
+      directoryURL: secondDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     firstStore.append(.syncSnapshot(scope: .records, phase: .blocked, blockedRecords: 2))
     secondStore.append(.syncSnapshot(scope: .records, phase: .active, pendingUploads: 4))
@@ -154,7 +168,8 @@ final class AppDiagnosticsTests: XCTestCase {
     XCTAssertFalse(secondExport.contains("host-b"))
 
     try firstStore.clear()
-    let retainedSecondExport = try String(contentsOf: secondStore.makeShareableFile(), encoding: .utf8)
+    let retainedSecondExport = try String(
+      contentsOf: secondStore.makeShareableFile(), encoding: .utf8)
 
     XCTAssertTrue(retainedSecondExport.contains("diagnostic_sync_latest"))
     XCTAssertTrue(retainedSecondExport.contains("pending_uploads=4"))
@@ -192,7 +207,8 @@ final class AppDiagnosticsTests: XCTestCase {
       "Snip-Snap-Diagnostics.txt": "Snip Snap diagnostics\n",
     ]
     for (name, contents) in sharedFiles {
-      try contents.write(to: sharedDirectory.appendingPathComponent(name), atomically: true, encoding: .utf8)
+      try contents.write(
+        to: sharedDirectory.appendingPathComponent(name), atomically: true, encoding: .utf8)
     }
     let directory = AppDiagnosticEventStore.storageDirectoryURL(
       cachesURL: cachesURL,
@@ -200,7 +216,8 @@ final class AppDiagnosticsTests: XCTestCase {
       isolatedDirectoryPath: nil
     )
     let store = AppDiagnosticEventStore(
-      directoryURL: directory, maxBytes: 4_096, appVersion: "1", appBuild: "2"
+      directoryURL: directory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
 
     let export = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
@@ -241,48 +258,57 @@ final class AppDiagnosticsTests: XCTestCase {
   func testLatestSyncHealthSurvivesHistoryRotationAndReopening() throws {
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
-      maxBytes: 1_024,
+      maxBytes: 2_048,
       appVersion: "1",
-      appBuild: "2"
+      appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     store.append(
       .syncSnapshot(scope: .transport, environment: .production, phase: .active, pendingEvents: 2),
-      at: Date(timeIntervalSince1970: 0)
+      at: Date(timeIntervalSince1970: 1_790_053_200 + 0)
     )
     store.append(
       .syncSnapshot(scope: .records, phase: .blocked, reason: .recordBlocked, blockedRecords: 3),
-      at: Date(timeIntervalSince1970: 1)
+      at: Date(timeIntervalSince1970: 1_790_053_200 + 1)
     )
-    store.append(.succeeded(operation: "sync.fetch"), at: Date(timeIntervalSince1970: 2))
-    store.append(.succeeded(operation: "sync.send"), at: Date(timeIntervalSince1970: 3))
+    store.append(
+      .succeeded(operation: "sync.fetch"), at: Date(timeIntervalSince1970: 1_790_053_200 + 2))
+    store.append(
+      .succeeded(operation: "sync.send"), at: Date(timeIntervalSince1970: 1_790_053_200 + 3))
     for index in 10..<30 {
-      store.append(.started(operation: "clipboard.persist"), at: Date(timeIntervalSince1970: TimeInterval(index)))
+      store.append(
+        .started(operation: "clipboard.persist"),
+        at: Date(timeIntervalSince1970: 1_790_053_200 + TimeInterval(index)))
     }
     let reopened = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
-      maxBytes: 1_024,
+      maxBytes: 2_048,
       appVersion: "1",
-      appBuild: "3"
+      appBuild: "3", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
 
     let export = try String(contentsOf: reopened.makeShareableFile(), encoding: .utf8)
 
-    XCTAssertTrue(export.contains(
-      "1970-01-01T00:00:00Z diagnostic_sync_latest operation=sync.snapshot outcome=succeeded "
-        + "visibility=background scope=transport environment=production phase=active pending_events=2"
-    ))
-    XCTAssertTrue(export.contains(
-      "1970-01-01T00:00:01Z diagnostic_sync_latest operation=sync.snapshot outcome=succeeded "
-        + "visibility=background scope=records phase=blocked reason=record_blocked blocked_records=3"
-    ))
-    XCTAssertTrue(export.contains(
-      "1970-01-01T00:00:02Z diagnostic_sync_last_success operation=sync.fetch outcome=succeeded"
-    ))
-    XCTAssertTrue(export.contains(
-      "1970-01-01T00:00:03Z diagnostic_sync_last_success operation=sync.send outcome=succeeded"
-    ))
-    XCTAssertTrue(export.contains("1970-01-01T00:00:29Z diagnostic_event operation=clipboard.persist"))
-    XCTAssertLessThanOrEqual(export.utf8.count, 1_024)
+    XCTAssertTrue(
+      export.contains(
+        "2026-09-22T05:00:00Z diagnostic_sync_latest operation=sync.snapshot outcome=succeeded "
+          + "visibility=background scope=transport environment=production phase=active pending_events=2"
+      ))
+    XCTAssertTrue(
+      export.contains(
+        "2026-09-22T05:00:01Z diagnostic_sync_latest operation=sync.snapshot outcome=succeeded "
+          + "visibility=background scope=records phase=blocked reason=record_blocked blocked_records=3"
+      ))
+    XCTAssertTrue(
+      export.contains(
+        "2026-09-22T05:00:02Z diagnostic_sync_last_success operation=sync.fetch outcome=succeeded"
+      ))
+    XCTAssertTrue(
+      export.contains(
+        "2026-09-22T05:00:03Z diagnostic_sync_last_success operation=sync.send outcome=succeeded"
+      ))
+    XCTAssertTrue(
+      export.contains("2026-09-22T05:00:29Z diagnostic_event operation=clipboard.persist"))
+    XCTAssertLessThanOrEqual(export.utf8.count, 2_048)
   }
 
   func testLatestSyncObservationReplacesOldValuesAndKeepsUnknownValuesAbsent() throws {
@@ -290,7 +316,7 @@ final class AppDiagnosticsTests: XCTestCase {
       directoryURL: temporaryDirectory,
       maxBytes: 4_096,
       appVersion: "1",
-      appBuild: "2"
+      appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     store.append(
       .syncSnapshot(
@@ -302,11 +328,11 @@ final class AppDiagnosticsTests: XCTestCase {
         pendingEvents: 5,
         blockedRecords: 4
       ),
-      at: Date(timeIntervalSince1970: 0)
+      at: Date(timeIntervalSince1970: 1_790_053_200 + 0)
     )
     store.append(
       .syncSnapshot(scope: .records, environment: .unknown, phase: .seeding, pendingUploads: 2),
-      at: Date(timeIntervalSince1970: 1)
+      at: Date(timeIntervalSince1970: 1_790_053_200 + 1)
     )
     store.append(
       .syncSnapshot(
@@ -317,19 +343,21 @@ final class AppDiagnosticsTests: XCTestCase {
         pendingEvents: -3,
         blockedRecords: -4
       ),
-      at: Date(timeIntervalSince1970: 2)
+      at: Date(timeIntervalSince1970: 1_790_053_200 + 2)
     )
 
     let export = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
     let observations = export.split(separator: "\n")
       .filter { $0.contains("diagnostic_sync_latest") }.map(String.init)
 
-    XCTAssertEqual(observations, [
-      "1970-01-01T00:00:02Z diagnostic_sync_latest operation=sync.snapshot outcome=succeeded "
-        + "visibility=background scope=transport phase=remote_checked_missing_zone",
-      "1970-01-01T00:00:01Z diagnostic_sync_latest operation=sync.snapshot outcome=succeeded "
-        + "visibility=background scope=records environment=unknown phase=seeding pending_uploads=2",
-    ])
+    XCTAssertEqual(
+      observations,
+      [
+        "2026-09-22T05:00:02Z diagnostic_sync_latest operation=sync.snapshot outcome=succeeded "
+          + "visibility=background scope=transport phase=remote_checked_missing_zone",
+        "2026-09-22T05:00:01Z diagnostic_sync_latest operation=sync.snapshot outcome=succeeded "
+          + "visibility=background scope=records environment=unknown phase=seeding pending_uploads=2",
+      ])
   }
 
   func testLastSuccessfulTransfersAdvanceOnlyAfterSuccess() throws {
@@ -337,44 +365,54 @@ final class AppDiagnosticsTests: XCTestCase {
       directoryURL: temporaryDirectory,
       maxBytes: 4_096,
       appVersion: "1",
-      appBuild: "2"
+      appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
-    store.append(.succeeded(operation: "sync.fetch"), at: Date(timeIntervalSince1970: 0))
-    store.append(.succeeded(operation: "sync.send"), at: Date(timeIntervalSince1970: 1))
-    store.append(.succeeded(operation: "sync.fetch"), at: Date(timeIntervalSince1970: 2))
+    store.append(
+      .succeeded(operation: "sync.fetch"), at: Date(timeIntervalSince1970: 1_790_053_200 + 0))
+    store.append(
+      .succeeded(operation: "sync.send"), at: Date(timeIntervalSince1970: 1_790_053_200 + 1))
+    store.append(
+      .succeeded(operation: "sync.fetch"), at: Date(timeIntervalSince1970: 1_790_053_200 + 2))
     store.append(
       .failure(operation: "sync.fetch", errorCode: "cloudkit.3", visibility: .background),
-      at: Date(timeIntervalSince1970: 3)
+      at: Date(timeIntervalSince1970: 1_790_053_200 + 3)
     )
     store.append(
       .started(operation: "sync.send", reason: .pendingWork),
-      at: Date(timeIntervalSince1970: 4)
+      at: Date(timeIntervalSince1970: 1_790_053_200 + 4)
     )
 
     let export = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
     let successes = export.split(separator: "\n")
       .filter { $0.contains("diagnostic_sync_last_success") }.map(String.init)
 
-    XCTAssertEqual(successes, [
-      "1970-01-01T00:00:02Z diagnostic_sync_last_success operation=sync.fetch "
-        + "outcome=succeeded visibility=background",
-      "1970-01-01T00:00:01Z diagnostic_sync_last_success operation=sync.send "
-        + "outcome=succeeded visibility=background",
-    ])
-    XCTAssertTrue(export.contains(
-      "operation=sync.send outcome=started visibility=background reason=pending_work"
-    ))
+    XCTAssertEqual(
+      successes,
+      [
+        "2026-09-22T05:00:02Z diagnostic_sync_last_success operation=sync.fetch "
+          + "outcome=succeeded visibility=background",
+        "2026-09-22T05:00:01Z diagnostic_sync_last_success operation=sync.send "
+          + "outcome=succeeded visibility=background",
+      ])
+    XCTAssertTrue(
+      export.contains(
+        "operation=sync.send outcome=started visibility=background reason=pending_work"
+      ))
   }
 
   func testExportRejectsUnknownSyncFieldsInHistoryAndRetainedHealth() throws {
-    try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
-    let validHistory = "2026-09-22T05:00:28Z diagnostic_event operation=sync.snapshot "
+    try FileManager.default.createDirectory(
+      at: temporaryDirectory, withIntermediateDirectories: true)
+    let validHistory =
+      "2026-09-22T05:00:28Z diagnostic_event operation=sync.snapshot "
       + "outcome=succeeded visibility=background scope=transport environment=production "
       + "phase=active pending_uploads=0 pending_downloads=2 pending_events=1 blocked_records=3"
-    let validHealth = "2026-09-22T05:00:29Z diagnostic_event operation=sync.snapshot "
+    let validHealth =
+      "2026-09-22T05:00:29Z diagnostic_event operation=sync.snapshot "
       + "outcome=succeeded visibility=background scope=records phase=blocked "
       + "reason=record_blocked blocked_records=4"
-    let prefix = "2026-09-22T05:00:30Z diagnostic_event operation=sync.snapshot "
+    let prefix =
+      "2026-09-22T05:00:30Z diagnostic_event operation=sync.snapshot "
       + "outcome=succeeded visibility=background "
     let invalid = [
       "scope=privateRecord",
@@ -393,25 +431,31 @@ final class AppDiagnosticsTests: XCTestCase {
       "scope=transport scope=records",
     ].map { prefix + $0 }
     try ([validHistory] + invalid).joined(separator: "\n")
-      .write(to: temporaryDirectory.appendingPathComponent("diagnostic-events.txt"), atomically: true, encoding: .utf8)
+      .write(
+        to: temporaryDirectory.appendingPathComponent("diagnostic-events.txt"), atomically: true,
+        encoding: .utf8)
     try ([validHealth] + invalid).joined(separator: "\n")
-      .write(to: temporaryDirectory.appendingPathComponent("diagnostic-sync-health.txt"), atomically: true, encoding: .utf8)
+      .write(
+        to: temporaryDirectory.appendingPathComponent("diagnostic-sync-health.txt"),
+        atomically: true, encoding: .utf8)
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
       maxBytes: 8_192,
       appVersion: "1",
-      appBuild: "2"
+      appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
 
     let export = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
     let history = export.split(separator: "\n")
       .filter { $0.contains("diagnostic_event") }.map(String.init)
 
-    XCTAssertEqual(history, [validHistory])
-    XCTAssertTrue(export.contains(
-      "diagnostic_sync_latest operation=sync.snapshot outcome=succeeded visibility=background "
-        + "scope=records phase=blocked reason=record_blocked blocked_records=4"
-    ))
+    XCTAssertEqual(history.count, 1)
+    XCTAssertTrue(try XCTUnwrap(history.first).hasPrefix(validHistory + " schema=1 "))
+    XCTAssertTrue(
+      export.contains(
+        "diagnostic_sync_latest operation=sync.snapshot outcome=succeeded visibility=background "
+          + "scope=records phase=blocked reason=record_blocked blocked_records=4"
+      ))
     XCTAssertFalse(export.contains("private"))
     XCTAssertFalse(export.contains("pending_uploads=01"))
     XCTAssertFalse(export.contains("pending_downloads=-1"))
@@ -424,7 +468,7 @@ final class AppDiagnosticsTests: XCTestCase {
       directoryURL: temporaryDirectory,
       maxBytes: 4_096,
       appVersion: "1",
-      appBuild: "2"
+      appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
 
     let export = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
@@ -435,55 +479,48 @@ final class AppDiagnosticsTests: XCTestCase {
   }
 
   func testObservedSyncHealthSurvivesAFailedHistoryWrite() throws {
-    let eventsURL = temporaryDirectory.appendingPathComponent("diagnostic-events.txt", isDirectory: true)
-    try FileManager.default.createDirectory(at: eventsURL, withIntermediateDirectories: true)
     let store = AppDiagnosticEventStore(
-      directoryURL: temporaryDirectory,
-      maxBytes: 4_096,
-      appVersion: "1",
-      appBuild: "2"
-    )
-
+      directoryURL: temporaryDirectory, maxBytes: 4_096,
+      appVersion: "1", appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) })
+    store.append(.started(operation: "app.startup"), at: Date(timeIntervalSince1970: 1_790_053_200))
+    let file = try XCTUnwrap(
+      FileManager.default.contentsOfDirectory(
+        at: temporaryDirectory,
+        includingPropertiesForKeys: nil
+      ).first { $0.pathExtension == "jsonl" })
+    try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: file.path)
+    defer {
+      try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+    }
     store.append(
       .syncSnapshot(scope: .records, phase: .active, reason: .pendingWork, pendingDownloads: 8),
-      at: Date(timeIntervalSince1970: 0)
-    )
-    XCTAssertEqual(try eventsURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory, true)
-    try FileManager.default.removeItem(at: eventsURL)
-    let reopened = AppDiagnosticEventStore(
-      directoryURL: temporaryDirectory,
-      maxBytes: 4_096,
-      appVersion: "1",
-      appBuild: "2"
-    )
-    let export = try String(contentsOf: reopened.makeShareableFile(), encoding: .utf8)
-
-    XCTAssertTrue(export.contains(
-      "1970-01-01T00:00:00Z diagnostic_sync_latest operation=sync.snapshot outcome=succeeded "
-        + "visibility=background scope=records phase=active reason=pending_work pending_downloads=8"
-    ))
-    XCTAssertFalse(export.contains("diagnostic_event"))
+      at: Date(timeIntervalSince1970: 1_790_053_201))
+    let export = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
+    XCTAssertTrue(export.contains("diagnostic_sync_latest operation=sync.snapshot"))
+    XCTAssertTrue(export.contains("pending_downloads=8"))
+    XCTAssertFalse(export.contains("diagnostic_event operation=sync.snapshot"))
   }
 
   func testExportRefreshesBuildMetadataWithoutANewEvent() throws {
-    try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(
+      at: temporaryDirectory, withIntermediateDirectories: true)
     let eventsURL = temporaryDirectory.appendingPathComponent("diagnostic-events.txt")
     try """
-      Snip Snap diagnostics
-      format=2 app_version=0.5.1 app_build=91
-      privacy=structured-operational-events-only
-      2026-09-22T05:00:28Z diagnostic_event operation=attachment.prepare outcome=failed visibility=user error=storage.pathOutsideRoot
-      """.write(to: eventsURL, atomically: true, encoding: .utf8)
+    Snip Snap diagnostics
+    format=2 app_version=0.5.1 app_build=91
+    privacy=structured-operational-events-only
+    2026-09-22T05:00:28Z diagnostic_event operation=attachment.prepare outcome=failed visibility=user error=storage.pathOutsideRoot
+    """.write(to: eventsURL, atomically: true, encoding: .utf8)
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
       maxBytes: 4_096,
       appVersion: "0.5.1",
-      appBuild: "92"
+      appBuild: "92", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
 
     let export = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
 
-    XCTAssertTrue(export.contains("format=3 app_version=0.5.1 app_build=92"))
+    XCTAssertTrue(export.contains("format=4 app_version=0.5.1 app_build=92"))
     XCTAssertFalse(export.contains("app_build=91"))
     XCTAssertTrue(export.contains("operation=attachment.prepare outcome=failed"))
   }
@@ -516,26 +553,28 @@ final class AppDiagnosticsTests: XCTestCase {
   }
 
   func testStoreKeepsLegacyAttachmentEventsWhileWritingStructuredEvents() throws {
-    try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(
+      at: temporaryDirectory, withIntermediateDirectories: true)
     let legacyURL = temporaryDirectory.appendingPathComponent("attachment-events.txt")
     try """
-      Snip Snap diagnostics
-      format=1 app_version=0.5.1 app_build=91
-      privacy=attachment-stage-events-only
-      2026-09-22T05:00:28Z attachment_download stage=cache_install outcome=failed error=storage.pathOutsideRoot
-      """.write(to: legacyURL, atomically: true, encoding: .utf8)
+    Snip Snap diagnostics
+    format=1 app_version=0.5.1 app_build=91
+    privacy=attachment-stage-events-only
+    2026-09-22T05:00:28Z attachment_download stage=cache_install outcome=failed error=storage.pathOutsideRoot
+    """.write(to: legacyURL, atomically: true, encoding: .utf8)
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
       maxBytes: 4_096,
       appVersion: "0.5.1",
-      appBuild: "92"
+      appBuild: "92", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
 
-    store.append(.failure(
-      operation: "attachment.prepare",
-      error: CocoaError(.fileReadNoSuchFile),
-      visibility: .user
-    ), at: Date(timeIntervalSince1970: 0))
+    store.append(
+      .failure(
+        operation: "attachment.prepare",
+        error: CocoaError(.fileReadNoSuchFile),
+        visibility: .user
+      ), at: Date(timeIntervalSince1970: 1_790_053_200 + 0))
     let export = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
 
     XCTAssertTrue(export.contains("attachment_download stage=cache_install outcome=failed"))
@@ -544,15 +583,17 @@ final class AppDiagnosticsTests: XCTestCase {
   }
 
   func testEvictedLegacyEventsDoNotReturnOnLaterAppends() throws {
-    try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(
+      at: temporaryDirectory, withIntermediateDirectories: true)
     let legacyURL = temporaryDirectory.appendingPathComponent("attachment-events.txt")
-    try "2026-09-22T05:00:28Z attachment_download stage=cache_install outcome=failed error=storage.pathOutsideRoot\n"
+    try
+      "2026-09-21T05:00:28Z attachment_download stage=cache_install outcome=failed error=storage.pathOutsideRoot\n"
       .write(to: legacyURL, atomically: true, encoding: .utf8)
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
-      maxBytes: 330,
+      maxBytes: 2_048,
       appVersion: "1",
-      appBuild: "2"
+      appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     let event = AppDiagnosticEvent.failure(
       operation: "attachment.prepare",
@@ -560,34 +601,35 @@ final class AppDiagnosticsTests: XCTestCase {
       visibility: .user
     )
 
-    for index in 0..<5 {
-      store.append(event, at: Date(timeIntervalSince1970: TimeInterval(index)))
+    for index in 0..<20 {
+      store.append(event, at: Date(timeIntervalSince1970: 1_790_053_200 + TimeInterval(index * 61)))
     }
     let afterEviction = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
     XCTAssertFalse(afterEviction.contains("attachment_download"))
     XCTAssertFalse(FileManager.default.fileExists(atPath: legacyURL.path))
 
-    store.append(event, at: Date(timeIntervalSince1970: 10))
+    store.append(event, at: Date(timeIntervalSince1970: 1_790_053_200 + 2_000))
     let laterExport = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
     XCTAssertFalse(laterExport.contains("attachment_download"))
   }
 
   func testExportRejectsMalformedStoredLinesThatCouldRevealPrivateValues() throws {
-    try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(
+      at: temporaryDirectory, withIntermediateDirectories: true)
     let legacyURL = temporaryDirectory.appendingPathComponent("attachment-events.txt")
     try """
-      2026-09-22T05:00:28Z attachment_download stage=cache_install outcome=failed error=storage.pathOutsideRoot
-      2026-09-22T05:00:29Z attachment_download stage=cache_install outcome=failed path=/private/private.txt
-      2026-09-22T05:00:30Z attachment_download stage=cache_install outcome=failed record_id=privateRecord
-      2026-09-22T05:00:31Z attachment_download stage=cache_install outcome=failed hash=privateHash
-      2026-09-22T05:00:32Z attachment_download stage=cache_install outcome=failed error=PrivateFilename
-      2026-09-22T05:00:33Z attachment_download stage=cache_install outcome=failed error=storage.PrivateFilename
-      """.write(to: legacyURL, atomically: true, encoding: .utf8)
+    2026-09-22T05:00:28Z attachment_download stage=cache_install outcome=failed error=storage.pathOutsideRoot
+    2026-09-22T05:00:29Z attachment_download stage=cache_install outcome=failed path=/private/private.txt
+    2026-09-22T05:00:30Z attachment_download stage=cache_install outcome=failed record_id=privateRecord
+    2026-09-22T05:00:31Z attachment_download stage=cache_install outcome=failed hash=privateHash
+    2026-09-22T05:00:32Z attachment_download stage=cache_install outcome=failed error=PrivateFilename
+    2026-09-22T05:00:33Z attachment_download stage=cache_install outcome=failed error=storage.PrivateFilename
+    """.write(to: legacyURL, atomically: true, encoding: .utf8)
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
       maxBytes: 4_096,
       appVersion: "1",
-      appBuild: "2"
+      appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
 
     let export = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
@@ -605,14 +647,15 @@ final class AppDiagnosticsTests: XCTestCase {
       directoryURL: temporaryDirectory,
       maxBytes: 4_096,
       appVersion: "1",
-      appBuild: "2"
+      appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
-    store.append(.failure(
-      operation: "cloudkit.request",
-      errorCode: "cloudkit.23",
-      visibility: .background,
-      retryAfterSeconds: 1e20
-    ), at: Date(timeIntervalSince1970: 0))
+    store.append(
+      .failure(
+        operation: "cloudkit.request",
+        errorCode: "cloudkit.23",
+        visibility: .background,
+        retryAfterSeconds: 1e20
+      ), at: Date(timeIntervalSince1970: 1_790_053_200 + 0))
 
     let export = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
 
@@ -623,54 +666,66 @@ final class AppDiagnosticsTests: XCTestCase {
   func testStoreDropsOldestWholeEventsAtSizeLimit() throws {
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
-      maxBytes: 235,
+      maxBytes: 2_048,
       appVersion: "1",
-      appBuild: "2"
+      appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
-    store.append(.started(operation: "attachment.remote_fetch"), at: Date(timeIntervalSince1970: 0))
-    store.append(.failure(
-      operation: "attachment.prepare",
-      errorCode: "storage.pathOutsideRoot",
-      visibility: .user
-    ), at: Date(timeIntervalSince1970: 1))
+    store.append(
+      .started(operation: "attachment.remote_fetch"),
+      at: Date(timeIntervalSince1970: 1_790_053_200 + 0))
+    for index in 1...30 {
+      store.append(
+        .succeeded(operation: "clipboard.persist", byteCount: Int64(index)),
+        at: Date(timeIntervalSince1970: 1_790_053_200 + Double(index)))
+    }
+    store.append(
+      .failure(
+        operation: "attachment.prepare",
+        errorCode: "storage.pathOutsideRoot",
+        visibility: .user
+      ), at: Date(timeIntervalSince1970: 1_790_053_200 + 1))
 
     let export = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
 
     XCTAssertFalse(export.contains("outcome=started"))
     XCTAssertTrue(export.contains("error=storage.pathOutsideRoot"))
-    XCTAssertLessThanOrEqual(export.utf8.count, 235)
+    XCTAssertLessThanOrEqual(export.utf8.count, 2_048)
   }
 
-  func testIdenticalFailuresInTheSameSecondRemainSeparateEvents() throws {
+  func testIdenticalFailuresInTheSameSecondKeepTheirCount() throws {
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
       maxBytes: 4_096,
       appVersion: "1",
-      appBuild: "2"
+      appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     let event = AppDiagnosticEvent.failure(
       operation: "attachment.prepare",
       errorCode: "storage.pathOutsideRoot",
       visibility: .user
     )
-    let at = Date(timeIntervalSince1970: 0)
+    let at = Date(timeIntervalSince1970: 1_790_053_200 + 0)
 
     store.append(event, at: at)
     store.append(event, at: at)
     let export = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
 
-    XCTAssertEqual(export.components(separatedBy: event.line).count - 1, 2)
+    XCTAssertEqual(export.components(separatedBy: event.line).count - 1, 1)
+    XCTAssertTrue(export.contains("count=2 first=2026-09-22T05:00:00Z last=2026-09-22T05:00:00Z"))
   }
 
   func testClearRemovesNewAndLegacyEvents() throws {
-    try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(
+      at: temporaryDirectory, withIntermediateDirectories: true)
     try "2026-09-22T05:00:28Z attachment_download stage=cache_install outcome=failed\n"
-      .write(to: temporaryDirectory.appendingPathComponent("attachment-events.txt"), atomically: true, encoding: .utf8)
+      .write(
+        to: temporaryDirectory.appendingPathComponent("attachment-events.txt"), atomically: true,
+        encoding: .utf8)
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
       maxBytes: 4_096,
       appVersion: "1",
-      appBuild: "2"
+      appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     store.append(.started(operation: "attachment.remote_fetch"))
     store.append(.syncSnapshot(scope: .transport, environment: .development, pendingEvents: 2))
@@ -690,21 +745,24 @@ final class AppDiagnosticsTests: XCTestCase {
   }
 
   func testRepeatedLegacyHeadersAreReplacedByOneCurrentHeader() throws {
-    try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(
+      at: temporaryDirectory, withIntermediateDirectories: true)
     try """
-      Snip Snap diagnostics
-      format=1 app_version=0.5.1 app_build=84
-      privacy=attachment-stage-events-only
-      Snip Snap diagnostics
-      format=1 app_version=0.5.1 app_build=84
-      privacy=attachment-stage-events-only
-      2026-09-21T19:43:28Z attachment_download stage=cache_install outcome=failed error=storage.pathOutsideRoot
-      """.write(to: temporaryDirectory.appendingPathComponent("attachment-events.txt"), atomically: true, encoding: .utf8)
+    Snip Snap diagnostics
+    format=1 app_version=0.5.1 app_build=84
+    privacy=attachment-stage-events-only
+    Snip Snap diagnostics
+    format=1 app_version=0.5.1 app_build=84
+    privacy=attachment-stage-events-only
+    2026-09-21T19:43:28Z attachment_download stage=cache_install outcome=failed error=storage.pathOutsideRoot
+    """.write(
+      to: temporaryDirectory.appendingPathComponent("attachment-events.txt"), atomically: true,
+      encoding: .utf8)
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
       maxBytes: 4_096,
       appVersion: "0.5.1",
-      appBuild: "92"
+      appBuild: "92", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
 
     store.append(.started(operation: "attachment.remote_fetch"))

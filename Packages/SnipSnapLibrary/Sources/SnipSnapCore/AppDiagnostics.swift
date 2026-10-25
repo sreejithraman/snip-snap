@@ -1,8 +1,7 @@
-import CryptoKit
 import Foundation
 import OSLog
 
-private enum AppDiagnosticCodePolicy {
+enum AppDiagnosticCodePolicy {
   static let unknownError = "other.UnknownError"
 
   static let operations: Set<String> = [
@@ -11,7 +10,7 @@ private enum AppDiagnosticCodePolicy {
     "attachment.cloudkit_asset_url", "attachment.cloudkit_record", "attachment.cloudkit_request",
     "attachment.import_select", "attachment.import_stage", "attachment.prepare",
     "attachment.receipt_validation", "attachment.remote_fetch",
-    "backup.export", "backup.import_select",
+    "backup.export", "backup.import_select", "backup.import_preview", "backup.import_apply",
     "clipboard.account_reset", "clipboard.clear", "clipboard.copy_file", "clipboard.delete",
     "clipboard.delete_synced", "clipboard.export", "clipboard.load", "clipboard.paste",
     "clipboard.persist",
@@ -20,16 +19,27 @@ private enum AppDiagnosticCodePolicy {
     "cloudkit.clipboard_delete", "cloudkit.clipboard_fetch", "cloudkit.clipboard_save",
     "cloudkit.control_create_zones", "cloudkit.control_delete_zones", "cloudkit.control_fetch",
     "cloudkit.control_save", "cloudkit.record_fetch", "cloudkit.record_send", "cloudkit.request",
-    "diagnostics.clear", "diagnostics.export", "import.file", "share.import", "shortcut.save",
+    "diagnostics.clear", "diagnostics.export", "diagnostics.recording", "import.file",
+    "share.import", "shortcut.save", "shortcut.register", "capture.screen", "selection.capture",
+    "snip.paste_read", "snip.paste_save",
+    "sync.account_refresh", "sync.account_resolve", "sync.account_status",
     "sync.cancel_setup", "sync.delete", "sync.disable", "sync.enable", "sync.run",
     "sync.setup", "sync.stop", "sync.snapshot", "sync.provider", "sync.fetch", "sync.send",
     "sync.settlement", "sync.schedule", "sync.reset",
   ]
 
   static let errorCodes: Set<String> = [
+    "diagnostics.busy", "diagnostics.routineOverflow", "diagnostics.failureOverflow",
+    "diagnostics.writeFailed",
     "clipboard.empty", "clipboard.tooLarge", "clipboard.unreadable", "clipboard.unsupported",
     "import.partialFailure", "import.readFailed", "pasteboard.writeFailed",
     "presentation.message", "presentation.startup", "attachment.unavailableAfterPrepare",
+    "selection.sourceUnavailable", "selection.selectionUnavailable",
+    "selection.clipboardUnavailable",
+    "selection.clipboardSnapshotTimedOut", "selection.clipboardChanged",
+    "selection.clipboardRestoreFailed",
+    "selection.sourceChanged", "selection.attachmentStagingFailed",
+    "shortcut.eventHandlerFailed", "shortcut.registrationFailed", "snip.emptyClipboard",
     "library.emptyContent", "library.snipNotFound", "library.invalidStore",
     "library.storeUnavailable", "library.requiresMultipleSnips", "library.snipChanged",
     "library.duplicateList", "library.invalidList", "library.invalidCommand",
@@ -301,16 +311,77 @@ public struct AppDiagnosticRecorder: Sendable {
   }
 }
 
-/// Describes the rendered, bounded export, including its header and retained sync health.
+/// Describes the default rendered report. Its revision covers all history, health, and recording state.
 public struct AppDiagnosticExportSnapshot: Equatable, Sendable {
   public let byteCount: Int
   public let revision: String
 }
 
 /// Creates and clears the bounded, privacy-safe diagnostic file shared from app settings.
+public struct AppDiagnosticLogReport: Sendable {
+  public let text: String
+  public let returnedEvents: Int
+  public let truncated: Bool
+}
+
+/// A bounded local diagnostic operation could not acquire its storage lock.
+public enum AppDiagnosticAccessError: Error, LocalizedError, Sendable,
+  AppDiagnosticErrorCodeProviding
+{
+  case busy
+
+  public var appDiagnosticCode: String { "diagnostics.busy" }
+
+  public var errorDescription: String? {
+    String(localized: "Diagnostic history is busy. Try again shortly.")
+  }
+}
+
+public enum AppDiagnosticExportRange: String, CaseIterable, Codable, Sendable {
+  case last24Hours
+  case last7Days
+}
+
 public enum AppDiagnosticsExport {
-  public static func makeShareableFile() throws -> URL {
-    try AppDiagnosticLiveSink.shared.makeShareableFile()
+  public static func readLog(
+    range: AppDiagnosticExportRange = .last24Hours, limit: Int = 200, errorsOnly: Bool = false
+  ) throws -> AppDiagnosticLogReport {
+    try AppDiagnosticLiveSink.shared.readLog(range: range, limit: limit, errorsOnly: errorsOnly)
+  }
+
+  /// Reads a target bundle's local history without starting the app or using its live sink.
+  public static func readLog(
+    bundleIdentifier: String, appVersion: String, appBuild: String,
+    range: AppDiagnosticExportRange = .last24Hours, limit: Int = 200, errorsOnly: Bool = false
+  ) throws -> AppDiagnosticLogReport {
+    try AppDiagnosticEventStore.forBundle(
+      bundleIdentifier: bundleIdentifier, appVersion: appVersion, appBuild: appBuild
+    ).readLog(range: range, limit: limit, errorsOnly: errorsOnly)
+  }
+
+  /// Reads the preference without treating unavailable storage as recording off.
+  public static func readRecordingEnabled() throws -> Bool {
+    try AppDiagnosticLiveSink.shared.readRecordingEnabled()
+  }
+
+  public static func setRecordingEnabled(_ enabled: Bool) throws {
+    try AppDiagnosticLiveSink.shared.setRecordingEnabled(enabled)
+  }
+
+  public static func setRecordingEnabled(_ enabled: Bool, ifRevision revision: String) throws
+    -> Bool
+  {
+    try AppDiagnosticLiveSink.shared.setRecordingEnabled(enabled, ifRevision: revision)
+  }
+
+  public static func makeShareableFile(range: AppDiagnosticExportRange = .last24Hours) throws -> URL
+  {
+    try AppDiagnosticLiveSink.shared.makeShareableFile(range: range)
+  }
+
+  /// Removes an owned staging file and its directory. User-saved copies are left alone.
+  public static func removeShareableFile(_ fileURL: URL) {
+    AppDiagnosticEventStore.removeOwnedShareableFile(fileURL)
   }
 
   public static func clear() throws {
@@ -321,7 +392,7 @@ public enum AppDiagnosticsExport {
     try AppDiagnosticLiveSink.shared.snapshot()
   }
 
-  /// Returns false without clearing when the rendered export has changed.
+  /// Returns false without clearing when history, health, app context, or recording state has changed.
   public static func clear(ifRevision revision: String) throws -> Bool {
     try AppDiagnosticLiveSink.shared.clear(ifRevision: revision)
   }
@@ -377,20 +448,19 @@ private final class AppDiagnosticLiveSink: @unchecked Sendable {
   static let shared = AppDiagnosticLiveSink()
 
   private let logger = Logger(subsystem: "SnipSnap", category: "Operations")
-  private let store = AppDiagnosticEventStore(
-    directoryURL: AppDiagnosticEventStore.storageDirectoryURL(
-      cachesURL: FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0],
-      bundleIdentifier: Bundle.main.bundleIdentifier,
-      environment: ProcessInfo.processInfo.environment
-    ),
-    maxBytes: 64 * 1_024,
+  private let store = AppDiagnosticEventStore.forBundle(
+    bundleIdentifier: Bundle.main.bundleIdentifier,
     appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
       ?? "unknown",
-    appBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-      ?? "unknown"
+    appBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
   )
 
+  private let writer: AppDiagnosticWriter
+
+  private init() { writer = AppDiagnosticWriter(store: store) }
+
   func record(_ event: AppDiagnosticEvent) {
+    let submittedAt = Date()
     switch event.outcome {
     case .failed:
       logger.error("\(event.line, privacy: .public)")
@@ -399,365 +469,40 @@ private final class AppDiagnosticLiveSink: @unchecked Sendable {
     case .started, .succeeded:
       logger.info("\(event.line, privacy: .public)")
     }
-    store.append(event)
+    writer.submit(event, at: submittedAt)
   }
 
-  func makeShareableFile() throws -> URL {
-    try store.makeShareableFile()
+  func readLog(range: AppDiagnosticExportRange, limit: Int, errorsOnly: Bool) throws
+    -> AppDiagnosticLogReport
+  {
+    try writer.perform { try store.readLog(range: range, limit: limit, errorsOnly: errorsOnly) }
   }
 
-  func clear() throws {
-    try store.clear()
+  func readRecordingEnabled() throws -> Bool {
+    try writer.perform { try store.readRecordingEnabled() }
   }
 
-  func snapshot() throws -> AppDiagnosticExportSnapshot {
-    try store.snapshot()
+  func setRecordingEnabled(_ enabled: Bool) throws {
+    try writer.perform { try store.setRecordingEnabled(enabled) }
   }
 
-  func clear(ifRevision revision: String) throws -> Bool {
-    try store.clear(ifRevision: revision)
-  }
-}
-
-final class AppDiagnosticEventStore: @unchecked Sendable {
-  private static let unbundledCacheNamespace = "unbundled-\(UUID().uuidString)"
-
-  static func storageDirectoryURL(
-    cachesURL: URL,
-    bundleIdentifier: String?,
-    environment: [String: String]
-  ) -> URL {
-    storageDirectoryURL(
-      cachesURL: cachesURL,
-      bundleIdentifier: bundleIdentifier,
-      isolatedDirectoryPath: environment["SNIP_SNAP_DIAGNOSTICS_DIRECTORY"]
-    )
+  func setRecordingEnabled(_ enabled: Bool, ifRevision revision: String) throws -> Bool {
+    try writer.perform { try store.setRecordingEnabled(enabled, ifRevision: revision) }
   }
 
-  static func storageDirectoryURL(
-    cachesURL: URL,
-    bundleIdentifier: String?,
-    isolatedDirectoryPath: String?
-  ) -> URL {
-    if let isolatedDirectoryPath, isolatedDirectoryPath.hasPrefix("/") {
-      return URL(fileURLWithPath: isolatedDirectoryPath, isDirectory: true)
-    }
-    let namespace: String
-    if let bundleIdentifier, !bundleIdentifier.isEmpty,
-      !bundleIdentifier.contains("/"), bundleIdentifier != ".", bundleIdentifier != ".."
-    {
-      namespace = bundleIdentifier
-    } else {
-      namespace = unbundledCacheNamespace
-    }
-    return cachesURL.appendingPathComponent(namespace, isDirectory: true)
-      .appendingPathComponent("SnipSnapDiagnostics", isDirectory: true)
-  }
-
-  private enum SyncHealthKey: CaseIterable {
-    case transport
-    case records
-    case fetch
-    case send
-
-    var marker: String {
-      switch self {
-      case .transport, .records: "diagnostic_sync_latest"
-      case .fetch, .send: "diagnostic_sync_last_success"
-      }
-    }
-  }
-
-  private let directoryURL: URL
-  private let eventsURL: URL
-  private let legacyEventsURL: URL
-  private let syncHealthURL: URL
-  private let shareURL: URL
-  private let maxBytes: Int
-  private let header: String
-  private let lock = NSLock()
-
-  init(directoryURL: URL, maxBytes: Int, appVersion: String, appBuild: String) {
-    self.directoryURL = directoryURL
-    eventsURL = directoryURL.appendingPathComponent("diagnostic-events.txt")
-    legacyEventsURL = directoryURL.appendingPathComponent("attachment-events.txt")
-    syncHealthURL = directoryURL.appendingPathComponent("diagnostic-sync-health.txt")
-    shareURL = directoryURL.appendingPathComponent("Snip-Snap-Diagnostics.txt")
-    self.maxBytes = max(0, maxBytes)
-    header = """
-      Snip Snap diagnostics
-      format=3 app_version=\(appVersion) app_build=\(appBuild)
-      privacy=structured-operational-events-only
-
-      """
-  }
-
-  func append(_ event: AppDiagnosticEvent, at date: Date = Date()) {
-    lock.withLock {
-      do {
-        try FileManager.default.createDirectory(
-          at: directoryURL,
-          withIntermediateDirectories: true
-        )
-        guard let line = sanitizedStoredEventLine(
-          "\(date.ISO8601Format(.iso8601(timeZone: .gmt).timeZone(separator: .colon))) \(event.line)"
-        ) else { return }
-        var lines = combinedEventLines()
-        var health = retainedSyncHealth(from: lines)
-        if let key = syncHealthKey(for: line) { health[key] = line }
-        // Save health before history can rotate. A crash between these atomic writes must
-        // not erase the newest observation or the last successful transfer.
-        try persistSyncHealth(health)
-        lines.append(line)
-        let contents = bounded(lines, prefix: header)
-        try contents.write(to: eventsURL, atomically: true, encoding: .utf8)
-        consumeLegacyEvents()
-      } catch {
-        // Diagnostics must never alter app behavior.
-      }
-    }
-  }
-
-  func makeShareableFile() throws -> URL {
-    try lock.withLock {
-      try makeShareableFileLocked()
-    }
+  func makeShareableFile(range: AppDiagnosticExportRange) throws -> URL {
+    try writer.perform { try store.makeShareableFile(range: range) }
   }
 
   func clear() throws {
-    try lock.withLock {
-      try clearLocked()
-    }
+    try writer.perform { try store.clear() }
   }
 
   func snapshot() throws -> AppDiagnosticExportSnapshot {
-    try lock.withLock {
-      try snapshotLocked()
-    }
+    try writer.perform { try store.snapshot() }
   }
 
   func clear(ifRevision revision: String) throws -> Bool {
-    try lock.withLock {
-      // Append and export use this same lock. No event can arrive between comparison
-      // and removal, and the helpers never acquire the nonrecursive lock again.
-      guard try snapshotLocked().revision == revision else { return false }
-      try clearLocked()
-      return true
-    }
-  }
-
-  private func snapshotLocked() throws -> AppDiagnosticExportSnapshot {
-    let data = try Data(contentsOf: makeShareableFileLocked())
-    return AppDiagnosticExportSnapshot(
-      byteCount: data.count,
-      revision: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    )
-  }
-
-  private func makeShareableFileLocked() throws -> URL {
-    try FileManager.default.createDirectory(
-      at: directoryURL,
-      withIntermediateDirectories: true
-    )
-    let lines = combinedEventLines()
-    let health = retainedSyncHealth(from: lines)
-    try persistSyncHealth(health)
-    try bounded(lines, prefix: header).write(to: eventsURL, atomically: true, encoding: .utf8)
-    consumeLegacyEvents()
-    var prefix = header
-    for key in SyncHealthKey.allCases {
-      guard let line = health[key] else { continue }
-      let observation = line.replacingOccurrences(
-        of: " diagnostic_event ",
-        with: " \(key.marker) "
-      ) + "\n"
-      if prefix.utf8.count + observation.utf8.count <= maxBytes {
-        prefix += observation
-      }
-    }
-    let contents = bounded(lines, prefix: prefix)
-    try contents.write(to: shareURL, atomically: true, encoding: .utf8)
-    return shareURL
-  }
-
-  private func clearLocked() throws {
-    for url in [syncHealthURL, eventsURL, legacyEventsURL, shareURL]
-    where FileManager.default.fileExists(atPath: url.path) {
-      try FileManager.default.removeItem(at: url)
-    }
-  }
-
-  private func combinedEventLines() -> [String] {
-    let current = storedEventLines(at: eventsURL)
-    var currentCounts = current.reduce(into: [String: Int]()) { counts, event in
-      counts[event, default: 0] += 1
-    }
-    // Earlier exports copied legacy events into the current file. Remove only that overlap;
-    // identical failures in one second are separate events and must remain separate.
-    let legacyOnly = storedEventLines(at: legacyEventsURL).filter { event in
-      guard let count = currentCounts[event], count > 0 else { return true }
-      currentCounts[event] = count - 1
-      return false
-    }
-    return legacyOnly + current
-  }
-
-  private func retainedSyncHealth(from history: [String]) -> [SyncHealthKey: String] {
-    var health: [SyncHealthKey: String] = [:]
-    for line in history {
-      if let key = syncHealthKey(for: line) { health[key] = line }
-    }
-    // The sidecar wins over history because it is written first. History also provides
-    // safe migration when an older build wrote a sync event without retained health.
-    if let size = try? syncHealthURL.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-      size <= 4_096
-    {
-      for line in storedEventLines(at: syncHealthURL) {
-        if let key = syncHealthKey(for: line) { health[key] = line }
-      }
-    }
-    return health
-  }
-
-  private func syncHealthKey(for line: String) -> SyncHealthKey? {
-    let fields = line.split(separator: " ").map(String.init)
-    guard fields.count >= 5, fields[1] == "diagnostic_event",
-      fields.contains("outcome=succeeded")
-    else { return nil }
-    if fields.contains("operation=sync.snapshot") {
-      if fields.contains("scope=transport") { return .transport }
-      if fields.contains("scope=records") { return .records }
-    }
-    if fields.contains("operation=sync.fetch") { return .fetch }
-    if fields.contains("operation=sync.send") { return .send }
-    return nil
-  }
-
-  private func persistSyncHealth(_ health: [SyncHealthKey: String]) throws {
-    let lines = SyncHealthKey.allCases.compactMap { health[$0] }
-    guard !lines.isEmpty else { return }
-    try (lines.joined(separator: "\n") + "\n")
-      .write(to: syncHealthURL, atomically: true, encoding: .utf8)
-  }
-
-  private func consumeLegacyEvents() {
-    guard FileManager.default.fileExists(atPath: legacyEventsURL.path) else { return }
-    try? FileManager.default.removeItem(at: legacyEventsURL)
-  }
-
-  private func storedEventLines(at url: URL) -> [String] {
-    guard let contents = try? String(contentsOf: url, encoding: .utf8) else { return [] }
-    return eventLines(from: contents)
-  }
-
-  private func eventLines(from contents: String) -> [String] {
-    contents.split(separator: "\n", omittingEmptySubsequences: true)
-      .compactMap { sanitizedStoredEventLine(String($0)) }
-  }
-
-  private func sanitizedStoredEventLine(_ line: String) -> String? {
-    guard line.utf8.count <= 512 else { return nil }
-    let fields = line.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
-    guard fields.count >= 4,
-      fields[0].count >= 19, fields[0].count <= 35,
-      fields[0].allSatisfy({ "0123456789-T:.+Z".contains($0) })
-    else { return nil }
-
-    let requiredKeys: [String]
-    let optionalKeys: [String]
-    switch fields[1] {
-    case "diagnostic_event":
-      requiredKeys = ["operation", "outcome", "visibility"]
-      optionalKeys = [
-        "error", "bytes", "retry_after", "next_attempt", "scope", "environment", "phase",
-        "reason", "pending_uploads", "pending_downloads", "pending_events", "blocked_records",
-      ]
-    case "attachment_download":
-      requiredKeys = ["stage", "outcome"]
-      optionalKeys = ["error", "bytes"]
-    default:
-      return nil
-    }
-    guard fields.count <= 2 + requiredKeys.count + optionalKeys.count else { return nil }
-
-    var values: [String: String] = [:]
-    for field in fields.dropFirst(2) {
-      let pair = field.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-      guard pair.count == 2, !pair[1].isEmpty,
-        values.updateValue(String(pair[1]), forKey: String(pair[0])) == nil
-      else { return nil }
-    }
-    guard requiredKeys.allSatisfy({ values[$0] != nil }),
-      values.keys.allSatisfy({ requiredKeys.contains($0) || optionalKeys.contains($0) }),
-      values.filter({ !["bytes", "retry_after", "next_attempt"].contains($0.key) })
-        .allSatisfy({ entry in
-        entry.value.unicodeScalars.allSatisfy {
-          CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")
-            .contains($0)
-        }
-      })
-    else { return nil }
-
-    if let bytes = values["bytes"], Int64(bytes) == nil { return nil }
-    for key in ["retry_after", "next_attempt"] {
-      if let value = values[key], Double(value)?.isFinite != true { return nil }
-    }
-    for key in ["pending_uploads", "pending_downloads", "pending_events", "blocked_records"] {
-      if let raw = values[key] {
-        guard let count = Int(raw), count >= 0, String(count) == raw else { return nil }
-      }
-    }
-    if let scope = values["scope"], AppDiagnosticSyncScope(rawValue: scope) == nil { return nil }
-    if let environment = values["environment"],
-      AppDiagnosticSyncEnvironment(rawValue: environment) == nil
-    { return nil }
-    if let phase = values["phase"], AppDiagnosticSyncPhase(rawValue: phase) == nil { return nil }
-    if let reason = values["reason"], AppDiagnosticSyncReason(rawValue: reason) == nil { return nil }
-    guard let outcome = values["outcome"] else { return nil }
-    if fields[1] == "attachment_download" {
-      guard let stage = values["stage"],
-        ["cloudkit_request", "cloudkit_record", "cloudkit_asset_url", "asset_copy",
-        "remote_fetch", "receipt_validation", "cache_install"].contains(stage)
-        && ["started", "succeeded", "failed", "missing"].contains(outcome)
-      else { return nil }
-    } else {
-      guard let visibility = values["visibility"],
-        ["started", "succeeded", "failed", "cancelled", "missing"].contains(outcome),
-        ["user", "background"].contains(visibility)
-      else { return nil }
-      values["operation"] = AppDiagnosticCodePolicy.operation(values["operation"] ?? "")
-      if values["operation"] == "sync.snapshot" {
-        guard values["scope"] != nil, outcome == "succeeded", visibility == "background"
-        else { return nil }
-      } else if [
-        "scope", "environment", "phase", "pending_uploads", "pending_downloads", "pending_events",
-        "blocked_records",
-      ].contains(where: { values[$0] != nil }) {
-        return nil
-      }
-    }
-    if let error = values["error"] {
-      values["error"] = AppDiagnosticCodePolicy.errorCode(error)
-    }
-    let orderedFields = (requiredKeys + optionalKeys).compactMap { key in
-      values[key].map { "\(key)=\($0)" }
-    }
-    return ([fields[0], fields[1]] + orderedFields).joined(separator: " ")
-  }
-
-  private func bounded(_ lines: [String], prefix: String) -> String {
-    guard prefix.utf8.count <= maxBytes else {
-      return String(decoding: prefix.utf8.prefix(maxBytes), as: UTF8.self)
-    }
-    var bytes = prefix.utf8.count
-    var retained: [String] = []
-    for line in lines.reversed() {
-      let count = line.utf8.count + 1
-      guard bytes + count <= maxBytes else { break }
-      bytes += count
-      retained.append(line)
-    }
-    guard !retained.isEmpty else { return prefix }
-    return prefix + retained.reversed().joined(separator: "\n") + "\n"
+    try writer.perform { try store.clear(ifRevision: revision) }
   }
 }

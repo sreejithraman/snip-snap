@@ -40,6 +40,8 @@ struct SnipCLIApplicationLocation {
   let rootURL: URL
   let canLaunch: Bool
   private let allowsUnhostedStore: Bool
+  private let diagnosticTarget: (bundleIdentifier: String, appVersion: String, appBuild: String)?
+  private let canReadDiagnostics: Bool
 
   init(
     executableURL: URL,
@@ -73,10 +75,32 @@ struct SnipCLIApplicationLocation {
     // An arbitrary store override must never cause the production app to launch.
     let embeddedPath = info?["SnipSnapDevelopmentStorePath"] as? String
     let overridden = environment["SNIP_SNAP_STORE_PATH"].flatMap { $0.isEmpty ? nil : $0 }
+    let isolatedDiagnostics = environment["SNIP_SNAP_DIAGNOSTICS_DIRECTORY"]?.hasPrefix("/") == true
+    let explicitApp = environment["SNIP_SNAP_APP_PATH"].map { !$0.isEmpty } ?? false
+    canReadDiagnostics = explicitApp || overridden == nil || embeddedPath == overridden || isolatedDiagnostics
+    if let info {
+      if let identifier = info["CFBundleIdentifier"] as? String,
+         !identifier.isEmpty, !identifier.contains("/"), identifier != ".", identifier != ".." {
+        diagnosticTarget = (identifier,
+          info["CFBundleShortVersionString"] as? String ?? "unknown",
+          info["CFBundleVersion"] as? String ?? "unknown")
+      } else { diagnosticTarget = nil }
+    } else { diagnosticTarget = ("world.sree.snipsnap", "unknown", "unknown") }
     canLaunch = environment["SNIP_SNAP_CLI_NO_LAUNCH"] != "1"
       && (overridden == nil || embeddedPath == overridden)
     allowsUnhostedStore = applicationURL == nil && overridden != nil
       && environment["SNIP_SNAP_CLI_NO_LAUNCH"] == "1"
+  }
+
+  /// Diagnostics belong to the selected app, independent of library readiness or sync scope.
+  func diagnosticIdentity() throws -> (bundleIdentifier: String, appVersion: String, appBuild: String) {
+    guard canReadDiagnostics else {
+      throw SnipSnapCLIError.usage("Choose SNIP_SNAP_APP_PATH or an isolated SNIP_SNAP_DIAGNOSTICS_DIRECTORY when overriding the store.")
+    }
+    guard let diagnosticTarget else {
+      throw SnipSnapCLIError.usage("The selected app bundle has no valid diagnostic identity.")
+    }
+    return diagnosticTarget
   }
 
   private static func info(at applicationURL: URL) -> [String: Any]? {
