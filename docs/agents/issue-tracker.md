@@ -18,10 +18,9 @@ A ticket is ready only when all blockers have closed.
 
 ## Claim and complete work
 
-Before starting a ticket, read its full body, comments, labels, assignees, and
-blocking links. Check any linked spec and use the
-[domain vocabulary](domain.md). Respect an existing assignee; when taking an
-unassigned ticket, claim it with `gh issue edit <number> --add-assignee @me`.
+Before starting a ticket, read any linked spec.
+Respect an existing assignee. Claim an unassigned ticket with
+`gh issue edit <number> --add-assignee @me`.
 
 Follow the [project workflow](workflow.md) for implementation, acceptance, and
 PR preparation. Link the issue from the PR. When the requested outcome is
