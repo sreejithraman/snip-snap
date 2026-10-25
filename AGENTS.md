@@ -12,17 +12,22 @@
 
 ## Agent skills
 
+### Project workflow
+
+Before implementation, acceptance checks, review, or PR preparation, read
+[the workflow guide](docs/agents/workflow.md).
+
 ### Issue tracker
 
-Issues and specs live in this repo's GitHub Issues. See `docs/agents/issue-tracker.md`.
+For ticket work, read [the GitHub issue guide](docs/agents/issue-tracker.md).
 
 ### Triage labels
 
-Use the default triage label vocabulary. See `docs/agents/triage-labels.md`.
+Before changing triage labels, read [the label mapping](docs/agents/triage-labels.md).
 
 ### Domain docs
 
-This is a single-context repo using the root glossary and ADR directory. See `docs/agents/domain.md`.
+Before exploring or naming domain concepts, read [the domain guide](docs/agents/domain.md).
 
 ### Releases
 
