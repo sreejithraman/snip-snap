@@ -34,7 +34,7 @@ enum PanelControlMetrics {
     static let actionWidth = actionHeight + actionIconLength
     static let inlineEntryInset: CGFloat = 4
     static let inlineEntryBaseHeight = compactComposerHeight + inlineEntryInset * 2
-    static let expandedInputVerticalPadding = SnipSnapSpacing.relatedContent
+    static let inputVerticalPadding = SnipSnapSpacing.relatedContent
 
     static let tabItemWidth = compactSelectionWidth + tabSelectionInset * 2
 }
@@ -42,7 +42,6 @@ enum PanelControlMetrics {
 enum PanelShapeMetrics {
     static let paneCornerRadius: CGFloat = 20
     static let listHeaderCornerRadius = paneCornerRadius
-    static let expandedInputCornerRadius: CGFloat = 14
 }
 
 enum PanelDialogMetrics {
@@ -73,10 +72,10 @@ enum PanelComposerMetrics {
         lineSpacing: textLineSpacing
     )
     static let maximumTextRowHeight = maximumTextInputHeight
-        + PanelControlMetrics.expandedInputVerticalPadding * 2
+        + PanelControlMetrics.inputVerticalPadding * 2
     static let maximumAttachmentRowHeight = AttachmentPreviewMetrics.side
         + AttachmentPreviewMetrics.removeButtonOverflow * 2
-        + PanelControlMetrics.expandedInputVerticalPadding
+        + PanelControlMetrics.inputVerticalPadding
     static let maximumInlineEntryHeight = maximumTextRowHeight
         + maximumAttachmentRowHeight
         + SnipSnapSpacing.relatedContent
@@ -109,11 +108,6 @@ enum PanelComposerLayout {
     static func clampedEntryHeight(_ height: CGFloat) -> CGFloat {
         guard height.isFinite else { return PanelControlMetrics.inlineEntryBaseHeight }
         return min(max(height, 0), PanelComposerMetrics.maximumInlineEntryHeight)
-    }
-
-    static func isExpanded(fieldHeight: CGFloat) -> Bool {
-        fieldHeight > PanelTextInputLayout.lineHeight
-            + PanelGeometryChange.minimumMeaningfulChange
     }
 }
 
@@ -265,18 +259,18 @@ extension View {
     }
 
     func panelEmbeddedInputSurface(
-        minHeight: CGFloat = PanelControlMetrics.floatingRowHeight,
-        expanded: Bool = false
+        minHeight: CGFloat = PanelControlMetrics.floatingRowHeight
     ) -> some View {
         let shape = RoundedRectangle(
-            cornerRadius: expanded ? PanelShapeMetrics.expandedInputCornerRadius : minHeight / 2,
+            cornerRadius: minHeight / 2,
             style: .continuous
         )
         return frame(minHeight: minHeight)
-            .panelGlassSurface(
-                in: shape,
-                interactive: true
-            )
+            .background {
+                GlassEffectContainer {
+                    Color.clear.panelGlassSurface(in: shape, interactive: true)
+                }
+            }
             .contentShape(shape)
     }
 

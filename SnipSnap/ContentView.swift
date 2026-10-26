@@ -53,7 +53,6 @@ struct ContentView: View {
     @State private var showingClearClipboard = false
     @State private var showingRecoveryReview = false
     @State private var inlineEntryHeights: [UUID: CGFloat] = [:]
-    @State private var inlineEntryFieldHeights: [UUID: CGFloat] = [:]
     @State private var isSavingInlineEntry = false
     private struct SendDestinationRequest {
         let sourceID: UUID
@@ -668,62 +667,44 @@ struct ContentView: View {
         return HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
             inlineAttachmentMenu(for: listID)
 
-            GlassEffectContainer {
-                VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
-                    if !draft.attachments.isEmpty {
-                        AttachmentPreviewStrip(
-                            items: draft.attachments.map(AttachmentPreviewItem.init(url:)),
-                            onPreview: { item in
-                                guard let url = item.url else { return }
-                                openAttachmentPreview(draft.attachments, selectedURL: url)
-                            },
-                            onRemove: { item in
-                                guard let url = item.url else { return }
-                                removePreviewURL(url)
-                                model.removeDraftAttachment(url, from: listID)
-                                cacheComposerDraft(for: listID)
-                            }
-                        )
-                        .padding(.horizontal, SnipSnapSpacing.controlContentInset)
-                        .padding(.top, PanelControlMetrics.expandedInputVerticalPadding)
-                    }
+            VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
+                if !draft.attachments.isEmpty {
+                    AttachmentPreviewStrip(
+                        items: draft.attachments.map(AttachmentPreviewItem.init(url:)),
+                        onPreview: { item in
+                            guard let url = item.url else { return }
+                            openAttachmentPreview(draft.attachments, selectedURL: url)
+                        },
+                        onRemove: { item in
+                            guard let url = item.url else { return }
+                            removePreviewURL(url)
+                            model.removeDraftAttachment(url, from: listID)
+                            cacheComposerDraft(for: listID)
+                        }
+                    )
+                    .padding(.horizontal, SnipSnapSpacing.controlContentInset)
+                    .padding(.top, PanelControlMetrics.inputVerticalPadding)
+                }
 
-                    inlineEntryField(
-                        for: listID,
-                        list: list,
-                        isInteractive: isInteractive
-                    )
-                    .padding(.leading, SnipSnapSpacing.controlContentInset)
-                    .padding(
-                        .trailing,
-                        PanelControlMetrics.actionWidth
-                            + PanelControlMetrics.sendInset
-                            + SnipSnapSpacing.relatedContent
-                    )
-                    .padding(
-                        .top,
-                        draft.attachments.isEmpty
-                            ? PanelControlMetrics.expandedInputVerticalPadding
-                            : 0
-                    )
-                    .padding(.bottom, PanelControlMetrics.expandedInputVerticalPadding)
-                    .frame(minHeight: PanelControlMetrics.compactComposerHeight)
-                }
-                .panelEmbeddedInputSurface(
-                    minHeight: PanelControlMetrics.compactComposerHeight,
-                    expanded: isInlineEntrySurfaceExpanded(for: listID)
-                )
-            }
-            .overlay(alignment: .bottomTrailing) {
-                GlassEffectContainer {
-                    inlineSendButton(
-                        for: listID,
-                        list: list,
-                        isInteractive: isInteractive
-                    )
-                        .padding(PanelControlMetrics.sendInset)
+                HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
+                    inlineEntryField(for: listID, list: list, isInteractive: isInteractive)
+                        .padding(.leading, SnipSnapSpacing.controlContentInset)
+                        .padding(
+                            .top,
+                            draft.attachments.isEmpty
+                                ? PanelControlMetrics.inputVerticalPadding
+                                : 0
+                        )
+                        .padding(.bottom, PanelControlMetrics.inputVerticalPadding)
+                        .frame(minHeight: PanelControlMetrics.compactComposerHeight)
+
+                    GlassEffectContainer {
+                        inlineSendButton(for: listID, list: list, isInteractive: isInteractive)
+                            .padding([.trailing, .bottom], PanelControlMetrics.sendInset)
+                    }
                 }
             }
+            .panelEmbeddedInputSurface(minHeight: PanelControlMetrics.compactComposerHeight)
         }
         .frame(maxWidth: .infinity)
         .fixedSize(horizontal: false, vertical: true)
@@ -777,15 +758,6 @@ struct ContentView: View {
             onChooseDestination: { openSendDestinations(for: listID) },
             onSubmit: { saveInlineEntry(for: listID) }
         )
-            .onGeometryChange(for: CGFloat.self) { proxy in
-                proxy.size.height
-            } action: { height in
-                guard PanelGeometryChange.shouldApply(
-                    current: inlineEntryFieldHeights[listID] ?? 0,
-                    proposed: height
-                ) else { return }
-                inlineEntryFieldHeights[listID] = height
-            }
     }
 
     private func entryText(for listID: UUID) -> Binding<String> {
@@ -868,10 +840,6 @@ struct ContentView: View {
         sendDestination = SendDestinationRequest(sourceID: listID, libraryRevision: model.libraryRevision)
     }
 
-    private func isInlineEntryExpanded(for listID: UUID) -> Bool {
-        PanelComposerLayout.isExpanded(fieldHeight: inlineEntryFieldHeights[listID] ?? 0)
-    }
-
     private func inlineEntryHeight(for listID: UUID) -> CGFloat {
         PanelComposerHeightCache.height(for: listID, in: inlineEntryHeights)
     }
@@ -889,10 +857,6 @@ struct ContentView: View {
         let height = inlineEntryHeight(for: listID)
         guard updatePanel, selectedPage == .list(listID) else { return }
         updatePanelComposerExpansion(for: height)
-    }
-
-    private func isInlineEntrySurfaceExpanded(for listID: UUID) -> Bool {
-        isInlineEntryExpanded(for: listID) || !composerDraft(for: listID).attachments.isEmpty
     }
 
     private func canSaveInlineEntry(for listID: UUID) -> Bool {

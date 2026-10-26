@@ -1550,19 +1550,6 @@ final class PanelTests: StoreBackedTestCase {
         XCTAssertEqual(PanelTextInputReturnAction.action(for: [.command]), .submit)
     }
 
-    func testComposerExpandsWhenTextWrapsToASecondLine() {
-        XCTAssertFalse(
-            PanelComposerLayout.isExpanded(
-                fieldHeight: PanelTextInputLayout.lineHeight
-            )
-        )
-        XCTAssertTrue(
-            PanelComposerLayout.isExpanded(
-                fieldHeight: PanelTextInputLayout.lineHeight * 2
-            )
-        )
-    }
-
     func testComposerHeightRejectsRunawayLayoutMeasurements() {
         XCTAssertEqual(
             PanelComposerLayout.clampedEntryHeight(.infinity),
