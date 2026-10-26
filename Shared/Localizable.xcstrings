@@ -206,6 +206,7 @@
     "iCloud storage is full. Free up space, then try again." : {},
     "Snip Snap couldn’t open the local library. It left your saved data unchanged." : {},
     "Snip Snap couldn’t open your local library, so it can’t save new snips." : {},
+    "Snip Snap couldn’t prepare its command connection. Quit and reopen Snip Snap, then try again." : {},
     "Snip Snap couldn’t read one or more files." : {},
     "Snip Snap couldn’t read these files: %@" : {},
     "A list with that name already exists. Choose another name." : {},
