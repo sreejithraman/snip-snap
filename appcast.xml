@@ -4,6 +4,21 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.1</title>
+            <pubDate>Mon, 26 Oct 2026 22:26:04 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.165</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.165-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>165</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.165/Snip-Snap-0.6.1.zip" length="18129687" type="application/octet-stream" sparkle:edSignature="VWVAyWgwafld052nWZ5UHt8XYGdkL8XccE6Z2/zhPqHlgjEeMhyQDkvLjSRKWxpJtLKSR1y7si6toJA4W63ZAA=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 165 — Mac
+
+- Fix compact composer layout and attachment alignment
+</description>
+        </item>
+        <item>
+            <title>0.6.1</title>
             <pubDate>Sun, 25 Oct 2026 14:25:43 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.164</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.164-mac.txt</sparkle:fullReleaseNotesLink>
