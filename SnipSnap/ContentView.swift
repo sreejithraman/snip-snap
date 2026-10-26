@@ -721,13 +721,7 @@ struct ContentView: View {
                         list: list,
                         isInteractive: isInteractive
                     )
-                        .padding(.trailing, PanelControlMetrics.sendInset)
-                        .padding(
-                            .bottom,
-                            isInlineEntrySurfaceExpanded(for: listID)
-                                ? PanelControlMetrics.expandedInputVerticalPadding
-                                : PanelControlMetrics.sendInset
-                        )
+                        .padding(PanelControlMetrics.sendInset)
                 }
             }
         }
