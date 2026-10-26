@@ -472,7 +472,7 @@ final class AppModel: ObservableObject {
                 scheduleCloudSync()
                 return true
             } catch {
-                presentError(error)
+                presentError(error, operation: "recovery.resolve")
                 await reloadUnlocked()
                 return false
             }
@@ -539,7 +539,7 @@ final class AppModel: ObservableObject {
         case .success(.duplicate):
             return false
         case .failure(let error):
-            presentError(error)
+            presentError(error, operation: "snip.add")
             return false
         }
     }
@@ -615,7 +615,7 @@ final class AppModel: ObservableObject {
         case .success:
             return true
         case .failure(let error):
-            presentError(error)
+            presentError(error, operation: "snip.update")
             return false
         }
     }
@@ -773,7 +773,7 @@ final class AppModel: ObservableObject {
             case .success(.added): saved = true
             case .success(.duplicate): saved = false
             case .failure(let error):
-                presentError(error)
+                presentError(error, operation: "snip.add")
                 saved = false
             }
             composerDrafts.finishSave(snapshot, saved: saved)
@@ -833,7 +833,7 @@ final class AppModel: ObservableObject {
         }
         guard let result else { return false }
         if case .failure(let error) = result {
-            presentError(error)
+            presentError(error, operation: "list.create")
             return false
         }
         return true
@@ -852,7 +852,7 @@ final class AppModel: ObservableObject {
             }
         }
         if case .some(.failure(let error)) = result {
-            presentError(error)
+            presentError(error, operation: "list.delete")
         } else if case .some(.success) = result {
             clearDraft(for: list.id)
         }
@@ -871,7 +871,7 @@ final class AppModel: ObservableObject {
         }
         guard let result else { return false }
         if case .failure(let error) = result {
-            presentError(error)
+            presentError(error, operation: "list.update")
             return false
         }
         return true
@@ -912,7 +912,7 @@ final class AppModel: ObservableObject {
         case .success(.duplicate):
             return false
         case .failure(let error):
-            presentError(error)
+            presentError(error, operation: "snip.add")
             return false
         }
     }
@@ -935,7 +935,7 @@ final class AppModel: ObservableObject {
                 toast = .deleted(count: snipsToDelete.count, id: token)
                 scheduleCloudSync()
             } catch {
-                presentError(error)
+                presentError(error, operation: "snip.delete")
             }
         }
     }
@@ -970,7 +970,7 @@ final class AppModel: ObservableObject {
                 if toast?.id == token { toast = nil }
                 scheduleCloudSync()
             } catch {
-                presentError(error)
+                presentError(error, operation: "snip.undo_delete")
             }
         }
     }
@@ -1088,7 +1088,7 @@ final class AppModel: ObservableObject {
         }.map(\.id))
         guard !eligibleIDs.isEmpty else { return }
         let deletionToast = preservesDeletionToast && toast?.action == .undoDelete ? toast : nil
-        await performUserMutationUnlocked {
+        await performUserMutationUnlocked(operation: "snip.completion") {
             let update = try await session.performLibraryCommand(
                 .setDone(ids: eligibleIDs, done: done),
                 sortedBy: sortMode
@@ -1112,7 +1112,7 @@ final class AppModel: ObservableObject {
     func togglePinned(id: UUID) async {
         await withCommandLock {
             guard editingID != id else { return }
-            await performUserMutationUnlocked {
+            await performUserMutationUnlocked(operation: "snip.pin") {
                 let update = try await session.performLibraryCommand(
                     .togglePinned(id: id), sortedBy: sortMode
                 )
@@ -1125,7 +1125,7 @@ final class AppModel: ObservableObject {
         await withCommandLock {
             let eligibleIDs = ids.subtracting(editingID.map { [$0] } ?? [])
             guard !eligibleIDs.isEmpty else { return }
-            await performUserMutationUnlocked {
+            await performUserMutationUnlocked(operation: "snip.pin") {
                 let update = try await session.performLibraryCommand(
                     .setPinned(ids: eligibleIDs, pinned: pinned), sortedBy: sortMode
                 )
@@ -1150,7 +1150,7 @@ final class AppModel: ObservableObject {
             )
             guard !unfinishedIDs.isEmpty else { return }
             let deletionToast = toast?.action == .undoDelete ? toast : nil
-            await performUserMutationUnlocked {
+            await performUserMutationUnlocked(operation: "snip.completion") {
                 let update = try await session.performLibraryCommand(
                     .setDone(ids: unfinishedIDs, done: true),
                     sortedBy: sortMode
@@ -1210,7 +1210,7 @@ final class AppModel: ObservableObject {
         if case .success = result {
             return true
         }
-        if case .failure(let error) = result { presentError(error) }
+        if case .failure(let error) = result { presentError(error, operation: "snip.move") }
         return false
     }
 
@@ -1230,7 +1230,7 @@ final class AppModel: ObservableObject {
         if case .success = result {
             return true
         }
-        if case .failure(let error) = result { presentError(error) }
+        if case .failure(let error) = result { presentError(error, operation: "snip.move") }
         return false
     }
 
@@ -1551,7 +1551,7 @@ final class AppModel: ObservableObject {
         case .success:
             preconditionFailure("The library returned the wrong merge outcome.")
         case .failure(let error):
-            presentError(error)
+            presentError(error, operation: "snip.merge")
         }
     }
 
@@ -1578,10 +1578,11 @@ final class AppModel: ObservableObject {
     }
 
     private func performUserMutationUnlocked(
+        operation: StaticString,
         _ mutation: () async throws -> (SnipLibraryUpdate, Void)
     ) async {
         if case .failure(let error) = await performMutationUnlocked(mutation) {
-            presentError(error)
+            presentError(error, operation: operation)
         }
     }
 

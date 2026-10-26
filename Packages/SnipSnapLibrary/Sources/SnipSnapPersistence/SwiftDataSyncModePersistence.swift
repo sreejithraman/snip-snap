@@ -101,18 +101,25 @@ public enum SyncModeActivationManifestReader {
 }
 
 package actor SyncModeActiveMutationLease {
+  package enum Purpose: Equatable, Sendable {
+    case sync
+    case modeChange
+  }
+
   private let persistence: SwiftDataSyncModePersistence
   private let storeID: UUID
+  private let purpose: Purpose
 
-  init(persistence: SwiftDataSyncModePersistence, storeID: UUID) {
+  init(persistence: SwiftDataSyncModePersistence, storeID: UUID, purpose: Purpose) {
     self.persistence = persistence
     self.storeID = storeID
+    self.purpose = purpose
   }
 
   package func run<Value: Sendable>(
     _ operation: @escaping @Sendable () async throws -> Value
   ) async throws -> Value {
-    let reservation = try await persistence.reserveActiveMutation(storeID: storeID)
+    let reservation = try await persistence.reserveActiveMutation(storeID: storeID, purpose: purpose)
     do {
       try Task.checkCancellation()
       let value = try await operation()
@@ -230,11 +237,19 @@ package actor SwiftDataSyncModePersistence {
   let readHook: ReadHook
   let recoveryQuarantineHook: RecoveryQuarantineHook
   let defaultSyncProtocol: SyncModeSyncProtocol
+  let diagnostics: AppDiagnosticRecorder
   var manifest: Manifest
-  var writeAdmissionInProgress = false
+  enum WriteAdmission: Equatable {
+    case exclusive
+    case modeChange
+    case cloud(SyncModeActiveMutationLease.Purpose)
+  }
+  var writeAdmission: WriteAdmission?
+  var writeAdmissionInProgress: Bool { writeAdmission != nil }
   struct ActiveMutationWaiter {
     let id: UUID
     let storeID: UUID
+    let admission: WriteAdmission
     let continuation: CheckedContinuation<SyncModeWriteReservation, any Error>
   }
   var activeMutationWaiters: [ActiveMutationWaiter] = []
@@ -252,7 +267,8 @@ package actor SwiftDataSyncModePersistence {
     manifestWriter: @escaping ManifestWriter = { try DurableFile.write($0, to: $1) },
     writeHook: @escaping WriteHook = { _ in },
     readHook: @escaping ReadHook = {},
-    recoveryQuarantineHook: @escaping RecoveryQuarantineHook = {}
+    recoveryQuarantineHook: @escaping RecoveryQuarantineHook = {},
+    diagnostics: AppDiagnosticRecorder = .live
   ) throws {
     self.rootURL = rootURL
     self.attachmentCacheRootURL = attachmentCacheRootURL
@@ -263,6 +279,7 @@ package actor SwiftDataSyncModePersistence {
     self.readHook = readHook
     self.recoveryQuarantineHook = recoveryQuarantineHook
     self.defaultSyncProtocol = defaultSyncProtocol
+    self.diagnostics = diagnostics
     try DurableFile.createDirectory(rootURL)
     if FileManager.default.fileExists(atPath: manifestURL.path) {
       do {
@@ -351,7 +368,7 @@ package actor SwiftDataSyncModePersistence {
       else { throw SyncModePersistenceError.transitionInProgress }
     }
 
-    writeAdmissionInProgress = true
+    writeAdmission = .modeChange
     defer { releaseWriteAdmission() }
     let replacement = Self.newStore(
       kind: .localOnly,
@@ -497,7 +514,7 @@ package actor SwiftDataSyncModePersistence {
       attachmentCacheRootURL: Self.cacheRootURL(
         base: attachmentCacheRootURL,
         storeID: store.id
-      )
+      ), diagnostics: diagnostics
     )
   }
 
@@ -717,7 +734,7 @@ package actor SwiftDataSyncModePersistence {
     {
       return
     }
-    writeAdmissionInProgress = true
+    writeAdmission = .modeChange
     defer { releaseWriteAdmission() }
     let kind: SyncModeStoreKind = namespace == nil ? .localOnly : .iCloudSync
     var candidate = Self.newStore(
@@ -795,7 +812,7 @@ package actor SwiftDataSyncModePersistence {
       if store(id: manifest.activeStoreID)?.kind == .localOnly { return nil }
       throw SyncModePersistenceError.transitionInProgress
     }
-    writeAdmissionInProgress = true
+    writeAdmission = .modeChange
     defer { releaseWriteAdmission() }
     let original = manifest
     var candidate = Self.newStore(

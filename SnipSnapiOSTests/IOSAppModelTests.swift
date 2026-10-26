@@ -11,6 +11,53 @@ import XCTest
 
 @MainActor
 final class IOSAppModelTests: XCTestCase {
+    func testCreateFailureNamesAddWithoutRecordingDraftText() async {
+        let diagnostics = IOSDiagnosticRecorderProbe()
+        let model = IOSAppModel(library: JSONSnipLibrary.unavailable(), diagnostics: diagnostics.recorder)
+
+        let saved = await model.createSnip(content: "Private draft text", in: SnipList.inboxID)
+
+        XCTAssertFalse(saved)
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertEqual(diagnostics.events.count, 1)
+        XCTAssertEqual(diagnostics.events.first?.operation, "snip.add")
+        XCTAssertEqual(diagnostics.events.first?.errorCode, "library.storeUnavailable")
+        XCTAssertFalse(diagnostics.events.first?.line.contains("Private") ?? true)
+    }
+
+    func testEditFailureNamesUpdateAndKeepsThePresentedError() async {
+        let diagnostics = IOSDiagnosticRecorderProbe()
+        let model = IOSAppModel(library: JSONSnipLibrary.unavailable(), diagnostics: diagnostics.recorder)
+        let snip = Snip(content: "Private original text", origin: .quickEntry)
+
+        let updated = await model.editSnip(snip, content: "Private edited text")
+
+        XCTAssertFalse(updated)
+        XCTAssertEqual(model.errorMessage, SnipLibraryError.storeUnavailable.localizedDescription)
+        XCTAssertEqual(diagnostics.events.count, 1)
+        XCTAssertEqual(diagnostics.events.first?.operation, "snip.update")
+        XCTAssertEqual(diagnostics.events.first?.errorCode, "library.storeUnavailable")
+        XCTAssertFalse(diagnostics.events.first?.line.contains("Private") ?? true)
+    }
+
+    func testDeleteFailureNamesDeleteOnce() async {
+        let diagnostics = IOSDiagnosticRecorderProbe()
+        let snip = Snip(content: "Private deleted text", origin: .quickEntry)
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: [snip], failsDeletion: true),
+            diagnostics: diagnostics.recorder)
+        await model.load()
+
+        let deleted = await model.deleteSnip(id: snip.id)
+
+        XCTAssertFalse(deleted)
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertEqual(diagnostics.events.count, 1)
+        XCTAssertEqual(diagnostics.events.first?.operation, "snip.delete")
+        XCTAssertEqual(diagnostics.events.first?.errorCode, "library.snipNotFound")
+        XCTAssertFalse(diagnostics.events.first?.line.contains("Private") ?? true)
+    }
+
     func testUnsupportedListIconKeepsItsSavedChoiceAndVisibleIdentity() {
         let savedSymbol = "snipsnap.future-symbol"
         let list = SnipList(id: UUID(), name: "Future", systemImage: savedSymbol, position: 1)
@@ -3373,6 +3420,28 @@ final class IOSAppModelTests: XCTestCase {
         XCTAssertNil(model.errorMessage)
     }
 
+    func testRecoveredTrailingImportDoesNotReportAnEarlierFailure() async {
+        let model = IOSAppModel(library: ModelTestLibrary())
+        let imports = QueuedImportSummaryProbe(summaries: [
+            ShareImportSummary(imported: 0, failed: 1),
+            ShareImportSummary(imported: 1, failed: 0)
+        ])
+        let coordinator = IOSShareImportCoordinator(
+            model: model, importOperation: { await imports.run() }
+        )
+        let first = Task { await coordinator.importPendingAndReload() }
+        await imports.waitUntilFirstImportStarts()
+        let overlapping = Task { await coordinator.importPendingAndReload() }
+        await Task.yield()
+        await imports.finishFirstImport()
+        await first.value
+        await overlapping.value
+
+        let passes = await imports.callCount()
+        XCTAssertEqual(passes, 2)
+        XCTAssertNil(model.errorMessage)
+    }
+
     func testNoPendingShareDoesNotResolveActiveCloudLibrary() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "NoPendingShare-\(UUID().uuidString)",
@@ -3392,6 +3461,30 @@ final class IOSAppModelTests: XCTestCase {
         let activeLibraryCalls = await cloudSession.activeLibraryCallCount()
         XCTAssertEqual(activeLibraryCalls, 0)
         XCTAssertNil(session.model.errorMessage)
+    }
+
+    func testPendingShareLibraryFailureKeepsRequestAndRecordsItsCause() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let imports = ShareImportStore(sharedRootURL: root)
+        _ = try await imports.save(ShareImportRequest(
+            content: "Private shared text", destinationListID: SnipList.inboxID))
+        let diagnostics = IOSDiagnosticRecorderProbe()
+        let session = IOSAppSession(
+            library: ModelTestLibrary(), shareImports: imports,
+            cloudSyncSession: ActiveLibraryFailureProbe(error: SnipLibraryError.storeUnavailable),
+            diagnostics: diagnostics.recorder
+        )
+
+        await session.foreground()
+
+        let pending = await imports.pendingImportCount()
+        XCTAssertEqual(pending, 1)
+        XCTAssertNotNil(session.model.errorMessage)
+        let failure = diagnostics.events.first { $0.operation == "share.import_library" }
+        XCTAssertEqual(failure?.errorCode, "library.storeUnavailable")
+        XCTAssertEqual(failure?.visibility, .background)
+        XCTAssertFalse(diagnostics.events.map(\.line).joined().contains("Private"))
     }
 
     func testImportFailureReportsRetryWithoutRedundantSync() async {
@@ -6767,6 +6860,8 @@ private actor QueuedImportSummaryProbe {
         firstImportContinuation?.resume()
         firstImportContinuation = nil
     }
+
+    func callCount() -> Int { calls }
 }
 
 private actor ImportCallProbe {
@@ -6909,6 +7004,9 @@ private actor SequencedSyncProbe {
 
 private actor ActiveLibraryFailureProbe: IOSCloudSyncSessionHandling {
     private var activeLibraryCalls = 0
+    private let error: any Error
+
+    init(error: any Error = ProbeError.offline) { self.error = error }
 
     func synchronize() async throws -> SnipSnapCloudSyncResult { .noChange }
 
@@ -6916,7 +7014,7 @@ private actor ActiveLibraryFailureProbe: IOSCloudSyncSessionHandling {
         -> (library: any SnipLibrary, recoveryScope: SnipRecoveryScope?)
     {
         activeLibraryCalls += 1
-        throw ProbeError.offline
+        throw error
     }
 
     func activeLibraryCallCount() -> Int { activeLibraryCalls }

@@ -5,6 +5,15 @@ import XCTest
 @testable import SnipSnapCLI
 
 final class SnipCLIAppReadinessTests: XCTestCase {
+  func testUnavailableReadinessHasAnActionableMessageAndStableDiagnostic() {
+    let error = SnipCLIAppReadinessError.unavailable
+    XCTAssertEqual(error.localizedDescription,
+      "Snip Snap couldn’t prepare its command connection. Quit and reopen Snip Snap, then try again.")
+    let event = AppDiagnosticEvent.failure(operation: "cli.readiness", error: error, visibility: .user)
+    XCTAssertEqual(event.operation, "cli.readiness")
+    XCTAssertEqual(event.errorCode, "cli.unavailable")
+  }
+
   func testSuspensionBetweenReadinessAndEnqueueLeavesNoQueuedMutation() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }

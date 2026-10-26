@@ -6,6 +6,7 @@ enum AppDiagnosticCodePolicy {
 
   static let operations: Set<String> = [
     "app.startup", "app.user_action", "app.unknown",
+    "cli.readiness",
     "attachment.asset_copy", "attachment.cache_clear", "attachment.cache_install",
     "attachment.cloudkit_asset_url", "attachment.cloudkit_record", "attachment.cloudkit_request",
     "attachment.import_select", "attachment.import_stage", "attachment.prepare",
@@ -21,9 +22,14 @@ enum AppDiagnosticCodePolicy {
     "cloudkit.control_save", "cloudkit.record_fetch", "cloudkit.record_send", "cloudkit.request",
     "diagnostics.clear", "diagnostics.export", "diagnostics.recording", "import.file",
     "share.import", "share.extension_startup", "share.extension_load", "share.extension_save",
+    "share.import_read", "share.import_apply", "share.import_cleanup", "share.import_library",
     "share.catalog_publish", "share.catalog_read", "shortcut.save", "shortcut.register",
     "capture.screen", "selection.capture",
-    "snip.paste_read", "snip.paste_save",
+    "snip.paste_read", "snip.paste_save", "snip.add", "snip.update", "snip.edit_attachments",
+    "snip.delete", "snip.restore", "snip.merge", "snip.pin", "snip.completion", "snip.move",
+    "snip.replace_all", "snip.undo_delete", "list.create", "list.restore", "list.update",
+    "list.delete", "list.move", "library.apply_patch", "library.batch", "attachment.prune",
+    "recovery.resolve", "library.write_admission",
     "sync.account_refresh", "sync.account_resolve", "sync.account_status",
     "sync.cancel_setup", "sync.delete", "sync.disable", "sync.enable", "sync.run",
     "sync.setup", "sync.stop", "sync.snapshot", "sync.provider", "sync.fetch", "sync.send",
@@ -33,6 +39,7 @@ enum AppDiagnosticCodePolicy {
   static let errorCodes: Set<String> = [
     "diagnostics.busy", "diagnostics.routineOverflow", "diagnostics.failureOverflow",
     "diagnostics.writeFailed", "share.sharedContainerUnavailable",
+    "cli.unavailable",
     "clipboard.empty", "clipboard.tooLarge", "clipboard.unreadable", "clipboard.unsupported",
     "import.partialFailure", "import.readFailed", "pasteboard.writeFailed",
     "presentation.message", "presentation.startup", "attachment.unavailableAfterPrepare",
@@ -133,6 +140,14 @@ public enum AppDiagnosticSyncReason: String, Sendable {
   case ownerReplaced = "owner_replaced"
 }
 
+public enum AppDiagnosticWriteReason: String, Sendable {
+  case syncBusy = "sync_busy"
+  case writeBusy = "write_busy"
+  case modeChange = "mode_change"
+  case dataReset = "data_reset"
+  case reservedWrite = "reserved_write"
+}
+
 /// One structured operational event. Fields are deliberately limited to values that cannot
 /// contain user content, filenames, filesystem paths, record identifiers, or hashes.
 public struct AppDiagnosticEvent: Equatable, Sendable {
@@ -151,6 +166,7 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
   public let pendingDownloads: Int?
   public let pendingEvents: Int?
   public let blockedRecords: Int?
+  public let writeReason: AppDiagnosticWriteReason?
 
   private init(
     operation: StaticString,
@@ -167,7 +183,8 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
     pendingUploads: Int? = nil,
     pendingDownloads: Int? = nil,
     pendingEvents: Int? = nil,
-    blockedRecords: Int? = nil
+    blockedRecords: Int? = nil,
+    writeReason: AppDiagnosticWriteReason? = nil
   ) {
     self.operation = AppDiagnosticCodePolicy.operation(String(describing: operation))
     self.outcome = outcome
@@ -184,6 +201,15 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
     self.pendingDownloads = pendingDownloads.flatMap { $0 >= 0 ? $0 : nil }
     self.pendingEvents = pendingEvents.flatMap { $0 >= 0 ? $0 : nil }
     self.blockedRecords = blockedRecords.flatMap { $0 >= 0 ? $0 : nil }
+    self.writeReason = writeReason
+  }
+
+  public static func writeAdmission(
+    _ outcome: AppDiagnosticOutcome, reason: AppDiagnosticWriteReason
+  ) -> Self {
+    Self(operation: "library.write_admission", outcome: outcome, visibility: .background,
+      errorCode: outcome == .failed ? "library.modeTransitionInProgress" : nil,
+      writeReason: reason)
   }
 
   public static func started(
@@ -281,6 +307,7 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
       "visibility=\(visibility.rawValue)",
     ]
     if let errorCode { fields.append("error=\(errorCode)") }
+    if let writeReason { fields.append("write_reason=\(writeReason.rawValue)") }
     if let byteCount { fields.append("bytes=\(byteCount)") }
     if let retryAfterSeconds { fields.append("retry_after=\(retryAfterSeconds)") }
     if let nextAttemptSeconds { fields.append("next_attempt=\(nextAttemptSeconds)") }

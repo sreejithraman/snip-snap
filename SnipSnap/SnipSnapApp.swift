@@ -490,7 +490,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             } catch is CancellationError {
                 // Normal termination cancels an unfinished startup check.
             } catch {
-                if !isFlushingBeforeTermination { model.presentError(error) }
+                if !isFlushingBeforeTermination { model.presentError(error, operation: "cli.readiness") }
             }
         }
         if let cloudSyncSession {
@@ -552,7 +552,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             try await cliLifecycle.refresh()
         } catch is CancellationError {
         } catch {
-            if !isFlushingBeforeTermination { model.presentError(error) }
+            if !isFlushingBeforeTermination { model.presentError(error, operation: "cli.readiness") }
         }
     }
 

@@ -193,6 +193,7 @@ run_signed_build() {
         "PRODUCT_BUNDLE_IDENTIFIER=$product_bundle_identifier.dev$slot"
         "SNIP_SNAP_PRODUCT_NAME=$process_name"
         "INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Dev $slot"
+        "SNIP_SNAP_DEV_STORE_PATH=$store_path"
         build
     )
     if [[ -n "$build_log" ]]; then

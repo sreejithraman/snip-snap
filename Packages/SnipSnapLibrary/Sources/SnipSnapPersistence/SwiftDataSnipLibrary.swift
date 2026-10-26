@@ -77,6 +77,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
   let isAvailable: Bool
   let afterMutationBeforeSave: @Sendable () throws -> Void
   let beforeImportCommit: @Sendable () async throws -> Void
+  let diagnostics: AppDiagnosticRecorder
   var seenRequestIDs: Set<UUID>
   var knownAttachmentPaths: [UUID: String]
   var lastKnownState: SnipLibraryState
@@ -95,8 +96,10 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     afterMutationBeforeSave: @escaping @Sendable () throws -> Void = {},
     beforeImportCommit: @escaping @Sendable () async throws -> Void = {},
     metadataBackfillHook: @escaping @Sendable (LibraryMetadataBackfillPoint) throws -> Void = { _ in },
-    cloudFullRecordBackfillHook: @escaping @Sendable (CloudFullRecordBackfillPoint) throws -> Void = { _ in }
+    cloudFullRecordBackfillHook: @escaping @Sendable (CloudFullRecordBackfillPoint) throws -> Void = { _ in },
+    diagnostics: AppDiagnosticRecorder = .live
   ) throws {
+    self.diagnostics = diagnostics
     let directory = storeURL.deletingLastPathComponent()
     try DurableFile.createDirectory(directory)
     let lockURL = storeURL.appendingPathExtension("lock")
@@ -159,6 +162,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
   }
 
   private init(unavailableAt storeURL: URL, attachmentCacheRootURL: URL?) {
+    diagnostics = .live
     let attachmentRootURL = Self.attachmentRootURL(forStoreURL: storeURL)
     lockURL = storeURL.appendingPathExtension("lock")
     self.attachmentRootURL = attachmentRootURL

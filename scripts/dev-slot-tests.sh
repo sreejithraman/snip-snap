@@ -133,6 +133,8 @@ if grep -E -- '(^|[[:space:]])PRODUCT_NAME=SnipSnapDev2([[:space:]]|$)' \
 fi
 grep -F -- "INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Dev 2" \
     "$test_dir/build-args" >/dev/null
+grep -F -- "SNIP_SNAP_DEV_STORE_PATH=$test_dir/state/data/slot-2/items.json" \
+    "$test_dir/build-args" >/dev/null
 grep -F -- "CODE_SIGN_IDENTITY=-" "$test_dir/build-args" >/dev/null
 grep -F -- "DEVELOPMENT_TEAM=" "$test_dir/build-args" >/dev/null
 grep -F -- "CODE_SIGN_ENTITLEMENTS=" "$test_dir/build-args" >/dev/null

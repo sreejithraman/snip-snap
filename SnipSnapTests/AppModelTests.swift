@@ -128,6 +128,41 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testComposerSendFailureNamesAddWithoutRecordingDraftText() async throws {
+        let probe = MacDiagnosticRecorderProbe()
+        let model = AppModel(
+            library: SwiftDataSnipLibrary.unavailable(storeURL: try storeURL()),
+            defaults: defaults(), diagnostics: probe.recorder)
+        await model.reload()
+
+        let saved = await model.saveComposerDraft(content: "Private draft text", listID: SnipList.inboxID)
+
+        XCTAssertFalse(saved)
+        XCTAssertNotNil(model.presentedError)
+        XCTAssertEqual(probe.events.count, 1)
+        XCTAssertEqual(probe.events.first?.operation, "snip.add")
+        XCTAssertEqual(probe.events.first?.errorCode, "library.storeUnavailable")
+        XCTAssertFalse(probe.events.first?.line.contains("Private") ?? true)
+    }
+
+    @MainActor
+    func testUpdateFailureNamesUpdateAndKeepsThePresentedError() async throws {
+        let probe = MacDiagnosticRecorderProbe()
+        let model = AppModel(
+            library: SwiftDataSnipLibrary.unavailable(storeURL: try storeURL()),
+            defaults: defaults(), diagnostics: probe.recorder)
+
+        let updated = await model.update(id: UUID(), content: "Private edited text")
+
+        XCTAssertFalse(updated)
+        XCTAssertEqual(model.presentedError, SnipLibraryError.storeUnavailable.localizedDescription)
+        XCTAssertEqual(probe.events.count, 1)
+        XCTAssertEqual(probe.events.first?.operation, "snip.update")
+        XCTAssertEqual(probe.events.first?.errorCode, "library.storeUnavailable")
+        XCTAssertFalse(probe.events.first?.line.contains("Private") ?? true)
+    }
+
+    @MainActor
     func testDuplicateListErrorTitleResetsForOtherErrorsAndDismissal() throws {
         let library = try JSONSnipLibrary(fileURL: storeURL())
         let model = AppModel(library: library, defaults: defaults())

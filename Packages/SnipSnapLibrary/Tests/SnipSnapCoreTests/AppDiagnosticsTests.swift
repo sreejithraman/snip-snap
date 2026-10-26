@@ -6,6 +6,39 @@ import XCTest
 final class AppDiagnosticsTests: XCTestCase {
   private var temporaryDirectory: URL!
 
+  func testExportPreservesSpecificSnipActionWithoutContent() throws {
+    let store = AppDiagnosticEventStore(
+      directoryURL: temporaryDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2")
+    store.append(.failure(operation: "snip.add", error: SnipLibraryError.modeTransitionInProgress,
+      visibility: .user))
+    store.append(.failure(operation: "snip.update", error: SnipLibraryError.snipChanged,
+      visibility: .user))
+
+    let exported = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
+    XCTAssertTrue(exported.contains("operation=snip.add outcome=failed visibility=user error=library.modeTransitionInProgress"))
+    XCTAssertTrue(exported.contains("operation=snip.update outcome=failed visibility=user error=library.snipChanged"))
+    XCTAssertFalse(exported.contains("operation=app.unknown"))
+  }
+
+  func testExportRetainsTypedWriteReasonsAndRejectsUnknownReasons() throws {
+    let store = AppDiagnosticEventStore(
+      directoryURL: temporaryDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2")
+    store.append(.writeAdmission(.started, reason: .syncBusy))
+    store.append(.writeAdmission(.failed, reason: .writeBusy))
+    store.append(.writeAdmission(.failed, reason: .modeChange))
+    store.append(.writeAdmission(.failed, reason: .dataReset))
+
+    let exported = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
+    for reason in ["sync_busy", "write_busy", "mode_change", "data_reset"] {
+      XCTAssertTrue(exported.contains("write_reason=\(reason)"))
+    }
+    XCTAssertFalse(exported.contains("operation=app.unknown"))
+    XCTAssertNil(AppDiagnosticLine.sanitize(
+      "2026-10-26T19:12:50Z diagnostic_event operation=library.write_admission outcome=failed visibility=background error=library.modeTransitionInProgress write_reason=private-secret"))
+    XCTAssertNil(AppDiagnosticLine.sanitize(
+      "2026-10-26T19:12:50Z diagnostic_event operation=snip.add outcome=failed visibility=user error=library.modeTransitionInProgress write_reason=mode_change"))
+  }
+
   override func setUpWithError() throws {
     temporaryDirectory = FileManager.default.temporaryDirectory
       .appendingPathComponent(UUID().uuidString, isDirectory: true)

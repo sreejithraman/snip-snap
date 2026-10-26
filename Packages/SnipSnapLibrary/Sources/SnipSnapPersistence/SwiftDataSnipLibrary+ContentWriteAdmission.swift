@@ -10,17 +10,22 @@ extension SwiftDataSnipLibrary {
     guard !FileManager.default.fileExists(atPath: readOnlyRecoveryMarkerURL.path) else {
       throw SnipLibraryError.readOnlyRecovery
     }
-    for row in try context.fetch(FetchDescriptor<StoredCloudStagedBatch>()) {
-      try CloudContentWriteAdmission.requireStagedAllowsWrites(row)
-    }
-    for row in try context.fetch(FetchDescriptor<StoredCloudRecoveryEvent>()) {
-      try CloudContentWriteAdmission.requireRecoveryAllowsWrites(row)
-    }
-    for row in try context.fetch(FetchDescriptor<StoredCloudFullEnrollment>()) {
-      guard let enrollment = try? Self.fullEnrollmentState(from: row.referencesData) else {
-        throw SnipLibraryError.invalidStore
+    do {
+      for row in try context.fetch(FetchDescriptor<StoredCloudStagedBatch>()) {
+        try CloudContentWriteAdmission.requireStagedAllowsWrites(row)
       }
-      try CloudContentWriteAdmission.requireNamespaceAllowsWrites(enrollment.namespaceState)
+      for row in try context.fetch(FetchDescriptor<StoredCloudRecoveryEvent>()) {
+        try CloudContentWriteAdmission.requireRecoveryAllowsWrites(row)
+      }
+      for row in try context.fetch(FetchDescriptor<StoredCloudFullEnrollment>()) {
+        guard let enrollment = try? Self.fullEnrollmentState(from: row.referencesData) else {
+          throw SnipLibraryError.invalidStore
+        }
+        try CloudContentWriteAdmission.requireNamespaceAllowsWrites(enrollment.namespaceState)
+      }
+    } catch CloudContentWriteAdmission.Block.dataReset {
+      diagnostics.record(.writeAdmission(.failed, reason: .dataReset))
+      throw SnipLibraryError.modeTransitionInProgress
     }
   }
 }
@@ -28,6 +33,7 @@ extension SwiftDataSnipLibrary {
 /// The storage admission rule reads every durable source of reset evidence.
 /// Optional legacy fields may be absent; present evidence must remain readable.
 private enum CloudContentWriteAdmission {
+  enum Block: Error { case dataReset }
   static func requireStagedAllowsWrites(_ row: StoredCloudStagedBatch) throws {
     guard row.id == "\(row.namespaceKey)|\(row.batchID.uuidString.lowercased())" else {
       throw SnipLibraryError.invalidStore
@@ -71,7 +77,7 @@ private enum CloudContentWriteAdmission {
   static func requireNamespaceAllowsWrites(_ state: CloudFullNamespaceState) throws {
     guard state.storageVersion == 1 else { throw SnipLibraryError.invalidStore }
     // The namespace commit outlives staged input and failed reset delivery.
-    if state.phase == .blocked { throw SnipLibraryError.modeTransitionInProgress }
+    if state.phase == .blocked { throw Block.dataReset }
   }
 
   static func requireRecoveryAllowsWrites(_ row: StoredCloudRecoveryEvent) throws {
@@ -110,7 +116,7 @@ private enum CloudContentWriteAdmission {
     // belongs to the cloud normalizer; only batch identity and reset affect edits.
     switch input.kind {
     case .destructiveReset:
-      throw SnipLibraryError.modeTransitionInProgress
+      throw Block.dataReset
     case .retryableFetch, .terminalFetch:
       guard try requireRawBatchAllowsWrites(input.resultData, id: batchID) == .fetched else {
         throw SnipLibraryError.invalidStore
@@ -195,6 +201,6 @@ private enum CloudContentWriteAdmission {
       zone["ownerName"] is String, let reason = value["reason"] as? String,
       ["deleted", "purged", "encryptedDataReset"].contains(reason)
     else { throw SnipLibraryError.invalidStore }
-    if reason != "deleted" { throw SnipLibraryError.modeTransitionInProgress }
+    if reason != "deleted" { throw Block.dataReset }
   }
 }
