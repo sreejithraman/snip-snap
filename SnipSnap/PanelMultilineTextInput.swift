@@ -101,12 +101,15 @@ enum PanelTextInputReturnAction: Equatable {
 }
 
 enum PanelTextInputLayout {
+    static var lineHeight: CGFloat {
+        let font = NSFont.preferredFont(forTextStyle: .body)
+        return ceil(font.ascender - font.descender + font.leading)
+    }
+
     static func maximumHeight(
         lineRange: ClosedRange<Int>,
         lineSpacing: CGFloat
     ) -> CGFloat {
-        let font = NSFont.preferredFont(forTextStyle: .body)
-        let lineHeight = ceil(font.ascender - font.descender + font.leading)
         let addedLineCount = max(lineRange.upperBound - 1, 0)
         return PanelControlMetrics.compactComposerHeight
             + CGFloat(addedLineCount) * (lineHeight + lineSpacing)
@@ -244,7 +247,6 @@ struct PanelMultilineTextInput: View {
         .lineLimit(lineRange)
         .fixedSize(horizontal: false, vertical: true)
         .frame(
-            minHeight: PanelControlMetrics.compactComposerHeight,
             maxHeight: PanelTextInputLayout.maximumHeight(
                 lineRange: lineRange,
                 lineSpacing: lineSpacing

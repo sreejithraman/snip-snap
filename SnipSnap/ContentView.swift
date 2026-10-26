@@ -665,7 +665,7 @@ struct ContentView: View {
     private func inlineEntry(for listID: UUID, isInteractive: Bool) -> some View {
         let draft = composerDraft(for: listID)
         let list = model.lists.first(where: { $0.id == listID }) ?? .inbox
-        return HStack(alignment: .top, spacing: SnipSnapSpacing.relatedContent) {
+        return HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
             inlineAttachmentMenu(for: listID)
 
             GlassEffectContainer {
@@ -688,25 +688,26 @@ struct ContentView: View {
                         .padding(.top, PanelControlMetrics.expandedInputVerticalPadding)
                     }
 
-                    HStack(
-                        alignment: PanelComposerLayout.actionAlignment(
-                            isExpanded: isInlineEntryExpanded(for: listID)
-                        ),
-                        spacing: SnipSnapSpacing.relatedContent
-                    ) {
-                        inlineEntryField(
-                            for: listID,
-                            list: list,
-                            isInteractive: isInteractive
-                        )
-                        Color.clear
-                            .frame(width: PanelControlMetrics.actionWidth, height: PanelControlMetrics.actionHeight)
-                            .padding(.trailing, PanelControlMetrics.sendInset)
-                            .allowsHitTesting(false)
-                    }
+                    inlineEntryField(
+                        for: listID,
+                        list: list,
+                        isInteractive: isInteractive
+                    )
                     .padding(.leading, SnipSnapSpacing.controlContentInset)
-                    .padding(.top, inlineEntryTextTopPadding(for: listID))
-                    .padding(.bottom, inlineEntryTextBottomPadding(for: listID))
+                    .padding(
+                        .trailing,
+                        PanelControlMetrics.actionWidth
+                            + PanelControlMetrics.sendInset
+                            + SnipSnapSpacing.relatedContent
+                    )
+                    .padding(
+                        .top,
+                        draft.attachments.isEmpty
+                            ? PanelControlMetrics.expandedInputVerticalPadding
+                            : 0
+                    )
+                    .padding(.bottom, PanelControlMetrics.expandedInputVerticalPadding)
+                    .frame(minHeight: PanelControlMetrics.compactComposerHeight)
                 }
                 .panelEmbeddedInputSurface(
                     minHeight: PanelControlMetrics.compactComposerHeight,
@@ -723,10 +724,9 @@ struct ContentView: View {
                         .padding(.trailing, PanelControlMetrics.sendInset)
                         .padding(
                             .bottom,
-                            max(
-                                inlineEntryTextBottomPadding(for: listID),
-                                PanelControlMetrics.sendInset
-                            )
+                            isInlineEntrySurfaceExpanded(for: listID)
+                                ? PanelControlMetrics.expandedInputVerticalPadding
+                                : PanelControlMetrics.sendInset
                         )
                 }
             }
@@ -899,18 +899,6 @@ struct ContentView: View {
 
     private func isInlineEntrySurfaceExpanded(for listID: UUID) -> Bool {
         isInlineEntryExpanded(for: listID) || !composerDraft(for: listID).attachments.isEmpty
-    }
-
-    private func inlineEntryTextTopPadding(for listID: UUID) -> CGFloat {
-        isInlineEntryExpanded(for: listID) && composerDraft(for: listID).attachments.isEmpty
-            ? PanelControlMetrics.expandedInputVerticalPadding
-            : 0
-    }
-
-    private func inlineEntryTextBottomPadding(for listID: UUID) -> CGFloat {
-        isInlineEntrySurfaceExpanded(for: listID)
-            ? PanelControlMetrics.expandedInputVerticalPadding
-            : 0
     }
 
     private func canSaveInlineEntry(for listID: UUID) -> Bool {

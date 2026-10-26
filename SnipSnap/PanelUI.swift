@@ -111,12 +111,8 @@ enum PanelComposerLayout {
         return min(max(height, 0), PanelComposerMetrics.maximumInlineEntryHeight)
     }
 
-    static func actionAlignment(isExpanded: Bool) -> VerticalAlignment {
-        isExpanded ? .top : .center
-    }
-
     static func isExpanded(fieldHeight: CGFloat) -> Bool {
-        fieldHeight > PanelControlMetrics.compactComposerHeight
+        fieldHeight > PanelTextInputLayout.lineHeight
             + PanelGeometryChange.minimumMeaningfulChange
     }
 }

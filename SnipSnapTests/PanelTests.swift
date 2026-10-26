@@ -1437,17 +1437,6 @@ final class PanelTests: StoreBackedTestCase {
         )
     }
 
-    func testComposerSendAlignsToTheTopOnlyWhenExpanded() {
-        XCTAssertEqual(
-            PanelComposerLayout.actionAlignment(isExpanded: false),
-            VerticalAlignment.center
-        )
-        XCTAssertEqual(
-            PanelComposerLayout.actionAlignment(isExpanded: true),
-            VerticalAlignment.top
-        )
-    }
-
     func testCompactComposerPeerControlsShareVisibleHeight() {
         XCTAssertEqual(
             PanelControlMetrics.compactControlLength,
@@ -1561,15 +1550,15 @@ final class PanelTests: StoreBackedTestCase {
         XCTAssertEqual(PanelTextInputReturnAction.action(for: [.command]), .submit)
     }
 
-    func testCompactComposerDoesNotTreatItsAlignedFieldAsExpanded() {
+    func testComposerExpandsWhenTextWrapsToASecondLine() {
         XCTAssertFalse(
             PanelComposerLayout.isExpanded(
-                fieldHeight: PanelControlMetrics.compactComposerHeight
+                fieldHeight: PanelTextInputLayout.lineHeight
             )
         )
         XCTAssertTrue(
             PanelComposerLayout.isExpanded(
-                fieldHeight: PanelControlMetrics.compactComposerHeight + 1
+                fieldHeight: PanelTextInputLayout.lineHeight * 2
             )
         )
     }
@@ -1603,25 +1592,6 @@ final class PanelTests: StoreBackedTestCase {
             PanelControlMetrics.inlineEntryBaseHeight
         )
         XCTAssertEqual(PanelComposerHeightCache.height(for: second, in: heights), 96)
-    }
-
-    @MainActor
-    func testCompactPanelTextInputUsesCompactMacHeight() {
-        let input = PanelMultilineTextInput(
-            "Add to Inbox…",
-            text: .constant(""),
-            lineRange: 1...5,
-            isFocused: false,
-            onFocusChange: { _ in },
-            onSubmit: {}
-        )
-        let hostingView = NSHostingView(rootView: input)
-
-        XCTAssertEqual(
-            hostingView.fittingSize.height,
-            PanelControlMetrics.compactComposerHeight,
-            accuracy: 0.5
-        )
     }
 
     @MainActor
