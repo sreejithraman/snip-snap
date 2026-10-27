@@ -42,6 +42,23 @@ final class TestStoreActivity: Sendable {
 }
 
 final class SnipStoreBackgroundActivityTests: XCTestCase {
+  func testDatabaseLockTraceKeepsOneIdentityThroughUnlockAndProtectionEnd() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let events = Mutex<[RuntimeTrace.Event]>([])
+    let trace = RuntimeTrace(sink: { event in events.withLock { $0.append(event) } })
+    try SnipStoreBackgroundActivity.$runner.withValue({ _ in {} }) {
+      let lock = try SnipStoreFileLock(url: root, runtimeTrace: trace)
+      withExtendedLifetime(lock) {}
+    }
+    let recorded = events.withLock { $0 }
+    XCTAssertEqual(recorded.map(\.phase), [.protectionRequested, .protectionGranted,
+      .lockWaiting, .lockAcquired, .lockReleased, .protectionEnded, .accessEnded])
+    XCTAssertTrue(recorded.allSatisfy { $0.component == .database })
+    XCTAssertEqual(Set(recorded.compactMap(\.id)).count, 1)
+    XCTAssertFalse(recorded.contains { $0.line.contains(root.lastPathComponent) })
+  }
+
   private func observeTeardown(
     of library: SwiftDataSnipLibrary, onDeinit: @escaping () -> Void
   ) async throws {

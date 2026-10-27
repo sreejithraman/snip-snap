@@ -8,12 +8,17 @@ import UIKit
 @main
 @MainActor
 struct SnipSnapiOSApp: App {
+    @UIApplicationDelegateAdaptor(IOSRuntimeTraceDelegate.self) private var runtimeTraceDelegate
+    @Environment(\.scenePhase) private var scenePhase
     private let session: IOSAppSession
     private let uiTestAttachmentURLs: [URL]
     private let seedsCopyShareFixtures: Bool
     private let shareProcessToken: String?
 
     init() {
+        AppRuntimeTrace.applicationState(
+            .launching, protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable
+        )
         UINavigationBar.appearance().titleTextAttributes = [.font: UIFont.rounded(size: 17, weight: .semibold)]
         UINavigationBar.appearance().largeTitleTextAttributes = [.font: UIFont.rounded(size: 34, weight: .bold)]
         let startup = Self.makeLibrary()
@@ -117,6 +122,17 @@ struct SnipSnapiOSApp: App {
                 shareProcessToken: shareProcessToken
             )
             .fontDesign(.rounded)
+        }
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            let state: AppRuntimeTrace.State = switch phase {
+            case .active: .active
+            case .inactive: .inactive
+            case .background: .background
+            @unknown default: .unknown
+            }
+            AppRuntimeTrace.applicationState(
+                state, protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable
+            )
         }
     }
 
@@ -343,5 +359,18 @@ extension UIFont {
     static func rounded(size: CGFloat, weight: UIFont.Weight) -> UIFont {
         let font = UIFont.systemFont(ofSize: size, weight: weight)
         return UIFont(descriptor: font.fontDescriptor.withDesign(.rounded) ?? font.fontDescriptor, size: size)
+    }
+}
+
+@MainActor
+final class IOSRuntimeTraceDelegate: NSObject, UIApplicationDelegate {
+    func applicationProtectedDataWillBecomeUnavailable(_ application: UIApplication) {
+        AppRuntimeTrace.protectedDataWillBecomeUnavailable(
+            currentlyAvailable: application.isProtectedDataAvailable
+        )
+    }
+
+    func applicationProtectedDataDidBecomeAvailable(_ application: UIApplication) {
+        AppRuntimeTrace.protectedDataAvailability(application.isProtectedDataAvailable)
     }
 }

@@ -341,6 +341,27 @@ shared remain wherever you sent them. These controls do not erase Apple's separa
 system logs. Latest sync health and last successful fetch/send observations are
 retained separately from ordinary history rotation.
 
+Runtime suspension traces use Apple's separate unified log: subsystem `SnipSnap`,
+category `Runtime`. They report actual aggregate app phase, the last observed
+protected-data availability, execution-time admission and expiry, file-lock wait
+and hold times, and diagnostic-writer retry/loss summaries. A random process
+session and temporary operation numbers connect related events without identifying
+snips, files, accounts, or CloudKit records. Writer counts describe queued
+submissions, occurrences removed from the queue, and attempted writes with unknown
+persistence results. A discarded queue entry can overlap an uncertain write; a
+queue drop does not prove disk loss. Counts are process-local and do not survive
+termination. Concurrent callback events can interleave.
+
+Lifecycle changes, denied or expired protection, writer loss/recovery, and
+geometric retry milestones use notice-level logging. Lock boundaries also use
+notice while inactive or backgrounded, or when waiting/holding takes at least one second;
+that threshold selects diagnostic detail, not an OS execution-time allowance.
+Routine foreground detail uses debug logging and needs an enabled capture.
+Use Console with the connected iPhone, or a collected device system-log archive,
+and filter by the subsystem and category. Retention is bounded. These traces
+never write through the diagnostic history store and are not included in its
+text export or automatically attached to TestFlight feedback.
+
 #### Investigate an iOS TestFlight issue
 
 For a sync failure or error dialog, ask the tester for the approximate time,

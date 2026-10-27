@@ -1,86 +1,42 @@
 import Foundation
-import Synchronization
+import SnipSnapCore
 
 /// Keeps iOS execution time tied to one synchronous store operation.
 final class SnipStoreBackgroundActivity: Sendable {
-  typealias End = @Sendable () -> Void
-  typealias Runner = @Sendable (@escaping @Sendable () -> Void) -> End
+  typealias End = FileAccessBackgroundActivity.End
+  typealias Runner = FileAccessBackgroundActivity.Runner
 
-  @TaskLocal static var runner: Runner? = platformRunner
+  @TaskLocal static var runner: Runner? = FileAccessBackgroundActivity.platformRunner
 
-  private static var platformRunner: Runner? {
-    #if os(iOS)
-    { expire in
-      runExpiringActivity(expire: expire) { body in
-        ProcessInfo.processInfo.performExpiringActivity(
-          withReason: "Snip Snap store access", using: body
-        )
-      }
-    }
-    #else
-    nil
-    #endif
+  private let activity: FileAccessBackgroundActivity
+
+  private init(activity: FileAccessBackgroundActivity) {
+    self.activity = activity
   }
 
-  // Foundation schedules the work on a concurrent queue. Adapt its two
-  // callbacks to a scope which ends only after the caller releases its lock.
   static func runExpiringActivity(
     expire: @escaping @Sendable () -> Void,
     schedule: (@escaping @Sendable (Bool) -> Void) -> Void
   ) -> End {
-    let admitted = DispatchSemaphore(value: 0)
-    let completion = DispatchGroup()
-    completion.enter()
-    schedule { expired in
-      if expired { expire() }
-      admitted.signal()
-      completion.wait()
-    }
-    admitted.wait()
-    return { completion.leave() }
+    FileAccessBackgroundActivity.runExpiringActivity(expire: expire, schedule: schedule)
   }
 
-  private final class Expiration: Sendable {
-    let expired = Mutex(false)
-  }
-
-  private let expiration: Expiration
-  private let ended = Mutex(false)
-  private let end: End
-
-  private init(expiration: Expiration, end: @escaping End) {
-    self.expiration = expiration
-    self.end = end
-  }
-
-  static func begin() throws -> SnipStoreBackgroundActivity? {
-    guard let runner else { return nil }
-    let expiration = Expiration()
-    let end = runner { expiration.expired.withLock { $0 = true } }
-    let activity = SnipStoreBackgroundActivity(expiration: expiration, end: end)
+  static func begin(
+    trace: RuntimeTrace.Span = RuntimeTrace.live.span(.database, operation: .containerCleanup)
+  ) throws -> SnipStoreBackgroundActivity? {
+    guard let activity = try FileAccessBackgroundActivity.begin(runner: runner, trace: trace) else { return nil }
+    let scope = SnipStoreBackgroundActivity(activity: activity)
     do {
-      try activity.check()
-      SnipStoreContainerCleanup.drain(while: activity)
-      try activity.check()
-      return activity
+      SnipStoreContainerCleanup.drain(while: scope)
+      try scope.check()
+      return scope
     } catch {
-      activity.finish()
+      scope.finish()
       throw error
     }
   }
 
-  deinit { finish() }
+  func check() throws { try activity.check() }
 
-  func check() throws {
-    if expiration.expired.withLock({ $0 }) { throw CancellationError() }
-  }
-
-  func finish() {
-    let shouldEnd = ended.withLock { ended in
-      guard !ended else { return false }
-      ended = true
-      return true
-    }
-    if shouldEnd { end() }
-  }
+  func finish() { activity.finish() }
 }
