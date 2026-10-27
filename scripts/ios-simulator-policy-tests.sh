@@ -23,8 +23,13 @@ cat > "$test_dir/bin/xcrun" <<'STUB'
 if [[ "$*" == 'simctl list devices available --json' ]]; then
  print -r -- '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-26-0":[{"state":"Booted","udid":"TEST-SIM"}]}}'
 elif [[ "$1" == simctl ]]; then
- [[ ! -e "$FAKE_FIXTURE_PID_FILE" ]] || { print -u2 'The fixture started before app opening'; exit 1; }
+ [[ ! -e "$FAKE_FIXTURE_PID_FILE" ]] || { print -u2 'The fixture started before simulator setup finished'; exit 1; }
  print -r -- "$*" >> "$FAKE_SIM_LOG"
+ if [[ "$2" == "${FAKE_SIM_STALL_STAGE:-}" ]]; then
+  print -r -- "Waiting in simulator $2"
+  /bin/sleep 60 &
+  wait
+ fi
 fi
 STUB
 cat > "$test_dir/bin/xcodebuild" <<'STUB'
@@ -37,6 +42,13 @@ if [[ "$*" == *'-showBuildSettings'* ]]; then
  exit 0
 fi
 print -r -- "$*" >> "$FAKE_BUILD_LOG"
+if [[ "${argv[-1]}" == build* ]]; then
+ if [[ -f "$FAKE_SIM_LOG" ]]; then
+  wc -l < "$FAKE_SIM_LOG" > "$FAKE_SIM_LOG.setup-start"
+ else
+  print 0 > "$FAKE_SIM_LOG.setup-start"
+ fi
+fi
 if [[ "${argv[-1]}" == build-for-testing ]]; then
  if [[ "${FAKE_COMPILER_EVIDENCE:-}" != missing ]]; then
   print -r -- "SwiftDriver SnipSnap_iOS normal arm64 com.apple.xcode.tools.swift.compiler (in target 'SnipSnapiOS' from project 'SnipSnap')"
@@ -52,6 +64,16 @@ if [[ "${argv[-1]}" == build-for-testing ]]; then
  # A dependency's flags cannot prove whether the app is instrumented.
  print -r -- "SwiftDriver SnipSnapCore normal arm64 com.apple.xcode.tools.swift.compiler (in target 'SnipSnapCore' from project 'SnipSnapLibrary')"
  print -r -- '    builtin-SwiftDriver -- /toolchain/usr/bin/swiftc -module-name SnipSnapCore -profile-generate -profile-coverage-mapping -c /source/Core.swift'
+fi
+if [[ "${argv[-1]}" == test* ]]; then
+ setup_start="$(cat "$FAKE_SIM_LOG.setup-start")"
+ typeset -a setup_calls
+ setup_calls=("${(@f)$(tail -n +$((setup_start + 1)) "$FAKE_SIM_LOG")}")
+ (( ${#setup_calls} == 2 )) && \
+ [[ "${setup_calls[1]}" == 'simctl terminate TEST-SIM org.example.snipsnap.ios.dev1' && \
+    "${setup_calls[2]}" == 'simctl install TEST-SIM '* ]] || {
+  print -u2 'Tests must terminate and install the Dev app without an ordinary simctl launch'; exit 1
+ }
 fi
 if [[ "${argv[-1]}" == test* && "${FAKE_EXPECT_FIXTURE:-0}" == 1 ]]; then
  [[ -s "$FAKE_FIXTURE_PID_FILE" ]] && /bin/kill -0 "$(cat "$FAKE_FIXTURE_PID_FILE")" || {
@@ -108,11 +130,21 @@ if grep -E '(^| )CODE_SIGN_ENTITLEMENTS=' "$FAKE_BUILD_LOG" >/dev/null; then
  print -u2 'Global app entitlements would affect package targets'; exit 1
 fi
 grep -F 'SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS=' "$FAKE_BUILD_LOG" >/dev/null
-"$script_dir/run.sh" --ios-simulator --simulator-id TEST-SIM --unit-test IOSAppModelTests > "$test_dir/output"
+"$script_dir/run.sh" --ios-simulator --simulator-id TEST-SIM --unit-test IOSAppModelTests > "$test_dir/output" 2>&1 || {
+ cat "$test_dir/output" >&2; exit 1
+}
+grep -F 'Prepared Snip Snap iOS Dev 1 for testing' "$test_dir/output" >/dev/null
+if grep -F 'Opened Snip Snap' "$test_dir/output" >/dev/null; then
+ print -u2 'A test run claimed to open the ordinary app'; exit 1
+fi
 grep -F -- '-only-testing:SnipSnapiOSTests/IOSAppModelTests' "$FAKE_BUILD_LOG" >/dev/null
 if [[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *'-enableCodeCoverage NO'* ]]; then
  print -u2 'An ordinary test run disabled coverage'; exit 1
 fi
+"$script_dir/run.sh" --ios-simulator --unit-test all > "$test_dir/output" 2>&1
+[[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *'-only-testing:SnipSnapiOSTests test' ]] || {
+ print -u2 'The all-unit selector did not include every iOS unit suite'; exit 1
+}
 "$script_dir/run.sh" --ios-simulator --unit-test IOSAppModelTests --performance > "$test_dir/output" 2>&1 || {
  cat "$test_dir/output" >&2; exit 1
 }
@@ -196,6 +228,27 @@ if FAKE_WRONG_ID=1 "$script_dir/run.sh" --ios-simulator > "$test_dir/output" 2>&
  print -u2 'Accepted a build with the wrong bundle ID'; exit 1
 fi
 cmp "$test_dir/before" "$FAKE_SIM_LOG"
+for stage in terminate install launch; do
+ : > "$FAKE_SIM_LOG"
+ if FAKE_SIM_STALL_STAGE="$stage" SNIP_SNAP_SIMULATOR_SETUP_TIMEOUT_SECONDS=0.2 \
+  "$script_dir/run.sh" --ios-simulator > "$test_dir/output" 2>&1; then
+  print -u2 "A stalled simulator $stage succeeded"; exit 1
+ else
+  stage_status=$?
+ fi
+ [[ "$stage_status" == 124 ]] || { print -u2 "Simulator $stage lost timeout status"; exit 1; }
+ grep -F "Simulator $stage (timeout 0.2s). Log:" "$test_dir/output" >/dev/null
+ stage_log="$SNIP_SNAP_DEV_STATE_DIR/build/ios-slot-1/build-$stage.log"
+ grep -F "Waiting in simulator $stage" "$stage_log" >/dev/null
+ grep -F 'timed out after 0.2s' "$stage_log" >/dev/null
+ [[ "$(tail -n 1 "$FAKE_SIM_LOG")" == "simctl $stage "* ]] || {
+  print -u2 'Simulator setup continued after a timeout'; exit 1
+ }
+ [[ ! -e "$SNIP_SNAP_DEV_STATE_DIR/locks/ios-slot-1" ]] || {
+  print -u2 'Simulator timeout left the Dev slot locked'; exit 1
+ }
+done
+"$script_dir/owned-command-tests.sh"
 "$script_dir/run.sh" ios-simulator TEST-SIM > "$test_dir/output"
 if ! FAKE_EXPECT_FIXTURE=1 "$script_dir/run.sh" --ios-simulator --simulator-id TEST-SIM --ui-test all > "$test_dir/output" 2>&1; then
  cat "$test_dir/output" >&2

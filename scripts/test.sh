@@ -23,6 +23,7 @@ esac
 
 source "$script_dir/derived-data.sh"
 source "$script_dir/ios-bundle-check.sh"
+source "$script_dir/test-failure-evidence.sh"
 snip_snap_claim_derived_data
 trap snip_snap_cleanup_derived_data EXIT
 
@@ -35,13 +36,18 @@ if [[ "$run_common_tests" == YES ]]; then
     "$script_dir/testflight-policy-tests.sh"
     "$script_dir/testflight-tests.sh"
     "$script_dir/tracked-input-policy-tests.sh"
-    "$script_dir/tracked-input-policy.sh"
+    if [[ "${CI:-}" == true ]]; then
+        "$script_dir/tracked-input-policy.sh"
+    else
+        "$script_dir/tracked-input-policy.sh" --include-untracked
+    fi
     "$script_dir/showroom-delivery-tests.sh"
     "$script_dir/dev-slot-tests.sh"
     "$script_dir/build-tests.sh"
     "$script_dir/derived-data-tests.sh"
     "$script_dir/build-matrix-tests.sh"
     "$script_dir/test-runner-tests.sh"
+    "$script_dir/test-diagnostic-tests.sh"
     "$script_dir/release-matrix-tests-tests.sh"
     "$script_dir/cloud-dev-transport-contract-tests.sh"
     /usr/bin/ruby "$script_dir/cloudkit-schema-tests.rb"
@@ -71,9 +77,8 @@ if [[ "$run_mac_app_tests" == YES ]]; then
         :
     else
         test_status=$?
-        for result in "$mac_derived_data/Logs/Test/"*.xcresult(N); do
-            xcrun xcresulttool get test-results summary --path "$result" || true
-        done
+        snip_snap_preserve_test_failure "$mac_derived_data" mac || \
+            print -u2 'Could not preserve Mac test failure evidence.'
         exit "$test_status"
     fi
 elif [[ "$run_common_tests" == YES ]]; then
@@ -95,9 +100,8 @@ if [[ "$run_ios_app_tests" == YES ]]; then
         :
     else
         test_status=$?
-        for result in "$derived_data/ios/Logs/Test/"*.xcresult(N); do
-            xcrun xcresulttool get test-results summary --path "$result" || true
-        done
+        snip_snap_preserve_test_failure "$derived_data/ios" ios || \
+            print -u2 'Could not preserve iOS test failure evidence.'
         exit "$test_status"
     fi
 

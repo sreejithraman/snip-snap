@@ -35,7 +35,11 @@ module ReleaseNotes
     git(repo, 'log', '--first-parent', '--reverse', '--format=%H', range).lines.map(&:strip).each do |sha|
       paths = git(repo, 'diff-tree', '--root', '--first-parent', '-m', '--no-commit-id', '--name-only', '-r', sha).lines.map(&:strip)
       title = git(repo, 'show', '-s', '--format=%s', sha).sub(/\s*\(#\d+\)\z/, '')
-      platforms_for(paths, title).each { |platform| changes.fetch(platform) << title }
+      platforms = platforms_for(paths, title)
+      next if platforms.empty?
+      note = note_for(repo, sha, title)
+      next unless note
+      platforms.each { |platform| changes.fetch(platform) << note }
     end
     heading = "Snip Snap #{version}#{channel == 'beta' ? " Beta #{build}" : ''}"
     result = {}
@@ -52,6 +56,22 @@ module ReleaseNotes
       "## #{label}\n\n#{body}"
     end.join("\n")
     result
+  end
+
+  def self.note_for(repo, sha, title)
+    # A commit trailer supplies user-facing copy without changing its engineering title.
+    authored = git(repo, 'show', '-s', '--format=%(trailers:key=Release-Note,valueonly,unfold=true)', sha).lines.map(&:strip)
+    raise "Commit #{sha} has more than one Release-Note trailer" if authored.length > 1
+    return nil if authored.first&.casecmp('none') == 0
+    return authored.first unless authored.empty?
+    internal_title?(title) ? nil : title
+  end
+
+  def self.internal_title?(title)
+    title.match?(/\ARevert\b/i) ||
+      title.match?(/\A(?:Set|Bump|Update|Prepare|Publish) Snip Snap \d+\.\d+\.\d+\b/i) ||
+      title.match?(/\A(?:Bump|Set|Update) (?:the )?(?:(?:marketing|release) )?version(?: to)? v?\d+\.\d+\.\d+\b/i) ||
+      title.match?(/\A(?:build|chore|ci|docs|refactor|style|test)(?:\([^)]*\))?!?:/i)
   end
 
   def self.platforms_for(paths, title)

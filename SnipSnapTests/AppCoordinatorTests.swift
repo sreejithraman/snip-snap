@@ -584,6 +584,8 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         let importer = StandaloneFileImporter.makePanel()
         var panelCompletion: ((NSApplication.ModalResponse) -> Void)?
         var importedURLs: [URL]?
+        var keyTransitions: [String] = []
+        let importFinished = expectation(description: "File picker completion handled")
         let model = AppModel(
             library: try JSONSnipLibrary(fileURL: storeURL()),
             defaults: defaults
@@ -610,17 +612,21 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             object: pickerFocusWindow
         ) { _ in
             MainActor.assumeIsolated {
-                // Check the transition before an async yield lets another app take focus.
-                XCTAssertTrue(pickerFocusWindow.isKeyWindow)
+                keyTransitions.append("picker")
                 return true
             }
         }
-        XCTAssertTrue(coordinator.presentOpenPanel(importer) { importedURLs = $0 })
+        XCTAssertTrue(coordinator.presentOpenPanel(importer) {
+            importedURLs = $0
+            importFinished.fulfill()
+        })
         await fulfillment(of: [pickerBecameKey], timeout: 2)
 
+        // Native key transitions are the contract; desktop focus may move again
+        // before XCTest resumes or while AppKit delivers the notification.
+        XCTAssertEqual(keyTransitions, ["picker"])
         XCTAssertTrue(coordinator.panelDialogs.isPresented)
         XCTAssertFalse(parent.canBecomeKey)
-        XCTAssertFalse(parent.isKeyWindow)
         XCTAssertEqual(parent.alphaValue, 0.45, accuracy: 0.001)
         XCTAssertEqual(importer.appearance?.name, .aqua)
         XCTAssertNil(parent.childWindows?.first)
@@ -632,13 +638,15 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             object: parent
         ) { _ in
             MainActor.assumeIsolated {
-                XCTAssertTrue(parent.isKeyWindow)
+                keyTransitions.append("parent")
                 return true
             }
         }
+        pickerFocusWindow.orderOut(nil)
         panelCompletion?(.cancel)
-        await fulfillment(of: [parentRegainedKey], timeout: 2)
+        await fulfillment(of: [parentRegainedKey, importFinished], timeout: 2)
 
+        XCTAssertEqual(keyTransitions, ["picker", "parent"])
         XCTAssertFalse(coordinator.panelDialogs.isPresented)
         XCTAssertTrue(parent.canBecomeKey)
         XCTAssertEqual(parent.alphaValue, 1, accuracy: 0.001)

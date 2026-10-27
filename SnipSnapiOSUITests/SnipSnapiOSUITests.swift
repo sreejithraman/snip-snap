@@ -1653,7 +1653,9 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         createSnip("Compact interaction fixture", in: app)
         let snipRow = row(named: "Compact interaction fixture", in: app)
-        snipRow.tap()
+        try visibleTouchCenter(
+            of: snipRow, clippedTo: app.collectionViews.firstMatch.frame, in: app
+        ).tap()
         XCTAssertFalse(snipRow.isSelected)
     }
 
@@ -1780,18 +1782,29 @@ final class SnipSnapiOSUITests: XCTestCase {
         continueAfterFailure = false
         let app = launchApp(withClipboardEntry: true)
         try requireCompactSelector(in: app)
-        app.buttons["clipboard-tab"].tap()
+        let selector = app.descendants(matching: .any)["list-selector"]
+        let clipboard = app.buttons["clipboard-tab"]
+        XCTAssertGreaterThanOrEqual(clipboard.frame.minX, selector.frame.minX - 1)
+        XCTAssertLessThanOrEqual(clipboard.frame.maxX, selector.frame.maxX + 1)
+        try visibleTouchCenter(of: clipboard, clippedTo: selector.frame, in: app).tap()
 
         let entry = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier BEGINSWITH %@", "clipboard-entry-")
         ).firstMatch
         XCTAssertTrue(entry.waitForExistence(timeout: 5))
-        entry.press(forDuration: 1)
+        try visibleTouchCenter(
+            of: entry, clippedTo: app.collectionViews.firstMatch.frame, in: app
+        ).press(forDuration: 1)
         app.buttons["Pin"].tap()
         XCTAssertEqual(entry.value as? String, "Pinned")
-        entry.press(forDuration: 1)
+        try visibleTouchCenter(
+            of: entry, clippedTo: app.collectionViews.firstMatch.frame, in: app
+        ).press(forDuration: 1)
         app.buttons["Unpin"].tap()
-        entry.press(forDuration: 1)
+        XCTAssertNotEqual(entry.value as? String, "Pinned")
+        try visibleTouchCenter(
+            of: entry, clippedTo: app.collectionViews.firstMatch.frame, in: app
+        ).press(forDuration: 1)
         app.buttons["Delete"].tap()
         XCTAssertTrue(entry.waitForNonExistence(timeout: 3))
     }
@@ -4419,6 +4432,28 @@ final class SnipSnapiOSUITests: XCTestCase {
         guard app.keyboards.firstMatch.exists else { return }
         app.swipeDown()
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
+    }
+
+    // Synthetic SwiftUI accessibility containers can lack an AX hit point even when touch works.
+    private func visibleTouchCenter(
+        of element: XCUIElement,
+        clippedTo bounds: CGRect,
+        in app: XCUIApplication,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> XCUICoordinate {
+        XCTAssertTrue(element.waitForExistence(timeout: 3), file: file, line: line)
+        XCTAssertTrue(element.isEnabled, file: file, line: line)
+        let visibleFrame = element.frame.intersection(bounds).intersection(app.frame)
+        let point = try XCTUnwrap(
+            visibleFrame.isNull || visibleFrame.isEmpty
+                ? nil : CGPoint(x: visibleFrame.midX, y: visibleFrame.midY),
+            "The intended touch target must intersect its visible container.",
+            file: file, line: line
+        )
+        return app.coordinate(withNormalizedOffset: .zero).withOffset(
+            CGVector(dx: point.x - app.frame.minX, dy: point.y - app.frame.minY)
+        )
     }
 
     private func waitForHittable(

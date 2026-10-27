@@ -127,7 +127,7 @@ done
 [[ "$(/usr/bin/grep -Fc -- 'CODE_SIGNING_ALLOWED=NO' "$args_file")" == 4 ]] || \
     fail_test "one or more package or app-action tests allowed signing"
 
-/usr/bin/grep -F -- 'run: ./scripts/test.sh --ios-only' \
+/usr/bin/grep -F -- './scripts/test.sh --ios-only' \
     "$script_dir/../.github/workflows/ci.yml" >/dev/null || \
     fail_test "CI does not run iOS tests and bundle checks"
 

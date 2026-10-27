@@ -96,4 +96,21 @@ for key_prefix in PRIVATE 'OPENSSH PRIVATE' 'DSA PRIVATE'; do
     fi
 done
 
+candidate_repo="$(new_repo candidates)"
+print -r -- "$home_value" > "$candidate_repo/new-source.swift"
+print -r -- 'local-state/' > "$candidate_repo/.gitignore"
+/bin/mkdir "$candidate_repo/local-state"
+print -r -- "$home_value" > "$candidate_repo/local-state/settings.txt"
+"$script_dir/tracked-input-policy.sh" "$candidate_repo" >/dev/null || \
+    fail_test "default mode included untracked files"
+if output="$("$script_dir/tracked-input-policy.sh" --include-untracked "$candidate_repo" 2>&1)"; then
+    fail_test "candidate mode accepted an untracked personal path"
+fi
+[[ "$output" == *'new-source.swift:1 contains a forbidden personal home path'* ]] || \
+    fail_test "candidate mode did not identify the offending source"
+[[ "$output" != *sample-person* ]] || fail_test "candidate mode exposed its value"
+/bin/rm "$candidate_repo/new-source.swift"
+"$script_dir/tracked-input-policy.sh" --include-untracked "$candidate_repo" >/dev/null || \
+    fail_test "candidate mode included ignored local state"
+
 print "Tracked-input policy checks passed."

@@ -2,6 +2,7 @@ import XCTest
 import SnipSnapCore
 import Foundation
 import AppKit
+import Combine
 import UniformTypeIdentifiers
 @testable import SnipSnap
 @testable import SnipSnapPersistence
@@ -396,6 +397,73 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertTrue(model.snips.isEmpty)
         XCTAssertTrue(model.selection.isEmpty)
         XCTAssertEqual(model.recoverySnapshot.promotedSnips, [recovered])
+    }
+
+    @MainActor
+    func testRefreshingTheSameCloudScopeKeepsTheInlineEditorMounted() async {
+        let snip = Snip(content: "Saved text", origin: .quickEntry)
+        let scope = SnipRecoveryScope("account-a-generation-a")
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [snip]), defaults: defaults(),
+            recoveryScope: scope
+        )
+        await model.waitForInitialLoad()
+        let beganEditing = await model.beginEditing(snip.id)
+        XCTAssertTrue(beganEditing)
+        var editorChanges: [UUID?] = []
+        let observation = model.$editingID.dropFirst().sink { editorChanges.append($0) }
+        defer { observation.cancel() }
+        let refreshedLibrary = InMemorySnipLibrary(snips: [snip])
+
+        await model.replaceLibrary(refreshedLibrary, recoveryScope: scope)
+
+        XCTAssertEqual(model.editingID, snip.id)
+        XCTAssertTrue(editorChanges.isEmpty, "Remounting the editor discards its unsaved text and attachments.")
+        let saved = await model.update(id: snip.id, content: "Unsaved text kept by the editor")
+        XCTAssertTrue(saved)
+        let refreshed = await refreshedLibrary.snapshot(sortedBy: .chronological)
+        XCTAssertEqual(refreshed.snips.first?.content, "Unsaved text kept by the editor")
+    }
+
+    @MainActor
+    func testReplacingCloudScopeClosesTheEditorEvenWhenTheSnipIDMatches() async {
+        let snip = Snip(content: "Account A", origin: .quickEntry)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [snip]), defaults: defaults(),
+            recoveryScope: SnipRecoveryScope("account-a-generation-a")
+        )
+        await model.waitForInitialLoad()
+        let replacementScopes: [SnipRecoveryScope?] = [
+            SnipRecoveryScope("account-a-generation-b"),
+            SnipRecoveryScope("account-b-generation-a"),
+            nil
+        ]
+        for scope in replacementScopes {
+            let beganEditing = await model.beginEditing(snip.id)
+            XCTAssertTrue(beganEditing)
+
+            await model.replaceLibrary(InMemorySnipLibrary(snips: [snip]), recoveryScope: scope)
+
+            XCTAssertNil(model.editingID)
+        }
+    }
+
+    @MainActor
+    func testRefreshingCloudScopeClosesAnEditorWhoseSnipWasDeleted() async {
+        let snip = Snip(content: "Deleted remotely", origin: .quickEntry)
+        let scope = SnipRecoveryScope("account-a-generation-a")
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [snip]), defaults: defaults(),
+            recoveryScope: scope
+        )
+        await model.waitForInitialLoad()
+        let beganEditing = await model.beginEditing(snip.id)
+        XCTAssertTrue(beganEditing)
+
+        await model.replaceLibrary(InMemorySnipLibrary(snips: []), recoveryScope: scope)
+
+        XCTAssertNil(model.editingID)
+        XCTAssertTrue(model.snips.isEmpty)
     }
 
     @MainActor

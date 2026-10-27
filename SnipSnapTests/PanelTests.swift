@@ -1,6 +1,7 @@
 import XCTest
 import SnipSnapCore
 import AppKit
+import Combine
 import SwiftUI
 @testable import SnipSnap
 @testable import SnipSnapPersistence
@@ -92,7 +93,190 @@ private final class PanelTextValue {
     }
 }
 
+@MainActor
+private final class RefreshedEditorProbe: ObservableObject {
+    let listID: UUID
+    @Published var attachments: [URL] = []
+    @Published var isSaving = false
+    @Published var savedText: String?
+    var savedAttachmentData: [Data] = []
+    var errorMessage: String?
+
+    init(listID: UUID) {
+        self.listID = listID
+    }
+}
+
+private struct RefreshedEditorTestView: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var probe: RefreshedEditorProbe
+
+    var body: some View {
+        let snapshot = model.snipListSnapshot(in: probe.listID)
+        VStack {
+            ForEach(snapshot.groups) { group in
+                VStack {
+                    ForEach(group.snips) { snip in
+                        SnipCardRow(
+                            snip: snip, appearance: SnipList.inbox.accent,
+                            isRecovered: false, isSelected: false,
+                            isEditing: model.editingID == snip.id,
+                            commandNumber: nil, onPickCommandNumber: {},
+                            editAttachments: $probe.attachments, isSaving: $probe.isSaving,
+                            attachmentURL: model.attachmentURL,
+                            onPreviewSavedAttachments: { _, _ in },
+                            onPreviewLocalAttachments: { _, _ in },
+                            onRemovePreviewURL: { _ in }, onSelect: {},
+                            onSelectForExpansion: { _ in false }, onOpen: {},
+                            onToggleDone: {}, onCopy: { false }, onChooseFiles: {},
+                            onCaptureScreenArea: { _ in },
+                            onCancelEdit: { model.editingID = nil },
+                            onSaveEdit: { text, attachments in
+                                do {
+                                    probe.savedAttachmentData = try attachments.map { try Data(contentsOf: $0) }
+                                    probe.savedText = text
+                                    model.editingID = nil
+                                    return true
+                                } catch {
+                                    probe.errorMessage = error.localizedDescription
+                                    return false
+                                }
+                            },
+                            onEditError: { probe.errorMessage = $0 }
+                        )
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private enum EditorRefreshChange {
+    case done, moved, removedSearchMatch, deletedList
+}
+
 final class PanelTests: StoreBackedTestCase {
+    @MainActor
+    func testSameScopeDoneRefreshKeepsEditorDraftAndTemporaryAttachmentReachable() async throws {
+        try await assertEditorSurvivesRefresh(.done)
+    }
+
+    @MainActor
+    func testSameScopeMoveRefreshKeepsEditorDraftAndTemporaryAttachmentReachable() async throws {
+        try await assertEditorSurvivesRefresh(.moved)
+    }
+
+    @MainActor
+    func testSameScopeSearchRefreshKeepsEditorDraftAndTemporaryAttachmentReachable() async throws {
+        try await assertEditorSurvivesRefresh(.removedSearchMatch)
+    }
+
+    @MainActor
+    func testSameScopeDeletedListRefreshKeepsEditorDraftAndTemporaryAttachmentReachable() async throws {
+        try await assertEditorSurvivesRefresh(.deletedList)
+    }
+
+    @MainActor
+    private func assertEditorSurvivesRefresh(_ change: EditorRefreshChange) async throws {
+        let list = SnipList(id: UUID(), name: "Work", systemImage: "folder", position: 1)
+        let snip = Snip(content: "Original search match", origin: .quickEntry, listID: list.id)
+        let scope = SnipRecoveryScope("editor-refresh-account-generation")
+        let defaultsName = "SnipSnapEditorRefresh-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [snip], lists: [.inbox, list]),
+            defaults: defaults, recoveryScope: scope
+        )
+        await model.waitForInitialLoad()
+        model.selectList(list)
+        if change == .removedSearchMatch {
+            model.enterSearch()
+            model.query = "search match"
+        } else {
+            model.completionFilter = .notDone
+        }
+        let opened = await model.beginEditing(snip.id)
+        XCTAssertTrue(opened)
+        let probe = RefreshedEditorProbe(listID: list.id)
+        let host = NSHostingView(rootView: RefreshedEditorTestView(model: model, probe: probe))
+        let window = SnipSnapPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 640),
+            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false
+        )
+        window.becomesKeyOnlyIfNeeded = false
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer {
+            window.makeFirstResponder(nil)
+            window.orderOut(nil)
+            processLifetimePanelSearchWindows.append(window)
+            for url in probe.attachments { try? FileManager.default.removeItem(at: url) }
+        }
+        let editor = try XCTUnwrap(waitForTextField(in: host, placeholder: "Snip text"))
+        XCTAssertTrue(window.makeFirstResponder(editor))
+        let fieldEditor = try XCTUnwrap(window.firstResponder as? NSTextView)
+        let draft = "Unsaved editor draft"
+        fieldEditor.insertText(draft, replacementRange: NSRange(location: 0, length: fieldEditor.string.utf16.count))
+        let pasted = String(repeating: "attachment", count: 300)
+        let staged = expectation(description: "Large insertion staged as an editor attachment")
+        let stagingObservation = probe.$attachments.first(where: { !$0.isEmpty }).sink { _ in staged.fulfill() }
+        defer { stagingObservation.cancel() }
+        fieldEditor.insertText(pasted, replacementRange: NSRange(location: draft.utf16.count, length: 0))
+        await fulfillment(of: [staged], timeout: 2)
+        host.layoutSubtreeIfNeeded()
+        let temporaryAttachment = try XCTUnwrap(probe.attachments.first)
+        XCTAssertEqual(try Data(contentsOf: temporaryAttachment), Data(pasted.utf8))
+        XCTAssertEqual(editor.stringValue, draft)
+        let originalGroup = try XCTUnwrap(model.snipListSnapshot(in: list.id).groups.first)
+        var remote = snip
+        var remoteLists: [SnipList] = [.inbox, list]
+        switch change {
+        case .done: remote.isDone = true
+        case .moved: remote.listID = SnipList.inboxID
+        case .removedSearchMatch: remote.content = "Unrelated replacement text"
+        case .deletedList:
+            remote.listID = SnipList.inboxID
+            remoteLists = [.inbox]
+        }
+
+        await model.replaceLibrary(InMemorySnipLibrary(snips: [remote], lists: remoteLists), recoveryScope: scope)
+        await Task.yield()
+        host.layoutSubtreeIfNeeded()
+        host.displayIfNeeded()
+
+        let refreshedGroup = try XCTUnwrap(model.snipListSnapshot(in: list.id).groups.first)
+        XCTAssertEqual(refreshedGroup.id, originalGroup.id)
+        XCTAssertEqual(refreshedGroup.snips.map(\.id), [snip.id])
+        XCTAssertEqual(model.snips, [remote], "Presentation must not rewrite the refreshed record.")
+        XCTAssertEqual(model.activeListID, list.id)
+        XCTAssertTrue(PanelTabPage.ordered(lists: model.displayedLists).contains(.list(list.id)))
+        XCTAssertTrue(findTextField(in: host, placeholder: "Snip text") === editor)
+        XCTAssertEqual(editor.stringValue, draft)
+        XCTAssertEqual(probe.attachments, [temporaryAttachment])
+        XCTAssertEqual(try Data(contentsOf: temporaryAttachment), Data(pasted.utf8))
+        let save = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "s",
+            charactersIgnoringModifiers: "s", isARepeat: false, keyCode: 1
+        ))
+        let saved = expectation(description: "Visible editor saves its draft and attachments")
+        let saveObservation = probe.$savedText.first(where: { $0 != nil }).sink { _ in saved.fulfill() }
+        defer { saveObservation.cancel() }
+        XCTAssertTrue(host.performKeyEquivalent(with: save), "Save must remain reachable on the mounted editor.")
+        await fulfillment(of: [saved], timeout: 2)
+        XCTAssertEqual(probe.savedText, draft)
+        XCTAssertEqual(probe.savedAttachmentData, [Data(pasted.utf8)])
+        XCTAssertNil(probe.errorMessage)
+        XCTAssertNil(model.editingID)
+        XCTAssertFalse(model.filteredSnips(in: list.id).contains(where: { $0.id == snip.id }))
+        if change == .deletedList {
+            XCTAssertEqual(model.activeListID, SnipList.inboxID)
+            XCTAssertFalse(model.displayedLists.contains(where: { $0.id == list.id }))
+        }
+    }
+
     func testUnsupportedListIconKeepsItsSavedChoiceAndVisibleIdentity() {
         let savedSymbol = "snipsnap.future-symbol"
         let list = SnipList(id: UUID(), name: "Future", systemImage: savedSymbol, position: 1)

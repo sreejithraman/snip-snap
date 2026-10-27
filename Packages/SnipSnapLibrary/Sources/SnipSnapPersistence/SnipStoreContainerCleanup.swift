@@ -1,11 +1,10 @@
-import SwiftData
 import Synchronization
 
 /// Closing a SwiftData container can checkpoint SQLite even after its last read.
 enum SnipStoreContainerCleanup {
-  private static let pending = Mutex<[ModelContainer]>([])
+  private static let pending = Mutex<[any AnyObject & Sendable]>([])
 
-  static func release(_ container: inout ModelContainer?) {
+  static func release<Resource: AnyObject & Sendable>(_ container: inout Resource?) {
     guard container != nil else { return }
     do {
       let activity = try SnipStoreBackgroundActivity.begin()

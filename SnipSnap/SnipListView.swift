@@ -63,7 +63,7 @@ struct SnipListView: View {
     }
 
     private var displayedList: SnipList {
-        model.lists.first(where: { $0.id == displayedListID }) ?? .inbox
+        model.displayedLists.first(where: { $0.id == displayedListID }) ?? .inbox
     }
 
     private var snipCommands: SnipCommandDispatcher {
@@ -71,14 +71,7 @@ struct SnipListView: View {
     }
 
     var body: some View {
-        let snapshot = SnipListSnapshot(
-            visibleSnips: model.filteredSnips(in: displayedListID),
-            allSnips: model.snips,
-            lists: model.lists,
-            selection: model.selection,
-            keepsEmptyListID: model.hasActiveQuery ? nil : displayedListID,
-            attachmentURL: model.attachmentURL
-        )
+        let snapshot = model.snipListSnapshot(in: displayedListID)
         let showsSearchLists = model.hasActiveQuery
         let showsActiveListHeader = !showsSearchLists
             && (clipboardEntries.isEmpty || !snapshot.orderedVisibleIDs.isEmpty)
