@@ -1,0 +1,9 @@
+# Snip Snap 0.6.1 Beta 166
+
+## Mac
+
+- Prevent sync contention errors and recover queued Share imports
+
+## iOS
+
+- Prevent sync contention errors and recover queued Share imports
