@@ -775,7 +775,7 @@ final class IOSAppModel {
             scheduleCloudSync()
             return true
         } catch {
-            presentError(error)
+            presentError(error, operation: "recovery.resolve")
             await loadUnlocked()
             return false
     }
@@ -1159,7 +1159,7 @@ final class IOSAppModel {
             scheduleCloudSync()
         } catch {
             haptics.emit(.error, for: feedbackInteraction)
-            presentError(error)
+            presentError(error, operation: "snip.undo_delete")
         }
     }
 
@@ -1184,7 +1184,7 @@ final class IOSAppModel {
             scheduleCloudSync()
             return true
         } catch {
-            presentError(error)
+            presentError(error, operation: "snip.delete")
             haptics.emit(.error, for: feedbackInteraction)
             return false
         }
@@ -1226,7 +1226,7 @@ final class IOSAppModel {
             scheduleCloudSync()
             return true
         } catch {
-            presentError(error)
+            presentError(error, operation: command.diagnosticOperation)
             haptics.emit(.error, for: feedbackInteraction)
             return false
         }

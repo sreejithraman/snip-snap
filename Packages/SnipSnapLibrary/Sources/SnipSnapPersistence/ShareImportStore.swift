@@ -223,22 +223,25 @@ public actor ShareImportStore {
     var failed = 0
     var cleanupFailures = 0
     for directory in readyDirectories() {
+      var operation: StaticString = "share.import_read"
       do {
         let request = try readRequest(in: directory)
+        let attachmentURLs = try request.attachments.map {
+          try paths.attachmentURL($0, in: directory)
+        }
         let snapshot = await library.snapshot(sortedBy: .chronological)
         let destinationID = SnipShareDestination.resolve(
           rememberedListID: request.destinationListID,
           in: snapshot.lists
         )
+        operation = "share.import_apply"
         let update = try await library.perform(
           .add(
             content: request.content,
             origin: .share,
             source: request.source,
             listID: destinationID,
-            attachmentURLs: try request.attachments.map {
-              try paths.attachmentURL($0, in: directory)
-            },
+            attachmentURLs: attachmentURLs,
             requestID: request.requestID,
             now: request.createdAt
           ),
@@ -252,9 +255,13 @@ public actor ShareImportStore {
           try FileManager.default.removeItem(at: directory)
           try DurableFile.syncDirectory(paths.pendingRootURL)
         } catch {
+          diagnostics.record(.failure(
+            operation: "share.import_cleanup", error: error, visibility: .background
+          ))
           cleanupFailures += 1
         }
       } catch {
+        diagnostics.record(.failure(operation: operation, error: error, visibility: .background))
         failed += 1
       }
     }

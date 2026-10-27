@@ -80,7 +80,8 @@ final class IOSAppSession {
         cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
         haptics: IOSHapticFeedback = IOSHapticFeedback(),
         clipboardRootURL: URL? = nil,
-        clipboardContainerIdentifier: String? = nil
+        clipboardContainerIdentifier: String? = nil,
+        diagnostics: AppDiagnosticRecorder = .live
     ) {
         let shareDestinationPublisher = shareImports.map {
             ShareListCatalogPublisher(imports: $0)
@@ -94,6 +95,7 @@ final class IOSAppSession {
             startupError: startupError,
             cloudSyncHandler: cloudSyncHandler,
             haptics: haptics,
+            diagnostics: diagnostics,
             publishShareDestinations: shareDestinationPublisher.map { publisher in
                 { lists in
                     publisher.enqueue(lists)
@@ -109,7 +111,8 @@ final class IOSAppSession {
             generation: {
                 guard let cloudSyncSession else { return nil }
                 return try await cloudSyncSession.iosActiveLibrary().recoveryScope?.rawValue
-            }
+            },
+            diagnostics: diagnostics
         )
         self.clipboard = clipboard
         self.syncedContentSettings = syncedContentSettings
@@ -122,10 +125,14 @@ final class IOSAppSession {
                     return ShareImportSummary(imported: 0, failed: 0)
                 }
                 if let cloudSyncSession {
-                    guard let active = try? await cloudSyncSession.iosActiveLibrary() else {
+                    do {
+                        let active = try await cloudSyncSession.iosActiveLibrary()
+                        return await imports.importPending(into: active.library)
+                    } catch {
+                        diagnostics.record(.failure(
+                            operation: "share.import_library", error: error, visibility: .background))
                         return ShareImportSummary(imported: 0, failed: 1)
                     }
-                    return await imports.importPending(into: active.library)
                 }
                 return await imports.importPending(into: library)
             }
@@ -399,7 +406,7 @@ final class IOSShareImportCoordinator {
     private let model: IOSAppModel
     private let importOperation: @Sendable () async -> ShareImportSummary
     private let syncOperation: @MainActor @Sendable () async throws -> Void
-    private var inFlight: Task<Int, Never>?
+    private var inFlight: Task<Void, Never>?
     private var needsTrailingPass = false
 
     init(
@@ -415,20 +422,20 @@ final class IOSShareImportCoordinator {
     func importPendingAndReload() async {
         if let inFlight {
             needsTrailingPass = true
-            _ = await inFlight.value
+            await inFlight.value
             return
         }
         let task = Task { [self] in
+            defer { inFlight = nil }
             var importFailures = 0
             repeat {
                 needsTrailingPass = false
-                importFailures += await runPass()
+                importFailures = await runPass()
             } while needsTrailingPass
-            inFlight = nil
-            return importFailures
+            report(importFailures)
         }
         inFlight = task
-        report(await task.value)
+        await task.value
     }
 
     private func runPass() async -> Int {

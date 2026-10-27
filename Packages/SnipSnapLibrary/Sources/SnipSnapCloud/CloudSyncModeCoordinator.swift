@@ -616,7 +616,8 @@ package actor ICloudSyncModeCoordinator {
         }
 
         if initial.transition == nil, choice == .refreshThenCopy {
-            let lease = try await persistence.activeCloudMutationLease(storeID: initial.activeStore.id)
+            let lease = try await persistence.activeCloudMutationLease(
+                storeID: initial.activeStore.id, purpose: .modeChange)
             let activeBridge = try await adapter(storeID: initial.activeStore.id)
             do {
                 let evidence = try await lease.run {
@@ -722,7 +723,7 @@ package actor ICloudSyncModeCoordinator {
 
     private func preserveAttachmentsForLocalCopy(storeID: UUID) async throws {
         guard payloadZone != nil else { return }
-        let lease = try await persistence.activeCloudMutationLease(storeID: storeID)
+        let lease = try await persistence.activeCloudMutationLease(storeID: storeID, purpose: .modeChange)
         try await lease.run {
             _ = try await self.preserveIsolatedAttachmentsForLocalCopy(storeID: storeID)
         }

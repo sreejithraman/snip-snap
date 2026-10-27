@@ -312,6 +312,15 @@ time ranges and any omitted events. They include the running app version, build,
 and OS context, and preserve the version associated with older events. Reports
 include timestamps, fixed operation and outcome codes, stable error codes,
 counts and other bounded numeric fields, and version fields.
+Queued Share imports record underlying errors with `share.import_library`,
+`share.import_read`, `share.import_apply`, or `share.import_cleanup`. Cleanup
+failures are separate from save failures; a retained request can replay without
+duplicating the snip. These events exclude shared text, paths, and request IDs.
+
+Saved-snip and list failures identify the action, such as `snip.add` or
+`list.update`. Separate `library.write_admission` events use a fixed
+`write_reason` to distinguish waiting for sync from rejection by another write,
+a mode change, an iCloud data reset, or a reserved interrupted write.
 Attachment stages and older attachment log entries are included until the size
 limit evicts old events. It contains no snip content, filenames, file paths,
 account identifiers, CloudKit record IDs, or hashes.

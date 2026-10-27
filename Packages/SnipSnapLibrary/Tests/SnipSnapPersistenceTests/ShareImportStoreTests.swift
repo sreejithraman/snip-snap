@@ -6,6 +6,93 @@ import Synchronization
 import XCTest
 
 final class ShareImportStoreTests: XCTestCase {
+  func testFailedPendingImportRecordsUnderlyingWriteErrorAndRetriesOnce() async throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let imports = ShareImportStore(
+      sharedRootURL: root,
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } }
+    )
+    let request = ShareImportRequest(
+      content: "Private shared text", destinationListID: SnipList.inboxID
+    )
+    _ = try await imports.save(request)
+    let storeURL = ShareImportStore.storeURL(in: root)
+    let failed = await imports.importPending(into: SwiftDataSnipLibrary.unavailable(storeURL: storeURL))
+
+    XCTAssertEqual(failed, ShareImportSummary(imported: 0, failed: 1))
+    let pendingAfterFailure = await imports.pendingImportCount()
+    XCTAssertEqual(pendingAfterFailure, 1)
+    let recorded = events.withLock { $0 }
+    XCTAssertEqual(recorded.count, 1)
+    XCTAssertEqual(recorded.first?.operation, "share.import_apply")
+    XCTAssertEqual(recorded.first?.errorCode, "library.storeUnavailable")
+    XCTAssertEqual(recorded.first?.visibility, .background)
+    let lines = recorded.map(\.line).joined()
+    for privateValue in [request.content, request.requestID.uuidString, root.path] {
+      XCTAssertFalse(lines.contains(privateValue))
+    }
+
+    let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let retried = await imports.importPending(into: library)
+    let repeated = await imports.importPending(into: library)
+    XCTAssertEqual(retried, ShareImportSummary(imported: 1, failed: 0))
+    XCTAssertEqual(repeated, ShareImportSummary(imported: 0, failed: 0))
+    let pendingAfterRetry = await imports.pendingImportCount()
+    XCTAssertEqual(pendingAfterRetry, 0)
+    let saved = await library.snapshot(sortedBy: .chronological)
+    XCTAssertEqual(saved.snips.map(\.requestID), [request.requestID])
+    XCTAssertEqual(saved.snips.map(\.content), [request.content])
+    XCTAssertEqual(events.withLock { $0 }, recorded)
+  }
+
+  func testUnreadablePendingImportRecordsReadFailureAndPreservesRequestForRetry() async throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let imports = ShareImportStore(
+      sharedRootURL: root,
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } }
+    )
+    let request = ShareImportRequest(
+      content: "Private shared text", destinationListID: SnipList.inboxID
+    )
+    _ = try await imports.save(request)
+    let metadata = root.appendingPathComponent(
+      "Share/PendingImports/\(request.requestID.uuidString).ready/import.json"
+    )
+    let original = try Data(contentsOf: metadata)
+    let corrupt = Data("{\"content\":\"\(request.content) \(request.requestID) \(root.path)".utf8)
+    try corrupt.write(to: metadata)
+    let library = try SwiftDataSnipLibrary(storeURL: ShareImportStore.storeURL(in: root))
+
+    let failed = await imports.importPending(into: library)
+
+    XCTAssertEqual(failed, ShareImportSummary(imported: 0, failed: 1))
+    XCTAssertEqual(try Data(contentsOf: metadata), corrupt)
+    let pendingAfterFailure = await imports.pendingImportCount()
+    XCTAssertEqual(pendingAfterFailure, 1)
+    let recorded = events.withLock { $0 }
+    XCTAssertEqual(recorded.count, 1)
+    XCTAssertEqual(recorded.first?.operation, "share.import_read")
+    XCTAssertEqual(recorded.first?.errorCode, "other.UnknownError")
+    XCTAssertEqual(recorded.first?.visibility, .background)
+    let lines = recorded.map(\.line).joined()
+    for privateValue in [request.content, request.requestID.uuidString, root.path] {
+      XCTAssertFalse(lines.contains(privateValue))
+    }
+
+    try original.write(to: metadata)
+    let retried = await imports.importPending(into: library)
+    let repeated = await imports.importPending(into: library)
+    XCTAssertEqual(retried, ShareImportSummary(imported: 1, failed: 0))
+    XCTAssertEqual(repeated, ShareImportSummary(imported: 0, failed: 0))
+    let saved = await library.snapshot(sortedBy: .chronological)
+    XCTAssertEqual(saved.snips.map(\.requestID), [request.requestID])
+    XCTAssertEqual(events.withLock { $0 }, recorded)
+  }
+
   func testPendingShareWaitsForStoreMigrationThenImportsOnceAcrossRelaunch() async throws {
     let root = try makeRoot()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -577,8 +664,10 @@ final class ShareImportStoreTests: XCTestCase {
     XCTAssertEqual(published, .pending(requestID: request.requestID))
 
     let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let events = Mutex<[AppDiagnosticEvent]>([])
     let interrupted = ShareImportStore(
       sharedRootURL: root,
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } },
       afterPendingSaveBeforeCleanup: { throw SimulatedCrash() }
     )
     let interruptedImport = await interrupted.importPending(into: library)
@@ -590,6 +679,15 @@ final class ShareImportStoreTests: XCTestCase {
     XCTAssertEqual(interruptedSnapshot.snips.count, 1)
     let pendingAfterCrash = await interrupted.pendingImportCount()
     XCTAssertEqual(pendingAfterCrash, 1)
+    let recorded = events.withLock { $0 }
+    XCTAssertEqual(recorded.count, 1)
+    XCTAssertEqual(recorded.first?.operation, "share.import_cleanup")
+    XCTAssertEqual(recorded.first?.errorCode, "other.UnknownError")
+    XCTAssertEqual(recorded.first?.visibility, .background)
+    let lines = recorded.map(\.line).joined()
+    for privateValue in [request.content, request.requestID.uuidString, root.path] {
+      XCTAssertFalse(lines.contains(privateValue))
+    }
 
     let resumed = ShareImportStore(sharedRootURL: root)
     let resumedImport = await resumed.importPending(into: library)

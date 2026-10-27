@@ -1,4 +1,5 @@
 import Foundation
+import SnipSnapCore
 
 /// Identifies one launch, independently of the library's durable scope and receipts.
 public struct SnipCLIAppInstance: Codable, Equatable, Sendable {
@@ -25,6 +26,14 @@ public struct SnipCLIAppReadiness: Codable, Equatable, Sendable {
   }
 }
 
-public enum SnipCLIAppReadinessError: Error, Sendable {
+public enum SnipCLIAppReadinessError: LocalizedError, AppDiagnosticErrorCodeProviding, Sendable {
   case unavailable
+
+  public var errorDescription: String? {
+    String(localized:
+      "Snip Snap couldn’t prepare its command connection. Quit and reopen Snip Snap, then try again.",
+      bundle: .main)
+  }
+
+  public var appDiagnosticCode: String { "cli.unavailable" }
 }
