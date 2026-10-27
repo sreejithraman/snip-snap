@@ -462,14 +462,10 @@ private struct EditorConfirmActionIcon: View {
 }
 
 struct InlineListEditor: View {
-    private enum AppearanceTab { case icon, color }
-
     let model: IOSAppModel
     let list: SnipList
     let cancelNewList: (UUID) async -> Bool
     @Bindable private var draft: InlineListDraft
-    @State private var appearanceTab: AppearanceTab = .color
-    @State private var iconQuery = ""
     @State private var didReceiveInitialFocus = false
     @FocusState private var focusedField: ListAppearanceField?
     @ScaledMetric(relativeTo: .body) private var actionSymbolSize: CGFloat = 16
@@ -495,13 +491,13 @@ struct InlineListEditor: View {
                 ScrollView {
                     LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                         editorHeader
-                        switch appearanceTab {
+                        switch draft.appearanceTab {
                         case .icon:
                             Section {
-                                ListIconGrid(selection: $draft.systemImage, query: iconQuery)
+                                ListIconGrid(selection: $draft.systemImage, query: draft.iconQuery)
                                     .padding(.horizontal, SnipSnapSpacing.paneContentInset)
                             } header: {
-                                ListIconSearchField(query: $iconQuery, focus: $focusedField, usesGlassBackground: true)
+                                ListIconSearchField(query: $draft.iconQuery, focus: $focusedField, usesGlassBackground: true)
                                     .fixedSize(horizontal: false, vertical: true)
                                     .padding(.horizontal, SnipSnapSpacing.paneContentInset)
                                     .padding(.bottom, SnipSnapSpacing.relatedContent)
@@ -522,7 +518,8 @@ struct InlineListEditor: View {
                 appearancePicker
             }
         }
-        .safeAreaBar(edge: .bottom, spacing: 0) { editorFooter }
+        // Bar hosting drops field focus updates on iOS 26.5.
+        .safeAreaInset(edge: .bottom, spacing: 0) { editorFooter }
         .scrollEdgeEffectStyle(.soft, for: .all)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .disabled(draft.isSaving)
@@ -559,9 +556,9 @@ struct InlineListEditor: View {
 
     private var appearancePicker: some View {
         Group {
-            switch appearanceTab {
+            switch draft.appearanceTab {
             case .icon:
-                InlineListIconPicker(selection: $draft.systemImage, query: $iconQuery, searchFocus: $focusedField)
+                InlineListIconPicker(selection: $draft.systemImage, query: $draft.iconQuery, searchFocus: $focusedField)
             case .color:
                 ScrollView {
                     SnipListColorPicker(selection: $draft.color, showsTitle: false)
@@ -575,10 +572,10 @@ struct InlineListEditor: View {
         .frame(maxHeight: .infinity, alignment: .top)
     }
 
-    private var appearanceSelection: Binding<AppearanceTab> {
-        Binding(get: { appearanceTab }, set: { tab in
+    private var appearanceSelection: Binding<InlineListDraft.AppearanceTab> {
+        Binding(get: { draft.appearanceTab }, set: { tab in
             let keepsKeyboard = focusedField != nil
-            appearanceTab = tab
+            draft.appearanceTab = tab
             if keepsKeyboard {
                 focusedField = tab == .color ? .name : .iconSearch
             }
@@ -610,8 +607,8 @@ struct InlineListEditor: View {
 
             }
             Picker("List appearance", selection: appearanceSelection) {
-                Text("Icon").tag(AppearanceTab.icon)
-                Text("Color").tag(AppearanceTab.color)
+                Text("Icon").tag(InlineListDraft.AppearanceTab.icon)
+                Text("Color").tag(InlineListDraft.AppearanceTab.color)
             }
             .pickerStyle(.segmented)
             .accessibilityIdentifier("list-appearance-picker")
@@ -635,7 +632,7 @@ struct InlineListEditor: View {
             }
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
-            .controlSize(.regular)
+            .controlSize(.large)
             .frame(minWidth: 44, minHeight: 44)
             .accessibilityLabel(model.newListID == list.id ? "Cancel new list" : "Cancel list editing")
             .accessibilityIdentifier(model.newListID == list.id ? "cancel-new-list" : "cancel-list-editing")
@@ -656,7 +653,7 @@ struct InlineListEditor: View {
             }
             .buttonStyle(.glassProminent)
             .buttonBorderShape(.circle)
-            .controlSize(.regular)
+            .controlSize(.large)
             .tint(SnipListAppearance(preset: draft.color).controlTint)
             .foregroundStyle(SnipListAppearance(preset: draft.color).filledControlLabel(in: environment))
             .frame(minWidth: 44, minHeight: 44)

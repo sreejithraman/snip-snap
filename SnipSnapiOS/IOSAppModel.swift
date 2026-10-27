@@ -24,9 +24,13 @@ typealias IOSCopiedSnipVersions = [UUID: Date]
 @MainActor
 @Observable
 final class InlineListDraft {
+    enum AppearanceTab { case icon, color }
+
     var name: String
     var systemImage: String
     var color: SnipListColorPreset?
+    var appearanceTab: AppearanceTab = .color
+    var iconQuery = ""
     fileprivate enum Operation {
         case editing
         case saving
