@@ -16,7 +16,7 @@ final class CloudMutationAdmissionTests: XCTestCase {
     let pause = AutomaticSyncPause()
     let changing = Task { try await lease.run { await pause.suspend() } }
     await pause.waitUntilSuspended()
-    do { _ = try await managed.perform(Self.add("Private text"), sortedBy: .manual); XCTFail("Mode changes must block adds") }
+    do { _ = try await managed.perform(admissionAddCommand("Private text"), sortedBy: .manual); XCTFail("Mode changes must block adds") }
     catch SnipLibraryError.modeTransitionInProgress {}
     await pause.resume()
     try await changing.value
@@ -34,7 +34,7 @@ final class CloudMutationAdmissionTests: XCTestCase {
     let pause = AutomaticSyncPause()
     let syncing = Task { try await lease.run { await pause.suspend() } }
     await pause.waitUntilSuspended()
-    let adding = Task { try await managed.perform(Self.add("Private text"), sortedBy: .manual) }
+    let adding = Task { try await managed.perform(admissionAddCommand("Private text"), sortedBy: .manual) }
     try await waitForQueuedMutations(fixture.persistence, count: 1)
     await pause.resume()
     try await syncing.value
@@ -51,9 +51,9 @@ final class CloudMutationAdmissionTests: XCTestCase {
     }, diagnostics: diagnostics.recorder)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let managed = try await fixture.persistence.activeLibrary()
-    let writing = Task { try await managed.perform(Self.add("first"), sortedBy: .manual) }
+    let writing = Task { try await managed.perform(admissionAddCommand("first"), sortedBy: .manual) }
     await pause.waitUntilSuspended()
-    do { _ = try await managed.perform(Self.add("second"), sortedBy: .manual); XCTFail("Writes must remain exclusive") }
+    do { _ = try await managed.perform(admissionAddCommand("second"), sortedBy: .manual); XCTFail("Writes must remain exclusive") }
     catch SnipLibraryError.modeTransitionInProgress {}
     await pause.resume()
     _ = try await writing.value
@@ -73,7 +73,7 @@ final class CloudMutationAdmissionTests: XCTestCase {
     await point.arm()
     let changing = Task { try await fixture.persistence.activateEmptyCollection(namespace: replacement.binding) }
     await pause.waitUntilSuspended()
-    do { _ = try await managed.perform(Self.add("blocked"), sortedBy: .manual); XCTFail("Store replacement must block writes") }
+    do { _ = try await managed.perform(admissionAddCommand("blocked"), sortedBy: .manual); XCTFail("Store replacement must block writes") }
     catch SnipLibraryError.modeTransitionInProgress {}
     await pause.resume()
     try await changing.value
@@ -88,9 +88,9 @@ final class CloudMutationAdmissionTests: XCTestCase {
     }, diagnostics: diagnostics.recorder)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let managed = try await fixture.persistence.activeLibrary()
-    do { _ = try await managed.perform(Self.add("interrupted"), sortedBy: .manual); XCTFail("Expected injected process loss") }
+    do { _ = try await managed.perform(admissionAddCommand("interrupted"), sortedBy: .manual); XCTFail("Expected injected process loss") }
     catch AdmissionDiagnosticCrash.injected {}
-    do { _ = try await managed.perform(Self.add("blocked"), sortedBy: .manual); XCTFail("The abandoned reservation must block writes") }
+    do { _ = try await managed.perform(admissionAddCommand("blocked"), sortedBy: .manual); XCTFail("The abandoned reservation must block writes") }
     catch SnipLibraryError.modeTransitionInProgress {}
 
     XCTAssertEqual(diagnostics.events, [.writeAdmission(.failed, reason: .reservedWrite)])
@@ -191,14 +191,14 @@ final class CloudMutationAdmissionTests: XCTestCase {
     let syncing = Task { try await lease.run { await pause.suspend() } }
     await pause.waitUntilSuspended()
     let cancelled = Task {
-      try await managed.perform(Self.add("cancelled"), sortedBy: .manual)
+      try await managed.perform(admissionAddCommand("cancelled"), sortedBy: .manual)
     }
     try await waitForQueuedMutations(fixture.persistence, count: 1)
     cancelled.cancel()
     do { _ = try await cancelled.value; XCTFail("Expected cancellation while waiting for sync") }
     catch is CancellationError {}
     let next = Task {
-      try await managed.perform(Self.add("next send"), sortedBy: .manual)
+      try await managed.perform(admissionAddCommand("next send"), sortedBy: .manual)
     }
     try await waitForQueuedMutations(fixture.persistence, count: 1)
     await pause.resume()
@@ -231,7 +231,7 @@ final class CloudMutationAdmissionTests: XCTestCase {
     }
     await pause.waitUntilSuspended()
     let adding = Task {
-      try await managed.perform(Self.add("must not enter reset cache"), sortedBy: .manual)
+      try await managed.perform(admissionAddCommand("must not enter reset cache"), sortedBy: .manual)
     }
     try await waitForQueuedMutations(fixture.persistence, count: 1)
     await pause.resume()
@@ -258,7 +258,7 @@ final class CloudMutationAdmissionTests: XCTestCase {
     let syncing = Task { try await lease.run { await pause.suspend() } }
     await pause.waitUntilSuspended()
     let adding = Task {
-      try await managed.perform(Self.add("cancelled after admission"), sortedBy: .manual)
+      try await managed.perform(admissionAddCommand("cancelled after admission"), sortedBy: .manual)
     }
     try await waitForQueuedMutations(fixture.persistence, count: 1)
     await pause.resume()
@@ -271,7 +271,7 @@ final class CloudMutationAdmissionTests: XCTestCase {
 
     let afterCancellation = try await fixture.persistence.snapshot()
     XCTAssertFalse(afterCancellation.hasActiveMutationReservation)
-    _ = try await managed.perform(Self.add("next send"), sortedBy: .manual)
+    _ = try await managed.perform(admissionAddCommand("next send"), sortedBy: .manual)
     let saved = try await managed.checkedSnapshot(sortedBy: .manual)
     XCTAssertEqual(saved.snips.map(\.content), ["next send"])
   }
@@ -292,7 +292,7 @@ final class CloudMutationAdmissionTests: XCTestCase {
     let finished = Mutex(false)
     let adding = Task {
       defer { finished.withLock { $0 = true } }
-      return try await managed.perform(Self.add("must not cross mode change"), sortedBy: .manual)
+      return try await managed.perform(admissionAddCommand("must not cross mode change"), sortedBy: .manual)
     }
     do {
       try await waitForQueuedMutations(fixture.persistence, count: 2,
@@ -311,11 +311,6 @@ final class CloudMutationAdmissionTests: XCTestCase {
     catch SnipLibraryError.modeTransitionInProgress {}
     let saved = try await managed.checkedSnapshot(sortedBy: .manual)
     XCTAssertTrue(saved.snips.isEmpty)
-  }
-
-  private static func add(_ content: String) -> SnipLibraryCommand {
-    .add(content: content, origin: .quickEntry, source: nil, listID: SnipList.inboxID,
-      attachmentURLs: [], requestID: UUID(), now: Date())
   }
 
   func testAttachmentReleaseContinuesThePendingAutomaticBatchAndCheckpoint() async throws {
@@ -519,6 +514,11 @@ final class CloudMutationAdmissionTests: XCTestCase {
     XCTAssertFalse(results.contains { if case .syncIssue = $0 { true } else { false } })
     XCTAssertNil(pending)
   }
+}
+
+private func admissionAddCommand(_ content: String) -> SnipLibraryCommand {
+  .add(content: content, origin: .quickEntry, source: nil, listID: SnipList.inboxID,
+    attachmentURLs: [], requestID: UUID(), now: Date())
 }
 
 private struct AdmissionFixture: Sendable {
