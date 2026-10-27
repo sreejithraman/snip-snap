@@ -467,7 +467,7 @@ final class SnipSnapiOSUITests: XCTestCase {
     func testClipboardHidesSavedListActionsOnIPad() throws {
         continueAfterFailure = false
         let app = launchApp()
-        if app.descendants(matching: .any)["list-selector"].exists {
+        if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
             throw XCTSkip("The sidebar is limited to regular-width iPad.")
         }
         createList("Work", in: app)
