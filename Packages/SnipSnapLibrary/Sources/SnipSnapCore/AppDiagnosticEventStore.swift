@@ -21,6 +21,9 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
   private let os: String
   private let lock = NSLock()
   private let lockTimeout: TimeInterval
+  private let runtimeTrace: RuntimeTrace
+  private var activeTrace: RuntimeTrace.Span?
+  private let backgroundActivityRunner: FileAccessBackgroundActivity.Runner?
   private var context: [Record] = []
   private var contextClearToken: Data?
 
@@ -28,8 +31,13 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
     directoryURL: URL, policy: AppDiagnosticRetentionPolicy = .init(),
     appVersion: String, appBuild: String, legacyDirectoryURL: URL? = nil,
     priorDirectoryURLs: [URL] = [],
-    now: @escaping () -> Date = Date.init, lockTimeout: TimeInterval = 0.25
+    now: @escaping () -> Date = Date.init, lockTimeout: TimeInterval = 0.25,
+    runtimeTrace: RuntimeTrace = .live,
+    backgroundActivityRunner: FileAccessBackgroundActivity.Runner? =
+      FileAccessBackgroundActivity.platformRunner
   ) {
+    self.runtimeTrace = runtimeTrace
+    self.backgroundActivityRunner = backgroundActivityRunner
     self.lockTimeout = lockTimeout.isFinite ? max(0, min(lockTimeout, 0.5)) : 0.25
     self.directoryURL = directoryURL
     self.legacyDirectoryURL = legacyDirectoryURL
@@ -129,7 +137,7 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
 
   /// Selection and every resulting append share one bounded lock acquisition.
   func appendThrowing(_ event: AppDiagnosticEvent, occurrences: [AppDiagnosticOccurrence]) throws {
-    try synchronized {
+    try synchronized(.append) {
       for selection in AppDiagnosticOccurrence.retained(
         occurrences, event: event, after: try controlFence()?.submission)
       {
@@ -145,7 +153,7 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
     _ event: AppDiagnosticEvent, at date: Date? = nil, count: Int = 1, first: Date? = nil,
     submitted: AppDiagnosticSubmissionStamp? = nil
   ) throws {
-    try synchronized { try appendLocked(event, at: date, count: count, first: first, submitted: submitted) }
+    try synchronized(.append) { try appendLocked(event, at: date, count: count, first: first, submitted: submitted) }
   }
 
   private func appendLocked(
@@ -190,7 +198,7 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
   }
 
   func makeShareableFile(range: AppDiagnosticExportRange = .last24Hours) throws -> URL {
-    try synchronized { try exportLocked(range: range) }
+    try synchronized(.export) { try exportLocked(range: range) }
   }
 
   private enum QueryError: Error { case invalidLimit }
@@ -200,7 +208,7 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
     errorsOnly: Bool = false
   ) throws -> AppDiagnosticLogReport {
     guard (1...2_000).contains(limit) else { throw QueryError.invalidLimit }
-    return try synchronized {
+    return try synchronized(.read) {
       let result = try renderLocked(
         range: range, budget: policy.exportBytes,
         eventLimit: limit, errorsOnly: errorsOnly)
@@ -211,13 +219,13 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
   }
 
   func snapshot() throws -> AppDiagnosticExportSnapshot {
-    try synchronized { try snapshotLocked() }
+    try synchronized(.read) { try snapshotLocked() }
   }
 
-  func clear() throws { try synchronized { try clearLocked() } }
+  func clear() throws { try synchronized(.clear) { try clearLocked() } }
 
   func clear(ifRevision revision: String) throws -> Bool {
-    try synchronized {
+    try synchronized(.clear) {
       guard try snapshotLocked().revision == revision else { return false }
       try clearLocked()
       return true
@@ -225,15 +233,15 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
   }
 
   func readRecordingEnabled() throws -> Bool {
-    try synchronized { try recordingPreference() }
+    try synchronized(.recording) { try recordingPreference() }
   }
 
   func setRecordingEnabled(_ enabled: Bool) throws {
-    try synchronized { try setRecordingLocked(enabled) }
+    try synchronized(.recording) { try setRecordingLocked(enabled) }
   }
 
   func setRecordingEnabled(_ enabled: Bool, ifRevision revision: String) throws -> Bool {
-    try synchronized {
+    try synchronized(.recording) {
       guard try snapshotLocked().revision == revision else { return false }
       try setRecordingLocked(enabled)
       return true
@@ -242,10 +250,27 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
 
   private func url(_ name: String) -> URL { directoryURL.appendingPathComponent(name) }
 
-  private func synchronized<T>(prepareHistory: Bool = true, _ operation: () throws -> T) throws -> T
-  {
+  private func synchronized<T>(
+    _ name: RuntimeTrace.Operation = .access, prepareHistory: Bool = true,
+    _ operation: () throws -> T
+  ) throws -> T {
+    let trace = runtimeTrace.span(.diagnostics, operation: name)
+    defer { trace.mark(.accessEnded) }
+    // Execution protection must outlive every file lock. Busy preserves the writer's queued batch.
+    let activity: FileAccessBackgroundActivity?
+    do {
+      activity = try FileAccessBackgroundActivity.begin(runner: backgroundActivityRunner, trace: trace)
+    } catch is CancellationError {
+      throw AppDiagnosticAccessError.busy
+    }
+    defer { activity?.finish() }
+    func checkActivity() throws {
+      do { try activity?.check() }
+      catch is CancellationError { throw AppDiagnosticAccessError.busy }
+    }
     let deadline = ProcessInfo.processInfo.systemUptime + lockTimeout
     while !lock.try() {
+      try checkActivity()
       guard ProcessInfo.processInfo.systemUptime < deadline else {
         throw AppDiagnosticAccessError.busy
       }
@@ -253,6 +278,7 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
     }
     defer { lock.unlock() }
     return try { () throws -> T in
+      try checkActivity()
       try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
       guard try directoryURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true
       else {
@@ -266,7 +292,9 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
         url(".lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
       guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
       defer { Darwin.close(descriptor) }
+      trace.waitingForLock()
       while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+        try checkActivity()
         guard errno == EWOULDBLOCK || errno == EAGAIN || errno == EINTR else {
           throw CocoaError(.fileWriteUnknown)
         }
@@ -275,12 +303,23 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
         }
         Thread.sleep(forTimeInterval: 0.002)
       }
-      defer { flock(descriptor, LOCK_UN) }
+      trace.acquiredLock()
+      defer {
+        flock(descriptor, LOCK_UN)
+        trace.releasedLock()
+      }
+      activeTrace = trace
+      defer { activeTrace = nil }
+      try checkActivity()
       if prepareHistory {
         try discardAbandonedShares()
+        try checkActivity()
         try migrateOwnedHistory()
+        try checkActivity()
         try migrateLegacy()
       }
+      try checkActivity()
+      // Finish an admitted operation before ending protection; do not replay a committed append.
       return try operation()
     }()
   }
@@ -289,6 +328,8 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
   /// Clear discards pending imports, including later writes in rediscovered sandboxes.
   /// Unreadable files retry; readable sources are consumed after ID/count deduplication.
   private func migrateOwnedHistory() throws {
+    activeTrace?.mark(.migrationStarted)
+    defer { activeTrace?.mark(.migrationEnded) }
     for sourceURL in priorDirectoryURLs
     where sourceURL.standardizedFileURL != directoryURL.standardizedFileURL {
       let namespace = sourceURL.deletingLastPathComponent().lastPathComponent
@@ -300,7 +341,8 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
       else { continue }
       let source = AppDiagnosticEventStore(
         directoryURL: sourceURL, policy: policy,
-        appVersion: appVersion, appBuild: appBuild, now: now, lockTimeout: lockTimeout)
+        appVersion: appVersion, appBuild: appBuild, now: now, lockTimeout: lockTimeout,
+        runtimeTrace: runtimeTrace, backgroundActivityRunner: backgroundActivityRunner)
       let optOutPending = url("migration-off-\(key).pending")
       if exists(marker), !exists(optOutPending), !source.exists(source.url("aggregate.json")),
         !source.exists(source.url("diagnostic-sync-health.txt")),
@@ -321,7 +363,7 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
         try remove(optOutPending)
       }
       do {
-        try source.synchronized(prepareHistory: false) {
+        try source.synchronized(.migration, prepareHistory: false) {
           if source.exists(source.url("aggregate.json")),
             source.read(source.url("aggregate.json"), limit: Self.recordLimit) == nil
           {
@@ -554,6 +596,8 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
   }
 
   private func cleanup() throws {
+    activeTrace?.mark(.cleanupStarted)
+    defer { activeTrace?.mark(.cleanupEnded) }
     let cutoff = now().addingTimeInterval(-policy.retentionAge)
     for stream in ["routine", "protected"] {
       var files = try segments().filter { $0.lastPathComponent.hasPrefix(stream) }
@@ -640,6 +684,8 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
   }
 
   private func discardAbandonedShares() throws {
+    activeTrace?.mark(.shareCleanupStarted)
+    defer { activeTrace?.mark(.shareCleanupEnded) }
     for file in try stagedFiles() {
       guard let process = Self.stageOwner(file.lastPathComponent) else { continue }
       if (process == getpid() && !file.lastPathComponent.contains(Self.session))
