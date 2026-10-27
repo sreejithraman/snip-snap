@@ -52,8 +52,6 @@ struct SnipListView: View {
     @State private var activeDropTarget: SnipListReorderTarget?
     @State private var isCommittingDrop = false
     @State private var activeDragRowFrames: [UUID: CGRect] = [:]
-    @State private var contentHeight: CGFloat = 0
-    @State private var viewportHeight: CGFloat = 0
     @State private var commandNumberOwner = CommandNumberOwner()
     @StateObject private var cardInteractionController = PanelCardInteractionController()
     @StateObject private var reorderGeometry = SnipListReorderGeometry()
@@ -136,7 +134,6 @@ struct SnipListView: View {
                     }
                     bottomSpacer
                 }
-                .panelMeasuredHeight($contentHeight)
             }
             .contentMargins(0, for: .scrollContent)
             .background {
@@ -210,10 +207,7 @@ struct SnipListView: View {
                     selectionFocusTarget(proxy: proxy)
                 }
             }
-            .panelBlankDragOverlay(
-                viewportHeight: $viewportHeight,
-                contentHeight: contentHeight
-            )
+            .panelBlankDragOverlay()
         }
         .onAppear {
             guard isInteractive else { return }
@@ -362,7 +356,7 @@ struct SnipListView: View {
         snips: [Snip]
     ) -> some View {
         let payload = snapshot.dragPayload(for: snip)
-        return snipCard(snip)
+        return snipCard(snip, snapshot: snapshot)
                 .opacity(isShowingDragGap(for: snip.id) ? 0 : 1)
                 .background {
                     if model.editingID != snip.id {
@@ -682,7 +676,7 @@ struct SnipListView: View {
             }
     }
 
-    private func snipCard(_ snip: Snip) -> some View {
+    private func snipCard(_ snip: Snip, snapshot: SnipListSnapshot) -> some View {
         SnipCardRow(
             snip: snip,
             appearance: (model.lists.first { $0.id == snip.listID } ?? .inbox).accent,
@@ -775,7 +769,7 @@ struct SnipListView: View {
                     Button(SnipCommand.toggleDone.title(allSelectedAreDone: snip.isDone)) {
                         model.toggleDone(id: snip.id)
                     }
-                    if model.canReorder(ids: contextSelection(for: snip.id)) {
+                    if !model.hasActiveQuery, model.completionFilter == .all, snapshot.canReorder(snip) {
                         Button("Move Up") {
                             let ids = contextSelection(for: snip.id)
                             Task { await model.moveSelectionNow(by: -1, ids: ids) }

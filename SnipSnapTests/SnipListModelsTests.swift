@@ -1117,6 +1117,40 @@ final class SnipListModelsTests: XCTestCase {
         XCTAssertEqual(snapshot.dragPayload(for: firstReview).ids, [firstReview.id])
     }
 
+    func testSnapshotReorderEligibilityUsesTheWholeSelection() {
+        let first = dropSnip(id: 1, createdAt: 100, list: "Inbox", manualPosition: 0)
+        let second = dropSnip(id: 2, createdAt: 200, list: "Inbox", manualPosition: 1)
+        let otherList = dropSnip(id: 3, createdAt: 300, list: "Review", manualPosition: 0)
+        var pinned = second
+        pinned.pinnedAt = Date(timeIntervalSince1970: 400)
+
+        func snapshot(_ snips: [Snip], selection: Set<UUID>) -> SnipListSnapshot {
+            SnipListSnapshot(
+                visibleSnips: snips,
+                allSnips: snips,
+                lists: [.inbox, SnipList(id: listID("Review"), name: "Review", systemImage: "star", position: 1)],
+                selection: selection
+            )
+        }
+
+        let sameList = snapshot([first, second, otherList], selection: [first.id, second.id])
+        XCTAssertTrue(sameList.canReorder(first))
+        XCTAssertTrue(sameList.canReorder(second))
+        XCTAssertTrue(sameList.canReorder(otherList))
+
+        let mixedLists = snapshot([first, second, otherList], selection: [first.id, otherList.id])
+        XCTAssertFalse(mixedLists.canReorder(first))
+        XCTAssertFalse(mixedLists.canReorder(otherList))
+        XCTAssertTrue(mixedLists.canReorder(second))
+
+        let includesPin = snapshot([first, pinned, otherList], selection: [first.id, pinned.id])
+        XCTAssertFalse(includesPin.canReorder(first))
+        XCTAssertFalse(includesPin.canReorder(pinned))
+        XCTAssertTrue(includesPin.canReorder(otherList))
+        XCTAssertFalse(snapshot([pinned], selection: []).canReorder(pinned))
+        XCTAssertTrue(snapshot([first], selection: []).canReorder(first))
+    }
+
     private func dropSnip(
         id: Int,
         createdAt: TimeInterval,

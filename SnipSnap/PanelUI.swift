@@ -320,27 +320,8 @@ extension View {
         }
     }
 
-    func panelMeasuredHeight(_ height: Binding<CGFloat>) -> some View {
-        onGeometryChange(for: CGFloat.self) { $0.size.height } action: { proposed in
-            guard PanelGeometryChange.shouldApply(
-                current: height.wrappedValue,
-                proposed: proposed
-            ) else { return }
-            height.wrappedValue = proposed
-        }
-    }
-
-    func panelBlankDragOverlay(
-        viewportHeight: Binding<CGFloat>,
-        contentHeight: CGFloat
-    ) -> some View {
-        panelMeasuredHeight(viewportHeight)
-            .overlay(alignment: .bottom) {
-                PanelBlankDragRegion(
-                    viewportHeight: viewportHeight.wrappedValue,
-                    contentHeight: contentHeight
-                )
-            }
+    func panelBlankDragOverlay() -> some View {
+        modifier(PanelBlankDragOverlay())
     }
 
 }
@@ -355,9 +336,28 @@ struct PanelDragRegion: View {
     }
 }
 
+private struct PanelBlankDragOverlay: ViewModifier {
+    @State private var blankHeight: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        content
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                PanelBlankDragRegion.height(
+                    viewportHeight: geometry.containerSize.height,
+                    contentHeight: geometry.contentSize.height
+                )
+            } action: { _, height in
+                guard PanelGeometryChange.shouldApply(current: blankHeight, proposed: height) else { return }
+                blankHeight = height
+            }
+            .overlay(alignment: .bottom) {
+                PanelBlankDragRegion(blankHeight: blankHeight)
+            }
+    }
+}
+
 struct PanelBlankDragRegion: View {
-    let viewportHeight: CGFloat
-    let contentHeight: CGFloat
+    let blankHeight: CGFloat
 
     static func height(viewportHeight: CGFloat, contentHeight: CGFloat) -> CGFloat {
         guard viewportHeight > 0, contentHeight > 0 else { return 0 }
@@ -365,10 +365,6 @@ struct PanelBlankDragRegion: View {
     }
 
     var body: some View {
-        let blankHeight = Self.height(
-            viewportHeight: viewportHeight,
-            contentHeight: contentHeight
-        )
         if blankHeight > 0 {
             PanelDragRegion()
                 .frame(maxWidth: .infinity)
