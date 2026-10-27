@@ -7,13 +7,19 @@ import UniformTypeIdentifiers
 final class SnipStoreFileLock {
   private let descriptor: Int32
   private let backgroundActivity: SnipStoreBackgroundActivity?
+  private let trace: RuntimeTrace.Span
 
-  init(url: URL) throws {
-    let activity = try SnipStoreBackgroundActivity.begin()
+  init(url: URL, runtimeTrace: RuntimeTrace = .live) throws {
+    let trace = runtimeTrace.span(.database)
+    self.trace = trace
+    var activity: SnipStoreBackgroundActivity?
     var opened: Int32 = -1
+    var locked = false
     do {
+      activity = try SnipStoreBackgroundActivity.begin(trace: trace)
       opened = Darwin.open(url.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
       guard opened >= 0 else { throw SnipLibraryError.storeUnavailable }
+      trace.waitingForLock()
       if let activity {
         while flock(opened, LOCK_EX | LOCK_NB) != 0 {
           guard errno == EWOULDBLOCK || errno == EINTR else {
@@ -25,12 +31,16 @@ final class SnipStoreFileLock {
       } else {
         guard flock(opened, LOCK_EX) == 0 else { throw SnipLibraryError.storeUnavailable }
       }
+      locked = true
+      trace.acquiredLock()
       try activity?.check()
       descriptor = opened
       backgroundActivity = activity
     } catch {
       if opened >= 0 { Darwin.close(opened) }
+      if locked { trace.releasedLock() }
       activity?.finish()
+      trace.mark(.accessEnded)
       throw error
     }
   }
@@ -42,7 +52,9 @@ final class SnipStoreFileLock {
   deinit {
     flock(descriptor, LOCK_UN)
     Darwin.close(descriptor)
+    trace.releasedLock()
     backgroundActivity?.finish()
+    trace.mark(.accessEnded)
   }
 }
 

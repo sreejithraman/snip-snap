@@ -21,6 +21,7 @@ final class AppDiagnosticWriter: @unchecked Sendable {
     }
   }
 
+  private let trace: RuntimeTrace.Span
   private let store: AppDiagnosticEventStore
   private let requiresReadableControls: Bool
   private let capacity: Int
@@ -33,6 +34,12 @@ final class AppDiagnosticWriter: @unchecked Sendable {
   private var pendingOccurrences = 0
   private static let occurrenceCapacity = 2_048
   private static let lossOccurrenceCapacity = 64
+  // Loss totals use lock; reporting cursors and retry attempts belong to queue.
+  private var droppedOccurrences = 0
+  private var uncertainOccurrences = 0
+  private var reportedDropped = 0
+  private var reportedUncertain = 0
+  private var retryAttempts = 0
   private var scheduled = false
   // Queue-owned batch; a busy store retains it for the next finite retry.
   // Together with pending, at most 2 * capacity + 6 envelopes and
@@ -43,8 +50,10 @@ final class AppDiagnosticWriter: @unchecked Sendable {
 
   init(
     store: AppDiagnosticEventStore, capacity: Int = 128, requiresReadableControls: Bool = false,
-    scheduleRetry: (@Sendable (TimeInterval, @escaping @Sendable () -> Void) -> Void)? = nil
+    scheduleRetry: (@Sendable (TimeInterval, @escaping @Sendable () -> Void) -> Void)? = nil,
+    runtimeTrace: RuntimeTrace = .live
   ) {
+    trace = runtimeTrace.span(.writer)
     self.store = store
     self.requiresReadableControls = requiresReadableControls
     self.capacity = max(1, min(capacity, 256))
@@ -116,6 +125,7 @@ final class AppDiagnosticWriter: @unchecked Sendable {
       try drain(shouldContinue: { request.isPending })
       request.finish(true)
     } catch AppDiagnosticAccessError.busy {
+      noteDeferredAttempt()
       queue.asyncAfter(deadline: .now() + 0.01) { self.flushAttempt(request) }
     } catch {
       request.finish(false)
@@ -159,6 +169,9 @@ final class AppDiagnosticWriter: @unchecked Sendable {
     let code =
       code
       ?? (submission.priority > 0 ? "diagnostics.failureOverflow" : "diagnostics.routineOverflow")
+    let occurrences = submission.occurrences.reduce(0) { $0 + $1.count }
+    if code == "diagnostics.writeFailed" { uncertainOccurrences += occurrences }
+    else { droppedOccurrences += occurrences }
     var loss = losses.removeValue(forKey: code) ?? Submission(
       event: .failure(
         operation: "diagnostics.recording", errorCode: code, visibility: .background),
@@ -186,16 +199,23 @@ final class AppDiagnosticWriter: @unchecked Sendable {
       return result
     }
     try drainBatch(shouldContinue: shouldContinue)
+    reportLossIfChanged()
+    if retryAttempts > 0 {
+      reportHealth(.writerRecovered)
+      retryAttempts = 0
+    }
   }
 
   private func drainBatch(shouldContinue: () -> Bool) throws {
     while let submission = batch.first {
       guard shouldContinue() else { throw CancellationError() }
+      var attemptedAppend = false
       do {
         if requiresReadableControls, try !store.readRecordingEnabled() {
           batch.removeFirst()
           continue
         }
+        attemptedAppend = true
         try store.appendThrowing(submission.event, occurrences: submission.occurrences)
         retryDelay = 0.05
         batch.removeFirst()
@@ -204,8 +224,17 @@ final class AppDiagnosticWriter: @unchecked Sendable {
       } catch {
         if requiresReadableControls {
           // Unknown shared controls cannot authorize later persistence or loss replay.
+          let discarded = batch.filter { !$0.loss }.reduce(0) {
+            $0 + $1.occurrences.reduce(0) { $0 + $1.count }
+          }
           batch.removeAll(keepingCapacity: true)
           lock.withLock {
+            if attemptedAppend, !submission.loss {
+              uncertainOccurrences += submission.occurrences.reduce(0) { $0 + $1.count }
+            }
+            droppedOccurrences += discarded + pending.reduce(0) {
+              $0 + $1.occurrences.reduce(0) { $0 + $1.count }
+            }
             pending.removeAll(keepingCapacity: true)
             losses.removeAll(keepingCapacity: true)
             pendingOccurrences = 0
@@ -238,9 +267,31 @@ final class AppDiagnosticWriter: @unchecked Sendable {
     } catch {
       // Short initial retry for reader contention; persistent permission/disk
       // failures back off to one attempt per five seconds. Progress resets it.
+      noteDeferredAttempt()
       let delay = retryDelay
       retryDelay = min(5, retryDelay * 2)
       scheduleRetry(delay) { self.queue.async { self.pump() } }
     }
+  }
+
+  private func noteDeferredAttempt() {
+    retryAttempts += 1
+    reportLossIfChanged()
+    // Geometric milestones bound trace volume during a persistent denial.
+    if retryAttempts.nonzeroBitCount == 1 { reportHealth(.writerDeferred) }
+  }
+
+  private func reportLossIfChanged() {
+    let counts = lock.withLock { (droppedOccurrences, uncertainOccurrences) }
+    guard counts.0 != reportedDropped || counts.1 != reportedUncertain else { return }
+    reportedDropped = counts.0
+    reportedUncertain = counts.1
+    reportHealth(.writerLoss)
+  }
+
+  private func reportHealth(_ phase: RuntimeTrace.Phase) {
+    let counts = lock.withLock { (pending.count + losses.count, droppedOccurrences, uncertainOccurrences) }
+    trace.health(phase, queued: batch.count + counts.0, retries: retryAttempts,
+      dropped: counts.1, uncertain: counts.2)
   }
 }
