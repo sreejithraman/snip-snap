@@ -578,6 +578,33 @@ final class PanelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testShortScrollContentLeavesBlankDragSpace() async throws {
+        var blankHeight: CGFloat?
+        let root = ScrollView {
+            Text("Short snip").frame(height: 80)
+        }
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            PanelBlankDragRegion.height(
+                viewportHeight: geometry.containerSize.height,
+                contentHeight: geometry.contentSize.height
+            )
+        } action: { _, height in
+            blankHeight = height
+        }
+        let host = NSHostingView(rootView: root)
+        host.frame = NSRect(x: 0, y: 0, width: 430, height: 500)
+        let window = NSWindow(contentRect: host.frame, styleMask: [], backing: .buffered, defer: false)
+        window.contentView = host
+        processLifetimePanelSearchWindows.append(window)
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(200))
+        host.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(try XCTUnwrap(blankHeight), 400)
+    }
+
+    @MainActor
     func testMainPanelRendersNeedsAttentionWithBothSafeChoices() async throws {
         let defaults = try XCTUnwrap(
             UserDefaults(suiteName: "Snip SnapPanelAccountNoticeTests-\(UUID().uuidString)")

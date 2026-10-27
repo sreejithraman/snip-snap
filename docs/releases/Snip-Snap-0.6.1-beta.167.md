@@ -1,0 +1,9 @@
+# Snip Snap 0.6.1 Beta 167
+
+## Mac
+
+- Fix long-list scrolling stalls on Mac
+
+## iOS
+
+- No iOS changes in this build.

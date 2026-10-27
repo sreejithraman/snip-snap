@@ -81,8 +81,6 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
     let maxHeight: CGFloat
     let onPreviewAttachments: ([URL], URL) -> Void
     @ViewBuilder let headerActions: () -> HeaderActions
-    @State private var contentHeight: CGFloat = 0
-    @State private var viewportHeight: CGFloat = 0
     @State private var commandNumberOwner = CommandNumberOwner()
     @State private var hasScrolledFromTop = false
 
@@ -155,7 +153,6 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
                     }
                 }
             }
-            .panelMeasuredHeight($contentHeight)
         }
         .scrollEdgeEffectStyle(.hard, for: .top)
         .overlay(alignment: .topLeading) {
@@ -173,10 +170,7 @@ private struct ClipboardEntriesList<HeaderActions: View>: View {
         } action: { _, hasScrolled in
             hasScrolledFromTop = hasScrolled
         }
-        .panelBlankDragOverlay(
-            viewportHeight: $viewportHeight,
-            contentHeight: contentHeight
-        )
+        .panelBlankDragOverlay()
         .frame(maxHeight: maxHeight)
         .background {
             SnipListWindowFrameReader { frame, _ in
