@@ -2,10 +2,7 @@
 set -euo pipefail
 script_dir="${0:A:h}"
 test_dir="$(mktemp -d)"
-fixture_lock="/private/tmp/snip-snap-share-fixture-58493.lock"
-test_fixture_lock_owned=0
 cleanup() {
- [[ "$test_fixture_lock_owned" == 0 ]] || /bin/rmdir "$fixture_lock" 2>/dev/null || true
  /bin/rm -rf "$test_dir"
 }
 trap cleanup EXIT
@@ -79,7 +76,10 @@ if [[ "${argv[-1]}" == test* && "${FAKE_EXPECT_FIXTURE:-0}" == 1 ]]; then
  [[ -s "$FAKE_FIXTURE_PID_FILE" ]] && /bin/kill -0 "$(cat "$FAKE_FIXTURE_PID_FILE")" || {
   print -u2 'The Share fixture was not ready before xcodebuild test'; exit 1
  }
-elif [[ -e "$FAKE_FIXTURE_PID_FILE" ]]; then
+ [[ "${TEST_RUNNER_SNIP_SNAP_SHARE_FIXTURE_URL:-}" == 'http://127.0.0.1:43101/' ]] || {
+  print -u2 'The Share fixture URL did not reach the XCTest runner environment'; exit 1
+ }
+elif [[ -e "$FAKE_FIXTURE_PID_FILE" || ( "${argv[-1]}" == test* && -n "${TEST_RUNNER_SNIP_SNAP_SHARE_FIXTURE_URL:-}" ) ]]; then
  print -u2 'A build or unrelated UI test started the Share fixture'; exit 1
 fi
 if [[ "${argv[-1]}" == test* ]]; then
@@ -105,12 +105,12 @@ cat > "$test_dir/bin/python3" <<'STUB'
 #!/bin/zsh
 set -euo pipefail
 [[ -f "$2/index.html" ]] || exit 1
-[[ "$4" == 58493 ]] || exit 1
+[[ "$4" == 0 ]] || exit 1
 [[ "${FAKE_FIXTURE_START_FAILURE:-0}" != 1 ]] || { print -u2 'Fixture startup failed'; exit 29; }
 print -r -- "$$" > "$FAKE_FIXTURE_PID_FILE"
 print -r -- "$$" >> "$FAKE_FIXTURE_LOG"
 trap 'rm -f "$FAKE_FIXTURE_PID_FILE"; exit 0' TERM INT
-print -r -- "${FAKE_FIXTURE_RETURNED_PORT:-$4}" > "$3"
+print -r -- "${FAKE_FIXTURE_RETURNED_PORT:-43101}" > "$3"
 while true; do /bin/sleep 0.05; done
 STUB
 chmod +x "$test_dir/bin/"*
@@ -258,8 +258,8 @@ if ! grep -F -- '-only-testing:SnipSnapiOSUITests test' "$FAKE_BUILD_LOG" >/dev/
  print -u2 'The full UI suite must run against the isolated Dev app'; exit 1
 fi
 assert_fixture_cleaned_up() {
- [[ ! -e "$fixture_lock" && ! -e "$FAKE_FIXTURE_PID_FILE" ]] || {
-  print -u2 'The runner left its fixture child or port lock behind'; exit 1
+ [[ ! -e "$FAKE_FIXTURE_PID_FILE" ]] || {
+  print -u2 'The runner left its fixture child behind'; exit 1
  }
  local fixture_pid
  for fixture_pid in ${(f)"$(cat "$FAKE_FIXTURE_LOG")"}; do
@@ -305,7 +305,7 @@ assert_fixture_cleaned_up
 [[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *' test-without-building' ]] || {
  print -u2 'Performance UI testing failed before its test action'; exit 1
 }
-for fixture_failure in FAKE_FIXTURE_START_FAILURE=1 FAKE_FIXTURE_RETURNED_PORT=12345; do
+for fixture_failure in FAKE_FIXTURE_START_FAILURE=1 FAKE_FIXTURE_RETURNED_PORT=0 FAKE_FIXTURE_RETURNED_PORT=65536 FAKE_FIXTURE_RETURNED_PORT=invalid; do
  if env "$fixture_failure" FAKE_EXPECT_FIXTURE=1 \
   "$script_dir/run.sh" --ios-simulator --ui-test all > "$test_dir/output" 2>&1; then
   print -u2 'The runner accepted an unavailable Share fixture'; exit 1
@@ -315,18 +315,10 @@ for fixture_failure in FAKE_FIXTURE_START_FAILURE=1 FAKE_FIXTURE_RETURNED_PORT=1
  }
  assert_fixture_cleaned_up
 done
-/bin/mkdir "$fixture_lock"
-test_fixture_lock_owned=1
-cp "$FAKE_FIXTURE_LOG" "$test_dir/fixture-before"
-if FAKE_EXPECT_FIXTURE=1 "$script_dir/run.sh" --ios-simulator --ui-test all > "$test_dir/output" 2>&1; then
- print -u2 'The runner accepted an already owned fixture port'; exit 1
-fi
-[[ -d "$fixture_lock" ]] || { print -u2 'The runner removed another fixture lock'; exit 1; }
-cmp "$test_dir/fixture-before" "$FAKE_FIXTURE_LOG"
-grep -F 'another Share fixture owns loopback port 58493' "$test_dir/output" >/dev/null
-/bin/rmdir "$fixture_lock"
-test_fixture_lock_owned=0
-assert_fixture_cleaned_up
+TEST_RUNNER_SNIP_SNAP_SHARE_FIXTURE_URL='http://127.0.0.1:1/' \
+ "$script_dir/run.sh" --ios-simulator --ui-test testExample > "$test_dir/output" 2>&1 || {
+ cat "$test_dir/output" >&2; exit 1
+}
 cp "$FAKE_SIM_LOG" "$test_dir/before"
 mkdir -p "$SNIP_SNAP_DEV_STATE_DIR/locks/ios-slot-1"
 for arguments in '--ios-simulator --simulator-id TEST-SIM' 'ios-simulator TEST-SIM'; do
@@ -335,4 +327,4 @@ for arguments in '--ios-simulator --simulator-id TEST-SIM' 'ios-simulator TEST-S
  fi
  cmp "$test_dir/before" "$FAKE_SIM_LOG"
 done
-print 'iOS Simulator Dev policy tests passed (performance compiler evidence, diagnostics options, fixture admission, 4 focused Share cases, cleanup, collisions, and isolation).'
+print 'iOS Simulator Dev policy tests passed (performance compiler evidence, diagnostics options, fixture URL handoff, 4 focused Share cases, cleanup, and slot isolation).'

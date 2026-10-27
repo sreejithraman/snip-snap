@@ -22,6 +22,12 @@ File.open(ENV.fetch('SNIP_SNAP_TEST_CALLS'), 'a') { |file| file.puts('policy:clo
 exit 1 if ENV['SNIP_SNAP_TEST_FAILURE'] == 'cloudkit-schema'
 RUBY
 
+cat > "$fixture/scripts/share-fixture-tests.py" <<'PYTHON'
+import os
+with open(os.environ['SNIP_SNAP_TEST_CALLS'], 'a') as output:
+    output.write('policy:share-fixture-tests.py\n')
+PYTHON
+
 cat > "$test_root/bin/swift" <<'SWIFT'
 #!/bin/zsh
 print -r -- "swift:$*" >> "$SNIP_SNAP_TEST_CALLS"
@@ -83,6 +89,7 @@ assert_groups() {
     [[ "$(/usr/bin/grep -c '^policy:cloudkit-schema-tests.rb$' "$SNIP_SNAP_TEST_CALLS" || true)" == "$common" ]]
     [[ "$(/usr/bin/grep -c '^swift:' "$SNIP_SNAP_TEST_CALLS" || true)" == "$common" ]]
     [[ "$(/usr/bin/grep -c '^policy:release-policy-tests.sh$' "$SNIP_SNAP_TEST_CALLS" || true)" == "$common" ]]
+    [[ "$(/usr/bin/grep -c '^policy:share-fixture-tests.py$' "$SNIP_SNAP_TEST_CALLS" || true)" == "$common" ]]
     [[ "$(/usr/bin/grep -c -- '-scheme SnipSnap ' "$SNIP_SNAP_TEST_CALLS" || true)" == "$mac" ]]
     [[ "$(/usr/bin/grep -c -- '-scheme SnipSnapiOS ' "$SNIP_SNAP_TEST_CALLS" || true)" == "$ios" ]]
     [[ "$(/usr/bin/grep -c '^xcodebuild:' "$SNIP_SNAP_TEST_CALLS" || true)" == "$(( mac + ios ))" ]]

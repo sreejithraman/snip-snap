@@ -48,6 +48,7 @@ if [[ "$run_common_tests" == YES ]]; then
     "$script_dir/build-matrix-tests.sh"
     "$script_dir/test-runner-tests.sh"
     "$script_dir/test-diagnostic-tests.sh"
+    python3 "$script_dir/share-fixture-tests.py"
     "$script_dir/release-matrix-tests-tests.sh"
     "$script_dir/cloud-dev-transport-contract-tests.sh"
     /usr/bin/ruby "$script_dir/cloudkit-schema-tests.rb"

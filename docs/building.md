@@ -79,8 +79,8 @@ interruption test on both device families. It also checks the 100 MiB total
 boundary, quota and interrupted-upload retries, the iCloud limit action,
 Share, and local attachment actions. Last, Safari opens a fixed loopback page
 and invokes the embedded Share extension with the main app open, closed, and
-unable to migrate. An exclusive run lock guards the loopback port. These
-process tests use ad-hoc Simulator signing and no Team ID. The default
+unable to migrate. These process tests use the same per-run fixture setup,
+ad-hoc Simulator signing and no Team ID. The default
 Simulator names match the CI image. Override them without checking in a device
 ID:
 
@@ -100,7 +100,9 @@ Select a booted Simulator and pass its ID:
 Use a test method name instead of `all` to run one workflow. Both paths use this
 worktree's Dev bundle ID, app name, data store, and badge. The runner starts and
 cleans up the local Share fixture for the full suite and related focused tests;
-these checks use Python 3 to serve the loopback page.
+these checks use Python 3 to serve the loopback page. Each run binds its own
+OS-selected port and passes its fixture URL into XCTest. Separate worktrees can
+run Share checks concurrently on their own Simulators.
 
 ## Run the local Dev app
 

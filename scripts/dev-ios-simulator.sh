@@ -245,6 +245,7 @@ if [[ -n "$ui_test" || -n "$unit_test" ]]; then
         fi
         test_kind="unit"
     fi
+    TEST_RUNNER_SNIP_SNAP_SHARE_FIXTURE_URL="$share_fixture_url" \
     run_owned_command 0 xcodebuild "${build_arguments[@]}" \
         "${test_arguments[@]}" \
         -parallel-testing-enabled NO \

@@ -1124,6 +1124,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         )
         revealCompactList(named: work, in: app)
         tapVisibleSelectorTab(listControl(named: work, in: app), in: app)
+        XCTAssertTrue(
+            saved.waitForExistence(timeout: 10),
+            "The shared snip was unavailable after returning to \(work): \(app.debugDescription)"
+        )
         XCTAssertEqual(activeSnipRows(in: app).matching(NSPredicate(format: "label CONTAINS %@", token)).count, 1)
     }
 
@@ -3326,8 +3330,17 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     private func shareURLFromSafari(token: String) -> XCUIApplication {
         let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
-        guard let fixtureURL = URL(string: "http://127.0.0.1:58493/#\(token)") else {
-            XCTFail("The fixed Share fixture URL is invalid.")
+        guard let fixtureBase = ProcessInfo.processInfo.environment["SNIP_SNAP_SHARE_FIXTURE_URL"],
+              var components = URLComponents(string: fixtureBase),
+              components.scheme == "http", components.host == "127.0.0.1",
+              let port = components.port, (1...65535).contains(port)
+        else {
+            XCTFail("Run Share tests through scripts/run.sh or scripts/release-matrix-tests.sh to supply their local fixture URL.")
+            return safari
+        }
+        components.fragment = token
+        guard let fixtureURL = components.url else {
+            XCTFail("The supplied Share fixture URL is invalid.")
             return safari
         }
         safari.open(fixtureURL)
