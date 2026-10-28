@@ -601,8 +601,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         let app = launchApp()
         try requireCompactSelector(in: app)
         createList("Work", in: app)
-        let body = app.staticTexts["empty-snips"]
+        let emptyStates = app.staticTexts.matching(identifier: "empty-snips")
+            .matching(NSPredicate(format: "enabled == true"))
+        let body = emptyStates.element
         XCTAssertTrue(body.waitForExistence(timeout: 3))
+        XCTAssertEqual(emptyStates.count, 1)
         let start = body.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.3))
             .withOffset(CGVector(dx: 8, dy: 0))
         start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 180, dy: 0)))
@@ -2988,7 +2991,6 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         let toast = app.descendants(matching: .any)["app-toast"]
         XCTAssertTrue(toast.waitForExistence(timeout: 3))
-        Thread.sleep(forTimeInterval: 1.5)
         app.buttons["Search"].tap()
         XCTAssertTrue(app.searchFields["Search"].waitForExistence(timeout: 3))
         XCTAssertTrue(toast.exists)
