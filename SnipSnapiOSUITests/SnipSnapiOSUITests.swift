@@ -1449,7 +1449,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         editor.typeText(" unsaved")
         let text = "Copy mixed fixture unsaved"
         XCTAssertEqual(editor.value as? String, text)
-        focusWithOnscreenKeyboard(editor, in: app)
+        try focusWithOnscreenKeyboard(editor, in: app)
         XCTAssertEqual(editor.value as? String, text)
         app.descendants(matching: .any)["global-search-results"].swipeDown()
         closeSearch(in: app)
@@ -1486,7 +1486,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         composer.tap()
         composer.typeText("Sent to Work from Inbox")
 
-        focusWithOnscreenKeyboard(composer, in: app)
+        try focusWithOnscreenKeyboard(composer, in: app)
         let send = app.buttons["composer-send"]
         let keyboard = app.keyboards.firstMatch
         let layoutReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
@@ -2870,7 +2870,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Reading Notes"].waitForExistence(timeout: 3))
     }
 
-    func testListEditorIconSearchKeepsControlsReachable() {
+    func testListEditorIconSearchKeepsControlsReachable() throws {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .landscapeLeft
         let app = launchApp()
@@ -2884,7 +2884,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.frame.contains(search.frame))
         search.tap()
         search.typeText("star")
-        focusWithOnscreenKeyboard(search, in: app)
+        try focusWithOnscreenKeyboard(search, in: app)
         XCTAssertTrue(app.keyboards.firstMatch.exists)
         XCTAssertTrue(app.buttons["save-list"].isHittable)
         XCTAssertLessThanOrEqual(app.buttons["save-list"].frame.maxY, app.keyboards.firstMatch.frame.minY)
@@ -3051,7 +3051,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCUIDevice.shared.appearance = .dark
         let app = launchApp()
         createSnip("Undo this", in: app)
-        deleteSnipAndWaitForToast(named: "Undo this", in: app)
+        try deleteSnipAndWaitForToast(named: "Undo this", in: app)
 
         app.buttons["toast-action"]
             .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1))
@@ -3079,7 +3079,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCUIDevice.shared.appearance = .dark
         let app = launchApp()
         createSnip("Inspect delete feedback", in: app)
-        deleteSnipAndWaitForToast(named: "Inspect delete feedback", in: app)
+        try deleteSnipAndWaitForToast(named: "Inspect delete feedback", in: app)
 
         let state = try app.snapshot()
         let toast = try capturedSnapshot(identifiedBy: "app-toast", in: state)
@@ -3118,10 +3118,10 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     @discardableResult
-    private func deleteSnipAndWaitForToast(named text: String, in app: XCUIApplication) -> XCUIElement {
+    private func deleteSnipAndWaitForToast(named text: String, in app: XCUIApplication) throws -> XCUIElement {
         let snip = row(named: text, in: app)
         XCTAssertTrue(snip.waitForExistence(timeout: 3))
-        snip.press(forDuration: 1)
+        try visibleTouchCenter(of: snip, in: app).press(forDuration: 1)
         app.buttons["delete-context-snip"].tap()
         XCTAssertTrue(snip.waitForNonExistence(timeout: 3))
         let toast = app.descendants(matching: .any)["app-toast"]
@@ -4799,11 +4799,16 @@ final class SnipSnapiOSUITests: XCTestCase {
         in app: XCUIApplication,
         file: StaticString = #filePath,
         line: UInt = #line
-    ) {
+    ) throws {
         // XCTest text entry can leave the software keyboard offscreen until the next touch.
-        waitForHittable(element, file: file, line: line)
-        element.tap()
         let keyboard = app.keyboards.firstMatch
+        var inputBounds = app.frame
+        if keyboard.exists, keyboard.frame.intersects(inputBounds) {
+            inputBounds.size.height = max(0, keyboard.frame.minY - inputBounds.minY)
+        }
+        try visibleTouchCenter(
+            of: element, clippedTo: inputBounds, in: app, file: file, line: line
+        ).tap()
         let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             guard keyboard.exists else { return false }
             let frame = keyboard.frame
