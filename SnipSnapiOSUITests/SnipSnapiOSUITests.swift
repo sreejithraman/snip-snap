@@ -3665,8 +3665,15 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(search.placeholderValue, "Search")
         XCTAssertTrue(app.descendants(matching: .any)["search-prompt"].exists)
         search.typeText("Alpha")
-        XCTAssertTrue(row(named: "Alpha inbox", in: app).isHittable)
-        XCTAssertTrue(row(named: "Alpha work", in: app).isHittable)
+        let results = app.buttons.matching(NSPredicate(
+            format: "identifier MATCHES %@ AND enabled == true",
+            "search-snip-[0-9A-Fa-f-]{36}"
+        ))
+        for text in ["Alpha inbox", "Alpha work"] {
+            let result = results.matching(NSPredicate(format: "label BEGINSWITH %@", text)).firstMatch
+            XCTAssertTrue(result.waitForExistence(timeout: 3))
+            XCTAssertTrue(result.isHittable)
+        }
         XCTAssertTrue(app.staticTexts["Inbox"].exists)
         XCTAssertTrue(app.staticTexts["Work"].exists)
         XCTAssertFalse(app.descendants(matching: .any)["list-selector"].exists)
