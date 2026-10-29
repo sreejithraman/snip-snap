@@ -1,6 +1,9 @@
 #!/usr/bin/ruby
 # frozen_string_literal: true
 
+require 'json'
+require 'open3'
+
 module IOSTestSelection
   GROUPS = {
     'smoke' => {
@@ -88,9 +91,35 @@ module IOSTestSelection
     }
   }.freeze
 
+  def self.unit_test_sources
+    root = File.expand_path('..', __dir__)
+    project = File.join(root, 'SnipSnap.xcodeproj/project.pbxproj')
+    contents, error, status = Open3.capture3('/usr/bin/plutil', '-convert', 'json', '-o', '-', project)
+    abort "Cannot read iOS unit target sources: #{error}" unless status.success?
+    objects = JSON.parse(contents).fetch('objects')
+    target = objects.values.find { |object| object['isa'] == 'PBXNativeTarget' && object['name'] == 'SnipSnapiOSTests' }
+    parents = objects.flat_map do |id, object|
+      object.fetch('children', []).map { |child| [child, id] }
+    end.to_h
+    resolve = lambda do |id|
+      object = objects.fetch(id)
+      directory = if object['sourceTree'] == 'SOURCE_ROOT' || !parents.key?(id)
+                    root
+                  else
+                    resolve.call(parents.fetch(id))
+                  end
+      File.expand_path(object.fetch('path', ''), directory)
+    end
+    target.fetch('buildPhases').flat_map do |id|
+      phase = objects.fetch(id)
+      next [] unless phase['isa'] == 'PBXSourcesBuildPhase'
+      phase.fetch('files').map { |file| resolve.call(objects.fetch(file).fetch('fileRef')) }
+    end.select { |path| File.extname(path) == '.swift' }
+  end
+
   def self.run(arguments)
     if arguments.length == 2 && arguments.first == '--unit-test'
-      parents = Dir.glob(File.expand_path('../SnipSnapiOSTests/*.swift', __dir__)).flat_map do |path|
+      parents = unit_test_sources.flat_map do |path|
         File.read(path).scan(/^\s*(?:final\s+)?class (\w+)\s*:\s*(\w+)/)
       end.to_h
       classes = ['XCTestCase']

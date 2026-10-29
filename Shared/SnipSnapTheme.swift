@@ -207,8 +207,8 @@ private struct AppToastPresenter: ViewModifier {
             }
         }
         .animation(reduceMotion ? nil : .snappy, value: toast?.id)
-        .onChange(of: toast?.id) { _, _ in
-            pausedAt = nil
+        .onChange(of: toast?.id, initial: true) { _, _ in
+            pausedAt = isTimerPaused ? ContinuousClock().now : nil
             resumedDeadline = nil
         }
         .onChange(of: isTimerPaused) { _, isPaused in

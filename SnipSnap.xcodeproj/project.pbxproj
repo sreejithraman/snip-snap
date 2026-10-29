@@ -194,6 +194,7 @@
 		C2610B260000000000000005 /* IOSAttachmentPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000005 /* IOSAttachmentPreviewTests.swift */; };
 		C2610B260000000000000006 /* IOSShareImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000006 /* IOSShareImportTests.swift */; };
 		C2610B260000000000000007 /* IOSSnipCopyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000007 /* IOSSnipCopyTests.swift */; };
+		C2710B270000000000000001 /* IOSUndoFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2710A270000000000000001 /* IOSUndoFeedbackTests.swift */; };
 		C2610B260000000000000008 /* IOSComposerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000008 /* IOSComposerTests.swift */; };
 		C2610B260000000000000009 /* IOSBackupModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000009 /* IOSBackupModelTests.swift */; };
 		C2610B26000000000000000A /* IOSHapticFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A26000000000000000A /* IOSHapticFeedbackTests.swift */; };
@@ -432,6 +433,7 @@
 		C2610A260000000000000005 /* IOSAttachmentPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAttachmentPreviewTests.swift; sourceTree = "<group>"; };
 		C2610A260000000000000006 /* IOSShareImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSShareImportTests.swift; sourceTree = "<group>"; };
 		C2610A260000000000000007 /* IOSSnipCopyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSSnipCopyTests.swift; sourceTree = "<group>"; };
+		C2710A270000000000000001 /* IOSUndoFeedbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSUndoFeedbackTests.swift; sourceTree = "<group>"; };
 		C2610A260000000000000008 /* IOSComposerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSComposerTests.swift; sourceTree = "<group>"; };
 		C2610A260000000000000009 /* IOSBackupModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSBackupModelTests.swift; sourceTree = "<group>"; };
 		C2610A26000000000000000A /* IOSHapticFeedbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSHapticFeedbackTests.swift; sourceTree = "<group>"; };
@@ -736,6 +738,7 @@
 				C2610A260000000000000009 /* IOSBackupModelTests.swift */,
 				C2610A260000000000000008 /* IOSComposerTests.swift */,
 				C2610A260000000000000007 /* IOSSnipCopyTests.swift */,
+				C2710A270000000000000001 /* IOSUndoFeedbackTests.swift */,
 				C2610A260000000000000006 /* IOSShareImportTests.swift */,
 				C2610A260000000000000005 /* IOSAttachmentPreviewTests.swift */,
 				C2610A260000000000000004 /* IOSSyncModelTests.swift */,
@@ -1209,6 +1212,7 @@
 				C2610B260000000000000009 /* IOSBackupModelTests.swift in Sources */,
 				C2610B260000000000000008 /* IOSComposerTests.swift in Sources */,
 				C2610B260000000000000007 /* IOSSnipCopyTests.swift in Sources */,
+				C2710B270000000000000001 /* IOSUndoFeedbackTests.swift in Sources */,
 				C2610B260000000000000006 /* IOSShareImportTests.swift in Sources */,
 				C2610B260000000000000005 /* IOSAttachmentPreviewTests.swift in Sources */,
 				C2610B260000000000000004 /* IOSSyncModelTests.swift in Sources */,

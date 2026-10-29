@@ -159,6 +159,10 @@ fi
 [[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *'-only-testing:SnipSnapiOSTests test' ]] || {
  print -u2 'The all-unit selector did not include every iOS unit suite'; exit 1
 }
+"$script_dir/run.sh" --ios-simulator --unit-test AppFeedbackTests > "$test_dir/output" 2>&1
+[[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *'-only-testing:SnipSnapiOSTests/AppFeedbackTests test' ]] || {
+ print -u2 'The shared feedback suite did not select its iOS target'; exit 1
+}
 "$script_dir/run.sh" --ios-simulator --unit-test IOSAppModelTests --performance > "$test_dir/output" 2>&1 || {
  cat "$test_dir/output" >&2; exit 1
 }

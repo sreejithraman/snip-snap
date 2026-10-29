@@ -29,11 +29,16 @@ grep -Fx 'testSelectionPersistsAcrossLists' "$test_dir/selection" >/dev/null
 [[ "$(cat "$test_dir/selection")" == IOSHapticFeedbackTests ]]
 /usr/bin/ruby "$script_dir/ios-test-selection.rb" --unit-test IOSSnipCopyTests > "$test_dir/selection"
 [[ "$(cat "$test_dir/selection")" == IOSSnipCopyTests ]]
+/usr/bin/ruby "$script_dir/ios-test-selection.rb" --unit-test AppFeedbackTests > "$test_dir/selection"
+[[ "$(cat "$test_dir/selection")" == AppFeedbackTests ]]
+/usr/bin/ruby "$script_dir/ios-test-selection.rb" --unit-test IOSUndoFeedbackTests > "$test_dir/selection"
+[[ "$(cat "$test_dir/selection")" == IOSUndoFeedbackTests ]]
 
 for arguments in \
  '--ui-group unknown' \
  '--ui-test testMisspelledMethod' \
  '--unit-test MisspelledTestClass' \
+ '--unit-test AppCoordinatorTests' \
  '--ui-group smoke --ui-test testCopiesTextOnlySnip' \
  '--ui-group smoke --unit-test IOSAppModelTests' \
  '--ui-test testCopiesTextOnlySnip --ui-test testCreatesAndEditsTextSnip' \
